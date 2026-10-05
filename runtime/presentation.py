@@ -49,6 +49,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,6 +71,18 @@ def _load(name: str, filename: str):
 
 alerting = _load("serveros_runtime_alerting", "alerting.py")
 alert_digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
+
+
+def _card_day():
+    """The day store's reader, for the one question only it can answer.
+
+    Loaded lazily rather than at import: `card_day` reads a business calendar
+    and a delivery ledger off disk at module scope in some of its own paths, and
+    this module is imported by every card render. The direction is one-way —
+    `card_day` does not import this module — so the pairing is acyclical, and
+    the lazy call is about import cost rather than about a cycle.
+    """
+    return _load("serveros_runtime_card_day", "card_day.py")
 # Neither detector is loaded here, and the omission is load-bearing.
 # `resource_anomaly.py` sits behind
 # `tests/test_resource_anomaly.py::test_nothing_in_the_tree_yet_creates_through_the_admission_gate`,
@@ -92,7 +105,21 @@ DEFINITIONS = _HERE / "card-definitions.yaml"
 #: §6 puts it in the card title as well; this is the model-level half, so that
 #: a consumer which renders its own layout still cannot present a sample as a
 #: reading.
-SAMPLE_MARK = "示例 / 尚未发送"
+#:
+#: WHY IT IS ONE WORD AND NOT THREE. The mark rides on the card TITLE, and the
+#: title is the widest-cost row on the card: `.hdr h2` lays out at 16px/700,
+#: which `fit-candidates.py` measures at 8.5–9.5px per half-width cell against
+#: the 7.1–8.4px the 15px rows cost. `示例 / 尚未发送` is eight cells that the
+#: body rows would not notice and the title cannot afford: with it the marked
+#: title measured 407.9px in a 360px box and wrapped to two lines, while the
+#: same card without the mark measured 275.2px and took one. A preview that
+#: wraps where production does not is §16's 「预览与渲染完全一致» broken by the
+#: one thing on the card that exists only in a preview — so the mark gives way,
+#: and not the finding. `示例` is the same word `card_scenarios` prints in its
+#: banner, and it is the word that carries the requirement: a reader must not
+#: take a sample for a reading. The measured pool for every row this card has
+#: is `_measure/fit-candidates.py`.
+SAMPLE_MARK = "示例"
 
 DECLARED = "DECLARED"
 ABSENT = "ABSENT"
@@ -149,8 +176,54 @@ class PresentationError(Exception):
     """A model that cannot be built from what was handed in."""
 
 
+#: The two YAML documents this module reads, parsed once per REVISION of the
+#: file rather than once per question asked of it.
+#:
+#: WHY THIS EXISTS. `card alert` spent **64 of its 65 seconds** re-parsing the
+#: same 46 KB `notification-contract.yaml`. `alert_model` asks `attention_of`
+#: once per row, and every question down that path — `attention_policy`,
+#: `code_expectations`, `on_the_face`, `attention_word` — read the contract
+#: again from the top. Measured on this node 2026-10-04 against the live
+#: register: 832 rows entering the loop, **3,584 parses**, 17.9 ms each =
+#: 64.15 s, for a card that came out with no events on it.
+#:
+#: This is the same defect `alert_digest.may_interrupt` records in its own
+#: words — "Read once, not once per row" — found there on 2026-09-24, fixed
+#: there, and never carried across to the module that asks the question most.
+#:
+#: KEYED ON IDENTITY, NOT ON TIME. The key is the file's inode, size and
+#: nanosecond mtime, so a rewritten file IS re-read and a same-size rewrite is
+#: not served a stale parse. One entry per path, so the cache cannot grow, and
+#: what it holds is always the parse of the revision currently on disk.
+#:
+#: THE DOCUMENT RETURNED IS SHARED, and every reader here treats it as
+#: read-only: `attention_policy`, `code_expectations`, `definition_for`,
+#: `comparison_word` and `action_for` all read it with `.get` and none assigns
+#: into it. A copy per call would put the whole cost back.
+_PARSE_CACHE: dict[str, tuple[tuple, dict]] = {}
+
+
+def _parsed(path: Path) -> dict:
+    """One YAML document, parsed once per revision of the file on disk."""
+    try:
+        stat = path.stat()
+        key: tuple | None = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        # An unreadable path is not a cacheable one. Fall through and let
+        # `read_text` raise the error the callers are written against, rather
+        # than answering from a parse that no longer describes anything.
+        key = None
+    entry = _PARSE_CACHE.get(str(path))
+    if key is not None and entry is not None and entry[0] == key:
+        return entry[1]
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if key is not None:
+        _PARSE_CACHE[str(path)] = (key, document)
+    return document
+
+
 def _catalogue() -> dict:
-    return yaml.safe_load(DEFINITIONS.read_text(encoding="utf-8")) or {}
+    return _parsed(DEFINITIONS)
 
 
 def known_codes() -> frozenset:
@@ -257,7 +330,7 @@ ATTENTION_RULE = "实际状态违反了一个明确的预期状态，而且这�
 
 
 def _contract() -> dict:
-    return yaml.safe_load(CONTRACT.read_text(encoding="utf-8")) or {}
+    return _parsed(CONTRACT)
 
 
 def attention_policy() -> dict:
@@ -387,21 +460,28 @@ LOST_OBSERVATION = frozenset({"unmeasured", "not_evaluated"})
 def _integrity_words() -> dict:
     """The declared sentence for the aggregate monitoring-integrity finding.
 
-    Three keys, all required. A contract missing one of them is a contract in
+    Four keys, all required. A contract missing one of them is a contract in
     which this finding would have to be described by whoever renders it — which
     is the failure the block exists to prevent — so it raises instead.
+
+    `collector` is the fourth and it is not decoration. The action tells a
+    person to check the collection side, and «采集侧» alone is the card
+    pointing at something unnamed; §4 keeps the names off the first screen, so
+    what the word refers to is declared here and printed one panel down, where
+    the reader who wants to act on the sentence can find out what to look at.
     """
     block = ((attention_policy().get("monitoring_integrity") or {}))
-    missing = [k for k in ("what", "impact", "action") if not block.get(k)]
+    keys = ("what", "impact", "action", "collector")
+    missing = [k for k in keys if not block.get(k)]
     if missing:
         raise PresentationError(
             "notification-contract.yaml alerts.attention.monitoring_integrity "
             f"does not declare {', '.join(missing)}; the finding cannot be "
             "described without it")
-    return {k: str(block[k]) for k in ("what", "impact", "action")}
+    return {k: str(block[k]) for k in keys}
 
 
-def integrity_finding(held_rows: list[dict]) -> dict | None:
+def integrity_finding(held_rows: list[dict], *, at: str | None = None) -> dict | None:
     """The held rows that are a monitoring-integrity finding, aggregated to one.
 
     AC6 and AC20 are the same rule read from two sides, and this function is
@@ -417,8 +497,17 @@ def integrity_finding(held_rows: list[dict]) -> dict | None:
     These are returned as ONE dict and never as N rows. 542 held entries with
     one cause are one line on a card; the alternative is the dump this whole
     round exists to remove.
+
+    `at` is what makes §4's 「从何时起·持续多久」 answerable, and it is the card's
+    own instant rather than `datetime.now()`: the age this block prints has to
+    be measured from the same clock as the `采集` stamp two panels down, or a
+    card read on a phone and a card read a minute later would disagree about
+    how long the loss has lasted. Every row here carries a real `first_seen` —
+    `alert_digest` only writes a held row from an alert that is OPEN in the
+    register — so the earliest of them is an observation point and not an
+    interval this function invented (§3).
     """
-    findings, history = [], []
+    findings, history, undecided = [], [], []
     for row in held_rows or []:
         kind = row.get("hold_kind")
         if kind is not None and kind not in LOST_OBSERVATION:
@@ -427,14 +516,27 @@ def integrity_finding(held_rows: list[dict]) -> dict | None:
             # anything became unobservable. We are being told the same thing we
             # were told last hour, and nothing is missing.
             continue
-        (findings if expectation_of(row.get("code"))["kind"] == "declared"
-         else history).append(row)
-    if not findings:
+        found = expectation_of(row.get("code"))
+        if not found["decided"]:
+            # §八-B. NOT the same fact as `history`, and it was being filed as
+            # one. `history` is "the contract decided this code carries no
+            # expectation, so not seeing it is a fact about our looking".
+            # An undecided code is "nobody decided", which is the sentence
+            # `attention_of` refuses to collapse — and filing it under a note
+            # that says 没有任何东西声明它们应当存在 makes the node ASSERT an
+            # expectation-free status for a code it never looked at. That is
+            # the incomplete admission catalogue the round is about, and it
+            # belongs in its own bucket with its own wording.
+            undecided.append(row)
+            continue
+        (findings if found["kind"] == "declared" else history).append(row)
+    if not findings and not undecided:
         return None
     codes: dict[str, int] = {}
     for row in findings:
         code = str(row.get("code") or "")
         codes[code] = codes.get(code, 0) + 1
+    undecided_codes = sorted({str(r.get("code") or "") for r in undecided})
     # The wording comes from the contract, not from here. This function decides
     # WHICH rows are a finding and HOW MANY; the sentence a person reads is
     # declared in `alerts.attention.monitoring_integrity`, so changing it is a
@@ -442,20 +544,104 @@ def integrity_finding(held_rows: list[dict]) -> dict | None:
     # contract that has lost them rather than falling back to a string built
     # here, because a fallback is how the second authority gets created.
     words = _integrity_words()
+    # §4's 「现在还存在吗」 and 「从何时起·持续多久」, as the two facts they are.
+    #
+    # The state is UNCONFIRMED and it is not a verdict this function reached:
+    # every row here is OPEN in the register and held because nobody graded it,
+    # which is `_now_line`'s UNCONFIRMED branch read on a set instead of on one
+    # alert. It is NOT 「仍在发生» and the difference is the whole reason both
+    # spellings exist — 仍在发生 would say the machine is still in some
+    # condition, and what is true is that nothing looked.
+    #
+    # The instant is the EARLIEST `first_seen` of the rows being counted, and
+    # the earliest is the one to print because it is the answer to «since
+    # when». A maximum would date the newest subject and make a loss that
+    # started a fortnight ago read as one that started this morning. Rows with
+    # no parseable `first_seen` are skipped rather than dragging the answer to
+    # a sentinel — an unparseable stamp is one row's bad data, not a reason to
+    # print 未知 over thirteen rows that dated themselves.
+    since, seconds = None, None
+    for row in findings:
+        moment = (row.get("first_seen") or "")
+        if not moment:
+            continue
+        if since is None or str(moment) < since:
+            since = str(moment)
+    if since and at:
+        opened = _parse(since)
+        now = _parse(at)
+        if opened and now:
+            seconds = max(0, int((now - opened).total_seconds()))
     return {
         "kind": "monitoring-integrity",
-        "attention": attention_of(findings[0].get("code")),
+        "current": {"state": "UNCONFIRMED", "since": since,
+                    "since_seconds": seconds},
+        "attention": attention_of(findings[0].get("code")) if findings else
+                     {"level": None, "rule": "undecided", "expectation": None,
+                      "escalated": False,
+                      "because": ("这条发现本身来自未定级的 code，契约没有"
+                                  "决定它的注意力级别")},
         "count": len(findings),
         "by_code": codes,
         "text": words["what"].format(count=len(findings)),
         "impact": words["impact"],
         "action": words["action"],
+        "collector": words["collector"],
         "not_a_finding": {
             "count": len(history),
-            "note": ("另有无预期声明的历史主体同样未被观测到。没有任何东西声明"
-                     "它们应当存在，因此「测不到」不是故障，不计入本条。"),
+            "note": ("另有无预期声明的历史主体同样未被观测到。契约已经决定"
+                     "它们不携带预期，因此「测不到」不是故障，不计入本条。"),
+        },
+        "undecided": {
+            "count": len(undecided),
+            "codes": undecided_codes,
+            "note": ("这些 code 没有任何东西在 attention 表里决定过，因此"
+                     "既不能说「测不到是故障」也不能说「测不到不是故障」。"
+                     "未决定不等于不重要——它是准入目录上的一个洞，如实列出。"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Width. §2's line budget, measured rather than guessed.
+# ---------------------------------------------------------------------------
+
+def display_cells(text: str) -> int:
+    """How many half-width cells a string takes up.
+
+    THE UNIT IS THE CELL AND NOT THE CHARACTER, and the difference is the whole
+    reason this exists. `len()` counts `磁盘 / 70.2%` as 11 and `磁盘使用率` as 5,
+    and the second is wider on the screen than the first. A budget written in
+    characters therefore lets the wide line through and cuts the narrow one,
+    which is the failure this function was written for: the first version of
+    §2's face line used `truncate: 34` characters and rendered `CPU 占整机 /
+    1.6%` and `磁 / 盘 / 70.2%` — a unit broken off its number, which is the
+    one shape §6 calls out by name.
+
+    A cell is still not a pixel, and this is not a claim that it is. The
+    budgets in `card-definitions.yaml` were calibrated against the real thing:
+    `card_geometry.py` loads the rendered card in the browser the screenshots
+    come from and reads back the width of every line. Measured there, the widest
+    strings that fit their row were 304px of 358px at weight 600 and 338px of
+    360px at weight 400, which is what puts 42 and 46 cells on those rows. The
+    calibration lives with the numbers that came out of it.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in text)
+
+
+def fits(text: str, width: int) -> bool:
+    """Whether `text` fits a row of `width` cells. No width, no opinion."""
+    return not width or display_cells(text) <= width
+
+
+def display_width(key: str) -> int:
+    """One of `card-definitions.yaml`'s declared row widths, in cells."""
+    sections = _catalogue().get("sections") or {}
+    try:
+        return int(sections.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -463,20 +649,31 @@ def integrity_finding(held_rows: list[dict]) -> dict | None:
 # ---------------------------------------------------------------------------
 
 #: The prefixes `alerting.RESOURCE_PREFIXES` already treats as naming a
-#: resource, each with the rule that turns the rest of the ref into something a
-#: person recognises. Ordered longest-prefix-first by hand: `process-tree:session-`
-#: and `process-tree:` both match a session tree, and the more specific one has
-#: to win or every session tree renders as an opaque pid blob.
+#: resource, each with the word for the KIND of thing it names and the rule
+#: that turns the rest of the ref into something a person recognises. Ordered
+#: longest-prefix-first by hand: `process-tree:session-` and `process-tree:`
+#: both match a session tree, and the more specific one has to win or every
+#: session tree renders as an opaque pid blob.
+#:
+#: THE KIND WORD IS ITS OWN CELL, AND IT IS HERE FOR ONE REASON. Every rule
+#: puts a class in front of a name — `受管运行时 container0-litellm`,
+#: `文件系统 /data` — and that class is the first thing a row with one line to
+#: spend can do without, because the name behind it is more specific than the
+#: class in front of it. Writing it as its own entry means a surface that is
+#: short of room can leave it off without a second table saying what the kind
+#: words are; `bare` in the returned dict is that second form. `None` is a rule
+#: that prefixes no kind word, and then the two forms are the same string.
 _SUBJECT_RULES = (
-    ("runtime-group:process-tree:session-",
+    ("runtime-group:process-tree:session-", "会话",
      lambda rest: _session_tree(rest, "会话")),
     # A container's process tree, which is the shape most of this node's
     # findings take. Named as a container rather than left as `system.slice:
     # docker:<id>`: the slice, the runtime and the id are three layers of where
     # the process happens to live, and the card is about one container.
-    ("runtime-group:process-tree:system.slice:docker:",
+    ("runtime-group:process-tree:system.slice:docker:", "Docker 容器",
      lambda rest: f"Docker 容器 {rest}"),
-    ("runtime-group:process-tree:", lambda rest: f"进程组 {rest}"),
+    ("runtime-group:process-tree:", "进程组",
+     lambda rest: f"进程组 {rest}"),
     # The one the first NOC-style card was written against, and still the
     # shape most of this node's findings about a working session take. Same
     # split as the session tree above: the face is the session, the pid is in
@@ -506,28 +703,29 @@ _SUBJECT_RULES = (
     # enumerates `graph.AGENT_RULES` so a third agent added there fails that
     # test rather than silently falling through to the opaque `runtime-group:`
     # rule below.
-    ("runtime-group:claude-session:",
+    ("runtime-group:claude-session:", "登录会话",
      lambda rest: _session_tree(rest, "登录会话")),
-    ("runtime-group:codex-session:",
+    ("runtime-group:codex-session:", "登录会话",
      lambda rest: _session_tree(rest, "登录会话")),
-    ("runtime-group:", lambda rest: f"运行时组 {rest}"),
+    ("runtime-group:", "运行时组", lambda rest: f"运行时组 {rest}"),
     # `filesystem:mount:/data` → `文件系统 /data`. The `mount:` in the middle
     # is the producer's own word for how it found the filesystem and it is not
     # part of the name of anything; a card that printed it reads as "mount
     # colon slash data", which is a ref, not a place.
-    ("filesystem:", lambda rest: f"文件系统 {rest.split('mount:', 1)[-1]}"),
-    ("host:", lambda rest: f"整机 {rest}"),
-    ("device:", lambda rest: f"设备 {rest}"),
-    ("tunnel:", lambda rest: f"隧道 {rest}"),
-    ("container:", lambda rest: f"容器 {rest}"),
+    ("filesystem:", "文件系统",
+     lambda rest: f"文件系统 {rest.split('mount:', 1)[-1]}"),
+    ("host:", "整机", lambda rest: f"整机 {rest}"),
+    ("device:", "设备", lambda rest: f"设备 {rest}"),
+    ("tunnel:", "隧道", lambda rest: f"隧道 {rest}"),
+    ("container:", "容器", lambda rest: f"容器 {rest}"),
     # A container the name index could not resolve. The ruling's last rung is
     # "缩短后的 opaque id", and without this rule the ref matched `runtime:`
     # below and rendered as 「受管运行时 container:08e734361c06…」 — the
     # producer's own `container:` token left inside a sentence, behind a word
     # that is about registrations. Nothing is invented here: `rest` is whatever
     # the ref carried, and `_abbreviate_ids` shortens it if it is a hex id.
-    ("runtime:container:", lambda rest: f"容器 {rest}"),
-    ("runtime:", lambda rest: f"受管运行时 {rest}"),
+    ("runtime:container:", "容器", lambda rest: f"容器 {rest}"),
+    ("runtime:", "受管运行时", lambda rest: f"受管运行时 {rest}"),
 )
 
 
@@ -573,6 +771,25 @@ _ID_VISIBLE = 12
 _OPAQUE_ID = re.compile(r"\b(?=[a-z0-9]*[0-9])[a-z0-9]{20,}\b")
 
 
+def device_name(ref: str | None) -> str:
+    """A device, said as the device's name.
+
+    THE REF SCHEME IS NOT PART OF THE NAME. `device:tokyo-shared-dev-01` is a
+    ref, and the `device:` in front of it is the half that says which table the
+    rest keys into — the same kind of token as the `mount:` that `filesystem:`
+    strips two paragraphs up. On the card's title it is seven characters of
+    machinery in front of the one word that says which machine this is, and at
+    16px on a 360px row it was seven characters of the overflow that wrapped
+    the title onto a second line. §2 names 原始 schema on the face as the thing
+    a reader scrolls past to reach a reading.
+
+    A ref that is not a device ref is returned unchanged: this strips one
+    declared prefix and does not guess at others.
+    """
+    text = str(ref or "").strip()
+    return text[len("device:"):] if text.startswith("device:") else text
+
+
 def _abbreviate_ids(text: str) -> str:
     """Elide opaque ids, wherever they ended up.
 
@@ -607,25 +824,46 @@ def subject_display(subject_ref: str | None, *, owner: dict | None = None,
     and the subject falls back to the shortened ref. Nothing here reads a
     string's shape and calls the result a name — an id that no evidence
     explains stays an id, and the card says so by rendering it.
+
+    THREE FORMS, AND EACH ONE HAS A READER. `text` is the face — what the name
+    is called by default. `precise` is the same subject with the identifier
+    that distinguishes it from its siblings (`_session_tree` carries the pid
+    there), for a detail view where there is room. `bare` is `text` with the
+    kind word taken off — `container0-litellm` rather than `受管运行时
+    container0-litellm` — and it exists for exactly one reader: §3.4's problem
+    line, which has one line of §2's twelve and must not spend two of them
+    wrapping. A surface that takes `bare` is expected to keep `text` one tap
+    down; the name is never lost, only moved.
     """
     ref = str(subject_ref or "")
     named = _lookup_name(ref, names)
     if named is not None:
-        return {"ref": ref or None, "text": _abbreviate_ids(named["text"]),
+        text = _abbreviate_ids(named["text"])
+        return {"ref": ref or None, "text": text,
+                # A name the resolver found is already the name; there was no
+                # kind word in front of it and so there is none to leave off.
+                "bare": text,
                 "precise": None,
                 "rule": named["rule"], "owner": dict(owner) if owner else None,
                 "because": named.get("because"),
                 "criticality": named.get("criticality")}
     text = None
+    bare = None
     precise = None
     rule = None
-    for prefix, expand in _SUBJECT_RULES:
+    for prefix, kind, expand in _SUBJECT_RULES:
         if ref.startswith(prefix):
-            expanded = expand(ref[len(prefix):])
+            rest = ref[len(prefix):]
+            expanded = expand(rest)
             # A rule may return the more precise form alongside the face one
             # (`_session_tree` does; see the pid rule there). Everything else
             # returns a single string and has no second form.
             text, precise = expanded if isinstance(expanded, tuple) else (expanded, None)
+            # The kind word comes off by the rule's own declaration and not by
+            # cutting at the first space: `Docker 容器` is two words, and a
+            # split would leave `容器 abc123` behind — a different kind word,
+            # not no kind word.
+            bare = text[len(kind) + 1:] if kind and text.startswith(kind + " ") else text
             rule = prefix
             break
     if text is None:
@@ -633,7 +871,9 @@ def subject_display(subject_ref: str | None, *, owner: dict | None = None,
         # how `runtime-group:process-tree:session-150:pid28541` becomes
         # "会话 150" and stops naming the process the alert is actually about.
         text, rule = (ref or "（未记录对象）"), "verbatim"
+        bare = text
     return {"ref": ref or None, "text": _abbreviate_ids(text),
+            "bare": _abbreviate_ids(bare),
             "precise": _abbreviate_ids(precise) if precise else None,
             "rule": rule,
             "owner": dict(owner) if owner else None, "because": None,
@@ -862,6 +1102,33 @@ def human_duration(seconds) -> str:
     return f"{seconds // 86400} 天 {(seconds % 86400) // 3600} 小时"
 
 
+def age_says(seconds) -> str:
+    """How long ago, said in one unit — «2 天前», not «距今 2 天 0 小时».
+
+    TWO SPELLINGS OF AN INTERVAL ARE NOT A DUPLICATE, and the difference is what
+    each one is for. `human_duration` above is the measurement: it appears where
+    a duration IS the reading («已持续 1 小时 08 分», «本次持续 23 分钟») and it
+    is exact because a reader is going to compare it with another duration.
+
+    This one is an AGE beside an absolute timestamp, and its job is to save the
+    reader arithmetic the timestamp already implies — so the units it cannot
+    round to are units nobody asked for. On the alert face the pair sits on a
+    row that measured 422.9px in a 360px box, and the five cells « 0 小时»
+    spends there to say «and no hours» was a third of what the line had to give
+    up to stop wrapping.
+    """
+    if seconds is None:
+        return "未知"
+    seconds = int(seconds)
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{seconds // 60} 分钟前"
+    if seconds < 86400:
+        return f"{seconds // 3600} 小时前"
+    return f"{seconds // 86400} 天前"
+
+
 # ---------------------------------------------------------------------------
 # Certainty. §15 / `graph.freshness_of`: not knowing is never the same as
 # knowing something good.
@@ -886,6 +1153,74 @@ def certainty_of(row: dict) -> dict:
             "why": ("生产者在这一行没有记录 freshness，因此这次读数是否仍然"
                     "新鲜无法判定" if not stated
                     else f"{stated!r} 不是本模型认识的 freshness 取值")}
+
+
+#: The four answers §4's second question can have. `UNCONFIRMED` and `STILL`
+#: are the pair that must never be merged: both are spelled `state: OPEN` in
+#: the register, and only `hold_kind` separates "the last pass that graded this
+#: still found it above its floor" from "no pass has graded it since".
+STILL = "STILL"
+UNCONFIRMED = "UNCONFIRMED"
+RECOVERED = "RECOVERED"
+
+
+def existence_of(row: dict, *, at: str) -> dict:
+    """§4's second question — 「现在还存在吗」 — from the register, not the clock.
+
+    THE BUG THIS REMOVES
+    --------------------
+    The model used to answer it with `row["resolved_at"] or at`, where `at` is
+    the instant the card was rendered. That is not an observation. On this node
+    it would print 「仍在发生」 on 1,091 rows whose last grading was 2026-09-21
+    and which have been `hold_kind: unmeasured` ever since — the card asserting
+    a current reading about a number thirteen days old. §4's own rule for the
+    face ("no measurement ⇒ declaration wording only") is the same rule one
+    level up: a state that was never observed must not be printed as one that
+    was.
+
+    THE THREE ANSWERS
+    -----------------
+      * `RECOVERED`   — the register closed it; `observed_at` is when.
+      * `UNCONFIRMED` — open, and held: the last pass refused to grade it, so
+                        nobody has looked. `observed_at` is the last time
+                        anybody DID look, which may be the day it opened, and
+                        `silent_seconds` is how long ago that was.
+      * `STILL`       — open, not held: the last grading found it above its
+                        floor. `observed_at` is that grading.
+
+    A row with no state at all is `UNCONFIRMED` with no observation, because
+    "the register did not tell me" and "somebody looked and it is still there"
+    are different answers and the second one is the one a reader acts on.
+
+    `silent_seconds` is computed against `at` here rather than in the renderer
+    so that both registers — the face and the evidence block — say the same
+    age. It is None whenever there is no observation to age.
+    """
+    state = str(row.get("state") or "").upper()
+    hold = row.get("hold_kind") or None
+    if state == "RESOLVED":
+        return {"state": RECOVERED, "hold_kind": hold,
+                "observed_at": row.get("resolved_at"),
+                "silent_seconds": None,
+                "basis": "resolved_at"}
+    looked = row.get("last_seen")
+    return {
+        "state": UNCONFIRMED if (state != "OPEN" or hold) else STILL,
+        "hold_kind": hold,
+        "observed_at": looked,
+        "silent_seconds": _seconds_since(looked, at),
+        "basis": ("last_seen" if state == "OPEN"
+                  else "the register row carried no state"),
+    }
+
+
+def _seconds_since(when, at: str) -> int | None:
+    """Seconds from `when` to `at`, or None if either will not parse."""
+    start = _parse(when)
+    end = _parse(at)
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds()))
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +1282,7 @@ def alert_model(digest: dict, *, at: str, limit: int = DEFAULT_LIMIT,
     events.sort(key=lambda pair: AXIS.index(pair[0]["level"]))
     events = events[:limit]
 
-    finding = integrity_finding(digest.get("held") or [])
+    finding = integrity_finding(digest.get("held") or [], at=at)
     return {
         "schema": SCHEMA,
         "card": "alert",
@@ -1051,6 +1386,10 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
         code, desired=row.get("desired_state"),
         actual=row.get("actual_derived_state"))
     what_text = (f"{subject['text']} {said}" if said else definition["what"])
+    # Built once and read twice: the evidence block and the face's measurement
+    # line are the same numbers, and assembling the row twice is how the two
+    # would come to disagree about which fields the register carried.
+    detail_row = _for_detail(row, at=at)
     return {
         "ref": row.get("key"),
         # §29. WHICH appearance this event is, in the vocabulary the delivery
@@ -1097,6 +1436,24 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
             "code": code,
             "why": definition.get("why"),
         },
+        # The reading the finding is ABOUT, as a field of the event rather than
+        # as the first clause of an English sentence inside `evidence`.
+        #
+        # It is lifted out because the acceptance criterion names it: an
+        # incident card's first screen answers what / how bad / what it costs /
+        # what to do / since when, and a reader deciding whether to get up has
+        # to have the number and the tier it crossed in that same screen. §4
+        # always required the measurement — it required it one tap down, in a
+        # block titled 技术详情, which is where a person who has not yet decided
+        # to care will not go.
+        #
+        # Produced by `alerting.measurement_face`, not by this module: the
+        # register's payload has exactly one reader that knows which of its keys
+        # are readings, and a second one here would be a second answer about
+        # what this code measures. Null on a code that measures nothing, which
+        # is a real answer and not a gap.
+        "measurement": alerting.measurement_face(detail_row,
+                                                 detail_row.get("measured") or {}),
         "subject": subject,
         "severity": {"level": severity,
                      "word": row.get("severity_word")
@@ -1108,12 +1465,22 @@ def _event_of(row: dict, *, at: str, names: dict | None = None,
         },
         "certainty": certainty_of(row),
         "action": action_for(code, severity),
+        # §4's second question, and the reason it is a field of the event and
+        # not a clause of `状态`: 状态 is what the machine was doing when this
+        # was written, and this is whether that is still true. On a phone those
+        # are the two lines that decide whether the reader gets up.
+        "existence": existence_of(row, at=at),
         "times": {"first_seen": row.get("first_seen"),
-                  "last_seen": row.get("resolved_at") or at,
+                  # The observation the register recorded, and NOT the render
+                  # instant it used to be. `resolved_at or at` made every open
+                  # finding claim a last reading taken at the moment somebody
+                  # looked at the card; `existence_of` is the reader of this
+                  # now, and it says what the register has.
+                  "last_seen": row.get("last_seen"),
                   "duration": duration,
                   "duration_text": human_duration(duration["seconds"])},
         "occurrences": row.get("occurrence_count"),
-        "evidence": alerting.detail_for(_for_detail(row, at=at), at=at),
+        "evidence": alerting.detail_for(detail_row, at=at),
     }
 
 
@@ -1257,6 +1624,21 @@ SECTIONS = ("mine", "host", "gateway")
 GATEWAY_BOUND = "BOUND"
 GATEWAY_UNBOUND = "UNBOUND"
 
+#: The readings a section may carry, and the whole of them. Written once because
+#: two readers need it and a second copy would drift silently: the clamp in
+#: `_gateway_state` admits a reading only if it is named here, and `env_health`
+#: files the faulted half as faulted. A state named in one and not the other is
+#: not a hypothetical — it is exactly the defect this tuple was extracted for,
+#: one layer apart (see `_gateway_state`).
+SECTION_FAULTED = ("DEGRADED", "NOT_READY", "DOWN", "CRITICAL", "ATTENTION")
+#: `GATEWAY_UNBOUND` is deliberately absent. It is a reading of the BINDING and
+#: not of the gateway (see `gateway_section`), so a bound section whose
+#: accounting came back saying «unbound» is saying something that cannot be true
+#: of that axis — and admitting it here would route it into `env_health`'s
+#: unbound branch, which exists to keep a declaration gap from being reported as
+#: a fault in the environment.
+SECTION_READINGS = (OK, UNKNOWN) + SECTION_FAULTED
+
 
 def gateway_section(snapshot: dict, *, binding: dict | None) -> dict:
     """The shared gateway, chosen by binding and by nothing else.
@@ -1318,7 +1700,253 @@ def gateway_section(snapshot: dict, *, binding: dict | None) -> dict:
     }
 
 
-def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
+#: §3.4's fourth block, and the one thing it may never do is render «no reading»
+#: as «no problems». The register is the only document on this card that can
+#: answer «现在有什么问题», and a node that cannot open it is not a node with
+#: nothing wrong — it is a node whose monitor has stopped being able to tell.
+#: That is why every branch below has a spelling for it and why there is no
+#: default that arrives at an empty list.
+_PROBLEM_STATES = {STILL: "仍在发生", UNCONFIRMED: "无法确认",
+                   RECOVERED: "已恢复"}
+
+
+def _problem_line(subject: dict, label: str, word: str, width: int) -> str:
+    """`object · finding · state` on ONE line, or the kind word comes off.
+
+    §2 gives the first screen ten to twelve lines and §3.4 spends one of them on
+    a problem, so a problem that wraps costs two and reads as two problems. The
+    live card had exactly that shape: the managed-runtime row measured 706px
+    against a 360px body, and it was the widest of the three but not the only
+    one over.
+
+    SOMETHING IS GIVEN UP AND THE ORDER IS DECLARED. The kind word goes first —
+    `受管运行时` in front of a container whose own name already says what it is —
+    because it is the least specific part of the line. The finding and the state
+    do not go: §3.4 puts both on this line by name («对象、目录把它叫什么、以及它
+    是否仍在发生»). The full name is not lost either; it is one line down, in the
+    fold the same block opens.
+    """
+    full = " · ".join(b for b in (subject["text"], label, word) if b)
+    if fits(full, width):
+        return full
+    return " · ".join(b for b in (subject["bare"], label, word) if b)
+
+
+def problems_block(reading: dict | None, *, at: str) -> dict:
+    """§3.4: what is wrong RIGHT NOW, in a reader's words and nothing else.
+
+    THE READING COMES FROM `alert_digest.current`, and this function is the
+    reader's side of it: the register's own answer — which rows are open, which
+    codes the contract puts on a face, how many are behind each code — arrives
+    as data, and the words here are the card's. The split is the same one the
+    other three blocks have: `card_source` gathers, `alert_digest` grades
+    against the contract, and this decides what a person reads.
+
+    WHY IT IS NOT A LIST OF EVENTS. §4's seven questions belong to the incident
+    card, which exists to be opened when something happened. This block sits on
+    a dashboard that is read in a glance and answers one question — «现在有
+    问题吗，几件» — so every problem is ONE line: the object, what the catalogue
+    calls the finding, and whether it is still happening. The number, the
+    threshold and the impact are one tap away on the incident card, which is
+    the card that has room for them; printing them here three times over is how
+    the first screen stops being a first screen (§1: ≤10–12 行).
+
+    `at` ages the readings, and it is the card's instant rather than the
+    reading's, so that a problem listed here is aged the same way as every
+    other time on this card. The two differ by the seconds between a subprocess
+    and a render.
+
+    TWO KINDS OF OMISSION COME BACK, AND ONLY ONE OF THEM IS THE FACE'S.
+    `also` is about the problems — how many were not listed, which codes nobody
+    has graded, what a person has already answered — and it is printed under
+    the list. `below` is true of the register and is not about the problems,
+    and the renderer folds it. The split is made here because this is the
+    module that decides what the word «problem» covers; see the comment at the
+    split itself.
+    """
+    reading = reading if isinstance(reading, dict) else {}
+    if str(reading.get("state") or "") != "READ":
+        # No reading, or a reading that says it could not be made. Both get the
+        # same treatment and neither gets an empty list: `unreadable` in
+        # `alert_digest` is the producer of the second, and a caller that handed
+        # nothing at all — a fixture, an older `status_model` caller — is the
+        # first. §13 fixes this block on the first screen, so it is printed
+        # rather than dropped, and what it prints is that it cannot answer.
+        #
+        # THE FACE SENTENCE IS A PERSON'S AND THE TOOL'S OWN WORDS ARE NOT ON
+        # IT. `why` arrives as whatever the subprocess last said — `card_source.
+        # _default_run` keeps the final stderr line — so a refused socket puts
+        # a command name and a status code on the first screen. That is the
+        # boundary §R15 draws for every other read on this card, and the card
+        # keeps it two blocks up: 采集缺口 names the readings that did not
+        # arrive («本账户资源摘要…未读到（4 项）») and the command with its exit
+        # code sits in 技术诊断. There is no reason the register should be the
+        # one read that reports itself in tool vocabulary, so the raw reason
+        # goes to `below` and the face says what the reader can act on.
+        detail = " ".join(str(reading.get("why") or "").split())
+        # ONE CLAUSE, BECAUSE THE HEADER ALREADY CARRIES THE OTHER. The face
+        # reads «当前问题 · 无法确认» and then this line under it, so
+        # «无法回答『现在有什么问题』» was the header said twice — and the pair
+        # together measured 562.5px in a 360px row, which is a wrap bought to
+        # repeat a word the reader had just read. What the header cannot say is
+        # the half §3.4 spends its paragraph on, and that half is this one:
+        # nobody looked is not the same as nothing is wrong. `note` and `below`
+        # keep the longer sentence for the fold and the register's own account.
+        unread_sentence = "没有读到登记表 · 空白不是「没有问题」"
+        return {
+            "state": "UNAVAILABLE",
+            "level": "",
+            "headline": "无法确认",
+            "lines": [],
+            "details": [],
+            "counts": {},
+            "shown": 0,
+            # The read's own account, one tap down: which command was asked and
+            # what it said. Empty when a caller handed nothing rather than a
+            # failed read — there is no command to name in that case, and
+            # inventing one would be a sentence about a read nobody made.
+            "below": ([f"serverosctl alert current 未读到：{detail}"]
+                      if detail else []),
+            "why": unread_sentence,
+            "note": str(reading.get("note") or
+                        "没有读到告警登记表，所以这一块无法回答「现在有什么问题」；"
+                        "空白不是「没有问题」。"),
+        }
+    counts = dict(reading.get("counts") or {})
+    action = int(counts.get("ACTION_REQUIRED") or 0)
+    review = int(counts.get("REVIEW") or 0)
+    total = int(counts.get("open_on_face") or 0)
+    # The level is the WORST one present, and it is a level and not a sentence
+    # so that the icon is chosen in one place: the words in this function are
+    # this module's, and the glyphs on this card are `cards`'. Passing the level
+    # across keeps the two from having to agree about colours in two files.
+    level = AXIS[0] if action else (AXIS[1] if review else "")
+    if action and review:
+        headline = f"{action} 项需要处理、{review} 项建议查看"
+    elif action:
+        headline = f"{action} 项需要处理"
+    elif review:
+        headline = f"{review} 项建议查看"
+    else:
+        headline = "没有需要处理的问题"
+
+    # One line per problem, and the line is bounded by measurement rather than
+    # by hope. `problems_width` is the number `card_geometry.py` put on this
+    # row: the widest string that fitted the 360px body at weight 400 measured
+    # 338px, and 46 cells is that string. A line that would exceed it gives up
+    # the subject's kind word rather than wrapping — see `_problem_line`.
+    width = display_width("problems_width")
+    lines, details, covered = [], [], 0
+    for row in reading.get("shown") or []:
+        if not isinstance(row, dict):
+            continue
+        subject = subject_display(row.get("subject_ref"), owner=row.get("owner"))
+        label = str(definition_for(row.get("code")).get("label") or "").strip()
+        existence = existence_of(row, at=at)
+        word = _PROBLEM_STATES.get(str(existence.get("state") or ""), "状态未知")
+        # THE AGE IS THE FACT §4 TURNS ON AND IT IS NOT ON THE FACE ANY MORE.
+        # «仍在发生» and «无法确认» are the same `state: OPEN` in the register,
+        # and only the age of the last reading tells them apart — so a row
+        # nobody has graded since the 21st must not read as a live fault, and a
+        # live fault must not read as one nobody is looking at. That is why the
+        # age cannot be dropped. It is why it is one line down instead: on the
+        # face it made every problem two lines (§2 allows the whole first
+        # screen twelve), and the state word it explains is still on the face.
+        silence = existence.get("silent_seconds")
+        age = ""
+        if str(existence.get("state")) == UNCONFIRMED and silence:
+            age = f"最后一次读数在 {human_duration(silence)}前"
+        elif str(existence.get("state")) == STILL and row.get("duration_seconds"):
+            age = f"已持续 {human_duration(row['duration_seconds'])}"
+        of_code = int(row.get("of_code") or 1)
+        covered += of_code
+        named = " · ".join(b for b in (subject["text"], label) if b)
+        lines.append(_problem_line(subject, label, word, width))
+        extra = [age] if age else []
+        if of_code > 1:
+            extra.append(f"同类共 {of_code} 项")
+        if extra:
+            # The full name, spelled, with the two facts the face gave up
+            # beside it — and it is `named` and not the face line, so a problem
+            # whose face dropped its kind word gets it back on the first tap.
+            details.append(f"{named}　{'　'.join(extra)}")
+
+    parts = []
+    codes = int(counts.get("codes") or 0)
+    if total > covered:
+        parts.append(f"另有 {total - covered} 项未逐条列出（共 {codes} 类问题）")
+    undecided = reading.get("undecided") or {}
+    if int(undecided.get("count") or 0):
+        parts.append(f"{int(undecided['count'])} 项的 code 未在注意力表中定级，"
+                     f"所以它们算不算问题这件事本身没有定论")
+    acknowledged, snoozed = (int(counts.get("acknowledged") or 0),
+                             int(counts.get("snoozed") or 0))
+    if acknowledged or snoozed:
+        said = []
+        if acknowledged:
+            said.append(f"已确认 {acknowledged} 项")
+        if snoozed:
+            said.append(f"已静默 {snoozed} 项")
+        parts.append("、".join(said) + "，不再列在这里")
+    # BELOW THE FOLD, AND THE SPLIT IS THE POINT
+    # -----------------------------------------
+    # The register carries a second population the face is not allowed to have
+    # an opinion about: findings the contract has already graded as NOT a
+    # problem — `watch`, whose codes sit under the face, and which this machine
+    # holds 1,360 of at 2026-10-04. On the CLI they are disclosed, and that is
+    # right: somebody who typed `alert current` asked the register a question
+    # and §5 says a short answer is only honest with its omissions beside it.
+    #
+    # A card is asked a different question. It answers «现在有问题吗，几件», and
+    # the contract has already answered «这 1,360 件不算» — so printing the
+    # number here re-opens a question the contract closed, in the one place §13
+    # keeps for what changes a judgement («旧账/恢复清单不塞日常首屏»). It also
+    # does something worse than clutter: «没有需要处理的问题» followed by a
+    # four-digit number teaches a reader that the green line is not to be
+    # trusted, and the number drifts every tick while nothing acts on it.
+    #
+    # So it moves to the fold rather than being dropped, which is where the
+    # block's own `note` already points at `alert list`. What stays on the face
+    # is every sentence that is about the PROBLEMS: how many of them were not
+    # listed, how many codes nobody has graded (which is the one gap that makes
+    # the headline itself unreliable), how many a person has already answered.
+    below = []
+    watch = reading.get("watch") or {}
+    if int(watch.get("count") or 0):
+        below.append(f"登记表里还有 {int(watch['count'])} 项在「值得留意」「供参考」"
+                     f"一档。它们不在脸面上，也不改变上面那句——合同已经判过"
+                     f"它们不是当前问题，完整清单见 `serverosctl alert list`。")
+    return {
+        "state": "READ",
+        "level": level,
+        "headline": headline,
+        "lines": lines,
+        # WHAT THE FACE LINE COULD NOT HOLD, one line per problem and only for
+        # the problems that had something to hold back: the age that separates
+        # «仍在发生» from «无法确认», the number of siblings behind the same
+        # code, and the subject's full name when the face dropped its kind word.
+        # A problem with nothing held back contributes nothing, so the fold
+        # opens onto nothing on a card where every line fitted — the renderer
+        # skips an empty one rather than drawing an empty panel.
+        "details": details,
+        "counts": counts,
+        "shown": len(lines),
+        # The omissions, each in its own sentence, for the reason §5 gives
+        # everywhere else: a block that prints three of thirteen and says
+        # nothing about the other ten is read as a block about three.
+        "also": parts,
+        # True, worth keeping, and not about the machine's problems. The
+        # renderer folds these instead of printing them, and the split is here
+        # rather than in the renderer because this module is where the words
+        # for «problem» are decided — a renderer sorting sentences it cannot
+        # read would be a second answer about which codes are current problems.
+        "below": below,
+        "note": str(reading.get("note") or ""),
+    }
+
+
+def env_health(sections: dict, *, at: str, gaps: list | None = None,
+               problems: dict | None = None) -> dict:
     """§2's top line: is this environment usable, and how good is the reading?
 
     Two separate answers, and §2 draws them as two — "环境可用性：有一项待确认"
@@ -1342,19 +1970,75 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
     would report a declaration gap in this monitor as a fault in the
     environment. Both send somebody to repair the wrong thing, so it is
     carried as its own state and the verdict names it.
+
+    **§3.4's 当前问题 has a vote, and it is a fourth input.** The three sections
+    are readings of this node, and the register is the node's own list of
+    findings about itself: an open alert whose code the contract puts on a face
+    is a known active anomaly even when every section rendered fine, so it can
+    take the verdict out of green — at `REVIEW` with 建议查看 and at
+    `ACTION_REQUIRED` with 需要处理. A register that could not be read takes it
+    out of green the other way, to `UNCONFIRMED`, because §3.4 lets green stand
+    only on 足够的相关观测 and «nobody looked» is not that. Both directions are
+    the same rule §6 states for one timestamp, applied to a fourth reading.
     """
     gaps = list(gaps or [])
     states = {name: (sections.get(name) or {}).get("state") for name in SECTIONS}
+    # §3.4's fourth block, which is not a section: it is read from the register
+    # rather than from this node's three subjects, and it is the ONE input here
+    # that can say «there is something wrong» which no section would report —
+    # an open alert is a finding about the node, and the three sections are
+    # readings of it.
+    #
+    # `None` AND A BLOCK THAT SAYS `UNAVAILABLE` ARE DIFFERENT ANSWERS, and the
+    # difference is the one `card_source.snapshot` already draws for the
+    # calendar and the day store: «handed a reading that says it could not be
+    # made» versus «handed nothing». A caller that never put a register in view
+    # — this function's own unit callers, a fixture about three sections — is
+    # asserting nothing about one, and leaving green unearned on its behalf
+    # would be inventing an observation it was never given. `status_model`
+    # always builds the block, so the CARD's verdict is the one §3.4 is about,
+    # and it is decided by the block.
+    handed = problems is not None
+    problems = problems if isinstance(problems, dict) else {}
+    problem_counts = dict(problems.get("counts") or {})
+    problem_level = str(problems.get("level") or "")
+    problem_action = int(problem_counts.get("ACTION_REQUIRED") or 0)
+    problem_review = int(problem_counts.get("REVIEW") or 0)
+    problem_unread = handed and str(problems.get("state") or "") != "READ"
     unread = sorted(n for n, s in states.items() if s in (None, UNKNOWN))
     unbound = sorted(n for n, s in states.items() if s == GATEWAY_UNBOUND)
-    faulted = sorted(n for n, s in states.items()
-                     if s in ("DEGRADED", "NOT_READY", "DOWN", "CRITICAL",
-                              "ATTENTION"))
+    faulted = sorted(n for n, s in states.items() if s in SECTION_FAULTED)
 
     if faulted and unread:
         verdict, word = UNCONFIRMED, "有项目需处理，且有项目未读到"
     elif faulted:
         verdict, word = ATTENTION, "有项目需处理"
+    elif problem_level == AXIS[0]:
+        verdict, word = ATTENTION, f"有 {problem_action} 项需要处理"
+    elif problem_unread and unread:
+        # BOTH KINDS OF «NOBODY LOOKED», said as one thing. Either half on its
+        # own is a complete answer to a different question — the sections are
+        # «how much of this node did we read» and the register is «what is known
+        # to be wrong» — and when both are missing, printing only the register's
+        # half would drop the fact that two of the three blocks above are blank.
+        # The shape is the one the `faulted and unread` branch already uses:
+        # state both, and let the fold name which sections, which is where this
+        # card already answers that (§2 keeps the names off the first screen).
+        verdict, word = UNCONFIRMED, "有项目未读到，且现在有什么问题无法确认"
+    elif problem_unread:
+        # §3.4: 绿色必须有足够的相关观测. A register nobody could open is not
+        # enough observation to say the environment is fine, and the whole
+        # round is about the false green that says it is. The block itself
+        # prints why one tap away; the verdict names the state.
+        verdict, word = UNCONFIRMED, "现在有什么问题无法确认"
+    elif problem_level == AXIS[1]:
+        # REVIEW is not green either, and the reason is the same one: the
+        # contract puts a code on the face only when a person may be
+        # interrupted for it, so an open one is a known active anomaly — a
+        # declared service whose probe is failing, a filesystem past its
+        # declared threshold. It is not 需处理 and it does not say so; it says
+        # what the contract's own word for this level says.
+        verdict, word = ATTENTION, f"有 {problem_review} 项建议查看"
     elif unread:
         # Named rather than counted, because "一项未读到" sends the reader
         # hunting through three blocks for which one, and the card already
@@ -1370,7 +2054,7 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
     else:
         verdict, word = OK, "三项均已读到且无异常"
 
-    observation = ("部分新鲜" if gaps or unread else "新鲜")
+    observation = ("部分新鲜" if gaps or unread or problem_unread else "新鲜")
     return {
         "verdict": verdict,
         "verdict_text": word,
@@ -1378,7 +2062,8 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
         "observation_text": (
             f"有 {len(gaps)} 项采集缺口" if gaps else
             ("有项目未读到" if unread else
-             ("已读到的项目无缺口" if unbound else "三项均已读到"))),
+             ("当前问题这一块没有读到" if problem_unread else
+              ("已读到的项目无缺口" if unbound else "三项均已读到")))),
         # Read, not merely present. An unbound section is neither — it is a
         # declared absence — and counting it here would print "已读到 gateway"
         # about the one block the card says nothing was read for.
@@ -1386,6 +2071,24 @@ def env_health(sections: dict, *, at: str, gaps: list | None = None) -> dict:
                                 if s not in (None, UNKNOWN, GATEWAY_UNBOUND)),
         "sections_unread": unread,
         "sections_unbound": unbound,
+        # WHICH ONES FAULTED, and it is carried for the same reason the two lists
+        # above are. A block's line on the first screen says what state that
+        # block is in, and until this line the renderer had no way to ask: the
+        # three lists that decide the verdict were computed here and two of them
+        # were returned. A renderer left to re-derive «did this block fault»
+        # from its raw state would be testing one word that means a different
+        # thing per block — a bound gateway's state is how the gateway IS, an
+        # unbound one's is the absence of a declaration — which is the shape of
+        # the bug that once made every bound gateway render as the word BOUND.
+        "sections_faulted": faulted,
+        # §3.4's block is not a section and is not counted among the three, so
+        # what it contributed to the verdict is carried by name. A verdict that
+        # came out ATTENTION because of an open alert must be distinguishable
+        # from one that came out ATTENTION because a section is DEGRADED — the
+        # two send a reader to different places, and a model that made them
+        # identical would leave the alert card as the only way to tell.
+        "problems_read": not problem_unread,
+        "problem_level": problem_level or None,
         "gaps": gaps,
         "at": at,
     }
@@ -1407,6 +2110,14 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
     acceptance criterion that names the word `calendar=UNKNOWN`, and the day
     card's absence has none, so a fixture written without a day store renders
     without a day block rather than with an invented one.
+
+    `snapshot["problems"]` — §3.4's fourth block — is the one input here that is
+    NOT optional in the same sense: it gets a block and a vote on the verdict
+    whether or not it is present, because §13 fixes the block on the first
+    screen and a fixed block that vanishes is read as «nothing wrong». A
+    snapshot without the key renders it as 无法确认, which is `problems_block`'s
+    answer for a caller that handed nothing, and the verdict leaves green for
+    the same reason.
     """
     gaps = list(snapshot.get("gaps") or [])
     sections = {
@@ -1415,7 +2126,22 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
         "gateway": _gateway_state(gateway_section(snapshot, binding=binding)),
     }
     mine = snapshot.get("mine") or {}
-    return {
+    day = snapshot.get("day") or None
+    problems = problems_block(snapshot.get("problems"), at=at)
+    health = env_health(sections, at=at, gaps=gaps, problems=problems)
+    # WHICH READS, BESIDE THE SENTENCES THAT SAY WHY, and in the same dict so a
+    # reader of one is a reader of the other. The gap sentence `card_source`
+    # writes is «summary（resource summary）未读到：exit 2» — a schema key, a CLI
+    # invocation and an exit status, all three of them §2's forbidden spelling
+    # on a first screen — and it stays reachable in the engineering fold, where
+    # 采集口径 belongs. `card_source` writes both from ONE list, so the names
+    # cannot come out of step with the sentences; the renderer reads them rather
+    # than parsing them back out of the sentence, which would be a second reader
+    # of a shape and would drift the first time the sentence was reworded.
+    health["gap_reads"] = list(
+        (snapshot.get("coverage") or {}).get("reads_missing") or [])
+    schedule = _schedule(snapshot)
+    model = {
         "schema": SCHEMA,
         "card": "status",
         "sample": bool(sample),
@@ -1423,11 +2149,28 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
         "at": at,
         "node_label": snapshot.get("node_label"),
         "node_host": snapshot.get("node_host"),
-        "env_health": env_health(sections, at=at, gaps=gaps),
+        "env_health": health,
         "sections": sections,
         "order": list(SECTIONS),
-        "schedule": _schedule(snapshot),
-        "day": snapshot.get("day") or None,
+        "schedule": schedule,
+        "day": day,
+        # §13 fixes the first screen's blocks as 我的资源、整机、关键基础设施、
+        # 当前问题 — so `cards.status_card` prints this one after `order` and
+        # before the engineering fold, and it reads a block that is always
+        # there. It travels as its own key rather than as a fourth entry in
+        # `order` because `order` is the list of the three sections and every
+        # reader of it is asking about a section: `sections_read`, the coverage
+        # note and the sample fixture all count three, and a fourth name in that
+        # list would silently make them count four.
+        "problems": problems,
+        # The line the card leads with. Built from the day store, because that
+        # is the only document that holds the hour before this one — the
+        # snapshot carries the present and nothing of the past, and a delta
+        # recomputed from two live readings would be a delta against an hour
+        # nobody recorded. The schedule is needed beside it to tell «this is the
+        # day's first hour» from «the earlier hours were never read», which the
+        # store alone cannot distinguish: both are an empty history.
+        "delta": _delta(day, health, sections, schedule),
         "coverage": {
             # §3. The shared gateway and the personal container0 are different
             # things and the card says which of them each number came from.
@@ -1437,6 +2180,353 @@ def status_model(snapshot: dict, *, at: str, binding: dict | None = None,
                      "对象，不是同一件事"),
         },
     }
+    # AFTER `_delta`, and given the ORIGINAL day rather than the augmented one:
+    # the delta's job is to compare now against the newest row on the record, and
+    # handing it a timeline that already ends with now would make every hour
+    # compare equal to itself.
+    model["day"] = _day_through_this_instant(day, model, schedule=schedule)
+    return model
+
+
+def store_is_another_day(day, schedule: dict) -> bool:
+    """True when the day store's rows belong to a day this card is not about.
+
+    ONE PREDICATE, THREE READERS. Three things on the card are quietly about the
+    store's day rather than the card's: the delta compares this instant against
+    the store's newest row, the day panel lists the store's rows, and
+    `_day_through_this_instant` decides whether this reading may join them. On a
+    working day the two days are the same one and none of the three has to say
+    so — which is exactly why each of them was written without a day in it, and
+    why a rest day, where the store still holds the last working day, made all
+    three false at once. Written once so the three cannot drift into disagreeing
+    about WHICH day each is describing.
+
+    Both refs must be present for the answer to be `True`. A schedule with no
+    day reference is a calendar nobody imported — the honest answer there is
+    that this card does not know which day it belongs to, and asserting that the
+    store's day is a different one would be inventing the fact that is missing.
+    """
+    ref = day.get("day_ref") if isinstance(day, dict) else None
+    sched_ref = schedule.get("day_ref")
+    return bool(ref and sched_ref and ref != sched_ref)
+
+
+def _day_through_this_instant(day, model: dict, *, schedule: dict):
+    """The day's timeline with THIS reading as its last point.
+
+    THE CONTRADICTION THIS CLOSES
+    -----------------------------
+    The delta and the timeline sat three lines apart on one screen and could
+    disagree about whether anything had happened. `_delta` compares this instant
+    against the store's newest row; `card_day.timeline` was built from the
+    stored rows alone. A reading that had just changed printed «较 19:00 有 1 处
+   变化 gateway OK→UNBOUND» over a panel whose title said «0 处变化» — two
+    answers to one question, three lines apart, from the same comparison
+    function, because one of them was given the present and the other was not.
+
+    `card_day.summary`'s own docstring claims «the current hour is IN the list
+    rather than only on the card's face», and it was not: `DayStore.advance`
+    writes this hour AFTER the model is rendered, so the claim held only from
+    the next tick onward. This makes it true at the moment it is read.
+
+    The row is composed by `card_day.row`, the same function `advance` will
+    compose it with, so the point the panel shows now and the row the store
+    keeps next tick are the same reading rather than two composition rules that
+    happen to agree today. A store that already holds this tick gets nothing
+    appended — the hourly timer and a preview forty minutes later are one tick,
+    and a second entry would be the double-count `card_day`'s tick arithmetic
+    already refuses one layer down.
+
+    Returns `day` unchanged when there is no day to extend, when the schedule is
+    not an hour that can be a row, and when the schedule belongs to a DIFFERENT
+    day than the store does. That last one is not defensive tidiness: a store
+    holding `CN-Mainland/2026-09-30` that is handed a schedule for 09-29 would
+    otherwise grow a `10:10` reading in the middle of a 09-30 timeline, which is
+    a row nobody read and a day that never had that hour. The store's own
+    `day_ref` is the authority for which day this panel is about.
+    """
+    if not isinstance(day, dict):
+        return day
+    if store_is_another_day(day, schedule):
+        return day
+    card_day = _card_day()
+    try:
+        now = card_day.row(model, schedule=schedule)
+    except Exception:  # noqa: BLE001 - a schedule with no tick is not a row
+        return day
+    rows = list(day.get("history") or [])
+    if isinstance(day.get("latest"), dict):
+        rows.append(day["latest"])
+    if rows and rows[-1].get("tick") == now["tick"]:
+        # ONE HOUR, TWO READINGS. `advance` writes the row for this tick AFTER
+        # the model is rendered, so a second render inside the same hour — the
+        # hourly timer, then a preview forty minutes later — is looking at the
+        # row its own successor will overwrite. Replacing it is what the panel
+        # has to show: the reading in front of the reader, in the hour it
+        # belongs to, and not two points in an hour that has one. `_delta`
+        # compares against the hour BEFORE this one for the same reason, so the
+        # line at the top and the last segment here are one comparison.
+        rows[-1] = now
+    else:
+        rows.append(now)
+    entries = card_day.timeline(rows)
+    return {**day,
+            "timeline": entries,
+            # Recounted here rather than carried, for the same reason
+            # `card_day.summary` counts them rather than storing them: a count
+            # kept beside a list is a second answer to the same question, and
+            # the panel's title would go on saying «0 处变化» over a list that
+            # had grown one.
+            "transitions": sum(1 for e in entries if e["kind"] == "transition"),
+            "unobserved": sum(1 for e in entries if e["kind"] == "gap")}
+
+
+#: The four things this line can say about a day that has no earlier reading to
+#: stand on. They are four sentences and not one because they are four claims,
+#: and three of them are easy to mistake for each other:
+#:
+#:   * `FIRST` -- the workday's first tick. Nothing precedes it because the day
+#:     started here, which is what the schedule says, not what the store says.
+#:   * `UNOBSERVED` -- the day does not start here. Earlier ticks exist on the
+#:     calendar and none of them has a reading. This is the one that must not be
+#:     rounded into `FIRST`: «nothing has changed since the day began» and «the
+#:     morning was never looked at» are opposite claims about the same silence.
+#:   * `NO_TICK` -- the calendar was not read, so the card cannot say whether
+#:     this hour is the first. An unread calendar that came out as «first» is the
+#:     false rhythm `_schedule` refuses one screen above.
+#:   * `NO_DAY` -- no day store was attached to this reading at all.
+#:
+#: The delta's headline when the comparison came out even is `STEADY`, and it is
+#: spelled with the hour it compared against rather than as «上一小时»: the row
+#: before this one is not always the hour before this one.
+DELTA_STEADY = "与上一时点相同"
+DELTA_FIRST = "本工作日第一个时点"
+DELTA_NO_TICK = "本时点没有可比较的更早时点"
+DELTA_NO_DAY = "本次没有读当天卡，无可比较的更早时点"
+
+
+def _delta(day: dict, health: dict, sections: dict, schedule: dict) -> dict:
+    """What changed since the previous reading, as the card's first line.
+
+    THE ONE THING THIS CARD LEADS WITH
+    ----------------------------------
+    A dashboard that opens with the whole state makes every reader compute the
+    difference themselves, every hour, and the reader is a person on a phone.
+    The comparison is mechanical and the card can do it; what the card cannot do
+    is know which difference matters, so it names them all and lets the reader
+    decide.
+
+    WHERE THE COMPARISON COMES FROM
+    -------------------------------
+    `card_day.changes_between`, the same function the timeline uses — one
+    author of «what counts as a change», so the line at the top and the folded
+    panel cannot disagree about whether this hour moved. The row this instant
+    would be written as is composed here by the same rules `card_day.row` uses,
+    and `tests/test_cards.py` asserts the two agree rather than this comment
+    promising they do.
+
+    The comparison is over the CARD's vocabulary (verdict / observation / gaps /
+    the three section states) and not over the meter readings. A numeric delta
+    spans three blocks whose numbers are not in the same unit — percent beside
+    gigabytes — and «Δ» on two of those would need a unit for the difference,
+    which is how a card starts inventing readings. The cells carry the numbers;
+    this line carries what moved.
+
+    A day with no earlier hour answers `DELTA_FIRST` and not `DELTA_STEADY`.
+    «Nothing changed» is a finding; «there was nothing to compare against» is
+    the absence of one, and printing the first for the second is the
+    substitution §6's ban on a false green is about.
+
+    AND THE HOURS BETWEEN ARE NOT SKIPPED OVER
+    ------------------------------------------
+    The row before this one is not always the hour before this one. A store that
+    holds 14:00 and then 17:00 has two ticks nobody read between them, and a line
+    reading «与 14:00 相同» would fold those two into the middle of a comparison
+    that never happened — the same compression `card_day.timeline` refuses to
+    make one panel down. So when the two readings are not adjacent, the count of
+    unobserved ticks is part of the answer and not a footnote to it.
+    """
+    history = list(day.get("history") or []) if isinstance(day, dict) else []
+    latest = (day or {}).get("latest") if isinstance(day, dict) else None
+    # The most recent thing the day store holds. `history` alone would miss the
+    # case of a day that has been folded exactly once: `card_day` keeps the
+    # newest row under `latest`, so the only earlier reading can be there.
+    seen = history + ([latest] if isinstance(latest, dict) else [])
+    tick = schedule.get("tick")
+    if not seen:
+        if not isinstance(day, dict):
+            return {"headline": DELTA_NO_DAY, "from": None, "unobserved": 0,
+                    "moved": [],
+                    "detail": "本次采集没有带当天卡，因此这一行不声称与任何时点"
+                              "比较过；下方的读数是这一个瞬间的"}
+        if tick is None:
+            return {"headline": DELTA_NO_TICK, "from": None, "unobserved": 0,
+                    "moved": [],
+                    "detail": "本次采集没有读工作日历，因此无法说这是不是今天的"
+                              "第一个时点"}
+        if tick <= 1:
+            return {"headline": DELTA_FIRST, "from": None, "unobserved": 0,
+                    "moved": [],
+                    "detail": "当天卡从这一拍开始，因此这一行不是比较；它与下方的"
+                              "读数描述同一个瞬间"}
+        return {"headline": f"本工作日更早的 {tick - 1} 个时点没有读数",
+                "from": None, "unobserved": tick - 1, "moved": [],
+                "detail": "这一行不是「无变化」：今天第 1–"
+                          f"{tick - 1} 个时点没有任何读数，因此没有可比的对象"}
+    previous = seen[-1]
+    # …unless that row is THIS hour's. Two renders inside one tick are one hour
+    # and `advance` overwrites the row, so the reading that will survive is the
+    # one in front of the reader and the hour to compare it against is the one
+    # before — not the row it is about to replace. The timeline replaces that
+    # row too (`_day_through_this_instant`), which is what keeps «较 18:00 有 1
+    # 处变化» and the panel's own last segment one comparison instead of two
+    # answers to the same question three lines apart.
+    if (isinstance(tick, int) and previous.get("tick") == tick
+            and len(seen) > 1):
+        previous = seen[-2]
+    hhmm = previous.get("hhmm") or "上一时点"
+    earlier_tick = previous.get("tick")
+    # …AND IT MAY NOT EVEN BE FROM THIS DAY.
+    # A card that belongs to a day the store holds no row for — a rest day, or a
+    # preview rendered at an instant the hourly routine never advanced — reaches
+    # back to the newest row the store does hold, which belongs to the last day
+    # it advanced. That is a real reading and this is a real comparison. What it
+    # is not is «较 19:00» with no day in it beside a panel whose own title says
+    # 当天: the two would then answer one question differently, because the panel
+    # counts the transitions INSIDE a day and this line counts the one BETWEEN
+    # two. So the day joins the name of the row being compared against.
+    #
+    # The hours-skipped count does not survive the boundary and is not silently
+    # dropped: it counts the ticks of a working day, and across two days those
+    # ticks were never scheduled, so a count here would report a gap in a rhythm
+    # that was not promised. The clause that replaces it says the comparison
+    # crossed a day, which is the same information stated truthfully.
+    day_ref = day.get("day_ref") if isinstance(day, dict) else None
+    cross_day = store_is_another_day(day, schedule)
+    # THE DATE, NOT THE DAY REFERENCE. `day_ref` is `CN-Mainland/2026-09-30` —
+    # the jurisdiction joined to the date, which is the store's key for a day and
+    # not a way anybody writes one. §2 puts `day_ref` on the list of things that
+    # must not reach the first screen, and this is the one place it did. The
+    # jurisdiction is not dropped: it is in the engineering block with the rest
+    # of the account of which day this card belongs to, and the clause below
+    # says in words that the comparison crossed one.
+    dated = str(day_ref).rsplit("/", 1)[-1] if day_ref else None
+    if cross_day and dated:
+        hhmm = f"{dated} {hhmm}"
+    # Never negative, and the clamp is not defensive tidiness: a reading taken
+    # twice inside one tick — the hourly timer, then a preview forty minutes
+    # later, both of them tick 8 — compares against a row of its OWN tick, and
+    # the arithmetic says «minus one hours went unobserved». A count that cannot
+    # be true is not a small count; it is a sentence the card would be printing
+    # about hours that do not exist. Clamped at what it can mean here: this
+    # comparison skipped nothing.
+    unobserved = (max(0, tick - earlier_tick - 1)
+                  if isinstance(tick, int) and isinstance(earlier_tick, int)
+                  else 0)
+    if cross_day:
+        unobserved = 0
+    card_day = _card_day()
+    # The same four fields `card_day.row` composes, from the same two functions
+    # it reads them from. This instant has no row yet — `row` is built at write
+    # time, from the model this function is part of — so the comparison stands
+    # on a row-shaped dict assembled here, and a test asserts the two
+    # compositions agree.
+    row_ = {
+        "verdict": health.get("verdict"),
+        "observation": health.get("observation"),
+        "gaps": len(health.get("gaps") or []),
+        "sections": {name: (sections.get(name) or {}).get("state")
+                     for name in card_day.ROW_SECTIONS},
+    }
+    # WHICH AXES MOVED, AND WHICH OF THEM MAY BE PRINTED
+    # -------------------------------------------------
+    # `changes_between` ORs the two lists into one, and the headline's count
+    # needs that one: a verdict that moved because the freshness did is a change
+    # the card states. The face's clause needs them apart. `named_changes` is
+    # the blocks and the gap count — something a reader can go and look at — and
+    # `derived_changes` is the roll-up, every member of which is a function of
+    # the others. Printing `整体状态 正常→建议查看` under a headline that already
+    # said «有 1 处变化» is one fact stated twice: on this machine it fires on
+    # the ordinary hour where the verdict moved because the register's problem
+    # count did, and the block stating that problem is two lines further down.
+    # So the roll-up counts and is not spelled, and §2's ten-to-twelve lines are
+    # spent on the block instead.
+    changed = card_day.changes_between(previous, row_)
+    named = card_day.named_changes(previous, row_)
+    # The gap clause comes FIRST in both branches, before the reader is told
+    # what changed: a reader who stops after the verb has still been told that
+    # the comparison skipped hours, and one who stops before it has not. It gets
+    # its own line rather than a parenthetical in front of the change list,
+    # because a parenthetical is read as a qualifier on the list and this is a
+    # separate claim about the same hour.
+    #
+    # THE CLAUSE CARRIES NO LINE FEED OF ITS OWN. It used to end in `\n` so that
+    # the change list would start on the next line, and that made the `not
+    # changed` branch — where `gap` is returned on its own — end in a break,
+    # as did the `changed` branch on the hour where only the roll-up moved
+    # (`named` excludes the derived changes, so the join can be empty).
+    #
+    # WHAT THAT BREAK COST, MEASURED AND NOT ASSUMED. An earlier note here said
+    # it drew a blank line on the card and a second empty `<p>` in the preview.
+    # Both were wrong, and the measurement is in this round's evidence: the
+    # rendered box is 23.25px — exactly one line — with the break and without
+    # it, Chromium trims trailing whitespace at the end of a block, and
+    # photographing `day_gap` with only the break removed is pixel-identical to
+    # the shot that still has it (`_measure/isolate-newline`). So this is a
+    # latent hazard and not a visible defect: the string is one markdown block
+    # handed to a transport whose renderer is not Chromium, and a trailing break
+    # in a markdown block is a line break in some of them. Nothing on this
+    # machine ever drew it. The defect it did have was real and is the reason
+    # the rule is written down: 4 `<p>` elements across 2 scenarios ended in a
+    # break that no rule asked for.
+    #
+    # A line's text is what it has to say; the separation between two lines is
+    # the joiner's business, so it is done once, below, and only when there are
+    # two lines to separate.
+    if cross_day:
+        # One clause, because the headline already carries the day it compared
+        # against and §1's screenshot counts the lines a reader must get past.
+        # The card's own day is named and not its reference — «本卡所属的
+        # CN-Mainland/2026-10-04» was a second `day_ref` on the same line, which
+        # is the spelling §2 forbids and a reader has no use for: 「本卡」 is
+        # today by construction, and the day it belongs to is what the card's
+        # own timestamp already says.
+        gap = (f"（跨日比较：上一次读数是 {dated} 的）" if dated else
+               "（跨日比较：上一次读数属于另一个工作日）")
+    elif unobserved > 0:
+        # SAYS «NOT READ» AND NOT «THERE WERE NONE», in the fewest cells that
+        # still says it. «–本时点之间有…没有读数» measured 398.1px in a 360px row
+        # and wrapped, which on a card whose whole point is that an unread hour
+        # is not a quiet hour is the worst line to lose half of. The subject of
+        # the sentence is the missing readings, so it leads with them.
+        gap = f"（{hhmm}–现在缺 {unobserved} 个时点读数，不是「无变化」）"
+    else:
+        gap = ""
+    if not changed:
+        # The gap clause and nothing else. What stood here was «状态词、观测与
+        # 三个板块与 {hhmm} 相比都没有变化» — a second sentence under a headline
+        # that already says «与 {hhmm} 相同». It is not a shorter way of saying
+        # the first line; the only thing it adds is the CARD'S OWN vocabulary,
+        # the list of fields the comparison is made of, which is a sentence
+        # about the comparing rather than about the machine. §2 sends that to
+        # the back with the other design notes, and §1's screenshot is a count
+        # of lines a reader has to get past: this was one of them, on every
+        # quiet hour, to say a second time what the line above it said. The
+        # clause that stays is the one carrying a fact the headline does not —
+        # that hours between the two readings were never observed at all.
+        return {"headline": f"与 {hhmm} 相同", "from": hhmm,
+                "unobserved": unobserved, "detail": gap, "moved": []}
+    return {"headline": f"较 {hhmm} 有 {len(changed)} 处变化", "from": hhmm,
+            "unobserved": unobserved,
+            # One line each, joined only when both are there: the gap clause is
+            # a claim about the hour and the names are what moved in it. An
+            # empty join, not a trailing separator, when one side is absent.
+            "detail": "\n".join(p for p in (gap, "；".join(named)) if p),
+            # The whole list, spelled, for a reader of the MODEL rather than of
+            # the card. The face prints `detail`, which drops the roll-up; the
+            # count above uses this list, and a caller that has to explain «1 处
+            # 变化» beside a clause naming no block needs both to be readable.
+            "moved": list(changed)}
 
 
 def _schedule(snapshot: dict) -> dict:
@@ -1471,9 +2561,14 @@ def _section(name: str, payload: dict | None, gaps: list) -> dict:
     payload = payload or {}
     state = payload.get("state")
     if state is None:
-        return {"name": name, "state": UNKNOWN, "lines": [],
+        return {"name": name, "state": UNKNOWN, "lines": [], "metrics": [],
                 "why": "这一栏没有被采集，因此不对它作任何断言"}
     return {"name": name, "state": state, "lines": list(payload.get("lines") or []),
+            # The same readings as the lines above, in cells. Passed through
+            # rather than derived here, because deriving them would mean this
+            # function parsing the sentences back into numbers — see
+            # `card_source.metric` for why that is the shape being avoided.
+            "metrics": list(payload.get("metrics") or []),
             "why": payload.get("why") or "", "detail": payload.get("detail") or {}}
 
 
@@ -1583,12 +2678,26 @@ def _gateway_state(section: dict) -> dict:
         # card's own body says a reading is not what is missing. The two states
         # have different repairs and only one of them is a repair.
         return {"name": "gateway", "state": GATEWAY_UNBOUND, "lines": [],
-                "why": section["why"], "detail": section}
+                "metrics": [], "why": section["why"], "detail": section,
+                # No endpoint and no `entry` with it: `gateway_section` returns
+                # UNBOUND precisely when no binding named a gateway, so there is
+                # no address to carry. Stated rather than left absent so the two
+                # branches of this function return one shape.
+                "entry": None}
     gateway = section
     probe = gateway.get("probe") or {}
     lines = []
+    # THE LOOPBACK IS NOT ONE OF THE LINES, and the reason is where a line goes.
+    # `cards.status_card` prints `lines[0]` on the face and folds the rest, so
+    # an endpoint at the head of this list is the FIRST SCREEN of the gateway
+    # block for every gateway whose readings are nothing but where it listens —
+    # and §R15 names loopback, with UID and model number, among the things a
+    # reader scrolls past before reaching a reading. It is carried as its own
+    # field instead, so the face can only ever be a reading, and the fold gets
+    # it by name rather than by its position in a list.
+    entry = None
     if gateway.get("endpoint"):
-        lines.append(f"本机入口 {gateway['endpoint']}")
+        entry = f"本机入口 {gateway['endpoint']}"
     probe_line = _gateway_probe_line(probe)
     if probe_line:
         lines.append(probe_line)
@@ -1608,9 +2717,37 @@ def _gateway_state(section: dict) -> dict:
     # binding named a gateway; this one says how the gateway is. Reading the
     # first here made every bound gateway report the word "BOUND" as its state,
     # which `env_health` does not recognise and therefore never faulted.
-    # Absent readings stay UNKNOWN and never OK.
-    return {"name": "gateway", "state": gateway.get("observed_state") or UNKNOWN,
-            "lines": lines, "why": "", "detail": gateway}
+    # Absent readings stay UNKNOWN and never OK — AND SO DO UNRECOGNISED ONES.
+    # `or UNKNOWN` above catches the first case and did not catch the second,
+    # and `UNAVAILABLE` is the second case, measured on this machine on
+    # 2026-10-04. `monitoring_model` emits that word when the shared gateway's
+    # own accounting cannot be read — the binding handed to the renderer that
+    # day carried `state: UNAVAILABLE` beside `probe: {state: OK}`, which is two
+    # axes reported honestly and collapsed here into one bad answer. It arrived
+    # verbatim, matched neither `env_health`'s `faulted` nor its `unread`, and so
+    # reached the else branch: the card said 「三项均已读到且无异常」 and this
+    # block's lead said 就绪, over a reading that was never made. Green over a
+    # failed reading is what §6 forbids, and the shape of it is «a word this card
+    # was never taught», not this one word — so the gate is a whitelist of the
+    # readings in `SECTION_READINGS` and the fallback is UNKNOWN. A state an
+    # upstream producer invents later lands on the neutral side by default,
+    # which is the side a reader can act on: `env_health` files it as unread and
+    # `card_day._state_word` prints it as 无法确认.
+    # No metric cells, and this is a decision rather than an omission. The two
+    # numeric blocks lead with a percentage a reader scans; this block is a list
+    # of NAMED THINGS and how each of them is, and every one of those sentences
+    # is composed from the declared catalogue in this very function — the wording
+    # authority for a gateway line is `card-definitions.yaml` and there is one of
+    # it. A cell built here from the same provider dict would be a second
+    # composition of the same reading, and the first reword of one of the two
+    # templates would leave the face and the fold describing one gateway in two
+    # vocabularies.
+    accounting = gateway.get("observed_state") or UNKNOWN
+    if accounting not in SECTION_READINGS:
+        accounting = UNKNOWN
+    return {"name": "gateway", "state": accounting,
+            "lines": lines, "metrics": [], "why": "", "detail": gateway,
+            "entry": entry}
 
 
 if __name__ == "__main__":  # pragma: no cover - a hand check, not an entry point

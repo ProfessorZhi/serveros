@@ -398,9 +398,18 @@ alerts:
   # cadence and the severity split; the deltas, the dedupe key and the backlog
   # rule live in `runtime/alert_digest.py`.
   digest:
-    # The four things that count as news, in the order a card reads them. Named
+    # The five things that count as news, in the order a card reads them. Named
     # here so a renderer has one vocabulary to read rather than its own.
-    kinds: [NEW, ESCALATED, RECOVERED, REOPENED]
+    #
+    # UPDATED is the fifth and it is not a fourth way of saying ESCALATED. It
+    # is an OPEN alert whose SEVERITY and STATE have both stayed the same while
+    # the kind of fact it is changed — a value still over its floor that became
+    # a loss of observation. Nothing less than that qualifies; a reading that
+    # merely drifted is not news, and a card that reported drift would report
+    # it every hour. It is deliberately absent from `proactive_severities`'
+    # consumer `may_interrupt`'s kind list: an UPDATED row can be printed on a
+    # card that exists for another reason and cannot itself cause one.
+    kinds: [NEW, ESCALATED, RECOVERED, REOPENED, UPDATED]
     # The outer cadence. A digest is COMPOSED on whatever schedule the surface
     # runs and SENT only when something immediate is due, or this many seconds
     # have passed since the last one that actually arrived AND the batch
@@ -557,15 +566,21 @@ alerts:
     # "critical" on another. A level with no word here renders as itself rather
     # than being given a friendlier one.
     #
-    # The two 需 words dropped the 要 they used to carry (需要处理 / 需要确认).
-    # They sit in a card header on a 390px screen beside a count, and 要 buys
-    # nothing a NOC header reader needs; the risk of shortening a declared word
-    # is real, which is why it is done HERE, once, for every surface that reads
-    # this table, and not by a renderer trimming it at display time. The other
-    # three are left alone: 值得留意 / 供参考 / 无事 are already the terse form.
+    # The two 需 words carry their 要, and the earlier trimming is REVERSED
+    # here rather than at a call site. The terse form (需处理 / 需确认) was
+    # chosen for a header on a 390px screen, and the cost was not the two
+    # characters: it left the axis with a SECOND vocabulary. `cards.FACE_WORDS`
+    # already said 建议查看 / 需要处理 / 无法确认 for the status card, the
+    # recovery card and the notice, so the same REVIEW level read «需确认» on an
+    # incident card's header and «建议查看» one tap away on the notice — one
+    # axis, two names, and a reader who has to learn both. The axis's own names
+    # win: 建议查看 is what a person does about a REVIEW, and 需要处理 is what
+    # they do about an ACTION_REQUIRED. Reversed HERE, once, for every surface
+    # that reads this table. The other three were never trimmed and are left
+    # alone: 值得留意 / 供参考 / 无事.
     words:
-      ACTION_REQUIRED: 需处理
-      REVIEW: 需确认
+      ACTION_REQUIRED: 需要处理
+      REVIEW: 建议查看
       WATCH: 值得留意
       INFORMATIONAL: 供参考
       NONE: 无事
@@ -777,13 +792,27 @@ alerts:
       # row's anomaly code, shown because it is the evidence for the claim and
       # not because it is the subject. No cause words: the finding says a
       # judgement became unavailable, never why.
+      #
+      # EACH SENTENCE IS ONE YAML LINE, and that is not formatting taste. A
+      # folded scalar (`>-`) turns every source line break into a space, and
+      # these sentences were wrapped at 60 columns — so the card printed
+      # 「因为判断正常 所需要的数据没有到达」 with a space in the middle of a
+      # Chinese clause, twice, on the two longest lines it had. Nothing
+      # rejects a space inside a Chinese sentence, so nothing caught it.
+      #
+      # AND EVERY SENTENCE IS AS LONG AS THE ROW IT LANDS IN WILL HOLD. §4 caps
+      # the incident face at 8–10 lines and requires no wrapped line; measured
+      # in the browser at 390px, an impact of 1056.7px and an action of 801.5px
+      # are three and three lines of a 360px box. The figure that was dropped
+      # is not a fact: `collector` names what 「采集侧」 IS, and the renderer
+      # prints it in the fold rather than in parentheses on the face, which is
+      # where §4 sends everything of the sort. The vanished clause — that the
+      # finding clears itself when observation returns — moved into the fold's
+      # 「这意味着」 line, which is the line that already says 观测恢复前.
       what: "{count} 个本应有状态声明的主体本次未被观测到"
-      impact: >-
-        观测本身在这一段窗口里不可信：没有异常不等于一切正常，因为判断正常
-        所需要的数据没有到达。这一条说的是判断不可用，不是说这些主体已经故障。
-      action: >-
-        确认采集侧（serverosd 与观测 provider）是否仍在运行，而不是去处理被
-        观测的对象。恢复观测后本条自行消失。
+      impact: "这一段观测不可信：「没有异常」不是结论。"
+      action: "确认采集侧是否仍在运行；不要动被观测对象"
+      collector: "serverosd 与观测 provider"
       never: >-
         never escalated to ACTION_REQUIRED on staling alone. Losing sight of
         something is not the same as something being broken, and the honest

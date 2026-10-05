@@ -210,8 +210,82 @@ def resource_ref(subject_ref: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# The store. One document, one atomic write, refused rather than emptied.
+# The store. Two documents, two atomic writes, refused rather than emptied.
 # ---------------------------------------------------------------------------
+#
+# HOT AND COLD, AND WHY THIS IS NOT RETENTION
+# -------------------------------------------
+# The register keeps one row per identity, and an identity that has ever opened
+# keeps its row so that a recurrence is legible AS a recurrence. That has no
+# expiry and this change adds none: nothing below is dropped for being old.
+#
+# What it was doing was paying for history on every pass. Measured on this node
+# 2026-10-04: 13,189 rows and 27.6 MB, of which 11,833 rows and 90.7% of the
+# bytes are RESOLVED — the record of what is over. An evaluation pass rewrites
+# the document whole, and a pass runs every minute, so two rewrites per tick
+# moved 20.7 MB of closed episodes from one side of a rename to the other
+# unchanged, at 0.3364 s each inside a 5.0 s tick.
+#
+# So the document is split by ROLE and not by AGE:
+#
+#   state.json   the HOT set — the rows a pass may open, hold, escalate,
+#                snooze, acknowledge or resolve. Written every pass.
+#                2.58 MB, 0.0335 s.
+#   ledger.json  the COLD ledger — the whole RESOLVED episode, authoritative
+#                and complete. Written only when a resolution, a re-resolution
+#                or a recovery announcement actually changes it. 25.07 MB,
+#                0.2917 s, and now paid on the events that cause it rather
+#                than on the clock.
+#
+# `alerts()` still returns the UNION of the two, so every reader that existed
+# before this split — `listing`, `evaluate`, `deltas`, `ensure_baseline`,
+# `record`, `alert_model` — sees exactly the document it saw before. That
+# equivalence is why the union is built at LOAD and not at read: no caller has
+# to know there are two files.
+#
+# WHICH FILE WINS WHERE THEY OVERLAP, AND WHY IT IS THE HOT ONE
+# -------------------------------------------------------------
+# The two writes of one commit are not atomic with each other, so an
+# interruption can leave a ref in both files. The rule is that the hot row wins,
+# and it is chosen because both residues it can produce are self-healing:
+#
+#   * A row resolved, the ledger was written, and the hot file still holds the
+#     older OPEN copy (the hot write is last). Hot wins, the row reads OPEN,
+#     and the next pass sees an identity that is no longer firing, resolves it
+#     again and sends the recovery message one tick late. Correct, delayed.
+#   * A row re-opened, the ledger's copy is the older RESOLVED episode, and the
+#     hot file has the live row. Hot wins and the reopening is not lost.
+#
+# The reverse rule would turn the first case into a row that reads RESOLVED
+# while it is still firing, which is a person not being told.
+#
+# THE LEDGER ONLY EVER GAINS
+# --------------------------
+# A row that leaves the hot set on re-opening is NOT removed from the ledger.
+# It resolved; that is history, and it is `evaluate` re-opening the identity
+# that makes it live again. Removing it would make the ledger a second opinion
+# about the present, which is the one thing two files could go wrong about.
+# Nothing reads the ledger directly — `alerts()` is the only door — so a
+# superseded episode sitting in it is invisible to every caller, and a history
+# query goes through the same union as everything else.
+#
+# WHAT IS NOT SPLIT: the delivery cursor (`delivery.json`) and the card receipt
+# ledger (`cards/delivery.json`) are siblings of the register and are untouched.
+# Both name `state.json` only as the file whose directory they live in.
+
+
+LEDGER_SCHEMA = "serveros/alerts-ledger.v1"
+
+
+def ledger_path(alert_state_path) -> Path:
+    """Where the cold ledger lives, given where the hot register lives.
+
+    A SIBLING, by the same argument `alert_digest.cursor_path` gives for the
+    delivery cursor: two documents with two lifetimes do not share one file,
+    because the one rewritten every minute would then also be the one whose
+    torn write loses the other.
+    """
+    return Path(alert_state_path).with_name("ledger.json")
 
 
 class AlertStore:
@@ -220,48 +294,63 @@ class AlertStore:
     A RESOLVED alert stays as a row, because "this was open and is now closed"
     is what makes the next occurrence legible — a store that dropped it would
     make every recurrence look like the first one, and the first one notifies
-    immediately by design.
+    immediately by design. Since 2026-10-04 that row lives in the cold ledger
+    rather than in the hot file; see the block comment above for why the
+    difference is invisible to every caller. `alerts()` is the only door.
     """
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        self._data = self._load()
+        self.ledger_path = ledger_path(self.path)
+        # Loaded, not written. A register that predates the split still holds
+        # its RESOLVED rows in `state.json`, so the union below is complete
+        # either way and the first `commit` performs the split as an ordinary
+        # atomic write. There is no separate migration step and no window in
+        # which the rows exist in neither file.
+        self._ledger: dict = self._read(self.ledger_path)["alerts"]
+        self._data = {"schema": SCHEMA,
+                      "alerts": {**self._ledger, **self._read(self.path)["alerts"]}}
 
-    def _load(self) -> dict:
-        if not self.path.exists():
-            return {"schema": SCHEMA, "alerts": {}}
+    def _read(self, path: Path) -> dict:
+        if not path.exists():
+            return {"alerts": {}}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             # Refused, not replaced. An unreadable alert store means every open
             # alert is no longer known, and a process that started anyway would
             # re-notify all of them as new — which is the spam this module
             # exists to prevent, produced by the failure path.
             raise AlertError(
-                f"{self.path} exists and cannot be read ({type(exc).__name__}: "
+                f"{path} exists and cannot be read ({type(exc).__name__}: "
                 f"{exc}). Refusing to start with an empty alert store: every "
                 f"open alert would notify again as if it were new.") from exc
         if not isinstance(data, dict):
-            raise AlertError(f"{self.path} is not a JSON object")
-        data.setdefault("alerts", {})
-        data["schema"] = SCHEMA
-        return data
+            raise AlertError(f"{path} is not a JSON object")
+        return {"alerts": data.get("alerts") or {}}
 
     def alerts(self) -> dict:
-        """A copy. Callers mutate the copy and hand it back via `replace`."""
+        """A copy. Callers mutate the copy and hand it back via `commit`."""
         return json.loads(json.dumps(self._data["alerts"]))
 
     def get(self, ref: str) -> dict | None:
         return self.alerts().get(str(ref))
 
     def commit(self, alerts: dict) -> None:
-        """The whole document, in one atomic write.
+        """Two documents, each in one atomic write, split by role.
 
-        Whole-document rather than per-record, because one evaluation pass
-        opens, updates, resolves and holds in the same tick: a store written
-        row by row would have a window in which an alert is open in one row and
-        still pending in another, and a crash inside it would leave a state no
-        code path produces.
+        Whole-document rather than per-record within each file, because one
+        evaluation pass opens, updates, resolves and holds in the same tick: a
+        store written row by row would have a window in which an alert is open
+        in one row and still pending in another, and a crash inside it would
+        leave a state no code path produces.
+
+        The ledger is written FIRST and the hot file second, so the hot write
+        is the commit point: an interruption before it leaves a ref in both
+        files rather than in neither, and the overlap rule in the block comment
+        above resolves that to the answer that is merely late instead of the
+        one that is wrong. The ledger is skipped entirely when nothing about it
+        changed, which is the whole of the saving on a routine pass.
 
         Named `commit` and not `replace`, which is what it was. `replace` takes
         one positional argument, which is exactly the arity of
@@ -275,8 +364,29 @@ class AlertStore:
         a `.replace()` on a store object as a path operation, which would have
         been a contract entry describing something that is not true.
         """
-        self._data["alerts"] = dict(alerts)
-        _store_io()._atomic_write(self.path, self._data)
+        hot: dict = {}
+        cold: dict = {}
+        for ref, row in alerts.items():
+            (cold if row.get("state") == "RESOLVED" else hot)[ref] = row
+
+        # A plain `!=` over the resolved rows, and not a fingerprint: measured
+        # on this node at 0.0157 s for all 11,833 of them, against 0.0671 s for
+        # a tuple built by hand — the comparison the tree already has is both
+        # cheaper and impossible to get subtly wrong by leaving a mutable field
+        # out of it.
+        if any(self._ledger.get(ref) != row for ref, row in cold.items()):
+            self._ledger = {**self._ledger, **cold}
+            _store_io()._atomic_write(
+                self.ledger_path,
+                {"schema": LEDGER_SCHEMA, "alerts": self._ledger})
+
+        # The union again, and not simply `alerts`: that is what the two files
+        # now hold, and a running store whose view differs from the view its own
+        # restart would build is a store that changes behaviour when it is
+        # restarted, which is the worst property a durable one can have.
+        self._data["alerts"] = {**self._ledger, **alerts}
+        _store_io()._atomic_write(self.path,
+                                  {"schema": SCHEMA, "alerts": hot})
 
     def summary(self) -> dict:
         rows = self.alerts()
@@ -284,8 +394,12 @@ class AlertStore:
         for row in rows.values():
             state = str(row.get("state"))
             by_state[state] = by_state.get(state, 0) + 1
+        # `total` and `by_state` still describe the union, so nothing that read
+        # this before reads a different number. The two extra keys say where
+        # the rows are, which is the one thing the union hides.
         return {"schema": SCHEMA, "total": len(rows), "by_state": by_state,
-                "path": str(self.path)}
+                "path": str(self.path), "ledger_path": str(self.ledger_path),
+                "ledger_rows": len(self._ledger)}
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +458,144 @@ def _pending(kind: str, *, at: str) -> dict:
     return {"kind": kind, "not_before": at}
 
 
+def _presentation():
+    """`presentation`, loaded at CALL time and never at import time.
+
+    `presentation.py` loads THIS module from its own top level, so a load here
+    at module scope would be a cycle. The same reason, the same loader and the
+    same shape as `alert_digest._presentation`, which reads the attention table
+    through the same door.
+    """
+    return _load("serveros_runtime_presentation", _HERE / "presentation.py")
+
+
+def _sayable_codes() -> frozenset:
+    """Which codes may occupy a line on a person's card, from the contract.
+
+    Asked of `presentation` and flattened nowhere else. The contract says NO
+    OTHER FILE MAY ASSIGN AN ATTENTION LEVEL, and `alert_digest.face_table`
+    already made this exact choice for this exact question; a third flattening
+    written here would be a third authority over one axis.
+
+    `criticality` is not an input, and that is not an omission:
+    `presentation.attention_of` can only move a `declared` code from
+    `escalation.from` to `escalation.to`, and the contract puts both of those on
+    the face. Escalation cannot move a code across THIS line, so asking it here
+    would add an input that cannot change the answer.
+
+    Read once per pass and not once per row: `face_table`'s docstring records
+    what asking per row cost this node (24.7 s inside a call whose client waits
+    5.0 s).
+    """
+    presentation = _presentation()
+    face = tuple(presentation.attention_policy().get("on_the_face") or ())
+    return frozenset(
+        code for code, entry in presentation.code_expectations().items()
+        if str(entry.get("level") or "") in face)
+
+
+def _may_be_said(code: str, *, sayable) -> str | None:
+    """Why nothing about `code` can be delivered, or None if something can.
+
+    The only surface this node has for telling a person about a finding is a
+    card line, and `alerts.attention.on_the_face` decides which codes may occupy
+    one. A code outside that set has nowhere to be delivered TO, so an intent to
+    say it is a debt with no payee — and a register that accumulates those stops
+    being a record of what is owed, which is the only thing `pending` is for.
+
+    Measured on this node 2026-10-04, before this rule: 13,207 rows carried a
+    `pending` and 1,204 had ever been announced, and 1,193 of those
+    announcements were for codes this table has never put on a card. The Status
+    Card's own 「未送达的历史意图（N）」 line was reading that difference as N
+    messages that failed to arrive.
+
+    The finding is not dropped and the row is not made quiet: `pending` is a
+    claim about what will be SAID, and withdrawing one changes nothing about
+    what is known. The row stays in the register, stays graded, and stays in the
+    digest's own buckets.
+    """
+    if str(code) in sayable:
+        return None
+    return (f"{code} is graded and nothing about it can be delivered: its "
+            f"attention level is not on a card's face, so no message about it "
+            f"has a surface to arrive on")
+
+
+def _opening_intent(code: str, *, at: str, sayable) -> tuple[dict | None, str | None]:
+    """(the intent a signal that just fired owes, or None with the reason).
+
+    §12 asks for a message when something becomes wrong; this is where §12 meets
+    §2, which decides what may be printed.
+    """
+    why = _may_be_said(code, sayable=sayable)
+    if why:
+        return None, why
+    return _pending("opened", at=at), None
+
+
+def _resolving_intent(alert: dict, *, at: str,
+                      sayable) -> tuple[dict | None, str | None]:
+    """(the recovery intent a closing alert owes, or None with the reason).
+
+    §10: a person who was told about a problem is told it ended. Both halves are
+    required, and each is a different way of owing nothing. The code has to be
+    one a card may carry, or the recovery has nowhere to arrive — a recovery
+    message is a message. And somebody has to have been told, because a recovery
+    message takes back an announcement: an episode nobody heard about has none
+    to take back.
+
+    The second half is why `last_notified_at` and not `state`. 11,077 rows on
+    this node were RESOLVED and carried a `resolved` intent for a first message
+    that had never been sent, so what the register was calling a recovery was in
+    several thousand cases the first word anybody would have had on the subject.
+    """
+    why = _may_be_said(str(alert.get("code") or ""), sayable=sayable)
+    if why:
+        return None, why
+    if alert.get("last_notified_at") is None:
+        # An attempt that failed is named here rather than left to be
+        # discovered: this is the one case where an intent is dropped AND a
+        # delivery was tried, and the sentence is the only place the two facts
+        # meet. `delivery_failure` stays on the row for `alert inspect`.
+        tried = alert.get("delivery_failure")
+        return None, (f"{alert.get('code')} closed without ever having been "
+                      f"announced, and a recovery message takes back an "
+                      f"announcement — there is none to take back"
+                      + (f"; the last attempt answered {tried!r}" if tried else ""))
+    return _pending("resolved", at=at), None
+
+
+def _withdrawn_intent(alert: dict, *, at: str, sayable) -> str | None:
+    """True up a row that carries an intent these rules would not write.
+
+    The two rules are applied at the two moments a row OPENs and CLOSEs, and
+    this is the third moment: every pass, to the rows it already owns. It is not
+    optional housekeeping. This node has 13,207 rows written by the rules as
+    they stood, and a rule governing only new rows would leave that number on
+    the books forever — the same untrue claim with a longer deadline, printed on
+    the Status Card the whole time.
+
+    Returns the reason the claim was withdrawn, or None when the row was already
+    honest. `state` is deliberately not consulted: an intent is a claim about
+    what will be SAID, so whether the underlying finding is open decides which
+    rule applies, never whether the claim is payable.
+    """
+    kind = (alert.get("pending") or {}).get("kind")
+    if kind == "opened":
+        _, why = _opening_intent(str(alert.get("code") or ""), at=at,
+                                 sayable=sayable)
+    elif kind == "resolved":
+        _, why = _resolving_intent(alert, at=at, sayable=sayable)
+    else:
+        return None
+    if why is None:
+        return None
+    alert["pending"] = None
+    return (f"a `{kind}` intent was withdrawn from this row, which was written "
+            f"by the rules as they stood before the attention table governed "
+            f"`pending`: {why}")
+
+
 def _should_repeat(alert: dict, *, severity: str, at: str,
                    cooldowns: dict, ranks: dict) -> tuple[bool, str | None]:
     """Whether a PERSISTING anomaly may speak again, and why not if not.
@@ -379,11 +631,12 @@ def _should_repeat(alert: dict, *, severity: str, at: str,
     return True, None
 
 
-def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
+def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict,
+                        subjects: set | None = None) -> tuple:
     """(verdict, why, kind) for an alert whose signal did not fire this tick.
 
-    RESOLVED, or HELD with the reason — never a guess. The three answers this
-    distinguishes are the three that a single "the signal is gone" would
+    RESOLVED, or HELD with the reason — never a guess. The four answers this
+    distinguishes are the four that a single "the signal is gone" would
     collapse:
 
       * the code was not evaluated at all → HELD. "Nobody looked" is not
@@ -392,10 +645,33 @@ def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
       * the subject is a measurement and it came back below its floor →
         RESOLVED.
       * the subject is a measurement and it did NOT come back below its floor,
-        or was not reported at all this tick → HELD. Without this the alert
+        or was reported and came back unreadable → HELD. Without this the alert
         would flap: at 84.9% the signal is absent and at 85.1% it is present,
         and a store that read absence as recovery would open and close the same
         alert on either side of one threshold.
+      * the subject is NOT IN THE PASS'S INVENTORY at all → RESOLVED, kind
+        `subject_gone`. This is the fourth answer, and it was missing for two
+        months. A runtime group's ref embeds a pid, so its ref is a LIFETIME:
+        when the group ends its ref never recurs. Held under the third answer,
+        such an alert said "a subject that stopped being measured has not
+        recovered" forever — measured on 2026-10-04, 1,088 alerts were frozen
+        OPEN saying exactly that, and **all 1,088 subjects no longer existed**.
+        The sentence was not cautious, it was false.
+
+    `subjects` is the pass's inventory of what it enumerated, from the
+    detection document. It is OPTIONAL and the absence of the key is not the
+    same as an empty one: a document that carries no inventory is evaluated
+    exactly as it was before this existed, so every hand-built test document
+    and every older document is unaffected. `evaluate()` turns an empty list
+    into `None` for that reason — a pass that enumerated nothing has not
+    established that everything is gone.
+
+    The order of the branches is the safety property, not an accident. The
+    `not_evaluated` test runs FIRST, so a pass whose process table failed to
+    answer holds every group alert before the inventory is ever consulted: a
+    degraded pass cannot mass-resolve. That is the same guard that keeps
+    `INPUT_CODES` honest one level up, and it is why `subject_gone` can be
+    trusted to mean "gone" rather than "not looked at today".
 
     `kind` is the machine-readable half of `why`, and it is a separate return
     value rather than something a consumer decodes from the sentence. Two of
@@ -420,6 +696,12 @@ def _graded_measurement(alert: dict, *, levels: dict, ungraded: dict) -> tuple:
                             f"being reported"), "not_a_measurement"
     row = levels.get(f"{code}|{subject}")
     if row is None:
+        if subjects is not None and subject not in subjects:
+            return "RESOLVED", (f"{subject} was not in this pass's inventory "
+                                f"of what it looked at, so {code} is about "
+                                f"something that is no longer there — that is "
+                                f"an ending and not a gap in the reading"), \
+                   "subject_gone"
         return "HELD", (f"the measurement for {subject} was not reported this "
                         f"tick; a subject that stopped being measured has not "
                         f"recovered"), "unmeasured"
@@ -458,6 +740,108 @@ def _thresholds() -> dict:
     return _THRESHOLD_CACHE
 
 
+_THRESHOLD_KEY_CACHE: dict = {}
+
+
+def threshold_keys() -> dict:
+    """code → the KEY of the threshold it is graded against.
+
+    Two tables, because this node has two detectors and the contract spells the
+    fact in both of their vocabularies: `attribution-contract.yaml` names a key
+    per resource code (`threshold:` on each `resource_anomalies:` entry, which
+    `test_resource_anomaly.py` already asserts against the detector's own
+    table), and `anomaly.THRESHOLD_KEYS` names it for the runtime codes, whose
+    contract entries carry no `threshold` field at all.
+
+    Read, not derived, and deliberately NOT read from a detector's private
+    table. The row a detector hands over stores `margin_key`, which is derived
+    FROM this key and no longer carries its direction — `memory_rss_high_bytes`
+    becomes `memory_rss_recovery_margin`, and the `_high` is consumed on the
+    way. A renderer that inverted a margin key to recover a direction would be
+    guessing at a derivation that already happened one layer down.
+    """
+    if not _THRESHOLD_KEY_CACHE:
+        out: dict = {}
+        try:
+            import yaml
+            path = getattr(_anomaly(), "CONTRACT", None)
+            document = (yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+                        if path else {}) or {}
+        except (OSError, Exception):  # noqa: BLE001 - unreadable contract
+            document = {}
+        for entry in document.get("resource_anomalies") or ():
+            if isinstance(entry, dict) and entry.get("code") and entry.get("threshold"):
+                out[str(entry["code"])] = str(entry["threshold"])
+        for code, key in (getattr(_anomaly(), "THRESHOLD_KEYS", None) or {}).items():
+            out.setdefault(str(code), key)
+        _THRESHOLD_KEY_CACHE.update(out)
+    return _THRESHOLD_KEY_CACHE
+
+
+def direction(threshold_key: str | None) -> str:
+    """The comparison a threshold key declares, read off its own suffix.
+
+    A row stores the threshold's VALUE and not what it is compared with, so
+    without this a face can print `97.3%（阈值 90.0%）` — a number, a
+    parenthesis and no statement of which side of the line it is on. §4 asks
+    for value, operator and threshold together, and the operator is not a free
+    choice to be made per code at the renderer: it is the shape of the key the
+    detector already grades against.
+
+    `_high` and `_high_bytes` are one end (≥), `_critical` names the second tier
+    of the same quantity and is an upper bound as well. A key of neither shape
+    prints NO operator rather than a guess — `cpu_sustained_seconds`,
+    `error_window_seconds` and the like are windows, not lines to cross, and a
+    face that stated a comparison nobody declared would be making the class of
+    claim this whole module exists to keep out. `_low` is accepted because the
+    suffix means what it says even though no code uses it today, so that the
+    first lower-bound measurement added to the contract does not need this
+    function changed to be read correctly.
+    """
+    key = str(threshold_key or "")
+    if key.endswith("_high") or key.endswith("_high_bytes") \
+            or key.endswith("_critical"):
+        return "≥"
+    if key.endswith("_low") or key.endswith("_low_bytes"):
+        return "≤"
+    return ""
+
+
+def crosses(reading, threshold, arrow: str) -> bool:
+    """Whether this reading is on the finding's side of its own threshold.
+
+    The operator states a comparison, and a comparison printed beside two
+    numbers without being performed is a claim. A register holds rows on BOTH
+    sides of their line — a RESOLVED row is the same row after the reading came
+    back down, and the PSI pair travels beside a swap watermark whether or not
+    anything is stalling — so a face that stamped the operator on every
+    threshold would print `0.0%（≥ 阈值 1.0%）`, asserting an inequality its own
+    two numbers contradict. Which is the failure §4 names, arrived at from the
+    other direction: not a missing operator, but one attached to a reading that
+    does not satisfy it.
+
+    So the operator appears only when it holds. When it does not, the threshold
+    is printed and no comparison is, which is exactly the string this function
+    rendered before it knew about direction — nothing is claimed, so nothing
+    can be claimed wrongly. The strict `<` of the other side is deliberately
+    NOT printed in its place: an alert does not close the moment its reading
+    drops below the threshold, it closes `margin_key` below it, so `below the
+    line` is not the same fact as `not currently a finding` and this renderer
+    does not own the state that decides it.
+
+    An incomparable pair takes the same path, because "could not check" is not
+    "holds".
+    """
+    try:
+        if arrow == "≥":
+            return float(reading) >= float(threshold)
+        if arrow == "≤":
+            return float(reading) <= float(threshold)
+    except (TypeError, ValueError):
+        return False
+    return False
+
+
 def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
              detector: str, thresholds: dict | None = None,
              policy_block: dict | None = None) -> dict:
@@ -489,6 +873,11 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             "a detection document with no detector name cannot own an alert: "
             "an alert nobody can be asked to re-derive is one nobody can close")
     block = policy_block or policy()
+    #: Which codes may occupy a line on a person's card, from the same table
+    #: the renderers read — computed once here and never per row. See
+    #: `_sayable_codes`. `pending` is governed by it below, which is what makes
+    #: this module agree with `alert_digest` about who may be told.
+    sayable = _sayable_codes()
     words = severity_words()
     ranks = _ranks()
     cooldowns = dict(block.get("cooldown_seconds") or {})
@@ -501,6 +890,15 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
     ungraded = {str(row.get("code")): row.get("why")
                 for row in (detection.get("codes_not_evaluated") or [])
                 if isinstance(row, dict)}
+    # §21. The subjects the pass ENUMERATED, as opposed to the ones it managed
+    # to measure — see `_graded_measurement` for what the difference decides.
+    # An EMPTY inventory is deliberately read as "no inventory was taken": a
+    # document that enumerated nothing has not established that every subject
+    # is gone, and closing every alert on it would be the mass-resolve this
+    # whole branch exists to avoid. A document with no `subjects` key at all is
+    # evaluated exactly as it was before the key existed.
+    inventory = detection.get("subjects")
+    subjects = set(inventory) if inventory else None
 
     alerts = store.alerts()
     touched: list[str] = []
@@ -511,6 +909,21 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
         held.append({"alert_ref": alert.get("alert_ref"), "code": alert.get("code"),
                      "subject_ref": alert.get("subject_ref"),
                      "state": alert.get("state"), "stage": stage, "why": why})
+
+    def intend(alert, *, at):
+        """Set `pending` for a signal that just fired, by §12's rule.
+
+        The rule is stated once, in `_opening_intent`. This is where the row is
+        told the answer, and where a row that owes nothing gets its attribution
+        into `held` — the list that answers "why was I not told about this",
+        which for a code off the face is the only moment anybody can act on.
+        """
+        intent, why = _opening_intent(str(alert.get("code") or ""), at=at,
+                                      sayable=sayable)
+        alert["pending"] = intent
+        if why:
+            hold(alert, "notification", why)
+        return intent
 
     for signal in signals:
         code = str(signal.get("code") or "")
@@ -582,10 +995,14 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
                 "last_attempt_at": None, "last_delivery": None,
                 "delivery_failure": None,
                 "snooze_until": None, "resolved_at": None,
-                "pending": _pending("opened", at=at),
+                # Set by `intend` below, not here: whether a message is owed
+                # depends on the code's attention level, and the code is not on
+                # this dict until `current` is merged into it.
+                "pending": None,
                 "hold_reason": None, "hold_kind": None,
             }
             alert.update(current)
+            intend(alert, at=at)
             alerts[ref] = alert
             touched.append(ref)
             continue
@@ -613,7 +1030,7 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             alert["first_seen"] = at
             alert["occurrence_count"] = 1
             alert["resolved_at"] = None
-            alert["pending"] = _pending("opened", at=at)
+            intend(alert, at=at)
             alert["reopened_from"] = previous
             continue
 
@@ -634,7 +1051,7 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
         speak, why_not = _should_repeat(alert, severity=severity, at=at,
                                         cooldowns=cooldowns, ranks=ranks)
         if speak:
-            alert["pending"] = _pending("opened", at=at)
+            intend(alert, at=at)
         else:
             hold(alert, "notification", why_not)
 
@@ -647,7 +1064,8 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             # about it — this detector never looks at that code.
             continue
         verdict, why, kind = _graded_measurement(alert, levels=levels,
-                                                 ungraded=ungraded)
+                                                 ungraded=ungraded,
+                                                 subjects=subjects)
         if verdict == "RESOLVED":
             alert["state"] = "RESOLVED"
             alert["resolved_at"] = at
@@ -657,7 +1075,13 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             # §10. Exactly one recovery message, and it is the reason
             # `alert.resolved` exists at all: a person who was told about a
             # problem and never told it ended reasonably concludes it did not.
-            alert["pending"] = _pending("resolved", at=at)
+            # `_resolving_intent` is what makes "was told" a fact about this row
+            # rather than an assumption: see it for the two ways an ending owes
+            # nobody anything.
+            alert["pending"], why_not = _resolving_intent(alert, at=at,
+                                                          sayable=sayable)
+            if why_not:
+                hold(alert, "notification", why_not)
             touched.append(ref)
         else:
             alert["hold_reason"] = why
@@ -669,6 +1093,34 @@ def evaluate(store: AlertStore, *, detection: dict, device_ref: str, at: str,
             # looked, the value is still up, and nothing is missing.
             alert["hold_kind"] = kind
             hold(alert, "resolution", why)
+
+    # -- the rows that claim a message nobody can receive ---------------------
+    #
+    # The two rules above are applied at the two moments a row OPENs and
+    # CLOSEs. This is the third moment, and the only one that reaches rows
+    # already in the register — 13,207 of them on this node, written by the
+    # rules as they stood. Reconciliation is not a separate migration with its
+    # own run: every pass brings the rows it owns into line, which is the only
+    # way the register's own total stops being the number that is wrong.
+    #
+    # Only this detector's rows. The other detector's rows were graded by a
+    # document this pass never saw, and reconciling them from here would be this
+    # detector ruling on another one's evidence — the same mistake the `detector`
+    # field exists to prevent.
+    #
+    # Nothing here touches `state`, `hold_kind` or `hold_reason`. A withdrawn
+    # claim is not a resolution and not a hold: the finding is exactly as open,
+    # exactly as graded, and exactly as visible as it was. `hold_reason` in
+    # particular is left alone on purpose — the digest card reads it on OPEN
+    # rows as 「已经不在了」 and reports those as the alerting system's own
+    # defect, so writing this reason there would make it say 「gone」 about a
+    # thousand findings it is still measuring.
+    for ref, alert in alerts.items():
+        if alert.get("detector") != detector:
+            continue
+        why = _withdrawn_intent(alert, at=at, sayable=sayable)
+        if why:
+            hold(alert, "notification", why)
 
     store.commit(alerts)
     pending = [row for row in alerts.values() if row.get("pending")]
@@ -791,19 +1243,88 @@ def detail_for(alert: dict, *, at: str) -> str:
     return "\n".join(lines)
 
 
-def _measurement_line(alert: dict, measured: dict) -> str:
-    """The measured value and the threshold it was compared against.
+def measurement_parts(alert: dict, measured: dict) -> list[dict]:
+    """The reading and the threshold it was compared against, as parts.
 
-    The threshold is included because a bare number is not a finding: "93.2%"
-    is alarming or unremarkable depending on whether the tier is 92% or 80%,
-    and a reader should not have to open the contract to find out which.
+    ONE PRODUCER, TWO REGISTERS
+    ---------------------------
+    The evidence block under an incident has always printed these numbers as one
+    English sentence, and the card's face now prints the leading one as a
+    Chinese field line. They are the same numbers, and they are derived here
+    once so that they cannot become two answers: a renderer that re-read
+    `used_percent` off the row itself would be a second reader of the register's
+    payload, and the day the two disagree is a day the face and the fold beneath
+    it print two different figures for one finding.
+
+    Each part is one comparison:
+
+      * `axis`     the register field it came from, so a reader can go and look;
+      * `says`     the evidence block's own words, unchanged from when this
+                   function was `_measurement_line` and nothing else read it;
+      * `face`     the same reading in the card's language, for the one line a
+                   phone shows. The two registers are not an accident — the
+                   evidence block is quoted in the contract's terms and the face
+                   is read by somebody who is not holding the contract;
+      * `measured` True for a part that IS a reading, False for the two
+                   sentences that are not: the one saying no reading exists for
+                   this code, and a caveat, which qualifies a reading rather
+                   than being one. The face prints measured parts only, because
+                   "no measurement — this code is a declaration" answers "where
+                   is the number" and is not a number.
+
+    The threshold is included everywhere it exists because a bare number is not
+    a finding: "93.2%" is alarming or unremarkable depending on whether the tier
+    is 92% or 80%, and a reader should not have to open the contract to find out
+    which.
     """
     parts = []
+
+    def add(axis, says, face, *, measured_=True, faces=()):
+        # `face` is the fullest form and stays the part's `face`, so every
+        # reader that has always read this key — the model, the JSON payload,
+        # the CLI — reads exactly what it read before. `faces` is the SAME
+        # sentence in the shorter forms a narrow row can hold, longest first,
+        # and only the renderer consumes it: how much of a line fits in 360px
+        # is a fact about the row, and the row is not this module's.
+        parts.append({"axis": axis, "says": says, "face": face,
+                      "faces": ((face,) + tuple(faces)) if face else (),
+                      "measured": measured_})
+
+    code_key = threshold_keys().get(str(alert.get("code") or ""))
+
+    def versus(reading, threshold, unit="%", key=None) -> tuple[str, str]:
+        """`value op threshold`'s tail, in both registers, or nothing.
+
+        §4: value, operator and threshold TOGETHER, and `crosses()` decides
+        whether the operator is earned by this reading. The operator is the one
+        thing that differs between the two registers — the evidence block is
+        quoted in the contract's terms and spells it in ASCII, the face is read
+        by somebody who is not holding the contract. `key` overrides the code's
+        own threshold key for the readings whose threshold is a field of
+        `measured` rather than the line this code is graded against (the PSI
+        pair beside a swap watermark); those field names say `_high` in their
+        own right, so the same suffix rule reads them.
+
+        An operator that could not be derived — or that the reading does not
+        satisfy — emits nothing, and the string stays exactly as it was before
+        this function learned about direction. A face that states a comparison
+        nobody declared, or one its own numbers contradict, is worse than a
+        face that states none, and both are the failure §4 names.
+        """
+        if threshold is None:
+            return "", ""
+        arrow = direction(code_key if key is None else key)
+        if arrow and crosses(reading, threshold, arrow):
+            return (f" ({arrow} threshold {threshold}{unit})",
+                    f"（{arrow} 阈值 {threshold}{unit}）")
+        return f" (threshold {threshold}{unit})", f"（阈值 {threshold}{unit}）"
+
     for key in ("used_percent", "inode_percent"):
         if measured.get(key) is not None:
-            threshold = measured.get("threshold_percent")
-            parts.append(f"{measured[key]}%"
-                         + (f" (threshold {threshold}%)" if threshold is not None else ""))
+            tail_says, tail_face = versus(measured[key],
+                                          measured.get("threshold_percent"))
+            add(key, f"{measured[key]}%" + tail_says,
+                f"{measured[key]}%" + tail_face)
     psi = measured.get("memory_pressure")
     if isinstance(psi, dict) and psi:
         # §SWAP. A watermark is not a pressure, and this is the line that stops
@@ -826,13 +1347,14 @@ def _measurement_line(alert: dict, measured: dict) -> str:
             # unreadable pressure as no pressure is the conflation this whole
             # pair of fields exists to prevent — it would not become true by
             # being made in a sentence instead of a field.
+            #
             # The clause after the reason is chosen by CODE, because the two
             # codes carry this reading in different ROLES: for SWAP_PRESSURE it
             # is the correction to the watermark printed above it, and for
             # MEMORY_PRESSURE_ACTIVE it is the finding itself. One sentence for
             # both would print the swap sentence on a card that has no swap
             # figure above it to point at.
-            parts.append(
+            add("memory_pressure",
                 "memory stall was NOT established: "
                 + (psi.get("reason")
                    or "memory pressure-stall information was not readable")
@@ -840,13 +1362,27 @@ def _measurement_line(alert: dict, measured: dict) -> str:
                    "is not a measurement of pressure"
                    if alert.get("code") == "SWAP_PRESSURE" else
                    " — what this host is doing to memory could not be "
-                   "measured, and unmeasured is not the same as fine"))
+                   "measured, and unmeasured is not the same as fine"),
+                # The face does not carry the reason, which is a sentence from
+                # the provider: what a person needs from the first screen is
+                # that this reading is missing, and the fold below has the why.
+                "内存停顿无法确认（原因见技术详情）")
         else:
-            parts.append(
-                f"memory stall some avg60={some['avg60']}%"
-                + (f" (threshold {some_at}%)" if some_at is not None else "")
-                + f", full avg60={full['avg60']}%"
-                + (f" (threshold {full_at}%)" if full_at is not None else ""))
+            # The threshold field's own name carries the direction here, so it
+            # is passed as the key: these two PSI readings are context beside a
+            # swap watermark rather than the line THIS code is graded against,
+            # and the code's key would answer a different question.
+            some_says, some_face = versus(
+                some.get("avg60"), some_at, "%",
+                key="psi_memory_some_avg60_percent_high")
+            full_says, full_face = versus(
+                full.get("avg60"), full_at, "%",
+                key="psi_memory_full_avg60_percent_high")
+            add("memory_pressure",
+                f"memory stall some avg60={some['avg60']}%" + some_says
+                + f", full avg60={full['avg60']}%" + full_says,
+                f"内存停顿 some avg60={some['avg60']}%" + some_face
+                + f" · full avg60={full['avg60']}%" + full_face)
     # The other half of a stall reading, and the half that makes it
     # counter-intuitive: this host stalled while holding 188 GiB available
     # (2026-09-29). A reader handed only the stall figure has to supply the
@@ -854,7 +1390,9 @@ def _measurement_line(alert: dict, measured: dict) -> str:
     # travels beside it — not as a second verdict, but as the rest of one
     # reading. Absent when the producing summary did not carry it.
     if measured.get("available_percent") is not None:
-        parts.append(f"{measured['available_percent']}% of memory available")
+        add("available_percent",
+            f"{measured['available_percent']}% of memory available",
+            f"可用内存 {measured['available_percent']}%")
     # The watermark, carried to the card that was raised WITHOUT it. The split
     # between the two axes is only legible if a reader can see that the pressure
     # fired while the watermark had not: the whole finding on 2026-09-29 was a
@@ -865,7 +1403,9 @@ def _measurement_line(alert: dict, measured: dict) -> str:
     # numbers that are not obviously different numbers is how a reader supplies
     # the wrong one.
     if measured.get("swap_used_percent") is not None:
-        parts.append(f"swap {measured['swap_used_percent']}% used")
+        add("swap_used_percent",
+            f"swap {measured['swap_used_percent']}% used",
+            f"交换区已用 {measured['swap_used_percent']}%")
     # The third axis, and the only place it reaches a person. A watermark says
     # how full; a stall figure says how much work waited; neither says whether
     # pages are moving at all, and "full and quiet" and "full and thrashing"
@@ -875,24 +1415,35 @@ def _measurement_line(alert: dict, measured: dict) -> str:
     # compare against another host's.
     paging = measured.get("paging")
     if isinstance(paging, dict) and paging.get("state") == "PRESENT":
-        parts.append(f"paging {paging.get('pswpout_per_second')} pages/s out, "
-                     f"{paging.get('pswpin_per_second')} pages/s in")
+        add("paging",
+            f"paging {paging.get('pswpout_per_second')} pages/s out, "
+            f"{paging.get('pswpin_per_second')} pages/s in",
+            f"换页 {paging.get('pswpout_per_second')} 页/秒出 · "
+            f"{paging.get('pswpin_per_second')} 页/秒入")
     for key in ("size_bytes", "log_bytes", "size_rw_bytes"):
         if measured.get(key) is not None:
             threshold = measured.get("threshold_bytes")
-            parts.append(f"{measured[key] / 1048576:.1f} MB"
-                         + (f" (threshold {threshold / 1048576:.1f} MB)"
-                            if threshold is not None else ""))
+            tail_says, tail_face = versus(
+                measured[key] / 1048576,
+                None if threshold is None else threshold / 1048576, " MB")
+            add(key, f"{measured[key] / 1048576:.1f} MB" + tail_says,
+                f"{measured[key] / 1048576:.1f} MB" + tail_face)
     if measured.get("cpu_percent") is not None:
         threshold = measured.get("threshold_percent")
-        parts.append(f"{measured['cpu_percent']}% of one core across "
-                     f"{measured.get('process_count') or '?'} process(es)"
-                     + (f" (threshold {threshold}%)" if threshold is not None else ""))
+        count = measured.get("process_count") or "?"
+        tail_says, tail_face = versus(measured["cpu_percent"], threshold)
+        add("cpu_percent",
+            f"{measured['cpu_percent']}% of one core across "
+            f"{count} process(es)" + tail_says,
+            f"{measured['cpu_percent']}% 单核 · {count} 个进程" + tail_face)
     if measured.get("memory_rss_bytes") is not None:
         threshold = measured.get("threshold_bytes")
-        parts.append(f"{measured['memory_rss_bytes'] / 1048576:.1f} MB rss"
-                     + (f" (threshold {threshold / 1048576:.1f} MB)"
-                        if threshold is not None else ""))
+        tail_says, tail_face = versus(
+            measured["memory_rss_bytes"] / 1048576,
+            None if threshold is None else threshold / 1048576, " MB")
+        add("memory_rss_bytes",
+            f"{measured['memory_rss_bytes'] / 1048576:.1f} MB rss" + tail_says,
+            f"{measured['memory_rss_bytes'] / 1048576:.1f} MB rss" + tail_face)
     if measured.get("desired_state") is not None \
             or measured.get("actual_derived_state") is not None:
         # §15. The threshold of this comparison IS the declaration, and the two
@@ -904,25 +1455,64 @@ def _measurement_line(alert: dict, measured: dict) -> str:
         # The provider's own word travels beside the normalized one.
         # `restarting` and `dead` both normalize to STOPPED and they call for
         # different things from whoever reads this.
+        #
+        # This is the one measurement whose face can outgrow the row, so it
+        # carries its shorter forms as well: the declaration and the measured
+        # state are the finding and cannot go, the provider's word is the
+        # qualifier and is the first thing to give up — and it is given up on
+        # the FACE only. The evidence block prints this part's `says`, which
+        # keeps `(provider says <raw>)` whichever tier the face took, so the
+        # word is one fold away rather than gone.
         declared = measured.get("desired_state") or "undeclared"
         actual = (measured.get("actual_derived_state")
                   or measured.get("actual_state") or "not measured")
         raw = measured.get("actual_raw")
-        parts.append(f"declared {declared} · measured {actual}"
-                     + (f" (provider says {raw})" if raw and str(raw) != str(actual)
-                        else ""))
+        tail = (f" (provider says {raw})" if raw and str(raw) != str(actual)
+                else "")
+        add("desired_state",
+            f"declared {declared} · measured {actual}" + tail,
+            f"声明 {declared} · 实测 {actual}"
+            + (f"（生产者说 {raw}）" if tail else ""),
+            faces=((f"声明 {declared} · 实测 {actual}（{raw}）",
+                    f"声明 {declared} · 实测 {actual}") if tail else ()))
     if not parts:
         # A finding that is a declaration rather than a measurement. Named as
         # such, so the reader does not go looking for a number that does not
         # exist for this code.
-        parts.append(f"{alert.get('why') or 'no measurement — this code is a declaration'}")
+        add("why",
+            f"{alert.get('why') or 'no measurement — this code is a declaration'}",
+            "", measured_=False)
     caveat = measured.get("caveat")
     if caveat:
         # §15's qualifier, carried in full. It is a paragraph because the
         # second reading it names is a specific measured case on this host, and
         # a shortened version would be a sentence without its evidence.
-        parts.append(f"caveat: {caveat}")
-    return ", ".join(parts)
+        add("caveat", f"caveat: {caveat}", "", measured_=False)
+    return parts
+
+
+def measurement_face(alert: dict, measured: dict) -> dict | None:
+    """The one reading the incident card's face prints, or nothing.
+
+    The FIRST measured part and not a selection by importance, because the
+    order above is already the order of how close each reading is to being the
+    finding itself — a percentage against its tier before the stall behind it
+    before the comparison that is its own threshold.
+
+    Nothing when no part is a reading. A card that printed 「测量 —— 本代码是一个
+    声明」 in the field where the other cards print a number would be answering a
+    question nobody asked, in the place where the answer to a real one goes. The
+    face then carries no measurement line at all, and the fold says why.
+    """
+    for part in measurement_parts(alert, measured):
+        if part["measured"] and part["face"]:
+            return part
+    return None
+
+
+def _measurement_line(alert: dict, measured: dict) -> str:
+    """The evidence block's sentence: every part, in the order above."""
+    return ", ".join(part["says"] for part in measurement_parts(alert, measured))
 
 
 def notify_for(provider, *, alert: dict, kind: str, device_ref: str, at: str,

@@ -52,13 +52,16 @@ SIX PROPERTIES, IN THE ORDER A READER NEEDS THEM
      a test below that reads the tick's own source, so the day somebody wires the
      two together is the day this file says so.
 
-Hermetic: a temporary directory per test, no daemon, no socket, and every instant
-an argument. The only subprocesses are the Parent fixtures, which are shell
-scripts written into the test's own temporary directory — and the CLI, which
-`tests/test_continuation.py` already drives the same way.
+Hermetic: a temporary directory per test, no daemon, no socket, and the instant
+an argument — EXCEPT in the tests that really start a Parent, which read the real
+clock because the verb refuses `--now` on a wake that acts; `an_instant_now`
+carries the reason. The only subprocesses are the Parent fixtures, which are
+shell scripts written into the test's own temporary directory — and the CLI,
+which `tests/test_continuation.py` already drives the same way.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -117,6 +120,19 @@ CONTEXT = "ctx-delegated-1"
 GRANT = "grant-1"
 BUDGET = {"wall_seconds": 30, "max_attempts": 2, "max_output_bytes": 200000,
           "exhausted": False}
+
+
+def an_instant_now() -> str:
+    """The real clock, ISO UTC.
+
+    The two tests that really start a Parent plan at the real clock, because
+    `work wake` refuses `--now` on a real wake — that rule is asserted below and
+    is the reason this helper exists rather than a literal. Their context has to
+    be observed at the real clock for the same reason: `actor.freshness` is
+    computed against the clock DOING THE READING, so a fixture pinned to a
+    literal date would be FRESH only on the day somebody wrote it down.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -967,17 +983,20 @@ class TestTheRoutineIsNotATick:
 class TestTheVerbDecidesAndReports:
     """`serverosctl work wake`, the surface the timer runs and a person reads."""
 
-    def a_scratch_node(self, tmp_path: Path) -> dict:
+    def a_scratch_node(self, tmp_path: Path, *, observed_at: str = NOW) -> dict:
         """A DATA_ROOT with a live, ready checkpoint in it.
 
-        Every call below passes `--now`, and the verb would otherwise read a real
-        clock — which would make these tests pass or fail depending on what time
-        of day the suite ran, since the window's readiness is what they turn on.
+        `observed_at` is the reading clock the context is minted for, and it
+        splits these tests in two. The deciding ones pass `--now` and get the
+        literal default, so their verdict does not depend on what time of day
+        the suite ran. The two that really start a Parent cannot pass `--now` —
+        the verb refuses it — so they read the real clock and their context has
+        to be observed at it too; `an_instant_now()` is that instant.
         """
         env = a_data_root(tmp_path)
         store = AgentControlStore(
             Path(env["SERVEROS_STATE_DIR"]) / "runtime" / "agent-control" / "store.json")
-        store.put_context(a_context())
+        store.put_context(a_context(observed_at=observed_at))
         store.put_grant(a_grant())
         a_checkpoint(store)
         return env
@@ -1020,20 +1039,33 @@ class TestTheVerbDecidesAndReports:
         assert not list(Path(env["SERVEROS_STATE_DIR"]).rglob("continuation-wake-*"))
 
     def test_a_relative_parent_is_refused_before_anything_is_planned(self, tmp_path):
-        """A Parent found through PATH is one whose identity depends on the caller."""
+        """A Parent found through PATH is one whose identity depends on the caller.
+
+        No `--now`, so the ONLY reason this can fail is the one it names: with
+        both refusals present a `--now` would have fired first, and a
+        counter-proof that removed the path check would still see red — for the
+        other rule. A test that cannot fail for its own reason is not evidence
+        about it.
+        """
         env = self.a_scratch_node(tmp_path)
-        done = cli("work", "wake", "--parent", "true", "--now", NOW, env_extra=env)
+        done = cli("work", "wake", "--parent", "true", env_extra=env)
         assert done.returncode != 0
         assert "is not an absolute path" in done.stderr
         assert not list(Path(env["SERVEROS_STATE_DIR"]).rglob("continuation-wake-*"))
 
     def test_the_verb_starts_a_parent_and_records_the_receipt(self, tmp_path):
-        """The whole path, once, against a scratch state root and a real process."""
-        env = self.a_scratch_node(tmp_path)
+        """The whole path, once, against a scratch state root and a real process.
+
+        No `--now`: a real wake refuses one, so this test is also the standing
+        check that the production shape — the service unit's `ExecStart=`, which
+        names no instant either — still wakes. The context is observed at the
+        real clock to match.
+        """
+        env = self.a_scratch_node(tmp_path, observed_at=an_instant_now())
         log = tmp_path / "parent.log"
         parent = a_script(tmp_path, "parent.sh", f"cat > {log}\nexit 0\n")
         done = cli("work", "wake", "--parent", parent, "--cwd", str(tmp_path),
-                   "--now", NOW, env_extra=env)
+                   env_extra=env)
         assert done.returncode == 0, done.stderr
         assert "WOKEN" in done.stdout
         assert ITEM in log.read_text()
@@ -1041,6 +1073,44 @@ class TestTheVerbDecidesAndReports:
             "continuation-wake-SRV-0001-e1-a1.json"))
         assert len(receipts) == 1
         assert json.loads(receipts[0].read_text())["status"] == "EXITED"
+
+    def test_a_real_wake_refuses_a_named_instant(self, tmp_path):
+        """The forgery this refusal exists for, refused before anything runs.
+
+        `--now` moves the instant the PLAN is judged at while the Parent is
+        spawned at the real clock. A wait that ended hours ago would then read
+        as READY and a real Parent would really start on the strength of it.
+        Asserted in both directions, because no instant a caller can name is one
+        this node can check — and asserted to have started NOTHING, since a
+        refusal that had already spawned the Parent would be the same defect
+        wearing an error message.
+        """
+        env = self.a_scratch_node(tmp_path)
+        parent = a_script(tmp_path, "parent.sh", "exit 0\n")
+        for instant in (CLOSED, an_instant_now()):
+            done = cli("work", "wake", "--parent", parent, "--cwd", str(tmp_path),
+                       "--now", instant, env_extra=env)
+            assert done.returncode != 0, done.stdout
+            assert "--now" in done.stderr and "Nothing was started" in done.stderr
+            assert "really start a Parent" in done.stderr
+        assert not list(Path(env["SERVEROS_STATE_DIR"]).rglob("continuation-wake-*"))
+
+    def test_a_dry_run_may_still_name_the_instant(self, tmp_path):
+        """The gate is about STARTING, and this is the half it must not break.
+
+        Reproducing a past decision against a named instant is what an operator
+        reaches for after a timer has misbehaved, and `--parent` is routinely
+        present in the environment it is read in. Refusing the pair here would
+        take away the only reading that can explain a timer.
+        """
+        env = self.a_scratch_node(tmp_path)
+        parent = a_script(tmp_path, "parent.sh", "exit 0\n")
+        done = cli("work", "wake", "--dry-run", "--json", "--parent", parent,
+                   "--cwd", str(tmp_path), "--now", NOW, env_extra=env)
+        assert done.returncode == 0, done.stderr
+        payload = json.loads(done.stdout)
+        assert payload["would_wake"] == ["SRV-0001#1"]
+        assert not list(Path(env["SERVEROS_STATE_DIR"]).rglob("continuation-wake-*"))
 
     def test_a_timer_that_fires_three_times_spends_two_attempts_and_then_stops(
             self, tmp_path):
@@ -1053,11 +1123,10 @@ class TestTheVerbDecidesAndReports:
         the routine retries within its bound and then stops rather than looping
         forever, which is the failure a wake half is most likely to have.
         """
-        env = self.a_scratch_node(tmp_path)
+        env = self.a_scratch_node(tmp_path, observed_at=an_instant_now())
         log = tmp_path / "parent.log"
         parent = a_script(tmp_path, "parent.sh", f"echo run >> {log}\nexit 0\n")
-        args = ("work", "wake", "--parent", parent, "--cwd", str(tmp_path),
-                "--now", NOW)
+        args = ("work", "wake", "--parent", parent, "--cwd", str(tmp_path))
         first, second, third = (cli(*args, env_extra=env) for _ in range(3))
         assert [done.returncode for done in (first, second, third)] == [0, 0, 0]
         assert "WOKEN" in first.stdout and "WOKEN" in second.stdout

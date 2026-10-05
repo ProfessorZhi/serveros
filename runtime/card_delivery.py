@@ -81,23 +81,83 @@ _HERE = Path(__file__).resolve().parent
 SCHEMA = "serveros/card-delivery.v1"
 FROZEN_SCHEMA = "serveros/card-frozen.v1"
 
-#: The three card kinds §3 and §1 name. Read as a closed set rather than as a
-#: free string so that a receipt cannot be filed under a kind no renderer
-#: produces — which is how "the status card has not been sent in three days"
-#: becomes unanswerable.
+#: The card kinds §3 and §1 name, plus the one the notice added. Read as a
+#: closed set rather than as a free string so that a receipt cannot be filed
+#: under a kind no renderer produces — which is how "the status card has not
+#: been sent in three days" becomes unanswerable.
 STATUS = "status"
 ALERT = "alert"
 RECOVERY = "recovery"
-KINDS = (STATUS, ALERT, RECOVERY)
+#: A Status Update Notice. Its own kind rather than a second `status` receipt,
+#: because it is a different message about the same card and the ledger's whole
+#: job is to keep «which message carries this card» answerable: two kinds that
+#: shared a name would let a later patch aim at whichever of the two the lookup
+#: happened to return. It is NOT per-episode — see `PER_EPISODE_KINDS` — and
+#: what it is bound to is the card VERSION it was composed against, which the
+#: `version` field already carries for every kind.
+NOTICE = "notice"
+#: The message that says a card did NOT arrive. §7① requires one — «PATCH FAILED
+#: 不得发送「状态已更新」，应形成投递 finding/incident» — and it needs its own kind
+#: rather than riding on `notice` for the reason `KEEP` is per kind: a receipt
+#: filed under a name that does not describe it is a receipt the next reader
+#: finds while looking for something else. What this message is about is not a
+#: card version (it exists precisely because the version did not arrive); it is
+#: about one FAILED attempt, so its key is the failed attempt's instant and its
+#: `version` is the hash of its own words.
+FAULT = "fault"
+KINDS = (STATUS, ALERT, RECOVERY, NOTICE, FAULT)
 
-#: How many sends are kept. A broadcast ledger is a receipt, not a historian:
-#: its job is to answer "what did the last send carry and did it arrive", and
-#: an unbounded list would put a growing document on the path of a command that
-#: runs every hour forever.
+#: How many sends of EACH KIND are kept. A broadcast ledger is a receipt, not a
+#: historian: its job is to answer "what did the last send carry and did it
+#: arrive", and an unbounded list would put a growing document on the path of a
+#: command that runs every hour forever.
+#:
+#: Per kind, and it was not, and the day this changed is worth writing down.
+#: `notice` adds thirteen receipts a workday, so a single bound over the whole
+#: document would evict the day's own `status` receipts — the one that carries
+#: `remote_id`, which is the message the next patch has to aim at — and the
+#: failure mode is not a missing receipt but a SECOND card: `binding_verdict`
+#: finds nothing to patch and a new message is the only option left. A bound on
+#: the shared list is a bound that one chatty kind can spend on another kind's
+#: behalf.
 KEEP = 20
 
 DELIVERED = "DELIVERED"
 OUTCOMES = (DELIVERED, "FAILED", "UNSUPPORTED", "UNKNOWN")
+
+#: What a receipt's state amounts to when the question is not «what does this
+#: row say» but «was the reader told». One finding per non-arrival, DERIVED from
+#: `OUTCOMES` rather than transcribed beside it: a fifth outcome added to that
+#: tuple would otherwise be a state the ledger can write and no finding can
+#: name, which is the silent case §7① is about — a send that did not arrive and
+#: that nothing in the vocabulary can describe.
+DELIVERY_NOT_ATTEMPTED = "DELIVERY_NOT_ATTEMPTED"
+FAULTS = tuple(f"DELIVERY_{state}" for state in OUTCOMES if state != DELIVERED)
+FINDINGS = FAULTS + (DELIVERY_NOT_ATTEMPTED,)
+
+#: What each finding says, in the reader's words. Here rather than in the
+#: sender because «this card did not arrive» is a statement about a measurement,
+#: and every consumer composing its own sentence is a consumer whose sentence
+#: can disagree with the ledger it was read from.
+#:
+#: None of them names a cause. A FAILED send is a fact about arrival and the
+#: reasons for it — a dead token, a rate limit, a network — are not in this
+#: document, so a sentence that supplied one would be inventing the half of the
+#: answer that has to be measured.
+SAYS = {
+    "DELIVERY_FAILED":
+        "这一版卡片没有到达：投递台账里最后一次投递记着 FAILED。读者手里那张"
+        "停在上一版，不是这一版。",
+    "DELIVERY_UNKNOWN":
+        "这一版卡片到没到无法确认：投递台账里最后一次投递记着 UNKNOWN。不能当"
+        "作已送达，也不能当作没发生 —— 而这两种读法给出的是相反的处置。",
+    "DELIVERY_UNSUPPORTED":
+        "这一版卡片没能送出去：投递台账里最后一次投递记着 UNSUPPORTED，传输侧"
+        "不接受这种消息。它不是延迟，是这条路对这张卡不成立。",
+    DELIVERY_NOT_ATTEMPTED:
+        "台账里没有这一版的投递记录：不是没送到，是没有人试过。这一拍没有跑，"
+        "所以没有可报的失败。",
+}
 
 #: Ids that are NOT message ids, by the prefix Lark gives them. `oc_` names a
 #: conversation, `ou_` a user and `on_` a union identity; only `om_` names one
@@ -112,8 +172,15 @@ NOT_MESSAGE_PREFIXES = ("oc_", "ou_", "on_")
 #: card is one per episode, and across hours and days the same episode keeps the
 #: same card, so the episode is the only name a later reader can look the
 #: message up by. The rule in `record` is symmetric — an incident receipt has to
-#: carry one, a status receipt must not — because a word that can mean nothing
-#: stops being a name.
+#: carry one, a status or notice receipt must not — because a word that can mean
+#: nothing stops being a name.
+#:
+#: `notice` is on the refusing side of that rule for a reason that is easy to
+#: get backwards: a notice IS raised by an incident as often as by a good hour,
+#: and it still carries no episode. What it is about is the CARD (the `version`
+#: field names which one), and the hour it rode in on. An episode here would
+#: make `carries` answer «the incident's card» with a notice's receipt, and the
+#: next incident patch would aim at the notice.
 PER_EPISODE_KINDS = (ALERT, RECOVERY)
 
 #: The message half of a card decision: what happens to the CHAT MESSAGE that
@@ -535,6 +602,67 @@ class CardLedger:
             "last_delivered": self.last_delivered(kind),
         }
 
+    def delivery_finding(self, kind: str = STATUS) -> dict:
+        """§7①. What happened to the NEWEST attempt to put this card in the chat.
+
+        This is not `last_delivered` and the difference is the whole reason the
+        function exists. `last_delivered` answers «did a card of this kind ever
+        arrive», and after a failed patch the row it finds is the PREVIOUS
+        hour's — same version, because the card had not changed — so a reader
+        that asked it would be told that something arrived and would conclude
+        the reader is up to date. The question a finding has to ask is what
+        happened to the attempt that was just made, and only the newest row of
+        ANY state can answer it. That is why this reads `last`.
+
+        The finding is about the newest attempt and NOT about a named episode;
+        «which message carries THIS incident» is `carries`, a lookup over one
+        episode's rows. Two questions, two readers, and folding them into one
+        would make an incident card's receipt speak for a day's card.
+
+        `fault` is not severity. It separates «the transport did not do the
+        thing» from «nobody asked it to» — a kind whose card has never been
+        attempted has no arrival to report and must not be counted as a failure,
+        while a kind that was attempted and did not arrive is one. That
+        distinction cannot be recovered from the finding word alone by a reader
+        in a hurry, which is the sort of reader this document is written for.
+        """
+        kind = check_kind(kind)
+        rows = self.entries(kind)
+        newest = rows[-1] if rows else None
+        state = str((newest or {}).get("state") or "").strip()
+        if newest is None:
+            finding = DELIVERY_NOT_ATTEMPTED
+        elif state == DELIVERED:
+            finding = None
+        elif state in OUTCOMES:
+            finding = f"DELIVERY_{state}"
+        else:
+            # A row whose state is not one of the four this module declares.
+            # Refused rather than reported as a fifth: a ledger that acquired a
+            # state no reader has a sentence for would otherwise be summarised
+            # as «not DELIVERED», which is true and useless — the difference
+            # between a refused send and an unreadable row is the difference
+            # between a transport problem and a document problem.
+            raise CardDeliveryError(
+                f"the newest {kind} receipt carries state {state!r}, which is "
+                f"not one of {', '.join(OUTCOMES)} — a finding cannot be "
+                f"stated about it, and reporting it as «not DELIVERED» would "
+                f"file an unreadable row as a transport failure")
+        return {
+            "kind": kind,
+            "finding": finding,
+            "fault": finding in FAULTS,
+            "state": state or None,
+            "version": str((newest or {}).get("version") or "") or None,
+            "at": (newest or {}).get("at"),
+            "remote_id": (newest or {}).get("remote_id"),
+            "says": SAYS.get(finding) if finding else None,
+            "note": ("About the NEWEST attempt of this kind, not about the "
+                     "newest one that arrived: after a failed patch the two are "
+                     "different rows and only the first one can say whether the "
+                     "reader is up to date."),
+        }
+
     # -- the one write ----------------------------------------------------
 
     def record(self, kind: str, *, at: str, state: str, version: str,
@@ -613,9 +741,34 @@ class CardLedger:
         entries = [dict(item) for item in self._data["entries"]
                    if isinstance(item, dict)]
         entries.append(row)
-        self._data["entries"] = entries[-KEEP:]
+        self._data["entries"] = _trim(entries)
         _store_io()._atomic_write(self.path, self._data)
         return {"recorded": True, "entry": row, "ledger": self.summary(kind)}
+
+
+def _trim(entries: list[dict]) -> list[dict]:
+    """Keep the last `KEEP` rows of each kind, in one chronological list.
+
+    Walked backwards so that "the last twenty of this kind" is decided by
+    position alone and does not need a sort key — rows are appended in order and
+    the file's order IS the order, so re-sorting by `at` would introduce a
+    second opinion about it for the benefit of nothing.
+
+    A row whose kind is unreadable is kept rather than dropped. Every writer
+    goes through `check_kind`, so such a row can only come from a file this
+    module did not write, and silently discarding evidence is the one thing a
+    receipt store must not do — `_load` refuses those files outright, which is
+    the loud answer, and this function is not the place to make it quiet.
+    """
+    kept: list[dict] = []
+    seen: dict = {}
+    for row in reversed(entries):
+        kind = row.get("kind")
+        seen[kind] = seen.get(kind, 0) + 1
+        if seen[kind] <= KEEP:
+            kept.append(row)
+    kept.reverse()
+    return kept
 
 
 def ledger_path(state_path) -> Path:

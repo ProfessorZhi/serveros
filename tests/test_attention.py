@@ -391,6 +391,32 @@ class MonitoringIntegrityTests(unittest.TestCase):
         self.assertEqual(finding["count"], 1)
         self.assertEqual(finding["not_a_finding"]["count"], 1)
 
+    def test_an_undecided_code_is_a_hole_and_not_filed_as_history(self):
+        """§八-B. `history` says "the contract decided this code carries no
+        expectation, so not seeing it is a fact about our looking". An
+        UNDECIDED code is "nobody decided", which is the distinction
+        `attention_of` refuses to collapse — and filing it under the history
+        note made the node assert an expectation-free status for a code it had
+        never looked at. That is the incomplete admission catalogue."""
+        rows = [self._held("NOT_A_DECIDED_CODE_AT_ALL", "unmeasured")]
+        finding = presentation.integrity_finding(rows)
+        self.assertIsNotNone(finding, "a catalogue hole must not vanish")
+        self.assertEqual(finding["count"], 0)
+        self.assertEqual(finding["undecided"]["count"], 1)
+        self.assertEqual(finding["undecided"]["codes"],
+                         ["NOT_A_DECIDED_CODE_AT_ALL"])
+        self.assertEqual(finding["not_a_finding"]["count"], 0)
+        self.assertIn("未决定", finding["undecided"]["note"])
+        self.assertNotIn("没有任何东西声明", finding["not_a_finding"]["note"])
+
+    def test_a_decided_code_still_goes_to_history_and_not_to_the_hole(self):
+        """The other half: the change separates two facts, it does not move
+        every held row into the alarming bucket."""
+        finding = presentation.integrity_finding(
+            [self._held("HIGH_MEMORY_SUSTAINED", "unmeasured")])
+        self.assertIsNone(finding, "a consumption code held is not a finding "
+                                   "and is not a catalogue hole either")
+
     def test_the_wording_is_declared_and_not_built_here(self):
         """The sentence lives in `notification-contract.yaml`. A renderer that
         wrote its own would be the second presentation authority this round

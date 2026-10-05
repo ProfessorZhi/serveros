@@ -335,6 +335,27 @@ def build(report: dict, *, now: str, nonce: str | None = None) -> dict:
     observed_at = report["observed_at"]
     window = int(contract()["freshness"]["window_seconds"])
 
+    # A report dated ahead of the clock that is reading it is not an early one.
+    # `expires_at` below is derived from `observed_at`, so accepting a future
+    # stamp mints a window that has not opened yet and will still be open long
+    # after the observation it claims is old: `freshness` would then call it
+    # FRESH (`age` is negative, and a negative age is below every threshold),
+    # and it would stay FRESH for `window` seconds past a moment that has not
+    # arrived. REFUSED rather than clamped, because moving the stamp to `now`
+    # would produce a context about an event nobody observed, which is the
+    # confusion this whole plane exists to prevent.
+    #
+    # This is the only place that mints a context, so the refusal here covers
+    # every path that writes one; `freshness` below is hardened separately for
+    # the records that are already on disk.
+    if _parse(observed_at) > _parse(now):
+        raise Rejected(
+            f"this report says the actor was observed at {observed_at!r}, which "
+            f"is ahead of the clock this ServerOS read ({now!r}). A trusted "
+            f"context cannot be minted about an observation that has not "
+            f"happened yet: its window is computed from that timestamp, so a "
+            f"future one would open later than the event and stay open after it")
+
     record = {
         "schema": contract()["schema"],
         "context_ref": context_ref(report["human_control_provider"], digest),
@@ -429,7 +450,17 @@ def freshness(record: dict, now: str) -> dict:
     current = _parse(now)
     age = (current - observed).total_seconds()
     window = contract()["freshness"]
-    if age >= int(window["window_seconds"]):
+    if age < 0:
+        # The reading clock is BEHIND the observation. That is not "very
+        # fresh" — it means the two clocks disagree about which instant this
+        # record belongs to, and nothing here can tell which one is right. The
+        # fail-safe bucket is the one that authorizes nothing, so it is
+        # EXPIRED; `because` names the real reason rather than letting the
+        # record sit in a neighbour's label. `build` refuses to mint such a
+        # record at all, so reaching this branch means one was written by
+        # something else.
+        state = "EXPIRED"
+    elif age >= int(window["window_seconds"]):
         state = "EXPIRED"
     elif age >= int(window["stale_after_seconds"]):
         state = "STALE"
@@ -445,6 +476,15 @@ def freshness(record: dict, now: str) -> dict:
 
 
 def _because(state: str, age: float, window: int) -> str:
+    if age < 0:
+        # Named first, and independently of `state`: whatever bucket the record
+        # landed in, the fact a reader needs is that the arithmetic ran
+        # backwards. Saying "past the 900s window" about a record dated in the
+        # future would be exactly the kind of confident-but-wrong sentence this
+        # module refuses to emit elsewhere.
+        return (f"observed {-int(age)}s in the FUTURE of the clock reading it, "
+                f"so this record cannot be aged at all — it is not new, and "
+                f"nothing that cannot be aged may authorize")
     if state == "FRESH":
         return "observed inside the fresh window"
     if state == "STALE":
