@@ -4,11 +4,17 @@
 # it is not an authority. ServerOS decides identity, policy and desired state;
 # an MCP surface is one way an agent asks about them.
 #
-# Three surfaces, because node observation, Agent Session control and Item/Run
-# lifecycle have different authorities and blast radii. Keeping them separate
-# prevents a read-only node adapter from acquiring provider/network side
-# effects merely because Agent control also needs an MCP surface, and it keeps
-# the Workengine's truth in the repository that owns it.
+# Four surfaces, because node observation, Agent Session control, Item/Run
+# lifecycle and one wake's own continuation have different authorities and blast
+# radii. Keeping them separate prevents a read-only node adapter from acquiring
+# provider/network side effects merely because Agent control also needs an MCP
+# surface, and it keeps the Workengine's truth in the repository that owns it.
+#
+# The fourth is different in kind from the other three and is marked as such
+# where it is declared: it is not a service bound to a socket, it is one process
+# per woken Parent carrying the authority of a single capability envelope, and
+# it is the only surface here that exists precisely because it DECIDES. The
+# three services answer about the world; this one answers about one wake.
 #
 # There were four declared here until this revision. `serveros-fleet-mcp` had
 # no implementation and no tool that resolved to any code; its names are
@@ -397,6 +403,99 @@ surfaces:
       every mutation is resolved from `context_ref` and is never taken from the
       caller, and `work.run.abandon` is a reason code on the same entry point as
       `work.run.cancel` rather than a second one.
+
+  serveros-continuation-mcp:
+    # NOT a service, and the one surface here that is not one. It is started by
+    # the wake launcher, lives exactly as long as one woken Parent, and is gone
+    # when that Parent is. There is no socket, no daemon and no registry: the
+    # ONLY thing that says which wake it is speaking for is the capability
+    # envelope the launcher filed beside the invocation receipt and named in
+    # `$SERVEROS_CONTINUATION_ENVELOPE`.
+    scope: ONE wake — the Item, epoch, grant and child refs its envelope names
+    ownership: the continuation boundary of a single woken Parent
+    implementation: mcp/continuation_mcp.py
+    resources: []
+    tools:
+      - continuation.inspect
+      - child-result.inspect
+      - work.checkpoint
+      - work.park
+      - work.accept
+      - work.complete
+    owns:
+      - whether one wake's own continuation operation may proceed, re-decided
+        from the agent control store on every call rather than remembered from
+        the envelope
+      - the capability envelope a wake was started with, as a binding that says
+        which wake is calling and not as the authority it calls with
+      - one durable receipt per continuation mutation, with the exact argv, the
+        exact stdin and both output streams beside it
+    does_not_own:
+      - the agent control store — the records are written by the verbs that own
+        them, and this surface reads before it dispatches
+      - any authority. It cannot widen an envelope, cannot mint a trusted
+        context and cannot take an actor from its caller
+      - grants, delegations or admissions — re-checked here on every call,
+        never renewed, extended or issued here
+      - the completion boundary of an Item — composed from the Item's document
+        chain by `intake/workchain` and READ, never written
+      - any other Item, epoch, grant or child ref. There is no argument through
+        which one can be named, which is why a wrong-Item call is a refusal
+        rather than a different effect
+    explicitly_absent:
+      - remote.shell
+      - continuation.wake
+      - continuation.escalate
+      - continuation.reopen
+    # The file's own rule — a declared-but-unserved name reads as coverage —
+    # applied to the one name here that is declared and refuses. It is in
+    # `tools` because the continuation design names it and a caller that looked
+    # for it and found nothing would route around the boundary instead; it is
+    # named here because a reader who sees it in `tools` would otherwise
+    # conclude completion can be performed.
+    declared_but_refusing:
+      work.complete: >-
+        Every call to it answers DENY with `OPERATION_NAMED_UNSUPPORTED`.
+        Completion in this fabric is not a record anybody writes: it is a
+        verdict composed from the Item's document chain by
+        `intake/workchain.completion_of`, and the `work` verb family has no
+        `complete` verb and the control store no completions collection. The
+        operation a Parent actually has is `continuation.inspect`, which reports
+        the boundary. Serving a mutating `work.complete` would create a second
+        completion authority, which this product's design forbids.
+    note: >-
+      This surface exists because the alternative was a shell. Until it landed,
+      the only way a woken Parent could set down its own record was
+      `serverosctl work park`, `serverosctl work checkpoint` or
+      `serverosctl work accept`, and those three verbs open the control store
+      directly and take no trusted context and no admission —
+      measured. So a Parent with Bash could set down another Item's epoch,
+      accept a cycle its own checkpoint never named, and checkpoint a sibling;
+      the write scope in its launcher was a sentence in prose and nothing
+      enforced it. An adapter that refused a request would have been a surface
+      with no verb behind it; what makes this one a boundary is that it is the
+      only continuation path a restricted Parent is given, and that it decides
+      before dispatching rather than after.
+
+      It answers three ways and the third is not a soft denial: ALLOW and DENY
+      are verdicts about the request, and UNASKABLE says this adapter could not
+      look — the store would not open, an instant would not parse, the Item's
+      completion boundary could not be composed. Collapsing UNASKABLE into DENY
+      would tell a person their authority was withdrawn when nobody checked,
+      which is `runtime/ownership_gate.py`'s `EXIT_UNASKABLE` and not its
+      `EXIT_DENY`.
+
+      Every mutation is executed by `runtime/bounded_invocation.invoke_once`
+      calling the verb that already owns it, so there is one implementation of
+      each mutation and the evidence for it is the input digest plus the receipt
+      plus the two artifact files — never the Parent's account of what it did.
+
+      Deliberately NOT in `plugin/bundle.yaml`. The node and agent surfaces are
+      composed into every session; this one carries mutation authority no other
+      surface has and must exist exactly once per wake, so it is injected into
+      the wake launcher and nowhere else. Adding it to the bundle would give
+      every session a surface whose envelope is absent, which is why `main()`
+      refuses to start without one rather than serving an empty tool list.
 
 # ---------------------------------------------------------------------------
 # §11's release set, mapped to the surface that serves each name.

@@ -106,7 +106,22 @@ def _receipt_lock(lock: Path):
 
 def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                 input_text: str = "", timeout: int = 120, readonly: bool = True,
-                max_output_bytes: int = 2_000_000) -> dict:
+                max_output_bytes: int = 2_000_000, env: dict | None = None) -> dict:
+    """`env` IS THE CALLER'S, AND IT IS ADDED TO THIS PROCESS'S ENVIRONMENT.
+
+    Added and not substituted, because this helper does not know what a child
+    needs to find — `PATH`, `HOME` and the state root are all the ambient
+    environment's business. What a caller names here is therefore exactly the
+    extra, and nothing else changes.
+
+    It is part of the input digest, and that is the point: a second call under
+    the same key that hands the child a different environment is a different
+    dispatch, and this helper's rule is that one key carries one input or
+    refuses. That puts a requirement on the caller rather than on this helper —
+    a value that varies run to run (a timestamp, a fresh temporary directory)
+    makes every replay a refusal. Name something derived from the key, and the
+    digest stays put across the replays it exists to serve.
+    """
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", key):
         raise ValueError("safe action key required")
     if not argv or any(not isinstance(a, str) or not a or "\x00" in a for a in argv):
@@ -117,12 +132,33 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
         raise ValueError("valid cwd, owned receipt root and positive timeout required")
     if type(max_output_bytes) is not int or max_output_bytes <= 0:
         raise ValueError("positive per-stream output bound required")
+    # A malformed environment is refused HERE rather than at `Popen`, because
+    # `Popen` would take it and fail as an `OSError` after the receipt had been
+    # written — turning a caller's typo into a dispatch that started nothing and
+    # is recorded as one that might have.
+    #
+    # The name pattern is the portable one, and it is deliberately narrower than
+    # what `execve` accepts. `execve` takes any string without `=`, so a name
+    # like `MY TOKEN` would be handed to the child and be addressable by nothing
+    # — no shell can expand it, and the caller asking for it meant `MY_TOKEN`.
+    # Refusing it turns a silent no-op into a message. A caller with a genuine
+    # unaddressable name (a bash function export, `BASH_FUNC_f%%`) is not served
+    # by this helper and should say so rather than be quietly accommodated.
+    if env is not None and (not isinstance(env, dict) or any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) if isinstance(k, str)
+            else True for k in env) or any(
+            not isinstance(v, str) or "\x00" in v for v in env.values())):
+        raise ValueError(
+            "env must map portable names ([A-Za-z_][A-Za-z0-9_]*) to string "
+            "values with no NUL; a name nothing can address is a typo, not a "
+            "setting")
     receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
     if receipts.stat().st_mode & 0o077:
         raise ValueError("receipt directory must be private (0700)")
     digest = hashlib.sha256(json.dumps({"argv": argv, "cwd": str(cwd.resolve()),
                 "input": input_text, "readonly": readonly, "timeout": timeout,
-                "max_output_bytes": max_output_bytes}, sort_keys=True).encode()).hexdigest()
+                "max_output_bytes": max_output_bytes,
+                "env": env or {}}, sort_keys=True).encode()).hexdigest()
     path = receipts / (key + ".json")
     with _receipt_lock(receipts / (key + ".lock")):
         if path.is_symlink():
@@ -152,7 +188,8 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
             streams = {"stdout": out, "stderr": err}
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, stdin=source, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, start_new_session=True)
+                                        stderr=subprocess.PIPE, start_new_session=True,
+                                        env={**os.environ, **(env or {})})
                 deadline = time.monotonic() + timeout
                 sizes = {"stdout": 0, "stderr": 0}
                 reason = None

@@ -216,6 +216,15 @@ def _invocation():
                  _HERE / "bounded_invocation.py")
 
 
+def _store_io():
+    """`_atomic_write`, loaded by path rather than imported — the same idiom
+    `runtime/bounded_invocation.py` uses for the same two symbols, and under the
+    same name, because this file writes one thing beside that file's receipts and
+    a half-written copy of it would be read as a whole one."""
+    return _load("serveros_runtime_agent_control_store",
+                 _HERE / "agent_control_store.py")
+
+
 # ---------------------------------------------------------------------------
 # What is installed here — measured, not declared
 # ---------------------------------------------------------------------------
@@ -560,7 +569,8 @@ def _row(record: dict, wait: dict, action: str, reason: str, says: str, **extra)
            "says": says,
            "authorized_by": None, "grants_considered": [], "grants_not_covering": [],
            "action_key": None, "attempt": None, "attempts_terminal": 0,
-           "attempts_allowed": None, "wall_seconds": None, "briefing": None}
+           "attempts_allowed": None, "wall_seconds": None, "briefing": None,
+           "capability": None, "envelope_path": None}
     row.update(extra)
     return row
 
@@ -749,11 +759,15 @@ def plan(control, *, now: str, item: str | None = None, unit_dir=None,
             rows.append(_row(record, wait, "REFUSE", "BRIEFING_OVER_BOUND",
                              str(exc), action_key=key, attempt=attempt, **common))
             continue
+        capability = capability_envelope(record, envelope, grant_ref, attempt=attempt,
+                                         key=key, spend=spend, now=now)
         rows.append(_row(record, wait, "WAKE", "READY",
                          f"{wait['says']}, {grant_ref} authorizes waking it, and "
                          f"attempt {attempt} of {spend['attempts_allowed']} is "
                          f"unspent",
                          action_key=key, attempt=attempt, briefing=text,
+                         capability=capability,
+                         envelope_path=str(envelope_path(root, key)),
                          **common))
 
     counts: dict = {}
@@ -780,6 +794,198 @@ def _budget_sentence(spend: dict, grant_ref: str) -> str:
     return (f"{grant_ref} carries `budget.exhausted`, so the delegation it derives "
             f"from has spent the budget it was given. A wake under it would be "
             f"authority the grant no longer has")
+
+
+# ---------------------------------------------------------------------------
+# What one wake is allowed to do — the envelope the Parent is handed
+# ---------------------------------------------------------------------------
+
+
+ENVELOPE_SCHEMA = "serveros/continuation-envelope.v1"
+
+#: The operations a woken Parent may ask the continuation adapter for.
+#:
+#: Closed, and it is the ADAPTER's vocabulary rather than the grant's. Every name
+#: here stands for an object this fabric already has — `runtime/continuation.py`'s
+#: checkpoint record and `runtime/cli.py`'s `work` verbs — so the adapter that
+#: reads this list is a thin translation onto existing authority and not a second
+#: one.
+#:
+#: IT IS NOT DERIVED FROM `grant["actions"]`, and that is the reason this tuple is
+#: written down instead of being read off the grant. A grant's `actions` is the
+#: vocabulary `intake/daily_cycle.grant_reason` checks a BOARD row's business
+#: action against — `publish` and its siblings — and it is not a permission set
+#: for continuation control. Measured on the live store on 2026-10-06: all five
+#: recorded grants carry `actions: []`, except one carrying
+#: `["human-control-smoke"]`. Deriving «what this Parent may do» from that field
+#: would hand every real Parent an empty permission set, and the empty set would
+#: read as a policy decision while being an accident of which field was nearest.
+CONTINUATION_OPERATIONS = (
+    "continuation.inspect",
+    "child-result.inspect",
+    "work.checkpoint",
+    "work.park",
+    "work.accept",
+)
+
+#: Operations the adapter knows by name and CANNOT perform, kept in the envelope
+#: rather than left out of it. A name that is absent reads as «nobody thought of
+#: it»; a name that is here with a reason reads as «this was looked at and the
+#: object does not exist» — and a Parent that went looking for a way to declare
+#: its work finished needs the second answer, not the first. The reason is filled
+#: by the adapter, which is where the absence is measured.
+CONTINUATION_OPERATIONS_UNSUPPORTED = ("work.complete",)
+
+#: How the Parent is told where its envelope is. The environment and not a
+#: command-line argument, because the launcher's argv is a fixed script the
+#: install renders once and a per-wake argument would make the install's own
+#: command line vary per wake — which `invoke_once` would then refuse as «same
+#: key, different input» the second time anything replayed. It is also the one
+#: channel the receiver can add to without the launcher having to pass it on: the
+#: child inherits it, and `invoke_once` carries it in the input digest so a
+#: second wake under one key cannot be handed a different document.
+ENVELOPE_ENV = "SERVEROS_CONTINUATION_ENVELOPE"
+
+
+def envelope_path(receipts, key: str) -> Path:
+    """Where this attempt's envelope is written, derived from its action key.
+
+    Beside the receipt and under the same key prefix, because the two are one
+    attempt's evidence and a reader looking up what happened at
+    `continuation-wake-SRV-0001-e1-a1` should find both under that name. It is a
+    FILE IN `invoke_once`'s DIRECTORY rather than a key of its own: that module's
+    rule is one key to one receipt, and nothing here writes a `.json` under a
+    name it might later parse as one — `.envelope.json` is not a name
+    `ATTEMPT_KEY` matches, so `attempts_recorded` cannot count this file as a
+    second attempt.
+
+    IT IS DETERMINISTIC ON PURPOSE. The receiver writes it before the spawn and
+    hands the child the PATH through the environment, so a Parent cannot be told
+    a different envelope than the one filed under its own key, and a second
+    process reading the receipt directory finds the same document without being
+    trusted to have been handed it.
+    """
+    return Path(receipts) / (key + ".envelope.json")
+
+
+def capability_envelope(record: dict, grant: dict, grant_ref: str, *, attempt: int,
+                        key: str, spend: dict, now: str) -> dict:
+    """The bounded capability one wake carries, as a document the Parent can read.
+
+    WHY A DOCUMENT AND NOT A BRIEFING SENTENCE. The briefing says what the
+    receiver checked; this says what the Parent may DO, and the two have
+    different lifetimes. A briefing is read once, by a model, in prose. This is
+    read on every mutation by the adapter, as fields, and each field is what the
+    adapter compares against the live store before it lets anything happen. A
+    permission that lived only in prose — which is what the launcher's own comment
+    concedes the write scope is today — is a permission nothing enforces.
+
+    IT IS A BINDING TO THE WAKE AND NOT A GRANT OF ITS OWN. Every field here is
+    copied from the checkpoint, the grant or the spend the receiver just computed
+    — nothing is minted, nothing is widened, and the expiry is the EARLIER of the
+    two bounds already in force. `expires_because` names which one bound it, so a
+    refusal an hour later can say whether the grant ended or the Parent ran out of
+    its own wall budget. Authority still lives in the store: the adapter re-reads
+    the grant on every mutation, and a revoked or expired grant refuses there
+    whatever this document says.
+
+    `allowed_write_scope` IS REPORTED AND NOT YET ENFORCED, and the field is named
+    so that a reader can tell. The checkpoint's `write_scope` is a decision a
+    person recorded; enforcing it needs an OS-level boundary this routine does not
+    have (the woken Parent is a plain process in the operator's own account), and
+    pretending otherwise here would be the same prose-with-a-field-name that this
+    document exists to replace. What it does instead is make the scope readable to
+    the adapter, which reports it and refuses a mutation whose own declared path
+    falls outside it.
+    """
+    waiting = record.get("waiting_on") or {}
+    child_refs = {str(r) for r in (record.get("child_attempts") or []) if str(r).strip()}
+    if waiting.get("kind") == "child":
+        child_refs |= {str(r) for r in (waiting.get("refs") or []) if str(r).strip()}
+
+    issued = _instant(now) or datetime.datetime.now(datetime.timezone.utc)
+    wall = int(spend["wall_seconds"])
+    from_wall = issued + datetime.timedelta(seconds=wall)
+    from_grant = _instant(grant.get("expires_at"))
+    if from_grant is None:
+        expires, expires_because = from_wall, "wall_budget"
+    elif from_grant < from_wall:
+        expires, expires_because = from_grant, "grant_expires_at"
+    else:
+        expires, expires_because = from_wall, "wall_budget"
+
+    return {
+        "schema": ENVELOPE_SCHEMA,
+        "issued_at": issued.isoformat(),
+        "issued_by": RECEIVER_ID,
+        # -- which wake this is, and which work it is for ------------------
+        "action_key": key,
+        "attempt": int(attempt),
+        "checkpoint_ref": record.get("checkpoint_ref"),
+        "work_item_ref": record.get("work_item"),
+        "epoch": record.get("epoch"),
+        "parent_owner": record.get("parent_owner"),
+        "requirement_revision": record.get("requirement_revision"),
+        # -- the authority this wake was checked against -------------------
+        "grant_ref": grant_ref,
+        "delegation_ref": grant.get("delegated_by"),
+        "grant_valid_from": grant.get("valid_from"),
+        "grant_expires_at": grant.get("expires_at"),
+        # -- what it may do, and to what ----------------------------------
+        "allowed_operations": list(CONTINUATION_OPERATIONS),
+        "unsupported_operations": list(CONTINUATION_OPERATIONS_UNSUPPORTED),
+        "allowed_child_refs": sorted(child_refs),
+        "allowed_write_scope": [str(p) for p in (record.get("write_scope") or [])],
+        # -- the bounds in force, and which one is nearer ------------------
+        "wall_budget": wall,
+        "attempts_allowed": int(spend["attempts_allowed"]),
+        "expires_at": expires.isoformat(),
+        "expires_because": expires_because,
+    }
+
+
+def write_envelope(path: Path, payload: dict) -> dict:
+    """File this attempt's envelope ONCE, and refuse a second one that differs.
+
+    The rule `invoke_once` applies to its receipt, applied to the document that
+    names what that receipt's process may do: one action key carries one envelope,
+    a second write of the SAME bytes is that wake being planned again and is
+    served by returning, and a second write of DIFFERENT bytes is a refusal rather
+    than an overwrite. Silently replacing it would be the worst outcome available
+    — the Parent already running holds the path, so it would keep reading a
+    capability nobody issued while the file on disk said the wake was authorized
+    for something else.
+
+    Written before the spawn and not after, because the child reads it. A failure
+    to write is therefore a refusal to start, which is why this raises rather than
+    returning a flag.
+
+    The directory precondition is `invoke_once`'s own, restated here for one
+    reason: this file is written BEFORE the call that would have checked it, so a
+    receipts directory another account can read would already have received the
+    envelope by the time that module refused.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.stat().st_mode & 0o077:
+        raise WakeRefused(
+            f"{path.parent} is readable beyond its owner, and this document "
+            f"names what a woken Parent may do. `invoke_once` refuses the same "
+            f"directory for the same reason; this check is here because the "
+            f"envelope is written before that refusal could be reached")
+    body = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    if path.exists():
+        if path.is_symlink() or path.read_text() != body + "\n":
+            raise WakeRefused(
+                f"{path.name} already exists and is not this envelope. One action "
+                f"key carries one capability: a second one that differs is a "
+                f"different wake, and overwriting this file would leave the "
+                f"Parent already reading it holding a capability nobody issued")
+        return {"envelope": str(path), "envelope_written": False,
+                "envelope_because": "already filed under this action key, byte for byte"}
+    _store_io()._atomic_write(path, payload)
+    return {"envelope": str(path), "envelope_written": True,
+            "envelope_because": "filed now, before the spawn"}
 
 
 # ---------------------------------------------------------------------------
@@ -852,29 +1058,38 @@ def briefing(record: dict, wait: dict, verdict: dict, *, grant_ref: str,
         f"up to {spend['wall_seconds']}s",
         f"  wake receipt key     {key}  (one key is one receipt: a second wake "
         f"under it replays rather than starts)",
+        f"  capability envelope  ${ENVELOPE_ENV}  (the path to the document naming "
+        f"what this wake may do; it is read by the continuation adapter, and every "
+        f"call through that adapter re-checks this wake's grant against the store "
+        f"before anything happens)",
         "",
         "BEFORE YOU ACT, RECONCILE — the receiver checked four things and this",
         "document is not a substitute for checking them again:",
         "",
-        "  1. read the whole checkpoint:   serverosctl work continuations --item "
-        + str(record.get('work_item')),
+        "  1. read the whole checkpoint:   `continuation.inspect` — this wake's",
+        "     own continuation surface, whose Item, epoch, grant and children come",
+        "     from the capability envelope above and are not arguments to it",
         "  2. re-check the current authority: does the delegation above still",
         "     authorize, and does the grant still cover this Item, its actions and",
         "     its scope? If it does not, stop — do not act on this document.",
+        "     `continuation.inspect` answers this from the store, so the answer is",
+        "     the store's and not this document's.",
         "  3. re-check the Requirement revision above against the current one. If",
         "     it has moved, this record was written under a Requirement that no",
         "     longer holds and continuing from it is continuing the wrong work.",
-        "  4. look up every child attempt named above and receive each result",
-        "     EXACTLY ONCE (`serverosctl work accept <cycle>`); check the",
+        "  4. look up every child attempt named above (`child-result.inspect`) and",
+        "     receive each result EXACTLY ONCE (`work.accept <cycle>`); check the",
         "     unresolved effects before taking any write, and act only inside the",
         "     write scope.",
         "",
         "Then continue the next safe action, or checkpoint again — including when",
         "the honest answer is that this Item is finished with for now, which is a",
-        "disposition and not a silence, and this node has a verb for it:",
-        "`serverosctl work park <checkpoint> --reason <why>` sets it down with the",
-        "reason kept, and `work unpark` is the way back. Handing it to a person is a",
-        "message and not a record.",
+        "disposition and not a silence, and this surface has a verb for it:",
+        "`work.park <checkpoint> --reason <why>` sets it down with the reason",
+        "kept. Picking it back up (`work unpark`) is a person's verb and is NOT on",
+        "this wake's surface, so parking is how a wake hands an Item back rather",
+        "than a way to reopen one. Handing it to a person is a message and not a",
+        "record.",
         "Do not treat this document as authority to widen the scope, to touch",
         "production, or to send anything externally.",
     ]
@@ -916,6 +1131,14 @@ def wake(rows, *, launcher, cwd, receipts, budget=None,
     and not a checkout, so the working directory a Parent starts in is a decision
     the install makes (`--cwd`, or the unit's `WorkingDirectory=`), and a receiver
     that guessed one would be choosing where a Parent writes.
+
+    THE ENVELOPE IS FILED BEFORE THE SPAWN, AND A FAILURE TO FILE IT IS A
+    REFUSAL TO START. That ordering is the point rather than an implementation
+    detail: the Parent reads its capability from that file, so a Parent started
+    without one would be a session running with nothing to check against, and a
+    failure that arrived after the spawn could not be undone by reporting it. It
+    is filed once per action key — see `write_envelope` — so the attempt that
+    already has one is a replay and not a second filing.
     """
     invocation = _invocation()
     results: list = []
@@ -932,11 +1155,19 @@ def wake(rows, *, launcher, cwd, receipts, budget=None,
                    "launcher": list(launcher), "cwd": str(cwd),
                    "timeout": timeout}
         try:
+            filed = write_envelope(row["envelope_path"], row["capability"])
+        except WakeRefused as exc:
+            results.append({**outcome, "result": "NOT_STARTED",
+                            "receipt_status": None, "because": str(exc)})
+            continue
+        outcome.update(filed)
+        try:
             receipt = invocation.invoke_once(
                 key=row["action_key"], argv=list(launcher), cwd=cwd,
                 receipts=receipts, input_text=row["briefing"],
                 timeout=timeout, readonly=False,
-                max_output_bytes=max_output_bytes)
+                max_output_bytes=max_output_bytes,
+                env={ENVELOPE_ENV: str(row["envelope_path"])})
         except ValueError as exc:
             # Every `ValueError` in that helper is on the near side of `Popen`,
             # which is what makes «nothing was started» a fact here rather than a
