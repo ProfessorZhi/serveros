@@ -709,6 +709,56 @@ class TestAnAllowedMutationLeavesAReceipt:
         assert answer["receipt"]["process_exit_code"] == 0
         assert answer["receipt"]["status"] == "EXITED"
 
+    def test_a_checkpoint_files_the_next_epoch_and_not_the_one_it_woke_from(
+            self, state_dir, wake_dir, tmp_path, fake_verb, verb_log):
+        """The record this Parent was woken FROM is the one write it may not make.
+
+        `AgentControlStore.put_checkpoint` keys a checkpoint by (Item, epoch) and
+        refuses to replace a LIVE one under its own key. The record a wake
+        carries is live by definition — `continuation_control.verify` refuses the
+        mutation otherwise — so a checkpoint dispatched at the envelope's epoch
+        is refused with the store's own sentence, «Carry the Item on under a new
+        epoch, which takes the scope over and keeps this record readable». That
+        refusal is the design: a Parent that replaces another writes the
+        SUCCESSOR record, and the store supersedes the record it replaced in the
+        same transaction.
+
+        THIS ASSERTS THE ARGV BECAUSE THE ARGV IS WHERE THE DEFECT WAS. Nothing
+        in this file reaches `put_checkpoint` — the stand-in verb records what it
+        was handed and prints a line — so a checkpoint aimed at the epoch it woke
+        from passed every test in the file. The acceptance run, in a redirected
+        state root, is what found it. The second half below closes that gap from
+        the other side: the epoch this dispatch named is handed to the REAL
+        store, which is the property the change exists to satisfy rather than two
+        numbers that happen to differ.
+        """
+        store, server = a_ready_wake(state_dir, wake_dir, tmp_path, fake_verb)
+        answer = call(server, "work.checkpoint", {"next_action": "carry it on"})
+        assert answer["decision"] == "ALLOW", answer.get("because")
+        assert answer["executed"] is True
+        epoch = int(server.envelope["epoch"])
+        assert dispatched(verb_log) == [[
+            "work", "checkpoint", ITEM, "--epoch", str(epoch + 1),
+            "--parent", "parent-a", "--next-action", "carry it on"]]
+        # ...and the epoch named is not the one this wake carries.
+        assert str(epoch + 1) != str(epoch)
+
+        # The number is not merely different: it is the one the store TAKES for
+        # this Item, and taking it supersedes the record the wake carried. Fed
+        # the argv the adapter really dispatched, so a regression to the
+        # envelope's epoch fails here as well as above.
+        argv = dispatched(verb_log)[0]
+        named = int(argv[argv.index("--epoch") + 1])
+        successor = continuation.build_checkpoint(
+            work_item=ITEM, epoch=named, parent_owner="parent-a",
+            next_safe_action="carry it on",
+            waiting_on={"kind": "window", "until": minutes(30)}, now=utcnow(),
+            requirement_revision="REQ-2026-09-20",
+            child_attempts=["cyc-1"], write_scope=[SCOPE])
+        store.put_checkpoint(successor)
+        assert store.checkpoints()[f"{ITEM}#{epoch}"]["superseded_by"] == \
+            successor["checkpoint_ref"]
+
     def test_the_receipt_names_the_artifacts_a_verdict_can_rest_on(
             self, state_dir, wake_dir, tmp_path, fake_verb):
         _store, server = a_ready_wake(state_dir, wake_dir, tmp_path, fake_verb)
