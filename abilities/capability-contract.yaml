@@ -16,6 +16,32 @@ schema: serveros/capability-resolution.v1
 version: 1
 
 # ---------------------------------------------------------------------------
+# The vocabulary, as data. These are the closed sets the resolver holds as
+# tuples, and they are declared here rather than only mentioned in a sentence
+# because `tests/test_ability_resolver.py::CapabilityContractTests` compares
+# them BOTH ways. A value in the code and not here is a value a reader of this
+# contract does not know exists; a value here and not in the code is a branch a
+# caller writes and never reaches. `inputs:` below is the eighth, and it is
+# ordered, so it is compared as a sequence rather than as a set.
+#
+# Until 2026-10-06 these were named nowhere: the file mentioned `REASONS` once,
+# inside a sentence, and the other four appeared in neither a list nor a
+# sentence. That is the same absence that let `runtime` and `inputs_missing`
+# drift out of `record:` unnoticed — a vocabulary the contract does not carry
+# is a vocabulary it cannot be out of date against.
+# ---------------------------------------------------------------------------
+vocabulary:
+  STATUSES: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+  REASONS: [AGENT_UNSUPPORTED, DEVICE_DEPENDENCY_MISSING, RUNTIME_UNHEALTHY,
+            POLICY_DENIED, NETWORK_UNAVAILABLE, PROVIDER_NOT_INSTALLED,
+            ACTION_UNSUPPORTED]
+  OPERATION_STATES: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+  PRODUCT_ROLE_STATES: [DECLARED, UNDECLARED, AMBIGUOUS, UNKNOWN]
+  THIN_LINK_FIELDS: [product_role, routing, handoff, authority]
+  THIN_LINK_RECORD_FIELDS: [product_role_state, semantic_owner, realization_role,
+                            cross_refs, subroles, subrole, human_boundary]
+
+# ---------------------------------------------------------------------------
 # The eight inputs, in evaluation order. Order matters for the REASON, not for
 # the answer: the result is an intersection, so any input may refuse, and the
 # first one that refuses names the reason. Evaluation stops at the first
@@ -36,7 +62,32 @@ inputs:
     # caller and every fixture in the product already writes
     # (`abilities/resolver.py#parse_ability_ref` says so), and keying by it is
     # what makes `ability:x#read` and `ability:x` the same lookup.
-    catalogue_key: "ability:<id>"
+    # WHICH `<id>`, because the authority uses that word for two different
+    # things and this line read as the wrong one.
+    #
+    #   abilities-manifest.yaml  `id`    `ProfessorZhi/runtime-management`
+    #                            `name`  `runtime-management`
+    #   ability-packs.yaml       "WHAT A PACK IS: names. `ability:<kebab-id>`
+    #                            members" — and every member it writes is
+    #                            `ability:runtime-management`.
+    #
+    # So the field the manifest calls `id` is `author/kebab`, the field it calls
+    # `name` is the kebab-id, and `ability-packs.yaml` calls THAT one the id.
+    # The catalogue key is the **`name`** field — the kebab-id — because that is
+    # what the authority's own pack members are written as, and what every
+    # shipped example in this repo writes (`abilities/requests/resolve-
+    # example.json`, `abilities/requests/catalogue-example.txt`). The manifest's
+    # `id` is the identity and is NOT the key: its header says so itself —
+    # `path = storage locator（name != identity != path）` — and `name` carries
+    # an installation suffix in places (`obra/superpowers` is named
+    # `superpowers@cc-server-local`), which is a label and not a key.
+    catalogue_key: "ability:<name>"
+    # Measured 2026-10-06 against `thin-ability-link-20261006@5e666575`: 65
+    # records, 60 keys, and a resolution of `ability:grill-me` and
+    # `ability:playwright-mcp` both reach their declared Thin Link. The same
+    # abilities addressed by manifest `id` — `ability:unknown/grill-me` —
+    # resolve to `UNKNOWN` with the link unread, which is the concrete cost of
+    # the ambiguity above.
     # Two shapes are readable and only one of them can hit this catalogue. A
     # bare id is accepted by the parser — deliberately, since normalising it
     # would rewrite an input nobody asked to have rewritten — and then misses
@@ -44,7 +95,7 @@ inputs:
     # really a finding about how the caller spelled the ref. Naming the gap
     # rather than closing it: refusing a bare ref is a change to the accepted
     # input set, and this round did not make it.
-    known_gap: "a bare `<id>` ref is accepted and can never match a ref-keyed catalogue"
+    known_gap: "a bare `<name>` ref is accepted and can never match a ref-keyed catalogue"
   - name: device_capability
     source: "fleet/registry.yaml device record + observed facts"
     refuses_when: "a declared requirement is absent"
@@ -95,7 +146,60 @@ record:
     - provider         # chosen provider id, when one was chosen
     - candidates       # providers considered, with their individual statuses
     - operation        # the verb named on the reference; null when none was (§10)
-    - note
+    - detail           # the sentence behind `reason`/`status`; null when there is none
+    - finding          # a named observation that is NOT a refusal (DEGRADED only)
+    - runtime          # the agent runtime the question was asked about
+    - inputs_missing   # the complement of `inputs_seen`, and not a courtesy
+    - note             # written by the CLI, NOT by the resolver — see `added_by`
+    # §14 — the Thin Ability Link, read out of input 1. Every one of these is
+    # derived from the catalogue the caller supplied plus the caller's own
+    # words, and `abilities/resolver.py#THIN_LINK_RECORD_FIELDS` is the list
+    # this must stay equal to; `tests/test_ability_resolver.py` asserts it, and
+    # asserts that every name appears in this file, so a field cannot be added
+    # to the code without being declared here.
+    #
+    # Three of the seven are absent from a resolution that named no catalogue
+    # and from one answered against a file of names — §14's fields answer a
+    # question that only the authority can be asked, and "nobody asked" is
+    # `product_role_state: UNKNOWN` rather than a null per field.
+    - product_role_state  # DECLARED | UNDECLARED | AMBIGUOUS | UNKNOWN
+    - semantic_owner      # `product_role.primary` — the L2 that owns it, e.g. `B6`
+    - realization_role    # core | primary-skill | specialist | provider | packaging
+    - cross_refs          # the other L2s this ability is used with
+    - subroles            # the named sub-abilities it fills
+    - subrole             # the verb on the reference, when it IS a declared subrole
+    - human_boundary      # `authority.human_required`; `[]` means "declared, none"
+  # Every candidate, always the same shape — a candidate set whose rows have
+  # different keys cannot be read as a table, and `resolve` builds each one from
+  # the same literal. Declared because `candidates` above only says the list
+  # exists, and until 2026-10-06 nothing said what a row was made of: three of
+  # these fields were added in this round (`installed`, `why_candidate`, and
+  # `runtime_features_state`) with no table to be out of date against.
+  candidate_fields:
+    - provider              # the provider id this row is about
+    - status                # this candidate's own standing, never the record's
+    - reason                # from the same closed list; null when AVAILABLE
+    - detail
+    - refused_by            # WHICH of the eight inputs said no (§14's `binding_ready`)
+    - unevaluated           # inputs that could not be read for THIS candidate
+    - finding
+    - preference            # the provider's declared ordering weight
+    - installed             # instance registered here: true | false | null(unasked)
+    - why_candidate         # which declared table put it in the set
+    - operations_state      # SUPPORTED | UNSUPPORTED | UNKNOWN | null(no verb named)
+    - runtime_features_state
+  # Who writes which field, where it matters. `note` is here because a reader
+  # of the contract would otherwise conclude the resolver never emits it and
+  # 'fix' the record by deleting it.
+  added_by:
+    note: >
+      `runtime/cli.py`'s `cmd_ability_resolve`, and only when input 1 came from
+      a named provenance (`--ability-repo`/`--ability-rev` or
+      `--catalogue`). The resolver is pure and reads a catalogue it cannot
+      attribute, so the provenance sentence is minted by the layer that knows
+      it. It is declared here rather than in a CLI-local shape because a caller
+      reading one record should not have to know which of two modules wrote
+      which key.
   forbidden_fields:
     - "a credential, token, cookie, or key"
     - "an absolute path"   # paths are resolved per device, never embedded
@@ -134,6 +238,61 @@ record:
     - "inputs_seen is always present. A resolution that could not see an input
        is UNKNOWN with the missing input named, never a confident answer
        computed from the inputs that happened to be readable."
+    - "The field lists above are CLOSED, and this is now enforced rather than
+       asserted. Every key the resolver can produce is in `required_fields` or
+       `optional_fields`, every candidate row's keys are exactly
+       `candidate_fields`, and the only declared field the resolver never
+       produces is `note`, which `added_by` names a writer for.
+       `tests/test_ability_resolver.py::CapabilityContractTests` drives the
+       resolver through every branch it has and compares the union of what came
+       back against this file — so a field added to the code without being
+       declared here fails, and a declared field that stops being produced is
+       named rather than quietly ignored. Until 2026-10-06 nothing read this
+       file at all: it was four lists and seven invariants of prose, and four
+       fields the resolver had been returning for as long as it has existed
+       (`runtime`, `inputs_missing`, `detail`, `finding`) appeared in none of
+       them. A contract with no reader and the code it describes are two
+       documents, and the one that is wrong is the one a person reads."
+    - "The Thin Ability Link grants nothing and denies nothing (§18). Its
+       fields are read from input 1 and from the caller's own words, and they
+       never reach `status`, `reason`, or a candidate's standing: a resolution
+       is identical across every value of `product_role_state` except inside the
+       link-owned fields themselves. `UNDECLARED` is a FINDING (§12: no silent
+       orphan), not a refusal — an ability nothing declares a home for is still
+       resolved, and the finding says only that. Nor is a disagreement a
+       refusal: two records of one identity that name different owners resolve
+       as `AMBIGUOUS` rather than being refused for the disagreement, because
+       the resolver's job is to report which question is open, not to close it
+       by picking a record. `tests/test_ability_resolver.py` asserts all four
+       states against one baseline."
+    - "`subrole` is decided by MEMBERSHIP in the ability's declared
+       `product_role.subroles` and by nothing else — no similarity, no scoring,
+       no model (§14: the resolver is not a planner). It is deliberately NOT
+       the operation axis: a subrole is a responsibility the ability DECLARES
+       it fills, while an operation is something a PROVIDER implements, so a
+       subrole never makes an operation SUPPORTED and never appears in
+       `candidates[].operations_state`. Letting the first answer for the second
+       would turn a declaration into a capability, which is the transfer §18
+       forbids."
+    - "`runtime_compatible` and `binding_ready` are NOT fields of this record,
+       although §14 names them. Both questions are already answered inside
+       `candidates[]`, and a second spelling of an answer is how one question
+       comes to have two answers that disagree. `runtime_compatible` is
+       `candidates[].runtime_features_state` together with that candidate's
+       `status`; `binding_ready` is the candidate's `refused_by`, which says
+       WHICH device input refused — the sharper form, since `device_capability`,
+       `device_profile` and `device_binding` all mean 'the binding is not ready
+       here' and call for three different repairs. `candidates[].installed` is
+       the same lookup at the one input that is specifically about installation,
+       and it is three-valued — `null` where no instance inventory was supplied,
+       never `false`, because 'nobody looked' is not 'not installed'."
+    - "`candidates[].why_candidate` restates which declared table put the
+       provider in the candidate set: that it declares the ability, whether it
+       declares the named verb, and that the provider implements it. It is
+       deterministic and it ranks nothing — three declared facts and the
+       caller's own word go in, and the sentence names all three. It exists so
+       a person reading a resolution can tell a candidate that was considered
+       from one that was assumed (§14)."
 
 # ---------------------------------------------------------------------------
 # Degradation. The case that made this necessary: a device was reported as able

@@ -2777,6 +2777,14 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
     — not what the operator typed, because `--ability-rev` may be a branch or a
     short SHA and a catalogue that cannot be produced again is not a catalogue
     a verdict may cite.
+
+    There is no bare-id composer beside this, and one used to be:
+    `_catalogue_from_names(names)` took bare ids and prefixed them. It had no
+    caller, and it is removed here rather than left for one because it is the
+    exact behaviour the check below REFUSES — a bare id quietly given the prefix
+    it was missing is how `ability:ability:runtime-management` was born, and a
+    helper that would rebuild it is more dangerous than the dead code it was.
+    A file of names writes references or it writes nothing.
     """
     if args.ability_repo and args.ability_rev:
         projection_mod = _load_module_from(
@@ -2793,9 +2801,22 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
                 f"nobody read would be a verdict about nothing.")
         # The manifest names abilities by their bare id, so the reference is
         # composed here. This is the one branch that composes.
-        keys = [f"ability:{name}" for name in
-                (str(a.get("name")) for a in (manifest.get("abilities") or [])
-                 if isinstance(a, dict) and a.get("name"))]
+        #
+        # `declared` keeps the entries that produced each key, because the
+        # Thin Ability Link is per-RECORD and the catalogue is keyed per
+        # IDENTITY — the same split §6 states for the manifest itself: one
+        # identity, several distribution forms. Two records under one key are
+        # not a conflict to be collapsed away at this layer; they are the
+        # material the resolver needs in order to say whether they AGREE.
+        keys = []
+        declared: dict[str, list] = {}
+        for record in (manifest.get("abilities") or []):
+            if not isinstance(record, dict) or not record.get("name"):
+                continue
+            key = f"ability:{record['name']}"
+            keys.append(key)
+            declared.setdefault(key, []).append(record)
+        thin_link_fields = projection_mod.THIN_LINK_FIELDS
         where = f"ability-repo {args.ability_repo}@{resolved[:12]}"
         # What the collapse below is, in this branch's own words. The canonical
         # manifest lists an ability once per SOURCE, so `mcps/X` and `plugins/X`
@@ -2815,6 +2836,13 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
             return None, None, f"cannot read {args.catalogue} — {exc}"
         where = f"catalogue {args.catalogue}"
         unit, collapse = "lines", "which are the same key written twice"
+        # A file of names names abilities and declares nothing about them, so
+        # its values stay empty and the resolver reports the Thin Link as
+        # UNKNOWN rather than UNDECLARED. The two readings get different
+        # answers on purpose: `--catalogue` cannot tell you an ability has no
+        # product role, because it was never asked, and saying UNDECLARED here
+        # would manufacture a §12 orphan out of a file that only lists keys.
+        declared = None
 
     if not keys:
         # An empty catalogue is not a permissive one. Handed through it makes
@@ -2847,7 +2875,8 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
         if not key.startswith("ability:"):
             return None, None, (
                 f"{key!r} in {where} is not an ability reference. Catalogue keys "
-                f"are written `ability:<id>`; `{key}` written bare is a "
+                f"are written `ability:<name>` — the manifest's `name`, not its "
+                f"`id`, which is `author/name`; `{key}` written bare is a "
                 f"different key and would miss every entry in a catalogue keyed "
                 f"by reference.")
     distinct = sorted(set(keys))
@@ -2865,23 +2894,50 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
             f"composed from {len(keys)} {unit} — {lost} of them "
             f"{'names' if lost == 1 else 'name'} an ability another one "
             f"already names, {collapse}")
-    return ({key: {} for key in distinct}, f"{where} ({counted})", None)
+    if declared is None:
+        return ({key: {} for key in distinct}, f"{where} ({counted})", None)
+    return (
+        {key: {field: _distinct_declarations(
+            record.get(field) for record in declared.get(key, ()))
+            for field in thin_link_fields}
+         for key in distinct},
+        f"{where} ({counted})", None)
 
 
-def _catalogue_from_names(names) -> dict:
-    """Bare ability ids in, the resolver's input 1 out.
+def _distinct_declarations(values) -> list:
+    """The distinct non-null declarations among `values`, first-seen order.
 
-    Keyed `ability:<id>`, which is the identity `parse_ability_ref` splits an
-    operation off — a catalogue keyed by anything else misses every ability
-    whose reference the caller happened to write with a verb on it.
+    A LIST, and the length of it is the whole interface the resolver reads:
 
-    The value is empty on purpose. `resolver._input_ability` asks one question
-    of this mapping (is the ability in it), and inventing a `revision` field
-    here would put a number in the record that nothing read. The revision this
-    catalogue was read AT belongs on the answer's `note`, where it is the
-    revision of the thing that was actually read.
+      * the key is absent            the catalogue carries no Thin Link — not asked
+      * `[]`                         carried, and this ability declares nothing
+      * `[one]`                      the declaration
+      * `[one, other]`               two records of one identity that disagree
+
+    Three of those four were unrepresentable while the value was `{}`, and the
+    one that matters most is the third: `microsoft/playwright-mcp` is an `mcp`
+    record and a `plugin` record under one id (§6 — a plugin is a distribution
+    identity, not one semantic ability), so the collapse below is their only
+    chance to be compared. Collapsing them by picking the last one would make
+    the resolver's answer depend on manifest order, and its `semantic_owner`
+    would change because a file was re-sorted.
+
+    `None` drops out rather than becoming an element, so "declared nothing" and
+    "declared null" cannot be read as two different declarations. The marker is
+    a canonical JSON rendering rather than the object itself, because dicts are
+    unhashable and equality alone would not survive a key order difference
+    between two records that say the same thing.
     """
-    return {f"ability:{name}": {} for name in sorted(set(names))}
+    seen, distinct = set(), []
+    for value in values:
+        if value is None:
+            continue
+        marker = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        distinct.append(value)
+    return distinct
 
 
 def cmd_ability_resolve(args) -> int:
