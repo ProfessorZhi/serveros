@@ -859,17 +859,27 @@ def anomaly_list(*, host=None, registry=None, docker_host=None,
     classifications = anomaly.classify_all(
         signals, criticality=criticality, protection=protection
     )
+    levels, subjects = anomaly.levels(groups=groups, host_facts=host_facts,
+                                      error_windows=error_windows)
     # §9/§21. The two halves a signal list cannot carry, both derived from the
     # inputs already in hand rather than measured again: which codes nobody
     # looked at, and what every graded measurement IS. The alert layer needs
     # both — without the first it closes alerts about codes that stopped being
     # evaluated, without the second it closes them at the open threshold and
     # reopens them one tick later.
+    #
+    # `subjects` is the third half, and it is a different question from both.
+    # `levels` says what was measured; `subjects` says what was even there to
+    # measure. A runtime group's ref embeds a pid, so its ref is a lifetime —
+    # when the group ends its ref never recurs, and a reader holding only
+    # `levels` cannot tell "this came back unreadable" from "this is gone".
+    # Measured 2026-10-04: 1,088 alerts were frozen OPEN under the first
+    # reading when all 1,088 were the second.
     return _envelope({
         "signal_count": len(signals),
         "signals": signals,
-        "levels": anomaly.levels(groups=groups, host_facts=host_facts,
-                                 error_windows=error_windows),
+        "levels": levels,
+        "subjects": sorted(subjects),
         "codes_not_evaluated": anomaly.unevaluated(unchecked),
         "classifications": classifications,
         "unchecked": unchecked,

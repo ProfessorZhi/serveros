@@ -19,6 +19,7 @@ A test that only covered (1) would pass against a daemon that accepted
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import inspect
 import json
@@ -75,6 +76,24 @@ VERIFIED_REPORT = {
 }
 
 NOW = "2026-09-14T00:00:30+00:00"
+
+
+def _epoch(stamp: str) -> float:
+    """A stamp in the seconds `Daemon(now=...)` takes.
+
+    The fixture daemons below FREEZE their clock so their tests are
+    deterministic, and that freeze has to sit AT the instant the fixture reports
+    observe. A frozen clock that disagrees with `observed_at` turns every
+    freshness assertion in this file into a statement about the disagreement
+    rather than about the record — which is what it was: the clock was frozen at
+    `2026-02-25T06:13:20+00:00` while every report in the file said
+    `2026-09-14`, 200 days apart, and the answer that came back from
+    `agent.context.attach` was `FRESH`. That is exactly the defect
+    `test_a_record_dated_ahead_of_the_clock_is_expired_and_not_fresh` names,
+    reached through the fixture instead of through a caller. Derived from the
+    stamp rather than written as a literal, so the two cannot drift apart again.
+    """
+    return datetime.datetime.fromisoformat(stamp).timestamp()
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +285,33 @@ def test_a_report_missing_evidence_fields_is_refused():
             actor.build(report, now=NOW)
 
 
+def test_a_report_observed_after_the_reading_clock_is_refused():
+    # `expires_at` is DERIVED from `observed_at`, so a future stamp mints a
+    # window that has not opened yet and stays open long past the event — and
+    # `freshness` would call it FRESH, because a negative age is below every
+    # threshold. Clamped to `now` would be worse than refused: it would produce
+    # a context about an observation nobody made. This is the only place a
+    # context is minted, so refusing here covers every writer.
+    with pytest.raises(Rejected) as caught:
+        actor.build({**VERIFIED_REPORT, "observed_at": "2026-09-14T00:05:00+00:00"},
+                    now=NOW)
+    assert "2026-09-14T00:05:00+00:00" in str(caught.value), (
+        "the refusal must name the stamp it refused")
+    assert NOW in str(caught.value), (
+        "...and the clock it was measured against, since the two together are "
+        "the whole finding")
+
+
+def test_a_report_observed_exactly_at_the_reading_clock_is_accepted():
+    # The boundary, and the reason the comparison is `>` rather than `>=`: a
+    # provider that probes and reports inside one call can land on the same
+    # second as the read, and refusing that would refuse the honest case while
+    # the dishonest one is minutes away. Age zero is FRESH.
+    record = actor.build({**VERIFIED_REPORT, "observed_at": NOW}, now=NOW)
+    assert record["expires_at"] > NOW
+    assert actor.freshness(record, NOW)["state"] == "FRESH"
+
+
 def test_a_context_with_no_window_is_refused():
     with pytest.raises(Rejected):
         actor.validate({"context_ref": "human-context:p/d", "actor_ref": "human:hwz",
@@ -291,6 +337,41 @@ def test_freshness_is_computed_from_the_clock_not_read_from_the_record():
     assert actor.freshness(record, "2026-09-14T00:00:30+00:00")["state"] == "FRESH"
     assert actor.freshness(record, "2026-09-14T00:10:00+00:00")["state"] == "STALE"
     assert actor.freshness(record, "2026-09-14T00:20:00+00:00")["state"] == "EXPIRED"
+
+
+def test_a_record_dated_ahead_of_the_clock_is_expired_and_not_fresh():
+    # `build` refuses to mint one, so this record is written the way a second
+    # writer or an edited store would write it — which is why the reader is
+    # hardened separately. It must not read as FRESH: a negative age means the
+    # two clocks disagree about which instant the record belongs to, and the
+    # bucket that authorizes nothing is the one that can be wrong safely.
+    record = actor.build(VERIFIED_REPORT, now=NOW)
+    record["observed_at"] = "2026-09-14T00:05:00+00:00"      # 270s ahead of NOW
+    fresh = actor.freshness(record, NOW)
+    assert fresh["state"] == "EXPIRED"
+    assert fresh["age_seconds"] == -270.0
+    assert "FUTURE" in fresh["because"], (
+        "the reason must name the real one; 'observed Ns ago, past the 900s "
+        "window' about a record dated in the future is precisely the "
+        "confident-but-wrong sentence this module refuses to emit")
+    assert "ago" not in fresh["because"]
+
+
+def test_a_context_dated_ahead_of_the_clock_authorizes_nothing():
+    # The exact shape `context/delegation.check` and `abilities/target.py` read:
+    # `.get("authorizes")` and `.get("because")`, with `state` carried through.
+    # A refusal that dropped `state` would break the display path, and a
+    # `because` naming the wrong cause sends the operator to fix the wrong thing.
+    record = actor.build(VERIFIED_REPORT, now=NOW)
+    record["observed_at"] = "2026-09-14T00:05:00+00:00"
+    verdict = actor.authorizes(record, NOW)
+    assert verdict["authorizes"] is False
+    assert verdict["state"] == "EXPIRED"
+    assert "FUTURE" in verdict["because"]
+    assert verdict["provenance"] == "FACT", (
+        "the refusal is about the clock, not about the evidence: a verdict "
+        "that also degraded the provenance would send the reader to re-verify "
+        "an actor that was verified correctly")
 
 
 def test_stale_does_not_authorize():
@@ -708,7 +789,7 @@ class FakeRegistry:
 def daemon(tmp_path):
     return daemon_mod.Daemon(FakeRegistry(), state_dir=tmp_path / "state",
                              socket_path=tmp_path / "run/serveros.sock",
-                             now=lambda: 1_772_000_000.0,
+                             now=lambda: _epoch(NOW),
                              log=lambda message: None)
 
 

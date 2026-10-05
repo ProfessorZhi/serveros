@@ -93,7 +93,7 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V16 | 计划停机/退役临时环境 | 不发假故障，历史证据保留，当前视图不充数 |
 | V17 | 新配置未reload旧process | 显示实际running版本；待激活不是已升级 |
 | V18 | 未授权动作/错误actor | 没有实际mutation；“已知晓”不是批准重启 |
-| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史 |
+| V19 | rolling status card | 每小时采样只patch当前卡，不新增一条聊天历史；每次patch**投递成功后**才发一条只引用该卡版本的更新提醒；同一小时重复触发幂等只出一条；patch失败或结果未知时不发“已更新”，转为投递事故 |
 | V20 | incident still-open | 只有age增加不新发；同episode更新原卡 |
 | V21 | process-hygiene flood | 数百个high-memory/orphan/age finding不会变成数百通知 |
 | V22 | root/data/quota | 系统盘、数据盘、本人quota分别可读且阈值按role/remaining判断 |
@@ -102,7 +102,7 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V25 | many idle agent sessions | 多个后台/可resume CC session不产生Incident |
 | V26 | outlived-login hygiene | VS Code/tmux/daemon跨login存活只进Diagnostic，除非join真实pressure/lease/work impact |
 | V27 | workflow integrity | Active Focus Parent lost、lease conflict、effect unknown、unexpected A7 FAIL可形成workflow incident |
-| V28 | daily status lifecycle | 同一CN-Mainland工作日08:00–20:00整点只patch一张Status Card，下一工作日新建 |
+| V28 | daily status lifecycle | 同一CN-Mainland工作日08:00–20:00整点只patch一张Status Card，下一工作日新建；更新提醒身份按〈工作日/小时〉区分，一小时一条、跨小时不共用同一身份 |
 | V29 | incident lifecycle | 同episode跨小时/跨天只patch一张Incident Card，不重复NEW |
 | V30 | shared-node principal scoping | 当前用户卡不把其它principal的WIP/PID列为自己的待处理对象 |
 | V31 | mixed login scope | 同一login scope内正常Claude/IDE与已结束Run runtime可分别归属，不整scope误报 |
@@ -119,6 +119,7 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 | V42 | business calendar and missed hour | 官方调休覆盖weekday；UNKNOWN不伪造工作日；漏08:00不追发全部小时 |
 | V43 | card purpose identity | alert/status调用者、冻结payload、message与receipt可追，不凭截图外观判类型 |
 | V44 | observe-only recovery | 没有真实recovery worker/receipt时不得显示正在自动修复 |
+| V45 | single production renderer | 生产卡片面只有一份renderer，status/alert/notice不各持一套；同一payload从任一路径渲染结果一致 |
 
 ## 5. 判据与计划关系
 
@@ -130,4 +131,4 @@ SRV-0011/SRV-0005/MarketOps/LiteLLM并行任务仍受保护。真正同文件冲
 
 本轮只读核对c5d118cc：`runtime/cards.py`的alert摘要空路径返回“没有需要处理的变化”，辅助计数包含低优先级/恢复/历史；`status_card`是独立入口。该事实定位候选消费链，不证明用户截图对应的message身份、实际installed代码或sender调度。
 
-实施必须同时测模型状态、卡片目的和投递次数：仅改文案/颜色不够，仅不发送也不能隐藏当前真实异常；数百诊断finding不自动转成数百active异常。V35–V44是待执行验收，不是本次已跑测试。
+实施必须同时测模型状态、卡片目的和投递次数：仅改文案/颜色不够，仅不发送也不能隐藏当前真实异常；数百诊断finding不自动转成数百active异常。V35–V45是待执行验收，不是本次已跑测试。

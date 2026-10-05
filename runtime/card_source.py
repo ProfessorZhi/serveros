@@ -193,6 +193,29 @@ def _percent(value) -> str:
         return "未读到"
 
 
+def _ratio(part, whole) -> str:
+    """`part / whole` as a percentage, or the absence of one.
+
+    Arithmetic on two readings that are already in hand, and not a third
+    reading: every caller passes the same two numbers it prints beside the
+    result. The divide is refused when `whole` is missing or zero, because
+    `0 / 0` raised and `x / 0` — on a swap partition that was never created —
+    would print `inf%` on a card a person reads.
+
+    This is what the metric cells lead with. A face laid out two abreast is
+    scanned rather than read, and a percentage is the unit that survives
+    scanning; the absolute pair goes in the note, where a reader who was
+    stopped by the percentage goes next.
+    """
+    try:
+        part, whole = float(part), float(whole)
+    except (TypeError, ValueError):
+        return "未读到"
+    if not whole:
+        return "未读到"
+    return _percent(100.0 * part / whole)
+
+
 def _value(value, *, empty: str = "未读到") -> str:
     """A scalar as it should appear, or the absence of one.
 
@@ -286,10 +309,43 @@ def _disk_findings(summary: dict) -> list[dict]:
     return sorted(found, key=lambda f: -float(f["value"]))
 
 
+def metric(label: str, value: str, *, note: str = "") -> dict:
+    """One reading, as a face that can be laid out beside another one.
+
+    WHY THE READINGS ARE STRUCTURED AND NOT ONLY PROSE
+    --------------------------------------------------
+    The prose lines below already carry every one of these numbers, and they are
+    not being replaced: they are what the fold shows, with the units, thresholds
+    and provenance that make a number checkable. What they cannot do is sit two
+    abreast — a sentence is a width, not a cell, and a two-column layout built by
+    splitting sentences would be a renderer parsing its own prose back into
+    fields.
+
+    So the fact is constructed ONCE, in the section function that already has
+    the locals, and handed over twice: as a `{label, value}` for the face and as
+    the sentence it was always in. This is a second RENDERING of one reading and
+    never a second reading — the alternative, having the renderer extract the
+    numbers back out of `lines`, is how a card comes to disagree with itself the
+    first time somebody reworded a line.
+
+    `note` is the short qualifier that fits in a cell (`阈值 90%`, `缓存 12 GiB`).
+    Anything longer belongs in the fold; a note that does not fit the column is
+    a note the reader has to scroll sideways for, which is worse than absent.
+    """
+    return {"label": label, "value": value, "note": note}
+
+
 def _host_section(summary: dict | None, gaps: list[dict]) -> dict:
     if summary is None:
-        return {"state": UNKNOWN, "lines": [],
-                "why": "本机的 resource summary 没有到达，因此不声称这台机器自身的数字"}
+        return {"state": UNKNOWN, "lines": [], "metrics": [],
+                # The reading is named the way a person knows it and not by the
+                # command that failed: this sentence is printed on the FACE when
+                # a section has no cells, and `resource summary` is 采集口径 —
+                # §R15 puts it in 详情, and §2 forbids it on a first screen. The
+                # command is not lost: the gap sentence one fold down carries it
+                # with the exit status, which is where an account of how the
+                # reading was taken belongs.
+                "why": "本机的资源摘要没有到达，因此不声称这台机器自身的数字"}
     host = summary.get("host") or {}
     load = host.get("load") or {}
     memory = host.get("memory") or {}
@@ -347,7 +403,31 @@ def _host_section(summary: dict | None, gaps: list[dict]) -> dict:
                         f"（阈值 {f['limit']}%）" for f in findings[:3])
     elif swap_hot:
         why = f"交换区已用 {_percent(swap.get('used_percent'))}（阈值 {swap_high}%）"
-    return {"state": state, "lines": lines, "why": why,
+
+    # The face, in the order a machine is triaged: what it is, how loaded it is,
+    # the two things that run out, then the two places data lands. Thresholds
+    # appear only where the tree publishes one — an invented limit is a claim
+    # about policy made by a reader of numbers.
+    limit = limits.get("swap_percent_high")
+    metrics = [
+        metric("CPU", f"{_value(cpu.get('logical_cpus'))} 逻辑核"),
+        metric("负载", f"{_value(load.get('load1'))} / {_value(load.get('load5'))}"
+                       f" / {_value(load.get('load15'))}",
+               note=f"可运行 {_value(load.get('runnable'))}"),
+        metric("内存", _ratio(memory.get("used_bytes"), memory.get("total_bytes")),
+               note=f"{_bytes(memory.get('used_bytes'))} / "
+                    f"{_bytes(memory.get('total_bytes'))}"),
+        metric("交换区", _percent(swap.get("used_percent")),
+               note=(f"阈值 {limit}%" if limit is not None
+                     else f"{_bytes(swap.get('used_bytes'))} / "
+                          f"{_bytes(swap.get('total_bytes'))}")),
+    ]
+    for role in _filesystems(summary):
+        free = role.get("free_bytes")
+        metrics.append(metric(f"磁盘 {role.get('mount_point')}",
+                              _percent(role.get("used_percent")),
+                              note=f"可用 {_bytes(free)}"))
+    return {"state": state, "lines": lines, "metrics": metrics, "why": why,
             "detail": {"findings": findings, "reads": ["summary"]}}
 
 
@@ -362,8 +442,11 @@ def _mine_section(summary: dict | None, user_services: dict | None,
     processes; nothing here compares a string to "vince".
     """
     if summary is None:
-        return {"state": UNKNOWN, "lines": [],
-                "why": "本账户的 resource summary 没有到达，因此不声称本账户占用的份额"}
+        return {"state": UNKNOWN, "lines": [], "metrics": [],
+                # Named as the reader knows it, for the reason `_host_section`
+                # gives above: this sentence reaches the face, and the command
+                # that failed is 采集口径 and belongs in the fold.
+                "why": "本账户的资源摘要没有到达，因此不声称本账户占用的份额"}
     user = summary.get("user") or {}
     share = user.get("summary") or {}
     quota = user.get("quota") or {}
@@ -371,9 +454,13 @@ def _mine_section(summary: dict | None, user_services: dict | None,
     lines = [
         # The uid is named because "my resources" is only meaningful with the
         # identity it was computed for, and a card forwarded to a colleague
-        # otherwise reads as theirs.
-        f"账户 uid {os.getuid()}"
-        + (f" · 进程数 {_value(share.get('process_count'))}" if share else ""),
+        # otherwise reads as theirs. It is HERE and not on the face: V01 asks
+        # that 「型号/uid不挤摘要», and §M4 repeats it — 「把uid/型号/本机地址放
+        # 详情». The face used to open this block with a cell whose LABEL was
+        # this same string and whose value was the process count now standing
+        # two lines down, so the number was on the first screen twice over an
+        # identity the block's own heading had already established.
+        f"账户 uid {os.getuid()}",
         f"CPU 占整机 {_percent(share.get('cpu_percent_of_host'))}"
         f"（{_cpu_share(share)}）",
         f"内存 {_bytes(share.get('memory_rss_bytes'))}"
@@ -425,7 +512,27 @@ def _mine_section(summary: dict | None, user_services: dict | None,
         # short, which is what makes `env_health` mark the top line partial.
         state = UNKNOWN if state == OK else state
         why = why or "本板块有部分未读到：见下方逐条说明"
-    return {"state": state, "lines": lines, "why": why,
+
+    # This account's share, in the same shape the host block uses so that the
+    # two blocks are read the same way. The uid is NOT a cell: it is not a
+    # reading, it is the thing every reading on this block was computed for, and
+    # the cell it used to occupy put an account number where the first number
+    # belongs. The process count it carried stays, as its own reading.
+    metrics = []
+    if share:
+        metrics.append(metric("进程",
+                              f"{_value(share.get('process_count'))} 个"))
+        metrics.append(metric("CPU 占整机",
+                              _percent(share.get("cpu_percent_of_host")),
+                              note=_cpu_share(share)))
+        metrics.append(metric("内存",
+                              _percent(share.get("memory_percent_of_host")),
+                              note=_bytes(share.get("memory_rss_bytes"))))
+    if quota:
+        metrics.append(metric("配额",
+                              _percent(quota.get("used_percent")),
+                              note=f"软限 {_bytes(quota.get('soft_limit_bytes'))}"))
+    return {"state": state, "lines": lines, "metrics": metrics, "why": why,
             "detail": {"uid": os.getuid(),
                        "reads": [n for n, p in (("summary", summary),
                                                 ("user_services", user_services),
@@ -436,6 +543,7 @@ def _mine_section(summary: dict | None, user_services: dict | None,
 def snapshot(collected: dict, *, at: str, binding: dict | None = None,
              node_label: str | None = None, calendar: dict | None = None,
              day: dict | None = None,
+             problems: dict | None = None,
              reads_order=("summary", "top", "user_services", "runtime_list")) -> dict:
     """The three blocks, in the shape `presentation.status_model` consumes.
 
@@ -509,6 +617,15 @@ def snapshot(collected: dict, *, at: str, binding: dict | None = None,
                  for g in gaps],
         **({"schedule": schedule} if schedule else {}),
         **({"day": day_card} if day_card else {}),
+        # §3.4's 当前问题. Carried whenever a reading was handed, INCLUDING the
+        # reading that says it could not be made: `state: UNAVAILABLE` is what
+        # keeps an unread register from rendering as an empty one. The
+        # difference from `day` above is deliberate — a day that is absent is a
+        # normal state of a workday, whereas a register nobody could open is a
+        # fault, and the two must not both arrive as a missing key. A caller
+        # that hands nothing gets no key here, and `presentation.problems_block`
+        # is where that case gets its own words.
+        **({"problems": problems} if problems is not None else {}),
         "mine": _mine_section(summary, reads.get("user_services"),
                               reads.get("runtime_list"), gaps),
         "host": _host_section(summary, gaps),
@@ -595,22 +712,79 @@ def load_day_store(path=None) -> dict:
             "detail": ""}
 
 
+def load_problems(*, at: str, run=None) -> dict:
+    """§3.4's 当前问题 as a READING — the register, or a named reason there is none.
+
+    THROUGH THE COMMAND, like every other read on this card. `gather()` runs
+    `serverosctl` for the machine's numbers and does not open `/proc` itself;
+    this asks `serverosctl alert current` and does not open the register. Both
+    are the same rule: the command is the supported interface, and a card that
+    imported the internals would break silently the day those change shape while
+    the command kept its promise. It also keeps this module free of a second
+    answer to «what does the node hold» — the daemon is the register's only
+    writer and this is the door it already opens for `alert list`.
+
+    A FAILED READ IS A READING THAT SAYS SO, never an empty one. This is the
+    rule `gather` states for every other input: «nobody looked» and «looked,
+    found nothing» produce the same blank in a payload and are different facts.
+    On this block the difference is the whole of §3.4's ban on a false green —
+    a daemon that is not answering would otherwise print as «当前没有问题», which
+    is the one sentence this block must not say about a register nobody opened.
+    So the failure is turned into `alert_digest.unreadable`, which carries the
+    same keys as the real reading and says which of the two it is.
+
+    `run` is the seam the tests replace, the same one `gather` takes.
+    """
+    run = run or _default_run
+    payload, err = run(("alert", "current"))
+    if err:
+        digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
+        return digest.unreadable(err, at=at)
+    if not isinstance(payload, dict) or "state" not in payload:
+        digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
+        return digest.unreadable(
+            "the answer was not a reading of the register", at=at)
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--gateway-binding", default="")
     parser.add_argument("--business-calendar", default="")
     parser.add_argument("--day-store", default="")
+    parser.add_argument("--problems", default="",
+                        help="the 当前问题 reading, as JSON, or a path to it. "
+                             "Omitted, `serverosctl alert current` is asked — "
+                             "the same read the live card makes. A read that "
+                             "fails renders as 无法确认, never as «no problems»")
     parser.add_argument("--device-ref", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--at", default="")
     args = parser.parse_args(argv)
     collected = gather()
+    # A PATH OVERRIDE, not the only way to get a reading — the shape
+    # `--gateway-binding` / `--business-calendar` / `--day-store` already have,
+    # and for the same reason. The flag is for the hand-check that must be
+    # reproducible: two renders of two different registers are two documents,
+    # and a person diffing them is diffing the machine rather than the card. So
+    # a named file wins; with no flag this asks the node, which is what the live
+    # status card does, and the two renders then differ only by the instant.
+    #
+    # Whether it succeeded is not something the caller has to remember: a failed
+    # read comes back from `load_problems` as a reading that says so, and the
+    # block renders 无法确认 rather than «no problems» either way.
+    problems = load_problems(at=args.at)
+    if args.problems:
+        raw = Path(args.problems)
+        blob = raw.read_text(encoding="utf-8") if raw.exists() else args.problems
+        problems = json.loads(blob)
     snap = snapshot(collected, at=args.at, node_label=args.device_ref or None,
                     binding=load_binding(args.gateway_binding or None,
                                          device_ref=args.device_ref or None),
                     calendar=load_calendar(args.business_calendar or None),
-                    day=load_day_store(args.day_store or None))
+                    day=load_day_store(args.day_store or None),
+                    problems=problems)
     text = json.dumps(snap, ensure_ascii=False, indent=2)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")

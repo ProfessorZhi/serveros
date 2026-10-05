@@ -93,6 +93,7 @@ a frozen block and rows that disagree is refused rather than reconciled.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import importlib.util
 import json
@@ -123,19 +124,27 @@ FROZEN_SCHEMA = "serveros/alert-digest-frozen.v1"
 #: and a close-and-reopen does not.
 EPISODE_FIELDS = ("first_seen", "resolved_at")
 
-#: The four delta kinds, in the order a card reads them. Named here so the
+#: The five delta kinds, in the order a card reads them. Named here so the
 #: contract's `alerts.digest.kinds` has a literal to check against and so the
 #: vocabulary exists in exactly one place.
 NEW = "NEW"
 ESCALATED = "ESCALATED"
 RECOVERED = "RECOVERED"
 REOPENED = "REOPENED"
-KINDS = (NEW, ESCALATED, RECOVERED, REOPENED)
+#: Still open, same severity, same state — and a different KIND of fact. An
+#: alert that was a measurement still over its floor and has become a loss of
+#: observation (`hold_kind` moved between `above_floor` and `unmeasured` or
+#: `not_evaluated`) is the one change to an open alert that alters what the
+#: alert IS rather than how big it is. See `deltas` for why nothing less than
+#: that qualifies: a value that drifted is a value that drifted, and the
+#: register keeps the reading whether or not anybody was told about it.
+UPDATED = "UPDATED"
+KINDS = (NEW, ESCALATED, RECOVERED, REOPENED, UPDATED)
 
 #: How a kind sorts on the card. A thing that is wrong now beats a thing that
 #: has stopped being wrong, so the reader's eye lands on the first group even
 #: when the second is larger.
-_KIND_ORDER = {NEW: 0, ESCALATED: 0, REOPENED: 1, RECOVERED: 2}
+_KIND_ORDER = {NEW: 0, ESCALATED: 0, REOPENED: 1, UPDATED: 1, RECOVERED: 2}
 
 DEVICE_FALLBACK = "device:unknown"
 
@@ -302,6 +311,25 @@ def face_table() -> dict:
     face = tuple(presentation.attention_policy().get("on_the_face") or ())
     return {str(code): str(entry.get("level") or "") in face
             for code, entry in presentation.code_expectations().items()}
+
+
+def undecided_codes(*groups) -> list[str]:
+    """Codes this document CARRIES that no attention decision covers.
+
+    The catalogue is `alerts.attention.codes`, and `code_expectations()` is its
+    one flattening (`face_table` is built from the same call, so the two cannot
+    disagree about which codes are known).
+
+    A code absent from it has no level, and `may_interrupt` reads that as «not
+    on the face» — the same answer it gives a WATCH code. Those are not the
+    same sentence and this function exists to keep them apart: one says a
+    decision was made and the answer was no, the other says nobody decided
+    anything. Only the second is a hole in this node's own declaration.
+    """
+    decided = _presentation().code_expectations()
+    seen = {str((row or {}).get("code") or "")
+            for group in groups for row in (group or ())}
+    return sorted(code for code in seen if code and code not in decided)
 
 
 def severity_ranks() -> dict:
@@ -601,8 +629,28 @@ def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
         "subject_ref": alert.get("subject_ref"),
         "resource_ref": alert.get("resource_ref"),
         "state": alert.get("state"),
+        # Carried so that the one change to an OPEN alert that is not a
+        # severity and not a state can be seen at all — see `deltas`'s UPDATED
+        # branch. Null on every row that is not being held, which is the same
+        # distinction `alerting._graded_measurement` draws.
+        "hold_kind": alert.get("hold_kind"),
         "first_seen": alert.get("first_seen"),
         "resolved_at": alert.get("resolved_at"),
+        # WHEN THIS WAS LAST OBSERVED, which is not the same fact as when the
+        # card was made and used to be spelled as if it were: `_event_of` set
+        # `last_seen` to `resolved_at or at`, so every open finding on every
+        # card claimed to have been observed at the instant of rendering. On
+        # this node that is false for 1,091 rows — `HIGH_MEMORY_SUSTAINED` rows
+        # held since 2026-09-21 with `hold_kind: unmeasured`, last looked at ten
+        # minutes after they opened. A card built from `at` says "仍是现在" about
+        # a reading thirteen days old, and §4's second question («现在还存在
+        # 吗») cannot be answered without this field.
+        #
+        # It travels with `hold_kind` because the two answer it together: a row
+        # still being graded and a row nobody has graded since the 21st are both
+        # OPEN, and only the pair separates "still above its floor" from "nobody
+        # has looked".
+        "last_seen": alert.get("last_seen"),
         "duration_seconds": duration,
         "occurrence_count": alert.get("occurrence_count"),
         # §7/§8. Present when the producer attributed this group to an owner,
@@ -640,7 +688,29 @@ def _row_of(alert: dict, *, at: str, ranks: dict, words: dict) -> dict:
 
 def deltas(store, cursor: DeliveryCursor, *, at: str,
            policy_block: dict | None = None) -> dict:
-    """Classify the register against what the person was last told.
+    """Classify the register against what the ledger last ACCOUNTED for.
+
+    THE TWO AXES, AND WHY THEY ARE TWO
+    ----------------------------------
+    An alert's own state — `state`, `severity`, `hold_kind` — is what happened
+    to the world, and `alerting` owns it. This cursor is what this node has
+    put in front of a decision, and it is a fact about a conversation rather
+    than about the machine. They are read against each other and neither
+    derives the other: `record` moves the cursor when a transport said
+    DELIVERED, and `account` moves it when a pass decided not to send at all
+    and said why. `announced` on a cursor entry stays the answer to the
+    narrower question "was a person told", so an identity that was accounted
+    for and declined is not thereby described as one somebody heard about.
+
+    That second writer is what makes `NEW` mean what it says. `record is None`
+    below is not "we have not spoken about this recently" — it is "this
+    identity has never been accounted for at all", which is true of exactly
+    one tick in its life: the one on which it first opened. Before `account`
+    existed, a pass that declined everything wrote nothing, so the same rows
+    were re-classified NEW on every tick forever — measured 2026-10-04, 827
+    rows pinned at the baseline's delivery time of 2026-10-03T15:39:57Z while
+    the register had not changed. The classification was never wrong; nothing
+    was maintaining the thing it reads.
 
     Returns the delta rows and the two counts that are deliberately NOT rows:
     the backlog (open before anybody wired a ledger) and the silent
@@ -735,6 +805,14 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
                 now_rank = ranks.get(str(alert.get("severity")), -1)
                 if now_rank > told_rank:
                     kind = ESCALATED
+                elif (alert.get("hold_kind") and record.get("hold_kind")
+                      and alert["hold_kind"] != record["hold_kind"]):
+                    # Both halves are stated and they differ, so this is a
+                    # change between two known kinds and not the first
+                    # classification of a row that had none. `elif` and not a
+                    # second `if`: a severity that rose is an ESCALATED, and
+                    # saying so is the stronger of the two statements.
+                    kind = UPDATED
         # ACKNOWLEDGED and SNOOZED are what a PERSON did to an alert. They are
         # not deltas: the identity was already announced, the condition has not
         # changed, and a card that re-announced somebody's own acknowledgement
@@ -747,7 +825,11 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
         row["was_announced"] = was_announced
         row["backlog"] = (record is not None and not was_announced
                           and first_seen < baseline)
-        row["immediate"] = (kind in (NEW, ESCALATED, REOPENED)
+        # `_PROACTIVE_KINDS` and not the tuple spelled out again: "may cause an
+        # urgent send" and "may cause a card at the interval" are the same
+        # question about the same kinds, and two copies of the list is how they
+        # come to disagree. `UPDATED` is deliberately in neither.
+        row["immediate"] = (kind in _PROACTIVE_KINDS
                             and row["severity"] in immediate)
         if include and row["severity"] not in include:
             # Declared out of the digest entirely. Kept out of `rows` and
@@ -770,6 +852,178 @@ def deltas(store, cursor: DeliveryCursor, *, at: str,
         "backlog": backlog,
         "silent_resolutions": silent_resolutions,
     }
+
+
+#: §3.4: how many distinct fault domains the status card's 当前问题 block names
+#: before it stops naming and starts counting. Three, the same number the alert
+#: card's own face uses, and not a second policy — the two blocks are the same
+#: class of answer at two levels of detail, and a reader who learns «three and
+#: then a count» on one card should not have to learn a different number on the
+#: other. The COUNT is never capped: §3.4 says the 0–2 limit that governs how
+#: many things the monitor focuses on is not a limit on how many are wrong.
+CURRENT_CODES_SHOWN = 3
+
+
+def current(store, *, at: str, limit: int = CURRENT_CODES_SHOWN) -> dict:
+    """What is wrong RIGHT NOW — the register itself, graded by the contract.
+
+    WHY THIS IS NOT `deltas`, WHICH IS THE POINT OF IT
+    --------------------------------------------------
+    `deltas` answers "what changed since a person was last told", and every
+    field of it is relative to a cursor. A row that is open, graded, and has
+    already been accounted for produces NO delta at all — the cursor has it,
+    nothing about it moved, and `deltas` passes over it in silence. That is
+    correct for an incident card, which exists to interrupt about changes. On a
+    status card it is the one failure mode §3.4 names: the question is «现在
+    有什么问题», and an answer computed from changes says «nothing» for the most
+    durable problem on the node.
+
+    Measured on this host 2026-10-04 before this function existed: the register
+    held 1,357 OPEN rows and the delta document carried **0** of them whose code
+    the contract puts on a face — not because there were none, but because an
+    open row that has not moved is not a delta. A block built on `deltas` would
+    have been green on a node whose register was, every tick, non-empty.
+
+    WHAT "A PROBLEM" MEANS HERE, and it is a contract read and not a choice
+    ----------------------------------------------------------------------
+    A row qualifies when BOTH hold: its `state` is a live one, and its code is a
+    code a person may be interrupted for — `may_interrupt`, which reads
+    `alerts.attention.on_the_face` and nothing else. The second half is what
+    keeps this block from becoming the register dump: the contract carries
+    `HIGH_MEMORY_SUSTAINED`, `AGE_WITHOUT_ACTIVITY` and the rest of the
+    consumption and history families at WATCH and INFORMATIONAL, which are
+    readings a reader is not interrupted for and which §3.4 files under
+    Diagnostic. They are still COUNTED here, in `watch`, for the reason §5 gives
+    everywhere else: a short block is only honest with its omissions beside it.
+
+    `ACKNOWLEDGED` and `SNOOZED` are live states and are NOT rows. A person who
+    acknowledged a finding has taken it; re-listing it as a current problem on
+    the next status card would be the card arguing with its own reader. They are
+    counted so that neither is silent, and the count is where a reader can see
+    that the block's own total is not the register's.
+
+    NO CURSOR, NO BASELINE, NO `hold_kind` FILTER. This reads `store.alerts()`
+    and nothing else, so it cannot be a second opinion about what has been said:
+    the register's state is the whole of its input.
+
+    THE LEVEL PRINTED IS THE CODE'S OWN, and the escalation axis is NOT applied
+    — `presentation.attention_of` can move a `declared` code from
+    `escalation.from` to `escalation.to` when the finding's subject resolves to
+    a registration marked `criticality: critical`, and that input is the name
+    index, which no live caller of the incident card supplies either
+    (`cli.cmd_card_alert` and `cards.main` both call `alert_model` without
+    `names`). So the two cards agree today — neither escalates — and this is
+    written down because they would stop agreeing the moment one of them was
+    given the index. The row already carries what the reader would need
+    (`subject_ref`), so closing the gap is a caller change and not a change
+    here.
+    """
+    table = face_table()
+    ranks = severity_ranks()
+    words = _alerting().severity_words()
+    levels = {str(code): str(entry.get("level") or "")
+              for code, entry in _presentation().code_expectations().items()}
+    open_rows, live_other = [], collections.Counter()
+    by_code: dict[str, int] = collections.Counter()
+    watch = collections.Counter()
+    undecided = collections.Counter()
+    for alert in store.alerts().values():
+        state = str(alert.get("state") or "")
+        if state in ("ACKNOWLEDGED", "SNOOZED"):
+            if table.get(str(alert.get("code") or "")):
+                live_other[state] += 1
+            continue
+        if state != "OPEN":
+            # RESOLVED is not a current problem in any spelling. §3.4: 已恢复
+            # 累计 does not change the current colour, and this block is the
+            # colour.
+            continue
+        code = str(alert.get("code") or "")
+        level = levels.get(code)
+        if not table.get(code):
+            if level is None:
+                undecided[code] += 1
+            else:
+                watch[code] += 1
+            continue
+        by_code[code] += 1
+        open_rows.append((level, _row_of(alert, at=at, ranks=ranks, words=words)))
+
+    # The contract's axis order IS the sort order, as on the alert card, so a
+    # REVIEW cannot print above an ACTION_REQUIRED. Inside one level the worst
+    # severity leads, and the tie is broken by age so that two readings of one
+    # severity come out in the order they started rather than in the order a
+    # dict happened to yield them.
+    order = _presentation().AXIS
+    open_rows.sort(key=lambda pair: (order.index(pair[0]),
+                                     -pair[1]["severity_rank"],
+                                     str(pair[1].get("first_seen") or "")))
+    # ONE ROW PER CODE, the highest-ranked one, because §3.4 asks for distinct
+    # fault domains and three lines naming one fault three times is the register
+    # dump arriving in a smaller font. The rows left out are not dropped: the
+    # code they belong to is `by_code`'s count and the whole set is one
+    # `serverosctl alert list` away.
+    shown, seen = [], set()
+    for level, row in open_rows:
+        code = str(row.get("code") or "")
+        if code in seen:
+            continue
+        seen.add(code)
+        shown.append({**row, "attention": level,
+                      "attention_word": _attention_words().get(level, level),
+                      "of_code": by_code[code]})
+        if len(shown) >= limit:
+            break
+    return {
+        "at": at,
+        "state": "READ",
+        "shown": shown,
+        "by_code": dict(by_code),
+        "counts": {
+            # The accurate count of what is wrong, capped by nothing. `shown`
+            # is a rendering decision; this is the fact.
+            "open_on_face": sum(by_code.values()),
+            "codes": len(by_code),
+            "ACTION_REQUIRED": sum(1 for level, _r in open_rows
+                                   if level == "ACTION_REQUIRED"),
+            "REVIEW": sum(1 for level, _r in open_rows if level == "REVIEW"),
+            "acknowledged": live_other["ACKNOWLEDGED"],
+            "snoozed": live_other["SNOOZED"],
+        },
+        "watch": {"count": sum(watch.values()), "by_code": dict(watch)},
+        "undecided": {"count": sum(undecided.values()),
+                      "codes": sorted(undecided)},
+        "note": ("这是登记表的当前状态，不是自上次播报以来的变化；"
+                 "已恢复的累计不在这里。完整清单见 `serverosctl alert list`。"),
+    }
+
+
+def unreadable(reason: str, *, at: str) -> dict:
+    """The reading for «there is no reading», which is not the same as «none».
+
+    §3.4 lets this block be green only with 足够的相关观测; a register nobody
+    could open is the opposite of that, and a block that rendered it as «无当前
+    问题» would be the false green the whole round is about. The shape is the
+    same as `current`'s so that a renderer reads one document with two answers
+    in it rather than two documents.
+    """
+    return {"at": at, "state": "UNAVAILABLE", "shown": [], "by_code": {},
+            "counts": {}, "watch": {"count": 0, "by_code": {}},
+            "undecided": {"count": 0, "codes": []},
+            "why": reason,
+            "note": ("没有读到告警登记表，因此这一块无法回答「现在有什么问题」；"
+                     "空白不是「没有问题」。")}
+
+
+def _attention_words() -> dict:
+    """`{level: the word a person reads}`, from the contract.
+
+    The same door `may_interrupt` uses and for the same reason: the contract's
+    vocabulary is the contract's, and a word spelled out here would be a second
+    authority for it — the one thing `notification-contract.yaml` says no other
+    file may be.
+    """
+    return dict(_presentation().attention_policy().get("words") or {})
 
 
 def _canonical(blob) -> bytes:
@@ -813,6 +1067,12 @@ def row_version(row: dict) -> dict:
         "severity": row.get("severity"),
         "severity_rank": int(rank) if isinstance(rank, int) else -1,
         "state": row.get("state"),
+        # The fourth field the ledger compares against, and the only one that
+        # is not a severity or a state. It is frozen here with the other three
+        # for the same reason: `record` runs after the transport answered, and
+        # reading it off the register then would let a hold_kind that moved in
+        # between be recorded as what the person was shown.
+        "hold_kind": row.get("hold_kind"),
         "first_seen": row.get("first_seen"),
         "resolved_at": row.get("resolved_at"),
         "episode": episode_of(row),
@@ -954,6 +1214,29 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # printed on a card must not preempt the interval either.
     # ONE table for the whole decision, not one per row. See `face_table`.
     face = face_table()
+
+    # §八-B. An INCOMPLETE admission catalogue is an internal contract failure,
+    # and it must not arrive here as a decline. `may_interrupt` answers False
+    # for a code the catalogue has never seen, and that False is
+    # character-for-character the answer it gives a code that was decided and
+    # put off the face — so every decline below would name those findings and
+    # say «none of them may occupy a line on the card», which asserts a
+    # decision nobody made. Measured on this node 2026-10-04: the register holds
+    # 13,242 rows, 0 of them on an undecided code, so this cannot fire on data
+    # that is merely old — only on a code that shipped without a row in
+    # `alerts.attention.codes`, which is exactly a defect in this node's own
+    # declaration. Refusing loudly is the point: this node would rather fail to
+    # answer than answer «nothing worth saying» about a finding it never decided
+    # how to say. `test_attention.py` refuses at build time for the same reason.
+    holes = undecided_codes(digest.get("rows"), digest.get("held"))
+    if holes:
+        raise DigestError(
+            f"准入目录不完整：{len(holes)} 个 code 没有任何注意力决定 —— "
+            f"{'、'.join(holes)}。这不是「不发」：`may_interrupt` 对一个没见过的 "
+            f"code 答 False，而那和「这个 code 已被决定、只是不在卡面上」逐字相同，"
+            f"于是这些发现会被静默丢掉，退场理由却读起来像一次政策决定。"
+            f"要么把它们补进 alerts.attention.codes，要么让产生它们的检测器停下来")
+
     urgent = [row for row in digest["shown"]
               if row["immediate"] and may_interrupt(row, table=face)]
 
@@ -964,17 +1247,77 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     if cursor.last_attempt_at():
         since_attempt = _seconds_between(cursor.last_attempt_at(), at)
 
+    # §八-B. `held` was read by NEITHER door below, and the cost was not a
+    # missing card — it was a FALSE SENTENCE on the card that was correctly
+    # not sent. A held row is a subject that stopped being measured, or a value
+    # still up; it is not a delta, so it lives in `digest["held"]` and never in
+    # `rows`, and both doors here and `account` below read only `rows`/`shown`.
+    # Measured on this node 2026-10-04: 1,090 rows were held, and the decline
+    # said "nothing in the register changed since the last digest that was told
+    # to a person". 1,090 things were stuck and the sentence said nothing was.
+    #
+    # The count does not by itself make a card exist — a held row has not
+    # changed, and the contract is explicit that an open alert not worth saying
+    # last hour is not news this hour for being an hour older. What it changes
+    # is that the DECLINE IS ATTRIBUTED: every refusal names what it refused,
+    # so "nothing was sent" can never again be a sentence about a register with
+    # 1,090 stuck rows in it.
+    held = digest.get("held") or []
+    held_by_kind: dict[str, int] = {}
+    held_by_code: dict[str, int] = {}
+    held_announced = 0
+    for row in held:
+        kind = str(row.get("hold_kind") or "unspecified")
+        held_by_kind[kind] = held_by_kind.get(kind, 0) + 1
+        code = str(row.get("code") or "")
+        held_by_code[code] = held_by_code.get(code, 0) + 1
+        if row.get("was_announced"):
+            held_announced += 1
+    # The integrity finding is the ONE thing in `held` that can occupy a line
+    # on the card, and `presentation.integrity_finding` is the ONE authority on
+    # which held rows those are — asked here rather than re-derived, because a
+    # second reading of the same rule is the second authority this section
+    # exists to prevent.
+    integrity = _presentation().integrity_finding(held)
+    integrity_face = bool(integrity) and _presentation().on_the_face(
+        (integrity.get("attention") or {}).get("level"))
+
+    def with_held(note: str) -> str:
+        """A decline that names the held rows it is declining over."""
+        if not held_by_kind:
+            return note
+        parts = "、".join(f"{k} {v}" for k, v in sorted(held_by_kind.items()))
+        extra = (f"；同时 {len(held)} 条主体处于持有状态（{parts}），"
+                 f"其中 {held_announced} 条曾经被告知过。持有不是增量，"
+                 f"不因此产生一条消息，但它也不等于「登记表没有变化」")
+        if integrity is not None and not integrity_face:
+            extra += (f"；其中 {integrity['count']} 条构成监控完整性发现，"
+                      f"按契约其注意力级别为 "
+                      f"{(integrity.get('attention') or {}).get('level')}，"
+                      f"不在卡面上")
+        return note + extra
+
     generation = cursor.generation() + 1
     key = f"alert-digest-{digest.get('device_ref') or 'device'}-{generation}"
     out = {"send": False, "why": "", "generation": generation,
            "idempotency_key": key, "immediate": [r["key"] for r in urgent],
            "interval_seconds": interval,
            "seconds_since_last_digest": since_digest,
-           "seconds_since_last_attempt": since_attempt}
+           "seconds_since_last_attempt": since_attempt,
+           # §八-B. The declined half of this pass, stated rather than dropped.
+           # `held_total` is not a reason to send and is not counted as one; it
+           # is the number that makes `why` checkable, so that a quiet hour on a
+           # register with a backlog cannot read as a quiet register.
+           "held": {"total": len(held), "by_kind": held_by_kind,
+                    "by_code": held_by_code, "announced": held_announced,
+                    "integrity_finding": (None if integrity is None else
+                                          integrity["count"]),
+                    "integrity_on_the_face": integrity_face}}
 
-    if not digest["rows"]:
-        out["why"] = ("nothing in the register changed since the last digest "
-                      "that was told to a person")
+    if not digest["rows"] and not integrity_face:
+        out["why"] = with_held(
+            "nothing in the register changed since the last digest that was "
+            "told to a person")
         return out
 
     if urgent:
@@ -1007,12 +1350,6 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     proactive = [row for row in digest["rows"]
                  if row.get("kind") in _PROACTIVE_KINDS
                  and row.get("severity") in floor]
-    if not proactive:
-        out["why"] = (f"{len(digest['rows'])} finding(s), none at "
-                      f"{'/'.join(floor)} and none immediate — a batch of "
-                      f"recoveries, notices or already-told findings is not "
-                      f"worth a message of its own")
-        return out
 
     # §27's second half, and the half that was missing. The severity floor is
     # NECESSARY and not sufficient: it asks "may this cause a card" without ever
@@ -1021,29 +1358,51 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # report, so the face test decides, and the two doors above and here are the
     # same door.
     worthy = [row for row in proactive if may_interrupt(row, table=face)]
-    if not worthy:
-        out["why"] = (f"{len(proactive)} finding(s) at {'/'.join(floor)}, and "
-                      f"none of them may occupy a line on the card — a card "
-                      f"caused by a finding it cannot print arrives saying there "
-                      f"is nothing to do")
+
+    # §八-B, the door `held` never had. An integrity finding is a subject this
+    # node SAID should exist and can no longer observe. It is not a delta and
+    # it is not in `rows`, so no door above could see it; and the loss of
+    # observation is precisely what makes every other judgement about that code
+    # unanswerable, so it is worth a message on its own terms and not only as
+    # a line on somebody else's card. It takes the INTERVAL door and not the
+    # immediate one: it carries no severity, and `cooldowns` is a table about
+    # severity — inventing one here would be a second vocabulary for the axis
+    # the immediate door already reads. When the contract puts the code off the
+    # face this is False by the same table that decides every row, and
+    # `with_held` then says so out loud instead of leaving it implied.
+    if not worthy and not integrity_face:
+        out["why"] = with_held(
+            f"{len(digest['rows'])} finding(s), none at {'/'.join(floor)} and "
+            f"none immediate, and no monitoring-integrity finding on the face — "
+            f"a batch of recoveries, notices or already-told findings is not "
+            f"worth a message of its own"
+            if not proactive else
+            f"{len(proactive)} finding(s) at {'/'.join(floor)}, and none of "
+            f"them may occupy a line on the card — a card caused by a finding "
+            f"it cannot print arrives saying there is nothing to do")
         return out
 
     if since_digest is None or since_digest >= interval:
         out["send"] = True
-        out["why"] = (f"the {interval:.0f}s interval has elapsed since the last "
-                      f"delivered digest, and {len(worthy)} of "
-                      f"{len(digest['rows'])} finding(s) are at "
-                      f"{'/'.join(floor)} and may occupy a line on the card"
-                      if since_digest is not None else
-                      f"no digest has been delivered yet and {len(worthy)} of "
-                      f"{len(digest['rows'])} finding(s) are at "
-                      f"{'/'.join(floor)} and may occupy a line on the card")
+        lead = (f"the {interval:.0f}s interval has elapsed since the last "
+                f"delivered digest" if since_digest is not None else
+                f"no digest has been delivered yet")
+        if worthy:
+            out["why"] = (f"{lead}, and {len(worthy)} of {len(digest['rows'])} "
+                          f"finding(s) are at {'/'.join(floor)} and may occupy "
+                          f"a line on the card")
+        else:
+            out["why"] = (f"{lead}, and {integrity['count']} subject(s) this "
+                          f"node declared should exist can no longer be "
+                          f"observed — a monitoring-integrity finding at "
+                          f"{(integrity.get('attention') or {}).get('level')}, "
+                          f"which the contract puts on the face")
         return out
 
-    out["why"] = (f"{len(digest['rows'])} finding(s), {len(worthy)} of them at "
-                  f"{'/'.join(floor)} and printable, none immediate, and only "
-                  f"{since_digest:.0f}s of the {interval:.0f}s interval have "
-                  f"elapsed")
+    out["why"] = with_held(
+        f"{len(digest['rows'])} finding(s), {len(worthy)} of them at "
+        f"{'/'.join(floor)} and printable, none immediate, and only "
+        f"{since_digest:.0f}s of the {interval:.0f}s interval have elapsed")
     return out
 
 
@@ -1213,6 +1572,7 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
         episode = version.get("episode") if version else None
         told_severity = version.get("severity") if version else None
         told_state = version.get("state") if version else None
+        told_hold_kind = version.get("hold_kind") if version else None
         if version is not None and version.get("kind"):
             kind = version["kind"]
         if version is not None:
@@ -1254,6 +1614,7 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             # on a row that was composed with something else.
             told_severity = alert.get("severity")
             told_state = alert.get("state")
+            told_hold_kind = alert.get("hold_kind")
         if alert is None:
             # The register no longer holds it: the detector resolved it in the
             # seconds between composing and delivering. Recorded rather than
@@ -1269,6 +1630,7 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             missing.append(key)
             keys[key] = {"announced": True, "at": at, "kind": kind,
                          "severity": told_severity, "state": told_state,
+                         "hold_kind": told_hold_kind,
                          "episode": episode,
                          "frozen": version is not None,
                          "payload_version": payload_version,
@@ -1280,6 +1642,7 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             "kind": kind,
             "severity": told_severity,
             "state": told_state,
+            "hold_kind": told_hold_kind,
             "episode": episode,
             "frozen": version is not None,
             "payload_version": payload_version,
@@ -1321,6 +1684,131 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             "unnamed_rows": sorted(unnamed), "disagreed_rows": sorted(contradicted),
             "payload_version": payload_version, "payload_hash": payload_hash,
             "cursor": summary}
+
+
+def account(cursor: DeliveryCursor, *, at: str, digest: dict, why: str,
+            owed) -> dict:
+    """Say in the ledger that this pass declined these rows, and why.
+
+    `record` answers "what did the transport do with what it carried". This
+    answers the other half of the same pass: what the pass looked at and
+    deliberately did not carry, and the sentence that explains it. Both write
+    the same cursor and they write DIFFERENT fields on it — `record` sets
+    `announced` and advances the generation, this sets `accounted_at` and
+    `accounted_why` and leaves `announced` exactly as it found it. A declined
+    identity is therefore one this ledger has ACCOUNTED FOR and which nobody
+    has been TOLD about, and those are two different sentences about it.
+
+    TWO WRITERS, ONE QUESTION
+    -------------------------
+    Without this function the ledger only ever moved on DELIVERED, so the
+    classification in `deltas` — which is correct and was never the defect —
+    was reading a document nothing maintained. Every row a pass declined came
+    back as `NEW` on the next pass, and the pass declined it again, forever:
+    measured 2026-10-04, 827 rows re-derived as new every tick against a
+    baseline delivery time of 2026-10-03T15:39:57Z. `NEW` is supposed to mean
+    "the tick on which this identity first opened" and it means that again
+    once somebody writes down that the tick has been dealt with.
+
+    `owed` IS REQUIRED AND HAS NO DEFAULT
+    -------------------------------------
+    It is the set of keys this pass is still OWED to somebody: the rows the
+    card carried, or would have carried and will be retried after a failed
+    send. Everything else in `digest["rows"]` is declined here. A default of
+    "everything is owed" would make this function a no-op that looks like it
+    ran; a default of "nothing is owed" would account rows that are still
+    pending their first send. A caller has to state which it means, and the
+    three real callers each have one answer:
+
+      * the decision was not to send at all      -> `owed=()`
+      * the send was delivered                   -> `owed=shown_keys`
+      * the send failed and will be retried      -> `owed=shown_keys`
+
+    AN IMMEDIATE ROW IS NEVER ACCOUNTED HERE
+    ----------------------------------------
+    A row at an immediate severity has been declared worth interrupting
+    somebody for, and this function's whole effect is to stop a row being
+    reported again. Accounting one would be the silent drop the admission
+    contract forbids — a finding that should have been said, marked as dealt
+    with because it could not be printed. So those rows are REFUSED, left
+    un-accounted so the next pass re-derives them, and named in the return
+    value under `unaccounted_immediate`. That list being non-empty is not a
+    routine condition; it is the admission catalogue failing to admit
+    something it declared actionable, and it is reported rather than resolved.
+
+    THE CLOCKS ARE NOT TOUCHED
+    --------------------------
+    `last_attempt_at` and `last_digest_at` keep their meanings — a transport
+    was tried, and a digest arrived. Declining to send is neither, and a
+    function that stamped them would make `decision`'s interval door believe a
+    card had gone out and that this node had said something it had not.
+    """
+    owed_keys = set()
+    for item in owed or ():
+        key = item.get("key") if isinstance(item, dict) else item
+        if key:
+            owed_keys.add(str(key))
+
+    rows = [row for row in (digest.get("rows") or [])
+            if str(row.get("key") or "") and str(row["key"]) not in owed_keys]
+    declined = [row for row in rows if not row.get("immediate")]
+    refused = [{"key": str(row["key"]), "code": row.get("code"),
+                "severity": row.get("severity"), "kind": row.get("kind"),
+                "why": (f"{row.get('kind')} at {row.get('severity')} is worth "
+                        f"interrupting somebody for and the card did not carry "
+                        f"it; accounting it here would mark a finding that "
+                        f"should have been said as dealt with")}
+               for row in rows if row.get("immediate")]
+
+    if not declined:
+        return {"at": at, "why": why, "accounted_keys": 0, "accounted": [],
+                "owed": sorted(owed_keys), "declined": 0,
+                "unaccounted_immediate": refused, "cursor": cursor.summary(),
+                "note": ("nothing to account for: every delta this pass "
+                         "composed is still owed to somebody"
+                         if not refused else
+                         "the only deltas this pass declined were immediate, "
+                         "and they are left pending rather than accounted")}
+
+    keys = cursor.keys()
+    accounted: list[str] = []
+    for row in declined:
+        key = str(row["key"])
+        held = keys.get(key)
+        held = held if isinstance(held, dict) else {}
+        keys[key] = {
+            # UNCHANGED, and it is the point of the function that it is. This
+            # is the announced/delivery axis and accounting does not move it.
+            "announced": bool(held.get("announced")),
+            "at": held.get("at") or at,
+            "kind": row.get("kind"),
+            "severity": row.get("severity"),
+            "state": row.get("state"),
+            "hold_kind": row.get("hold_kind"),
+            "episode": held.get("episode") or episode_of(row),
+            "frozen": bool(held.get("frozen")),
+            "payload_version": held.get("payload_version"),
+            # Preserved rather than reset: a delivery that is still in flight
+            # for this key is compared against it, and writing 0 here would
+            # un-supersede a late ACK that is older than what the ledger
+            # already knows.
+            "generation": int(held.get("generation") or 0),
+            # The two fields that make this entry readable as what it is.
+            "accounted_at": at,
+            "accounted_why": why,
+        }
+        accounted.append(key)
+
+    summary = cursor.commit(keys=keys)
+    return {"at": at, "why": why, "accounted_keys": len(accounted),
+            "accounted": sorted(accounted), "owed": sorted(owed_keys),
+            "declined": len(rows), "unaccounted_immediate": refused,
+            "cursor": summary,
+            "note": ("`announced` is untouched: these identities have been "
+                     "accounted for and nobody has been told about them. A "
+                     "later pass finds them in the cursor and stops calling "
+                     "them NEW — which is what `NEW` always meant, and what "
+                     "nothing was maintaining until this call existed.")}
 
 
 def main(argv: list[str] | None = None) -> int:

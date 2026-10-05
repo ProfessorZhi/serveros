@@ -991,8 +991,8 @@ def unevaluated(rows: list[dict]) -> list[dict]:
     return out
 
 
-def levels(*, groups=None, host_facts=None, error_windows=None) -> dict:
-    """Every GRADED measurement, reported whether or not it fired.
+def levels(*, groups=None, host_facts=None, error_windows=None) -> tuple[dict, set]:
+    """Every GRADED measurement, and the subjects they were about.
 
     A signal list cannot answer "has this come back down far enough to close
     the alert about it", because a signal is only emitted ABOVE its threshold:
@@ -1006,13 +1006,38 @@ def levels(*, groups=None, host_facts=None, error_windows=None) -> dict:
     on purpose: an alert about one of those closes when it stops being
     reported, and giving it a level row would invent a measurement nobody
     takes.
+
+    THE SECOND RETURN VALUE IS NOT A CONVENIENCE
+    --------------------------------------------
+    It is the negative half of the first, and it exists because the alert layer
+    could not tell two opposite facts apart. A subject with no row in `out` is
+    either a subject that was looked at and could not be read — genuinely
+    unmeasured, and an alert about it must HOLD, because absence of a
+    measurement is not recovery — or a subject that is no longer there at all.
+
+    Measured on this node 2026-10-04, that gap was not academic: 1,088 alerts
+    were stuck OPEN for weeks with `hold_kind: unmeasured`. **All 1,088 had a
+    subject that no longer existed** — runtime groups whose ref embeds a pid,
+    so the ref is a lifetime and the group ends. Every one of them was being
+    held open forever under the sentence "a subject that stopped being measured
+    has not recovered", when the true sentence was "the thing is gone".
+
+    So the pass now says which subjects it looked at, and a reader with both
+    halves can tell "not read" from "not there". The set includes subjects whose
+    value came back unreadable: those were looked at, and their rows are absent
+    for the unmeasurable reason, which is the case that must keep holding.
     """
     out: dict = {}
+    looked_at: set[str] = set()
     thresholds = load_thresholds()
 
     for group in groups or []:
         ref = group["ref"]
         agg = group.get("aggregate") or {}
+        # The group is in this pass's process table, so it exists this pass —
+        # whether or not its two figures were readable. Registered before the
+        # value test for exactly that reason.
+        looked_at.add(ref)
         rows = (
             ("HIGH_CPU_SUSTAINED", agg.get("cpu_percent"),
              thresholds["cpu_percent_high"]),
@@ -1025,22 +1050,25 @@ def levels(*, groups=None, host_facts=None, error_windows=None) -> dict:
             out[f"{code}|{ref}"] = _level_row(code, ref, value, threshold)
 
     for fact in (host_facts or {}).get("filesystems") or []:
+        mount = fact.get("mount")
+        subject = f"filesystem:{mount}"
+        looked_at.add(subject)
         used = fact.get("used_percent")
         if used is None:
             continue  # unread is not empty
-        mount = fact.get("mount")
         code = "ROOT_FS_PRESSURE" if mount == "/" else "DATA_FS_PRESSURE"
-        out[f"{code}|filesystem:{mount}"] = _level_row(
-            code, f"filesystem:{mount}", used, thresholds["filesystem_percent_high"])
+        out[f"{code}|{subject}"] = _level_row(
+            code, subject, used, thresholds["filesystem_percent_high"])
 
     for ref, window in (error_windows or {}).items():
+        looked_at.add(ref)
         count = window.get("count")
         if count is None:
             continue
         out[f"REPEATED_ERROR_LOOP|{ref}"] = _level_row(
             "REPEATED_ERROR_LOOP", ref, count, thresholds["error_repeats_high"])
 
-    return out
+    return out, looked_at
 
 
 def _level_row(code: str, subject: str, value, threshold) -> dict:

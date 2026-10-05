@@ -106,11 +106,14 @@ scopes:
 actuators:
 
   # ---------------------------------------------------------------------
-  # Read-only git. Eight modules shell out to git for a revision, a tree
+  # Read-only git. Twelve modules shell out to git for a revision, a tree
   # listing or a blob. Every one is a read; none writes to a repository, and
   # `GIT_OPTIONAL_LOCKS=0` is set where it matters so that not even the index
-  # is refreshed. Declared as one capability rather than eight because the
-  # question a reviewer has is the same question for all eight.
+  # is refreshed. Declared as one capability rather than twelve because the
+  # question a reviewer has is the same question for all twelve. (The count in
+  # this sentence was already stale when the twelfth site arrived, which is
+  # itself the argument for the table below being the set and this line being
+  # only a summary of it.)
   # ---------------------------------------------------------------------
   - id: read-only-git-queries
     kind: exec
@@ -141,6 +144,13 @@ actuators:
       # revision is recorded for a reader, never used to decide validity, so a
       # failed or absent git is `UNKNOWN` rather than a refusal.
       - {file: scripts/verify.py, symbols: [revision_of]}
+      # §12's screenshot producer asks each side which revision it photographed,
+      # and it is the third `status --porcelain` site — the second one where the
+      # flag is load-bearing rather than decorative. It reads a baseline tree
+      # that is not this worktree's, so a refreshed index there would be a write
+      # into somebody else's checkout; it sets the same flag, for the same
+      # reason, and the reason is stated at the call site too.
+      - {file: runtime/card_shots.py, symbols: [_revision.git]}
       - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
       - {file: skills/serveros/scripts/architecture_check.py, symbols: [_git]}
       - {file: skills/serveros/scripts/map_projection.py, symbols: [_git]}
@@ -1112,3 +1122,123 @@ actuators:
       that reason verbatim rather than turning it into a status.
     sites:
       - {file: runtime/bounded_invocation.py, symbols: [invoke_once]}
+
+  # ---------------------------------------------------------------------
+  # §12's screenshot producer — `runtime/card_shots.py`. It is in this table
+  # because it is in the tree, not because it is on a path anyone but a person
+  # runs. Stated once here so that the three entries below can each be about
+  # their own reach: the module is invoked as
+  # `python runtime/card_shots.py --renderer <tree> --out <dir> --label after
+  # --run-ref <ref>`, it has no daemon, no timer, no unit, no MCP verb, no CLI
+  # subcommand and no caller in this repository, and the only thing that
+  # imports it is `tests/test_card_shots.py`. It sends nothing, to anyone: the
+  # renderer it drives reaches no transport, which is checkable rather than
+  # asserted — the import surface of `card_scenarios`, `cards` and
+  # `presentation` is importlib/json/pathlib/re/datetime/yaml and no module in
+  # that closure imports `message_transport` or `document_transport`.
+  #
+  # It is declared rather than deleted for the reason the header gives: an
+  # exemption written once must not silently keep covering a file that has
+  # since grown a second call site. This file grew five at once, and the
+  # mutation guard's own run is what said so.
+  # ---------------------------------------------------------------------
+  - id: card-shots-drives-a-headless-browser
+    kind: unresolved_argv
+    verb: "<argv0>"
+    why: >-
+      `subprocess.run(command, capture_output=True, timeout=self.timeout)` in
+      `Chrome._run`. The scanner reports it because `command[0]` is
+      `self.binary` — the path to a browser, not a literal — and everything the
+      scanner cannot read is written here instead. The `verb` above is the
+      placeholder for exactly that and not for a command nobody can see: the
+      scanner read this argv in full, flag by flag, and stopped at its first
+      word. An entry whose verb is a bare `<argv0>` is the narrower kind of
+      gap, and the paragraphs below are what close it. The binary is a
+      parameter
+      with the default `/opt/google/chrome/chrome`, and it is a parameter for a
+      measured reason the class docstring records: the Playwright Chromium on
+      this node prints a DOM but hangs on `--screenshot` even for a one-
+      paragraph page, and the shared persistent browser the MCP server attaches
+      to belongs to another account. `--chrome` is how a person names a
+      different one; nothing in the tree passes it.
+      WHAT IT IS ASKED TO DO is fixed and short, and it is the whole of the
+      reach: `--headless=new`, `--screenshot=<a path the caller supplies>` or
+      `--dump-dom`, and a single `file://` URL. The URL is built by this module
+      from its own wrapper page under the caller's output directory, with the
+      scenario name and viewport as query parameters; no URL is taken from
+      anywhere else and there is no mechanism here to fetch one.
+      One flag is a genuine widening and is named rather than buried,
+      `--allow-file-access-from-files`: framing needs to read the framed
+      document's geometry across a `file://` boundary, and without the flag the
+      pan does not happen and the shot is the blank area below the card. It
+      widens the browser's access to `file://` documents, and the browser is
+      given `--user-data-dir=<out_dir>/_chrome-profile` — a fresh profile in
+      the caller's own output directory, not a shared or personal one — so what
+      it can read is the previews this same run just rendered. There is no
+      network in the picture: no scenario URL is remote, and nothing is
+      downloaded.
+      The failure mode is an exception and not an empty picture, which matters
+      for the same reason the shrink rule in this table's header does: a hung
+      browser and a page that rendered nothing leave the same thing in a
+      directory listing. `TimeoutExpired` is re-raised as a `RuntimeError` that
+      says the round does not count.
+    sites:
+      - {file: runtime/card_shots.py, symbols: [Chrome._run]}
+
+  - id: card-shots-asks-a-revision-what-it-renders
+    kind: unresolved_argv
+    verb: "<argv0>"
+    why: >-
+      Two `subprocess.run` sites, reported for the same reason as the entry
+      above and answering a different question: `sys.executable` is the
+      unresolved `argv[0]`, so the verb the scanner read is `<argv0>` and the
+      argv past it is a literal. What varies is which interpreter answers — so
+      the reach is best stated as what is asked of it. `_scenario_names` runs a
+      one-liner that imports a tree's `card_scenarios` and prints the scenario
+      names it declares; `_render` runs that tree's `card_scenarios.py --out
+      <dir>`. Both take `cwd=<that tree>`.
+      This is the one place in this repository that executes another
+      revision's code, and it is deliberate: it is the mechanism of §12's A/B.
+      The baseline side is `worktrees/serveros/card-measurement-20260929`, and
+      the reason it must be that tree's interpreter and that tree's module is
+      the failure `card_shots`' own docstring records: `card_scenarios` caches
+      its siblings in `sys.modules` by fixed name, so loading two revisions in
+      one process renders both sides with whichever one arrived first and
+      raises nothing. One process per side is what makes "Before" the baseline
+      rather than the work in progress.
+      WHAT THAT IMPLIES, stated plainly because it is the sentence a reviewer
+      wants: the code being run is a checkout at a pinned revision whose
+      HEAD `f7a446a` is recorded in the run manifest before any picture is
+      taken, it is read from disk and never modified (the same module's
+      `_revision` reads it with `GIT_OPTIONAL_LOCKS=0`, declared under
+      `read-only-git-queries`), and the argv after `sys.executable` is a
+      literal script or a path composed from `--renderer`. No scenario name, no
+      path and no flag reaches these two calls from a caller who could point
+      them elsewhere.
+    sites:
+      - {file: runtime/card_shots.py, symbols: [_scenario_names, _render]}
+
+  - id: card-shots-clears-the-frame-it-is-about-to-write
+    kind: fs_mutation
+    verb: ".unlink()"
+    why: >-
+      `out.unlink()` in `Chrome.shoot`, guarded by `if out.exists()`. It is the
+      one destructive call in the module and it is declared rather than argued
+      away, because the honest description is not "it can only delete a file it
+      wrote": the operation itself is an unconditional delete of whatever path
+      it is handed, and the narrowing lives one level up.
+      The narrowing is real. `Chrome.shoot` has exactly one caller in the tree,
+      `shoot()` in the same module, which composes the path as
+      `shots_dir / f"{name}.{suffix}.png"` where `shots_dir` is
+      `<out>/shots/`, `name` comes from the renderer's own declared scenario
+      list and `suffix` from a module constant. So the delete reaches a PNG
+      under the output directory the person named on the command line, and
+      nothing else — and it is a delete rather than an overwrite because Chrome
+      will write through an existing file but the previous round's picture for
+      the same scenario must not survive into a manifest that says what this
+      round produced. A stale shot at the right path is precisely the thing
+      that would make an unframed result look framed.
+      The tool is manual-only (see the section note above): no daemon, no
+      timer, no MCP verb, no CLI subcommand, no scheduler, and one test.
+    sites:
+      - {file: runtime/card_shots.py, symbols: [Chrome.shoot]}

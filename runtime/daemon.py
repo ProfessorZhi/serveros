@@ -48,6 +48,9 @@ how the original incident stayed invisible for 54 minutes.
 """
 from __future__ import annotations
 
+import contextvars
+import errno
+import fcntl
 import importlib.util
 import json
 import os
@@ -59,6 +62,21 @@ import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+
+# Whose connection the request being handled arrived on.
+#
+# `handle` gives a handler its params and nothing else, and `agent.context.attach`
+# needs the peer of *its own* caller — the pid on the other end of this
+# connection is the whole reason a trusted context binds to a process rather
+# than to a claim. This used to live on the instance, under a comment saying it
+# was safe, and only safe, because the daemon serves one connection at a time
+# on one thread. That sentence was true, and being true was the problem: an
+# identity check rested on a scheduling property that nothing declared and any
+# later edit — a thread pool for a slow probe, a handler that re-enters
+# `handle` — could quietly withdraw. Carried per call instead, so the
+# correctness does not depend on how the loop happens to be scheduled.
+_CALLER_PEER: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "serveros_caller_peer", default=None)
 
 
 def _pointer_state(root: Path) -> dict:
@@ -337,6 +355,80 @@ def declared_on_demand(here: Path | None = None) -> dict:
     }
 
 
+def declared_catalogue(here: Path | None = None) -> dict:
+    """The authority's catalogue as this node last materialized it — the WIDER view.
+
+    The other two sources each answer a different question and neither can
+    answer this one:
+
+      * the local projection says what is **installed on this device**;
+      * `ARTIFACT.json` says what **this composition declared resolvable**;
+      * this says **what the authority's catalogue contains at all**, read from
+        `state/serveros/abilities/catalogue.json` — written by
+        `ability_projection.refresh` from the same manifest read that produces
+        the projection, so the two are never two readings of two revisions.
+
+    Why it must exist, measured rather than argued: of the 21 responsibilities
+    the product tree names, 8 are reachable through the projection and the
+    composition's own recommendations, and 13 are not — `ability-management`,
+    `runtime-management`, `workspace-management` and `test-management` among
+    them, all four shipped in the composition this node runs. Every one of the
+    13 IS in the catalogue. What the surface could not say is that "absent from
+    this device" and "absent from the world" are different sentences; this is
+    the only source that can say it.
+
+    §35 keeps the projection local on purpose, so the wider answer arrives as a
+    second artifact rather than as a widened first one. The daemon still holds
+    no checkout and does not go looking for one: this reads a file the producer
+    wrote, and if the producer has never run, the honest answer is that nobody
+    has asked — `entries: None`, never `[]`, the same distinction every source
+    on this surface draws.
+    """
+    state = paths_mod.Paths().root("state") / "abilities"
+    path = state / ability_projection_mod.CATALOGUE_NAME
+    record = _read_identity_file(path)
+    if not record["present"]:
+        return {
+            "source": str(path),
+            "present": False,
+            "why": record["why"],
+            "registry_status": None,
+            "generated_at": None,
+            "source_revision": None,
+            "entries": None,
+            "note": (
+                f"no catalogue {record['why']} at {path}, so this node cannot "
+                "say what the authority's catalogue contains. `entries: null` "
+                "rather than an empty list: nobody has asked is not the same "
+                "as the catalogue is empty, and only one of them is a claim "
+                "about ability-management."
+            ),
+        }
+    value = record["value"]
+    raw = value.get("entries")
+    entries = None
+    if isinstance(raw, list):
+        entries = [entry for entry in raw
+                   if isinstance(entry, dict) and entry.get("name")]
+    return {
+        "source": str(path),
+        "present": True,
+        "why": ("this catalogue carries no `entries` list" if entries is None
+                else None),
+        "registry_status": value.get("registry_status"),
+        "generated_at": value.get("generated_at"),
+        "source_revision": value.get("source_revision"),
+        "entries": entries,
+        "note": (
+            "the authority's catalogue at a pinned revision, materialized by "
+            "`serverosctl ability refresh`. It names NO device: an entry here "
+            "says the ability exists, never that this node has it. Read beside "
+            "the local projection — present here and absent there is the whole "
+            "distinction, and it is not a defect in either file."
+        ),
+    }
+
+
 def _load(name: str, filename: str):
     if name in sys.modules:
         return sys.modules[name]
@@ -483,6 +575,19 @@ def _ability_resolver():
 
 class DaemonError(Exception):
     """The daemon cannot continue as configured."""
+
+
+class DaemonAlreadyRunning(DaemonError):
+    """Another daemon already owns this endpoint.
+
+    Raised rather than logged, because the alternative is what was measured on
+    2026-10-05: two daemons on one socket path do not take turns. Each one
+    unlinks what it finds and binds its own, the other notices on its next
+    one-second accept timeout and does the same, and both go on logging
+    `re-bound … the socket file was removed while this daemon was running`
+    — 46 and 45 times in fifteen seconds, with both processes still up. A
+    client that connects lands on whichever of them won the last race.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +882,12 @@ class Daemon:
         # Set by `_open_socket`; the identity of the socket file this daemon
         # bound, so that teardown cannot act on a socket that is not ours.
         self._socket_ino: int | None = None
+        # Set by `_hold_singleton`; the file descriptor whose `flock` makes
+        # "one daemon per socket path" a property of the kernel rather than of
+        # everyone remembering. `None` until `serve_forever` claims it, which
+        # is why a test may build a `Daemon` — or call `_open_socket` — without
+        # claiming anything.
+        self._singleton_fd: int | None = None
         self.host = host or probes_mod.LiveHost()
         self.inventory = inventory or inventory_mod.Inventory()
         self.enable_reconcile = enable_reconcile
@@ -832,9 +943,6 @@ class Daemon:
         # the alert delta window.
         self._card_ledger: object | None = None
         self.last_alert_pass: dict | None = None
-        # Whose connection the request in flight arrived on. Cleared by
-        # `handle`; read only by `agent.context.attach`.
-        self._peer: dict | None = None
 
     # A status answer older than this many tick intervals is labelled stale.
     # Three, not one: a single missed deadline is a slow machine, and calling
@@ -1351,6 +1459,7 @@ class Daemon:
             # transport (§2/§18). `alert.pass` exists because a caller testing
             # what the register would say should not have to wait for a tick.
             "alert.list": self._r_alert_list,
+            "alert.current": self._r_alert_current,
             "alert.inspect": self._r_alert_inspect,
             "alert.ack": self._r_alert_ack,
             "alert.snooze": self._r_alert_snooze,
@@ -1365,6 +1474,13 @@ class Daemon:
             "alert.digest": self._r_alert_digest,
             "alert.digest-baseline": self._r_alert_digest_baseline,
             "alert.digest-record": self._r_alert_digest_record,
+            # The OTHER half of one pass, and the reason the ledger moves at
+            # all on a tick when nothing was sent. `digest-record` says what a
+            # transport did with what it carried; this says what the pass
+            # declined to carry and why. Without it the cursor only advances on
+            # DELIVERED, so every declined row is re-derived as NEW forever —
+            # measured 2026-10-04, 827 rows.
+            "alert.digest-account": self._r_alert_digest_account,
             # §3. The OTHER rhythm over the same facts. A status broadcast is
             # produced by a clock and a digest by a delta, so the two keep
             # separate ledgers: one ledger would let an hourly status card
@@ -1389,7 +1505,28 @@ class Daemon:
         reads it (`agent.context.attach`), and that method's whole job is to
         bind an observation to the process that made it.
         """
+        # These two readings happen BEFORE the `try` below, so a request whose
+        # shape this method did not anticipate would not be an error response —
+        # it would be an exception leaving `handle` entirely. A body that is
+        # valid JSON but not an object (`[1, 2, 3]`, `123`, `"GET /"`) raised
+        # `AttributeError: 'list' object has no attribute 'get'` out of
+        # `_serve_connection`, out of `serve_forever`, and out of the process;
+        # the observation daemon died and the node spent its restart interval
+        # blind. A malformed request is a fact about one caller, and the cost
+        # of saying so must not be the daemon. Named here rather than left to
+        # the `except Exception` below, because "a request must be an object"
+        # is the sentence the caller needs and `AttributeError` is not.
+        if not isinstance(request, dict):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request must be a JSON object; this one is a "
+                f"{type(request).__name__}")
         method = request.get("method")
+        if not isinstance(method, str):
+            return _error(
+                None, "BAD_REQUEST",
+                f"a request's `method` must be a string; this one is a "
+                f"{type(method).__name__}")
         params = request.get("params") or {}
         handler = self.handler_map().get(method)
 
@@ -1398,17 +1535,16 @@ class Daemon:
                 method, "UNKNOWN_METHOD",
                 f"{method!r} is not served. Known: {sorted(self._methods())}",
             )
-        # Set for the duration of the call and cleared after. Safe, and only
-        # safe, because this daemon serves one connection at a time on one
-        # thread: a thread pool here would turn this into a race and make the
-        # sentence above a lie.
-        self._peer = peer
+        # Set for the duration of the call and reset after, carried per call
+        # rather than on the instance: see `_CALLER_PEER` for why the safety of
+        # an identity check must not rest on this loop being single-threaded.
+        token = _CALLER_PEER.set(peer)
         try:
             return {"ok": True, "method": method, "result": handler(params)}
         except Exception as exc:  # noqa: BLE001 - the caller needs the reason
             return _error(method, type(exc).__name__, str(exc))
         finally:
-            self._peer = None
+            _CALLER_PEER.reset(token)
 
     def _methods(self) -> tuple[str, ...]:
         return ("device.show", "context.current", "path.resolve", "path.admit",
@@ -1464,12 +1600,25 @@ class Daemon:
                 # to match a comment and breaks the CLI.
                 "alert.list", "alert.inspect", "alert.ack", "alert.snooze",
                 "alert.pending", "alert.record-delivery", "alert.pass",
+                # §3.4's block, and a READ of the register for the reason
+                # `card.incident` is a read of the ledger: the status card's
+                # 当前问题 must be the register's answer and not a second
+                # computation of it, and the register has one writer. It adds a
+                # lookup to the socket and no verb, so nothing here is reachable
+                # from a chat message — the node MCP still declares `alert.list`
+                # and `alert.inspect` and nothing else.
+                "alert.current",
                 # §Q2. The batch hop, and it is on this socket for the same
                 # reason the seven above are: `serverosctl alert digest` is a
                 # local command that reaches the ledger through it. What is
                 # absent is again the point — the node MCP still declares
                 # `alert.list` and `alert.inspect` and nothing else.
                 "alert.digest", "alert.digest-baseline", "alert.digest-record",
+                # And its other half. It is a WRITE, on the same ledger, for
+                # the same reason — the daemon owns that document, and the
+                # surface that decides whether the hour is worth a card is the
+                # caller's.
+                "alert.digest-account",
                 # §3. The card receipt. On this socket for the same reason the
                 # three above are: `serverosctl card record-delivery` is a local
                 # command and the ledger it appends to lives beside the register
@@ -1628,13 +1777,43 @@ class Daemon:
                         "claim that it will load here — `serverosctl ability "
                         "resolve` is what answers that."
                     )}
+        # Not in the projection and not declared on demand. Before answering
+        # that, ask the WIDER source: "absent from this device" and "absent from
+        # the catalogue" are different facts, and a surface that can only say
+        # the first reports the second by accident. `ability-management` is the
+        # live case — shipped in the composition this node runs, never recorded
+        # as an installation here, and therefore invisible to both sources above.
+        catalogue = declared_catalogue()
+        listed = next((entry for entry in (catalogue.get("entries") or [])
+                       if entry.get("name") == name), None)
+        if listed is not None:
+            return {**view, "on_demand": _on_demand_header(on_demand),
+                    "catalogue": _catalogue_header(catalogue),
+                    "name": name, "installed": False,
+                    "placement": "catalogue", "ability": listed,
+                    "note": (
+                        f"{name!r} is NOT observed installed on this device and "
+                        "is not declared on demand by this revision's "
+                        "composition — but the authority's catalogue lists it, "
+                        "so it is absent HERE rather than absent. Those are "
+                        "different facts: this is not a claim that it will load "
+                        "here — `serverosctl ability resolve` answers that."
+                    )}
+        # Nothing in any source. What that means depends on whether the widest
+        # source was readable at all, so the sentence is built from that rather
+        # than asserting a catalogue nobody read was empty.
+        beyond = ("the materialized catalogue is present and does not list it"
+                  if catalogue.get("entries") is not None else
+                  "the catalogue was not readable, so nothing here is a claim "
+                  "about what the authority holds")
         return {**view, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "name": name, "installed": None, "placement": None,
-                "note": f"{name!r} is not in the local projection "
-                        f"({view.get('registry_status')}) and is not declared "
-                        f"on demand by this revision's composition. Absence "
-                        f"from both is still not proof of absence on the "
-                        f"authority."}
+                "note": f"{name!r} is in no source this node can read: not the "
+                        f"local projection ({view.get('registry_status')}), not "
+                        f"this revision's declared recommendations, and {beyond}. "
+                        f"Absence from all of them is still not proof of "
+                        f"absence on the authority."}
 
     # -- §4/§2 · the discovery tree, over the same projection ----------------
     #
@@ -1841,22 +2020,33 @@ class Daemon:
         kept apart, and a search is where collapsing them is easiest and most
         convincing.
 
-        It searches TWO sources and labels every row with which one it came
-        from, because they answer different questions and one of them alone
+        It searches THREE sources and labels every row with which one it came
+        from, because they answer different questions and any one of them alone
         was wrong in a way nobody could see:
 
           * the local projection — what is **installed on this device**;
           * this revision's own `ARTIFACT.json` — what the composition it was
             built from declares **resolvable on demand**, which is a fact a
-            node with no checkout can read and the projection cannot carry.
+            node with no checkout can read and the projection cannot carry;
+          * the materialized **catalogue** — what the authority lists at all,
+            which is the only source that can tell "absent from this device"
+            from "absent from the world".
 
         A row from the second source says `installed: false` and names the
-        composition that declared it. Before this, `information-management` —
-        which the installed `serveros` skill routes to — returned `matched: 0`
-        on a node where it is one `ability.resolve` away, and `0` there read as
-        "this ability does not exist". `matched_installed` and
-        `matched_on_demand` are reported beside `matched` so the two are never
-        summed into one number the caller cannot take apart.
+        composition that declared it; a row from the third says `installed:
+        false` too and carries no composition, because no build put it there.
+        Before the second source existed, `information-management` — which the
+        installed `serveros` skill routes to — returned `matched: 0` on a node
+        where it is one `ability.resolve` away, and `0` there read as "this
+        ability does not exist". Before the third, `ability-management` did the
+        same, and it is installed in the very composition this node runs. The
+        three counts are reported beside `matched` so they are never summed into
+        one number the caller cannot take apart.
+
+        A note on names: `catalogue_size` below predates this third source and
+        is the size of the LOCAL PROJECTION, not of the catalogue. It is left
+        as it was rather than renamed under a reader that already consumes it;
+        the real catalogue's size is `catalogue.count`.
         """
         view = self._capability_view()
         header = self._projection_header(view)
@@ -1866,35 +2056,39 @@ class Daemon:
                              MAX_ABILITY_SEARCH_LIMIT)
         materials = view.get("abilities")
         on_demand = declared_on_demand()
+        catalogue = declared_catalogue()
         if not query:
             return {
                 **header, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "query": raw_query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "refused": "EMPTY_QUERY",
                 "catalogue_size": None if materials is None else len(materials),
                 "note": (
                     "an empty query is not a search. This surface does not "
-                    "serve the catalogue: returning every row would cost the "
-                    "caller the context the search exists to save, and the "
-                    "caller would have no way to tell that it had asked for "
-                    "nothing. Ask a question, or use `ability.list` if the "
-                    "whole projection is genuinely what is wanted."
+                    "serve any of its three sources whole: returning every row "
+                    "would cost the caller the context the search exists to "
+                    "save, and the caller would have no way to tell that it had "
+                    "asked for nothing. Ask a question, or use `ability.list` "
+                    "if the whole projection is genuinely what is wanted."
                 ),
             }
-        if materials is None and on_demand.get("entries") is None:
+        if (materials is None and on_demand.get("entries") is None
+                and catalogue.get("entries") is None):
             return {
                 **header, "on_demand": _on_demand_header(on_demand),
+                "catalogue": _catalogue_header(catalogue),
                 "query": query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "catalogue_size": None,
                 "note": (
-                    "neither source is readable: no local capability "
-                    "projection has been materialized AND this revision's "
-                    "ARTIFACT.json does not declare what it recommends. "
-                    "`matched` is null rather than 0: nothing readable is not "
-                    "an empty catalogue, and the two would render identically "
-                    "as an empty list."
+                    "no source is readable: no local capability projection has "
+                    "been materialized, this revision's ARTIFACT.json does not "
+                    "declare what it recommends, and no catalogue has been "
+                    "materialized either. `matched` is null rather than 0: "
+                    "nothing readable is not an empty catalogue, and the two "
+                    "would render identically as an empty list."
                 ),
             }
         needle = query.lower()
@@ -1911,27 +2105,54 @@ class Daemon:
         declared_rows = [dict(entry, installed=False, placement="on-demand",
                               declared_by=on_demand.get("composition"))
                          for entry in declared[:max(0, limit - len(rows))]]
+        # Disjoint from the two stronger sources by construction. A name they
+        # already matched is not counted again: two sources reporting one
+        # ability would make `matched` exceed `returned` with `truncated:
+        # false`, an answer no caller can take apart. What is worth reporting
+        # here is exactly "the other sources did not have this", and a
+        # duplicate row would bury it.
+        already_matched = ({row.get("name") for row in hits}
+                           | {entry.get("name") for entry in declared})
+        listed = [entry for entry in (catalogue.get("entries") or [])
+                  if entry.get("name") not in already_matched
+                  and needle in _catalogue_searchable(entry)]
+        # Last, and given only what the two stronger sources left over. The
+        # order is a precedence, not a ranking: a name that is installed here
+        # is a better answer than the same name merely existing, so the weakest
+        # source never crowds out a stronger one. It is still bounded by the
+        # same `limit` — three sources must not add up to three times the rows
+        # the caller asked for.
+        listed_rows = [dict(_catalogue_row_compact(entry), installed=False,
+                            placement="catalogue", registered_here=False)
+                       for entry in listed[:max(0, limit - len(rows)
+                                                - len(declared_rows))]]
         return {
             **header, "on_demand": _on_demand_header(on_demand),
+            "catalogue": _catalogue_header(catalogue),
             "query": query, "limit": limit,
             "catalogue_size": None if materials is None else len(materials),
-            "matched": len(hits) + len(declared),
+            "matched": len(hits) + len(declared) + len(listed),
             "matched_installed": len(hits),
             "matched_on_demand": len(declared),
-            "returned": len(rows) + len(declared_rows),
+            "matched_in_catalogue": len(listed),
+            "returned": len(rows) + len(declared_rows) + len(listed_rows),
             "truncated": (len(hits) > len(rows)
-                          or len(declared) > len(declared_rows)),
-            "matches": rows + declared_rows,
+                          or len(declared) > len(declared_rows)
+                          or len(listed) > len(listed_rows)),
+            "matches": rows + declared_rows + listed_rows,
             "note": (
                 "substring match, case-insensitive, over name / id / path / "
                 "type / version / domain / taxonomy refs / agents (projection "
-                "rows) and name (declared rows). It is not a ranking and not a "
-                "semantic search: there is no relevance score to distrust "
-                "because there is no score. `matched` is the sum of "
-                "`matched_installed` and `matched_on_demand` — a row with "
-                "`installed: false` is declared resolvable by the composition "
-                "and is NOT observed installed here; that is a different fact "
-                "from absence and it is not a claim that it will resolve."
+                "rows), name (declared rows), and name / id / path / type / "
+                "domain / taxonomy refs (catalogue rows). It is not a ranking "
+                "and not a semantic search: there is no relevance score to "
+                "distrust because there is no score. `matched` is the sum of "
+                "`matched_installed`, `matched_on_demand` and "
+                "`matched_in_catalogue`. A row with `installed: false` is NOT "
+                "observed installed here: `placement: on-demand` means the "
+                "composition declares it resolvable, and `placement: catalogue` "
+                "means only that the authority lists it — neither is a claim "
+                "that this node has it or that it will resolve."
             ),
         }
 
@@ -2353,6 +2574,19 @@ class Daemon:
                     "transport, and the surface that does is named by "
                     "`agent.control.status`.")}
 
+    def _r_alert_current(self, params) -> dict:
+        """§3.4. What is wrong NOW — the register, not the delta.
+
+        Asked here rather than opened by the caller for the reason
+        `card.incident` is: this daemon is the register's only writer, and a
+        second reader that opened the file would be a second answer to «what
+        does this node hold», which is the one thing a store's owner exists to
+        prevent. It reads, it grades and it returns; nothing here announces,
+        acknowledges or resolves anything.
+        """
+        at = _iso(self._now())
+        return digest_mod.current(self.alert_store(), at=at)
+
     def _r_alert_inspect(self, params) -> dict:
         """One alert in full, with the sentence a person would have been sent."""
         ref = _required(params, "alert_ref")
@@ -2472,6 +2706,55 @@ class Daemon:
             generation=int(generation), state=str(state), shown=shown,
             reason=params.get("reason"), frozen=frozen)
 
+    def _r_alert_digest_account(self, params) -> dict:
+        """§Q2. What this pass declined to carry, and the sentence saying why.
+
+        The companion of `alert.digest-record`, and the reason the ledger is
+        maintained on a tick where nothing was sent. A digest that is composed
+        and declined leaves the register unchanged and the cursor advancing,
+        and both halves of that sentence are needed: the register stays the
+        truth about the machine, and the cursor stops re-deriving the same rows
+        as new on the next tick.
+
+        `owed` is required and has no default, exactly as it has none in
+        `alert_digest.account`. The caller is the only party that knows which
+        rows are still owed to somebody — an empty list when the decision was
+        not to send, the shown keys when a card went out or a send failed and
+        will be retried. A default here would be this daemon guessing at the
+        caller's own message lifecycle.
+        """
+        at = _iso(self._now())
+        digest = params.get("digest")
+        if not isinstance(digest, dict) or not isinstance(digest.get("rows"), list):
+            raise DaemonError(
+                f"`digest` must be the composed document whose `rows` are being "
+                f"accounted for, not {type(digest).__name__}: the rows to "
+                f"account for are listed by the document that composed them, "
+                f"and a caller supplying its own list would be describing a "
+                f"pass this node never ran")
+        owed = params.get("owed")
+        if owed is None:
+            raise DaemonError(
+                "`owed` is required and has no default. It names the keys this "
+                "pass is still owed to somebody — the rows the card carried, or "
+                "would have carried and will be retried. Pass an empty list "
+                "when the decision was not to send at all; omitting it would "
+                "make this call account for rows that are still pending their "
+                "first send")
+        if not isinstance(owed, list):
+            raise DaemonError(
+                f"`owed` must be a list of alert keys or digest rows, not "
+                f"{type(owed).__name__}")
+        why = str(params.get("why") or "").strip()
+        if not why:
+            raise DaemonError(
+                "`why` is required. Accounting for a row without saying why "
+                "nobody was told is the silent drop this call exists to make "
+                "impossible: the ledger would record that a finding was dealt "
+                "with and lose the only sentence that explained it")
+        return digest_mod.account(
+            self.delivery_cursor(), at=at, digest=digest, why=why, owed=owed)
+
     def card_ledger(self):
         """The card receipt ledger, beside the register and the digest cursor."""
         if self._card_ledger is None:
@@ -2542,11 +2825,21 @@ class Daemon:
             "recent": list(reversed(rows))[:max(0, limit)],
             "last": ledger.last(kind),
             "last_delivered": ledger.last_delivered(kind),
+            # §7①'s finding, for EVERY kind rather than only the one this call
+            # filtered to: «the card did not reach the chat» is the one answer a
+            # reader must not have to ask a second question to get, and a
+            # payload that carried it only under `--kind status` would make the
+            # default dump the view in which a delivery failure is invisible.
+            # Four small dictionaries, computed from the rows already read.
+            "findings": {name: ledger.delivery_finding(name)
+                         for name in card_delivery_mod.KINDS},
             "note": ("A receipt list, not a historian. `last_delivered` is the "
                      "answer to 'what did the last one that arrived carry'; a "
                      "FAILED entry keeps its version because that is what was "
                      "attempted, and an attempt nobody composed a card for "
-                     "would have no version at all."),
+                     "would have no version at all. `findings` is the other "
+                     "question — what happened to the NEWEST attempt — which "
+                     "`last_delivered` cannot answer after a failed patch."),
         }
 
     def _r_card_incident(self, params) -> dict:
@@ -2617,7 +2910,7 @@ class Daemon:
                                      "from a HumanControlProvider")
 
         observed_by = report.get("provider_pid")
-        peer = self._peer or {}
+        peer = _CALLER_PEER.get() or {}
         peer_pid = peer.get("pid")
         if observed_by is None:
             raise actor_mod.Rejected(
@@ -3267,8 +3560,31 @@ class Daemon:
         depend on scheduling. Requests are served between ticks, on the same
         thread, so an IPC answer can never be computed against a half-updated
         observation set.
+
+        Because it is one thread, the time spent inside one connection is time
+        the next tick does not happen — measured on this host: a peer that
+        delivered a request one byte per 3 seconds stopped the tick for 21.0
+        seconds. That is what `REQUEST_READ_SECONDS` bounds, and it bounds it
+        for the peer rather than for the daemon: reading is the part of a
+        request a caller controls, and `_serve_connection` gives it a total
+        that does not restart on every byte.
         """
-        server = self._open_socket()
+        # Before `_open_socket`, not after, and the order is the whole point:
+        # `_open_socket` begins by unlinking whatever is at the socket path,
+        # so a daemon that is going to refuse must refuse before it touches a
+        # live daemon's endpoint. A refusal that had already deleted the
+        # socket would be the defect it is meant to prevent.
+        self._hold_singleton()
+        try:
+            server = self._open_socket()
+        except BaseException:
+            # The lock is held from here on, so it has to be given back on
+            # every way out of this method — including a bind that never
+            # happened. A daemon restarted in a loop would otherwise leak one
+            # descriptor per attempt, holding a lock on an endpoint it never
+            # managed to serve.
+            self._release_singleton()
+            raise
         self._log(f"serverosd listening on {self.socket_path}")
 
         self.interval = interval
@@ -3309,18 +3625,102 @@ class Daemon:
                     continue
                 try:
                     self._serve_connection(connection)
+                except Exception as exc:  # noqa: BLE001 - the loop survives
+                    # The same reason the tick above is wrapped, and the same
+                    # sentence: one connection's failure is a fact about that
+                    # caller, not a reason for the observation daemon to stop
+                    # observing. Without this, an exception anywhere in the
+                    # path between `accept` and the close leaves `serve_forever`
+                    # entirely — closing the server and releasing the socket
+                    # on the way out — and the node spends its whole restart
+                    # interval blind. `handle` names the malformed requests it
+                    # can name; this is the guarantee that no shape it did not
+                    # anticipate can do worse than that.
+                    self._log("serverosd dropped a connection: "
+                              f"{type(exc).__name__}: {exc}")
                 finally:
                     connection.close()
         finally:
             server.close()
             self._release_socket()
+            self._release_singleton()
+
+    # Two bounds on the same read, deliberately different numbers because they
+    # answer different questions.
+    #
+    # `PER_READ_SECONDS` is a *per-recv* timeout: it is reset by every byte that
+    # arrives, so on its own it bounds nothing about a whole request. A peer
+    # that sent one byte every few seconds held this connection — and, because
+    # `serve_forever` calls `_serve_connection` inline, the accept loop and the
+    # tick with it — for as long as it chose. Measured on this host: a 41-byte
+    # request delivered one byte per 3 seconds held the daemon for 21.0 seconds
+    # and no tick happened in between.
+    #
+    # `REQUEST_READ_SECONDS` is that missing bound: one request line, from when
+    # this side starts reading it, no matter how the bytes are paced. A peer
+    # that stops sending entirely still trips the per-recv bound at ten
+    # seconds; a peer that trickles forever now trips this one at thirty and
+    # gets told why by name.
+    #
+    # It bounds the READ, which is the part a peer controls. It deliberately
+    # does not bound `handle`: that is this daemon's own work, some of it slow
+    # on purpose (a probe that shells out can take tens of seconds), and a
+    # deadline there would need a watchdog thread and could tear a half-written
+    # observation. That is a different decision from this one, and this one is
+    # not enlarged to cover it.
+    PER_READ_SECONDS = 10.0
+    REQUEST_READ_SECONDS = 30.0
+
+    def _refuse_a_slow_request(self, connection: socket.socket) -> None:
+        """Tell a peer that ran out of time which bound it ran out of.
+
+        A silent drop would be cheaper to write and would tell the caller
+        nothing it can act on; the two ways a read ends here are different
+        facts about the caller, and this one is not the one the peer can
+        diagnose by itself.
+        """
+        try:
+            connection.settimeout(self.PER_READ_SECONDS)
+            connection.sendall(json.dumps(_error(
+                None, "REQUEST_TIMEOUT",
+                f"a request must arrive as one line, and this one was still "
+                f"arriving after {self.REQUEST_READ_SECONDS:g} seconds. "
+                f"A request is one line, written once",
+            )).encode() + b"\n")
+        except OSError:
+            pass
 
     def _serve_connection(self, connection: socket.socket) -> None:
-        connection.settimeout(10.0)
+        connection.settimeout(self.PER_READ_SECONDS)
         buffer = b""
+        deadline = time.monotonic() + self.REQUEST_READ_SECONDS
         try:
             while b"\n" not in buffer:
-                chunk = connection.recv(65536)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # A request that is still arriving when its deadline passes.
+                    # Not normally reached by falling round the loop — the wait
+                    # below is clipped to `remaining`, so a wait that expires
+                    # lands in the handler below — but a guard is what keeps
+                    # `settimeout` from being handed a value <= 0, which would
+                    # make this loop spin instead of refusing.
+                    self._refuse_a_slow_request(connection)
+                    return
+                wait = min(self.PER_READ_SECONDS, remaining)
+                connection.settimeout(wait)
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    # Which bound ran out is decided by which wait was shorter,
+                    # not by comparing clocks against the deadline — so this is
+                    # not a race between two timers. A clipped wait expiring is
+                    # the deadline; the full per-recv wait expiring is a peer
+                    # that went quiet, and that one is still dropped in silence.
+                    if wait < self.PER_READ_SECONDS:
+                        self._refuse_a_slow_request(connection)
+                    return
+                except OSError:
+                    return
                 if not chunk:
                     return
                 buffer += chunk
@@ -3329,7 +3729,7 @@ class Daemon:
                         _error(None, "REQUEST_TOO_LARGE", "request exceeded 1 MiB")
                     ).encode() + b"\n")
                     return
-        except (socket.timeout, OSError):
+        except OSError:
             return
         line, _, _ = buffer.partition(b"\n")
         try:
@@ -3342,6 +3742,82 @@ class Daemon:
             connection.sendall(json.dumps(response, default=str).encode() + b"\n")
         except OSError:
             pass
+
+    def _lock_path(self) -> Path:
+        # Beside the socket, not in the state dir: the contended thing is the
+        # endpoint. Two daemons with the same --socket and different
+        # --state-dir trample each other exactly as badly as two with the same
+        # state dir, so keying the lock anywhere else would miss them.
+        return self.socket_path.with_name(self.socket_path.name + ".lock")
+
+    def _hold_singleton(self) -> None:
+        """Claim this endpoint for the life of this process.
+
+        MEASURED 2026-10-05, in isolation (temporary state dir, temporary
+        socket, minimal registry): two daemons started on one socket path both
+        came up. In fifteen seconds the socket file's inode changed seven
+        times, both processes stayed alive, and both logged the `re-bound`
+        line — 46 times and 45 times. "Remove the file at my path and bind my
+        own" is right about a *stale* socket and wrong about a live one, and
+        the daemon had no way to tell the two apart.
+
+        The kernel can. An exclusive `flock` held for the process's life is
+        released when the process exits, however it exits, so a lock file left
+        on disk says nothing while a lock that is HELD says everything.
+
+        Deliberately `LOCK_NB` with no retry and no wait: a second daemon is
+        not a slow first one. Waiting would let it come up later and look
+        healthy, which is the same defect arriving on a delay.
+        """
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        path = self._lock_path()
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                # Not contention: the lock itself could not be taken. Saying
+                # "another serverosd already holds this" here would be the
+                # wrong-but-confident message this whole method exists to
+                # replace, so the two cases are told apart by errno.
+                os.close(fd)
+                raise DaemonError(
+                    f"could not lock {path} to claim {self.socket_path}: "
+                    f"{exc.strerror or exc}. The lock file has to sit beside "
+                    f"the socket, on a filesystem that supports flock(2)."
+                ) from exc
+            # `flock` only fails here while another process holds it, and the
+            # kernel releases it when that process ends — so the holder is
+            # alive and what it wrote in the file is a current pid, not a
+            # leftover from a daemon that is already gone.
+            holder = ""
+            try:
+                holder = os.pread(fd, 32, 0).decode().strip()
+            except OSError:
+                pass
+            os.close(fd)
+            raise DaemonAlreadyRunning(
+                f"another serverosd already holds {self.socket_path}"
+                + (f" (pid {holder})" if holder else "")
+                + f"; {path} is locked. Two daemons on one socket path do not "
+                  f"take turns — each removes the other's socket file about "
+                  f"once a second and both stay up, and a client lands on "
+                  f"whichever won the last race. Stop the one that holds it, "
+                  f"or give this one a different --socket."
+            )
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        self._singleton_fd = fd
+
+    def _release_singleton(self) -> None:
+        """Give the endpoint back; closing the descriptor releases the lock."""
+        if self._singleton_fd is None:
+            return
+        try:
+            os.close(self._singleton_fd)
+        except OSError:
+            pass
+        self._singleton_fd = None
 
     def _prepare_socket(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3582,6 +4058,74 @@ def _on_demand_header(record: dict) -> dict:
     }
 
 
+def _catalogue_searchable(entry: dict) -> str:
+    """What a query is matched against on a catalogue row.
+
+    The same classification fields `_ability_searchable` uses, minus `version`
+    and `agents`, which a catalogue entry does not carry — it is the manifest's
+    own classification metadata and nothing else. Kept a separate function
+    rather than folded into the other one so the two row shapes can diverge
+    only deliberately: a catalogue row that silently began matching a field it
+    does not have would be a match whose reason is invisible in the result.
+    """
+    parts = [entry.get("name"), entry.get("id"), entry.get("path"),
+             entry.get("type")]
+    domain = entry.get("domain")
+    if isinstance(domain, dict):
+        parts.append(domain.get("primary"))
+    refs = entry.get("taxonomy_refs")
+    if isinstance(refs, list):
+        parts.extend(v for v in refs if isinstance(v, str))
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _catalogue_row_compact(entry: dict) -> dict:
+    """One catalogue hit. The classification fields, and no device in it.
+
+    Deliberately NOT `_ability_row_compact`: that one emits `agents: []` for a
+    row that does not carry agents, and an empty list there would read as "no
+    agent has this" — a claim about installations this source never made. The
+    catalogue knows where an ability sits and what it is; it does not know who
+    has it, and the row says so by not carrying the field at all.
+    """
+    domain = entry.get("domain")
+    return {
+        "name": entry.get("name"),
+        "id": entry.get("id"),
+        "type": entry.get("type"),
+        "path": entry.get("path"),
+        "domain": domain.get("primary") if isinstance(domain, dict) else None,
+        "taxonomy_refs": entry.get("taxonomy_refs") or [],
+    }
+
+
+def _catalogue_header(record: dict) -> dict:
+    """The wider-catalogue source, small enough to sit in every answer.
+
+    `count: null` when the catalogue could not be read, for the reason every
+    count on this surface is null when its source is unread: `0` would say "the
+    authority's catalogue is empty", which is a claim about a document nobody
+    read and the most confident available way to be wrong.
+    """
+    entries = record.get("entries")
+    return {
+        "source": record.get("source"),
+        "present": record.get("present"),
+        "why": record.get("why"),
+        "registry_status": record.get("registry_status"),
+        "source_revision": record.get("source_revision"),
+        "count": None if entries is None else len(entries),
+        "note": (
+            "the authority's catalogue at a pinned revision, as this node last "
+            "materialized it. An entry here is NOT installed and NOT "
+            "recommended by this composition — it is the authority's own "
+            "statement that the ability exists, which is the one thing neither "
+            "of the other two sources can say. `serverosctl ability resolve` "
+            "still decides whether this node can act on one now."
+        ),
+    }
+
+
 MAX_PROJECTION_AGE_SECONDS = 24 * 3600
 
 
@@ -3683,7 +4227,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(report['drift'])} drift item(s), "
                   f"{len(report['decisions'])} decision(s)")
         return 0
-    daemon.serve_forever(interval=args.interval)
+    try:
+        daemon.serve_forever(interval=args.interval)
+    except DaemonAlreadyRunning as exc:
+        # A distinct exit code, so a unit file or a person can tell "there is
+        # already one of me" from "I could not start". `Restart=on-failure`
+        # would otherwise retry this forever, and it would be right to: the
+        # condition clears the moment the other daemon stops.
+        sys.stderr.write(f"serverosd: {exc}\n")
+        return 3
     return 0
 
 

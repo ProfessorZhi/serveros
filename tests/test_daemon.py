@@ -19,11 +19,14 @@ Hermetic: no docker, no systemd, no socket on the real machine, no network.
 from __future__ import annotations
 
 import datetime
+import errno
 import importlib.util
 import json
+import os
 import socket
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -54,6 +57,12 @@ card_delivery_mod = _load("serveros_runtime_card_delivery", "card_delivery.py")
 # over a host whose reads all fail, rather than a fake that models the failure
 # shapes — and therefore tests the fake.
 inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
+# The delta kinds, loaded so that a test asserting the digest's counts asserts
+# the DECLARED set rather than a copy of it. It had a copy: when `UPDATED` was
+# added as the fifth kind the literal here still listed four, and this suite
+# passed only because an empty register reports zero for everything it is
+# asked about — so the count that was wrong was the one nobody was reading.
+digest_mod = _load("serveros_runtime_alert_digest", "alert_digest.py")
 
 # `release.py` is the one module under test that lives outside `runtime/`, so it
 # does not fit `_load`. It is loaded here because the unit-rendering it owns is
@@ -1904,6 +1913,155 @@ def test_a_name_in_neither_source_is_still_not_a_claim_of_absence(
     assert "not proof of absence" in result["note"]
 
 
+def _catalogue(tmp_path, monkeypatch, entries, *, revision="deadbeef",
+               status="FRESH"):
+    """A materialized catalogue beside the projection `_state_root` wrote.
+
+    Written as a real file rather than by patching `declared_catalogue`, for the
+    same reason `_revision_declaring` writes a real ARTIFACT.json: what is being
+    asserted is that the reader reads the artifact the producer writes, and
+    patching the reader would test the patch.
+    """
+    directory = tmp_path / "state" / "abilities"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "catalogue.json").write_text(json.dumps({
+        "schema": "serveros/ability-catalogue.v1",
+        "authority": "ability-management",
+        "this_is": "the authority's catalogue at a pinned revision, not an "
+                   "installation record",
+        "registry_status": status,
+        "generated_at": "2027-01-15T07:00:00+00:00",
+        "source_revision": revision,
+        "entries": entries,
+    }))
+    return directory / "catalogue.json"
+
+
+def test_a_search_finds_what_the_catalogue_lists_and_says_which_absence_it_is(
+        daemon_factory, tmp_path, monkeypatch):
+    """The measured gap, as a test.
+
+    Of the 21 responsibilities the product tree names, 13 are reachable from
+    neither the projection nor the composition's own recommendations — and
+    `ability-management`, shipped in the composition this node runs, is one of
+    them. Every one of the 13 IS in the authority's catalogue. Before this
+    source all 13 returned `matched: 0`, which reads as "this ability does not
+    exist"; what the surface could not say is that they are absent HERE rather
+    than absent.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "muc-playwright-e2e", "id": "x", "path": "skills/muc-playwright-e2e"},
+    ])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "ability-management", "id": "ProfessorZhi/ability-management",
+         "type": "skill", "path": "skills/ability-management",
+         "domain": {"primary": "serveros.governance"}, "taxonomy_refs": []},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "ability-management"}})["result"]
+
+    assert result["matched"] == 1, "the projection has never heard of it"
+    assert result["matched_installed"] == 0
+    assert result["matched_on_demand"] == 0
+    assert result["matched_in_catalogue"] == 1
+    row = result["matches"][0]
+    assert row["name"] == "ability-management"
+    assert row["installed"] is False
+    assert row["placement"] == "catalogue"
+    assert row["registered_here"] is False
+    # A catalogue row knows classification and nothing about installations, so
+    # it carries no `agents` key at all: `[]` there would read as "no agent has
+    # this", a claim this source never made.
+    assert "agents" not in row
+    assert result["catalogue"]["count"] == 1
+    assert result["catalogue"]["source_revision"] == "deadbeef"
+    assert result["catalogue"]["present"] is True
+
+
+def test_the_catalogue_does_not_re_count_a_name_a_stronger_source_has(
+        daemon_factory, tmp_path, monkeypatch):
+    """The three sources are summed, so they must not overlap.
+
+    A name installed here is of course also in the catalogue. If the third
+    source counted it again, `matched` would exceed `returned` with
+    `truncated: false` — an answer no caller can take apart — and the number
+    actually worth reporting, "what the other sources did not have", would be
+    buried.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "path": "skills/test-management"},
+    ])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "test-management", "id": "x", "type": "skill",
+         "path": "skills/test-management", "domain": None, "taxonomy_refs": []},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "test-management"}})["result"]
+
+    assert result["matched_installed"] == 1
+    assert result["matched_in_catalogue"] == 0, "not counted a second time"
+    assert result["matched"] == 1
+    assert result["returned"] == 1
+    assert result["truncated"] is False
+    # The projection row is the installed one by NOT being marked as either of
+    # the weaker placements; those sources say `installed: false` and name
+    # where they are instead.
+    assert "placement" not in result["matches"][0]
+
+
+def test_a_status_of_a_catalogue_only_ability_is_not_a_claim_of_absence(
+        daemon_factory, tmp_path, monkeypatch):
+    """`installed: None` and `installed: False` are different answers, and the
+    catalogue is what makes the second available for a name the projection has
+    never heard of — which is the whole shape of this node's 13 unreachable
+    responsibilities."""
+    _state_root(tmp_path, monkeypatch, [])
+    _revision_declaring(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [
+        {"name": "human-control", "id": "ProfessorZhi/human-control",
+         "type": "skill", "path": "skills/human-control",
+         "domain": {"primary": "serveros.governance"}, "taxonomy_refs": []},
+    ])
+    daemon = daemon_factory(a_resource("thing-one"))
+
+    found = daemon.handle(
+        {"method": "ability.status", "params": {"name": "human-control"}})["result"]
+    assert found["installed"] is False
+    assert found["placement"] == "catalogue"
+    assert found["ability"]["path"] == "skills/human-control"
+    assert found["catalogue"]["source_revision"] == "deadbeef"
+
+    missing = daemon.handle(
+        {"method": "ability.status", "params": {"name": "nowhere-at-all"}})["result"]
+    assert missing["installed"] is None
+    # The catalogue WAS readable and does not list it, so the sentence may say
+    # so — which is a stronger thing to be able to say than "absent from all".
+    assert "does not list it" in missing["note"]
+
+
+def test_a_node_that_never_materialized_a_catalogue_says_so_rather_than_zero(
+        daemon_factory, tmp_path, monkeypatch):
+    """`count: null` and `present: false`, never `0` and `[]`.
+
+    This is the state of every node before its first `refresh` that carried the
+    catalogue, which is every node today — so it is the COMMON case and not an
+    edge one, and `0` here would claim the authority's catalogue is empty.
+    """
+    _state_root(tmp_path, monkeypatch, [
+        {"name": "shared-memory", "id": "x", "path": "skills/shared-memory"},
+    ])
+    result = daemon_factory(a_resource("thing-one")).handle(
+        {"method": "ability.search", "params": {"query": "shared-memory"}})["result"]
+
+    assert result["catalogue"]["present"] is False
+    assert result["catalogue"]["count"] is None
+    assert result["catalogue"]["why"]
+    # And it is not a reason to refuse the search: the projection answered.
+    assert result["matched"] == 1
+    assert result["matched_in_catalogue"] == 0
+    assert "placement" not in result["matches"][0]
+
+
 def test_an_artifact_built_before_the_field_says_so_rather_than_nothing(
         daemon_factory, tmp_path, monkeypatch):
     """`recommended` is newer than the artifacts already installed, so the
@@ -2326,6 +2484,518 @@ def test_malformed_input_gets_a_named_error_not_a_dropped_connection(daemon_fact
     assert response["error"]["code"] == "BAD_REQUEST"
 
 
+@pytest.mark.parametrize("body", ["[1, 2, 3]", "123", '"GET / HTTP/1.0"', "null", "true"])
+def test_a_body_that_parses_but_is_not_an_object_is_refused_not_fatal(
+        daemon_factory, body):
+    """Measured live on 2026-10-05: `[1, 2, 3]` killed the daemon.
+
+    Every shape here is valid JSON, so the bad-bytes guard above does not cover
+    it, and the reading of `request` happened *before* `handle`'s own error
+    boundary. The exception left `handle`, left `_serve_connection`, left
+    `serve_forever` — closing the server and releasing the socket on the way
+    out — and the process exited 1. The traceback named it exactly:
+
+        daemon.py, in handle: method = request.get("method")
+        AttributeError: 'list' object has no attribute 'get'
+
+    `_serve_connection` must therefore RETURN here, not raise, and the caller
+    must be told which of the two things it got wrong.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        right.sendall(body.encode() + b"\n")
+        daemon._serve_connection(left)  # returns; a raise here is the defect
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        left.close()
+        right.close()
+    assert response["error"]["code"] == "BAD_REQUEST"
+    assert "object" in response["error"]["message"]
+
+
+@pytest.mark.parametrize("method", ["[1, 2, 3]", "7", "null"])
+def test_a_request_whose_method_is_not_a_string_is_refused(daemon_factory, method):
+    """The second reading that used to happen outside the error boundary.
+
+    `handler_map().get([1, 2, 3])` is a `TypeError` — a list is not hashable —
+    raised from the same place as the `AttributeError` above, with the same
+    consequence for the process.
+    """
+    daemon = daemon_factory(a_resource("thing-one"))
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        right.sendall(f'{{"method": {method}}}'.encode() + b"\n")
+        daemon._serve_connection(left)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        left.close()
+        right.close()
+    assert response["error"]["code"] == "BAD_REQUEST"
+    assert "string" in response["error"]["message"]
+
+
+def test_one_bad_connection_cannot_stop_serve_forever(daemon_factory):
+    """The guarantee behind the two named refusals above.
+
+    Those refuse the shapes that were measured. This is the other half: a
+    shape nobody anticipated must still cost one connection and not the
+    daemon. Leaving `serve_forever` closes the server and releases the socket,
+    so the node would be unreachable for its whole restart interval — and
+    `Restart=on-failure` would make that look like a working service.
+    """
+    import threading
+
+    daemon = daemon_factory()
+    real = daemon._serve_connection
+    seen = []
+
+    def explode_once(connection):
+        seen.append(1)
+        if len(seen) == 1:
+            raise RuntimeError("a shape nobody anticipated")
+        return real(connection)
+
+    daemon._serve_connection = explode_once
+
+    thread = threading.Thread(
+        target=daemon.serve_forever, kwargs={"interval": 0.05, "stop_after": 60},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_for(lambda: daemon.socket_path.exists())
+
+        # The first connection gets no answer at all — the injected failure.
+        with pytest.raises(Exception):
+            _round_trip(daemon.socket_path)
+        assert seen, "the injected failure never ran; this test proves nothing"
+
+        assert thread.is_alive(), (
+            "the daemon left `serve_forever` because one connection raised; "
+            "the node is unreachable until systemd restarts it")
+        assert _round_trip(daemon.socket_path)["ok"] is True
+    finally:
+        # See the note in the test above: the loop reads `stop_after` between
+        # connections, so the thread is told it is done rather than waited out.
+        daemon.ticks = 60
+        thread.join(timeout=10)
+
+
+def test_a_request_that_trickles_forever_is_refused_by_name(daemon_factory):
+    """A slow request has a TOTAL deadline, not a per-recv one.
+
+    `connection.settimeout(10.0)` is reset by every byte that arrives, so on
+    its own it bounds nothing about a request. Measured on this host on
+    2026-10-05: a 41-byte request delivered one byte per 3 seconds held the
+    daemon for 21.0 seconds, and because `serve_forever` calls this method
+    inline, no tick happened in between — the observation daemon was blind for
+    as long as the peer felt like it.
+
+    The per-recv timeout is kept, because it answers a different question
+    ("did this peer stop sending entirely"), and this test holds it far out of
+    reach: the trickle arrives every 0.05s, so what stops it can only be the
+    total deadline.
+
+    The deadline is deliberately not a multiple of the trickle's cadence. When
+    it is — 0.6 against 0.05, say — the last wait the deadline clips is exactly
+    the gap to the next byte, and which of the two ends the read is a photo
+    finish rather than a fact. At 0.53 the clipped wait is always strictly
+    shorter than the gap, so the deadline is *decided* to be what stopped it.
+    """
+    import threading
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 10.0     # deliberately out of reach
+    daemon.REQUEST_READ_SECONDS = 0.53
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def trickle():
+        # Never ten seconds apart, so the per-recv timeout cannot be what stops
+        # this. Bounded in wall-clock terms on purpose: with the deadline
+        # removed the correct failure of this test is a red assertion, not a
+        # test run that never ends.
+        for _ in range(60):                # 60 × 0.05s = 3.0s
+            try:
+                right.sendall(b"x")
+            except OSError:
+                return
+            time.sleep(0.05)
+
+    sender = threading.Thread(target=trickle, daemon=True)
+    sender.start()
+    started = time.monotonic()
+    try:
+        daemon._serve_connection(left)      # must return; hanging is the defect
+        elapsed = time.monotonic() - started
+        right.settimeout(5)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        sender.join(timeout=5)
+        left.close()
+        right.close()
+
+    assert response["error"]["code"] == "REQUEST_TIMEOUT"
+    assert "one line" in response["error"]["message"]
+    assert elapsed < daemon.PER_READ_SECONDS, (
+        f"the read ran for {elapsed:.2f}s; if the peer's own pacing were the "
+        f"only bound it would have run for as long as the peer chose")
+
+
+def test_the_deadline_holds_even_when_the_next_byte_would_land_after_it(
+        daemon_factory):
+    """The total is a total: each wait is clipped to what the deadline leaves.
+
+    Without that clipping the bound is not `REQUEST_READ_SECONDS`; it is
+    `REQUEST_READ_SECONDS + PER_READ_SECONDS`, because a byte landing just
+    under the per-recv timeout buys the peer another full wait. Here the
+    second byte is due four seconds in with a ten-second per-recv timeout, and
+    the deadline is one second: a peer that is told at one second was told by
+    the deadline, and one told at four was told by the byte.
+    """
+    import threading
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 10.0
+    daemon.REQUEST_READ_SECONDS = 1.0
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def dribble():
+        right.sendall(b"{")
+        time.sleep(4.0)
+        try:
+            right.sendall(b"}\n")
+        except OSError:
+            pass
+
+    sender = threading.Thread(target=dribble, daemon=True)
+    sender.start()
+    started = time.monotonic()
+    try:
+        daemon._serve_connection(left)
+        elapsed = time.monotonic() - started
+        right.settimeout(5)
+        response = json.loads(right.recv(65536).decode())
+    finally:
+        sender.join(timeout=5)
+        left.close()
+        right.close()
+
+    assert response["error"]["code"] == "REQUEST_TIMEOUT"
+    assert elapsed < 2.0, (
+        f"the read ended at {elapsed:.2f}s. The next byte was due at 4.0s, so "
+        f"anything over 2.0s means the wait ran on past the deadline this "
+        f"daemon declares — the peer's pacing, not the deadline, was the bound")
+
+
+def test_a_peer_that_stops_sending_trips_the_per_recv_timeout(
+        daemon_factory):
+    """The other bound, kept apart so neither is read as the other.
+
+    A peer that stops sending entirely is the case the ten-second per-recv
+    timeout was written for, and it must still be what answers — by silence,
+    because a dead connection and a slow request get different treatment on
+    purpose. The total deadline is held out of reach here, so reaching it
+    would mean the two bounds had collapsed into one.
+    """
+    import time
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    daemon.PER_READ_SECONDS = 0.3
+    daemon.REQUEST_READ_SECONDS = 30.0
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        started = time.monotonic()
+        daemon._serve_connection(left)      # nothing is ever sent
+        elapsed = time.monotonic() - started
+        right.settimeout(0.2)
+        with pytest.raises(socket.timeout):
+            right.recv(65536)
+    finally:
+        left.close()
+        right.close()
+
+    assert elapsed >= daemon.PER_READ_SECONDS * 0.9
+    assert elapsed < daemon.REQUEST_READ_SECONDS, (
+        "a peer that sent nothing was held for the whole request deadline; "
+        "the per-recv bound is supposed to answer this one")
+
+
+def test_two_callers_do_not_answer_for_each_other(daemon_factory):
+    """The caller's peer is a property of the call, not of the daemon.
+
+    It lived on the instance under a comment saying that was safe, and only
+    safe, because this loop serves one connection at a time on one thread.
+    That was true, and being true was the problem: `agent.context.attach`
+    decides who a trusted context is about by comparing the pid on the other
+    end of *this* connection, so a thread pool added later for a slow probe
+    would have made one caller's identity answer for another's without anyone
+    touching the check. Carried per call, the guarantee no longer depends on
+    the schedule.
+
+    The parked call reads through the production reader — the real attach
+    handler, whose refusal names the pid it resolved — so this tests what the
+    daemon actually reads rather than a proxy for it.
+    """
+    import threading
+
+    daemon = daemon_factory(a_resource("thing-one"))
+    attach = daemon.handler_map()["agent.context.attach"]
+    entered, release = threading.Event(), threading.Event()
+    order, seen = [], {}
+
+    def parked(params):
+        if order:
+            order.append("second")
+            return {"second": True}
+        order.append("first")
+        # Hold this call open inside its handler, then resolve its own caller
+        # once another call has come and gone.
+        entered.set()
+        release.wait(timeout=10)
+        try:
+            attach({"report": {"provider_pid": 1111}})
+            seen["a"] = "accepted"
+        except Exception as exc:  # noqa: BLE001 - the message is the evidence
+            seen["a"] = str(exc)
+        return {"parked": True}
+
+    daemon._r_runtime_list = parked
+
+    first = threading.Thread(
+        target=lambda: daemon.handle(
+            {"method": "runtime.list", "params": {}}, peer={"pid": 2222}),
+        daemon=True)
+    first.start()
+    assert entered.wait(timeout=10), "the parked call never reached its handler"
+
+    daemon.handle({"method": "runtime.list", "params": {}}, peer={"pid": 3333})
+    release.set()
+    first.join(timeout=10)
+
+    assert order == ["first", "second"], (
+        f"the two calls never overlapped ({order!r}), so nothing was actually "
+        f"concurrent and the assertion below would prove nothing")
+
+    assert "arrived from pid 2222" in seen.get("a", ""), (
+        f"the parked caller resolved {seen.get('a')!r} as its own peer after "
+        f"another call finished. On the instance, the second call's cleanup "
+        f"would have left it None — or holding 3333 — which is one caller's "
+        f"identity answering for another's")
+
+
+# ---------------------------------------------------------------------------
+# §20/§21 · one endpoint, one daemon, for the whole life of the instance
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_daemon_on_one_socket_refuses_and_leaves_the_first_alone(
+        daemon_factory):
+    """MEASURED 2026-10-05, in isolation, before this was written: two daemons
+    started on one socket path both came up. In fifteen seconds the socket
+    file's inode changed seven times, both processes stayed alive, and both
+    logged `re-bound` — 46 times and 45 times. A client connecting to that
+    path reached whichever daemon won the last race, and neither could tell
+    it had lost.
+
+    The refusal has to come before `_open_socket`, because `_open_socket`
+    begins by unlinking whatever is at the path. A daemon that says "you
+    already have one of me" *after* deleting the incumbent's socket has
+    produced exactly the outage it was refusing to produce — so the socket
+    file is checked by inode, after the refusal, not merely by existence.
+    """
+    import threading
+
+    first = daemon_factory()
+    thread = threading.Thread(
+        target=first.serve_forever,
+        kwargs={"interval": 0.05, "stop_after": 60},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_for(lambda: first.socket_path.exists())
+        inode = first.socket_path.stat().st_ino
+
+        second = daemon_factory()
+        refusal: list[BaseException] = []
+
+        def try_to_serve():
+            try:
+                second.serve_forever(interval=0.05)
+            except BaseException as exc:  # noqa: BLE001 - asserted just below
+                refusal.append(exc)
+
+        # Run on its own thread so that the defect this test is about — a
+        # second daemon that serves the same endpoint instead of refusing —
+        # fails the suite in twenty seconds rather than hanging it. A test
+        # that hangs when the guard is removed cannot be used to show the
+        # guard fires.
+        contender = threading.Thread(target=try_to_serve, daemon=True)
+        contender.start()
+        contender.join(timeout=20)
+        assert not contender.is_alive(), (
+            "the second daemon was still serving after 20s: it did not refuse, "
+            "so both daemons are answering on one endpoint")
+        assert len(refusal) == 1, (
+            f"the second daemon returned without refusing: {refusal}")
+        assert isinstance(refusal[0], daemon_mod.DaemonAlreadyRunning)
+
+        message = str(refusal[0])
+        assert str(first.socket_path) in message
+        assert str(second._lock_path()) in message
+        # The holder is named. `first` and `second` live in this process, so
+        # the pid the incumbent wrote into the lock file is this one.
+        assert f"pid {os.getpid()}" in message, message
+
+        assert first.socket_path.exists(), "the refusal removed the socket"
+        assert first.socket_path.stat().st_ino == inode, (
+            "the second daemon unlinked and rebound the first one's endpoint "
+            "on its way to refusing; a client connecting now lands on neither")
+        assert _round_trip(first.socket_path)["ok"] is True
+    finally:
+        # `serve_forever` has no stop flag, and the loop only reads
+        # `stop_after` between accepted connections — so the thread is told
+        # it has done its sixty ticks rather than being waited out. The one
+        # extra tick this costs is a fake host and a fake inventory.
+        first.ticks = 60
+        thread.join(timeout=10)
+
+
+def test_a_lock_a_daemon_died_holding_does_not_block_the_next_one(
+        daemon_factory):
+    """`flock(2)` is released by the kernel when the holder exits, however it
+    exits. That is what makes the file left on disk safe to ignore: its
+    contents say nothing, the lock says everything.
+
+    The failure this prevents is a node that cannot come back. `Restart=
+    on-failure` is the supervisor here, so if the lock outlived the crash the
+    first crash would be permanent. The child below exits with `os._exit`, so
+    Python closes nothing it holds — only the kernel's own cleanup runs, which
+    is the crash exactly.
+    """
+    daemon = daemon_factory()
+    daemon.socket_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = daemon._lock_path()
+    # A file, and a pid that is not running. Neither is read as a reason to
+    # refuse.
+    lock.write_text("999999")
+
+    child = subprocess.run(
+        [sys.executable, "-c",
+         "import fcntl, os, sys\n"
+         "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+         "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+         "os._exit(0)\n",
+         str(lock)],
+        capture_output=True, timeout=30)
+    assert child.returncode == 0, child.stderr.decode()
+
+    daemon._hold_singleton()  # a raise here is the defect
+    assert daemon._singleton_fd is not None
+    daemon._release_singleton()
+
+
+def test_the_endpoint_goes_back_when_the_holder_releases_it(daemon_factory):
+    """The other half of the same lock, and the ordinary restart case.
+
+    Two `Daemon` objects in one process contend for it for real: `flock` treats
+    each `open` as a distinct holder even within a single process, so this is
+    the same exclusion a second process meets.
+    """
+    first = daemon_factory()
+    second = daemon_factory()
+
+    first._hold_singleton()
+    with pytest.raises(daemon_mod.DaemonAlreadyRunning):
+        second._hold_singleton()
+
+    first._release_singleton()
+    second._hold_singleton()
+    second._release_singleton()
+
+
+def test_a_lock_that_cannot_be_taken_at_all_is_not_called_a_second_daemon(
+        daemon_factory, monkeypatch):
+    """`flock` can fail for a reason that is not contention — a filesystem that
+    does not support it, for one. Reporting that as "another serverosd already
+    holds this" would be the wrong-but-confident answer this method exists to
+    replace, and it would send somebody looking for a daemon that is not
+    there. Only the contention errnos get the contention message.
+    """
+    daemon = daemon_factory()
+    real = daemon_mod.fcntl
+
+    def unsupported(fd, operation):
+        raise OSError(errno.ENOTSUP, "flock not supported here")
+
+    monkeypatch.setattr(daemon_mod, "fcntl", types.SimpleNamespace(
+        flock=unsupported, LOCK_EX=real.LOCK_EX, LOCK_NB=real.LOCK_NB))
+
+    with pytest.raises(daemon_mod.DaemonError) as caught:
+        daemon._hold_singleton()
+    assert not isinstance(caught.value, daemon_mod.DaemonAlreadyRunning), (
+        "a lock that could not be taken at all was reported as an incumbent "
+        "daemon")
+    assert str(daemon._lock_path()) in str(caught.value)
+    assert "another serverosd" not in str(caught.value)
+
+
+def test_main_exits_with_a_code_of_its_own_when_the_endpoint_is_held(
+        daemon_factory, tmp_path):
+    """The exit code is the only part of this a unit file can see.
+
+    Folded into a general failure code, `Restart=on-failure` would retry a
+    condition that clears only when somebody else stops — and would be right
+    to, which is why it must not be told to. The daemon that refuses is real
+    here, built by `main` from its own arguments; nothing ticks, because the
+    refusal happens before the loop.
+    """
+    import threading
+
+    holder = daemon_factory()
+    holder._hold_singleton()
+    try:
+        registry_path = tmp_path / "registry.json"
+        registry_path.write_text(json.dumps({
+            "schema": "serveros/managed-runtime-registry.v1",
+            "device_ref": "device:server-beijing",
+            "resources": [],
+        }))
+
+        codes: list[int] = []
+        worker = threading.Thread(
+            target=lambda: codes.append(daemon_mod.main([
+                "--registry", str(registry_path),
+                "--state-dir", str(tmp_path / "state"),
+                "--socket", str(holder.socket_path),
+                "--interval", "3600",
+            ])),
+            daemon=True,
+        )
+        # On a thread, so that removing the guard makes this fail rather than
+        # hang: without it `main` enters the serve loop and never returns, and
+        # the exit code this test is about is never produced.
+        worker.start()
+        worker.join(timeout=20)
+        assert not worker.is_alive(), (
+            "`main` was still serving after 20s: it did not refuse the "
+            "endpoint another daemon holds")
+        assert codes == [3]
+
+        # And the refusal changed nothing: the endpoint is still held.
+        refuses_again = daemon_factory()
+        with pytest.raises(daemon_mod.DaemonAlreadyRunning):
+            refuses_again._hold_singleton()
+    finally:
+        holder._release_singleton()
+
+
 # ---------------------------------------------------------------------------
 # §17 · the daemon does not grow into things that are not its job
 # ---------------------------------------------------------------------------
@@ -2620,8 +3290,7 @@ def test_the_digest_handlers_answer_through_the_real_dispatch(daemon_factory):
 
     document = daemon.handle({"method": "alert.digest", "params": {}})["result"]
     assert document["baseline_at"] == taken["baseline_at"]
-    assert document["counts"] == {"NEW": 0, "ESCALATED": 0,
-                                  "RECOVERED": 0, "REOPENED": 0}
+    assert document["counts"] == {kind: 0 for kind in digest_mod.KINDS}
     assert document["decision"]["send"] is False
 
     recorded = daemon.handle(
