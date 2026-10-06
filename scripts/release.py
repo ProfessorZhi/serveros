@@ -696,10 +696,8 @@ def verify_node_runtime(rev_dir: Path, state_dir: Path) -> dict:
 
     # The revision is only half of "runnable". The rendered unit tells the
     # daemon to read its registry from `state_dir`, and the daemon exits 2 when
-    # it is not there — so a promote onto a state root that does not exist
-    # produces a node that cannot start, and this function used to call that a
-    # success. Checking the revision and not the state root is precisely the gap
-    # that let a HOME-fallback default install a broken unit and report AGREE.
+    # it is not there. Existence alone is insufficient: accidentally passing
+    # the existing runtime/ child adds runtime/ twice to the registry path.
     if not state_dir.is_dir():
         problems.append(
             f"state root does not exist: {state_dir}\n"
@@ -707,6 +705,34 @@ def verify_node_runtime(rev_dir: Path, state_dir: Path) -> dict:
             f"daemon refuses to start without a registry under it. Seed the state "
             f"root before promoting, or pass --state-dir with this node's real root."
         )
+    else:
+        # Ask the staged runtime's own resolver and validator with the same
+        # state override the unit will use. Do not start a daemon or run probes;
+        # an import and read are sufficient to reject an unbootable registry.
+        probe = """\
+import sys
+sys.path.insert(0, sys.argv[1])
+import registry
+target = registry.default_path()
+try:
+    registry.Registry(path=target)
+except Exception as exc:
+    print(f"{target}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(2)
+"""
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+               "SERVEROS_STATE_DIR": str(state_dir)}
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", probe, str(rev_dir / "runtime")],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=env, timeout=15,
+            )
+            if proc.returncode != 0:
+                problems.append(f"runtime registry preflight failed for {state_dir}: "
+                                f"{proc.stderr.strip()[:400]}")
+        except subprocess.TimeoutExpired:
+            problems.append(f"runtime registry preflight timed out for {state_dir}")
 
     template = rev_dir / "runtime" / UNIT_NAME
     if template.is_file():
