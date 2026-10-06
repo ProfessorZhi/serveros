@@ -13,6 +13,13 @@ Existing record/storage contracts distinguish:
 - stable Item intent: records/projects/<project>/items/<ITEM>/card.yaml;
 - runtime/control state: <state_root>/serveros.db;
 - evidence: <artifacts_root>/work-items/<project>/<ITEM>/<RUN>/;
+
+Evidence registration is idempotent only for the same bytes and metadata at the
+same Item/Run/locator. A changed file or verdict returns `EVIDENCE_CONFLICT`;
+changing `--kind` cannot replace the original record. Keep registered evidence
+immutable. For a corrected report, save a new versioned artifact, register it,
+and describe the correction with a reference to the prior evidence. The store
+does not rewrite historical hashes or reconstruct lost bytes.
 - human reasoning documents: records work packets;
 - code and repository revision: Git;
 - actual cloud bodies, task stores and native sessions: their providers.

@@ -50,6 +50,12 @@ class ActiveWorkerAckRequired(ValueError):
     reason_code = "ACTIVE_WORKER_ACK_REQUIRED"
 
 
+class EvidenceConflict(ValueError):
+    """A registered evidence locator was replayed with different bytes or facts."""
+
+    reason_code = "EVIDENCE_CONFLICT"
+
+
 class ServerOSStore:
     def __init__(self, state_dir: str | Path) -> None:
         state_dir = Path(state_dir)
@@ -490,7 +496,20 @@ class ServerOSStore:
         if not digest: raise ValueError("evidence requires SHA-256")
         _reject_secrets({'kind':kind,'locator':locator,'command':command,'cases':cases,'revision':revision,'verdict':verdict,'exit_code':exit_code,'dirty':dirty})
         with self.transaction(immediate=True) as c:
-            c.execute("INSERT OR IGNORE INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
+            previous = c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",
+                                 (item_id, run_id, locator)).fetchone()
+            requested = dict(kind=kind, sha256=digest, command=command, cases_json=json.dumps(cases),
+                             exit_code=exit_code, revision=revision, dirty=int(dirty), verdict=verdict)
+            if previous is not None:
+                changed = [field for field, value in requested.items() if previous[field] != value]
+                if changed:
+                    raise EvidenceConflict(
+                        f"evidence_id {previous['evidence_id']} already records this locator; "
+                        f"changed fields: {', '.join(changed)}. Preserve the existing record and "
+                        "register the corrected artifact at a new immutable versioned locator; "
+                        "changing --kind does not create a new evidence identity.")
+                return dict(previous)
+            c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
 
     def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
