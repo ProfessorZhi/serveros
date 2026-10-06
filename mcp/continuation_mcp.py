@@ -62,6 +62,7 @@ the same decision, and the same reason, as `mcp/node_mcp.py`.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -122,6 +123,12 @@ def _bounded():
     """`runtime/bounded_invocation.py` — the fabric's only bounded executor."""
     return _load("serveros_runtime_bounded_invocation",
                  _RUNTIME / "bounded_invocation.py")
+
+
+def _option(flag: str, value: str) -> list[str]:
+    # Preserve existing receipt argv except where argparse would parse the
+    # value as another option (e.g. next_action="--verify").
+    return [flag + "=" + value] if value.startswith("-") else [flag, value]
 
 
 def _cli():
@@ -262,7 +269,7 @@ TOOLS: tuple[dict, ...] = (
                 "waiting_on_window": {"type": "string",
                                       "description": "an ISO instant that ends the wait. Exactly one of this and waiting_on_child, and one of the two is required"},
                 "write_scope": {"type": "array", "items": {"type": "string"},
-                                "description": "a write scope this Parent holds; each must stay inside the envelope's allowed_write_scope"},
+                                "description": "defaults to this wake's allowed_write_scope; an explicit list may narrow it"},
             },
             "required": ["next_action"],
             "additionalProperties": False,
@@ -452,6 +459,38 @@ class ContinuationServer:
             return answer
         key = "%s-%s" % (self.envelope["action_key"], operation.replace(".", "-"))
         try:
+            if operation == "work.checkpoint":
+                child, window = arguments.get("waiting_on_child"), arguments.get("waiting_on_window")
+                if bool(child) == bool(window):
+                    raise ValueError("checkpoint requires exactly one of waiting_on_child or waiting_on_window")
+                # Validate with the owning writer before reserving an invocation
+                # key. A typo must be correctable without a new wake or grant.
+                _mod, store = self.cli()._control_store()
+                self.cli()._continuation_module().build_checkpoint(
+                    work_item=self.envelope["work_item_ref"], epoch=self.envelope["epoch"] + 1,
+                    parent_owner=arguments["parent"], next_safe_action=arguments.get("next_action"),
+                    waiting_on=({"kind": "child", "refs": child} if child else
+                                {"kind": "window", "until": window}),
+                    admissions=store.admissions(), now=self.now(),
+                    requirement_revision=arguments.get("requirement"),
+                    remaining_results=arguments.get("remaining"), evidence_locators=arguments.get("evidence"),
+                    child_attempts=arguments.get("attempt"), unresolved_effects=arguments.get("unresolved_effect"),
+                    write_scope=arguments.get("write_scope"))
+            if operation == "work.accept":
+                # Each child is a separate acceptance; changed input for the
+                # SAME child still reaches invoke_once's conflict check.
+                legacy = self.receipts / (key + ".json")
+                legacy_cycle = None
+                if legacy.exists():
+                    try:
+                        legacy_cycle = json.loads(
+                            (self.receipts / (key + ".stdin")).read_text())["cycle"]
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        raise ValueError("legacy acceptance needs reconciliation: "
+                                         "its child cannot be read") from exc
+                if legacy_cycle != arguments["cycle"]:
+                    identity = json.dumps([self.envelope["action_key"], arguments["cycle"]])
+                    key = "accept-" + hashlib.sha256(identity.encode()).hexdigest()
             receipt = _bounded().invoke_once(
                 key=key,
                 argv=[self.python, str(self.serverosctl), "work", *tail],
@@ -471,6 +510,7 @@ class ContinuationServer:
             # Reported as an answer rather than raised, because a refusal to
             # dispatch is exactly what this surface exists to produce.
             return {**answer, "decision": "DENY", "because": str(exc),
+                    "verdict": {**verdict, "decision": "DENY", "because": str(exc)},
                     "dispatch_refused": True}
         answer["executed"] = True
         answer["receipt"] = self._receipt(receipt, key)
@@ -537,17 +577,19 @@ class ContinuationServer:
             # true of the machine and false of the work. The envelope's
             # `parent_owner` is the name this wake actually carries, so it is
             # what gets recorded, and no caller can put another name there.
-            tail = ["park", ref, "--reason", str(arguments.get("reason") or ""),
-                    "--by", str(self.envelope.get("parent_owner") or "")]
+            tail = (["park", ref] + _option("--reason", arguments.get("reason") or "")
+                    + _option("--by", str(self.envelope.get("parent_owner") or "")))
             return self._mutate(name, tail, merged, merged)
         if name == "work.accept":
             cycle = str(arguments.get("cycle") or "")
             by = str(arguments.get("by") or self.envelope.get("parent_owner") or "")
             merged = {**arguments, "cycle": cycle, "by": by}
-            tail = ["accept", cycle, "--by", by,
-                    "--locator", str(arguments.get("locator") or "")]
+            tail = (["accept", cycle] + _option("--by", by)
+                    + _option("--locator", arguments.get("locator") or ""))
             return self._mutate(name, tail, merged, merged)
         if name == "work.checkpoint":
+            arguments = {"write_scope": list(self.envelope.get("allowed_write_scope") or []),
+                         **arguments}
             item_id = str(self.envelope.get("work_item_ref") or "")
             epoch = self.envelope.get("epoch")
             # WHICH EPOCH THIS WRITES, AND WHY IT IS THE NEXT ONE. The
@@ -592,13 +634,13 @@ class ContinuationServer:
             # can refuse a mismatch — rather than this function quietly
             # substituting and the rule then checking a value nobody asked for.
             merged = {**arguments, "item": item_id, "parent": parent}
-            tail = ["checkpoint", item_id, "--epoch", str(successor),
-                    "--parent", parent,
-                    "--next-action", str(arguments.get("next_action") or "")]
+            tail = (["checkpoint", item_id, "--epoch", str(successor)]
+                    + _option("--parent", parent)
+                    + _option("--next-action", arguments.get("next_action") or ""))
             for flag, field in (("--requirement", "requirement"),
                                 ("--waiting-on-window", "waiting_on_window")):
                 if arguments.get(field):
-                    tail += [flag, str(arguments[field])]
+                    tail += _option(flag, arguments[field])
             for flag, field in (("--remaining", "remaining"),
                                 ("--evidence", "evidence"),
                                 ("--attempt", "attempt"),
@@ -606,7 +648,7 @@ class ContinuationServer:
                                 ("--waiting-on-child", "waiting_on_child"),
                                 ("--write-scope", "write_scope")):
                 for value in arguments.get(field) or []:
-                    tail += [flag, str(value)]
+                    tail += _option(flag, value)
             return self._mutate(name, tail, merged, merged)
         raise WiringFault(f"no dispatch for {name!r}")
 
@@ -651,14 +693,18 @@ class ContinuationServer:
 
     def _call_tool(self, request_id, params: dict) -> dict:
         name = params.get("name")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments", {})
         if name not in tool_names():
             return _result(request_id, {
                 "isError": True,
                 "content": [{"type": "text", "text":
                              f"Unknown tool {name!r}. Available: "
                              f"{list(tool_names())}"}]})
-        allowed = set(TOOLS[tool_names().index(name)]["inputSchema"]["properties"])
+        schema = TOOLS[tool_names().index(name)]["inputSchema"]
+        if not isinstance(arguments, dict):
+            return _result(request_id, {"isError": True, "content": [
+                {"type": "text", "text": f"{name} arguments must be an object"}]})
+        allowed = set(schema["properties"])
         unexpected = set(arguments) - allowed
         if unexpected:
             return _result(request_id, {
@@ -668,6 +714,16 @@ class ContinuationServer:
                              f"{sorted(unexpected)}. Accepted: "
                              f"{sorted(allowed)}"}]})
         try:
+            missing = set(schema.get("required", [])) - set(arguments)
+            if missing:
+                raise WiringFault(f"missing required argument(s): {sorted(missing)}")
+            for field, value in arguments.items():
+                expected = schema["properties"][field]["type"]
+                values = value if expected == "array" and isinstance(value, list) else [value]
+                if (expected == "array" and not isinstance(value, list)) or any(
+                        not isinstance(v, str) or "\x00" in v for v in values):
+                    raise WiringFault(f"{field} must be {expected} of text without NUL bytes"
+                                      if expected == "array" else f"{field} must be text without NUL bytes")
             payload = self.dispatch(name, arguments)
         except WiringFault as exc:
             return _result(request_id, {

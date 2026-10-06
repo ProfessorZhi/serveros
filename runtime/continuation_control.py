@@ -486,8 +486,17 @@ def _verify_inner(*, envelope, store, contexts, operation, arguments, when, now,
                         f"and no other")
         scope = [str(p) for p in (envelope.get("allowed_write_scope") or [])]
         asked = [str(p) for p in (arguments.get("write_scope") or [])]
-        outside = [p for p in asked if scope and not any(
-            p == s or p.startswith(s.rstrip("/") + "/") for s in scope)]
+        def inside(path, root):
+            # These are declared scopes, not an OS filesystem fence. Refuse
+            # traversal before the segment comparison so a successor cannot
+            # acquire a wider declaration through `allowed/../elsewhere`.
+            if any(not value or ".." in value.split("/") or "\\" in value
+                   or "\x00" in value for value in (path, root)):
+                return False
+            candidate, parent = Path(path), Path(root)
+            return candidate.is_relative_to(parent)
+
+        outside = [p for p in asked if not any(inside(p, s) for s in scope)]
         if outside:
             return stop("WRITE_SCOPE_OUTSIDE_ENVELOPE", "DENY",
                         f"this wake's write scope is {scope or '(none recorded)'} "
