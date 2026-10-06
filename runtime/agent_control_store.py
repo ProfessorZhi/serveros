@@ -57,9 +57,9 @@ whether a cycle may carry an objective, so it cannot be a file somebody edited
 — that is the one shape of authority this fabric refuses to accept, because
 nothing distinguishes it from a file somebody edited. A grant recorded here is
 the only thing that supplies one. `context/delegation.py` builds that map and
-drops every grant whose `delegated_by` does not resolve to a trusted context
-that `authorizes` right now, so a grant cannot outlive the delegation it
-derives from whatever its own `expires_at` says.
+checks legacy grants against their live actor context. New provider-signed
+grants instead retain the exact approval and issuance time; their own scope,
+window, revocation and execution budgets remain binding after actor expiry.
 
 Why a collection here and not a store of its own: a grant is the same kind of
 thing as the other four — control-plane state a restart must not lose. A
@@ -137,9 +137,11 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -368,6 +370,17 @@ RECEIPT_STATUSES = ("STARTED", "EXITED", "REFUSED", "TIMED_OUT", "OUTPUT_LIMIT",
 
 class StoreError(RuntimeError):
     pass
+
+
+def _actor_module():
+    name = "serveros_context_actor"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / "context/actor.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
 
 
 def _intent_digest(record: dict, *, selection_digest: str, grant_ref: str,
@@ -1460,6 +1473,34 @@ class AgentControlStore:
 
     # -- standing delegations (§12, P6) ------------------------------------
 
+    def issue_grant(self, evidence: dict, *, now: str) -> dict:
+        """Persist a provider-approved scope and its verified issuance atomically."""
+        actor = _actor_module()
+        with self._mutation():
+            payload = evidence.get("payload") if isinstance(evidence, dict) else None
+            scope = payload.get("grant") if isinstance(payload, dict) else None
+            ref = scope.get("grant_ref") if isinstance(scope, dict) else None
+            existing = self._data["grants"].get(ref) if isinstance(ref, str) else None
+            if existing is not None:
+                issuance = existing.get("issuance") or {}
+                if issuance.get("evidence") == evidence:
+                    # Readback only: a retry never replaces scope or clears revocation.
+                    return json.loads(json.dumps(existing))
+                raise StoreError(f"{ref} already has a grant; issuance cannot replace or upgrade it")
+            try:
+                approved, context = actor.verify_delegation(evidence, now=now)
+            except actor.Rejected as exc:
+                raise StoreError(str(exc)) from exc
+            recorded = {**approved, "revoked": False,
+                        "issuance": {"schema": actor.ISSUANCE_SCHEMA,
+                                     "accepted_at": now, "evidence": evidence}}
+            # Own a snapshot, not a caller's mutable dictionary.
+            recorded = json.loads(json.dumps(recorded))
+            self._data["contexts"][context["context_ref"]] = context
+            self._data["grants"][approved["grant_ref"]] = recorded
+            self._flush()
+            return json.loads(json.dumps(recorded))
+
     def put_grant(self, record: dict) -> dict:
         """Record a standing delegation. Write-once, on `grant_ref`.
 
@@ -1485,6 +1526,8 @@ class AgentControlStore:
         place would rewrite what work already done was authorized by. Extending
         a delegation is a new grant; ending one is `revoke_grant`.
         """
+        if "issuance" in record:
+            raise StoreError("issuance is owner-written; use issue_grant with signed provider evidence")
         ref = str(record.get("grant_ref") or "").strip()
         if not ref:
             raise StoreError(

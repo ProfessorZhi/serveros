@@ -35,6 +35,7 @@ number in a file and a second copy of it here would be a second authority.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import sys
@@ -50,6 +51,9 @@ except ImportError:  # pragma: no cover - environment guarantee
 
 _HERE = Path(__file__).resolve().parent
 CONTRACT = _HERE / "actor-context-contract.yaml"
+DELEGATION_TRUST = Path.home() / ".config/serveros/human-control-trust.json"
+DELEGATION_EVIDENCE_SCHEMA = "serveros/human-delegation.v1"
+ISSUANCE_SCHEMA = "serveros/delegation-issuance.v1"
 
 CONTEXT_PREFIX = "human-context:"
 
@@ -115,6 +119,110 @@ def contract() -> dict:
     if not isinstance(data, dict):
         raise Rejected(f"{CONTRACT} must contain a mapping")
     return data
+
+
+def delegation_trust() -> dict:
+    """Operator-owned public keys; a request cannot choose its trust root."""
+    try:
+        data = json.loads(DELEGATION_TRUST.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Rejected("DELEGATION_PROVIDER_UNBOUND: human-control trust binding unavailable") from exc
+    if not isinstance(data, dict) or data.get("schema") != "serveros/human-control-trust.v1":
+        raise Rejected("DELEGATION_PROVIDER_UNBOUND: invalid human-control trust binding")
+    return data
+
+
+def signed_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def verify_delegation(evidence: dict, *, now: str) -> tuple[dict, dict]:
+    """Verify a provider's approval of this exact scope, fresh at issuance."""
+    if not isinstance(evidence, dict) or set(evidence) != {"payload", "signature"}:
+        raise Rejected("DELEGATION_EVIDENCE_INVALID: signed provider evidence required")
+    payload = evidence["payload"]
+    fields = {"schema", "provider_id", "key_id", "audience", "issued_at", "actor_report", "grant"}
+    if not isinstance(payload, dict) or set(payload) != fields or payload.get("schema") != DELEGATION_EVIDENCE_SCHEMA:
+        raise Rejected("DELEGATION_EVIDENCE_INVALID: unknown signed payload")
+    if any(not isinstance(payload[k], str) or not payload[k].strip()
+           for k in ("provider_id", "key_id", "audience", "issued_at")):
+        raise Rejected("DELEGATION_EVIDENCE_INVALID: provider, key, audience and clock must be named")
+    trust = delegation_trust()
+    providers = trust.get("providers")
+    provider = providers.get(payload.get("provider_id"), {}) if isinstance(providers, dict) else {}
+    keys = provider.get("keys") if isinstance(provider, dict) else None
+    key = keys.get(payload.get("key_id"), {}) if isinstance(keys, dict) else {}
+    if (not isinstance(key, dict) or key.get("enabled") is not True
+            or not trust.get("audience") or payload.get("audience") != trust["audience"]):
+        raise Rejected("DELEGATION_PROVIDER_UNBOUND: provider/key/audience not trusted")
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
+    except ImportError as exc:
+        raise Rejected("DELEGATION_VERIFIER_UNAVAILABLE: Ed25519 support is required") from exc
+    try:
+        public = base64.b64decode(key["public_key"], validate=True)
+        signature = base64.b64decode(evidence["signature"], validate=True)
+        Ed25519PublicKey.from_public_bytes(public).verify(signature, signed_bytes(payload))
+    except (KeyError, TypeError, ValueError, InvalidSignature) as exc:
+        raise Rejected("DELEGATION_SIGNATURE_INVALID: provider evidence did not verify") from exc
+    report, grant = payload["actor_report"], payload["grant"]
+    if (not isinstance(report, dict) or set(report) != set(PROVIDER_REPORT_FIELDS)
+            or report.get("human_control_provider") != payload["provider_id"]):
+        raise Rejected("DELEGATION_EVIDENCE_INVALID: actor report does not identify this provider")
+    issued = _parse(payload["issued_at"])
+    if not _parse(report["observed_at"]) <= issued <= _parse(now):
+        raise Rejected("DELEGATION_EVIDENCE_INVALID: issuance clock precedes evidence or is in the future")
+    context = build(report, now=payload["issued_at"])
+    verdict = authorizes(context, now)
+    if not verdict["authorizes"]:
+        raise Rejected("DELEGATION_ISSUANCE_NOT_FRESH: " + verdict["because"])
+    allowed = {"grant_ref", "valid_from", "expires_at", "projects", "items", "actions",
+               "scope_digests", "covers", "budget", "engineering"}
+    if not isinstance(grant, dict) or set(grant) - allowed:
+        raise Rejected("DELEGATION_SCOPE_INVALID: unknown or owner-only grant fields")
+    if not isinstance(grant.get("grant_ref"), str) or not grant["grant_ref"].strip():
+        raise Rejected("DELEGATION_SCOPE_INVALID: grant_ref required")
+    for field in ("projects", "items", "actions", "covers"):
+        value = grant.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(v, str) or not v.strip() for v in value):
+            raise Rejected(f"DELEGATION_SCOPE_INVALID: {field} must be a string list")
+    if not grant.get("actions") or not (grant.get("items") or grant.get("covers")):
+        raise Rejected("DELEGATION_SCOPE_INVALID: an explicit work or subject scope and actions are required")
+    engineering = "engineering.execute" in grant["actions"]
+    if engineering != ("engineering" in grant) or (engineering and not isinstance(grant["engineering"], dict)):
+        raise Rejected("DELEGATION_SCOPE_INVALID: engineering.execute requires its signed engineering binding")
+    if grant.get("items"):
+        digests = grant.get("scope_digests")
+        if not grant.get("projects") or not isinstance(digests, dict) or any(
+                not isinstance(digests.get(item), str) or not digests[item].strip() for item in grant["items"]):
+            raise Rejected("DELEGATION_SCOPE_INVALID: work scope needs projects and each item's scope_digest")
+    budget = grant.get("budget")
+    if (not isinstance(budget, dict) or budget.get("exhausted") is not False
+            or any(type(budget.get(k)) is not int or budget[k] <= 0
+                   for k in ("wall_seconds", "max_attempts", "max_output_bytes"))):
+        raise Rejected("DELEGATION_SCOPE_INVALID: positive bounded budget required")
+    if not _parse(grant.get("valid_from")) < _parse(grant.get("expires_at")) or _parse(grant["expires_at"]) <= _parse(now):
+        raise Rejected("DELEGATION_SCOPE_INVALID: delegation window is invalid or already expired")
+    return {**grant, "delegated_by": context["context_ref"]}, context
+
+
+def issued_delegation(grant: dict, *, now: str) -> dict:
+    """Validate durable issuance without extending the signed scope or actor TTL."""
+    issuance = grant.get("issuance")
+    if (not isinstance(issuance, dict) or set(issuance) != {"schema", "accepted_at", "evidence"}
+            or issuance.get("schema") != ISSUANCE_SCHEMA):
+        raise Rejected("DELEGATION_ISSUANCE_INVALID: owner issuance receipt required")
+    at = issuance["accepted_at"]
+    if _parse(at) > _parse(now):
+        raise Rejected("DELEGATION_ISSUANCE_INVALID: receipt is ahead of execution clock")
+    approved, context = verify_delegation(issuance["evidence"], now=at)
+    actual = {k: v for k, v in grant.items() if k not in ("issuance", "ref", "revoked", "revoked_at", "revoked_reason")}
+    if actual != approved:
+        raise Rejected("DELEGATION_SCOPE_CHANGED: stored grant differs from provider-approved scope")
+    return {**authorizes(context, at), "issuance_ref": context["context_ref"],
+            "accepted_at": at, "basis": "provider-signed-delegation"}
 
 
 # ---------------------------------------------------------------------------

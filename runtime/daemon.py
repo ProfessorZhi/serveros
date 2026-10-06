@@ -1428,6 +1428,7 @@ class Daemon:
             "agent.context.attach": self._r_agent_context_attach,
             "agent.context.inspect": self._r_agent_context_inspect,
             "agent.context.resolve": self._r_agent_context_resolve,
+            "agent.grant.issue": self._r_agent_grant_issue,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -1566,6 +1567,7 @@ class Daemon:
                 # is deliberately NOT in the MCP surface — see `mcp/agent_mcp.py`.
                 "agent.context.attach", "agent.context.inspect",
                 "agent.context.resolve",
+                "agent.grant.issue",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status",
                 # §17. `agent.binding.resolve` and `agent.binding.list` are
@@ -2897,6 +2899,13 @@ class Daemon:
                      "resolves the actor from it and never from a field the "
                      "caller supplies"),
         }
+
+    def _r_agent_grant_issue(self, params) -> dict:
+        """Only a trusted provider's signed, exact human-approved scope can issue."""
+        if set(params) != {"evidence"}:
+            raise actor_mod.Rejected("agent.grant.issue accepts signed evidence only")
+        record = self.control_store().issue_grant(params["evidence"], now=_iso(self._now()))
+        return {"grant": record, "basis": "provider-signed-delegation"}
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.

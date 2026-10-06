@@ -1,63 +1,15 @@
 #!/usr/bin/env python3
-"""Standing delegation: which recorded grants still authorize, and why not.
+"""Resolve recorded grants without treating caller assertions as authority.
 
-A grant is a scope — Items, actions, projects, a budget — written down so that
-a cycle can carry an objective without a person approving it again. The one
-sentence this module implements:
+Legacy grants require their original actor context to authorize at read time.
+New grants carry provider-signed approval of the complete scope and an owner
+issuance receipt. Their human evidence must have been fresh when issued;
+later actor-context expiry does not end a still-valid delegation. Both paths
+retain the existing scope, revocation, window, budget and epoch gates at their
+execution owners. This module only supplies the derived envelope.
 
-    a grant is a scope on a trusted context, and it authorizes a cycle only
-    while that context still IS one — whatever window the grant carries.
-
-The second half is the load-bearing half, and it is the half nothing else
-checks. `intake/daily_cycle.grant_reason` validates a grant's own scope, time
-and budget and says in its docstring that it does not validate "the
-authenticity of the supplied grant". That is this module's job: `delegated_by`
-must resolve to a context `context/actor.py#authorizes` accepts *now*, so a
-grant cannot outlive the delegation it derives from, cannot be extended by
-editing its own `expires_at`, and cannot be invented by writing a file. This
-module returns the map `intake/daily_cycle.select_focus` is handed; nothing
-else on this node builds one.
-
-Where the grants live
----------------------
-`runtime/agent_control_store.py` holds them, in the store's `grants`
-collection, for the reason that module's own docstring gives: a delegation a
-restart lost would silently withdraw authority, and re-minting one on demand is
-authority nobody granted. This module reads that collection and writes nothing
-— there is no `main()`, no `--write`, and no way to reach the store through it.
-
-Four states, and the fourth is the point
-----------------------------------------
-`AUTHORIZED` is the only one that puts a grant in the map. The other three are
-kept apart because they are different facts about different things:
-
-  DELEGATION_UNRESOLVED          the store holds no context under
-                                 `delegated_by`. Its root is gone — the context
-                                 window closed and `sweep` dropped it, or the
-                                 record was hand-edited — so what was delegated
-                                 can no longer be established. Not a revocation:
-                                 nothing was withdrawn, the evidence expired.
-  DELEGATION_DOES_NOT_AUTHORIZE  the root is there and refuses. The context is
-                                 STALE or EXPIRED, or its provider did not
-                                 verify, or its provenance is not FACT. The
-                                 reason is `context/actor.py`'s own sentence,
-                                 copied rather than re-worded, because there is
-                                 one module that decides this and a second
-                                 phrasing of it would be a second opinion.
-  GRANT_MALFORMED                the record cannot be judged at all — it names
-                                 no delegation, or its own two names for its ref
-                                 disagree.
-
-A collapsed version of this reads "no grant", and the collapse is the failure
-§5.0 is about: a person asking why the cycle carried nothing would be told the
-same sentence whether nobody ever delegated, authority was withdrawn, or the
-evidence went stale — three answers with three different next actions.
-
-`GRANT_NOT_RECORDED` is a fifth state and it is about a different object: a ref
-some row names that this store has never heard of. It is reported against the
-board rather than against the store, and it is here because the two absences
-must not print as one: "the board names no grant" and "the store holds none"
-are different gaps with different producers.
+The signed path requires an operator-bound provider key. Unsigned BotMux
+current-actor reports and PID equality cannot mint durable delegation.
 """
 from __future__ import annotations
 
@@ -183,6 +135,18 @@ def derivation(grant: object, ref: str, context_record: dict | None, *,
     if malformed:
         return {"state": "GRANT_MALFORMED", "because": malformed}
     delegated_by = str(grant[DELEGATION_FIELD])
+    if "issuance" in grant:
+        actor = _actor_module()
+        try:
+            verdict = actor.issued_delegation(grant, now=now)
+        except actor.Rejected as exc:
+            return {"state": "DELEGATION_DOES_NOT_AUTHORIZE", "because": str(exc)}
+        return {
+            "state": "AUTHORIZED",
+            "because": ("provider-signed scope was verified at issuance; current grant "
+                        "scope, window, revocation, budget and checkpoint epoch still apply"),
+            "delegation": verdict,
+        }
     if context_record is None:
         return {
             "state": "DELEGATION_UNRESOLVED",
