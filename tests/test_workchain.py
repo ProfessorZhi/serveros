@@ -1091,6 +1091,13 @@ class TheCompletionBoundaryAnswersFourThings(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ACredentialIsNeverStored(unittest.TestCase):
+    # Assembled at runtime so this file carries no matchable credential shape
+    # of its own — otherwise the fixture that proves the refusal works is
+    # itself a finding when the scanner is pointed at the repository. The
+    # `sk-` member below has been written this way since it was added; this
+    # one was not, and `scripts/scan_secrets.py` reported it.
+    PRIVATE_KEY_HEADER = "-----BEGIN " + "PRIVATE KEY-----"
+
     def test_a_reference_is_accepted_and_a_value_is_refused(self):
         for reference in ("vault:feishu/tokyo-reader", "feishu-reader"):
             self.assertTrue(chain._looks_like_a_reference(reference), reference)
@@ -1098,7 +1105,7 @@ class ACredentialIsNeverStored(unittest.TestCase):
         # the last because a path to a file that HOLDS a secret is one `read()`
         # away from a secret in this repository.
         for value in ("sk-" + "a" * 40, "Bearer abcdef", "token=abcdef",
-                      "-----BEGIN PRIVATE KEY-----",
+                      self.PRIVATE_KEY_HEADER,
                       "vault/feishu/tokyo-reader.json",
                       # 32 hex characters with no separator: this one has no
                       # recognisable prefix at all, which is the case a
