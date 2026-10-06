@@ -434,6 +434,101 @@ def cmd_report_alignment(args) -> int:
     return EXIT_OK
 
 
+def cmd_report_evening(args) -> int:
+    """§P5 — 20:00 的那一次：19:20 的准备 → 当晚对齐 → 一次投递尝试。
+
+    三步在同一个进程里，因为它们是同一个晚上的一个动作；也因为这正是分开写时的
+    坏掉方式。日期（北京）要问三遍——哪一天的准备、哪一天的运行记录、投进哪个
+    目录——而「今晚的运行记录是哪一份」要在运行记录目录里按记录自己的 `finished_at`
+    挑。把这三样写进单元文件里的一行 shell，就没有任何东西能测它们，而它们取错值时
+    都不报错：一份昨天的运行记录填出来的缺口那一节，和真量过的那一节长得一模一样。
+
+    `--requested-by` 与 `--why` 是必填的，与 `report request` 同一个理由。定时器触发
+    不代表有人要求过；把触发它的单元名字写在 `--requested-by` 里，是这条待发唯一
+    诚实可核的请求者。
+
+    收件人没配置时**连待发意图都不记**，退出码是 2（什么都没尝试）而不是 0：一份写好了
+    却没有任何人会被通知的简报，与一份送达的简报，在任何一张健康表上都必须是不同的
+    两行。
+    """
+    alignment = _load_module_from(REPO_ROOT / "intake" / "alignment_delivery.py",
+                                  "serveros_intake_alignment_delivery")
+    delivery = _report_delivery_module()
+
+    day = alignment.beijing_day(args.at)
+    record, record_note = alignment.select_run_record(Path(args.record_dir), day)
+    out_dir = Path(args.out_root) / day
+    try:
+        composed = alignment.compose(Path(args.run_dir), out_dir, run_record=record,
+                                     period=args.period or day, at=args.at)
+    except alignment.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+
+    counts = composed["counts"]
+    lines = [
+        f"brief       {composed['brief']}",
+        f"version     {composed['version']}",
+        f"sha256      {composed['sha256']}",
+        f"自动更新    {counts['auto']}",
+        f"需要人决定  {counts['decision']}",
+        f"冲突        {counts['conflict']}",
+        f"理解缺口    {counts['gap']}",
+        f"运行记录    {record_note}",
+    ]
+    recipient = args.conversation or os.environ.get("SERVEROS_REPORT_CONVERSATION")
+    if not recipient:
+        lines.append("recipient  没有配置（--conversation 或 SERVEROS_REPORT_CONVERSATION）")
+        lines.append("sent       nothing — 简报写好了，留在上面那条路径；没有收件人，"
+                     "所以也没有记下待发意图。这不是「已送达」")
+        emit({"schema": "serveros/evening-alignment.v1", "out_dir": str(out_dir),
+              "day": day, "composed": composed, "run_record": record_note,
+              "recipient": None, "request": None, "delivery": None},
+             as_json=args.json, lines=lines)
+        return EXIT_COULD_NOT_ANSWER
+
+    try:
+        requested = delivery.request(out_dir, recipient=recipient,
+                                     requested_by=args.requested_by, why=args.why,
+                                     at=args.at)
+    except delivery.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    lines.append(f"recipient  {recipient}")
+    lines.append(f"request    {requested['state']}  {requested['intent'][:16]}…")
+
+    sender = None
+    try:
+        sender = _report_sender(recipient)
+    except Exception as exc:  # noqa: BLE001 - the reason is the answer
+        sys.stderr.write(
+            f"serverosctl: 构造不出投递通道（{type(exc).__name__}: {exc}）。"
+            f"这条待发仍然留在 outbox 里，没有被当作已送达。\n")
+        sender = None
+    authorization = {"authorized": True, "because": args.authorization or (
+        f"20:00 的这一次由每晚的定时器触发：简报由 {day} 的 19:20 准备生成"
+        f"（sha256 {composed['sha256'][:12]}…），收件人 {recipient} 来自配置。"
+        f"两条都是这一刻重新查的，不是上一次投递时留下的")}
+    try:
+        delivered = delivery.deliver(out_dir, sender=sender,
+                                     authorization=authorization, at=args.at)
+    except delivery.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    lines.extend(delivery.render(delivered))
+    lines.append(f"pending    {delivery.pending_count(out_dir)} 条仍在待发")
+    emit({"schema": "serveros/evening-alignment.v1", "out_dir": str(out_dir),
+          "day": day, "composed": composed, "run_record": record_note,
+          "recipient": recipient, "request": requested, "delivery": delivered},
+         as_json=args.json, lines=lines)
+    state = delivered.get("state")
+    if state in ("DELIVERED", "ALREADY_DELIVERED"):
+        return EXIT_OK
+    if state in ("NOTHING_REQUESTED", "PENDING_CONSUMER"):
+        return EXIT_COULD_NOT_ANSWER
+    return EXIT_FAULT
+
+
 def _report_delivery_module():
     return _load_module_from(REPO_ROOT / "runtime" / "report_delivery.py",
                              "serveros_runtime_report_delivery")
@@ -14042,6 +14137,59 @@ def build_parser() -> argparse.ArgumentParser:
                                    "difference, not a default value: absent means "
                                    "the clock was read here, which is recorded")
     rp_alignment.set_defaults(func=cmd_report_alignment)
+
+    rp_evening = report_sub.add_parser(
+        "evening",
+        help="20:00 的那一次：compose last night's alignment brief from the "
+             "day's 19:20 run, then request and deliver it in one pass. The day, "
+             "the run record and the delivery directory are all derived here so "
+             "that a unit file does not have to compute them in shell",
+        **_COMMON)
+    rp_evening.add_argument(
+        "--run-dir", required=True,
+        help="the 19:20 perception run's directory, holding alignment.json and "
+             "readings/. Read-only here")
+    rp_evening.add_argument(
+        "--record-dir", required=True,
+        help="the directory a perception recipe writes its run records into. The "
+             "one that finished on today (Beijing) is selected here, by the "
+             "record's own finished_at and not by the file's mtime")
+    rp_evening.add_argument(
+        "--out-root", required=True,
+        help="the delivery root, absolute. Tonight's brief goes into "
+             "<out-root>/<today in Beijing>/ so that a re-run of the same evening "
+             "lands on the same version instead of creating another one")
+    rp_evening.add_argument(
+        "--period", default=None, help="the period this brief is about, recorded "
+                                       "in the version statement. Default: today")
+    rp_evening.add_argument(
+        "--conversation", default=None,
+        help="who receives it, as user:<open_id> or chat:<chat_id>. Absent, "
+             "SERVEROS_REPORT_CONVERSATION is read; absent both, the brief is "
+             "composed and NOTHING is requested or sent, and the exit code says "
+             "so. The recipient is never guessed: an alignment brief is the "
+             "owner's own reading, and a guess would send it to whoever was "
+             "easiest to find")
+    rp_evening.add_argument(
+        "--requested-by", required=True,
+        help="who asked for this. Name the thing that asked — for the nightly "
+             "unit, that unit. Required: a timer firing is not a request")
+    rp_evening.add_argument(
+        "--why", required=True,
+        help="why this report goes to this recipient. Required, as in `report "
+             "request`: a delivery with no stated purpose is one nobody can "
+             "review later")
+    rp_evening.add_argument(
+        "--authorization", default=None,
+        help="what the caller just re-checked about sending now, overriding the "
+             "default sentence. The default names the day, the version's sha256 "
+             "and the recipient, because those are the three things this command "
+             "itself re-read in the moment before sending")
+    rp_evening.add_argument("--at", default=None,
+                            help="ISO-8601. A default difference, not a default "
+                                 "value: absent means the clock was read here, "
+                                 "which the brief then records")
+    rp_evening.set_defaults(func=cmd_report_evening)
 
     rp_request = report_sub.add_parser(
         "request",
