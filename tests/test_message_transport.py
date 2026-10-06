@@ -401,3 +401,21 @@ class TestOneReader:
         assert "answer.get(\"ok\")" not in source, (
             "`ok: true` 而不是 `code == 0` 这条判读只该有一份实现；这里出现第二份，"
             "变异掉其中一份时另一份会看起来还活着")
+
+
+class TestTheNameIsOneCopyToo:
+    """上一条钉的是**判读**只有一份，这条钉的是**名字**。
+
+    `mt.run()` 借调 `document_transport.run()`，而后者只在 `argv[0]` 恰好等于
+    `document_transport.LARK_CLI` 时才把它解析成本机的文件。两个文件各写一遍这个
+    字面量：谁改了一个而没人改另一个，这条链就会**静默**地退回「按调用方的 PATH
+    找」——而那正是这次修掉的那个缺陷，且它不会报错，只会让单元里的投递再次失败。
+    """
+
+    def test_both_adapters_name_the_same_cli(self):
+        dt = _load("document_transport", "runtime/document_transport.py")
+        assert mt.LARK_CLI == dt.LARK_CLI
+
+    def test_the_senders_default_is_the_name_that_gets_resolved(self):
+        dt = _load("document_transport", "runtime/document_transport.py")
+        assert mt.LarkMessageSender(RECIPIENT).cli == dt.LARK_CLI
