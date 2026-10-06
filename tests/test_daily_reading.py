@@ -46,6 +46,10 @@ def run(tmp_path, records, call=model, day=6):
 def test_pending_reading_is_cached_and_never_turned_into_authority(tmp_path, monkeypatch):
     records, card = fixture(tmp_path)
     cli = daily_reading._load("runtime/cli.py")
+    # Bound reading must not enumerate unrelated private sources or cards.
+    for module in ("intake/capture_coverage.py", "intake/understanding_delta.py"):
+        monkeypatch.setattr(daily_reading._load(module), "read_root",
+                            lambda *_: pytest.fail("full library scan from one bound source"))
     monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (None, "unbound fixture"))
     before = (records / card).read_bytes()
     result = run(tmp_path, records)
@@ -58,6 +62,15 @@ def test_pending_reading_is_cached_and_never_turned_into_authority(tmp_path, mon
     assert len(result["outcomes"]["readings"][0]["awaiting"]) == 1
     # No source body in the durable recipe state; the packet invocation owns it.
     assert "The endpoint" not in json.dumps(result["steps"])
+
+
+@pytest.mark.parametrize("field", ["card", "manifest"])
+def test_bound_reading_locator_cannot_escape_owner(tmp_path, field):
+    records, card = fixture(tmp_path)
+    source = yaml.safe_load((records / 'projects/example/context/sources.yaml').read_text())["sources"][0]
+    source[field] = "../outside"
+    with pytest.raises(ValueError, match="escapes"):
+        daily_reading.scoped_report(records, source)
 
 
 def test_granted_reading_uses_writer_then_recall_and_next_period_no_model(tmp_path, monkeypatch):
