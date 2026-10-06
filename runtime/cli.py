@@ -392,6 +392,48 @@ def cmd_report_daily(args) -> int:
 
 # ── P5 · 投递：把「写了两份文件」补成 compose → publish → send ─────────────────
 
+def cmd_report_alignment(args) -> int:
+    """§P5 — 把 19:20 的待决记录压成一份可投递的当晚对齐简报。
+
+    这一步**不发送任何东西**，而这不是留白：合成了再发，等于在合成的时刻把收件人、
+    内容版本和授权一起冻结下来，而这三样都要在真正发送的那一刻重新查一次。
+    它只写下简报本身和一个指明这一版是什么的版本声明；投递仍然走
+    `report request` / `report deliver`，一条纪律都不重写。
+
+    `--run-dir` 是 19:20 那次 perception 运行的目录（`alignment.json` 与 `readings/`
+    就在里面），`--out-dir` 是这份投递自己的目录。两者必须分开：前者每次运行都会被
+    覆盖，而投递回执必须活过它。
+    """
+    mod = _load_module_from(REPO_ROOT / "intake" / "alignment_delivery.py",
+                            "serveros_intake_alignment_delivery")
+    run_record = None
+    if args.run_record:
+        run_record = mod.read_record(Path(args.run_record))
+        if run_record is None:
+            sys.stderr.write(
+                f"serverosctl: {args.run_record} 不存在或读不出来。缺口那一节会按"
+                f"「本次没有量过」写出，而不是按「缺口：无」——这两句差别很大\n")
+    try:
+        result = mod.compose(Path(args.run_dir), Path(args.out_dir),
+                             run_record=run_record, period=args.period, at=args.at)
+    except mod.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_COULD_NOT_ANSWER
+    counts = result["counts"]
+    lines = [
+        f"brief       {result['brief']}",
+        f"version     {result['version']}",
+        f"sha256      {result['sha256']}",
+        f"自动更新    {counts['auto']}",
+        f"需要人决定  {counts['decision']}",
+        f"冲突        {counts['conflict']}",
+        f"理解缺口    {counts['gap']}",
+        "sent        nothing — 投递走 report request / report deliver",
+    ]
+    emit(result, as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
 def _report_delivery_module():
     return _load_module_from(REPO_ROOT / "runtime" / "report_delivery.py",
                              "serveros_runtime_report_delivery")
@@ -13968,6 +14010,38 @@ def build_parser() -> argparse.ArgumentParser:
     rp_daily.add_argument("--attempted-at", default=None,
                           help="when the caller attempted delivery, if it did")
     rp_daily.set_defaults(func=cmd_report_daily)
+
+    rp_alignment = report_sub.add_parser(
+        "alignment",
+        help="compose the evening alignment brief from a 19:20 perception run's "
+             "pending decisions. Writes the brief and the version that names it; "
+             "sends nothing — delivery goes through `report request` / "
+             "`report deliver`, which read this directory's version.json",
+        **_COMMON)
+    rp_alignment.add_argument(
+        "--run-dir", required=True,
+        help="the 19:20 perception run's directory, holding alignment.json and "
+             "readings/. Read-only here: this command never writes into it")
+    rp_alignment.add_argument(
+        "--out-dir", required=True,
+        help="this delivery's own directory, absolute. Must be separate from "
+             "--run-dir: the run directory is overwritten by the next run, and a "
+             "delivery receipt has to outlive it")
+    rp_alignment.add_argument(
+        "--run-record", default=None,
+        help="the perception recipe's run record, whose outcomes.unread is the "
+             "only place unaired sources are written down. Absent, the gap "
+             "section says it was not measured rather than saying there were none")
+    rp_alignment.add_argument(
+        "--period", default=None,
+        help="the window this alignment is about, as a label. Recorded in the "
+             "version statement so a reader of the delivery receipt can tell "
+             "which evening it belongs to")
+    rp_alignment.add_argument("--at", default=None,
+                              help="when it was composed, ISO-8601. A default "
+                                   "difference, not a default value: absent means "
+                                   "the clock was read here, which is recorded")
+    rp_alignment.set_defaults(func=cmd_report_alignment)
 
     rp_request = report_sub.add_parser(
         "request",
