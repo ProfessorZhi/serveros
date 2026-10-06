@@ -202,11 +202,13 @@ class TheAdapterInventsNothing(unittest.TestCase):
             self.assertEqual(liveness(row), (None, []))
 
     def test_the_absent_fields_are_named_with_a_reason(self):
-        for field in ("focus_disposition", "parking_acknowledged", "grant_ref",
-                      "scope_digest", "next_action", "blocked_by"):
+        for field in ("focus_disposition", "parking_acknowledged", "blocked_by"):
             self.assertTrue(NOT_PRODUCED.get(field),
                             f"{field} is absent from every row and the module "
                             f"does not say why")
+        for field in ("grant_ref", "scope_digest", "next_action"):
+            self.assertIn(field, PRODUCED)
+            self.assertNotIn(field, NOT_PRODUCED)
         # And the two that are absent from a DEFAULT composition for a different
         # reason: their producer exists, it is simply not read unless the caller
         # supplies it. Absent-for-a-reason and absent-because-nobody-looked are

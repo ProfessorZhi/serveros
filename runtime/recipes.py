@@ -545,9 +545,14 @@ class Context:
         bound, and a run that reports MODEL_UNBOUND when its ceiling was already
         spent would be hiding the cheaper fact behind the more interesting one.
         """
+        recorded_ask = ask
+        if ask.get("kind") == "understanding":
+            packet = ask.get("brief") or {}
+            recorded_ask = {"kind": "understanding", "source": packet.get("source"),
+                            "read": packet.get("read"), "directory": ask.get("directory")}
         spent = self.running["model_calls"]
         if spent >= self.budget:
-            self.running["would_call"] = {"step": step_id, "ask": ask,
+            self.running["would_call"] = {"step": step_id, "ask": recorded_ask,
                                           "why": "budget exhausted"}
             self.stop(
                 "BUDGET_EXHAUSTED",
@@ -558,7 +563,7 @@ class Context:
         transport = self._engine.transport
         if transport is None:
             self.running["would_call"] = {
-                "step": step_id, "ask": ask,
+                "step": step_id, "ask": recorded_ask,
                 "why": ("no model transport is bound on this node. "
                         f"{CONTRACT.name}#model.transports is empty and "
                         "state/serveros/recipes/model-binding.yaml, when it "
@@ -571,8 +576,12 @@ class Context:
                 f"report a quiet period this run never examined.")
         self.running["model_calls"] = spent + 1
         self.step(step_id, f"called the bound model transport {transport!r}",
-                  ask=ask)
-        return self._engine.model(transport, ask, self)
+                  ask=recorded_ask)
+        reply = self._engine.model(transport, ask, self)
+        if isinstance(reply, dict) and reply.get("executed_now") is False:
+            self.running["model_calls"] -= 1
+            self.step(step_id, "reused the native invocation receipt; no model call")
+        return reply
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +620,11 @@ def perception(ctx: Context) -> None:
     entries = sources["sources"]
     ctx.step("sources", f"{len(entries)} source(s) followed",
              path=sources.get("path"))
+
+    if any(entry.get("kind") == "understanding" for entry in entries):
+        if any(entry.get("kind") != "understanding" for entry in entries):
+            ctx.unbound("SOURCE_UNAVAILABLE", "use separate scopes for git observation and semantic reading")
+        return _load("serveros_daily_reading", ROOT / "intake" / "daily_reading.py").run(ctx, entries)
 
     observed, unanswered = {}, []
     for entry in entries:
@@ -1522,17 +1536,17 @@ def transport_for(state_root) -> str | None:
 
 # ---------------------------------------------------------------------------
 
-def default_model_invoker(transport, ask, ctx):  # pragma: no cover
-    """There is no transport, so this is never called.
-
-    It exists as the single name a bound transport would be reached through, so
-    that "no model is called" is a statement about a call site that exists and
-    is guarded, rather than about a call site that was never written.
-    """
+def default_model_invoker(transport, ask, ctx):
+    """Only the registered native reader; it cannot perform engineering work."""
+    if transport == "native-claude-reader" and ask.get("kind") == "understanding":
+        binding = yaml.safe_load((ctx.state_root / "model-binding.yaml").read_text())
+        reader = _load("serveros_native_reader", ROOT / "runtime" / "native_reader.py")
+        return reader.invoke(ask["brief"], directory=Path(ask["directory"]),
+                             timeout=binding.get("wall_seconds", 120),
+                             max_cost_usd=binding.get("max_cost_usd", 1.0))
     raise Unbound(
         "MODEL_UNBOUND",
-        f"the engine reached its model call site with transport {transport!r} "
-        f"and this distribution ships no invoker")
+        f"transport {transport!r} does not implement this kind of work")
 
 
 

@@ -248,8 +248,8 @@ class TheContractTest(unittest.TestCase):
         self.assertEqual(recipes.model_steps("perception"), ("refresh",))
         self.assertEqual(recipes.model_steps("work"), ("advance",))
 
-    def test_the_model_registry_is_empty_and_the_engine_does_not_widen_it(self):
-        self.assertEqual(recipes.model_transports(), ())
+    def test_the_model_registry_only_names_the_tool_free_reader(self):
+        self.assertEqual(recipes.model_transports(), ("native-claude-reader",))
 
 
 # ---------------------------------------------------------------------------

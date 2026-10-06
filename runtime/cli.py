@@ -795,6 +795,17 @@ def cmd_recipe_run(args) -> int:
 
     revision, revision_why = mod.checkout_revision(args.worktree)
     try:
+        sources = None
+        sources_path = getattr(args, "sources", None)
+        if sources_path:
+            if not Path(sources_path).is_absolute() or str(args.scope).startswith("project:"):
+                raise mod.Refused("--sources requires an absolute file and node/item scope; project scope uses its own sources.yaml")
+            try:
+                sources = mod.yaml.safe_load(Path(sources_path).read_text())["sources"]
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise mod.Refused(f"cannot read explicit source binding: {exc}") from exc
+            if not isinstance(sources, list) or any(not isinstance(row, dict) for row in sources):
+                raise mod.Refused("--sources must contain a sources list of objects")
         engine = mod.Engine(
             state_root=state_root, scope=args.scope, period=period,
             model=mod.default_model_invoker, transport=transport,
@@ -802,7 +813,7 @@ def cmd_recipe_run(args) -> int:
             worktree=args.worktree, run_dir=args.run_dir, out_dir=args.out_dir,
             recipient=args.recipient, channel=args.channel,
             publication_state=args.publication_state,
-            work_engine=args.work_engine)
+            work_engine=args.work_engine, sources=sources, sources_path=sources_path)
         result = engine.run(recipe_id=args.recipe, budget=budget,
                             budget_from=budget_from,
                             retake=args.retake, revision=revision)
@@ -7819,6 +7830,10 @@ def _focus_decision(args):
         sys.stderr.write(f"serverosctl: {exc}\n")
         return None
 
+    _boards, records, _workspace = _workchain_roots(args)
+    composed = focus_mod.control_join(composed, board, records_root=records,
+                                      grants=delegations["envelopes"])
+
     if composed["observed_at"] is None:
         # One shape for both, and the shape comes from the policy module rather
         # than from here: a caller that constructs a decision is deciding by
@@ -14075,6 +14090,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the records root the scope's authored inputs are "
                              "read from (sources.yaml, today.yaml)")
     rc_run.add_argument("--workspace-root", default=None)
+    rc_run.add_argument("--sources", default=None,
+                        help="absolute authored source binding for node/item scope; project scope reads context/sources.yaml")
     rc_run.add_argument("--worktree", default=None,
                         help="the checkout a period's real work delta is read "
                              "from. A path that is not a checkout, and no path "
