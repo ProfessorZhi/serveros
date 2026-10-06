@@ -40,6 +40,11 @@ Node/Item scope 可用 `--sources <absolute-yaml>` 指定绑定。跨时段复�
 `alignment.json` 从各 reading 的 resolution 生成，保留需要人决定的内容。
 它不接受需求、不生成 Work Item，也不等于语义接受记录。接受前仍需版本核验。
 一个事实的写入 receipt 完成，不表示同批提案已获接受。
+同一 reading 里的事实已经写入后，可继续通过 `work understanding-semantic --commit --accepted ...`
+接受仍在等待的 claim。每次确认追加独立收据，保留
+原始收据及其哈希；只允许尚未提交的 claim，不能借此改写既有确认。来源必须仍是
+原 revision，卡片只能发生已记录的 writer 变更；出现人工编辑时先重新阅读。
+后续对齐列表读取这些收据，移除已提交项，复跑不调用模型或重复写入。
 
 Focus 从 Work Engine 投影中的唯一 READY Activity 读取动作，从当前 Item card
 计算 scope digest，再关联唯一有效 grant。多个可执行 Activity 或多个 grant 不自动择一。

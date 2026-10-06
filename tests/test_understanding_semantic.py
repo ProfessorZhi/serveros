@@ -1170,6 +1170,66 @@ def acceptance_probe(*, claims=None, by: str = "alice", at: str = STAMP,
 
 class TestTheWriteRecordsWhichAcceptanceItWasMadeUnder:
 
+    def test_later_decisions_append_without_rewriting_facts_or_receipts(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(), claim("c2", touches=DEADLINE),
+                                  claim("c3", touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        first = applied(tmp_path, root, document, delegation=GRANT)
+        original = us._receipt_path(us.understanding_root(root), document)
+        original_bytes = original.read_bytes()
+        assert first["accepted"] is None
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c2"]))
+        second = applied(tmp_path, root, document, accepted=rows)
+        assert second["accepted"]["claims"] == ["c2"]
+        assert original.read_bytes() == original_bytes
+        after = (root / CARD).read_bytes()
+        replay = applied(tmp_path, root, document, accepted=rows)
+        assert replay["reused"] is True
+        assert (root / CARD).read_bytes() == after
+        third = applied(tmp_path, root, document,
+                        accepted=accepted_document(tmp_path, acceptance(proposal, claims=["c3"])))
+        assert len(third["previous_receipts"]) == 2
+        assert original.read_bytes() == original_bytes
+        body = (root / CARD).read_text()
+        assert body.count(us.AGENT_RECONCILED) == 1
+        assert body.count(us.USER_CONFIRMED) == 2
+        recall = _load("claim_recall_later", "claim_recall.py")
+        assert set(recall.build_index(root)["claims"]) == {"c1", "c2", "c3"}
+
+    @pytest.mark.parametrize("change", ["card", "source", "reading"])
+    def test_later_acceptance_revalidates_instead_of_bypassing_changed_input(self, tmp_path, change):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(), claim("c2", touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        applied(tmp_path, root, document, delegation=GRANT)
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c2"]))
+        if change == "card":
+            (root / CARD).write_text((root / CARD).read_text() + "\n人的新批注\n")
+        if change == "reading":
+            document["claims"][1]["assertion"]["now"] = "改变了的提案"
+        before = (root / CARD).read_bytes()
+        with pytest.raises(us.Refused):
+            applied(tmp_path, root, document, accepted=rows,
+                    **({"content_identity": "b" * 64} if change == "source" else {}))
+        assert (root / CARD).read_bytes() == before
+
+    def test_later_acceptance_can_resume_its_view_without_overwriting_first_receipt(self, tmp_path):
+        root = records_tree(tmp_path)
+        document = reading(root, [claim(), claim("c2", touches=DEADLINE)])
+        proposal = resolved(tmp_path, root, document, delegation=GRANT)
+        applied(tmp_path, root, document, delegation=GRANT)
+        original = us._receipt_path(us.understanding_root(root), document)
+        original_bytes = original.read_bytes()
+        (root / VIEW).unlink()
+        rows = accepted_document(tmp_path, acceptance(proposal, claims=["c2"]))
+        second = applied(tmp_path, root, document, accepted=rows)
+        assert second["state"] == "PARTIAL"
+        (root / VIEW).write_text(VIEW_PROSE)
+        resumed = applied(tmp_path, root, document, accepted=rows)
+        assert resumed["state"] == "COMPLETE"
+        assert original.read_bytes() == original_bytes
+
     def test_the_receipt_names_the_person_and_the_acceptance_by_digest(
             self, tmp_path):
         root = records_tree(tmp_path)
