@@ -577,6 +577,20 @@ class TestTheFiveGenericChecks:
 
 
 class TestTheTargetIsWhatTheOperationsDifferBy:
+    @pytest.mark.parametrize("scope,asked", [
+        ([], "/etc"),
+        ([SCOPE], SCOPE + "/../../state"),
+        ([SCOPE], SCOPE + "/../records/child"),
+    ])
+    def test_checkpoint_cannot_invent_or_traverse_its_write_scope(self, tmp_path, scope, asked):
+        store = a_store(tmp_path)
+        a_checkpoint(store)
+        envelope = a_wake(store)
+        envelope["allowed_write_scope"] = scope
+        verdict = ask(envelope, store, "work.checkpoint",
+                      {"item": ITEM, "next_action": "carry on", "write_scope": [asked]})
+        assert denied(verdict, "WRITE_SCOPE_OUTSIDE_ENVELOPE")
+
     def test_a_read_returns_before_any_target_rule_runs_and_says_so(self, tmp_path):
         store = a_store(tmp_path)
         a_checkpoint(store)

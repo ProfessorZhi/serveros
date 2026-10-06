@@ -3078,16 +3078,12 @@ def cmd_context_startup(args) -> int:
 
       item            inferred, never guessed, by the same resolver
                       `context current` uses
-      capability      ONE projection read, matching `costs.capability.L0` =
-                      "one manifest read, no probes". It is therefore a
-                      CATALOGUE count and it is rendered as one. The resolved
-                      count needs the eight-input intersection and is not
-                      claimed here.
-      authority       the bound roots from the path contract
+      capability      deferred to native/on-demand discovery; no daemon IPC
+      authority       placement roots, not an effect-authorization verdict
 
-    A daemon that will not answer degrades the line to `unknown` rather than
-    dropping it. Three lines are not smaller than five; they are five with two
-    missing, and a reader cannot tell which.
+    A missing or busy daemon must not delay starting unrelated native work.
+    The optional catalogue count used to download ability.list over IPC and
+    could hold every startup for DEFAULT_TIMEOUT while the daemon ran a tick.
     """
     disclosure_mod = _load_module_from(REPO_ROOT / "context/disclosure.py",
                                        "serveros_disclosure")
@@ -3112,22 +3108,6 @@ def cmd_context_startup(args) -> int:
         # says that it does not know; L1 says why. That is the whole of §29.
         item_why = f"{type(exc).__name__}; `serverosctl context current` explains"
 
-    # The catalogue count, over IPC, because the daemon grades its own
-    # projection and a CLI opening the file itself would report an empty
-    # answer for FRESH, STALE, UNREADABLE and NOT_MATERIALIZED alike.
-    capability_count = None
-    capability_why = None
-    try:
-        payload = ask_daemon("ability.list")
-        abilities = payload.get("abilities")
-        if abilities is None:
-            capability_why = (f"the daemon could not read its projection "
-                              f"({payload.get('registry_status')})")
-        else:
-            capability_count = len(abilities)
-    except DaemonUnavailable as exc:
-        capability_why = str(exc)
-
     # A COUNT, not the list, for the same reason capability L0 is a count:
     # naming all twelve bound roots costs about 60 of the 120 tokens and is
     # the sentence a reader skips. The first version of this line did name
@@ -3135,13 +3115,12 @@ def cmd_context_startup(args) -> int:
     # growing a list, in the axis next door, which the mutation tests had not
     # covered because they only imagined it happening to capability.
     contract = paths_mod.Paths().contract()
-    authority_line = (f"authority: writes under {len(contract['roots'])} bound "
-                      "roots are admitted; everything else asks "
-                      "(`serverosctl path contract` lists them)")
+    authority_line = (f"authority: {len(contract['roots'])} bound roots define "
+                      "placement, not permission; existing grants and owner rules apply")
 
     if args.json:
         record = disclosure_mod.startup_view(
-            item=item, capability_count=capability_count,
+            item=item,
             authority_line=authority_line,
             context_why=item_why if item is None else None,
             authority_why=None)
@@ -3151,7 +3130,7 @@ def cmd_context_startup(args) -> int:
     # The rendered view is the output. Printing the record as well would double
     # the text and make `within_budget` a statement about the wrong number.
     record = disclosure_mod.startup_view(
-        item=item, capability_count=capability_count,
+        item=item,
         authority_line=authority_line,
         context_why=item_why if item is None else None,
         authority_why=None)
@@ -3164,9 +3143,6 @@ def cmd_context_startup(args) -> int:
             f"~{sum(len(l['text']) for l in record['lines']) // 4} tokens, "
             f"over the declared {record['budget']['lines']}/"
             f"{record['budget']['tokens']}\n")
-    if capability_why:
-        sys.stderr.write(f"serverosctl: capabilities line is a catalogue "
-                         f"count unavailable — {capability_why}\n")
     return EXIT_OK
 
 

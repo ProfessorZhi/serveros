@@ -77,6 +77,17 @@ def a_resolved(usable, undecided=0, total=None):
 
 
 class StartupViewTests(unittest.TestCase):
+    def test_unrequested_discovery_is_distinct_from_a_failed_count(self):
+        deferred = disclosure.startup_view()
+        failed = disclosure.startup_view(capability_count=None)
+        deferred_line = next(l["text"] for l in deferred["lines"]
+                             if l["axis"] == "capability")
+        failed_line = next(l["text"] for l in failed["lines"]
+                           if l["axis"] == "capability")
+        self.assertNotIn("unknown", deferred_line)
+        self.assertIn("native discovery", deferred_line)
+        self.assertIn("unknown", failed_line)
+
     def test_the_view_renders_inside_its_declared_budget(self):
         """The budget is a number in the contract, so this fails when a line is
         added rather than when somebody notices the view got long."""
@@ -392,6 +403,32 @@ class MutationThreeBNoL0LineEnumerates(unittest.TestCase):
         self.assertNotIn("/opt/applications", authority[0],
                          "the authority line enumerates roots")
         self.assertIn("bound roots", authority[0])
+        self.assertIn("not permission", authority[0])
+        self.assertNotIn("writes under", authority[0])
+
+    def test_startup_does_not_wait_for_daemon_or_enumerate_abilities(self):
+        """Startup still works when the daemon cannot service requests.
+
+        Forbid IPC altogether: a smaller timeout would still delay every new
+        session and turn a busy runtime into an unrelated bootstrap failure.
+        """
+        import argparse
+        import contextlib
+        import io
+        import json
+        from unittest.mock import patch
+
+        cli = _load("serveros_disclosure_cli", REPO / "runtime" / "cli.py")
+        output = io.StringIO()
+        with patch.object(cli, "ask_daemon", side_effect=AssertionError(
+                "startup must not depend on the daemon")), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(cli.cmd_context_startup(argparse.Namespace(json=True)), 0)
+        record = json.loads(output.getvalue())
+        capability = next(l["text"] for l in record["lines"]
+                          if l["axis"] == "capability")
+        self.assertIn("on request", capability)
+        self.assertTrue(record["within_budget"])
 
 
 # ---------------------------------------------------------------------------
