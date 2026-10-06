@@ -526,17 +526,40 @@ def render(brief: dict, *, at=None) -> str:
     for row in brief["gap"]:
         lines.append(f"- `{row.get('id')}`：{row.get('why')}")
     lines.append("")
-    lines.append("—— 本节由 19:20 的准备结果生成。它只说明有什么在等人，"
+    lines.append(f"—— 本节{_prepared_sentence(brief)}。它只说明有什么在等人，"
                  "不代替任何人的答复；是否接受、是否成为需求，是下一步。")
     return "\n".join(lines) + "\n"
+
+
+def _prepared_sentence(brief: dict) -> str:
+    """The clause the footer uses to say where these rows came from.
+
+    It used to say "由 19:20 的准备结果生成" — a claim about a schedule, not about
+    a file. On this node the first real card was composed from a preparation that
+    finished at 14:17 Beijing, and the 运行记录 line a few rows above said so
+    while the footer said 19:20; the reader had a provenance line they could not
+    check against anything. `compose` reads the stamp off `alignment.json` before
+    rendering, so this names a time that exists. A caller rendering a gathered
+    brief with no composition behind it has no stamp to name, and says that
+    rather than falling back to the schedule — "which pass was this?" is a
+    question a person can act on, "19:20" is not.
+    """
+    prepared = (brief.get("brief") or {}).get("prepared_at")
+    if not prepared:
+        return "由一次准备结果生成，但没有读出它是什么时候写下的"
+    return f"由 {_beijing(prepared)}（北京）写出的准备结果生成"
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # the composition, which is where the version comes from
 # ────────────────────────────────────────────────────────────────────────────
 
-def _refuse_a_stale_preparation(directory: Path, at) -> None:
+def _refuse_a_stale_preparation(directory: Path, at):
     """Tonight's brief must be composed from tonight's preparation.
+
+    Returns when the preparation was written (Beijing), so the eventual footer
+    names the stamp this guard just compared rather than the time it was
+    scheduled for. `None` when there is no preparation to date at all.
 
     This is the one failure that would be invisible in the card. If the 19:20
     pass did not run — the timer was off, the service failed, the host was down
@@ -553,7 +576,7 @@ def _refuse_a_stale_preparation(directory: Path, at) -> None:
     """
     prepared = _read(directory / "alignment.json")
     if prepared is None:
-        return  # `gather` names this case precisely; no need to say it twice
+        return None  # `gather` names this case precisely; no need to say it twice
     try:
         age = (directory / "alignment.json").stat().st_mtime
     except OSError as exc:
@@ -567,6 +590,7 @@ def _refuse_a_stale_preparation(directory: Path, at) -> None:
             f"把上一次准备的结果当作今晚的对齐发出去，收件人会收到一张和平时一样平静的卡，"
             f"而它说的其实是昨天的事。要么让 19:20 的那一步真正跑起来，"
             f"要么用 --at 指明这份简报到底属于哪一天")
+    return written
 
 
 def compose(directory, out_dir, *, run_record=None, period=None, at=None) -> dict:
@@ -589,8 +613,10 @@ def compose(directory, out_dir, *, run_record=None, period=None, at=None) -> dic
         raise Refused(
             f"out_dir 是 {out_dir!r}，不是绝对路径。投递回执必须能被人按同一条路径找回"
             f"来，而相对路径的含义取决于谁在什么时候从哪个目录调用它")
-    _refuse_a_stale_preparation(directory, at)
+    prepared = _refuse_a_stale_preparation(directory, at)
     brief = gather(directory, run_record=run_record)
+    if prepared is not None:
+        brief["brief"]["prepared_at"] = prepared.isoformat()
     text = render(brief, at=at)
     target = out / BRIEF_FILE
     _atomic_text(target, text)
@@ -598,7 +624,8 @@ def compose(directory, out_dir, *, run_record=None, period=None, at=None) -> dic
     version = {"schema": VERSION_SCHEMA, "file": str(target), "sha256": _sha(body),
                "bytes": len(body), "period": period,
                "generated_at": _now(at), "counts": brief["counts"],
-               "from_run": str(directory)}
+               "from_run": str(directory),
+               "prepared_at": prepared.isoformat() if prepared is not None else None}
     _atomic_json(out / VERSION_FILE, version)
     return {"brief": str(target), "version": str(out / VERSION_FILE),
             "sha256": version["sha256"], "bytes": version["bytes"],

@@ -1064,7 +1064,18 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   still moves, because "what the payload says" is what a session reads, and a
 #   session that kept h would answer "no such command" for the one verb the
 #   20:00 unit calls.
-cachebuster: srv0005.20261006i
+#
+#   i → j: the footer stops claiming a time nothing recorded. `intake/
+#   alignment_delivery.py` reads the preparation's real stamp off
+#   `alignment.json` and names it ("由 2026-10-06 14:17（北京）写出的准备结果生成")
+#   instead of the scheduled "19:20"; a brief rendered with no composition
+#   behind it says the time was not read rather than falling back to the
+#   schedule. The stamp also lands in `version.json` as a field, so it can be
+#   checked rather than believed. Only that one module changed, and the move is
+#   still made because the footer is part of the delivered bytes: a session
+#   reading i would produce a card whose provenance line contradicts the
+#   运行记录 line above it.
+cachebuster: srv0005.20261006j
 
 skills:
   - name: runtime-management
