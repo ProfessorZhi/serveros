@@ -475,8 +475,18 @@ def render(brief: dict, *, at=None) -> str:
     own count and says so when it is empty, because a section that is absent and
     a section that was checked and came out empty look identical to a reader,
     and only one of them means "nothing needs you".
+
+    The title is the DAY this brief is about, not the minute it was rendered.
+    That is not cosmetic: `runtime/report_delivery.py#intent_key` keys a delivery
+    on the sha256 of these bytes, so any two renderings that differ are two
+    intents — and the second one is a second card in the same person's chat.
+    Measured on this node: with the wall clock in the title, a re-run one minute
+    after a successful delivery composed a new version and the transport was
+    called twice. The day is what an evening's brief is *about*, and it is the
+    same for every re-run of that evening, which is what makes "asking twice is
+    one request" true for the runner and not just for a caller that pinned `at`.
     """
-    stamp = _beijing(_now(at))
+    stamp = _brief_day(brief, at)
     counts = brief["counts"]
     lines = [f"# 对齐 · {stamp}", ""]
     sources = brief["brief"]["sources"]
@@ -529,6 +539,24 @@ def render(brief: dict, *, at=None) -> str:
     lines.append(f"—— 本节{_prepared_sentence(brief)}。它只说明有什么在等人，"
                  "不代替任何人的答复；是否接受、是否成为需求，是下一步。")
     return "\n".join(lines) + "\n"
+
+
+def _brief_day(brief: dict, at) -> str:
+    """The Beijing day this brief is about — its title, and one thing more.
+
+    Taken from the preparation's own stamp when there is one (`compose` puts it
+    in the brief), and from the caller's instant otherwise. Both are stable
+    across every re-run of one evening, which is the property the delivery
+    discipline needs: `intent_key` is a hash of these bytes, so a title that
+    moves with the clock makes every retry a new version, and a new version is a
+    new message. The day is the thing the reader and the directory agree on.
+
+    A preparation that finished at 23:50 belongs to that day even if the brief
+    is rendered just past midnight — the same rule `_refuse_a_stale_preparation`
+    compares by, and the reason this reads the stamp rather than `at` first.
+    """
+    prepared = (brief.get("brief") or {}).get("prepared_at")
+    return _moment(prepared if prepared else at).strftime("%Y-%m-%d")
 
 
 def _prepared_sentence(brief: dict) -> str:
@@ -630,5 +658,6 @@ def compose(directory, out_dir, *, run_record=None, period=None, at=None) -> dic
     return {"brief": str(target), "version": str(out / VERSION_FILE),
             "sha256": version["sha256"], "bytes": version["bytes"],
             "counts": brief["counts"],
+            "prepared_at": version.get("prepared_at"),
             "why": ("写下了这一版简报和指明它的版本声明。这一步没有发送任何东西——"
                     "投递仍要走 report request / report deliver")}

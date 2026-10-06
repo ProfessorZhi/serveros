@@ -104,8 +104,19 @@ serverosctl report evening --run-dir <19:20 的目录> --record-dir <perception 
 `--requested-by` 与 `--why` 是必填的，理由与 `report request` 相同：定时器触发不是「有人
 要求过」。收件人没配置时，`report evening` **连待发意图都不记**，退出码 2——一份写好了
 却没有任何人会被通知的简报，与一份送达的简报，在任何一张健康表上都必须是不同的两行。
-配置好收件人之后再跑：同一天同一版只会有一条待发记录（幂等键取自版本 sha256），
-所以重试不会变成第二封消息。
+
+### 重试不会变成第二封消息
+
+幂等键取自**版本 sha256**（`runtime/report_delivery.py#intent_key`），所以这条成立与否
+全看「同一晚跑两次是不是同一版」。简报的标题因此写的是**这一天**（`# 对齐 · 2026-10-06`），
+不是渲染那一刻的墙上时钟：标题带分钟时，相隔五分钟的两次运行就是两个版本、两个意图，
+而第二个意图会**真的再发一次**——本机实测过，投递通道被调用了两次，同一个人收到两张卡。
+按天写的标题在整个晚上不变，于是第二次运行要么得到 `ALREADY_REQUESTED`（还没投出去），
+要么由回执回答 `ALREADY_DELIVERED`（已经投出去了），两者都不再发送。
+已经落定为 DELIVERED 的那一版再被 `report request` 问一次，也不会往 outbox 里再记一条
+「待发」——那条永远不会被投递的记录会让 outbox 看上去还有事在排队。
+
+`--at` 仍然可以指定，但定时器**不传**：它要问的就是「今天是哪一天」。
 
 Focus 从 Work Engine 投影中的唯一 READY Activity 读取动作，从当前 Item card
 计算 scope digest，再关联唯一有效 grant。多个可执行 Activity 或多个 grant 不自动择一。
