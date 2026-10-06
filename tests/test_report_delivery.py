@@ -358,6 +358,45 @@ class TestTheAttempt:
                          authorization={"authorized": True, "because": "有人问了"})
         assert delivery.pending_count(out) == 0
 
+    def test_asking_again_after_a_delivery_leaves_no_phantom_waiter(self, tmp_path):
+        """A request that follows a settled delivery is one thing, not two.
+
+        Appending a second entry sends nothing — `deliver` reads the receipt for
+        that key first and answers ALREADY_DELIVERED — but it leaves a row in the
+        outbox that says "waiting", and every reader of that file (the pending
+        count, a health table, the next run) counts it as work outstanding. The
+        evening brief is where this became routine rather than rare: its version
+        is now stable for a whole day, so a runner that fires twice — a retry, a
+        manual re-run after configuring a recipient — asks twice about exactly
+        the same bytes.
+        """
+        out, _, _ = published(tmp_path)
+        asked(out)
+        delivery.deliver(out, sender=Sender(),
+                         authorization={"authorized": True, "because": "有人问了"})
+
+        again = asked(out)
+
+        assert again["state"] == "ALREADY_REQUESTED"
+        entries = json.loads(
+            Path(delivery.outbox_file(out)).read_text())["entries"]
+        assert len(entries) == 1
+        assert delivery.pending_count(out) == 0
+
+    def test_a_withdrawn_request_can_be_asked_again(self, tmp_path):
+        """Withdrawal is not a settled outcome, so it is the one state that must
+        not be deduplicated: a person who withdrew and then changed their mind
+        about the same version needs a pending entry, not a refusal.
+        """
+        out, _, _ = published(tmp_path)
+        asked(out)
+        delivery.withdraw(out, because="先不发了")
+
+        again = asked(out)
+
+        assert again["state"] == "REQUESTED"
+        assert delivery.pending_count(out) == 1
+
     def test_an_interrupted_attempt_is_not_re_sent_when_the_transport_cannot_be_asked(self, tmp_path):
         # 回执丢失但远端可能已经接受：核对不了就不重发，保持待发。
         out, _, _ = published(tmp_path)
