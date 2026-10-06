@@ -305,11 +305,11 @@ _cycle = _sibling("daily_cycle.py")
 def span_key(manifest, low, high) -> str | None:
     """One span's name in the revision vocabulary — the span, never the file.
 
-    `None` when the span is not nameable, which is not the same as "the same as
-    before": a claim read from a range with no positions has nothing to take a
-    digest over, and `understanding_delta.range_content_digest` says so in its
-    own words. `None` becomes `UNRESOLVED`, because nothing was compared.
+    Whole snapshots use #body; their bytes are checked by source_reading, not
+    the IM range digester. A half-specified range is still unnameable.
     """
+    if manifest and low is None and high is None:
+        return f"{manifest}#body"
     if not manifest or low is None or high is None:
         return None
     return f"{manifest}#{low}-{high}"
@@ -738,7 +738,8 @@ def _verdict(row: dict, cards: dict, recorded, digest_now,
 # the recall
 # --------------------------------------------------------------------------
 
-def recall(records_root: Path | str, *, only: list[str] | None = None) -> dict:
+def recall(records_root: Path | str, *, only: list[str] | None = None,
+           allowed_asset_roots: tuple[Path, ...] = ()) -> dict:
     """What may still be recalled, and for everything else, exactly why not.
 
     `only` restricts the answer to some ids and does NOT restrict the index, the
@@ -771,6 +772,14 @@ def recall(records_root: Path | str, *, only: list[str] | None = None) -> dict:
                     spans[span] = (None, (
                         "the claim names no capture object or no positions, so "
                         "there is no span to take a digest over"))
+                elif low is None and high is None:
+                    reader = _sibling("source_reading.py")
+                    try:
+                        packet = reader.read_packet(manifest, records_root,
+                                                    allowed_asset_roots=allowed_asset_roots)
+                        spans[span] = (packet["content_identity"], "")
+                    except reader.Refused as exc:
+                        spans[span] = (None, str(exc))
                 else:
                     spans[span] = _delta.range_content_digest(
                         _delta.messages_file(manifest, Path(records_root)), low, high)

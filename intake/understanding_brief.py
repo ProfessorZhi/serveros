@@ -40,11 +40,9 @@ source that looked like it had never said the thing.
 WHAT THIS MODULE DOES NOT DO
 ----------------------------
 No model client, no clock, and no writes: a brief is returned or printed, and
-whoever runs the Agent session is a caller. A document range (`WHOLE_DOCUMENT`)
-is refused BY NAME rather than guessed at — its material is a document body,
-and no field of a capture manifest is blessed by this tree's producer tables as
-the body's locator, so a brief that read one would be reading a path it
-invented. The named gap is in the refusal, where a caller meets it.
+whoever runs the Agent session is a caller. WHOLE_DOCUMENT uses the existing
+capture producer's body locator through source_reading, checking its exact
+bytes against the manifest digest before any text is handed over.
 """
 from __future__ import annotations
 
@@ -72,7 +70,7 @@ BRIEF_PRODUCED = {
             "the reader — the two values `_check_binding` will compare",
     "range": "the range's `kind` and `revisions`, copied from REVIEW_PRODUCED",
     "card": "the card file the range is about, read here for its own text",
-    "material": "the records the range names, from the source's own messages file",
+    "material": "the source's message span or source_reading's digest-verified body packet",
     "reading": "the schema and the field names the validator accepts, read from "
                "`understanding_semantic` itself rather than restated here",
 }
@@ -134,6 +132,7 @@ def _sibling(name: str):
 
 _delta = _sibling("understanding_delta")
 _semantic = _sibling("understanding_semantic")
+_source_reading = _sibling("source_reading")
 
 
 def no_unsourced(mapping: dict, table: dict, where: str) -> dict:
@@ -247,7 +246,8 @@ def _card_half(card_row: dict, records_root: Path) -> dict:
     }, CARD_PRODUCED, f"the card half of the brief for {card!r}")
 
 
-def brief_for(card_row: dict, row: dict, records_root: Path) -> dict:
+def brief_for(card_row: dict, row: dict, records_root: Path, *,
+              allowed_asset_roots: tuple[Path, ...] = ()) -> dict:
     """One review range as the packet a native Agent reads.
 
     Refused rather than emitted for every shape this module cannot pin: a range
@@ -268,19 +268,35 @@ def brief_for(card_row: dict, row: dict, records_root: Path) -> dict:
             f"without ever having read it")
     card = card_row["card"]
     low, high = row.get("from_position"), row.get("to_position")
-    if low is None or high is None:
-        raise Refused(
-            f"the range for {card!r} carries no positions, so its material is a "
-            f"document body rather than a span of records. No field of a capture "
-            f"manifest is a body locator this tree's producer tables bless, so "
-            f"handing that body over would mean reading a path this module "
-            f"invented — the range kind is {row.get('kind')!r}")
     identity = row.get("content_identity")
     if not identity:
         raise Refused(
             f"the range for {card!r} carries no content identity, so there is no "
             f"version for a reading to be made against: "
             f"{row.get('content_identity_why') or 'the reader did not say why'}")
+    if low is None or high is None:
+        if row.get("kind") != "WHOLE_DOCUMENT" or low is not None or high is not None:
+            raise Refused("a non-document range must carry both positions")
+        try:
+            material = _source_reading.read_packet(
+                row["manifest"], records_root, expected_identity=identity,
+                allowed_asset_roots=allowed_asset_roots)
+        except _source_reading.Refused as exc:
+            raise Refused(f"WHOLE_DOCUMENT document body cannot be pinned: {exc}") from exc
+        return no_unsourced({
+            "schema": SCHEMA,
+            "source": {"card": card, "manifest": row["manifest"],
+                       "from_position": None, "to_position": None,
+                       "kind": material["kind"]},
+            "read": {"card": card, "content_identity": identity,
+                     "card_digest": card_row["card_digest"]},
+            "range": {"kind": "WHOLE_DOCUMENT", "revisions": None},
+            "card": _card_half(card_row, Path(records_root)), "material": material,
+            "reading": {"schema": _semantic.READING_SCHEMA,
+                        "claim_fields": list(_semantic.CLAIM_PRODUCED),
+                        "kinds": list(_semantic.KINDS),
+                        "major_changes": list(_semantic.MAJOR_CHANGES)},
+        }, BRIEF_PRODUCED, f"the document brief for {card!r}")
     messages = _delta.messages_file(row["manifest"], Path(records_root))
     records, why = span_records(messages, int(low), int(high))
     if records is None:
@@ -317,7 +333,8 @@ def brief_for(card_row: dict, row: dict, records_root: Path) -> dict:
     }, BRIEF_PRODUCED, f"the brief for {card!r} {low}–{high}")
 
 
-def briefs(report: dict, records_root: Path | str) -> tuple[list[dict], list[dict]]:
+def briefs(report: dict, records_root: Path | str, *,
+           allowed_asset_roots: tuple[Path, ...] = ()) -> tuple[list[dict], list[dict]]:
     """`(what may be handed to a session, and every range that may not)`.
 
     Two lists rather than one, because a range this module refuses is NOT the
@@ -342,7 +359,17 @@ def briefs(report: dict, records_root: Path | str) -> tuple[list[dict], list[dic
             continue
         for row in (card_row.get("judged") or {}).get("review_ranges") or ():
             try:
-                out.append(brief_for(card_row, row, root))
+                packet = brief_for(card_row, row, root, allowed_asset_roots=allowed_asset_roots)
+                if row.get("kind") == "WHOLE_DOCUMENT":
+                    try:
+                        prior = _semantic.receipt_for(packet, root)
+                    except _semantic.Refused as exc:
+                        raise Refused(str(exc)) from exc
+                    if prior and prior.get("state") in ("COMPLETE", "RETRACTION_ONLY"):
+                        continue
+                    if prior and prior.get("state") == "PARTIAL":
+                        raise Refused("source reading already committed; resume its pending Views from the existing receipt")
+                out.append(packet)
             except Refused as exc:
                 refused.append({
                     "card": row.get("card"), "manifest": row.get("manifest"),
@@ -371,8 +398,10 @@ def select(items: list[dict], *, refused: list[dict] | None = None,
     kept = [item for item in items
             if (card is None or item["source"]["card"] == card)
             and (manifest is None or item["source"]["manifest"] == manifest)
-            and (position is None or item["source"]["from_position"] <= position
-                 <= item["source"]["to_position"])]
+            and (position is None or (item["source"]["from_position"] is not None
+                 and item["source"]["to_position"] is not None
+                 and item["source"]["from_position"] <= position
+                 <= item["source"]["to_position"]))]
     if kept:
         return kept
     offered = sorted({f"{item['source']['card']} {item['source']['manifest']} "
@@ -445,6 +474,13 @@ def render(brief: dict) -> list[str]:
     it would answer a different one.
     """
     source, material = brief["source"], brief["material"]
+    if material.get("schema") == _source_reading.SCHEMA:
+        return [f"card        {source['card']}",
+                f"snapshot    {source['manifest']} ({material['kind']})",
+                f"identity    {material['content_identity']}",
+                f"baseline    {brief['read']['card_digest']}",
+                f"coverage    {json.dumps(material['coverage'], ensure_ascii=False)}",
+                "", material["text"]]
     state = material["state"]
     lines = [f"card        {source['card']}",
              f"span        {source['manifest']} "

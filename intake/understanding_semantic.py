@@ -808,7 +808,15 @@ def resolve(reading: dict, current: dict, delegation: dict | None,
     read = reading["read"]
     low = current.get("from_position")
     high = current.get("to_position")
-    if low is None or high is None:
+    packet = current.get("source_packet")
+    body_source = (low is None and high is None and isinstance(packet, dict)
+                   and packet.get("schema") == "serveros/source-reading-packet.v1"
+                   and packet.get("kind") in ("DOCUMENT", "WEB")
+                   and packet.get("kind") == reading["source"].get("kind")
+                   and packet.get("manifest") == reading["source"].get("manifest")
+                   and packet.get("content_identity") == read["content_identity"]
+                   and isinstance(packet.get("text"), str))
+    if (low is None or high is None) and not body_source:
         raise Refused(
             f"the range this reading was about was not measured: current has "
             f"from_position={low!r}, to_position={high!r}. Without it no "
@@ -825,8 +833,16 @@ def resolve(reading: dict, current: dict, delegation: dict | None,
     covered: list[str] = []
     not_committable: list[dict] = []
     for claim in reading["claims"]:
-        outside = [position for position in claim["support"]["positions"]
-                   if not low <= position <= high]
+        if body_source:
+            support = claim["support"]
+            excerpt = support["excerpt"]
+            if (support["positions"] or not isinstance(excerpt, str)
+                    or not excerpt.strip() or excerpt not in packet["text"]):
+                raise Refused(f"claim {claim['id']} needs an exact non-empty excerpt "
+                              "from the verified source body and no IM positions")
+        outside = ([] if body_source else
+                   [position for position in claim["support"]["positions"]
+                    if not low <= position <= high])
         if outside:
             raise Refused(
                 f"claim {claim['id']} cites {', '.join(str(p) for p in outside)}, "
