@@ -83,6 +83,11 @@ def make_artifact(base: Path, marker: str, *, with_daemon: bool = True,
     (art / "runtime" / "serverosd.service").write_text(UNIT_TEMPLATE)
     (art / "runtime" / "cli.py").write_text(CLI_MODULE)
     (art / "runtime" / "daemon.py").write_text("# daemon\n")
+    # Preflight uses the candidate's real path resolver and registry validator,
+    # without constructing a daemon or observing any live resource.
+    for name in ("registry.py", "anomaly.py", "attribution.py", "paths.py",
+                 "managed-runtime-contract.yaml"):
+        (art / "runtime" / name).write_bytes((ROOT / "runtime" / name).read_bytes())
     (art / "bin" / "serverosctl").write_text(CLI_SHIM)
     if with_daemon:
         (art / "bin" / "serverosd").write_text("# entry point\n")
@@ -165,6 +170,13 @@ def run_release(args: list[str], env: dict | None = None) -> subprocess.Complete
                           env=env)
 
 
+def seed_registry(state_dir: Path) -> Path:
+    target = state_dir / "runtime/registry/resources.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("schema: serveros/managed-runtime-registry.v1\nresources: []\n")
+    return target
+
+
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -177,7 +189,7 @@ class ReleaseTests(unittest.TestCase):
         # the daemon exits 2 without a registry under it — and `promote` now
         # refuses that rather than reporting success. The fixture models a
         # runnable node; the test below covers the unseeded one.
-        self.state_dir.mkdir(parents=True)
+        seed_registry(self.state_dir)
         self.composition = "serveros-linux-work"
         self.comp_root = self.runtime_root / self.composition
 
@@ -400,6 +412,35 @@ class ReleaseTests(unittest.TestCase):
         # And nothing was pointed anywhere: the failure is before the swap.
         self.assertFalse((self.comp_root / "current").exists())
         self.assertFalse((self.unit_dir / "serverosd.service").exists())
+
+    def test_promote_refuses_an_existing_wrong_state_root_before_swap(self):
+        self.assertEqual(self.promote(make_artifact(self.base, "a"), "rev-a").returncode, 0)
+        wrong_root = self.state_dir / "runtime"
+        self.assertTrue(wrong_root.is_dir())
+        proc = self.promote(make_artifact(self.base, "b"), "rev-b",
+                            "--state-dir", str(wrong_root))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(str(wrong_root / "runtime/registry/resources.yaml"), proc.stderr)
+        self.assertEqual(release.current_revision(self.comp_root), "rev-a")
+        self.assertIn(f"SERVEROS_STATE_DIR={self.state_dir}\n",
+                      (self.unit_dir / "serverosd.service").read_text())
+
+    def test_preflight_loads_the_registry_instead_of_only_checking_its_file(self):
+        art = make_artifact(self.base, "a")
+        target = seed_registry(self.state_dir)
+        for document in ("schema: wrong\nresources: []\n",
+                         "schema: serveros/managed-runtime-registry.v1\nresources: [{}]\n",
+                         "[malformed YAML"):
+            with self.subTest(document=document):
+                target.write_text(document)
+                report = release.verify_node_runtime(art, self.state_dir)
+                self.assertFalse(report["ok"])
+                self.assertIn("registry", " ".join(report["problems"]))
+
+    def test_plugin_preflight_requires_no_state_root_or_registry(self):
+        art = make_plugin_artifact(self.base, "standalone")
+        report = release.verify_revision(art, self.base / "not-seeded", kind=release.PLUGIN)
+        self.assertTrue(report["ok"], report)
 
     def test_verification_does_not_write_into_the_artifact(self):
         """Promoting must not mutate what it promotes.
@@ -670,7 +711,7 @@ class TheDeliveryWorkerIsInstalledByASeparateAct(unittest.TestCase):
         self.unit_dir = self.base / "systemd-user"
         self.bin_dir = self.base / "bin"
         self.state_dir = self.base / "state/serveros"
-        self.state_dir.mkdir(parents=True)
+        seed_registry(self.state_dir)
         self.composition = "serveros-linux-work"
         self.comp_root = self.runtime_root / self.composition
 
@@ -816,7 +857,7 @@ class ArtifactKinds(unittest.TestCase):
         self.unit_dir = self.base / "systemd-user"
         self.bin_dir = self.base / "bin"
         self.state_dir = self.base / "state/serveros"
-        self.state_dir.mkdir(parents=True)
+        seed_registry(self.state_dir)
         self.composition = "serveros-testing"
         self.comp_root = self.runtime_root / self.composition
 
@@ -1038,7 +1079,7 @@ class StagingIsNotADeletionOpportunity(unittest.TestCase):
         self.unit_dir = self.base / "systemd-user"
         self.bin_dir = self.base / "bin"
         self.state_dir = self.base / "state/serveros"
-        self.state_dir.mkdir(parents=True)
+        seed_registry(self.state_dir)
         self.composition = "serveros-linux-work"
         self.comp_root = self.runtime_root / self.composition
         self.revisions = self.comp_root / "revisions"
