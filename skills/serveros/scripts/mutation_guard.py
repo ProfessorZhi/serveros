@@ -802,6 +802,19 @@ def audit(*, scan: dict, contract: dict) -> dict:
     teardowns declared by name is a table nobody reads, which is the same
     failure as no table — so instead the contract names the kinds a test may
     not reach at all, and that check is applied to every test hit.
+
+    `stale` is checked at the SITE and not only at the declaration, and the
+    difference is measurable rather than tidy. A capability is written as one
+    entry with many `sites` ("one capability, one row, one reason"), so a
+    site key that stopped naming anything used to be invisible the moment any
+    OTHER site of the same capability still matched — one live site covered
+    the whole row. The contract held five such keys on 2026-10-07, every one
+    of them a function that had been refactored out from under a site list
+    that kept the old name, and the checked declaration was silently carrying
+    four sentences about code that no longer existed. So a live capability is
+    reported one dead key at a time, and a capability whose every site is gone
+    is still reported once rather than N times: the same fact said N times is
+    how a reader learns to skim the list.
     """
     declared = contract.get("actuators") or []
     declared_keys: dict[tuple, dict] = {}
@@ -823,13 +836,23 @@ def audit(*, scan: dict, contract: dict) -> dict:
                           "why": "the declaration names no site, so it covers "
                                  "nothing and cannot be violated by anything"})
             continue
-        if not any(k in hit_keys for k in keys):
+        live = [k for k in keys if k in hit_keys]
+        if not live:
             # Unless the actuator declares it is allowed to match nothing —
             # the same distinction `required: false` draws in the state-root
             # contract, and for the same reason: an absence that is declared
             # is a fact, an absence nobody declared is a discovery.
             if not a.get("may_be_absent"):
                 stale.append({"id": a.get("id"), "expected": keys})
+            continue
+        for key in keys:
+            if key not in hit_keys:
+                stale.append({
+                    "id": a.get("id"), "expected": [key],
+                    "why": "this site names a (file, symbol, kind, verb) that "
+                           "no call site in the tree matches, while the "
+                           "declaration's other sites still do",
+                })
 
     # §26's scope rule, read from the contract rather than held in this file.
     tests_policy = _scope_policy(contract, "tests")

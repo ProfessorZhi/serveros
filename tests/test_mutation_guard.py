@@ -472,6 +472,44 @@ def f():
                                  "sites": [{"file": "product/p.py", "symbols": ["f"]}]}]})
         self.assertEqual(report["stale"], [])
 
+    def test_a_dead_site_inside_a_live_capability_is_reported(self):
+        """A capability is one row with many sites, and that grouping is why a
+        site key that stopped naming anything used to be invisible: the row
+        still matched through a sibling, so the declaration read as live while
+        carrying a sentence about code that is gone. The row is the reason the
+        sites were grouped, not the unit of the check."""
+        contract = {"actuators": [{
+            "id": "x", "kind": "host_reader", "verb": "docker",
+            "sites": [{"file": "product/p.py", "symbols": ["f"]},
+                      {"file": "product/p.py", "symbols": ["gone"]}]}]}
+        report = self.audit(contract=contract)
+        self.assertEqual(report["undeclared"], [])
+        self.assertEqual(len(report["stale"]), 1)
+        self.assertEqual(report["stale"][0]["id"], "x")
+        self.assertEqual(report["stale"][0]["expected"],
+                         [("product/p.py", "gone", "host_reader", "docker")])
+
+    def test_a_wholly_dead_declaration_is_reported_once_not_per_site(self):
+        """The same fact said N times is how a reader learns to skim the list,
+        so a capability none of whose sites matches is one entry carrying every
+        key — not one entry per key."""
+        contract = {"actuators": [{
+            "id": "x", "kind": "host_reader", "verb": "docker",
+            "sites": [{"file": "product/p.py", "symbols": ["gone"]},
+                      {"file": "product/p.py", "symbols": ["also_gone"]}]}]}
+        report = self.audit(product="def f():\n    pass\n", contract=contract)
+        self.assertEqual(len(report["stale"]), 1)
+        self.assertEqual(report["stale"][0]["id"], "x")
+        self.assertEqual(sorted(report["stale"][0]["expected"]),
+                         [("product/p.py", "also_gone", "host_reader", "docker"),
+                          ("product/p.py", "gone", "host_reader", "docker")])
+
+    def test_a_live_declaration_reports_nothing(self):
+        """The other half of the pair: the per-site walk must not report a site
+        that does match, which is the whole risk of narrowing the check."""
+        report = self.audit()
+        self.assertEqual(report["stale"], [])
+
     def test_a_per_site_verb_override_narrows_one_site_only(self):
         """The capability is one permission; the command varies by site. The
         override is written where it applies, and a site that carries the wrong
