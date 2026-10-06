@@ -70,15 +70,22 @@
 # has its wait ended, does a grant that still authorizes name this Item, and has
 # this epoch already been woken as many times as the grant allows.
 #
-# WHY THERE IS NO PATH= HERE — the sibling's measurement, 2026-09-14
+# WHY THERE IS NO PATH= HERE — the sibling's measurement, 2026-09-14,
+#                                   CORRECTED 2026-10-07
 # ------------------------------------------------------------------
-# `hwz-monitor.service` sets an explicit PATH because its ExecStart is a shell
-# script calling `lark-cli`, which lives in /usr/local/bin. Neither is true here:
-# ExecStart is an absolute path inside the revision, and its interpreter comes
-# from the shim's `#!/usr/bin/env python3`. Measured rather than assumed —
+# The conclusion stands; the inherited premise does not. See
+# `serveros-alert-sync.service` for the full correction. In short, measured on
+# this node 2026-10-07: `/usr/local/bin/lark-cli` does not exist and
+# `/usr/local/bin` is root:root 0755; `lark-cli` resolves to
+# `~/.local/bin/lark-cli`; the manager PATH below contains /usr/local/bin but NOT
+# `~/.local/bin`; and the cited sibling cannot run here at all, its ExecStart
+# being a Beijing path. "ExecStart is an absolute path" answers for this unit's
+# own exec, not for the CLIs the processes it spawns must resolve — what makes
+# the absence of `PATH=` correct is the code-side resolution
+# (`runtime/document_transport.py`, `resolve_cli`, 2026-10-06).
 #
 #     $ systemctl --user show-environment | grep ^PATH
-#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...
+#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin
 #
 # — which is the environment a user unit is started with.
 #
