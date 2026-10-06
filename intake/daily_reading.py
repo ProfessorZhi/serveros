@@ -39,7 +39,7 @@ def _write(path, value):
             os.unlink(temporary)
 
 
-def alignment(directory, entries):
+def alignment(directory, entries, records_root=None):
     """Regenerable pending view; COMPLETE writer receipts do not erase proposals.
 
     Every acceptance must still use the semantic writer's version checks. This
@@ -54,9 +54,22 @@ def alignment(directory, entries):
         if (source.get("card"), source.get("manifest")) not in bound:
             continue
         resolution = json.loads(path.read_text())
-        if resolution.get("awaiting"):
+        awaiting = resolution.get("awaiting", [])
+        if records_root is not None:
+            semantic = _load("intake/understanding_semantic.py")
+            receipt_path = semantic._receipt_path(semantic.understanding_root(records_root), reading)
+            receipts = [receipt_path, *receipt_path.parent.glob(f"{receipt_path.stem}-acceptance-*.json")]
+            committed = set()
+            for receipt_file in receipts:
+                receipt = semantic._read_receipt(receipt_file)
+                if receipt and receipt.get("reading_digest") == semantic.reading_digest(reading):
+                    committed.update(claim_id for entry in receipt.get("written", [])
+                                     if entry.get("role") == semantic.OWNER
+                                     for claim_id in entry.get("claims", []))
+            awaiting = [claim for claim in awaiting if claim["id"] not in committed]
+        if awaiting:
             pending.append({"reading": str(reading_path), "source": source,
-                            "read": reading["read"], "claims": resolution["awaiting"],
+                            "read": reading["read"], "claims": awaiting,
                             "state": "AWAITING_DECISION_REVALIDATE_BEFORE_ACCEPT"})
     target = directory / "alignment.json"
     _write(target, {"schema": "serveros/reading-alignment.v1", "pending": pending})
@@ -147,9 +160,9 @@ def run(ctx, entries):
         except (ValueError, OSError, semantic.Refused, brief_mod.Refused, delta.Refused, capture.Refused) as exc:
             failures.append({"id": entry["id"], "why": str(exc)})
     if failures:
-        ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries)
+        ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
         ctx.unbound("SOURCE_UNAVAILABLE", "one or more bound readings could not be completed")
-    ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries)
+    ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
     if ctx.running["outcomes"]["alignment"]["pending_readings"]:
         ctx.stop("NEEDS_DECISION", "readings prepared; only the claims requiring decisions remain pending")
     if not results:
