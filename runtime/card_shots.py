@@ -138,12 +138,19 @@ class Chrome:
 
     WHICH BINARY, AND WHY IT IS NOT A PREFERENCE
     --------------------------------------------
-    Two were measured here. The Playwright Chromium prints the DOM fine but
-    hangs on `--screenshot` and `--print-to-pdf` even for a page with one
-    paragraph, and the shared persistent browser that the MCP server attaches
-    to is a different account's process and is not ours to touch. The system
-    Chrome at the path below produced a real PNG. So this is the binary that
-    exists for this job, not the one that was picked.
+    Two were measured here, and both were re-measured on 2026-10-07. The
+    Playwright Chromium does not finish either mode: driven through this
+    class's own argv, `--dump-dom` and `--screenshot` both sat at a 60s bound
+    with nothing on stdout and no file written, where the system Chrome below
+    answered that same `--dump-dom` in 0.27s. The first half of the sentence
+    that used to stand here — that it "prints the DOM fine" — is no longer
+    true of the binary, which makes this a stronger reason to leave it out and
+    not a weaker one. The persistent browsers on 9222/9223 belong to this
+    account but not to this run: they carry other sessions' pages, and an
+    attach to 9222 measured a 30s timeout on 2026-09-29 while the same binary
+    on a fresh profile connected at once. The system Chrome at the path below
+    produced a real PNG. So this is the binary that exists for this job, not
+    the one that was picked.
 
     A timeout is an ERROR and never an empty image: `run()` raises, because a
     hung browser and a scenario that rendered nothing look the same in a
