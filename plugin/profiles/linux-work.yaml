@@ -1115,7 +1115,34 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   left on `l` carries a `report evening` path that cannot reach the CLI at
 #   the one moment it matters, and it would report that as a missing tool
 #   rather than as its own defect.
-cachebuster: srv0005.20261006m
+#
+#   m → n: `skills/workspace-management/scripts/capacity_check.py` read HOME
+#   against constants shaped for a machine whose HOME sits on a small system
+#   disk, and this node's HOME is the 4 TB data volume. Measured here on
+#   2026-10-06: 176.72 GB of HOME reported as `HOME_HARD_LIMIT`, a FAIL, while
+#   sitting five times under the 450 GB soft limit this node had already
+#   declared in `~/.config/serveros/host-profile.yaml`. The row was wrong on
+#   every run, and it is on the mandatory path before and after any write of
+#   250 MB or more, so every such write was preceded and followed by a false
+#   alarm. It now reads the node's own `node.quota` when there is one and keeps
+#   the constants otherwise, which is the same reading this node's dispatcher
+#   would have got and byte-identical behaviour for a host actually shaped like
+#   the one the constants describe.
+#
+#   The ROOT thresholds are deliberately untouched. This node's system disk is
+#   small and genuinely fills — measured 89.4% while this revision was being
+#   built, above the 80% hard stop — so it is the row that has been right, and
+#   loosening a correct check because a different one was wrong would trade one
+#   defect for another. `thresholds.home_basis` is added so a reader can tell a
+#   node that declared a budget from one that never did, since the two produce
+#   identically named findings.
+#
+#   `skills/workspace-management/SKILL.md` §0.5.1 moves with it, because it
+#   stated the HOME gate as fixed at 8/12 GB and would otherwise describe a
+#   checker that no longer behaves that way. The identity moves because a
+#   session left on `m` goes on being told its HOME is over budget by a number
+#   that was never this node's.
+cachebuster: srv0005.20261006n
 
 skills:
   - name: runtime-management
