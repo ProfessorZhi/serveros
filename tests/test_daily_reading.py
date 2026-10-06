@@ -104,6 +104,31 @@ def test_complete_fact_receipt_does_not_drop_a_pending_decision_next_day(tmp_pat
     assert second["outcomes"]["alignment"]["pending_readings"] == 1
     assert second["model_calls"] == 0
 
+    # Accept only the pending business decision from the original reading.
+    writer = daily_reading._load("intake/understanding_semantic.py")
+    result = first["outcomes"]["readings"][0]
+    reading_path = Path(result["reading"])
+    reading = writer.read_reading(reading_path)
+    resolution = json.loads(Path(result["resolution"]).read_text())
+    identity = resolution["acceptance"]["identity"]
+    row = dict(zip(writer.ACCEPTANCE_IDENTITY, identity))
+    row.update(by="test-human", at="2026-10-07T01:00:00Z",
+               claims=[resolution["awaiting"][0]["id"]])
+    accept_path = tmp_path / "accepted.jsonl"
+    accept_path.write_text(json.dumps(row) + "\n")
+    capture = daily_reading._load("intake/capture_coverage.py")
+    delta = daily_reading._load("intake/understanding_delta.py")
+    def measure():
+        report = delta.read_and_reconcile(records, capture.read_root(records)["objects"])
+        return cli._reading_current(writer, report, reading)
+    receipt = writer.apply(reading_path, records, measure=measure,
+                           accepted=writer.read_acceptances(accept_path),
+                           committed_at="2026-10-07T01:00:00Z")
+    assert receipt["state"] == "COMPLETE"
+    third = run(tmp_path, records, call=lambda *_: pytest.fail("accepted source sent again"), day=8)
+    assert third["stopped_because"] == "NO_CHANGE", third
+    assert third["outcomes"]["alignment"]["pending_readings"] == 0
+
 
 def test_unreadable_bound_source_is_not_no_change(tmp_path):
     records, _ = fixture(tmp_path)
