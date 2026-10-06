@@ -1055,7 +1055,16 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   than none: without it an existing session keeps running the revision whose
 #   `report` group has no `alignment`, and the verb answers "no such command"
 #   from a node that was promoted correctly.
-cachebuster: srv0005.20261006h
+#
+#   h → i: the same evening becomes ONE command a timer can call. `runtime/cli.py`
+#   gains `report evening` and `intake/alignment_delivery.py` gains the two
+#   functions that make a unit file unnecessary — the Beijing day, and the run
+#   record selected by its own `finished_at`. h was promoted and never ran a
+#   timer, so nothing is running against it on this node; the cache identity
+#   still moves, because "what the payload says" is what a session reads, and a
+#   session that kept h would answer "no such command" for the one verb the
+#   20:00 unit calls.
+cachebuster: srv0005.20261006i
 
 skills:
   - name: runtime-management
