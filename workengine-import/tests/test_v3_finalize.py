@@ -2,10 +2,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from contextlib import redirect_stderr
+from io import StringIO
+import json
 
 from workengine.model import Activity, ActivityState, ContextMode, RunState
-from workengine.store import ServerOSStore
-from workengine.cli import build_parser
+from workengine.store import EvidenceConflict, ServerOSStore
+from workengine.cli import build_parser, main
 
 
 class FinalizeV3Tests(unittest.TestCase):
@@ -101,6 +104,45 @@ class FinalizeV3Tests(unittest.TestCase):
 
     def test_evidence_requires_existing_hashable_file(self):
         with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator='/nope',command='x',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
+
+    def test_evidence_replay_is_idempotent_but_changed_bytes_require_a_new_locator(self):
+        path = self._evidence_file()
+        first = self._record_evidence(path)
+        self.assertEqual(self._record_evidence(path), first)
+        path.write_text("corrected factual timestamp")
+        with self.assertRaisesRegex(EvidenceConflict, "sha256.*new immutable"):
+            self._record_evidence(path)
+        with self.assertRaises(EvidenceConflict):
+            self._record_evidence(path, kind="correction")
+        with self.s.connection() as conn:
+            rows = conn.execute("SELECT * FROM evidence").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(dict(rows[0]), first)
+        corrected = self._evidence_file("evidence-v2.txt")
+        corrected.write_bytes(path.read_bytes())
+        second = self._record_evidence(corrected, kind="correction")
+        self.assertNotEqual(second["evidence_id"], first["evidence_id"])
+        self.assertNotEqual(second["sha256"], first["sha256"])
+
+    def test_evidence_replay_cannot_silently_change_a_verdict(self):
+        path = self._evidence_file()
+        self._record_evidence(path, verdict="FAIL")
+        with self.assertRaisesRegex(EvidenceConflict, "verdict"):
+            self._record_evidence(path, verdict="PASS")
+
+    def test_cli_reports_a_changed_evidence_file_as_conflict(self):
+        path = self._evidence_file()
+        self._record_evidence(path)
+        path.write_text("new report revision")
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            code = main(["run", "evidence", self.item.id, self.run.id,
+                         "--state-dir", str(self.s.state_dir), "--kind", "report",
+                         "--locator", str(path), "--command", "python -m unittest",
+                         "--case", "test_case", "--exit-code", "0",
+                         "--revision", "revision-1", "--verdict", "PASS"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "EVIDENCE_CONFLICT")
 
     def test_evidence_rejects_secret_like_kind(self):
         with self.assertRaises(ValueError):

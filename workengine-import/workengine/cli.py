@@ -379,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         emit(handler(args))
         return 0
     except (ValueError, KeyError, OSError) as exc:
-        emit({"error": {"code": "INVALID_INPUT", "message": str(exc)}}, stream=sys.stderr)
+        emit({"error": {"code": getattr(exc, "reason_code", "INVALID_INPUT"), "message": str(exc)}}, stream=sys.stderr)
         return 2
 
 
