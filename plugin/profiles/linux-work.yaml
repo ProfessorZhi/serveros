@@ -1046,7 +1046,16 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   runtime/testing_contract.py                  (absent) → ad87c011
 #   skills/test-management/profiles.yaml         (absent) → 28abf727
 # Task-aware ability discovery and complete bounded monitoring updates.
-cachebuster: srv0005.20261006g
+#
+#   g → h: the 19:20 preparation becomes a 20:00 card. Two new payload members
+#   (`intake/alignment_delivery.py`, and its 20 tests are not shipped) plus two
+#   changed ones (`runtime/report_delivery.py` — `published_version` became
+#   `held_version`, one resolver for two kinds of version statement — and
+#   `runtime/cli.py` — the `report alignment` verb). A new cachebuster rather
+#   than none: without it an existing session keeps running the revision whose
+#   `report` group has no `alignment`, and the verb answers "no such command"
+#   from a node that was promoted correctly.
+cachebuster: srv0005.20261006h
 
 skills:
   - name: runtime-management
