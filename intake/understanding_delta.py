@@ -954,6 +954,45 @@ def _content_identity(row: dict, kind: str, low, high,
     return range_content_digest(messages_file(manifest, records_root), low, high)
 
 
+def bounded_report(report: dict, records_root: Path, *, max_positions: int = 50) -> dict:
+    """Partition only proposed IM ranges, with stable position buckets.
+
+    Overlapping citations are one reading obligation. Buckets preserve completed
+    prefixes when more messages arrive; an unfinished tail may be read again.
+    The ordinary report remains unchanged for human inspection.
+    """
+    cards = []
+    for card in report.get("cards", []):
+        judged = dict(card.get("judged") or {})
+        ranges, groups = [], {}
+        for row in judged.get("review_ranges", []):
+            low, high = row.get("from_position"), row.get("to_position")
+            if low is None or high is None:
+                ranges.append(row)
+            else:
+                groups.setdefault(row["manifest"], []).append(row)
+        for rows in groups.values():
+            intervals = []
+            for row in sorted(rows, key=lambda r: r["from_position"]):
+                low, high = row["from_position"], row["to_position"]
+                if intervals and low <= intervals[-1][1] + 1:
+                    intervals[-1][1] = max(high, intervals[-1][1])
+                else:
+                    intervals.append([low, high, row])
+            for low, high, row in intervals:
+                while low <= high:
+                    end = min(high, (low // max_positions + 1) * max_positions - 1)
+                    identity, why = _content_identity(row, row["kind"], low, end, records_root)
+                    part = {**row, "from_position": low, "to_position": end, "content_identity": identity}
+                    if why:
+                        part["content_identity_why"] = why
+                    ranges.append(part)
+                    low = end + 1
+        judged["review_ranges"] = ranges
+        cards.append({**card, "judged": judged})
+    return {**report, "cards": cards}
+
+
 def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict:
     """The card's state, the ranges to look at, and the reason for both.
 
