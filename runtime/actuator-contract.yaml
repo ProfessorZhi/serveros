@@ -243,8 +243,15 @@ actuators:
       no subnet at all, so a network-creation preflight that read only the
       listing would be asking "is this subnet free" of a set of rows that does
       not carry a subnet.
+
+      `LiveHost._docker_json` is the chokepoint those four share and not a
+      fifth handoff. It takes an argv a caller already built and hands it to
+      `LiveHost._run`; the `docker` literal is at the four call sites, which is
+      both where the scanner attributes the handoff and where a reviewer wants
+      to read it. It was declared here until 2026-10-07, next to its own
+      callers, which reads as a fifth site and covers nothing.
     sites:
-      - {file: runtime/probes.py, symbols: [LiveHost._docker_json, LiveHost.docker_inspect, LiveHost.docker_ps, LiveHost.docker_network_ls, LiveHost.docker_network_inspect]}
+      - {file: runtime/probes.py, symbols: [LiveHost.docker_inspect, LiveHost.docker_ps, LiveHost.docker_network_ls, LiveHost.docker_network_inspect]}
       - {file: runtime/inventory.py, symbols: [Inventory._docker_root_dir, Inventory.docker_summary, Inventory.docker_list, Inventory.docker_volumes, Inventory.docker_images, Inventory.docker_stats, Inventory.docker_networks, Inventory.docker_sizes, Inventory.docker_space, Inventory.container_logs]}
 
   - id: host-topology-commands
@@ -472,11 +479,20 @@ actuators:
       statement computed from bytes that no longer exist, and the check whose
       whole job is to catch a swapped brief would be comparing two different
       documents and calling them the same one.
+
+      `runtime/daemon.py#_atomic_write` was declared HERE and is not any more:
+      as of 2026-10-07 the daemon writes its temporary and replaces it in one
+      step, so there is no arm on which it unlinks the name it made and nothing
+      left for this row to cover. The commit half of that same function is
+      still declared, under `atomic-write-commit`, and still matches. The
+      removal is worth this paragraph because a permission that is no longer
+      needed and one nobody ever checked are the same two lines of diff, and
+      only one of them is fine. The row kept matching through its other sites
+      for as long as this was true, which is exactly how it went unnoticed.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
-      - {file: runtime/daemon.py, symbols: [_atomic_write]}
       - {file: runtime/lease_store.py, symbols: [_atomic_write]}
       # daily_report 的文本那一半：与 agent_control_store 的写法同一决定，
       # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
@@ -724,20 +740,28 @@ actuators:
     kind: fs_mutation
     verb: .replace()
     why: >-
-      Three names and one site. `_replace` is the primitive — temp file, write,
-      rename, the same idiom as `atomic-write-commit`; `write` serialises a
-      payload into it for the publisher, and `restore` puts captured bytes back
-      through it unchanged for the rollback. They are listed together because
-      they are one reachable path: all three are called only from `execute()`
-      and `rollback()`, and both refuse before the writer is touched unless
-      their own gate said so. The reason the writer is injected rather than
-      module-level is this entry: a test asserts on the call log that a refusal
-      never reaches it, and a call log can only exist if there is an object to
-      keep it on.
+      One primitive, three names, and one site — and the count that matters
+      here is the site. `_replace` is the rename — temp file, write, rename, the
+      same idiom as `atomic-write-commit`; `write` serialises a payload into it
+      for the publisher, and `restore` puts captured bytes back through it
+      unchanged for the rollback. `write` and `restore` were listed as separate
+      sites here until 2026-10-07 and are not any more: neither one renames
+      anything, both call `_replace`, and that is where the `.replace()` this
+      contract's key names actually is. Listing a caller beside the primitive it
+      calls reads as a second place the filesystem is reached. `_replace`'s own
+      docstring states the intent from the code's side, in as many words: it is
+      kept as a separate name from `write` so that the declaration has one site
+      to name, and so that neither caller can quietly grow its own way of
+      reaching the filesystem.
+
+      The three are still one reachable path: all are called only from
+      `execute()` and `rollback()`, and both refuse before the writer is touched
+      unless their own gate said so. The reason the writer is injected rather
+      than module-level is this entry: a test asserts on the call log that a
+      refusal never reaches it, and a call log can only exist if there is an
+      object to keep it on.
     sites:
-      - {file: runtime/managed_mutation.py,
-         symbols: [FilesystemWriter._replace, FilesystemWriter.write,
-                   FilesystemWriter.restore]}
+      - {file: runtime/managed_mutation.py, symbols: [FilesystemWriter._replace]}
   - id: managed-mutation-rollback-removes-what-it-created
     kind: fs_mutation
     verb: .unlink()
@@ -764,15 +788,31 @@ actuators:
     kind: fs_mutation
     verb: shutil.rmtree
     why: >-
-      `scripts/release.py` clearing its staging directory, which it created
-      under the state root in the same run, and swapping a symlink by unlink
-      then replace. Both act on paths `release.py` owns and neither touches a
-      deployed revision: the swap is unlink-then-replace on a temporary symlink
-      whose target was already staged, which is why a failed verify can leave
+      `scripts/release.py` clearing a staging directory it has just established
+      is its own, and the unlink half of swapping a symlink (the replace half is
+      declared under `atomic-write-commit`, whose whole subject is the rename).
+      Both act on paths `release.py` owns and neither touches a deployed
+      revision: the swap is unlink-then-replace on a temporary symlink whose
+      target was already staged, which is why a failed verify can leave
       `current` untouched (there is a test for exactly that).
+
+      The `shutil.rmtree` site was `_symlink_swap` until 2026-10-07 and is
+      `stage` now, and the move is the point of that function's rewrite rather
+      than a detail of it. The line it replaced was
+      `if staging.exists(): shutil.rmtree(staging)` — a default action taken on a
+      directory whose owner and intent had not been established, and one that
+      would have deleted a finished release's payload, or another actor's
+      half-written copy, as readily as its own leftover. It now runs only inside
+      the branch that has first read both manifests and established that the
+      leftover is a partial copy of THIS artifact by the same hand; the case that
+      is not that is refused with a sentence rather than removed. So the reach
+      declared here is narrower than the site it replaces: not "removes the
+      staging directory" but "removes a staging directory it has proved is its
+      own interrupted copy". The row kept matching through its symlink half,
+      which is why the drift stayed invisible until the guard began checking one
+      site at a time rather than one declaration at a time.
     sites:
       - {file: scripts/release.py, symbols: [stage]}
-      - {file: scripts/release.py, symbols: [_symlink_swap]}
       # `.swap` is the temporary link beside the destination. Removing it is
       # the recovery half of the same swap, and it acts on a path this function
       # constructed one line earlier.
