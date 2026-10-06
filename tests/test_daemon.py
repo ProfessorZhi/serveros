@@ -26,6 +26,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -63,6 +64,7 @@ inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 # passed only because an empty register reports zero for everything it is
 # asked about — so the count that was wrong was the one nobody was reading.
 digest_mod = _load("serveros_runtime_alert_digest", "alert_digest.py")
+digest_cli = _load("serveros_runtime_cli_digest_tests", "cli.py")
 
 # `release.py` is the one module under test that lives outside `runtime/`, so it
 # does not fit `_load`. It is loaded here because the unit-rendering it owns is
@@ -3662,3 +3664,144 @@ def test_thin_link_connectivity_does_not_treat_unpinned_metadata_as_catalogue_in
     assert result["inputs_seen"] == []
     assert result["semantic_owner"] is None
     assert result["catalogue"]["why"]
+
+
+@pytest.fixture
+def digest_cli_socket(daemon_factory, tmp_path, monkeypatch):
+    """Real CLI framing and daemon size gate, with isolated stores and no tick."""
+    daemon = daemon_factory(clock=lambda: 1789000000.0)
+    # Keep the Unix socket name short without moving it off the pytest data root.
+    directory_fd = os.open(tmp_path, os.O_RDONLY)
+    path = Path(f"/proc/self/fd/{directory_fd}/digest.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen()
+    listener.settimeout(0.1)
+    monkeypatch.setattr(digest_cli, "daemon_socket_path", lambda: path)
+    requests, errors = [], []
+    real_handle = daemon.handle
+
+    def handle(request, **kw):
+        assert request["method"] in ("alert.digest-account", "alert.digest-record")
+        requests.append(request)
+        return real_handle(request, **kw)
+
+    monkeypatch.setattr(daemon, "handle", handle)
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                connection, _ = listener.accept()
+            except socket.timeout:
+                continue
+            with connection:
+                try:
+                    daemon._serve_connection(connection)
+                except Exception as exc:
+                    errors.append(exc)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield daemon, requests
+    finally:
+        stop.set()
+        thread.join(2)
+        listener.close()
+        path.unlink()
+        os.close(directory_fd)
+        assert not thread.is_alive()
+        assert errors == []
+
+
+def _large_account_digest(count):
+    rows = [{"key": f"alert:historical-{n:05d}", "kind": "RECOVERED" if n % 2 else "NEW",
+             "code": "HIGH_MEMORY_SUSTAINED", "severity": "medium",
+             "state": "RESOLVED" if n % 2 else "OPEN", "hold_kind": None,
+             "first_seen": "2026-09-01T00:00:00Z",
+             "resolved_at": "2026-09-02T00:00:00Z" if n % 2 else None,
+             "immediate": n == count // 2, "detail": "诊断" * 400}
+            for n in range(count)]
+    document = {"generation": 300, "rows": rows, "shown": rows[:5],
+                "shown_keys": [row["key"] for row in rows[:5]],
+                "decision": {"pending_keys": [rows[-1]["key"]]}}
+    document["frozen"] = digest_mod.freeze(document)
+    return document
+
+
+def test_digest_account_cli_large_snapshot_uses_real_bounded_ipc_and_preserves_record(
+        digest_cli_socket, tmp_path, capsys):
+    daemon, requests = digest_cli_socket
+    document = _large_account_digest(12_000)
+    source = tmp_path / "large-digest.json"
+    source.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    assert source.stat().st_size > 17_000_000
+    cursor = daemon.delivery_cursor()
+    cursor.commit(generation=299)
+    argv = ["alert", "digest-account", "--json", "--digest-file", str(source),
+            "--still-owed", "shown", "--why", "本拍未发送"]
+    assert digest_cli.main(argv) == 0, capsys.readouterr().err
+    result = json.loads(capsys.readouterr().out)
+    assert result["accounted_keys"] == 11_993
+    assert result["owed"] == sorted(document["shown_keys"] + document["decision"]["pending_keys"])
+    assert [row["key"] for row in result["unaccounted_immediate"]] == [document["rows"][6000]["key"]]
+    assert len(requests) > 1
+    assert max(len((json.dumps(request) + "\n").encode()) for request in requests) < 1_000_000
+    assert cursor.generation() == 299
+
+    # Compaction must have precisely the same ledger meaning as the full frozen input.
+    expected = digest_mod.DeliveryCursor(tmp_path / "expected-cursor.json")
+    digest_mod.account(expected, at=daemon_mod._iso(daemon._now()), digest=document,
+                       why="本拍未发送", owed=document["shown_keys"])
+    assert cursor.keys() == expected.keys()
+    assert digest_cli.main(argv) == 0
+    capsys.readouterr()
+    assert cursor.keys() == expected.keys()  # retry changes neither identity nor generation
+    assert cursor.generation() == 299
+
+    # The same huge source file already gives record only five shown/frozen rows.
+    for state in ("FAILED", "DELIVERED"):
+        assert digest_cli.main(["alert", "digest-record", "--json", "--generation", "300",
+                                "--state", state, "--shown-file", str(source)]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert len(json.dumps(requests[-1]).encode()) < 100_000
+        assert result["delivered"] is (state == "DELIVERED")
+    assert result["payload_hash"] == document["frozen"]["payload_hash"]
+    assert result["payload_version"] == document["frozen"]["version"]
+    assert cursor.known(document["shown_keys"][0])["severity"] == "medium"
+    assert cursor.generation() == 300
+
+
+def test_digest_account_cli_partial_failure_stops_and_retries_without_consuming_pending(
+        digest_cli_socket, tmp_path, monkeypatch, capsys):
+    daemon, requests = digest_cli_socket
+    monkeypatch.setattr(digest_cli, "DIGEST_ACCOUNT_REQUEST_BYTES", 2_000, raising=False)
+    document = _large_account_digest(40)
+    source = tmp_path / "digest.json"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    real = daemon._r_alert_digest_account
+    calls = 0
+
+    def fail_second(params):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise daemon_mod.DaemonError("synthetic batch failure")
+        return real(params)
+
+    monkeypatch.setattr(daemon, "_r_alert_digest_account", fail_second)
+    argv = ["alert", "digest-account", "--json", "--digest-file", str(source),
+            "--still-owed", "none", "--why", "quiet"]
+    assert digest_cli.main(argv) != 0
+    captured = capsys.readouterr()
+    assert "partial" in captured.err and "unattempted" in captured.err
+    assert captured.out == ""  # a partial JSON success would fool the sender's JSON-only wrapper
+    assert len(requests) == 2
+    assert 0 < len(daemon.delivery_cursor().keys()) < 38
+    assert digest_cli.main(argv) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert len(daemon.delivery_cursor().keys()) == 38
+    assert result["owed"] == document["decision"]["pending_keys"]
+    assert len(result["unaccounted_immediate"]) == 1
+    assert daemon.delivery_cursor().generation() == 0
