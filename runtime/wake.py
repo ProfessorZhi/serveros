@@ -822,6 +822,7 @@ ENVELOPE_SCHEMA = "serveros/continuation-envelope.v1"
 #: read as a policy decision while being an accident of which field was nearest.
 CONTINUATION_OPERATIONS = (
     "continuation.inspect",
+    "continuation.execute",
     "child-result.inspect",
     "work.checkpoint",
     "work.park",

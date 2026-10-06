@@ -92,24 +92,17 @@
 #     the model.
 #   * `--strict-mcp-config` keeps the node's whole plugin fleet — including the
 #     BotMux control plane — out of a continuation session.
-#   * The MCP surface is exactly six operations, and the sixth (`work.complete`)
+#   * `continuation.execute` runs engineering commands inside the grant's
+#     isolated offline container. It grants no host shell to the Parent.
+#   * `work.complete`
 #     is declared and refused: the engine answers `OPERATION_NAMED_UNSUPPORTED`
 #     rather than leaving a caller to guess whether it was forgotten.
 #
-# WHAT THIS STILL DOES NOT BUY — READ THIS BEFORE TIGHTENING IT
-#   * `--restricted` confines the FILE tools to the working directory, and the
-#     working directory is the receiver's `--cwd` (or the unit's
-#     `WorkingDirectory=`). The production unit declares no `--cwd`, so on this
-#     node the fence is the operator's whole home directory. That is a REAL
-#     width and it is not fixed here: narrowing it needs an OS-level boundary
-#     (a dedicated account, a mount namespace, or a sandbox unit), which is a
-#     product decision with a migration plan and is filed as one. This launcher
-#     does not claim otherwise.
-#   * The Parent can still read and write anything inside that fence, and the
-#     adapter cannot see file effects at all. The envelope's `allowed_write_scope`
-#     is a DECLARED scope and is reported by the adapter; it is not enforced
-#     against the filesystem, and `runtime/wake.py:capability_envelope` says so
-#     in its own docstring rather than in this comment.
+# FILE SCOPE: the adapter resolves the current granted worktree before launch.
+# The restricted client's file tools are confined there. Control-only legacy
+# wakes get an empty private directory. Neither may reach HOME, the adapter,
+# the grant store or invocation receipts. File effects still require evidence;
+# the container receipt proves a command's execution, not business acceptance.
 #
 # ---------------------------------------------------------------------------
 set -u
@@ -152,6 +145,14 @@ if [ ! -x "${adapter}" ]; then
   echo "serveros-wake-parent: ${adapter} is missing or not executable. The" >&2
   echo "  continuation adapter is part of the promoted revision; a revision that" >&2
   echo "  does not carry it cannot start a Parent that is allowed to do anything." >&2
+  exit 2
+fi
+
+# Resolve from the live checkpoint/grant, not the receiver's ambient cwd.
+# Fail closed if this cannot be checked; never silently inherit HOME.
+parent_cwd="$("${adapter}" --envelope "${envelope}" --parent-cwd)" || exit 2
+if [ -z "${parent_cwd}" ] || ! cd -- "${parent_cwd}"; then
+  echo "serveros-wake-parent: no verified parent working directory" >&2
   exit 2
 fi
 

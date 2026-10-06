@@ -70,6 +70,11 @@ DECISIONS = ("ALLOW", "DENY", "UNASKABLE")
 #: so that this table can be checked against the verbs that exist rather than
 #: believed.
 OPERATIONS = {
+    "continuation.execute": {
+        "mutates": True,
+        "owner": "runtime/bounded_executor.py (isolated engineering command)",
+        "argv": (),
+    },
     "continuation.inspect": {
         "mutates": False,
         "owner": "runtime/continuation.py + runtime/wake.py (read only)",
@@ -477,7 +482,16 @@ def _verify_inner(*, envelope, store, contexts, operation, arguments, when, now,
         return stop("READ_OPERATION", "ALLOW",
                     f"{operation} reads; every check above held")
 
-    if operation == "work.checkpoint":
+    if operation == "continuation.execute":
+        if ("engineering.execute" not in grant.get("actions", [])
+                or not isinstance(grant.get("engineering"), dict)
+                or item_id not in grant.get("items", [])):
+            return stop("ENGINEERING_NOT_GRANTED", "DENY",
+                        "this Item requires an explicit engineering.execute grant and binding")
+        checks.append(_check("ENGINEERING_GRANTED", "ALLOW",
+                             "execution binding is read from the live grant; the executor checks its paths and bounds"))
+
+    elif operation == "work.checkpoint":
         wanted = str(arguments.get("item") or "")
         if wanted != item_id:
             return stop("TARGET_ITEM_IS_NOT_THIS_WAKE", "DENY",

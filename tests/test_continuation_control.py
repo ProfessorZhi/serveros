@@ -315,6 +315,9 @@ class TestTheTwoHalvesAgree:
                 continue  # `work.complete`: the absence IS the claim
             module = spec["owner"].split(" ")[0]
             assert (REPO / module).exists(), spec["owner"]
+            if name == "continuation.execute":
+                assert module == "runtime/bounded_executor.py"
+                continue  # engineering executes in the isolated provider, not a host CLI verb
             verb = name.split(".", 1)[1]
             assert re.search(r'add_parser\(\s*\n?\s*"' + verb + r'"', source), (
                 f"{name} names a verb the CLI does not register")
