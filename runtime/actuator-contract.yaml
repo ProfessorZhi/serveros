@@ -243,8 +243,15 @@ actuators:
       no subnet at all, so a network-creation preflight that read only the
       listing would be asking "is this subnet free" of a set of rows that does
       not carry a subnet.
+
+      `LiveHost._docker_json` is the chokepoint those four share and not a
+      fifth handoff. It takes an argv a caller already built and hands it to
+      `LiveHost._run`; the `docker` literal is at the four call sites, which is
+      both where the scanner attributes the handoff and where a reviewer wants
+      to read it. It was declared here until 2026-10-07, next to its own
+      callers, which reads as a fifth site and covers nothing.
     sites:
-      - {file: runtime/probes.py, symbols: [LiveHost._docker_json, LiveHost.docker_inspect, LiveHost.docker_ps, LiveHost.docker_network_ls, LiveHost.docker_network_inspect]}
+      - {file: runtime/probes.py, symbols: [LiveHost.docker_inspect, LiveHost.docker_ps, LiveHost.docker_network_ls, LiveHost.docker_network_inspect]}
       - {file: runtime/inventory.py, symbols: [Inventory._docker_root_dir, Inventory.docker_summary, Inventory.docker_list, Inventory.docker_volumes, Inventory.docker_images, Inventory.docker_stats, Inventory.docker_networks, Inventory.docker_sizes, Inventory.docker_space, Inventory.container_logs]}
 
   - id: host-topology-commands
@@ -434,9 +441,9 @@ actuators:
       in that directory. The commit half of the same function is declared under
       `atomic-write-commit`.
 
-      `runtime/report_delivery.py#_write` is the eighth and the last, and it is
-      the same function as `document_publish.py#write_receipt` under a
-      different name, which is why the two arrived in the same round: the
+      `runtime/report_delivery.py#_write` is the eighth, and it is the same
+      function as `document_publish.py#write_receipt` under a different name,
+      which is why the two arrived in the same round: the
       delivery outbox and its receipts are read back by the next attempt to
       answer "has this already gone out?", and half a record there is not a
       missing record — it is the answer "we cannot tell", which is the one
@@ -444,11 +451,48 @@ actuators:
       write into the directory `report daily` published into, which also holds
       the report a person reads; the `mkstemp` name is what keeps this unlink
       off that file.
+
+      Two more arrived after that round and are declared below. Both are the
+      `mkstemp` shape again — the temporary is named by the library in the
+      destination's own directory, and this unlink runs only on the arm where
+      the replace did not happen — so the "cannot reach a file it did not
+      write" argument holds by construction, the way it does for the three
+      `intake/understanding_*.py` sites above.
+
+      `intake/daily_reading.py#_write` is the writing half of §P5's finite
+      intake pass. It writes a model's READING (`reading.json`) and the
+      resolution over it (`resolution.json`), and both are read back: the first
+      through `semantic.read_reading`, the second by this module's own
+      `alignment` view and by `intake/alignment_delivery.py`'s `gather`. That
+      is why a half file here is worse than a missing one — a torn artifact is
+      not the absence of a reading, it is a reading, and the next step accepts
+      what a parser could read rather than what a person judged.
+
+      `intake/alignment_delivery.py#_atomic_text` is the evening brief's
+      writer, and its reason is one step sharper than the rest. The brief is
+      written first, then read back OFF DISK and hashed, and only then is the
+      `version.json` beside it written around that hash — never the hash of
+      what was in memory. `runtime/report_delivery.py`'s `held_version`
+      re-hashes the file at delivery time and compares it to what the statement
+      claims, and that function names this directory as the second kind of
+      version statement it resolves. A half-written brief would go out under a
+      statement computed from bytes that no longer exist, and the check whose
+      whole job is to catch a swapped brief would be comparing two different
+      documents and calling them the same one.
+
+      `runtime/daemon.py#_atomic_write` was declared HERE and is not any more:
+      as of 2026-10-07 the daemon writes its temporary and replaces it in one
+      step, so there is no arm on which it unlinks the name it made and nothing
+      left for this row to cover. The commit half of that same function is
+      still declared, under `atomic-write-commit`, and still matches. The
+      removal is worth this paragraph because a permission that is no longer
+      needed and one nobody ever checked are the same two lines of diff, and
+      only one of them is fine. The row kept matching through its other sites
+      for as long as this was true, which is exactly how it went unnoticed.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
       - {file: runtime/agent_control_store.py, symbols: [_atomic_write]}
-      - {file: runtime/daemon.py, symbols: [_atomic_write]}
       - {file: runtime/lease_store.py, symbols: [_atomic_write]}
       # daily_report 的文本那一半：与 agent_control_store 的写法同一决定，
       # 但 `_atomic_write` 只处理 JSON，日报写的是文本，所以是另一个符号。
@@ -458,6 +502,8 @@ actuators:
       - {file: intake/understanding_brief.py, symbols: [write]}
       - {file: intake/document_publish.py, symbols: [write_receipt], verb: ".unlink()"}
       - {file: runtime/report_delivery.py, symbols: [_write], verb: ".unlink()"}
+      - {file: intake/daily_reading.py, symbols: [_write]}
+      - {file: intake/alignment_delivery.py, symbols: [_atomic_text]}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -523,7 +569,7 @@ actuators:
       a second write to a document the first one has already touched. The unlink
       half of the same function is declared under `atomic-write-temp-cleanup`.
 
-      `runtime/report_delivery.py#_write` is the eighth and closes the round:
+      `runtime/report_delivery.py#_write` is the eighth and closed that round:
       the delivery outbox and its receipts, written atomically for exactly the
       reason above and one more. A receipt is what a LATER attempt reads to
       decide whether to send again — so a receipt that is half-written is not
@@ -532,6 +578,23 @@ actuators:
       into, beside the report a person reads and the publication receipt that
       says which version it is. Those two files are written atomically by
       `runtime/daily_report.py` for the same reason and are declared above.
+
+      `intake/daily_reading.py#_write` and
+      `intake/alignment_delivery.py#_atomic_text` are the two that arrived
+      after that round, and the commit half of each is declared here for the
+      reason the whole idiom exists: the rename is the instant a reader's
+      answer changes. In the first, that reader is the next stage of the same
+      pass, which reads `reading.json` back through `semantic.read_reading` —
+      a torn reading is not an unfinished one, it is a wrong one, and it would
+      be judged as written. In the second, the reader is a DELIVERY:
+      `held_version` hashes the brief off disk and compares it to the version
+      statement, so the instant this replace lands is the instant the pair
+      (brief, version) becomes consistent, and a reader who catches the file
+      half-written would hash bytes that were never published. Both
+      destinations are named by the caller and refused unless absolute —
+      `daily_reading`'s under a Run directory it has already required to be
+      absolute and real, `alignment_delivery`'s under `out_dir`, refused with
+      that sentence in `Refused` — so neither path can arrive from the cwd.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -547,6 +610,8 @@ actuators:
       - {file: intake/understanding_brief.py, symbols: [write]}
       - {file: intake/document_publish.py, symbols: [write_receipt], verb: ".replace()"}
       - {file: runtime/report_delivery.py, symbols: [_write], verb: ".replace()"}
+      - {file: intake/daily_reading.py, symbols: [_write]}
+      - {file: intake/alignment_delivery.py, symbols: [_atomic_text]}
       # §5 / Layer C: `memory/openviking/backup.py#backup` writes the archive to
       # `<out>.part` and then replaces `<out>` with it, so a reader never sees a
       # half-written archive. The destination is named by the CALLER and the
@@ -675,20 +740,28 @@ actuators:
     kind: fs_mutation
     verb: .replace()
     why: >-
-      Three names and one site. `_replace` is the primitive — temp file, write,
-      rename, the same idiom as `atomic-write-commit`; `write` serialises a
-      payload into it for the publisher, and `restore` puts captured bytes back
-      through it unchanged for the rollback. They are listed together because
-      they are one reachable path: all three are called only from `execute()`
-      and `rollback()`, and both refuse before the writer is touched unless
-      their own gate said so. The reason the writer is injected rather than
-      module-level is this entry: a test asserts on the call log that a refusal
-      never reaches it, and a call log can only exist if there is an object to
-      keep it on.
+      One primitive, three names, and one site — and the count that matters
+      here is the site. `_replace` is the rename — temp file, write, rename, the
+      same idiom as `atomic-write-commit`; `write` serialises a payload into it
+      for the publisher, and `restore` puts captured bytes back through it
+      unchanged for the rollback. `write` and `restore` were listed as separate
+      sites here until 2026-10-07 and are not any more: neither one renames
+      anything, both call `_replace`, and that is where the `.replace()` this
+      contract's key names actually is. Listing a caller beside the primitive it
+      calls reads as a second place the filesystem is reached. `_replace`'s own
+      docstring states the intent from the code's side, in as many words: it is
+      kept as a separate name from `write` so that the declaration has one site
+      to name, and so that neither caller can quietly grow its own way of
+      reaching the filesystem.
+
+      The three are still one reachable path: all are called only from
+      `execute()` and `rollback()`, and both refuse before the writer is touched
+      unless their own gate said so. The reason the writer is injected rather
+      than module-level is this entry: a test asserts on the call log that a
+      refusal never reaches it, and a call log can only exist if there is an
+      object to keep it on.
     sites:
-      - {file: runtime/managed_mutation.py,
-         symbols: [FilesystemWriter._replace, FilesystemWriter.write,
-                   FilesystemWriter.restore]}
+      - {file: runtime/managed_mutation.py, symbols: [FilesystemWriter._replace]}
   - id: managed-mutation-rollback-removes-what-it-created
     kind: fs_mutation
     verb: .unlink()
@@ -715,15 +788,31 @@ actuators:
     kind: fs_mutation
     verb: shutil.rmtree
     why: >-
-      `scripts/release.py` clearing its staging directory, which it created
-      under the state root in the same run, and swapping a symlink by unlink
-      then replace. Both act on paths `release.py` owns and neither touches a
-      deployed revision: the swap is unlink-then-replace on a temporary symlink
-      whose target was already staged, which is why a failed verify can leave
+      `scripts/release.py` clearing a staging directory it has just established
+      is its own, and the unlink half of swapping a symlink (the replace half is
+      declared under `atomic-write-commit`, whose whole subject is the rename).
+      Both act on paths `release.py` owns and neither touches a deployed
+      revision: the swap is unlink-then-replace on a temporary symlink whose
+      target was already staged, which is why a failed verify can leave
       `current` untouched (there is a test for exactly that).
+
+      The `shutil.rmtree` site was `_symlink_swap` until 2026-10-07 and is
+      `stage` now, and the move is the point of that function's rewrite rather
+      than a detail of it. The line it replaced was
+      `if staging.exists(): shutil.rmtree(staging)` — a default action taken on a
+      directory whose owner and intent had not been established, and one that
+      would have deleted a finished release's payload, or another actor's
+      half-written copy, as readily as its own leftover. It now runs only inside
+      the branch that has first read both manifests and established that the
+      leftover is a partial copy of THIS artifact by the same hand; the case that
+      is not that is refused with a sentence rather than removed. So the reach
+      declared here is narrower than the site it replaces: not "removes the
+      staging directory" but "removes a staging directory it has proved is its
+      own interrupted copy". The row kept matching through its symlink half,
+      which is why the drift stayed invisible until the guard began checking one
+      site at a time rather than one declaration at a time.
     sites:
       - {file: scripts/release.py, symbols: [stage]}
-      - {file: scripts/release.py, symbols: [_symlink_swap]}
       # `.swap` is the temporary link beside the destination. Removing it is
       # the recovery half of the same swap, and it acts on a path this function
       # constructed one line earlier.
@@ -1102,6 +1191,74 @@ actuators:
       reached; these two transports are the halves that do.
     sites:
       - {file: runtime/document_transport.py, symbols: [run]}
+
+  - id: engineering-executor-owns-its-containers
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      Three `subprocess.run` sites in `runtime/bounded_executor.py` — one in
+      `_run`, two in `_worker` — and the scanner reports them for the reason it
+      reports the two entries above: the argv is built by `_docker(config)` and
+      `create_argv(config)`, so it cannot be resolved from the call. What the
+      call cannot show is that the argv is not a CALLER's, and that is the
+      whole of what this entry states.
+
+      `_docker` is `[/usr/bin/docker, --host unix:///var/run/docker.sock,
+      --config <private>/docker-config]`: the binary is absolute and the
+      transport and credential config are named rather than inherited, so no
+      `DOCKER_HOST` in the environment and no credential helper on this host's
+      `PATH` can redirect the invocation to another daemon. `_run` is this
+      module's only way to speak to docker, and the verbs it is ever given are
+      `inspect`, `image inspect`, `kill`, `rm`, `create` and `start`. Every one
+      of them names a container whose name is derived here — `serveros-exec-`
+      plus the SHA-256 of the receipt root, the action key and the caller's key
+      — rather than one a caller supplies.
+
+      What the containers may then do is a list rather than a promise, and it
+      is in `create_argv`: `--pull=never`; an image that is a pinned LOCAL
+      image ID (`binding` requires `sha256:` and 64 hex characters, and the
+      `image inspect` in `_worker` refuses if the ID changed or if the image
+      declares implicit volumes); `--network=none`; `--read-only`;
+      `--cap-drop=ALL`; `--security-opt=no-new-privileges`; `--pids-limit`,
+      `--memory` with `--memory-swap` equal to it, and `--cpus`, each an
+      integer inside a range `binding` enforces; `--log-driver=none`; exactly
+      two `--mount`s — the worktree at `/workspace` and this invocation's
+      private artifact directory at `/artifacts`, both of them refused earlier
+      if the path is not absolute, not real, or holds a comma; and a 64 MiB
+      `nosuid,nodev` `tmpfs` on `/tmp`. The container's own argv is data handed
+      to a `python3 -I -c` bootstrap, so it is a program to run INSIDE the
+      boundary and not an option to it.
+
+      Stopping is bounded for the same reason starting is, and that is why
+      `kill` and `rm` belong to this entry rather than to a teardown entry
+      which would imply they are unconditional: `_settle` reads the container
+      back, refuses to act unless the `serveros.executor` label equals this
+      invocation's identity, and reports `worker_stopped: false` with
+      `effect: UNKNOWN` rather than claiming a stop it cannot see. An
+      invocation that is uncertain is never launched again under the same key.
+
+      HOW FAR THE CALLER CAN BE REACHED: `execute` is the operation
+      `continuation.execute` in `runtime/continuation_control.yaml`, whose
+      owner field names this module, and its one caller is the MCP continuation
+      adapter. The adapter checks admission first, then `binding`, which
+      refuses unless the grant carries an `engineering` binding of schema
+      `serveros/engineering-binding.v1`, lists `engineering.execute` in its
+      actions, includes this Item, names ONE project worktree at least two
+      segments under the worktrees root, and both the envelope's and the
+      checkpoint's declared write scopes contain it, with a non-root uid.
+      Between `binding` and `execute` the adapter also refuses a worktree that
+      contains the adapter itself, its envelope, its receipts or the authority
+      store. `execute` then re-checks its own inputs: the key's alphabet and
+      length, the container argv's bounds, a positive bounded budget, and a
+      receipt root outside the writable worktree. It is not a CLI verb and not
+      a daemon verb.
+
+      The site is declared here rather than in the round that wrote it
+      (`795df9c`); the RUN-0004 attribution is where the gap was measured, and
+      the guard's run of 2026-10-07 is the one that named it.
+    sites:
+      - {file: runtime/bounded_executor.py, symbols: [_run]}
+      - {file: runtime/bounded_executor.py, symbols: [_worker]}
 
   - id: bounded-invocation-kills-the-group-it-created
     kind: process_termination
