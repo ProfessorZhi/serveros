@@ -84,6 +84,12 @@ positions, in a non-test `.py` file:
     "field" in record            a membership test
     ("a", "field", "c")          enumerated into a collection of names
 
+In the first three, `record` has to be a record: a key read off the tool
+argument bag is a TOOL PARAMETER, declared in the tool's own schema, and
+counting it against a contract's `required_fields` is a name collision and not
+a reader. `TOOL_ARGUMENT_BAG` below states that boundary and how it was
+measured; the fourth position is not a container lookup and is untouched.
+
 That last position is not decoration, and the reason is the whole lesson of
 this file. The first version of this rule counted only the first two, and
 reported five unread fields. Two of them were wrong:
@@ -102,6 +108,17 @@ Both are real readers. A gate that reported them as dead would have taught its
 first reader to distrust it, which is how a gate gets turned off. The rule is
 generous in this direction on purpose: it under-reports dead fields rather than
 inventing them.
+
+That generosity is not free, and 2026-10-07 is the receipt. The other direction
+of this same gate — `test_a_field_that_gained_a_reader_must_lose_its_exemption`
+— ACTS on a reader it finds, so a generous reading does not only under-report a
+dead field: it can demand the deletion of an exemption that is still true. The
+detector counted `runtime/daemon.py:2161`, `params.get("request")`, as a read of
+the record field `request` that `abilities/target-contract.yaml` requires and
+`abilities/target.py:845` writes, and `request`'s exemption was reported as
+having been overtaken by a reader. It had not been. The reading was what was
+wrong, and it was made precise — not the demand made softer. `TOOL_ARGUMENT_BAG`
+carries that boundary and its measurement.
 
 The narrow version of the same rule is why the number went 5 → 3, and that
 number is the finding. The three that survived are listed below with what would
@@ -205,7 +222,12 @@ KNOWN_UNREAD = {
                    "every resolution record, including `work_item`; no consumer "
                    "reads it back. `fleet/view.py` reads `steps` and "
                    "`target.route`, and `serverosctl ability resolve` renders "
-                   "the resolver's own record, which has no `request` field.",
+                   "the resolver's own record, which has no `request` field. "
+                   "The one thing that LOOKS like a reader is a collision and "
+                   "not a reader: `runtime/daemon.py:2161` reads the tool "
+                   "PARAMETER `request` off `params`, which is a different "
+                   "declaration surface — `TOOL_ARGUMENT_BAG` has the "
+                   "measurement.",
         "disposition": "NEEDS_HUMAN",
     },
     "recipients": {
@@ -343,6 +365,70 @@ def _sources() -> list[tuple[str, ast.AST]]:
     return _SOURCE_CACHE
 
 
+# What this tree calls the argument bag a tool handler was handed, and the one
+# place the reader detector has to stop.
+#
+# A key read off that bag is a TOOL PARAMETER — the caller's input envelope,
+# declared in the tool's own schema. A record contract's `required_fields` is a
+# different declaration surface, and the two collided on the name `request`:
+# `abilities/target-contract.yaml` requires a record field `request`,
+# `abilities/target.py:845` writes it, and `runtime/daemon.py:2161` reads the
+# tool PARAMETER of the same name. The detector counted that as a record read,
+# so `test_a_field_that_gained_a_reader_must_lose_its_exemption` demanded the
+# deletion of an exemption that is still correct — a name rule inventing a
+# dead-exemption fix, which is the `turn.completed` mistake again, one surface
+# over.
+#
+# The rule is keyed on the receiver being a PARAMETER of the enclosing function,
+# not on the spelling: a module-level mapping called `params` is not an argument
+# bag and is still read normally, and so is any local that merely happens to
+# share the name.
+#
+# Measured over the whole tree on 2026-10-07 (the probe and its numbers are in
+# the RUN-0008 evidence `reader-detector-tool-bag`): 59 key lookups sit on a
+# `params` parameter, in 28 enclosing functions, every one of them a tool or
+# protocol handler — `runtime/daemon.py`'s `_r_*` handlers and the three
+# `mcp/*_mcp.py` `_call_tool`s. Removing them changes the reader EVIDENCE of 8
+# declared fields and the VERDICT of exactly one: `request`, read → not read.
+# No declared field gains a reader, and the no-reader count goes 1 → 2. All 18
+# removed sites were read by hand and all 18 are `params.get(<tool parameter>)`.
+TOOL_ARGUMENT_BAG = "params"
+
+
+def _scoped_nodes(node: ast.AST, params: frozenset[str] = frozenset()):
+    """(node, the parameter names of its innermost enclosing function).
+
+    `ast.walk` cannot answer "is the name I am looking at a parameter of the
+    function I am inside", and the rule below is exactly that question. This
+    walks the same nodes `ast.walk` does, once each, in source order.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        args = node.args
+        names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+        if args.vararg:
+            names.add(args.vararg.arg)
+        if args.kwarg:
+            names.add(args.kwarg.arg)
+        params = frozenset(names)
+    yield node, params
+    for child in ast.iter_child_nodes(node):
+        yield from _scoped_nodes(child, params)
+
+
+def _reads_the_tool_bag(receiver: ast.AST, params: frozenset[str]) -> bool:
+    """True when a key lookup's receiver is the calling tool's argument bag.
+
+    See `TOOL_ARGUMENT_BAG` for the measurement behind the rule and for what it
+    is not: the daemon rebinds that same bag to a local named `request` at
+    `runtime/daemon.py:2161`, so envelope reads under THAT name are still
+    counted (`runtime/daemon.py:2186` is one, counted against `device_ref`).
+    Measured the same day: no declared field's verdict depends on it.
+    """
+    return (isinstance(receiver, ast.Name)
+            and receiver.id == TOOL_ARGUMENT_BAG
+            and receiver.id in params)
+
+
 _READ_INDEX: dict[str, list[str]] | None = None
 _STRING_INDEX: dict[str, list[str]] | None = None
 
@@ -398,27 +484,34 @@ def _build_indexes() -> None:
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     reader_nodes.add(id(first))
-        for node in ast.walk(tree):
+        for node, params in _scoped_nodes(tree):
             if not hasattr(node, "lineno"):
                 continue  # the Module itself, which is not a line
             where = f"{rel}:{node.lineno}"
             if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                     and id(node) not in reader_nodes):
                 note(strings, node.value, where)
+            # The three container positions below exclude the tool argument
+            # bag: a key looked up on it belongs to the tool's schema, not to a
+            # record contract. See `TOOL_ARGUMENT_BAG`. The fourth position
+            # (a tuple of names) is not a container lookup and is untouched.
             if isinstance(node, ast.Subscript):
                 index = node.slice
-                if isinstance(index, ast.Constant):
+                if (isinstance(index, ast.Constant)
+                        and not _reads_the_tool_bag(node.value, params)):
                     note(reads, index.value, where)
             elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr in {"get", "pop", "setdefault", "getattr"}
                     and node.args):
                 first = node.args[0]
-                if isinstance(first, ast.Constant):
+                if (isinstance(first, ast.Constant)
+                        and not _reads_the_tool_bag(node.func.value, params)):
                     note(reads, first.value, where)
             elif isinstance(node, ast.Compare):
                 left = node.left
                 if (isinstance(left, ast.Constant)
-                        and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops)):
+                        and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops)
+                        and not _reads_the_tool_bag(node.comparators[0], params)):
                     note(reads, left.value, where)
             elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
                 for element in node.elts:
@@ -976,6 +1069,38 @@ class DeclaredFieldsHaveReaders(unittest.TestCase):
         exactly that — copied into every resolution record at
         `abilities/target.py:845`, read by nothing."""
         self.assertEqual(readers_of("request"), [])
+
+    def test_the_bag_predicate_is_keyed_on_the_parameter(self):
+        """The rule of `TOOL_ARGUMENT_BAG`, fed the four shapes it separates.
+
+        A spelling test (`id == "params"`) would pass the first and fail the
+        point: what makes a mapping the tool's argument bag is that it was
+        HANDED to the handler, and that is what is checked.
+        """
+        here = frozenset({"params", "record"})
+        self.assertTrue(_reads_the_tool_bag(ast.Name(id="params"), here))
+        self.assertFalse(_reads_the_tool_bag(ast.Name(id="params"), frozenset()),
+                         "a `params` that is not a parameter is not the bag")
+        self.assertFalse(_reads_the_tool_bag(ast.Name(id="record"), here),
+                         "a parameter that is not the bag is not the bag")
+        self.assertFalse(_reads_the_tool_bag(
+            ast.Attribute(value=ast.Name(id="self"), attr="params"), here),
+            "`self.params` is an attribute of the handler, not the bag")
+
+    def test_the_bag_exclusion_is_not_a_blanket_drop(self):
+        """The control that keeps the fix from being a loosening.
+
+        The exclusion has to be keyed on the receiver. If it dropped sites by
+        key name, by position, or by file, these two would go with it: this is
+        a genuine read of the resolution record's `steps`, through the SAME
+        `.get("...")` position the bag rule excludes, and it is still counted.
+        """
+        self.assertIn("fleet/view.py:225", readers_of("steps"),
+                      "the record read named in `request`'s own because — "
+                      "`steps = record.get(\"steps\") or []` — is still a "
+                      "reader, so the exclusion did not become a blanket drop")
+        self.assertTrue(readers_of("route"),
+                        "`target.route` is read at abilities/target.py:995")
 
 
 class EnforcerClaimsResolve(unittest.TestCase):
