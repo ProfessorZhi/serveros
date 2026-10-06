@@ -35,6 +35,48 @@ def model(transport, ask, ctx):
                         "applies_to": None, "touches": [], "supersedes": [], "conflicts": []}]}
 
 
+def im_fixture(tmp_path):
+    records, card = fixture(tmp_path)
+    manifest = "feishu/chats/people/x/oc_x/manifest.json"
+    raw = records / "information/raw" / manifest
+    raw.write_text(json.dumps({"chat": {"chat_id": "oc_x", "chat_type": "p2p", "name": "X"},
+                              "sync": {"msg_count": 2, "remote_unique_message_count": 2,
+                                       "pagination_complete": True, "fetched_page_count": 1,
+                                       "last_message_id": "om_1"}}))
+    raw.with_name("messages.jsonl").write_text("".join(json.dumps({
+        "message_id": f"om_{p}", "message_position": str(p), "content": "The endpoint returned HTTP 200.",
+        "updated": False, "deleted": False}) + "\n" for p in range(2)))
+    messages = Path(manifest).with_name("messages.jsonl")
+    (records / card).write_text(f"# Example\n\n## Sources\n- `information/raw/{messages}` message_position 0-0\n")
+    sources = records / "projects/example/context/sources.yaml"
+    data = yaml.safe_load(sources.read_text())
+    data["sources"][0]["manifest"] = manifest
+    sources.write_text(yaml.safe_dump(data))
+    return records, card
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_committed_im_range_is_not_sent_again_after_card_changes(tmp_path, monkeypatch, pending):
+    records, card = im_fixture(tmp_path)
+    cli = daily_reading._load("runtime/cli.py")
+    monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (
+        {"covers": ["example"], "until": "2026-10-31T00:00:00Z", "granted_by": "fixture"}, "test grant"))
+    def reading(*args):
+        result = model(*args)
+        result["claims"][0]["support"] = {"positions": [1], "start_line": None, "end_line": None}
+        if pending:
+            result["claims"].append({**result["claims"][0], "kind": "PROPOSAL", "touches": ["goal"]})
+        return result
+    before = (records / card).read_bytes()
+    first = run(tmp_path, records, call=reading)
+    assert first["outcomes"]["readings"][0]["receipt"]["state"] == "COMPLETE", first
+    assert (records / card).read_bytes() != before
+    second = run(tmp_path, records, call=lambda *_: pytest.fail("committed IM sent again"), day=7)
+    assert second["model_calls"] == 0
+    assert second["stopped_because"] == ("NEEDS_DECISION" if pending else "NO_CHANGE"), second
+    assert second["outcomes"]["alignment"]["pending_readings"] == int(pending)
+
+
 def run(tmp_path, records, call=model, day=6):
     engine = recipes.Engine(state_root=tmp_path / "state", records_root=records,
                             scope="project:example", period={"id": f"day-{day}", "start": f"2026-10-{day:02}T00:00:00Z",
