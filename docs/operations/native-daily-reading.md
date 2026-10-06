@@ -46,6 +46,44 @@ Node/Item scope 可用 `--sources <absolute-yaml>` 指定绑定。跨时段复�
 原 revision，卡片只能发生已记录的 writer 变更；出现人工编辑时先重新阅读。
 后续对齐列表读取这些收据，移除已提交项，复跑不调用模型或重复写入。
 
+## 20:00 晚报：19:20 的准备必须真的送到人手上
+
+19:20 只写出 `alignment.json`。一份没人看到的待决，在盘上和一份从来没被准备过的
+待决长得一模一样，所以当晚还要把它变成一次真实投递：
+
+```text
+serverosctl report alignment --run-dir <19:20 的 run 目录> --out-dir <投递目录>
+  --run-record <perception 的 run 记录> --period <当天> --json
+serverosctl report request  --out-dir <投递目录> --recipient user:<open_id>
+  --requested-by <谁要的> --why <为什么>
+serverosctl report deliver  --out-dir <投递目录> --conversation user:<open_id>
+  --authorization <刚刚复查了什么>
+```
+
+`report alignment` 只写两份东西：四段简报 `alignment-brief.md`，和指明这一版是什么的
+`version.json`。它不发送任何东西，投递完全走已有的 `report request` / `report deliver`
+——幂等键、回执、失败不谎报成功、被中断的尝试要去对账而不是重发，全部沿用同一条路径，
+没有第二份拷贝。`report deliver` 认这个目录的 `version.json`，与它认日报的
+`publication-receipt.json` 是同一个解析器。
+
+管线分成两步而不是一步，是因为收件人、内容版本和授权都要在真正发送的那一刻重新查一次。
+中途任何一处变了，投递都会被拒，而不是把一份没人要求过的内容发出去。
+
+四段固定：**自动更新**（机器已按既有授权自己提交的）、**需要人决定**（人不点头就停在那里）、
+**冲突**（新读解与卡片现状或另一次读解互相矛盾）、**理解缺口**（这一轮没能读到的来源）。
+每一节都会把自己的条数写出来，空的也写「本轮没有……」：空的一节和没人检查过的一节，
+在卡片上长得一样。
+
+两处刻意不装作知道。其一，19:20 那次运行若没跑成，`alignment.json` 是旧的，
+这时合成会被拒——否则收件人会收到一张和平时一样平静的卡，而它说的其实是昨天的事。
+其二，运行若停在 `BUDGET_EXHAUSTED` / `SOURCE_UNAVAILABLE`，未走到的区间不会出现在
+`unread` 里（没走到就没失败），所以缺口那一节会点名这次停在哪里，
+而不是报一个「缺口：0」。
+
+投递目录必须与 run 目录分开：run 目录每次运行都会被覆盖，而投递回执要活得比它久。
+收件人由人指定（`--conversation`，或服务里的 `SERVEROS_REPORT_CONVERSATION`）；
+没有指定时回答 `PENDING_CONSUMER`——一条待发，不是一次失败，也没有任何人被打扰。
+
 Focus 从 Work Engine 投影中的唯一 READY Activity 读取动作，从当前 Item card
 计算 scope digest，再关联唯一有效 grant。多个可执行 Activity 或多个 grant 不自动择一。
 scope 变化会被原有准入政策拒绝；旧投影的时间不会被重新标成当前时间。
