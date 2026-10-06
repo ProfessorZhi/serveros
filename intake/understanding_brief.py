@@ -360,15 +360,17 @@ def briefs(report: dict, records_root: Path | str, *,
         for row in (card_row.get("judged") or {}).get("review_ranges") or ():
             try:
                 packet = brief_for(card_row, row, root, allowed_asset_roots=allowed_asset_roots)
-                if row.get("kind") == "WHOLE_DOCUMENT":
-                    try:
-                        prior = _semantic.receipt_for(packet, root)
-                    except _semantic.Refused as exc:
-                        raise Refused(str(exc)) from exc
-                    if prior and prior.get("state") in ("COMPLETE", "RETRACTION_ONLY"):
-                        continue
-                    if prior and prior.get("state") == "PARTIAL":
-                        raise Refused("source reading already committed; resume its pending Views from the existing receipt")
+                # A writer changes the card digest without changing the source.
+                # This applies to IM ranges as well as documents: regenerating a
+                # reading here would spend another model call on committed input.
+                try:
+                    prior = _semantic.receipt_for(packet, root)
+                except _semantic.Refused as exc:
+                    raise Refused(str(exc)) from exc
+                if prior and prior.get("state") in ("COMPLETE", "RETRACTION_ONLY"):
+                    continue
+                if prior and prior.get("state") == "PARTIAL":
+                    raise Refused("source reading already committed; resume its pending Views from the existing receipt")
                 out.append(packet)
             except Refused as exc:
                 refused.append({
