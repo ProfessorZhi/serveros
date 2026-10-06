@@ -92,6 +92,11 @@ DAY_AUTHORITIES = ("declared-workday", "declared-rest", "weekday",
 WINDOW_FIRST_HOUR = 8
 WINDOW_LAST_HOUR = 20
 
+# An hourly timer and its bounded collection finish after the exact second.
+# Keep the final 20:00 tick usable for five minutes; this never adds a tick or
+# catches up a missed day. At 20:05 the routine window is closed.
+FINAL_TICK_GRACE_SECONDS = 300
+
 #: §10's ceiling, and it is a consequence of the window rather than a second
 #: rule: 08:00, 09:00 … 20:00 is thirteen instants. It is published as a number
 #: because the acceptance criterion counts it («同一工作日最多13次更新仍只有一张
@@ -445,11 +450,11 @@ def routine_window(instant, *, reading: dict | None = None,
     observing and DOES NOT start a routine group send, and the reason a person
     is shown has to distinguish «not imported» from «does not validate».
 
-    The window is inclusive at both ends (§10: «含两端»), so 08:00:00 and
-    20:00:00 are inside it and 20:00:01 is not. `tick` is the ordinal of the
-    hour within the day's thirteen, and it is reported rather than required:
-    §10 recommends the update happen on the hour, and a recommendation is not a
-    rule — a tick a minute late is still the same tick.
+    The window includes the 08:00 and 20:00 ticks (§10: «含两端»). The last
+    tick accepts a bounded five-minute delay for scheduling and collection:
+    requiring exactly 20:00:00 made the live timer skip the last update every
+    day. `tick` stays the ordinal within the same thirteen hours; the delay
+    neither adds an update slot nor permits a late catch-up after 20:05.
     """
     reading = reading or {"state": "ABSENT", "declaration": None,
                           "reason": "没有读过日历声明", "detail": "", "path": ""}
@@ -511,6 +516,7 @@ def routine_window(instant, *, reading: dict | None = None,
     first, last = WINDOW_FIRST_HOUR, WINDOW_LAST_HOUR
     morning = local.replace(hour=first, minute=0, second=0, microsecond=0)
     evening = local.replace(hour=last, minute=0, second=0, microsecond=0)
+    closing = evening + datetime.timedelta(seconds=FINAL_TICK_GRACE_SECONDS)
     where = f"{local.strftime('%H:%M')}（{zone_name}）"
 
     if local < morning:
@@ -518,7 +524,7 @@ def routine_window(instant, *, reading: dict | None = None,
         base["says"] = (f"{facts['date']} 是工作日，但现在是 {where}，早于常规播报"
                         f"窗口 {first:02d}:00–{last:02d}:00，不新增。错过 {first:02d}:00 "
                         f"不追发，进入窗口后的第一个时点建当天卡")
-    elif local > evening:
+    elif local >= closing:
         base.update({"reason": "AFTER_WINDOW", "in_window": False})
         base["says"] = (f"{facts['date']} 是工作日，但现在是 {where}，晚于常规播报"
                         f"窗口 {first:02d}:00–{last:02d}:00，当日卡不再因普通采样"
@@ -529,6 +535,10 @@ def routine_window(instant, *, reading: dict | None = None,
         base["says"] = (f"{facts['date']} 是工作日，现在是 {where}，在常规播报窗口 "
                         f"{first:02d}:00–{last:02d}:00 内 · 今天第 {base['tick']}/"
                         f"{ROUTINE_UPDATES_PER_WORKDAY} 个时点")
+        if local > evening:
+            base["says"] = (f"{facts['date']} 是工作日，现在是 {where}，仍属 "
+                            f"{last:02d}:00 末次更新的五分钟容差 · 今天第 "
+                            f"{base['tick']}/{ROUTINE_UPDATES_PER_WORKDAY} 个时点")
     if facts["authority"] == "weekday-fallback":
         base["says"] += "；注意这一天不是官方工作日，是实例声明的 fallback"
     return base

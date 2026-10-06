@@ -276,10 +276,11 @@ TOOLS: tuple[dict, ...] = (
         "name": "ability.search",
         "description": (
             "Find the few abilities a task needs, by substring, in this "
-            "node's local projection. Returns compact rows and says how many "
+            "node's projection and catalogue, including product roles and trigger hints "
+            "(not avoid hints). Returns compact rows and says how many "
             "matched beside how many it returned, so a truncated list never "
             "reads as a complete one. `matched` is null — not 0 — for an empty "
-            "query and for no projection: neither is a search that came back "
+            "query and for no readable source: neither is a search that came back "
             "empty. Ask a question; this surface deliberately does not serve "
             "the whole catalogue, because loading it is the cost this exists "
             "to remove."
@@ -299,22 +300,11 @@ TOOLS: tuple[dict, ...] = (
     {
         "name": "ability.resolve",
         "description": (
-            "Can THIS device do THIS thing, now, and if not why not — the pure "
-            "resolver run with the inputs this node can supply by itself "
-            "(its own identity, plus the ability and runtime you name). Those "
-            "three are the SCALARS a request requires and NOT three of the "
-            "kernel's eight inputs, which are documents: a pinned catalogue, a "
-            "device's capabilities, a policy. So expect `inputs_seen` to be "
-            "empty and `inputs_missing` to name all eight — an earlier version "
-            "of this description said three of the eight were supplied, and the "
-            "answer beside it said otherwise. The kernel's two lists are "
-            "passed through unchanged: read "
-            "`inputs_missing` before the status, because a verdict computed "
-            "from whichever inputs happened to be readable is what the kernel "
-            "exists to refuse. `runtime` has no default — this node holds no "
-            "declaration of what is installed, and a default would be a guess "
-            "about you printed as your own answer. An ability reference may "
-            "carry an operation: `ability:<id>#<verb>`."
+            "Read-only assessment for one ability/runtime using this node's pinned catalogue. "
+            "Optional request supplies bounded evaluation inputs (64 KiB); these are caller "
+            "claims, not verified observations or grants. Missing inputs remain unknown. "
+            "The result never authorizes execution, and native tools do not require this call. "
+            "Use ability:<name>#<verb> for an operation; runtime is explicit."
         ),
         "inputSchema": {
             "type": "object",
@@ -325,6 +315,18 @@ TOOLS: tuple[dict, ...] = (
                             "description": "the Agent runtime asking, e.g. 'claude-code' or 'codex'"},
                 "device": {"type": "string",
                            "description": "defaults to THIS node; state one to ask about another"},
+                "request": {
+                    "type": "object", "additionalProperties": False,
+                    "description": "Evaluation only; cannot override catalogue, ability, runtime or device. Maximum 64 KiB, depth 12; provider/instance lists at most 32 objects.",
+                    "properties": {
+                        **{key: {"type": ["array", "null"], "maxItems": 32,
+                                 "items": {"type": "object"}}
+                           for key in ("providers", "instances")},
+                        **{key: {"type": ["object", "null"], "maxProperties": 128}
+                           for key in ("device_capabilities", "profile", "runtime_record",
+                                       "runtime_binding", "health", "policy", "task_context")},
+                    },
+                },
             },
             "required": ["ability", "runtime"],
             "additionalProperties": False,

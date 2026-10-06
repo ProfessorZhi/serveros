@@ -115,6 +115,37 @@ ABILITY_FIELDS = ("name", "id", "type", "path", "domain", "taxonomy_refs",
                   *THIN_LINK_FIELDS)
 
 
+def resolution_catalogue(records: list[dict]) -> dict:
+    """Normalize manifest/materialized entries for the pure resolver.
+
+    Distribution records with the same name retain distinct declarations;
+    disagreement must reach the resolver as AMBIGUOUS, never last-write-wins.
+    No installation, readiness or permission is inferred from this metadata.
+    """
+    grouped: dict[str, list] = {}
+    for record in records:
+        if isinstance(record, dict) and record.get("name"):
+            grouped.setdefault(f"ability:{record['name']}", []).append(record)
+    return {
+        key: {field: _distinct_declarations(row.get(field) for row in rows)
+              for field in THIN_LINK_FIELDS}
+        for key, rows in sorted(grouped.items())
+    }
+
+
+def _distinct_declarations(values) -> list:
+    """Distinct non-null declarations in first-seen order."""
+    seen, distinct = set(), []
+    for value in values:
+        if value is None:
+            continue
+        marker = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if marker not in seen:
+            seen.add(marker)
+            distinct.append(value)
+    return distinct
+
+
 class AuthorityUnreachable(Exception):
     """The authority could not be read. Never a reason to invent a projection."""
 

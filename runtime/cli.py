@@ -2799,24 +2799,10 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
                 f"@{args.ability_rev} — {exc}. This is an answer, not a "
                 f"failure to compute one: a resolution against a catalogue "
                 f"nobody read would be a verdict about nothing.")
-        # The manifest names abilities by their bare id, so the reference is
-        # composed here. This is the one branch that composes.
-        #
-        # `declared` keeps the entries that produced each key, because the
-        # Thin Ability Link is per-RECORD and the catalogue is keyed per
-        # IDENTITY — the same split §6 states for the manifest itself: one
-        # identity, several distribution forms. Two records under one key are
-        # not a conflict to be collapsed away at this layer; they are the
-        # material the resolver needs in order to say whether they AGREE.
-        keys = []
-        declared: dict[str, list] = {}
-        for record in (manifest.get("abilities") or []):
-            if not isinstance(record, dict) or not record.get("name"):
-                continue
-            key = f"ability:{record['name']}"
-            keys.append(key)
-            declared.setdefault(key, []).append(record)
-        thin_link_fields = projection_mod.THIN_LINK_FIELDS
+        records = [record for record in (manifest.get("abilities") or [])
+                   if isinstance(record, dict) and record.get("name")]
+        keys = [f"ability:{record['name']}" for record in records]
+        declared = records
         where = f"ability-repo {args.ability_repo}@{resolved[:12]}"
         # What the collapse below is, in this branch's own words. The canonical
         # manifest lists an ability once per SOURCE, so `mcps/X` and `plugins/X`
@@ -2896,48 +2882,8 @@ def _named_catalogue(args) -> tuple[dict | None, str | None, str | None]:
             f"already names, {collapse}")
     if declared is None:
         return ({key: {} for key in distinct}, f"{where} ({counted})", None)
-    return (
-        {key: {field: _distinct_declarations(
-            record.get(field) for record in declared.get(key, ()))
-            for field in thin_link_fields}
-         for key in distinct},
-        f"{where} ({counted})", None)
-
-
-def _distinct_declarations(values) -> list:
-    """The distinct non-null declarations among `values`, first-seen order.
-
-    A LIST, and the length of it is the whole interface the resolver reads:
-
-      * the key is absent            the catalogue carries no Thin Link — not asked
-      * `[]`                         carried, and this ability declares nothing
-      * `[one]`                      the declaration
-      * `[one, other]`               two records of one identity that disagree
-
-    Three of those four were unrepresentable while the value was `{}`, and the
-    one that matters most is the third: `microsoft/playwright-mcp` is an `mcp`
-    record and a `plugin` record under one id (§6 — a plugin is a distribution
-    identity, not one semantic ability), so the collapse below is their only
-    chance to be compared. Collapsing them by picking the last one would make
-    the resolver's answer depend on manifest order, and its `semantic_owner`
-    would change because a file was re-sorted.
-
-    `None` drops out rather than becoming an element, so "declared nothing" and
-    "declared null" cannot be read as two different declarations. The marker is
-    a canonical JSON rendering rather than the object itself, because dicts are
-    unhashable and equality alone would not survive a key order difference
-    between two records that say the same thing.
-    """
-    seen, distinct = set(), []
-    for value in values:
-        if value is None:
-            continue
-        marker = json.dumps(value, sort_keys=True, ensure_ascii=False)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        distinct.append(value)
-    return distinct
+    return (projection_mod.resolution_catalogue(declared),
+            f"{where} ({counted})", None)
 
 
 def cmd_ability_resolve(args) -> int:

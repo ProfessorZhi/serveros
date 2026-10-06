@@ -367,3 +367,13 @@ def test_the_default_socket_matches_the_daemons(tmp_path):
     other's constant — they are separate processes and separate payloads."""
     daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
     assert mcp_mod.default_socket_path() == daemon_mod.default_socket_path()
+
+
+def test_resolution_input_document_reaches_daemon_without_a_second_evaluator():
+    daemon = FakeDaemon()
+    srv = NodeMcpServer(daemon)
+    arguments = {"ability": "ability:plan-interview", "runtime": "claude-code",
+                 "request": {"providers": [], "policy": {"denied_abilities": ["*"]}}}
+    response = rpc(srv, "tools/call", name="ability.resolve", arguments=arguments)
+    assert not response["result"].get("isError")
+    assert daemon.calls == [("ability.resolve", arguments)]

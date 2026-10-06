@@ -568,20 +568,35 @@ class TheDaysCardIsCreatedAtTheFirstAllowedTick(unittest.TestCase):
         self.assertIn("当日卡不再因普通采样变化", answer["says"])
 
     def test_the_window_ends_after_the_last_routine_patch_not_at_it(self):
-        """§10's window is inclusive at both ends, so 20:00 is the thirteenth
-        patch and 20:00:01 is after the window — one second apart, one update
-        apart, and the same day."""
+        """The last tick tolerates a delayed timer; it does not open a 14th tick."""
         last = schedule(at(PLAIN_WORKDAY, 20))
         self.assertTrue(last["in_window"])
         self.assertEqual(last["tick"], 13)
         self.assertEqual(card_day.decide({}, schedule=last,
                                          at=at(PLAIN_WORKDAY, 20))["reason"],
                          card_day.NEW_WORKDAY)
-        after = schedule(at(PLAIN_WORKDAY, 20, 0, 1))
+        after = schedule(at(PLAIN_WORKDAY, 20, 5))
         self.assertFalse(after["in_window"])
         self.assertEqual(card_day.decide({}, schedule=after,
-                                         at=at(PLAIN_WORKDAY, 20, 0, 1))["reason"],
+                                         at=at(PLAIN_WORKDAY, 20, 5))["reason"],
                          card_day.AFTER_WINDOW)
+
+    def test_delayed_final_tick_is_saved_once_and_then_closed(self):
+        store = temp_store(self)
+        for hour in range(8, 21):
+            instant = at(PLAIN_WORKDAY, hour, 0, 32)
+            result = store.advance(schedule=schedule(instant), at=instant, model=model())
+        self.assertEqual(result["decision"]["action"], card_day.PATCH)
+        self.assertEqual(store.summary()["updates"], 13)
+        retry = at(PLAIN_WORKDAY, 20, 2)
+        store.advance(schedule=schedule(retry), at=retry, model=model())
+        before = store.read()
+        self.assertEqual(store.summary()["updates"], 13)
+        self.assertEqual(len(before["open"]["history"]), 12)
+        late = at(PLAIN_WORKDAY, 20, 5)
+        result = store.advance(schedule=schedule(late), at=late, model=model())
+        self.assertEqual(result["decision"]["reason"], card_day.AFTER_WINDOW)
+        self.assertEqual(store.read(), before)
 
     def test_a_sample_inside_the_hour_is_that_hours_own_tick(self):
         """V28's 「整点只 patch 一张」 is about the ROW and not the second.
