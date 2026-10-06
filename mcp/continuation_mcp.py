@@ -203,6 +203,14 @@ def _completion_reader(cli):
 
 TOOLS: tuple[dict, ...] = (
     {
+        "name": "continuation.execute",
+        "description": "Build or test this Item in its granted offline container. Use a stable key per command; retrying the same key returns its receipt. Image, mounts and budgets come from the live grant. Read stdout/stderr evidence from the result; command exit does not mean Item acceptance.",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}}},
+            "required": ["key", "argv"], "additionalProperties": False},
+    },
+    {
         "name": "continuation.inspect",
         "description": (
             "This wake's own capability envelope, the live record it was issued "
@@ -419,6 +427,58 @@ class ContinuationServer:
 
     # -- operations -----------------------------------------------------------
 
+    def _engineering(self):
+        executor = _load("serveros_bounded_executor", _RUNTIME / "bounded_executor.py")
+        _mod, store = self.cli()._control_store()
+        grant = store.grants()[self.envelope["grant_ref"]]
+        checkpoint = store.checkpoints()[self.envelope["checkpoint_ref"]]
+        paths = _load("serveros_executor_paths", _RUNTIME / "paths.py").Paths()
+        if not paths.bound:
+            raise ValueError("node path profile is unbound")
+        resolved = executor.binding(envelope=self.envelope, checkpoint=checkpoint,
+            grant=grant, worktrees_root=paths.root("workspace") / "worktrees")
+        # File tools must not be able to overwrite this adapter or its authority.
+        worktree = Path(resolved["worktree"])
+        if any(path.resolve().is_relative_to(worktree) for path in
+               (_ROOT, self.envelope_path, self.receipts, Path(store.path))):
+            raise ValueError("worktree contains the adapter, authority or receipt store")
+        return executor, grant, resolved
+
+    def parent_cwd(self):
+        verdict = self.verdict("continuation.inspect")
+        if verdict["decision"] != "ALLOW":
+            raise ValueError(verdict["because"])
+        _mod, store = self.cli()._control_store()
+        grant = store.grants()[self.envelope["grant_ref"]]
+        if grant.get("engineering") is not None:
+            _executor, _grant, resolved = self._engineering()
+            return Path(resolved["worktree"])
+        # Control-only legacy wakes need no host file scope. An empty private
+        # directory keeps their control operations usable without HOME access.
+        name = hashlib.sha256(self.envelope["action_key"].encode()).hexdigest()[:24]
+        directory = self.receipts / ("parent-" + name)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or directory.resolve() != directory:
+            raise ValueError("parent working directory must not be a symlink")
+        return directory
+
+    def execute(self, arguments):
+        verdict = self.verdict("continuation.execute", arguments)
+        answer = {"operation": "continuation.execute", "decision": verdict["decision"],
+                  "because": verdict["because"], "verdict": verdict,
+                  "executed": False, "receipt": None}
+        if verdict["decision"] != "ALLOW":
+            return answer
+        try:
+            executor, grant, resolved = self._engineering()
+            result = executor.execute(envelope=self.envelope, grant=grant, resolved=resolved,
+                key=arguments.get("key"), argv=arguments.get("argv"), receipts=self.receipts)
+        except ValueError as exc:
+            answer.update(decision="DENY", because=str(exc),
+                          verdict={**verdict, "decision": "DENY", "because": str(exc)})
+            return answer
+        return {**answer, **result, "executed": result["receipt"].get("executed_now", False)}
+
     def _receipt(self, receipt: dict, key: str) -> dict:
         """The receipt, plus the two artifacts a verdict is allowed to rest on.
 
@@ -550,6 +610,8 @@ class ContinuationServer:
         }
 
     def dispatch(self, name: str, arguments: dict) -> dict:
+        if name == "continuation.execute":
+            return self.execute(arguments)
         if name == "continuation.inspect":
             return self.inspect()
         if name == "child-result.inspect":
@@ -803,6 +865,8 @@ def main(argv: list[str] | None = None) -> int:
                              f"(default: ${envelope_env_name()})")
     parser.add_argument("--list-tools", action="store_true",
                         help="print the tool surface and exit")
+    parser.add_argument("--parent-cwd", action="store_true",
+                        help="resolve and verify this wake's narrow file-tool working directory")
     args = parser.parse_args(argv)
 
     if args.list_tools:
@@ -813,6 +877,9 @@ def main(argv: list[str] | None = None) -> int:
     path = args.envelope or os.environ.get(envelope_env_name(), "")
     try:
         server = ContinuationServer(path)
+        if args.parent_cwd:
+            print(server.parent_cwd())
+            return 0
     except Exception as exc:  # noqa: BLE001 - refused loudly, on purpose
         # A surface started without a usable envelope would be a surface that
         # answers for any wake. It refuses to start instead, and says which file

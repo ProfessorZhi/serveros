@@ -404,6 +404,7 @@ surfaces:
     implementation: mcp/continuation_mcp.py
     resources: []
     tools:
+      - continuation.execute
       - continuation.inspect
       - child-result.inspect
       - work.checkpoint

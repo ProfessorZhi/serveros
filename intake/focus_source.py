@@ -83,6 +83,9 @@ from pathlib import Path
 # producer, which is why there is no such entry: `compose` raises on a row key
 # that is not here, so this table is the check rather than a comment about one.
 PRODUCED = {
+    "grant_ref": "unique verified grant naming this Item, joined by control_join",
+    "scope_digest": "digest of this Item's current accepted card scope, independent of grant",
+    "next_action": "unique READY Activity kind from the Work Engine projection",
     "id": "board row `id` (canonical Item id, work-engine's own)",
     "project": "board row `project`",
     "state": "board row `state` (work-engine ItemState)",
@@ -122,24 +125,6 @@ NOT_PRODUCED = {
     "focus_disposition": "the field that would mark an Item PARKED is part of the "
                          "same proposed card extension as the priorities",
     "parking_acknowledged": "same",
-    "scope_digest": "a grant-scoped digest, and no card carries one. It stopped "
-                    "being unproducible when the grant store landed "
-                    "(`runtime/agent_control_store.py#put_grant` takes "
-                    "`scope_digests`), so what is missing is the CARD field: a "
-                    "row that named a grant and no scope digest would be "
-                    "admitted under a grant whose scope was never checked, so "
-                    "`grant_reason` refuses it as SCOPE_CHANGED",
-    "grant_ref": "the card carries no such field. The other end of this join "
-                 "exists now — a grant can be recorded and the envelope is "
-                 "derived from it (`context/delegation.py`) — but until a card "
-                 "names a grant, `select_focus` reads `grants.get(None)` and "
-                 "reports every candidate MISSING_OR_REVOKED_GRANT. The gap is "
-                 "the board's producer, not the store's",
-    "next_action": "the card carries no such field, and since 2026-09-25 a silent "
-                   "row is an exact answer rather than a default: `classify` "
-                   "refuses it as NEXT_ACTION_NOT_ESTABLISHED instead of asking a "
-                   "grant about an action nobody named. The version that defaulted "
-                   "to `research` hid this absence behind a sentence about a grant",
     "blocked_by": "the board carries no dependency edge",
 }
 
@@ -671,6 +656,67 @@ def resources_released_by_item(environment: dict | None, *, item_ids) -> dict:
             # because a silent skip and "nothing held" render identically.
             "held_by_another_scope": sorted(elsewhere),
             "items": items_out}
+
+
+def scope_digest(card: dict) -> str:
+    """Stable accepted scope, independent of grant contents and live Git state."""
+    import hashlib
+    import json
+    if not card.get("id") or not card.get("project") or not card.get("acceptance"):
+        raise Refused("Item card must declare identity, project and acceptance")
+    fields = ("id", "project", "kind", "title", "source_refs", "acceptance",
+              "scope", "non_goals", "non-goals", "expected_deliverables")
+    value = {key: card[key] for key in fields if key in card}
+    return "sha256:" + hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                                 separators=(",", ":")).encode()).hexdigest()
+
+
+def control_join(composed: dict, board: dict, *, records_root, grants: dict) -> dict:
+    """Join planned READY Activities and accepted scope to verified grant refs.
+
+    Work Engine supplies the action kind. The records card supplies its scope.
+    A grant is selected only when exactly one names the Item; its own digest is
+    never copied as evidence of the current scope. Ambiguity stays visible.
+    """
+    import yaml
+    root = Path(records_root).resolve()
+    items = {}
+    for section in board.get("sections", []):
+        for item in section.get("rows", []):
+            items[(item.get("project"), item.get("id"))] = item
+    rows, joins = [], []
+    for original in composed["rows"]:
+        row = dict(original)
+        why = []
+        item = items.get((row["project"], row["id"]), {})
+        ready = item.get("ready_activities", [])
+        if len(ready) == 1 and isinstance(ready[0].get("kind"), str) and ready[0]["kind"].strip():
+            row["next_action"] = ready[0]["kind"]
+        else:
+            why.append("no unique READY Activity declares the next action")
+        path = root / "projects" / row["project"] / "items" / row["id"] / "card.yaml"
+        try:
+            if not path.resolve().is_relative_to(root):
+                raise Refused("Item card escapes records root")
+            card = yaml.safe_load(path.read_text())
+            if card.get("id") != row["id"] or card.get("project") != row["project"]:
+                raise Refused("Item card identity differs from the Work owner")
+            row["scope_digest"] = scope_digest(card)
+        except (OSError, ValueError, AttributeError, yaml.YAMLError, Refused) as exc:
+            why.append(str(exc))
+        refs = [ref for ref, grant in grants.items() if row["id"] in grant.get("items", [])
+                and row["project"] in grant.get("projects", [])]
+        if len(refs) == 1:
+            row["grant_ref"] = refs[0]
+        else:
+            why.append("no unique authorizing grant names this Item")
+        joins.append({"id": row["id"], "activity": ready[0].get("id") if len(ready) == 1 else None,
+                      "card": str(path), "gaps": why})
+        rows.append(row)
+    _check_declared(rows)
+    return {**composed, "rows": rows, "control_join": joins,
+            "not_produced": {key: value for key, value in composed["not_produced"].items()
+                             if key not in ("grant_ref", "scope_digest", "next_action")}}
 
 
 def compose(board: dict, *, projection_times: dict | None = None,

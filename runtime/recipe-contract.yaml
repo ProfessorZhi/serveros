@@ -254,12 +254,9 @@ model:
     A step carrying `needs_model: true` may not run without a bound transport
     and a remaining budget. Both refusals happen before anything is sent, and
     the run records what the step would have been asked.
-  transports: []
-  # EMPTY, and this is the reading rather than a placeholder: no model transport
-  # exists in this product yet. A binding that names one of nothing is
-  # MODEL_UNBOUND, which is why the list is here instead of a `if transport is
-  # None` in the engine -- an engine that can call anything typed into a config
-  # file is a remote execution surface wearing a configuration's clothes.
+  transports: [native-claude-reader]
+  # Explicit instance opt-in. This transport only reads fixed source packets
+  # with tools/customizations disabled; it cannot dispatch engineering work.
   binding:
     path: state/serveros/recipes/model-binding.yaml
     absent_means: MODEL_UNBOUND
@@ -291,7 +288,7 @@ recipes:
     loop: §7 Perception
     trigger: "授权源事件，或一次增量定时"
     action: "source delta -> filtered understanding -> what a reading must cover"
-    stops: [NO_CHANGE, BUDGET_EXHAUSTED, SOURCE_UNAVAILABLE, SOURCES_UNPRODUCED,
+    stops: [NO_CHANGE, NEEDS_DECISION, BUDGET_EXHAUSTED, SOURCE_UNAVAILABLE, SOURCES_UNPRODUCED,
             MODEL_UNBOUND]
     steps:
       - id: sources

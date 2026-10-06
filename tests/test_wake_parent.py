@@ -68,9 +68,10 @@ TEMPLATE = RUNTIME / "serveros-wake-parent"
 FAKE_CLAUDE = '''\
 #!/bin/bash
 {
-  printf '{"argv": %s, "stdin": %s}\\n' \\
+  printf '{"argv": %s, "stdin": %s, "cwd": %s}\\n' \\
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")" \\
-    "$(cat | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    "$(cat | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \\
+    "$(python3 -c 'import json,os; print(json.dumps(os.getcwd()))')"
 } >> "${FAKE_CLAUDE_LOG}"
 exit "${FAKE_CLAUDE_EXIT:-0}"
 '''
@@ -324,7 +325,10 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
             TEMPLATE.read_text().replace("@SERVEROS_RUNTIME@", str(self.base)))
         self.launcher.chmod(0o755)
         (self.base / "mcp" / "bin").mkdir(parents=True)
-        (self.base / "mcp" / "bin" / "serveros-continuation-mcp").write_text("#!/bin/bash\n")
+        self.parent_dir = self.base / "item-worktree"
+        self.parent_dir.mkdir()
+        (self.base / "mcp" / "bin" / "serveros-continuation-mcp").write_text(
+            "#!/bin/bash\nprintf '%s\\n' " + shlex.quote(str(self.parent_dir)) + "\n")
         (self.base / "mcp" / "bin" / "serveros-continuation-mcp").chmod(0o755)
         self.envelope = self.base / "envelope.json"
         self.envelope.write_text("{}\n")
@@ -386,6 +390,7 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
         """
         proc = self.run_launcher(briefing="resume SRV-0001\n")
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(self.log.read_text().splitlines()[0])["cwd"], str(self.parent_dir))
         started = self.started()
         self.assertEqual(len(started), 1)
         argv = started[0]

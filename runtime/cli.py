@@ -795,6 +795,17 @@ def cmd_recipe_run(args) -> int:
 
     revision, revision_why = mod.checkout_revision(args.worktree)
     try:
+        sources = None
+        sources_path = getattr(args, "sources", None)
+        if sources_path:
+            if not Path(sources_path).is_absolute() or str(args.scope).startswith("project:"):
+                raise mod.Refused("--sources requires an absolute file and node/item scope; project scope uses its own sources.yaml")
+            try:
+                sources = mod.yaml.safe_load(Path(sources_path).read_text())["sources"]
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise mod.Refused(f"cannot read explicit source binding: {exc}") from exc
+            if not isinstance(sources, list) or any(not isinstance(row, dict) for row in sources):
+                raise mod.Refused("--sources must contain a sources list of objects")
         engine = mod.Engine(
             state_root=state_root, scope=args.scope, period=period,
             model=mod.default_model_invoker, transport=transport,
@@ -802,7 +813,7 @@ def cmd_recipe_run(args) -> int:
             worktree=args.worktree, run_dir=args.run_dir, out_dir=args.out_dir,
             recipient=args.recipient, channel=args.channel,
             publication_state=args.publication_state,
-            work_engine=args.work_engine)
+            work_engine=args.work_engine, sources=sources, sources_path=sources_path)
         result = engine.run(recipe_id=args.recipe, budget=budget,
                             budget_from=budget_from,
                             retake=args.retake, revision=revision)
@@ -7819,6 +7830,10 @@ def _focus_decision(args):
         sys.stderr.write(f"serverosctl: {exc}\n")
         return None
 
+    _boards, records, _workspace = _workchain_roots(args)
+    composed = focus_mod.control_join(composed, board, records_root=records,
+                                      grants=delegations["envelopes"])
+
     if composed["observed_at"] is None:
         # One shape for both, and the shape comes from the policy module rather
         # than from here: a caller that constructs a decision is deciding by
@@ -8123,6 +8138,20 @@ def cmd_work_grants(args) -> int:
         lines.append(f"  because       {row['because']}")
     emit({"delegations": report, "store": str(control.path), "now": now},
          as_json=args.json, lines=lines)
+    return EXIT_OK
+
+
+def cmd_work_issue_grant(args) -> int:
+    """Submit signed provider evidence; trust roots and the clock belong to the daemon."""
+    try:
+        evidence = json.loads(args.request.read_text(encoding="utf-8"))
+        payload = ask_daemon("agent.grant.issue", {"evidence": evidence})
+    except (OSError, ValueError, DaemonUnavailable) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(payload, as_json=args.json,
+         lines=[f"grant       {payload.get('grant', {}).get('grant_ref', '—')}",
+                "basis       provider-signed-delegation"])
     return EXIT_OK
 
 
@@ -10787,7 +10816,8 @@ def cmd_work_understanding_patch(args) -> int:
     return EXIT_OK
 
 
-def _reading_current(semantic, report: dict, reading: dict) -> dict:
+def _reading_current(semantic, report: dict, reading: dict, *,
+                     allowed_asset_roots: tuple[Path, ...] = ()) -> dict:
     """What the span a reading is about measures at, now — from the reader's report.
 
     Not recomputed here. The reader already decided which ranges each card is
@@ -10826,10 +10856,21 @@ def _reading_current(semantic, report: dict, reading: dict) -> dict:
             + ". Read the current proposal rather than applying an "
               "interpretation of a span nothing is asking about")
     row = matching[0]
-    return {"card_digest": card_row["card_digest"],
-            "content_identity": row.get("content_identity"),
-            "from_position": row.get("from_position"),
-            "to_position": row.get("to_position")}
+    current = {"card_digest": card_row["card_digest"],
+               "content_identity": row.get("content_identity"),
+               "from_position": row.get("from_position"),
+               "to_position": row.get("to_position")}
+    if row.get("kind") == "WHOLE_DOCUMENT":
+        reader = _load_module_from(REPO_ROOT / "intake" / "source_reading.py",
+                                   "serveros_intake_source_reading")
+        try:
+            current["source_packet"] = reader.read_packet(
+                row["manifest"], report["records_root"],
+                expected_identity=row.get("content_identity"),
+                allowed_asset_roots=allowed_asset_roots)
+        except reader.Refused as exc:
+            raise semantic.Refused(str(exc)) from exc
+    return current
 
 
 def cmd_work_understanding_brief(args) -> int:
@@ -10891,7 +10932,8 @@ def cmd_work_understanding_brief(args) -> int:
         # what the reader proposes rather than to a second opinion about it.
         objects = capture.read_root(records)["objects"]
         report = delta.read_and_reconcile(records, objects)
-        pinned, unpinnable = brief_mod.briefs(report, records)
+        pinned, unpinnable = brief_mod.briefs(
+            report, records, allowed_asset_roots=tuple(getattr(args, "source_asset_root", ()) or ()))
         chosen = brief_mod.select(
             pinned, refused=unpinnable,
             card=getattr(args, "card", "") or None,
@@ -11068,7 +11110,9 @@ def cmd_work_understanding_semantic(args) -> int:
         document = semantic.read_reading(args.reading)
 
         def measure():
-            return _reading_current(semantic, report, document)
+            return _reading_current(
+                semantic, report, document,
+                allowed_asset_roots=tuple(getattr(args, "source_asset_root", ()) or ()))
     except (capture.Refused, delta.Refused, semantic.Refused) as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT
@@ -13276,6 +13320,12 @@ def build_parser() -> argparse.ArgumentParser:
                                 "is the one place the question is answered")
     wk_grants.set_defaults(func=cmd_work_grants)
 
+    wk_issue = work_sub.add_parser(
+        "issue-grant", help="record an exact human-approved scope from signed provider evidence", **_COMMON)
+    wk_issue.add_argument("--request", type=Path, required=True,
+                          help="provider-signed evidence; contains no caller-selected trust key")
+    wk_issue.set_defaults(func=cmd_work_issue_grant)
+
     wk_delegate = work_sub.add_parser(
         "delegate", help="§12/§5 — record a standing delegation. `--context-ref` "
                          "must name a trusted context this store already holds, "
@@ -13665,6 +13715,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 "manifest key")
     wk_ubrief.add_argument("--position", type=int, default=None,
                            help="only the range whose span contains this position")
+    wk_ubrief.add_argument("--source-asset-root", type=Path, action="append", default=[],
+                           help="explicit absolute root for captured external body copies; repeatable")
     wk_ubrief.add_argument("--write", type=Path, default=None,
                            help="write ONE selected brief here as the packet a "
                                 "session is handed. Must be absolute")
@@ -13684,6 +13736,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the records checkout to read and, with --commit, "
                               "to write into. Default: this node's workspace "
                               "root + /records. Must be absolute")
+    wk_usem.add_argument("--source-asset-root", type=Path, action="append", default=[],
+                         help="explicit absolute root for captured external body copies; repeatable")
     wk_usem_authority = wk_usem.add_mutually_exclusive_group()
     wk_usem_authority.add_argument("--delegation", type=Path, default=None,
                                    help="the standing grant that lets machine "
@@ -14036,6 +14090,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the records root the scope's authored inputs are "
                              "read from (sources.yaml, today.yaml)")
     rc_run.add_argument("--workspace-root", default=None)
+    rc_run.add_argument("--sources", default=None,
+                        help="absolute authored source binding for node/item scope; project scope reads context/sources.yaml")
     rc_run.add_argument("--worktree", default=None,
                         help="the checkout a period's real work delta is read "
                              "from. A path that is not a checkout, and no path "
