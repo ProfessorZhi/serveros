@@ -1691,6 +1691,13 @@ def record(cursor: DeliveryCursor, store, *, at: str, generation: int,
             "cursor": summary}
 
 
+# The snapshot fields consumed by account(), including episode_of(). Transport
+# may omit presentation text and the full digest's frozen hash/table; accounting
+# does not record a delivery. These values must stay from the original snapshot.
+ACCOUNT_ROW_FIELDS = ("key", "kind", "code", "severity", "state", "hold_kind",
+                      "immediate", *EPISODE_FIELDS)
+
+
 def account(cursor: DeliveryCursor, *, at: str, digest: dict, why: str,
             owed) -> dict:
     """Say in the ledger that this pass declined these rows, and why.
