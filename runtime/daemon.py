@@ -1911,31 +1911,12 @@ class Daemon:
         header = self._projection_header(view)
         name = params.get("name")
         materials = view.get("abilities")
-        if materials is None:
-            return {
-                **header, "name": name, "installed": None, "ability": None,
-                "tree": None,
-                "source": "local projection", "resolution": "not attempted",
-                "resolved_by": "serverosctl ability resolve",
-                # The work plan named `operations_declared: true|false` here.
-                # It is not built, and `None` is the honest value rather than a
-                # default: operation declarations live on PROVIDER records, and
-                # this process holds none — providers reach it over a transport
-                # (§23 keeps the core from loading the plane that governs it).
-                # Answering `false` would be a claim about a provider nobody
-                # read, indistinguishable from a checked one.
-                "operations_declared": None,
-                "operations_declared_by": (
-                    "serverosctl ability resolve --ability <id>#<verb>"),
-                "note": (
-                    "no local capability projection has been materialized, so "
-                    "nothing can be said about this ability from here. Absence "
-                    "of a projection is not absence of the ability."
-                ),
-            }
-        match = next((a for a in materials
+        match = next((a for a in (materials or [])
                       if isinstance(a, dict) and a.get("name") == name), None)
         if match is None:
+            catalogue = declared_catalogue()
+            listed = next((entry for entry in (catalogue.get("entries") or [])
+                           if entry.get("name") == name), None)
             # The second source, exactly as in `ability.status`: "not installed
             # here" and "not declared anywhere" are different answers, and the
             # caller that asked about a routing target needs the first one.
@@ -1945,8 +1926,9 @@ class Daemon:
             if declared is not None:
                 return {
                     **header, "on_demand": _on_demand_header(on_demand),
-                    "name": name, "installed": False,
-                    "placement": "on-demand", "ability": None,
+                    "catalogue": _catalogue_header(catalogue),
+                    "name": name, "installed": None if materials is None else False,
+                    "placement": "on-demand", "ability": listed,
                     "declared": declared,
                     "declared_by": on_demand.get("composition"),
                     "tree": None,
@@ -1967,8 +1949,22 @@ class Daemon:
                         "one's."
                     ),
                 }
+        if match is None:
+            if listed is not None:
+                return {
+                    **header, "catalogue": _catalogue_header(catalogue),
+                    "name": name, "installed": None if materials is None else False,
+                    "placement": "catalogue",
+                    "ability": listed, "tree": None,
+                    "source": "materialized catalogue", "resolution": "not attempted",
+                    "resolved_by": "serverosctl ability resolve",
+                    "operations_declared": None,
+                    "operations_declared_by": (
+                        "serverosctl ability resolve --ability <id>#<verb>"),
+                    "note": "listed in the pinned catalogue; installation is not observed, and no execution permission is inferred",
+                }
         tree = ability_projection_mod.domain_tree(
-            ability_projection_mod.tree_rows(materials))
+            ability_projection_mod.tree_rows(materials or []))
         placement = tree["placements"].get(name) if match is not None else None
         return {
             **header, "name": name,
@@ -1983,7 +1979,7 @@ class Daemon:
             "source": "local projection",
             "resolution": "not attempted",
             "resolved_by": "serverosctl ability resolve",
-            # See the note in the no-projection branch above: `null`, never
+            # `null`, never
             # `false`. A resource that kept no provider record cannot say a
             # provider declares no operations.
             "operations_declared": None,
@@ -2095,14 +2091,15 @@ class Daemon:
         hits = ([row for row in materials
                  if isinstance(row, dict) and needle in _ability_searchable(row)]
                 if materials is not None else [])
-        rows = [_ability_row_compact(row) for row in hits[:limit]]
+        rows = [_ability_row_compact(row, needle) for row in hits[:limit]]
         declared = [entry for entry in (on_demand.get("entries") or [])
                     if needle in _on_demand_searchable(entry)]
         # Trimmed to the same ceiling as the projection rows: two sources must
         # not add up to a result set twice the size the caller asked for, and a
         # caller that wanted more than `limit` rows from either source can ask
         # again with a larger one.
-        declared_rows = [dict(entry, installed=False, placement="on-demand",
+        declared_rows = [dict(entry, installed=None if materials is None else False,
+                              placement="on-demand",
                               declared_by=on_demand.get("composition"))
                          for entry in declared[:max(0, limit - len(rows))]]
         # Disjoint from the two stronger sources by construction. A name they
@@ -2122,8 +2119,10 @@ class Daemon:
         # source never crowds out a stronger one. It is still bounded by the
         # same `limit` — three sources must not add up to three times the rows
         # the caller asked for.
-        listed_rows = [dict(_catalogue_row_compact(entry), installed=False,
-                            placement="catalogue", registered_here=False)
+        listed_rows = [dict(_catalogue_row_compact(entry, needle),
+                            installed=None if materials is None else False,
+                            placement="catalogue",
+                            registered_here=None if materials is None else False)
                        for entry in listed[:max(0, limit - len(rows)
                                                 - len(declared_rows))]]
         return {
@@ -2144,7 +2143,8 @@ class Daemon:
                 "substring match, case-insensitive, over name / id / path / "
                 "type / version / domain / taxonomy refs / agents (projection "
                 "rows), name (declared rows), and name / id / path / type / "
-                "domain / taxonomy refs (catalogue rows). It is not a ranking "
+                "domain / taxonomy refs (catalogue rows), plus product roles and trigger hints. "
+                "Avoid hints never generate a positive match. It is not a ranking "
                 "and not a semantic search: there is no relevance score to "
                 "distrust because there is no score. `matched` is the sum of "
                 "`matched_installed`, `matched_on_demand` and "
@@ -2152,90 +2152,59 @@ class Daemon:
                 "observed installed here: `placement: on-demand` means the "
                 "composition declares it resolvable, and `placement: catalogue` "
                 "means only that the authority lists it — neither is a claim "
-                "that this node has it or that it will resolve."
+                "that this node has it or that it will resolve. `installed: null` "
+                "means the installation projection is unreadable."
             ),
         }
 
     def _r_ability_resolve(self, params) -> dict:
-        """Can THIS node do THIS thing now — asked from where the device is.
+        """Read-only evaluation using the node's pinned catalogue and optional inputs.
 
-        §45/§46. `serverosctl ability resolve` has answered this since it was
-        written, and it takes a request DOCUMENT: a caller who has not read
-        `resolver.py` cannot ask the question, and the resolver had no caller
-        outside its own tests until the CLI verb was added. The node surface
-        can ask it, because the three SCALARS a request requires — the ability
-        reference, the device, the runtime — are about the caller and this node
-        rather than about a second repository.
-
-        What it deliberately does NOT do is fill in ANY of the eight. Those are
-        documents — a pinned catalogue, a device's capabilities, a policy — and
-        the three scalars above are not among them, so `inputs_seen` here is
-        EMPTY and `inputs_missing` names all eight. That is what the running
-        node answers (measured 2026-09-27), and it is worth stating because the
-        prose around this method said the opposite: `fleet/mcp-contract.yaml`,
-        the `ability.resolve` tool description in `mcp/node_mcp.py` and the
-        `note` this method returns all claimed three of the eight were
-        supplied, and no one had compared that count against the kernel's own
-        two lists. A daemon that guessed at any of them would return a
-        confident AVAILABLE computed from inputs nobody supplied — the exact
-        failure `resolver.py` was written to prevent, reintroduced at the layer
-        above it. `inputs_seen` and `inputs_missing` are passed through
-        UNCHANGED, so an UNKNOWN naming eight inputs is the honest answer and
-        is still a useful one: it says which question to go and answer.
-
-        `runtime` is required and has no default ON PURPOSE. It is tempting to
-        default it to the Agent runtime installed here, and this node cannot:
-        there is no declaration of installed runtimes to read (the host profile
-        states the managed-runtime registry is empty), so a default would be a
-        guess about the caller printed in the caller's own answer. The caller
-        always knows which runtime it is; nobody else does.
+        Caller input is an evaluation scenario, not an observed installation or
+        a grant. The resolver never executes anything; native tools do not need
+        this evaluation before use. Missing documents remain explicitly missing.
         """
         ability = _required(params, "ability")
         if not params.get("runtime"):
             raise ValueError(
                 "missing required parameter 'runtime'. This node holds no "
-                "declaration of which Agent runtimes are installed, so it "
-                "cannot supply one on the caller's behalf — and a default here "
-                "would be a guess about the caller rendered as the caller's own "
-                "answer. State it, e.g. `claude-code` or `codex`."
+                "declaration of which Agent runtimes are installed; state the caller runtime."
             )
-        request = {
+        request = _bounded_resolution_inputs(params.get("request"))
+        request.update({
             "ability": ability,
-            "runtime": params["runtime"],
+            "runtime": _required(params, "runtime"),
             "device_ref": params.get("device") or self.registry.device_ref,
-        }
+        })
+        catalogue = declared_catalogue()
+        revision = catalogue.get("source_revision")
+        pinned = (isinstance(revision, str) and len(revision) in (40, 64)
+                  and all(c in "0123456789abcdef" for c in revision.lower()))
+        if catalogue.get("entries") is not None and pinned:
+            request["abilities"] = ability_projection_mod.resolution_catalogue(catalogue["entries"])
+        elif not pinned:
+            catalogue = {**catalogue, "why": "no full source revision; catalogue not used for resolution"}
         resolver_mod = _ability_resolver()
         try:
             record = resolver_mod.resolve(request)
         except resolver_mod.Rejected as exc:
-            # A malformed request, not a "no". The kernel's own distinction:
-            # "no" is an answer and is returned rather than raised.
             raise ValueError(str(exc)) from exc
-        device_from = "caller" if params.get("device") else ANSWERED_BY
         return {
             **record,
-            # Provenance for the three scalars, kept OUT of the kernel's two
-            # lists: `inputs_seen` is about the eight the intersection consults,
-            # and adding a fourth kind of thing to it is how a field whose job
-            # is to say how much was evaluated stops meaning that.
+            "catalogue": _catalogue_header(catalogue),
+            "request_inputs_from": ("caller (unverified)" if params.get("request") else None),
+            "authorizes_execution": False,
             "asked_as": {
                 "device_ref": request["device_ref"],
-                "device_ref_from": device_from,
+                "device_ref_from": "caller" if params.get("device") else ANSWERED_BY,
                 "runtime": request["runtime"],
                 "runtime_from": "caller",
             },
             "note": (
-                "the kernel's `inputs_seen` / `inputs_missing` are reported "
-                "unchanged. Read `inputs_missing` before the status: a status "
-                "computed from whichever inputs happened to be readable is what "
-                "`resolver.py` exists to refuse. `inputs_seen` is empty here on "
-                "purpose: the three scalars this surface supplies are the "
-                "request's required fields, and none of them is one of the "
-                "eight, which are documents. To supply the first of the eight, "
-                "run `serverosctl ability resolve --request <file>` with a "
-                "catalogue named by --ability-repo/--ability-rev — that is the "
-                "only way input 1 is ever supplied, and why the CLI's own "
-                "answer reports one input seen where this one reports none."
+                "catalogue metadata comes from the named source revision; other supplied "
+                "inputs are caller claims, not verified node observations. Missing inputs "
+                "are not inferred. This read-only assessment grants no execution permission; "
+                "existing grants and provider admission still apply."
             ),
         }
 
@@ -3979,6 +3948,98 @@ def _bounded_int(raw, default: int, ceiling: int) -> int:
     return max(1, min(value, ceiling))
 
 
+RESOLUTION_INPUT_TYPES = {
+    "providers": list, "instances": list,
+    "device_capabilities": dict, "profile": dict,
+    "runtime_record": dict, "runtime_binding": dict,
+    "health": dict, "policy": dict, "task_context": dict,
+}
+
+
+def _bounded_resolution_inputs(value) -> dict:
+    """Bound optional evaluation data; no files, commands or alternate catalogue.
+
+    This is an ingress limit, not authorization or a second resolver. The
+    existing resolver evaluates facts; their caller provenance remains visible.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("request must be an object")
+    if set(value) - RESOLUTION_INPUT_TYPES.keys():
+        raise ValueError("request contains unsupported fields; catalogue and identity cannot be overridden")
+    for key, entry in value.items():
+        if entry is not None and not isinstance(entry, RESOLUTION_INPUT_TYPES[key]):
+            raise ValueError(f"request.{key} has the wrong type")
+        if isinstance(entry, list) and (len(entry) > 32 or
+                                       any(not isinstance(row, dict) for row in entry)):
+            raise ValueError(f"request.{key} must contain at most 32 objects")
+    pending, nodes = [(value, 0)], 0
+    while pending:
+        entry, depth = pending.pop()
+        nodes += 1
+        if nodes > 2048 or depth > 12:
+            raise ValueError("request exceeds the structure limit")
+        if isinstance(entry, dict):
+            if len(entry) > 128 or any(not isinstance(k, str) or len(k) > 256 for k in entry):
+                raise ValueError("request object exceeds the key limit")
+            pending.extend((v, depth + 1) for v in entry.values())
+        elif isinstance(entry, list):
+            if len(entry) > 128:
+                raise ValueError("request array exceeds the item limit")
+            pending.extend((v, depth + 1) for v in entry)
+        elif isinstance(entry, str):
+            if len(entry) > 4096:
+                raise ValueError("request string exceeds the length limit")
+        elif entry is not None and not isinstance(entry, (int, float, bool)):
+            raise ValueError("request must contain JSON values")
+    if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > 65536:
+        raise ValueError("request exceeds 64 KiB")
+    for row in value.get("providers") or []:
+        if any(not isinstance(row.get(k), str) or not row[k] for k in ("id", "ability", "kind")):
+            raise ValueError("request.providers requires id, ability and kind strings")
+        for key in ("materialization", "requirements"):
+            if row.get(key) is not None and not isinstance(row[key], dict):
+                raise ValueError(f"request.providers.{key} must be an object")
+        for key in ("operations", "required_runtime_features"):
+            if row.get(key) is not None and (not isinstance(row[key], list) or
+                                            any(not isinstance(v, str) for v in row[key])):
+                raise ValueError(f"request.providers.{key} must be a string list")
+        preference = row.get("preference", 100)
+        if isinstance(preference, bool) or not isinstance(preference, (int, float)):
+            raise ValueError("request.providers.preference must be numeric")
+    for row in value.get("instances") or []:
+        if any(not isinstance(row.get(k), str) or not row[k] for k in ("provider", "device_ref")):
+            raise ValueError("request.instances requires provider and device_ref strings")
+    return dict(value)
+
+
+def _link_search_fields(row: dict) -> dict[str, list[str]]:
+    """Positive selection hints only; avoid_hints must never nominate a skill."""
+    fields = {}
+    for block, keys in (("product_role", ("primary", "subroles", "cross_refs")),
+                        ("routing", ("trigger_hints",))):
+        values = row.get(block)
+        if not isinstance(values, dict):
+            continue
+        for key in keys:
+            value = values.get(key)
+            if isinstance(value, str):
+                value = [value]
+            if isinstance(value, list):
+                fields[f"{block}.{key}"] = [v for v in value if isinstance(v, str)]
+    return fields
+
+
+def _link_search_summary(row: dict, query: str) -> dict:
+    role = row.get("product_role")
+    if not isinstance(role, dict):
+        return {}
+    return {"semantic_owner": role.get("primary"),
+            "matched_fields": [field for field, values in _link_search_fields(row).items()
+                               if query and any(query in v.lower() for v in values)]}
+
+
 def _ability_searchable(row: dict) -> str:
     """The fields a query is matched against, as one lowercased string.
 
@@ -3996,10 +4057,11 @@ def _ability_searchable(row: dict) -> str:
         value = row.get(key)
         if isinstance(value, list):
             parts.extend(v for v in value if isinstance(v, str))
+    parts.extend(value for values in _link_search_fields(row).values() for value in values)
     return " ".join(str(p) for p in parts if p).lower()
 
 
-def _ability_row_compact(row: dict) -> dict:
+def _ability_row_compact(row: dict, query: str = "") -> dict:
     """One search hit, small enough that eight of them are still cheap.
 
     The projection row carries a fingerprint, a revision count and an
@@ -4017,6 +4079,7 @@ def _ability_row_compact(row: dict) -> dict:
         "domain": domain.get("primary") if isinstance(domain, dict) else None,
         "taxonomy_refs": row.get("taxonomy_refs") or [],
         "agents": row.get("agents") or [],
+        **_link_search_summary(row, query),
     }
 
 
@@ -4076,10 +4139,11 @@ def _catalogue_searchable(entry: dict) -> str:
     refs = entry.get("taxonomy_refs")
     if isinstance(refs, list):
         parts.extend(v for v in refs if isinstance(v, str))
+    parts.extend(value for values in _link_search_fields(entry).values() for value in values)
     return " ".join(str(p) for p in parts if p).lower()
 
 
-def _catalogue_row_compact(entry: dict) -> dict:
+def _catalogue_row_compact(entry: dict, query: str = "") -> dict:
     """One catalogue hit. The classification fields, and no device in it.
 
     Deliberately NOT `_ability_row_compact`: that one emits `agents: []` for a
@@ -4096,6 +4160,7 @@ def _catalogue_row_compact(entry: dict) -> dict:
         "path": entry.get("path"),
         "domain": domain.get("primary") if isinstance(domain, dict) else None,
         "taxonomy_refs": entry.get("taxonomy_refs") or [],
+        **_link_search_summary(entry, query),
     }
 
 

@@ -724,7 +724,11 @@ class WhenItIsWorthAMessage(Fixture):
                        first_seen=LATER(200)))
         early = self.compose(at=LATER(300))
         self.assertEqual(early["counts"]["NEW"], 1)
-        self.assertFalse(digest.decision(early, self.cursor, at=LATER(300))["send"])
+        early["decision"] = digest.decision(early, self.cursor, at=LATER(300))
+        self.assertFalse(early["decision"]["send"])
+        self.assertEqual(early["decision"]["still_owed"], "shown")
+        digest.account(self.cursor, at=LATER(300), digest=early, why="waiting",
+                       owed=early["shown_keys"])
         late = self.compose(at=LATER(120 + INTERVAL + 1))
         self.assertTrue(digest.decision(late, self.cursor,
                                         at=LATER(120 + INTERVAL + 1))["send"])
@@ -746,6 +750,11 @@ class WhenItIsWorthAMessage(Fixture):
                                at=LATER(120))
         self.assertFalse(held["send"])
         self.assertIn("cooldown", held["why"])
+        self.assertEqual(held["still_owed"], "shown")
+        pending = self.compose(at=LATER(120))
+        pending["decision"] = held
+        digest.account(self.cursor, at=LATER(120), digest=pending, why="cooldown",
+                       owed=pending["shown_keys"])
         # The delta is still there — a failure does not consume it.
         self.assertEqual(self.compose(at=LATER(120))["counts"]["NEW"], 1)
 
@@ -1150,6 +1159,8 @@ class TheLedgerMovesWhenNothingWasSent(Fixture):
         first = self.compose(at=LATER(120))
         self.assertEqual(first["counts"]["NEW"], 1)
         self.assertEqual([r["key"] for r in first["rows"]], [ref])
+        first["decision"] = digest.decision(first, self.cursor, at=LATER(120))
+        self.assertEqual(first["decision"]["still_owed"], "none")
 
         out = self.decline(first, at=LATER(120), why="the interval has not elapsed")
         self.assertEqual(out["accounted_keys"], 1)
@@ -1161,6 +1172,17 @@ class TheLedgerMovesWhenNothingWasSent(Fixture):
                          "an unchanged open alert is not news on the tick after "
                          "the tick that already dealt with it")
         self.assertEqual(second["counts"]["NEW"], 0)
+
+    def test_worthy_overflow_is_not_lost_when_only_shown_rows_are_owed(self):
+        self.baseline()
+        self.put(*(alert(ref_of(CODE, f"/disk-{n}"), severity="medium",
+                         subject=f"/disk-{n}", first_seen=LATER(60)) for n in range(8)))
+        first = self.compose(at=LATER(120))
+        first["decision"] = digest.decision(first, self.cursor, at=LATER(120))
+        self.assertLess(len(first["shown_keys"]), len(first["rows"]))
+        result = self.decline(first, at=LATER(120), owed=first["shown_keys"])
+        self.assertEqual(result["accounted_keys"], 0)
+        self.assertEqual(self.compose(at=LATER(180))["counts"]["NEW"], 8)
 
     def test_the_same_row_is_new_once_and_not_once_per_pass(self):
         ref = ref_of(QUIET_CODE, GROUP)
