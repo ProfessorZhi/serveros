@@ -1328,11 +1328,15 @@ actuators:
       gap, and the paragraphs below are what close it. The binary is a
       parameter
       with the default `/opt/google/chrome/chrome`, and it is a parameter for a
-      measured reason the class docstring records: the Playwright Chromium on
-      this node prints a DOM but hangs on `--screenshot` even for a one-
-      paragraph page, and the shared persistent browser the MCP server attaches
-      to belongs to another account. `--chrome` is how a person names a
-      different one; nothing in the tree passes it.
+      measured reason the class docstring records, re-measured 2026-10-07:
+      the Playwright Chromium on this node does not finish either mode —
+      `--dump-dom` and `--screenshot` both sat at a 60s bound with nothing on
+      stdout and no file written, against 0.27s for the system Chrome on the
+      same argv — and the persistent browsers the MCP server attaches to
+      (9222/9223) are this account's processes but carry other sessions' pages.
+      `--chrome` is how a person names a different one; nothing in the tree
+      passes it, and the tests that drive this file hand in a recording
+      stand-in rather than a browser.
       WHAT IT IS ASKED TO DO is fixed and short, and it is the whole of the
       reach: `--headless=new`, `--screenshot=<a path the caller supplies>` or
       `--dump-dom`, and a single `file://` URL. The URL is built by this module
