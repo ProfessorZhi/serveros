@@ -694,6 +694,75 @@ class TestEveryMutationIsRefusedFromTheStore:
 
 
 class TestAnAllowedMutationLeavesAReceipt:
+    def test_legacy_acceptance_replays_without_blocking_a_second_child(
+            self, state_dir, wake_dir, fake_verb, verb_log):
+        store = a_store(state_dir)
+        a_checkpoint(store, child_refs=["cyc-1", "cyc-2"])
+        for cycle in ("cyc-1", "cyc-2"):
+            an_admission(store, cycle)
+        a_wake(store, wake_dir)
+        server = a_server(store, wake_dir, fake_verb)
+        key = server.envelope["action_key"] + "-work-accept"
+        arguments = {"cycle": "cyc-1", "locator": "rev-1", "by": "parent-a"}
+        mcp._bounded().invoke_once(
+            key=key, argv=[server.python, str(fake_verb), "work", "accept",
+                           "cyc-1", "--by", "parent-a", "--locator", "rev-1"],
+            cwd=server.cwd, receipts=server.receipts,
+            input_text=json.dumps(arguments, sort_keys=True),
+            timeout=mcp.MUTATION_TIMEOUT_SECONDS, readonly=False,
+            max_output_bytes=mcp.MUTATION_MAX_OUTPUT_BYTES,
+            env={mcp.envelope_env_name(): str(server.envelope_path)})
+        replay = call(server, "work.accept", {"cycle": "cyc-1", "locator": "rev-1"})
+        assert replay["receipt"]["replayed"] is True
+        assert replay["receipt"]["executed_now"] is False
+        second = call(server, "work.accept", {"cycle": "cyc-2", "locator": "rev-2"})
+        assert second["receipt"]["executed_now"] is True
+        assert len(dispatched(verb_log)) == 2
+
+    def test_invalid_checkpoint_can_be_corrected_without_consuming_the_attempt(
+            self, state_dir, wake_dir, tmp_path):
+        store, server = a_ready_wake(state_dir, wake_dir, tmp_path, REPO / "bin" / "serverosctl")
+        invalid = call(server, "work.checkpoint", {"next_action": "continue verification"})
+        assert invalid["executed"] is False
+        assert invalid["receipt"] is None
+        malformed = call(server, "work.checkpoint", {
+            "next_action": "--verify", "waiting_on_child": "cyc-1"})
+        assert malformed["isError"] is True
+        assert "waiting_on_child" in malformed["text"]
+        answer = call(server, "work.checkpoint", {
+            "next_action": "--verify", "waiting_on_window": minutes(30)})
+        assert answer["decision"] == "ALLOW", answer
+        assert answer["receipt"]["process_exit_code"] == 0, answer
+        assert store.checkpoints()[ITEM + "#1"]["superseded_by"] == ITEM + "#2"
+        assert store.checkpoints()[ITEM + "#2"]["write_scope"] == [SCOPE]
+        assert store.checkpoints()[ITEM + "#2"]["next_safe_action"] == "--verify"
+
+    def test_two_child_results_are_accepted_once_through_the_real_cli(
+            self, state_dir, wake_dir):
+        store = a_store(state_dir)
+        a_checkpoint(store, child_refs=["cyc-1", "cyc-2"])
+        for cycle in ("cyc-1", "cyc-2"):
+            an_admission(store, cycle)
+            store.confirm_admission(cycle, phase="LEASE_HELD", at=utcnow(),
+                                    evidence={"act": "DECLARE", "resource": "browser:chromium"})
+            store.confirm_admission(cycle, phase="DISPATCHED", at=utcnow(),
+                                    evidence={"action_key": "act-" + cycle, "status": "EXITED"})
+            store.retire_admission(cycle, at=utcnow(), outcome="fixture completed")
+        a_wake(store, wake_dir)
+        server = a_server(store, wake_dir, REPO / "bin" / "serverosctl")
+        for cycle in ("cyc-1", "cyc-2"):
+            args = {"cycle": cycle, "locator": "evidence:" + cycle}
+            first = call(server, "work.accept", args)
+            assert first["decision"] == "ALLOW", first
+            assert first["receipt"]["process_exit_code"] == 0, first
+            second = call(server, "work.accept", args)
+            assert second["receipt"]["replayed"] is True
+            assert second["receipt"]["executed_now"] is False
+            assert store.admissions()[cycle]["accepted_locator"] == args["locator"]
+        conflict = call(server, "work.accept", {"cycle": "cyc-2", "locator": "different"})
+        assert conflict["decision"] == "DENY"
+        assert store.admissions()["cyc-2"]["accepted_locator"] == "evidence:cyc-2"
+
     def test_a_park_dispatches_the_verbs_own_argv_and_no_other(
             self, state_dir, wake_dir, tmp_path, fake_verb, verb_log):
         _store, server = a_ready_wake(state_dir, wake_dir, tmp_path, fake_verb)
@@ -733,13 +802,16 @@ class TestAnAllowedMutationLeavesAReceipt:
         numbers that happen to differ.
         """
         store, server = a_ready_wake(state_dir, wake_dir, tmp_path, fake_verb)
-        answer = call(server, "work.checkpoint", {"next_action": "carry it on"})
+        until = minutes(30)
+        answer = call(server, "work.checkpoint", {"next_action": "carry it on",
+                                                 "waiting_on_window": until})
         assert answer["decision"] == "ALLOW", answer.get("because")
         assert answer["executed"] is True
         epoch = int(server.envelope["epoch"])
         assert dispatched(verb_log) == [[
             "work", "checkpoint", ITEM, "--epoch", str(epoch + 1),
-            "--parent", "parent-a", "--next-action", "carry it on"]]
+            "--parent", "parent-a", "--next-action", "carry it on",
+            "--waiting-on-window", until, "--write-scope", SCOPE]]
         # ...and the epoch named is not the one this wake carries.
         assert str(epoch + 1) != str(epoch)
 

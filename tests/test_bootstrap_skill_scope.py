@@ -34,7 +34,7 @@ RESPONSIBILITIES = {
     "path.resolve": r"path resolve",
     "path admission": r"path admit",
     "runtime status": r"runtime status",
-    "capability resolve": r"abilities/effective|capability",
+    "capability resolve": r"ability[. ]resolve",
     "load specialist": r"runtime-management|workspace-management|test-management",
     "policy": r"protected|protection",
     # §24's Agent fast path, by tool name rather than by prose. A bootstrap that
@@ -145,7 +145,7 @@ class BootstrapSkillScopeTests(unittest.TestCase):
         )
 
     def test_the_bootstrap_stays_small_enough_to_read_before_acting(self):
-        budget = 160
+        budget = 100
         self.assertLessEqual(
             len(self.lines),
             budget,

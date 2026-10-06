@@ -40,36 +40,40 @@ levels:
     L2: "the Run's evidence locator and recent Activity"
     L3: "the full Context Capsule, claims and provenance"
   capability:
-    L0: "the count of available abilities, and that a query exists"
+    L0: "native discovery and an on-demand query; a count only when already supplied"
     L1: "names of abilities likely relevant to this Item"
     L2: "a specific ability's provider, status and reason"
     L3: "the full resolved capability set with every input"
   authority:
-    L0: "the boundary in one line: what needs approval, and how many places it covers"
+    L0: "placement root count and the reminder that grants/owner rules still apply"
     L1: "the policy set that applies to this project"
     L2: "a specific denial and its reason"
     L3: "the full authority statement"
 
 # ---------------------------------------------------------------------------
-# Why the capability L0 is a NUMBER and not a list.
+# When a capability count is supplied, why it is not a list.
 # ---------------------------------------------------------------------------
 capability_l0:
   because: >
     a list is a menu, a menu invites browsing, and browsing is how a session
     spends its first thousand tokens reading a catalogue instead of working.
-    The number exists to tell the agent that ServerOS has something to say,
-    not to say it. The native agent already has its own Skill discovery and
-    does not need a second, worse one.
+    A caller may supply an existing count, but startup need not fetch one.
+    The native agent already has Skill discovery; it does not need to wait
+    for a second catalogue before using an available tool.
 
   # TWO numbers, and they are not the same number. This section used to
   # declare one shape — "N abilities resolvable on this device" — while
-  # `costs.capability.L0` prices the level at "one manifest read, no probes".
+  # a cheap catalogue read used to be priced as "one manifest read, no probes".
   # A probe-free read cannot produce a resolved count: resolution is the
   # eight-input intersection. So the declaration asked for a number its own
   # cost model could not pay for, and the cheap read would have been rendered
   # under the expensive word. That is the union wearing the intersection's
   # name, one layer above where `abilities/resolver.py` refuses to do it.
   shapes:
+    deferred:
+      renders: "use native discovery; ServerOS lookup on request"
+      produced_by: "no read or IPC; a startup does not require a live ability count"
+      means: "discovery has not been requested; this is not an availability failure"
     catalogue:
       renders: "N known to this authority; resolve one with `serverosctl ability resolve`"
       produced_by: "one projection read — the count of abilities the authority carries"
@@ -78,7 +82,7 @@ capability_l0:
       renders: "N resolvable[, M undecided]"
       produced_by: "`abilities/resolver.py` over the eight inputs; `count_abilities`"
       means: "the intersection agreed for these. M is the number nobody could decide."
-  default: catalogue
+  default: deferred
   because_two_shapes: >
     a caller that does not say which number it has does not get the stronger
     claim. A bare integer is a catalogue count, because that is the only read
@@ -109,7 +113,7 @@ contract:
 # ---------------------------------------------------------------------------
 costs:
   context: {L0: "none", L1: "one state read", L2: "one state read", L3: "one state read"}
-  capability: {L0: "one manifest read, no probes", L1: "one manifest read, no probes",
+  capability: {L0: "none by default; a supplied count requires no additional read", L1: "one manifest read, no probes",
                L2: "may run one probe", L3: "runs every probe"}
   authority: {L0: "none", L1: "one policy read", L2: "none — it is already known",
               L3: "one policy read"}
@@ -123,9 +127,9 @@ startup_view:
   lines:
     - "ServerOS is present on this device"
     - "context: <project>/<Item>/<Run>          (context L0)"
-    - "capabilities: <N> known to this authority; resolve one with `serverosctl ability resolve`  (capability L0)"
-    - "authority: writes to <bound roots> are admitted; everything else asks  (authority L0)"
-    - "details on request: `serverosctl context current | ability list | ability resolve --request <file>`"
+    - "capabilities: use native discovery; ServerOS lookup on request  (capability L0)"
+    - "authority: <N> bound roots define placement, not permission; existing grants and owner rules apply  (authority L0)"
+    - "details on request: `serverosctl context current`; `serverosctl ability resolve --request <file>`"
   budget_lines: 6
   budget_tokens: 120
   because: >
@@ -183,3 +187,5 @@ rules:
      value in the record, not an unstated exception."
   - "Memory is queried, never preloaded. Opening a session with everything the
      last one learned is not context, it is a transcript."
+  - "Startup performs no daemon lookup or catalogue read. Discovery is deferred;
+     a caller that attempted counting and failed supplies null, not a false zero."
