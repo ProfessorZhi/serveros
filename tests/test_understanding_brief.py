@@ -491,6 +491,7 @@ class TestTheCardHalf:
         packet = the_brief(records_tree(tmp_path))
         assert packet["card"]["claims"] is None
         assert packet["card"]["claims_state"] == "NO_FENCE"
+        assert "手写。" in packet["card"]["legacy_context"]
 
     def test_a_fence_the_module_marked_is_read_as_marked(self, tmp_path):
         records = records_tree(tmp_path)
@@ -504,6 +505,8 @@ class TestTheCardHalf:
         packet = the_brief(records)
         assert packet["card"]["claims_state"] == "MARKED"
         assert "c1" in packet["card"]["claims"]
+        assert "手写。" in packet["card"]["legacy_context"]
+        assert "c1" not in packet["card"]["legacy_context"]
 
     def test_a_fence_written_before_the_module_marked_its_lines_is_legacy(
             self, tmp_path):

@@ -82,6 +82,7 @@ CARD_PRODUCED = {
               "has no fence to hold one",
     "claims_state": "`understanding_semantic.fence_parts`/`claims_region`, "
                     "reported as MARKED, UNMARKED_LEGACY or NO_FENCE",
+    "legacy_context": "existing card prose outside the semantic fence; context, not newly accepted claims",
 }
 
 MATERIAL_PRODUCED = {
@@ -226,7 +227,7 @@ def _card_half(card_row: dict, records_root: Path) -> dict:
         raise Refused(
             f"the card {card!r} this range is about cannot be read ({exc}), so "
             f"the material cannot name the text the reading is a change to") from exc
-    _, fence, _ = _semantic.fence_parts(text)
+    before, fence, after = _semantic.fence_parts(text)
     if not fence:
         claims, state = None, "NO_FENCE"
     else:
@@ -243,6 +244,9 @@ def _card_half(card_row: dict, records_root: Path) -> dict:
         "digest": card_row["card_digest"],
         "claims": claims,
         "claims_state": state,
+        # Touch migration must not erase the reader's knowledge of the old
+        # human-written card when its first structured claim is added.
+        "legacy_context": (before + after).strip() or None,
     }, CARD_PRODUCED, f"the card half of the brief for {card!r}")
 
 
