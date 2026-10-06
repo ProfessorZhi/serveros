@@ -434,6 +434,25 @@ def cmd_report_alignment(args) -> int:
     return EXIT_OK
 
 
+def _evening_authorization(composed: dict, recipient: str) -> str:
+    """Why this delivery is authorized, as the sentence the receipt carries.
+
+    It used to say the brief was generated "由 {day} 的 19:20 准备" — a claim
+    about the schedule, which is true only on the evenings the timer ran on
+    time. On this node the first real brief came from a preparation that
+    finished at 14:17, so the sentence named a time that nothing in the
+    directory had recorded. It now names the preparation's own stamp, read off
+    `alignment.json` by the composition, and falls back to saying the time was
+    not read rather than to the schedule.
+    """
+    prepared = composed.get("prepared_at")
+    when = (f"{prepared} 写出的准备" if prepared
+            else "一次没有留下写出时间的准备")
+    return (f"20:00 的这一次由每晚的定时器触发：简报由 {when}生成"
+            f"（sha256 {composed['sha256'][:12]}…），收件人 {recipient} 来自配置。"
+            f"两条都是这一刻重新查的，不是上一次投递时留下的")
+
+
 def cmd_report_evening(args) -> int:
     """§P5 — 20:00 的那一次：19:20 的准备 → 当晚对齐 → 一次投递尝试。
 
@@ -505,10 +524,8 @@ def cmd_report_evening(args) -> int:
             f"serverosctl: 构造不出投递通道（{type(exc).__name__}: {exc}）。"
             f"这条待发仍然留在 outbox 里，没有被当作已送达。\n")
         sender = None
-    authorization = {"authorized": True, "because": args.authorization or (
-        f"20:00 的这一次由每晚的定时器触发：简报由 {day} 的 19:20 准备生成"
-        f"（sha256 {composed['sha256'][:12]}…），收件人 {recipient} 来自配置。"
-        f"两条都是这一刻重新查的，不是上一次投递时留下的")}
+    authorization = {"authorized": True, "because": args.authorization or
+                     _evening_authorization(composed, recipient)}
     try:
         delivered = delivery.deliver(out_dir, sender=sender,
                                      authorization=authorization, at=args.at)

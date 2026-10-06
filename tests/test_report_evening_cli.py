@@ -133,13 +133,19 @@ class EveningCommandTests(unittest.TestCase):
             {"state": "STOPPED", "stopped_because": code, "stopped_why": "到了该停的地方",
              "finished_at": finished, "outcomes": {"unread": []}}))
 
-    def evening(self, *argv):
+    def evening(self, *argv, at=AT):
         """Exit code, stdout and stderr — kept apart.
 
         Apart because the two carry different kinds of sentence: a refusal is on
         stderr and the result is on stdout, and a helper that merged them would
         make `--json` output unparseable exactly in the cases where the command
         had something to refuse about.
+
+        `at` is a parameter so a test can say which two instants it is asking
+        about. It defaults to the fixture's own evening, which is what every test
+        that cares about a *day* wants; a test that cares about what two runs
+        minutes apart do has to state both instants itself, because a fixture
+        that pinned one instant is exactly what hid the retry defect.
         """
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -148,7 +154,7 @@ class EveningCommandTests(unittest.TestCase):
                              "--record-dir", str(self.record_dir),
                              "--out-root", str(self.out_root),
                              "--requested-by", "serveros-evening-alignment.timer",
-                             "--why", "每晚的日常阅读对齐", "--at", AT, *argv])
+                             "--why", "每晚的日常阅读对齐", "--at", at, *argv])
         return code, out.getvalue(), err.getvalue()
 
     def out_dir(self) -> Path:
@@ -245,6 +251,36 @@ class EveningCommandTests(unittest.TestCase):
         assert json.loads(payload)["request"]["state"] == "ALREADY_REQUESTED"
         assert len(self.outbox()["entries"]) == 1
 
+    def test_a_retry_minutes_later_is_one_intent_and_one_message(self):
+        """The retry requirement, at the level the timer actually runs at.
+
+        `serveros-evening-alignment.service` passes no `--at`: every run carries
+        the wall clock, so two runs are two instants. While the title held the
+        render minute, those two instants were two versions, `intent_key` keys a
+        delivery on the version, and the second version was a second card to the
+        same person — measured on this node, the transport was called twice.
+
+        Five minutes apart rather than "twice in a row" on purpose: back-to-back
+        runs land in the same minute and would pass even with the defect.
+        """
+        self._set_recipient(None)
+        sent = []
+        real = cli._report_sender
+        cli._report_sender = _recording_transport(sent)
+        self.addCleanup(setattr, cli, "_report_sender", real)
+
+        first = self.evening("--conversation", "user:ou_synthetic",
+                             at="2026-10-06T12:00:00+00:00")
+        second = self.evening("--conversation", "user:ou_synthetic",
+                              at="2026-10-06T12:05:00+00:00")
+
+        assert first[0] == 0, first[1] + first[2]
+        assert second[0] == 0, second[1] + second[2]
+        assert json.loads(first[1])["delivery"]["state"] == "DELIVERED"
+        assert json.loads(second[1])["delivery"]["state"] == "ALREADY_DELIVERED"
+        assert len(sent) == 1
+        assert len(self.outbox()["entries"]) == 1
+
     def test_a_recipient_from_the_environment_is_the_one_that_is_used(self):
         self._set_recipient("user:ou_from_env")
         real = cli._report_sender
@@ -286,6 +322,23 @@ class EveningCommandTests(unittest.TestCase):
 def _no_transport(recipient):
     """What `_report_sender` does on a node with no transport for this recipient."""
     raise RuntimeError("no transport in this test")
+
+
+def _recording_transport(sent):
+    """A transport that accepts and records. The half `_no_transport` cannot reach.
+
+    Every other test in this file exercises the `PENDING_CONSUMER` side, because
+    a real transport would either post to an invented open_id or measure this
+    node's lark-cli. This one answers DELIVERED and keeps the envelope, which is
+    the only way to ask "did the second run send a second message" — the
+    question the retry requirement is about. What it does NOT show: that a real
+    Feishu transport accepts the envelope. That still needs a person.
+    """
+    def send(envelope):
+        sent.append(envelope)
+        return {"state": "DELIVERED", "why": "测试替身：记下了这次调用",
+                "provider": {"id": "test-transport", "transport": "test"}}
+    return lambda recipient: send
 
 
 if __name__ == "__main__":

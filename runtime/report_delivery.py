@@ -345,6 +345,10 @@ def request(out_dir, *, recipient, requested_by, why, channel=None,
     outbox = read_outbox(out_dir)
     entries = list(outbox.get("entries") or [])
 
+    # `WITHDRAWN` is the one state that is not deduplicated: a withdrawal stops
+    # the NEXT attempt (it cannot un-send anything), so asking again afterwards
+    # is a person changing their mind about the same version. That is a real new
+    # intent and not a duplicate of the one they withdrew.
     for entry in entries:
         if entry.get("intent") == key and entry.get("state") == "PENDING":
             # Asking twice for the same thing is one thing. This is not a
@@ -354,7 +358,20 @@ def request(out_dir, *, recipient, requested_by, why, channel=None,
                     "intent": key, "entry": entry,
                     "why": "同样的收件人对同样的这一版已经有一条待发记录了；再记一条会变成"
                            "第二封消息"}
-
+        if entry.get("intent") == key and entry.get("state") == "DELIVERED":
+            # The same request, already settled. Appending another entry would
+            # send nothing — the receipt for this key is read first and answers
+            # ALREADY_DELIVERED — but it would leave a row saying "waiting" for
+            # a delivery that already arrived, and every reader of the outbox
+            # (`pending_count`, a health table, the next attempt) would count it
+            # as work outstanding. §P5 is about a register being read as a
+            # register; a phantom pending row is the quietest way to break that.
+            return {"outbox": outbox_file(out_dir), "state": "ALREADY_REQUESTED",
+                    "intent": key, "entry": entry,
+                    "why": "这一版给这个收件人已经有一条落定为 DELIVERED 的记录：再记一条"
+                           "待发不会让它再发一次（回执会先被读到并回答 ALREADY_DELIVERED），"
+                           "只会留下一条永远等不到投递的「待发」，"
+                           "让 outbox 看上去还有事在排队"}
     entry = {"intent": key, "report": version,
              "audience": {"recipient": recipient, "channel": channel},
              "requested_by": requester, "requested_at": _now(at), "why": reason,

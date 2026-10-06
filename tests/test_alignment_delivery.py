@@ -214,12 +214,12 @@ def test_the_card_prints_every_section_even_when_it_is_empty(tmp_path):
     directory = build(tmp_path, readings={"a": resolution()}, pending=[])
     brief = alignment_delivery.gather(directory, run_record={
         "stopped_because": "NO_CHANGE", "outcomes": {"unread": []}})
-    text = alignment_delivery.render(brief, at="2026-10-06T11:20:00+00:00")
+    text = alignment_delivery.render(brief, at="2026-10-05T17:30:00+00:00")
 
     for heading in alignment_delivery.HEADINGS.values():
         assert f"## {heading}（0）" in text
-    # Beijing, not UTC: 11:20Z is the 19:20 the reader is being told about.
-    assert "# 对齐 · 2026-10-06 19:20" in text
+    # Beijing, not UTC: 17:30Z on the 5th is 01:30 on the 6th for the reader.
+    assert "# 对齐 · 2026-10-06" in text
 
 
 def test_a_long_excerpt_is_cut_and_the_cut_is_marked(tmp_path):
@@ -445,3 +445,38 @@ def test_a_render_that_read_no_preparation_says_so_rather_than_naming_1920(tmp_p
 
     assert "没有读出它是什么时候写下的" in text
     assert "19:20 的准备结果生成" not in text
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 同一个晚上跑两次，必须是同一版
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_two_instants_in_one_evening_render_the_same_bytes(tmp_path):
+    """The property a retry depends on: one evening, one version.
+
+    `runtime/report_delivery.py#intent_key` keys a delivery on the sha256 of
+    these bytes. The title used to be the wall clock to the minute, so composers
+    five minutes apart were two versions — and measured on this node, the second
+    one reached the transport and the same person got a second card. Two instants
+    inside one Beijing day must produce the same file.
+    """
+    directory = build(tmp_path, readings={"a": resolution()}, pending=[])
+    brief = alignment_delivery.gather(directory)
+
+    first = alignment_delivery.render(brief, at="2026-10-06T12:00:00+00:00")
+    later = alignment_delivery.render(brief, at="2026-10-06T12:05:00+00:00")
+
+    assert first == later
+
+
+def test_a_different_evening_is_a_different_brief(tmp_path):
+    """The other half: stable within a day, not stable across days."""
+    directory = build(tmp_path, readings={"a": resolution()}, pending=[])
+    brief = alignment_delivery.gather(directory)
+
+    first = alignment_delivery.render(brief, at="2026-10-06T12:00:00+00:00")
+    next_day = alignment_delivery.render(brief, at="2026-10-07T12:00:00+00:00")
+
+    assert first != next_day
+    assert "# 对齐 · 2026-10-07" in next_day
+
