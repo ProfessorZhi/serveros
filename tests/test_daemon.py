@@ -2200,20 +2200,10 @@ def test_ability_resolve_refuses_to_invent_the_runtime_it_is_asked_about(
     assert "missing required parameter 'ability'" in empty["error"]["message"]
 
 
-def test_ability_resolve_supplies_three_scalars_and_names_all_eight(
-        daemon_factory):
-    """The whole point of putting this on the node surface is that it answers
-    WITHOUT the rest — and says which ones it did not have. `inputs_seen` is
-    empty, and that is not a defect: the eight are documents (a catalogue, a
-    device's capabilities, a policy), and the three required scalars are not
-    among them. So the honest answer is UNKNOWN naming all eight questions,
-    which is still useful: it says what to go and find.
-
-    This test was named `…_and_names_the_other_five` until 2026-09-27 while the
-    assertion below it listed eight names — the count in the name was never
-    compared against the list it was counting, and the same arithmetic had been
-    copied into `fleet/mcp-contract.yaml`, the `ability.resolve` tool
-    description and the `note` the daemon returns."""
+def test_ability_resolve_without_a_catalogue_names_all_missing_inputs(
+        daemon_factory, tmp_path, monkeypatch):
+    """No materialized catalogue means UNKNOWN; identity scalars are not documents."""
+    _state_root(tmp_path, monkeypatch, [])
     daemon = daemon_factory(a_resource("thing-one"))
     result = daemon.handle({"method": "ability.resolve",
                             "params": {"ability": "runtime-management",
@@ -2251,11 +2241,12 @@ def test_ability_resolve_keeps_the_verb_out_of_the_catalogue_key(daemon_factory)
 
 
 def test_a_malformed_resolve_request_is_an_error_and_a_no_is_an_answer(
-        daemon_factory):
+        daemon_factory, tmp_path, monkeypatch):
     """`resolver.py`'s own distinction, kept at the layer above it. A "no" is
     returned; only a form it cannot parse raises — and the node surface does not
     launder either one into the other: a malformed request is an ERROR, and a
     resolved-to-UNKNOWN request is a RESULT the caller can read."""
+    _state_root(tmp_path, monkeypatch, [])
     daemon = daemon_factory(a_resource("thing-one"))
     response = daemon.handle({"method": "ability.resolve",
                               "params": {"ability": "x#a#b",
@@ -3535,3 +3526,139 @@ def test_the_incident_rpc_refuses_what_it_cannot_answer(daemon_factory):
         answer = daemon.handle({"method": "card.incident", "params": params})
         assert answer["ok"] is False, answer
     assert daemon.card_ledger().entries() == []
+
+
+def _linked_specialist():
+    return {
+        "name": "plan-interview", "id": "example/plan-interview", "type": "skill",
+        "path": "skills/plan-interview",
+        "product_role": {"primary": "B6", "subroles": ["plan-stress-test"],
+                         "cross_refs": ["B3"], "realization_role": "specialist"},
+        "routing": {"trigger_hints": ["计划已成文但仍有未决问题"],
+                    "avoid_hints": ["existing-code-review"]},
+        "handoff": {"consumes": ["plan"], "produces": ["decision-record"]},
+        "authority": {"owns": [], "human_required": ["decision-answers"]},
+    }
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_thin_link_connectivity_searches_responsibility_and_trigger_not_avoid(
+        daemon_factory, tmp_path, monkeypatch, installed):
+    row = _linked_specialist()
+    _state_root(tmp_path, monkeypatch, [row] if installed else [])
+    _catalogue(tmp_path, monkeypatch, [row], revision="c" * 40)
+    daemon = daemon_factory(a_resource("thing-one"))
+    for query in ("B6", "B3", "plan-stress-test", "计划已成文"):
+        result = daemon.handle({"method": "ability.search", "params": {"query": query}})["result"]
+        assert result["matched"] == 1
+        hit = result["matches"][0]
+        assert hit["name"] == row["name"]
+        assert hit["semantic_owner"] == "B6"
+        assert hit["matched_fields"]
+        assert "handoff" not in hit and "authority" not in hit
+    avoid = daemon.handle({"method": "ability.search", "params": {"query": "existing-code-review"}})["result"]
+    assert avoid["matched"] == 0
+
+
+@pytest.mark.parametrize("missing_projection", [False, True])
+@pytest.mark.parametrize("on_demand", [False, True])
+def test_thin_link_connectivity_inspects_a_catalogue_hit_without_installation(
+        daemon_factory, tmp_path, monkeypatch, missing_projection, on_demand):
+    state = _state_root(tmp_path, monkeypatch, [])
+    if missing_projection:
+        (state / "abilities/effective.json").unlink()
+    _catalogue(tmp_path, monkeypatch, [_linked_specialist()], revision="c" * 40)
+    if on_demand:
+        _revision_declaring(tmp_path, monkeypatch, [{"name": "plan-interview", "status": "available"}])
+    daemon = daemon_factory(a_resource("thing-one"))
+    hit = daemon.handle({"method": "ability.search", "params": {"query": "plan-interview"}})["result"]["matches"][0]
+    assert hit["installed"] is (None if missing_projection else False)
+    result = daemon.handle({"method": "ability.inspect", "params": {"name": hit["name"]}})["result"]
+    assert result["ability"]["handoff"]["produces"] == ["decision-record"]
+    assert result["placement"] == ("on-demand" if on_demand else "catalogue")
+    assert result["installed"] is (None if missing_projection else False)
+    assert result["catalogue"]["source_revision"] == "c" * 40
+    assert result["resolution"] == "not attempted"
+
+
+def test_thin_link_connectivity_no_projection_and_no_catalogue_is_unknown(
+        daemon_factory, tmp_path, monkeypatch):
+    state = _state_root(tmp_path, monkeypatch, [])
+    (state / "abilities/effective.json").unlink()
+    result = daemon_factory(a_resource("thing-one")).handle({
+        "method": "ability.inspect", "params": {"name": "plan-interview"}})["result"]
+    assert result["installed"] is None
+    assert result["ability"] is None
+
+
+def test_thin_link_connectivity_resolves_the_pinned_link_and_supplied_inputs(
+        daemon_factory, tmp_path, monkeypatch):
+    _state_root(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [_linked_specialist()], revision="c" * 40)
+    daemon = daemon_factory(a_resource("thing-one"))
+    params = {"ability": "ability:plan-interview#plan-stress-test", "runtime": "claude-code"}
+    result = daemon.handle({"method": "ability.resolve", "params": params})["result"]
+    assert result["semantic_owner"] == "B6"
+    assert result["subrole"] == "plan-stress-test"
+    assert result["inputs_seen"] == ["ability"]
+    assert result["status"] == "UNKNOWN"
+    assert result["catalogue"]["source_revision"] == "c" * 40
+    assert result["authorizes_execution"] is False
+    result = daemon.handle({"method": "ability.resolve", "params": {
+        **params, "request": {"providers": []}}})["result"]
+    assert result["status"] == "UNAVAILABLE"
+    assert result["request_inputs_from"] == "caller (unverified)"
+    assert result["authorizes_execution"] is False
+
+
+@pytest.mark.parametrize("input_payload", [
+    {"abilities": {"ability:plan-interview": {}}},
+    {"runtime": "another-runtime"},
+    {"policy": True},
+    {"providers": [{}]},
+    {"providers": [{"id": "p", "ability": "ability:plan-interview", "kind": "skill",
+                    "materialization": ["not-an-object"]}]},
+    {"instances": ["claimed-installation"]},
+    {"task_context": {"padding": "x" * 4097}},
+    {"task_context": {str(i): "x" * 2048 for i in range(33)}},
+])
+def test_thin_link_connectivity_rejects_overrides_and_unbounded_inputs(
+        daemon_factory, tmp_path, monkeypatch, input_payload):
+    _state_root(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [_linked_specialist()], revision="c" * 40)
+    result = daemon_factory(a_resource("thing-one")).handle({
+        "method": "ability.resolve", "params": {
+            "ability": "ability:plan-interview", "runtime": "claude-code", "request": input_payload}})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "ValueError"
+
+
+def test_thin_link_connectivity_keeps_claimed_availability_separate_from_permission(
+        daemon_factory, tmp_path, monkeypatch):
+    _state_root(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [_linked_specialist()], revision="c" * 40)
+    daemon = daemon_factory(a_resource("thing-one"))
+    result = daemon.handle({"method": "ability.resolve", "params": {
+        "ability": "ability:plan-interview", "runtime": "claude-code", "request": {
+            "providers": [{"id": "p", "ability": "ability:plan-interview", "kind": "skill",
+                           "materialization": {"path_role": "none"}}],
+            "device_capabilities": {"os": "linux"}, "profile": {},
+            "instances": [{"provider": "p", "device_ref": daemon.registry.device_ref}],
+            "runtime_record": {"id": "claude-code", "consumable_provider_kinds": ["skill"]},
+        }}})["result"]
+    assert result["status"] == "AVAILABLE"
+    assert result["candidates"][0]["installed"] is True
+    assert result["request_inputs_from"] == "caller (unverified)"
+    assert result["authorizes_execution"] is False
+
+
+def test_thin_link_connectivity_does_not_treat_unpinned_metadata_as_catalogue_input(
+        daemon_factory, tmp_path, monkeypatch):
+    _state_root(tmp_path, monkeypatch, [])
+    _catalogue(tmp_path, monkeypatch, [_linked_specialist()], revision=None)
+    result = daemon_factory(a_resource("thing-one")).handle({"method": "ability.resolve", "params": {
+        "ability": "ability:plan-interview", "runtime": "claude-code"}})["result"]
+    assert result["status"] == "UNKNOWN"
+    assert result["inputs_seen"] == []
+    assert result["semantic_owner"] is None
+    assert result["catalogue"]["why"]
