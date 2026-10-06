@@ -2053,55 +2053,53 @@ class Daemon:
         materials = view.get("abilities")
         on_demand = declared_on_demand()
         catalogue = declared_catalogue()
+        # Search is a compact pointer surface; keep the detailed source notes
+        # on list/inspect while preserving every source and uncertainty field.
+        on_demand_header = dict(_on_demand_header(on_demand), note=(
+            "Composition recommendation; installation and readiness are not implied."))
+        catalogue_header = dict(_catalogue_header(catalogue), note=(
+            "Authority catalogue at source_revision; installation and readiness are not implied."))
         if not query:
             return {
-                **header, "on_demand": _on_demand_header(on_demand),
-                "catalogue": _catalogue_header(catalogue),
+                **header, "on_demand": on_demand_header,
+                "catalogue": catalogue_header,
                 "query": raw_query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "refused": "EMPTY_QUERY",
                 "catalogue_size": None if materials is None else len(materials),
                 "note": (
-                    "an empty query is not a search. This surface does not "
-                    "serve any of its three sources whole: returning every row "
-                    "would cost the caller the context the search exists to "
-                    "save, and the caller would have no way to tell that it had "
-                    "asked for nothing. Ask a question, or use `ability.list` "
-                    "if the whole projection is genuinely what is wanted."
+                    "Empty query refused. Use ability.list for the whole projection."
                 ),
             }
         if (materials is None and on_demand.get("entries") is None
                 and catalogue.get("entries") is None):
             return {
-                **header, "on_demand": _on_demand_header(on_demand),
-                "catalogue": _catalogue_header(catalogue),
+                **header, "on_demand": on_demand_header,
+                "catalogue": catalogue_header,
                 "query": query, "limit": limit,
                 "matched": None, "returned": None, "matches": None,
                 "truncated": None, "catalogue_size": None,
                 "note": (
-                    "no source is readable: no local capability projection has "
-                    "been materialized, this revision's ARTIFACT.json does not "
-                    "declare what it recommends, and no catalogue has been "
-                    "materialized either. `matched` is null rather than 0: "
-                    "nothing readable is not an empty catalogue, and the two "
-                    "would render identically as an empty list."
+                    "No source is readable; matched is null: "
+                    "nothing readable is not an empty catalogue."
                 ),
             }
         needle = query.lower()
+        l2_query = _is_l2_query(needle)
         hits = ([row for row in materials
-                 if isinstance(row, dict) and needle in _ability_searchable(row)]
+                 if isinstance(row, dict) and (
+                     bool(_link_matched_fields(row, needle)) if l2_query
+                     else needle in _ability_searchable(row))]
                 if materials is not None else [])
-        rows = [_ability_row_compact(row, needle) for row in hits[:limit]]
+        rows = [_ability_row_compact(row, needle) for row in hits]
+        # ARTIFACT recommendations contain names, not product roles. Exact L2
+        # queries can find those abilities through their catalogue metadata.
         declared = [entry for entry in (on_demand.get("entries") or [])
-                    if needle in _on_demand_searchable(entry)]
-        # Trimmed to the same ceiling as the projection rows: two sources must
-        # not add up to a result set twice the size the caller asked for, and a
-        # caller that wanted more than `limit` rows from either source can ask
-        # again with a larger one.
+                    if not l2_query and needle in _on_demand_searchable(entry)]
         declared_rows = [dict(entry, installed=None if materials is None else False,
                               placement="on-demand",
                               declared_by=on_demand.get("composition"))
-                         for entry in declared[:max(0, limit - len(rows))]]
+                         for entry in declared]
         # Disjoint from the two stronger sources by construction. A name they
         # already matched is not counted again: two sources reporting one
         # ability would make `matched` exceed `returned` with `truncated:
@@ -2112,48 +2110,36 @@ class Daemon:
                            | {entry.get("name") for entry in declared})
         listed = [entry for entry in (catalogue.get("entries") or [])
                   if entry.get("name") not in already_matched
-                  and needle in _catalogue_searchable(entry)]
-        # Last, and given only what the two stronger sources left over. The
-        # order is a precedence, not a ranking: a name that is installed here
-        # is a better answer than the same name merely existing, so the weakest
-        # source never crowds out a stronger one. It is still bounded by the
-        # same `limit` — three sources must not add up to three times the rows
-        # the caller asked for.
+                  and (bool(_link_matched_fields(entry, needle)) if l2_query
+                       else needle in _catalogue_searchable(entry))]
         listed_rows = [dict(_catalogue_row_compact(entry, needle),
                             installed=None if materials is None else False,
                             placement="catalogue",
                             registered_here=None if materials is None else False)
-                       for entry in listed[:max(0, limit - len(rows)
-                                                - len(declared_rows))]]
+                       for entry in listed]
+        matches = rows + declared_rows + listed_rows
+        if l2_query:
+            # Stable partition before limiting: the primary owner must not be
+            # crowded out by installed cross-references. Preserve source/row
+            # order within each group; free-text ordering stays unchanged.
+            matches.sort(key=lambda row: "product_role.primary" not in row.get("matched_fields", []))
+        matches = matches[:limit]
         return {
-            **header, "on_demand": _on_demand_header(on_demand),
-            "catalogue": _catalogue_header(catalogue),
+            **header, "on_demand": on_demand_header,
+            "catalogue": catalogue_header,
             "query": query, "limit": limit,
             "catalogue_size": None if materials is None else len(materials),
             "matched": len(hits) + len(declared) + len(listed),
             "matched_installed": len(hits),
             "matched_on_demand": len(declared),
             "matched_in_catalogue": len(listed),
-            "returned": len(rows) + len(declared_rows) + len(listed_rows),
-            "truncated": (len(hits) > len(rows)
-                          or len(declared) > len(declared_rows)
-                          or len(listed) > len(listed_rows)),
-            "matches": rows + declared_rows + listed_rows,
+            "returned": len(matches),
+            "truncated": len(hits) + len(declared) + len(listed) > limit,
+            "matches": matches,
             "note": (
-                "substring match, case-insensitive, over name / id / path / "
-                "type / version / domain / taxonomy refs / agents (projection "
-                "rows), name (declared rows), and name / id / path / type / "
-                "domain / taxonomy refs (catalogue rows), plus product roles and trigger hints. "
-                "Avoid hints never generate a positive match. It is not a ranking "
-                "and not a semantic search: there is no relevance score to "
-                "distrust because there is no score. `matched` is the sum of "
-                "`matched_installed`, `matched_on_demand` and "
-                "`matched_in_catalogue`. A row with `installed: false` is NOT "
-                "observed installed here: `placement: on-demand` means the "
-                "composition declares it resolvable, and `placement: catalogue` "
-                "means only that the authority lists it — neither is a claim "
-                "that this node has it or that it will resolve. `installed: null` "
-                "means the installation projection is unreadable."
+                "Single L2: exact roles, primary first. Otherwise: case-insensitive "
+                "substrings; avoid hints excluded. installed=false: not observed here; "
+                "null: projection unreadable. Discovery grants no execution authority."
             ),
         }
 
@@ -4031,13 +4017,27 @@ def _link_search_fields(row: dict) -> dict[str, list[str]]:
     return fields
 
 
+def _is_l2_query(query: str) -> bool:
+    """Recognize the stable product vocabulary G1, A1-A10, B1-B10 only."""
+    return query == "g1" or (query[:1] in ("a", "b")
+                             and query[1:] in {str(n) for n in range(1, 11)})
+
+
+def _link_matched_fields(row: dict, query: str) -> list[str]:
+    fields = _link_search_fields(row)
+    if _is_l2_query(query):
+        return [field for field in ("product_role.primary", "product_role.cross_refs")
+                if any(query == value.lower() for value in fields.get(field, []))]
+    return [field for field, values in fields.items()
+            if query and any(query in value.lower() for value in values)]
+
+
 def _link_search_summary(row: dict, query: str) -> dict:
     role = row.get("product_role")
     if not isinstance(role, dict):
         return {}
     return {"semantic_owner": role.get("primary"),
-            "matched_fields": [field for field, values in _link_search_fields(row).items()
-                               if query and any(query in v.lower() for v in values)]}
+            "matched_fields": _link_matched_fields(row, query)}
 
 
 def _ability_searchable(row: dict) -> str:

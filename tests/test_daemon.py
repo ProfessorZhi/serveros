@@ -3543,6 +3543,54 @@ def _linked_specialist():
     }
 
 
+def test_l2_search_matches_roles_exactly_without_matching_b10(
+        daemon_factory, tmp_path, monkeypatch):
+    primary = {"name": "source-intake", "product_role": {"primary": "B1"}}
+    cross_ref = {"name": "document-stewardship",
+                 "product_role": {"primary": "B9", "cross_refs": ["B1"]}}
+    human_control = {"name": "human-control", "product_role": {"primary": "B10"}}
+    incidental = {"name": "b1-helper", "routing": {"trigger_hints": ["B1"]}}
+    _state_root(tmp_path, monkeypatch, [cross_ref, incidental])
+    _catalogue(tmp_path, monkeypatch, [human_control, primary])
+    _revision_declaring(tmp_path, monkeypatch, [{"name": "b1-helper"}])
+    daemon = daemon_factory()
+
+    result = daemon.handle({"method": "ability.search", "params": {"query": " b1 "}})["result"]
+    assert result["matched"] == 2
+    assert [hit["name"] for hit in result["matches"]] == ["source-intake", "document-stewardship"]
+    assert [hit["matched_fields"] for hit in result["matches"]] == [
+        ["product_role.primary"], ["product_role.cross_refs"]]
+    # A partial or invalid L2 code remains an ordinary substring query.
+    text = daemon.handle({"method": "ability.search", "params": {"query": "b1-"}})["result"]
+    assert text["matches"][0]["name"] == "b1-helper"
+    assert text["matches"][0]["agents"] == []  # installed source stays first
+
+
+def test_l2_search_prioritizes_primary_before_limit_with_stable_cross_ref_order(
+        daemon_factory, tmp_path, monkeypatch):
+    def linked(name, primary, cross_refs=()):
+        return {"name": name, "product_role": {"primary": primary,
+                                               "cross_refs": list(cross_refs)}}
+    grill = linked("grill-me", "B6", ["B5"])
+    browser = linked("playwright-mcp", "A7", ["B5"])
+    plugin = dict(browser, type="plugin")
+    research = linked("research-evidence", "B5")
+    _state_root(tmp_path, monkeypatch, [grill])
+    _catalogue(tmp_path, monkeypatch, [grill, browser, plugin, research], revision="c" * 40)
+    daemon = daemon_factory()
+
+    result = daemon.handle({"method": "ability.search", "params": {"query": "B5", "limit": 3}})["result"]
+    assert [hit["name"] for hit in result["matches"]] == ["research-evidence", "grill-me", "playwright-mcp"]
+    assert result["matches"][0]["placement"] == "catalogue"
+    assert result["matches"][0]["installed"] is False
+    assert result["matches"][0]["matched_fields"] == ["product_role.primary"]
+    assert "agents" in result["matches"][1]  # keep installed provenance
+    assert result["matches"][2]["type"] is None  # stable order, before plugin
+    assert result["matched"] == 4 and result["returned"] == 3 and result["truncated"] is True
+    assert result["matched_installed"] == 1 and result["matched_in_catalogue"] == 3
+    assert result["catalogue"]["source_revision"] == "c" * 40
+
+
 @pytest.mark.parametrize("installed", [True, False])
 def test_thin_link_connectivity_searches_responsibility_and_trigger_not_avoid(
         daemon_factory, tmp_path, monkeypatch, installed):
