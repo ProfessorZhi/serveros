@@ -1046,7 +1046,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   runtime/testing_contract.py                  (absent) → ad87c011
 #   skills/test-management/profiles.yaml         (absent) → 28abf727
 # Task-aware ability discovery and complete bounded monitoring updates.
-cachebuster: srv0005.20261006d
+cachebuster: srv0005.20261006e
 
 skills:
   - name: runtime-management

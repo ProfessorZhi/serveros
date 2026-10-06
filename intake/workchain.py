@@ -822,6 +822,8 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "runs": sum(len(a.get("runs") or ())
                             for a in item.get("activities") or ()),
                 "deliverables": len(item.get("deliverables") or ()),
+                "ready_activities": [{"id": a.get("id"), "kind": a.get("kind")}
+                                     for a in item.get("activities", []) if a.get("state") == "READY"],
             }
             # Computed HERE, where the contract and the documents are both in
             # hand, and then carried on the row. Every reader downstream — the

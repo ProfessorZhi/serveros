@@ -39,6 +39,7 @@ place.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -562,6 +563,7 @@ class TestWhatCannotBePinned:
         assert "document body" in str(refusal.value)
         assert "WHOLE_DOCUMENT" in str(refusal.value)
 
+
     def test_a_range_with_no_content_identity_carries_the_readers_reason(
             self, tmp_path):
         records = records_tree(tmp_path)
@@ -1017,3 +1019,95 @@ class TestTheChainThroughTheVerbs:
         assert second.returncode == 0, second.stderr
         assert json.loads(second.stdout)["state"] == "RETRACTION_ONLY"
         assert self.recall(env, records)["verdict"] == "RETRACTED"
+
+
+class TestDocumentReading:
+    def packet(self, tmp_path):
+        records = records_tree(tmp_path)
+        folder = records / RAW / "links/doc"
+        folder.mkdir(parents=True)
+        body = "# Snapshot\nRedis is shared by two workers.\n"
+        (folder / "content.md").write_text(body, encoding="utf-8")
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        (folder / "manifest.json").write_text(json.dumps({
+            "url": "https://example.test/doc", "type": "wiki",
+            "content_sha256": digest, "media_count": 2, "media": ["one.png", "two.png"],
+        }))
+        (records / CARD).write_text(
+            f"# X\n\n## Sources\n- `{RAW}/links/doc/content.md` sha deadbeef\n")
+        card, row = card_and_range(records)
+        return records, brief.brief_for(card, row, records)
+
+    def test_exact_document_packet_reaches_the_existing_writer(self, tmp_path):
+        records, packet = self.packet(tmp_path)
+        assert packet["source"]["from_position"] is None
+        assert packet["source"]["kind"] == "DOCUMENT"
+        assert packet["material"]["schema"] == "serveros/source-reading-packet.v1"
+        assert packet["material"]["revision"] is None
+        assert packet["material"]["coverage"]["media_read"] == 0
+        assert packet["material"]["coverage"]["media_declared"] == 2
+        document = reading_from(packet)
+        document["claims"][0]["support"] = {"positions": [], "excerpt": "Redis is shared by two workers."}
+        reading = tmp_path / "reading.json"
+        reading.write_text(json.dumps(document))
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--delegation", delegation_file(tmp_path), "--json")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["committed"][0]["id"] == "c1"
+
+    def test_document_body_drift_is_refused_without_changing_records(self, tmp_path):
+        records, packet = self.packet(tmp_path)
+        document = reading_from(packet)
+        document["claims"][0]["support"] = {"positions": [], "excerpt": "Redis is shared by two workers."}
+        reading = tmp_path / "reading.json"
+        reading.write_text(json.dumps(document))
+        Path(packet["material"]["path"]).write_text("drifted body\n")
+        before = (records / CARD).read_bytes()
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--delegation", delegation_file(tmp_path), "--json")
+        assert result.returncode != 0
+        assert "digest" in result.stderr
+        assert (records / CARD).read_bytes() == before
+
+    @pytest.mark.parametrize("support", [
+        {"positions": [], "excerpt": "not in the snapshot"},
+        {"positions": [1], "excerpt": "Redis is shared by two workers."},
+    ])
+    def test_document_citation_must_be_in_the_verified_body(self, tmp_path, support):
+        records, packet = self.packet(tmp_path)
+        document = reading_from(packet)
+        document["claims"][0]["support"] = support
+        reading = write_reading(tmp_path, document)
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--delegation", delegation_file(tmp_path), "--json")
+        assert result.returncode != 0
+        assert "excerpt" in result.stderr
+
+    def test_document_commit_is_not_offered_for_another_reading(self, tmp_path):
+        env = seeded(tmp_path)
+        records, packet = self.packet(tmp_path)
+        document = reading_from(packet)
+        document["claims"][0]["support"] = {"positions": [], "excerpt": "Redis is shared by two workers."}
+        reading = write_reading(tmp_path, document)
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--grant", "grant:x", "--now", NOW,
+                     "--commit", "--committed-at", STAMP, "--json", env_extra=env)
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["state"] == "COMPLETE"
+        assert receipt["key"] == [CARD, packet["source"]["manifest"], None, None,
+                                   packet["read"]["content_identity"]]
+        assert brief.briefs(report_for(records), records) == ([], [])
+        recall = _load("claim_recall", "claim_recall.py")
+        result = recall.recall(records, only=["c1"])
+        assert result["claims"][0]["verdict"] == "CURRENT"
+        body = Path(packet["material"]["path"])
+        body.write_text("The source now reports a single worker.\n")
+        manifest = body.with_name("manifest.json")
+        state = json.loads(manifest.read_text())
+        state["content_sha256"] = hashlib.sha256(body.read_bytes()).hexdigest()
+        manifest.write_text(json.dumps(state))
+        result = recall.recall(records, only=["c1"])
+        assert result["claims"][0]["verdict"] == "STALE"
+        pinned, refused = brief.briefs(report_for(records), records)
+        assert len(pinned) == 1 and not refused

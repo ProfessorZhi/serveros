@@ -1029,3 +1029,49 @@ class TestTheWire:
         printed = capsys.readouterr().out
         for name in mcp.tool_names():
             assert name in printed
+
+
+class TestBoundedEngineering:
+    def test_legacy_wake_keeps_control_without_home_or_engineering(
+            self, state_dir, wake_dir, tmp_path, fake_verb):
+        _store, server = a_ready_wake(state_dir, wake_dir, tmp_path, fake_verb)
+        cwd = server.parent_cwd()
+        assert cwd.parent == wake_dir
+        assert list(cwd.iterdir()) == []
+        assert not server.envelope_path.is_relative_to(cwd)
+        denied = server.dispatch("continuation.execute", {"key": "test", "argv": ["python3", "-V"]})
+        assert denied["decision"] == "DENY"
+        assert denied["executed"] is False
+
+    @pytest.mark.skipif("SERVEROS_TEST_DOCKER_IMAGE" not in os.environ,
+                        reason="requires an explicitly selected existing local image")
+    def test_real_mcp_execute_uses_live_scope_and_replays(
+            self, state_dir, wake_dir, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        tree = tmp_path / "workspace" / "worktrees" / "demo" / "item"
+        tree.mkdir(parents=True)
+        binding = {"schema": "serveros/engineering-binding.v1", "worktree": str(tree),
+                   "image": os.environ["SERVEROS_TEST_DOCKER_IMAGE"],
+                   "memory_bytes": 64 * 1024**2, "cpus": 1, "pids_limit": 16}
+        store = a_store(state_dir, grant=a_grant(actions=["engineering.execute"], engineering=binding))
+        a_checkpoint(store, write_scope=[str(tree)])
+        envelope = a_wake(store, wake_dir)
+        server = mcp.ContinuationServer(envelope, completion=lambda _: {"state": "OPEN"})
+        paths = mcp._load("serveros_executor_paths", RUNTIME / "paths.py")
+        monkeypatch.setattr(paths, "Paths", lambda: SimpleNamespace(bound=True,
+            root=lambda name: tmp_path / "workspace"))
+        assert server.parent_cwd() == tree
+        args = {"key": "verify", "argv": ["python3", "-c", "print('engineering-complete')"]}
+        first = server.dispatch("continuation.execute", args)
+        assert first["decision"] == "ALLOW", first
+        assert first["worker_stopped"] is True, first
+        assert first["container"]["container_state"]["ExitCode"] == 0
+        assert first["output_tail"]["stdout"].strip() == "engineering-complete"
+        assert server.dispatch("continuation.execute", args)["receipt"]["replayed"] is True
+        # An envelope cannot keep a broader scope after the current checkpoint narrows.
+        rewrite_store(store, lambda doc: doc["checkpoints"][server.envelope["checkpoint_ref"]].update(write_scope=[]))
+        denied = server.dispatch("continuation.execute", args)
+        assert denied["decision"] == denied["verdict"]["decision"] == "DENY"
+        assert denied["executed"] is False
+        with pytest.raises(ValueError, match="scope"):
+            server.parent_cwd()
