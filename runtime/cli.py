@@ -5279,6 +5279,67 @@ def cmd_alert_digest(args) -> int:
     return EXIT_OK
 
 
+# Below the daemon's existing 1,000,000-byte gate, including JSON escaping and
+# framing. This is an account-specific batch budget, not a larger IPC allowance.
+DIGEST_ACCOUNT_REQUEST_BYTES = 750_000
+
+
+def _digest_account_requests(document: dict, owed: list, why: str) -> tuple[list[dict], set[str]]:
+    """Project one composed snapshot into bounded, independently retryable writes.
+
+    Never recompose between batches: state, episode and immediate/pending status
+    are what this pass actually saw. Build and validate every request before the
+    first write so an oversized row cannot leave an avoidable partial update.
+    """
+    digest = _load("serveros_runtime_alert_digest", "alert_digest.py")
+    decision = document.get("decision") or {}
+    if not isinstance(decision, dict):
+        raise ValueError("digest decision must be an object")
+    pending = decision.get("pending_keys") or []
+    if not isinstance(pending, list):
+        raise ValueError("digest decision.pending_keys must be a list")
+    protected = {str(item.get("key") if isinstance(item, dict) else item)
+                 for item in owed if (item.get("key") if isinstance(item, dict) else item)}
+    protected.update(str(key) for key in pending)
+
+    def fresh():
+        return {"digest": {"rows": []}, "owed": [], "why": why}
+
+    params = fresh()
+    base_bytes = len((json.dumps({"method": "alert.digest-account", "params": params}) + "\n").encode())
+    if base_bytes > DIGEST_ACCOUNT_REQUEST_BYTES:
+        raise ValueError("digest-account reason exceeds the bounded request size")
+    size, requests = base_bytes, []
+    batch_owed = set()
+    for original in document["rows"]:
+        if not isinstance(original, dict):
+            raise ValueError("digest rows must be objects")
+        row = {key: original[key] for key in digest.ACCOUNT_ROW_FIELDS if key in original}
+        key = str(row.get("key") or "")
+        row_bytes = len(json.dumps(row).encode())
+        key_bytes = len(json.dumps(key).encode())
+
+        def added_bytes():
+            return (row_bytes + (2 if params["digest"]["rows"] else 0)
+                    + (key_bytes + (2 if params["owed"] else 0)
+                       if key in protected and key not in batch_owed else 0))
+
+        if params["digest"]["rows"] and size + added_bytes() > DIGEST_ACCOUNT_REQUEST_BYTES:
+            requests.append(params)
+            params, size, batch_owed = fresh(), base_bytes, set()
+        extra = added_bytes()
+        if size + extra > DIGEST_ACCOUNT_REQUEST_BYTES:
+            raise ValueError("one digest-account row exceeds the bounded request size")
+        params["digest"]["rows"].append(row)
+        if key in protected and key not in batch_owed:
+            params["owed"].append(key)
+            batch_owed.add(key)
+        size += extra
+    if params["digest"]["rows"] or not requests:
+        requests.append(params)
+    return requests, protected
+
+
 def cmd_alert_digest_account(args) -> int:
     """§Q2. The deltas this pass declined to put in front of anybody.
 
@@ -5319,12 +5380,40 @@ def cmd_alert_digest_account(args) -> int:
             return EXIT_FAULT
     else:
         owed = []
-    params = {"digest": document, "owed": owed, "why": args.why}
-    payload, code = _digest_answer("alert.digest-account", params)
-    if code != EXIT_OK:
-        return code
+    try:
+        requests, protected = _digest_account_requests(document, owed, args.why)
+    except (TypeError, ValueError) as exc:
+        sys.stderr.write(f"serverosctl: digest-account was not attempted: {exc}\n")
+        return EXIT_FAULT
+    answers, completed_rows = [], 0
+    for params in requests:
+        try:
+            answer = ask_daemon("alert.digest-account", params)
+        except DaemonUnavailable as exc:
+            unconfirmed = len(params["digest"]["rows"])
+            unattempted = len(document["rows"]) - completed_rows - unconfirmed
+            # No success-shaped JSON: the deployed sender interprets readable
+            # JSON as an answer even for a nonzero subprocess exit code.
+            sys.stderr.write(
+                f"serverosctl: partial digest-account: {len(answers)}/{len(requests)} batches "
+                f"confirmed ({completed_rows} rows); {unconfirmed} rows unconfirmed; "
+                f"{unattempted} rows unattempted. Retry the same digest; delivery generation "
+                f"was not advanced by accounting. {exc}\n")
+            return EXIT_COULD_NOT_ANSWER
+        answers.append(answer)
+        completed_rows += len(params["digest"]["rows"])
+    payload = {**answers[-1],
+               "accounted_keys": sum(answer.get("accounted_keys", 0) for answer in answers),
+               "accounted": sorted({key for answer in answers for key in answer.get("accounted", [])}),
+               "declined": sum(answer.get("declined", 0) for answer in answers),
+               "owed": sorted(protected),
+               "unaccounted_immediate": [row for answer in answers
+                                         for row in answer.get("unaccounted_immediate", [])]}
+    if len(answers) > 1:
+        payload["note"] = (f"considered {completed_rows} snapshot rows in {len(answers)} bounded requests; "
+                           "accounting does not claim delivery or advance its generation")
     lines = [f"本次组成    {len(document.get('rows') or [])} 条 delta",
-             f"仍在欠账    {len(owed)} 条（本批不记账，留给下一次）",
+             f"仍在欠账    {len(payload['owed'])} 条（本批不记账，留给下一次）",
              f"已落账      {payload.get('accounted_keys')} 条",
              f"理由        {args.why}"]
     immediate = payload.get("unaccounted_immediate") or []
