@@ -101,7 +101,7 @@ def scoped_report(records_root, entry):
     card["citations"] = [c for c in card.get("citations", []) if delta.expand(c, index)]
     if not card["citations"]:
         raise ValueError("bound understanding card does not cite this source")
-    return delta.reconcile([card], index, root)
+    return delta.bounded_report(delta.reconcile([card], index, root), root)
 
 
 def run(ctx, entries):
@@ -144,6 +144,19 @@ def run(ctx, entries):
                                                allowed_asset_roots=assets)
             failures.extend({"id": entry["id"], **row} for row in refused)
             for packet in packets:
+                # The preceding batch may have updated this same card. Refresh
+                # its context before spending another call; never reuse our own
+                # obsolete card baseline for the next batch.
+                current_report = scoped_report(ctx.records_root, entry)
+                current_card = next(c for c in current_report["cards"] if c["card"] == entry["card"])
+                source = packet["source"]
+                current_range = next((r for r in current_card["judged"]["review_ranges"]
+                                      if all(r.get(k) == source.get(k) for k in
+                                             ("manifest", "from_position", "to_position"))), None)
+                if current_range is None:
+                    raise ValueError("source range changed before the next batch; remeasure on the next pass")
+                packet = brief_mod.brief_for(current_card, current_range, ctx.records_root,
+                                            allowed_asset_roots=assets)
                 identity = hashlib.sha256(json.dumps({"reader": native.VERSION, "source": packet["source"], "read": packet["read"]},
                                                       sort_keys=True).encode()).hexdigest()
                 directory = ctx.run_dir / "readings" / identity
@@ -176,6 +189,9 @@ def run(ctx, entries):
                           "awaiting": resolution.get("awaiting", []),
                           "authority": reason, "receipt": receipt}
                 results.append(result)
+                # Budget exhaustion on the next batch must leave the already
+                # produced decisions visible, not an absent alignment file.
+                ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
                 ctx.step("semantic", "resolved a pinned reading through the semantic owner",
                          source=entry["id"], reading=str(reading_path),
                          committed=bool(receipt), awaiting=len(result["awaiting"]))

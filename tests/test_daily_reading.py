@@ -77,12 +77,54 @@ def test_committed_im_range_is_not_sent_again_after_card_changes(tmp_path, monke
     assert second["outcomes"]["alignment"]["pending_readings"] == int(pending)
 
 
-def run(tmp_path, records, call=model, day=6):
+def run(tmp_path, records, call=model, day=6, budget=1):
     engine = recipes.Engine(state_root=tmp_path / "state", records_root=records,
                             scope="project:example", period={"id": f"day-{day}", "start": f"2026-10-{day:02}T00:00:00Z",
                                                               "end": f"2026-10-{day:02}T23:59:00Z"},
                             transport="native-claude-reader", model=call, run_dir=tmp_path / "evidence")
-    return engine.run(recipe_id="perception", budget=1)
+    return engine.run(recipe_id="perception", budget=budget)
+
+
+def test_large_im_range_resumes_remaining_batches_and_keeps_pending_alignment(tmp_path, monkeypatch):
+    records, card = im_fixture(tmp_path)
+    raw = records / 'information/raw/feishu/chats/people/x/oc_x'
+    path = raw / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['sync'].update(msg_count=105, remote_unique_message_count=105, last_message_id='om_104')
+    path.write_text(json.dumps(manifest))
+    (raw / 'messages.jsonl').write_text(''.join(json.dumps({
+        'message_id': f'om_{p}', 'message_position': str(p), 'content': f'message {p}',
+        'updated': False, 'deleted': False}) + '\n' for p in range(105)))
+    cli = daily_reading._load('runtime/cli.py')
+    monkeypatch.setattr(cli, '_delegation_from_grant', lambda *_: (
+        {'covers': ['example'], 'until': '2026-10-31T00:00:00Z', 'granted_by': 'fixture'}, 'test grant'))
+    spans = []
+    def reading(_, ask, __):
+        brief = ask['brief']
+        low, high = (brief['source'][k] for k in ('from_position', 'to_position'))
+        spans.append((low, high))
+        # The ordinary acceptance CLI reads the unsplit report. It must still
+        # recognize exactly this bounded subset of the currently proposed work.
+        capture = daily_reading._load('intake/capture_coverage.py')
+        delta = daily_reading._load('intake/understanding_delta.py')
+        semantic = daily_reading._load('intake/understanding_semantic.py')
+        full = delta.read_and_reconcile(records, capture.read_root(records)['objects'])
+        current = cli._reading_current(semantic, full, brief)
+        assert current['content_identity'] == brief['read']['content_identity']
+        result = model(None, None, None)
+        result['claims'][0]['support'] = {'positions': [low], 'start_line': None, 'end_line': None}
+        result['claims'].append({**result['claims'][0], 'kind': 'PROPOSAL', 'touches': ['goal']})
+        return result
+    first = run(tmp_path, records, call=reading)
+    assert first['stopped_because'] == 'BUDGET_EXHAUSTED', first
+    assert first['outcomes']['alignment']['pending_readings'] == 1
+    second = run(tmp_path, records, call=reading, day=7, budget=2)
+    assert second['stopped_because'] == 'NEEDS_DECISION', second
+    assert spans == [(1, 49), (50, 99), (100, 104)]
+    assert second['outcomes']['alignment']['pending_readings'] == 3
+    third = run(tmp_path, records, call=lambda *_: pytest.fail('completed batches sent again'), day=8)
+    assert third['model_calls'] == 0
+    assert third['outcomes']['alignment']['pending_readings'] == 3
 
 
 def test_pending_reading_is_cached_and_never_turned_into_authority(tmp_path, monkeypatch):
