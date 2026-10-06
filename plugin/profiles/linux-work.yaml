@@ -1045,7 +1045,8 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   runtime/serveros-wake-parent                 (absent) → 29c6d68e
 #   runtime/testing_contract.py                  (absent) → ad87c011
 #   skills/test-management/profiles.yaml         (absent) → 28abf727
-cachebuster: srv0005.20261006a
+# On-demand bootstrap, recoverable continuation and precise release status.
+cachebuster: srv0005.20261006b
 
 skills:
   - name: runtime-management

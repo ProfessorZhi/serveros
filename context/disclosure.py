@@ -120,10 +120,10 @@ def _capability_l0(value, source: str | None) -> dict:
 
     Two numbers, and they are not the same number
     ---------------------------------------------
-    A catalogue count and a resolved count answer different questions, and
-    the contract prices them differently: `costs.capability.L0` is "one
-    manifest read, no probes", which is a catalogue read. Counting what this
-    device can actually RESOLVE is the eight-input intersection — it needs
+    A catalogue count and a resolved count answer different questions.
+    Counting entries from one manifest without probes is a catalogue read.
+    Counting what this device can actually RESOLVE is the eight-input
+    intersection — it needs
     records a cheap startup read does not have, and at L2 it may run a probe.
 
     Rendering a catalogue count as "N resolvable" is the union wearing the
@@ -195,9 +195,10 @@ def _capability_line(counts: dict) -> str:
 # ---------------------------------------------------------------------------
 
 PRESENCE_LINE = "ServerOS is present on this device"
+_NOT_REQUESTED = object()
 
 
-def startup_view(*, item: str | None = None, capability_count=None,
+def startup_view(*, item: str | None = None, capability_count=_NOT_REQUESTED,
                  authority_line: str | None = None,
                  context_why: str | None = None,
                  authority_why: str | None = None) -> dict:
@@ -209,6 +210,8 @@ def startup_view(*, item: str | None = None, capability_count=None,
     function's signature — which is a visible edit, in a file whose docstring
     says why not to.
 
+    An omitted capability count means discovery is deferred, not broken. An
+    explicit None means counting was attempted but could not produce a value.
     A line that cannot be produced is rendered as unknown rather than dropped.
     Three lines is not "smaller" than five; it is five with two of them
     missing, and the reader cannot tell which.
@@ -222,7 +225,10 @@ def startup_view(*, item: str | None = None, capability_count=None,
         lines.append({"axis": "context", "level": "L0", "text": f"context: {item}"})
 
     capability = None
-    if capability_count is None:
+    if capability_count is _NOT_REQUESTED:
+        lines.append({"axis": "capability", "level": "L0",
+                      "text": "capabilities: use native discovery; ServerOS lookup on request"})
+    elif capability_count is None:
         lines.append({"axis": "capability", "level": "L0",
                       "text": "capabilities: unknown (not counted)"})
     else:
@@ -237,8 +243,8 @@ def startup_view(*, item: str | None = None, capability_count=None,
         lines.append({"axis": "authority", "level": "L0", "text": authority_line})
 
     lines.append({"axis": None, "level": None, "text":
-                  "details on request: `serverosctl context current | "
-                  "ability list | ability resolve --request <file>`"})
+                  "details on request: `serverosctl context current`; "
+                  "`serverosctl ability resolve --request <file>`"})
 
     return {
         "schema": SCHEMA,
@@ -291,7 +297,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--startup", action="store_true")
     parser.add_argument("--item")
-    parser.add_argument("--capabilities", type=int)
+    parser.add_argument("--capabilities", type=int, default=_NOT_REQUESTED)
     parser.add_argument("--authority")
     parser.add_argument("--level", help="axis:level, e.g. capability:2")
     parser.add_argument("--value", help="a JSON value for --level")

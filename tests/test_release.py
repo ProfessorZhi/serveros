@@ -228,6 +228,79 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("@SERVEROS_STATE_DIR@", unit)
         self.assertIn(str(self.comp_root / "current"), unit)
 
+    def wake_artifact(self, marker: str) -> Path:
+        art = make_artifact(self.base, marker)
+        for name in (release.WAKE_SERVICE_NAME, release.WAKE_TIMER_NAME,
+                     release.WAKE_PARENT_NAME):
+            (art / "runtime" / name).write_bytes((ROOT / "runtime" / name).read_bytes())
+        launcher = art / release.WAKE_PARENT_TEMPLATE
+        launcher.write_text(launcher.read_text() + f"\n# revision {marker}\n")
+        return art
+
+    def install_wake(self, *extra: str):
+        return run_release(["continuation-wake", "--budget", "900",
+                            *self.args(*extra)])
+
+    def test_status_checks_entry_points_not_current_mentioned_in_comments(self):
+        self.assertEqual(self.promote(make_artifact(self.base, "a"), "rev-a").returncode, 0)
+        unit = self.unit_dir / release.UNIT_NAME
+        original = unit.read_text()
+        unit.write_text(original.replace(
+            f"ExecStart={self.comp_root}/current/bin/serverosd",
+            f"# expected {self.comp_root}/current/bin/serverosd\n"
+            f"ExecStart={self.comp_root}/revisions/rev-a/bin/serverosd"))
+        self.assertEqual(self.status().returncode, 1)
+        unit.write_text(original)
+        shim = self.bin_dir / "serverosctl"
+        shim.unlink()
+        shim.symlink_to(self.comp_root / "current-old" / "bin" / "serverosctl")
+        self.assertEqual(self.status().returncode, 1)
+
+    def test_status_detects_launcher_drift_after_promotion_and_rollback(self):
+        self.assertEqual(self.promote(self.wake_artifact("a"), "rev-a").returncode, 0)
+        self.assertEqual(self.install_wake().returncode, 0)
+        self.assertEqual(self.status().returncode, 0)
+        promoted = self.promote(self.wake_artifact("b"), "rev-b")
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        self.assertIn("continuation-wake", promoted.stdout)
+        status = self.status()
+        self.assertEqual(status.returncode, 1, status.stdout)
+        self.assertIn("launcher differs", status.stdout)
+        self.assertEqual(self.install_wake().returncode, 0)
+        self.assertEqual(self.status().returncode, 0)
+        rolled_back = run_release(["rollback", *self.args()])
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
+        self.assertIn("continuation-wake", rolled_back.stdout)
+        self.assertEqual(self.status().returncode, 1)
+        self.assertEqual(self.install_wake().returncode, 0)
+        self.assertEqual(self.status().returncode, 0)
+
+    def test_status_detects_missing_launcher_and_wrong_wake_runtime(self):
+        self.assertEqual(self.promote(self.wake_artifact("a"), "rev-a").returncode, 0)
+        self.assertEqual(self.install_wake().returncode, 0)
+        launcher = self.bin_dir / release.WAKE_PARENT_NAME
+        launcher.unlink()
+        self.assertEqual(self.status().returncode, 1)
+        self.assertEqual(self.install_wake().returncode, 0)
+        launcher.chmod(0o644)
+        self.assertEqual(self.status().returncode, 1)
+        launcher.chmod(0o755)
+        unit = self.unit_dir / release.WAKE_SERVICE_NAME
+        unit.write_text(unit.read_text().replace(
+            f"ExecStart={self.comp_root}/current/bin/serverosctl",
+            f"ExecStart={self.comp_root}/revisions/rev-a/bin/serverosctl"))
+        self.assertEqual(self.status().returncode, 1)
+
+    def test_status_accepts_custom_parent_but_checks_it_exists(self):
+        self.assertEqual(self.promote(self.wake_artifact("a"), "rev-a").returncode, 0)
+        parent = self.base / "custom-parent"
+        parent.write_text("#!/bin/sh\nexit 0\n")
+        parent.chmod(0o755)
+        self.assertEqual(self.install_wake("--parent", str(parent)).returncode, 0)
+        self.assertEqual(self.status().returncode, 0)
+        parent.unlink()
+        self.assertEqual(self.status().returncode, 1)
+
     def test_the_default_state_dir_does_not_come_from_the_environment(self):
         """The regression, tested under the condition that produced it.
 

@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -800,15 +801,83 @@ def current_revision(composition_root: Path) -> str | None:
     return Path(os.readlink(link)).name
 
 
+def installed_exec_start(unit: Path) -> list[str]:
+    """Read the installed service command, never a path mentioned in a comment.
+
+    This inspects the files we install, not systemd's loaded state or drop-ins.
+    Multiple commands or syntax outside our generated units are not agreement.
+    """
+    if not unit.is_file():
+        return []
+    section, commands = "", []
+    for line in re.sub(r"\\\n", " ", unit.read_text()).splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Service]" and line.startswith("ExecStart="):
+            value = line.split("=", 1)[1].strip()
+            if value:
+                commands.append(value)
+            else:
+                commands.clear()
+    if len(commands) != 1:
+        return []
+    try:
+        return shlex.split(commands[0])
+    except ValueError:
+        return []
+
+
+def wake_installation_problems(args) -> list[str]:
+    """Optional until installed; then the receiver and launcher must agree."""
+    unit = args.unit_dir / WAKE_SERVICE_NAME
+    if not unit.exists() and not unit.is_symlink():
+        timer = args.unit_dir / WAKE_TIMER_NAME
+        return ["wake service missing"] if timer.exists() or timer.is_symlink() else []
+    root = args.runtime_root / args.composition / "current"
+    command = installed_exec_start(unit)
+    problems = []
+    if command[:3] != [str(root / "bin/serverosctl"), "work", "wake"]:
+        problems.append("wake ExecStart does not use current/bin/serverosctl work wake")
+    if command.count("--parent") != 1:
+        return problems + ["wake service has no unambiguous --parent"]
+    index = command.index("--parent") + 1
+    if index >= len(command) or not Path(command[index]).is_absolute():
+        return problems + ["wake service has no absolute Parent path"]
+    parent = Path(command[index])
+    if not parent.is_file() or not os.access(parent, os.X_OK):
+        return problems + [f"wake Parent missing or not executable: {parent}"]
+    # Custom --parent remains supported. Its code is owned by the operator;
+    # only the launcher installed by this release has a template to compare.
+    if parent == args.bin_dir / WAKE_PARENT_NAME:
+        template = root / WAKE_PARENT_TEMPLATE
+        if not template.is_file():
+            problems.append("current revision has no managed wake launcher template")
+        else:
+            try:
+                expected = render_unit(template.read_text(), root, args.state_dir)
+                if parent.read_text() != expected:
+                    problems.append("wake launcher differs from current revision")
+            except (ValueError, OSError) as exc:
+                problems.append(f"wake launcher cannot be compared: {exc}")
+    return problems
+
+
+def print_wake_followup(args) -> None:
+    problems = wake_installation_problems(args)
+    if problems:
+        for problem in problems:
+            print(f"  wake drift   {problem}")
+        print("  action       rerun continuation-wake with this node's existing "
+              "--budget and any custom --parent; promotion does not reinstall it")
+
+
 def cmd_status(args) -> int:
     root = args.runtime_root / args.composition
     cur, prev = current_revision(root), None
     prev_link = root / "previous"
     if prev_link.is_symlink():
         prev = Path(os.readlink(prev_link)).name
-
-    unit = args.unit_dir / UNIT_NAME
-    shim = args.bin_dir / "serverosctl"
 
     # The kind is read from the receipt the promotion wrote, so `status` reports
 
@@ -851,14 +920,25 @@ def cmd_status(args) -> int:
     print(f"cli shim          {shim} -> "
           f"{os.readlink(shim) if shim.is_symlink() else '(not a symlink)'}")
 
-    # What a reader actually wants from a status command: do the two entry
-    # points agree? A node whose supervisor and whose CLI resolve different
-    # revisions is the split brain this tool exists to remove, and it is
-    # reported as the headline rather than left for the reader to diff.
+    # Compare executable paths, not occurrences of "current" in comments or
+    # longer paths. Stable current links are required for the next promotion.
     agree = False
-    if cur and unit.is_file() and shim.is_symlink():
-        agree = (str(root / "current") in unit.read_text()
-                 and str(root / "current") in os.readlink(shim))
+    current = root / "current"
+    if cur and current.is_dir() and shim.is_symlink():
+        command = installed_exec_start(unit)
+        shim_target = Path(os.path.abspath(shim.parent / os.readlink(shim)))
+        agree = (command[:1] == [str(current / "bin/serverosd")]
+                 and (current / "bin/serverosd").is_file()
+                 and shim_target == current / "bin/serverosctl"
+                 and shim.is_file())
+    wake_problems = wake_installation_problems(args)
+    for problem in wake_problems:
+        print(f"wake drift        {problem}")
+    if not wake_problems:
+        wake_installed = (args.unit_dir / WAKE_SERVICE_NAME).is_file()
+        print(f"wake installation {'AGREE' if wake_installed else 'not installed (optional)'}")
+    agree = agree and not wake_problems
+    print("scope             installed files; loaded units/processes not checked")
     print(f"agreement         {'AGREE' if agree else 'DIVERGENT'}")
     return 0 if agree else 1
 
@@ -937,6 +1017,7 @@ def cmd_promote(args) -> int:
     if unit_text is not None:
         print(f"  unit         {args.unit_dir / UNIT_NAME}")
         print(f"  cli shim     {args.bin_dir / 'serverosctl'}")
+        print_wake_followup(args)
     if not args.no_reload and unit_text is not None:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
         print("  daemon-reload  done")
@@ -990,6 +1071,8 @@ def cmd_rollback(args) -> int:
                       root / "current" / "bin" / "serverosctl")
 
     print(f"rolled back    {current or '(none)'} -> {rev.name}  kind={kind}")
+    if unit_text is not None:
+        print_wake_followup(args)
     if not args.no_reload and unit_text is not None:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
     return 0
