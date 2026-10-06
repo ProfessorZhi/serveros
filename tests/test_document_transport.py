@@ -10,7 +10,11 @@
 - 认不出的标签**保留它自己的名字**而不是被压平 —— 压平之后，下游的「不认识的块要拒绝」
   就永远拒绝不了任何东西；
 - 取节正文时，**有正文走整段替换、没有正文才插在标题之后**。选错不是差一点：对空范围做
-  `block_replace` 会把标题删掉，而下一次 patch 正是要找那个标题。
+  `block_replace` 会把标题删掉，而下一次 patch 正是要找那个标题；
+- **CLI 在哪里由本文件回答，不由调用方的 `PATH` 回答**。`PATH` 是**调用方**的属性，而
+  调用方常常是 systemd 单元、不是登录 shell：2026-10-06 实测，`systemd-run --user` 里
+  `command -v lark-cli` 什么都不打印，而 CLI 就装在本机、从任何 shell 都跑到 1.0.96。
+  这一条同时钉住反向：「本来就找得到的机器用哪个二进制」不许被这次修复改变。
 """
 from __future__ import annotations
 
@@ -132,6 +136,97 @@ class TestWhatTheAdapterWillNotBelieve:
             "ok": True, "data": {"items": [{"name": "a", "perm": "view"},
                                            {"name": "b", "perm": "edit"}]}})
         assert transport.audience(URL) == transport.audience(URL)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# CLI 在哪
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestWhereTheCliIs:
+    """`PATH` 是**调用方**的属性，而调用方常常是 systemd 单元、不是登录 shell。
+
+    实测（2026-10-06，本机）：`systemd-run --user` 里 `command -v lark-cli` 什么都不
+    打印，而 CLI 就装在本机的 `~/.local/bin` 下、从任何 shell 都能跑到 1.0.96。下面几条
+    钉两件事：**装好了就必须找得到**，以及**本来就找得到的机器不许被这次修复换掉二进制**。
+    """
+
+    def test_path_still_wins_so_a_working_host_is_unchanged(self):
+        # 这条是安全论证本身。PATH 先问：一台 PATH 已经能解析的机器，跑的还是它原来
+        # 那个二进制。否则这个「修复」会变成一个穿着同一件外衣的新缺陷。
+        assert transport.resolve_cli(
+            environ={}, home=Path("/nonexistent"),
+            find=lambda name: f"/usr/local/bin/{name}") == "/usr/local/bin/lark-cli"
+
+    def test_the_override_is_an_answer_and_not_a_guess(self):
+        # 节点有权用它自己的约定；说一次就不必教这个文件认识它。
+        assert transport.resolve_cli(
+            environ={transport.CLI_OVERRIDE_ENV: "  /opt/tools/lark-cli  "},
+            find=lambda name: f"/usr/local/bin/{name}") == "/opt/tools/lark-cli"
+
+    def test_the_node_prefix_is_found_with_no_path_at_all(self, tmp_path):
+        # 单元的环境就是这一条：PATH 里没有 `~/.local/bin`。
+        binary = tmp_path / ".local" / "bin" / transport.LARK_CLI
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        assert transport.resolve_cli(
+            environ={"HOME": str(tmp_path)}, find=lambda name: None) == str(binary)
+
+    def test_the_npm_binary_is_a_fallback_that_does_not_also_need_node(self, tmp_path):
+        binary = (tmp_path / ".local" / "lib" / "node_modules"
+                  / "@larksuite" / "cli" / "bin" / transport.LARK_CLI)
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        assert transport.resolve_cli(
+            environ={"HOME": str(tmp_path)}, find=lambda name: None) == str(binary)
+
+    def test_a_name_that_is_not_executable_is_not_an_answer(self, tmp_path):
+        # 装了一半的产物不算装好：存在的名字不是可运行的答案。
+        binary = tmp_path / ".local" / "bin" / transport.LARK_CLI
+        binary.parent.mkdir(parents=True)
+        binary.write_text("not a program", encoding="utf-8")
+        binary.chmod(0o644)
+        assert transport.resolve_cli(
+            environ={"HOME": str(tmp_path)}, find=lambda name: None) == transport.LARK_CLI
+
+    def test_a_host_that_really_has_none_keeps_the_sentence_it_had(self, tmp_path):
+        # 真的没有时，保持原来的行为与原话，而不是换成 traceback。
+        assert transport.resolve_cli(
+            environ={"HOME": str(tmp_path)}, find=lambda name: None) == transport.LARK_CLI
+
+    def test_run_executes_the_resolved_file_and_leaves_a_decided_argv_alone(
+            self, monkeypatch):
+        # 替换点在 `run()` 里，因为调用点才是会漂移的东西 —— 这里是全树每一个
+        # `lark-cli` 调用唯一的落点，包括 `message_transport` 借调的那一个。
+        seen = []
+
+        class Done:
+            returncode = 0
+            stdout = '{"ok": true, "data": {}}'
+            stderr = ""
+
+        monkeypatch.setattr(transport.subprocess, "run",
+                            lambda argv, **kw: seen.append(argv) or Done())
+        monkeypatch.setattr(transport, "resolve_cli", lambda: "/resolved/lark-cli")
+        transport.run([transport.LARK_CLI, "docs", "+fetch"])
+        transport.run([transport.LARK_CLI, "docs", "+fetch"], timeout=5, cwd=None)
+        assert [argv[0] for argv in seen] == ["/resolved/lark-cli"] * 2
+
+    def test_an_argv_that_already_names_a_file_is_not_overruled(self, monkeypatch):
+        # 已经指名了一个文件的调用方是决定过的。
+        seen = []
+
+        class Done:
+            returncode = 0
+            stdout = '{"ok": true, "data": {}}'
+            stderr = ""
+
+        monkeypatch.setattr(transport.subprocess, "run",
+                            lambda argv, **kw: seen.append(argv) or Done())
+        monkeypatch.setattr(transport, "resolve_cli", lambda: "/resolved/lark-cli")
+        transport.run(["/already/absolute/lark-cli", "docs", "+fetch"])
+        assert seen[0][0] == "/already/absolute/lark-cli"
 
 
 # ────────────────────────────────────────────────────────────────────────────

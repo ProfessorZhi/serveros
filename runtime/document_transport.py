@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
@@ -40,6 +42,87 @@ SCHEMA = "serveros/document-transport.v1"
 #: The CLI this adapter drives. Named rather than assumed on PATH so a host
 #: without it fails with a sentence instead of a `FileNotFoundError` traceback.
 LARK_CLI = "lark-cli"
+
+#: An explicit answer for a node that keeps the CLI somewhere the list below has
+#: never heard of. That list is a list of *this* node's conventions, and a node
+#: is entitled to a convention this file does not know; naming it once in the
+#: environment is how a node says so without teaching this file about itself.
+CLI_OVERRIDE_ENV = "SERVEROS_LARK_CLI"
+
+#: Where a user-level install of `lark-cli` is, on a node shaped like this one.
+#: Each entry is a convention that already exists elsewhere in this tree rather
+#: than a guess: `~/.local/bin` is the prefix `scripts/release.py` installs this
+#: node's own launchers into (`--bin-dir` defaults to it) and the directory
+#: `runtime/fs_hygiene.py` describes as where "user-level installs put their
+#: executables"; `~/.local/lib/node_modules/@larksuite/cli/bin/` is npm's layout
+#: for the same tool, and the file there is the CLI itself rather than the
+#: wrapper that re-executes it, so it is the entry that does not also need
+#: `node`.
+CLI_FALLBACKS = (
+    ".local/bin",
+    ".local/lib/node_modules/@larksuite/cli/bin",
+)
+
+
+def _cli_candidates(home: Path) -> tuple[Path, ...]:
+    """`CLI_FALLBACKS`, as paths under `home`, most-preferred first."""
+    return tuple(home / part / LARK_CLI for part in CLI_FALLBACKS)
+
+
+def resolve_cli(*, environ=None, home=None, find=None) -> str:
+    """The file to execute for `LARK_CLI`, or the bare name if there is none.
+
+    `PATH` is consulted FIRST, and that order is the safety argument: on a host
+    where the bare name already resolved, this returns exactly the binary that
+    host ran before this function existed. A fix that silently changed which
+    `lark-cli` a working node used would be a second defect wearing this one's
+    coat.
+
+    It is here because `PATH` is a property of the CALLER, and the caller is a
+    systemd user unit, which is not a login shell. Measured on this node,
+    2026-10-06 — `command -v lark-cli` inside `systemd-run --user` prints
+    nothing, and `systemctl --user show-environment` gives a `PATH` with no
+    `~/.local/bin` in it, while the CLI is installed there and runs at 1.0.96
+    from any shell. `serveros-evening-alignment` therefore exited 2 every night
+    saying "nothing was attempted", and the first evening it had a recipient it
+    would have refused at the send step with "lark-cli is not on this host" —
+    about a host that has it.
+
+    The sibling unit `runtime/serveros-alert-sync.service` carries the
+    measurement this repairs: no `PATH=` is needed, it says, because ExecStart is
+    absolute and `lark-cli` "lives in /usr/local/bin". Both halves are true of
+    the program that unit starts and neither is true of the CLI that program
+    then runs — on this node `/usr/local/bin/lark-cli` does not exist and
+    `/usr/local/bin` is not writable by the unit's user. A unit whose ExecStart
+    is absolute needs no `PATH=` for itself and every `PATH=` for what it spawns.
+    """
+    env = os.environ if environ is None else environ
+    override = (env.get(CLI_OVERRIDE_ENV) or "").strip()
+    if override:
+        return override
+    finder = shutil.which if find is None else find
+    found = finder(LARK_CLI)
+    if found:
+        return found
+    base = Path(home) if home is not None else Path(env.get("HOME") or Path.home())
+    for candidate in _cli_candidates(base):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return LARK_CLI
+
+
+def _cli_resolved(argv: list[str]) -> list[str]:
+    """`lark-cli` → this node's file; anything else passed through untouched.
+
+    A caller that already named a file has decided, and this does not overrule
+    it. The substitution is here rather than at each call site because the call
+    sites are the thing that would drift — this is the one function every
+    `lark-cli` invocation in this tree goes through, including the ones
+    `runtime/message_transport.py` borrows from it.
+    """
+    if argv and argv[0] == LARK_CLI:
+        return [resolve_cli(), *argv[1:]]
+    return argv
 
 #: DocxXML tag → the block type the publish module reasons about. A tag not in
 #: here keeps its own name as its type, which is how an unmodelled block becomes
@@ -73,7 +156,14 @@ def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None) -> dict:
     alone: a call can exit zero and still have failed, and reading only the exit
     code is how "the document was not touched" becomes "the document was
     updated".
+
+    `argv[0]` is resolved here rather than left to `PATH` — see `resolve_cli` —
+    so that "on PATH" means what this node has and not what the caller's
+    environment happens to contain. That distinction is the whole reason this
+    adapter had a defect: its callers are often systemd units, which are not
+    login shells. An `argv` that already names a file is passed through.
     """
+    argv = _cli_resolved(argv)
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, cwd=cwd)
