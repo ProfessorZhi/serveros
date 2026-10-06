@@ -1089,7 +1089,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   really sent: measured on this node, the transport was called twice for one
 #   evening. The identity moves because that key is computed from the payload a
 #   session holds — a session left on j would keep producing a second card.
-cachebuster: srv0005.20261006k
+cachebuster: srv0005.20261006l
 
 skills:
   - name: runtime-management

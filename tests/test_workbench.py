@@ -244,13 +244,15 @@ class ReadingsAreCheckedByTheirCommands(unittest.TestCase):
     def test_a_flipped_verdict_is_caught_and_the_row_is_named(self):
         text = self._render_start_here()
         first = text.split("<!-- ⟦verdicts⟧\n", 1)[1].splitlines()[0]
-        row = first.split("=")[0]
-        (self.tmp / "START-HERE.md").write_text(
-            text.replace(f"{first}\n", f"{row}=FAILING\n", 1))
+        row, original = first.split("=", 1)
+        flipped = "FAILING" if original == "OK" else "OK"
+        changed = text.replace(f"{first}\n", f"{row}={flipped}\n", 1)
+        self.assertNotEqual(changed, text, "the test must actually alter its verdict")
+        (self.tmp / "START-HERE.md").write_text(changed)
         code, _, err = run_main(["--check", "--out", str(self.tmp),
                                  "--documents", "START-HERE"])
         self.assertEqual(code, 1)
-        self.assertIn(f"{row}: 盘中 FAILING → 现在", err)
+        self.assertIn(f"{row}: 盘中 {flipped} → 现在", err)
 
     def test_the_check_reports_what_it_compared_and_what_it_did_not(self):
         self._render_start_here()
