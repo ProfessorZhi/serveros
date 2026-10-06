@@ -428,12 +428,36 @@ class TheAbilityAuthorityIsNotADaemon(unittest.TestCase):
     # constant is how that agreement is enforced instead of duplicated. Reading
     # a file the producer wrote is not reaching the authority — that is
     # `refresh`, which stays in AUTHORITY_NAMES below.
+    #
+    # `resolution_catalogue` was admitted 2026-10-07, when
+    # `test_the_daemon_reaches_only_the_pure_half` went red on main with
+    # `unexpected: {'resolution_catalogue', …}`. It arrived with 9cc4c47
+    # ("connect task-oriented ability discovery and monitoring receipts") and it
+    # is admitted because it meets the criterion the rest of this set meets, not
+    # because something already used it: it normalizes records its caller
+    # already read — the daemon passes `catalogue["entries"]` out of the
+    # producer's artifact under `state/abilities/` — with dict operations and
+    # one `json.dumps` for de-duplication.
+    #
+    # The admission is not taken on trust. `test_every_admitted_name_is_pure`
+    # requires of every admitted name that its intra-module call closure cannot
+    # reach `_git`, with `_git`/`read_manifest`/`refresh` as the control that
+    # the predicate does not answer "pure" to everything.
     ALLOWED_NAMES = {"TREE_SCHEMA", "domain_tree", "tree_rows", "ABILITY_FIELDS",
-                     "CATALOGUE_NAME"}
+                     "CATALOGUE_NAME", "resolution_catalogue"}
 
     # The names that reach the authority. Reaching these from the daemon would
     # make `git show` — in another repository, on another filesystem — part of
     # the control loop's latency budget, which is exactly what §28 refuses.
+    #
+    # This is a POLICY set, not a mechanical one, and the difference is worth
+    # knowing before reading the gate below as a proof about all four: `_git`,
+    # `read_manifest` and `refresh` fork git, and `project` does not — it takes
+    # a manifest its caller already read. `project` is here because building the
+    # projection is Core-2's job, so a daemon that called it would be Core-2
+    # running inside the control loop. Only the three that fork are usable as
+    # the control for a mechanical predicate, and that is the three the control
+    # test names.
     AUTHORITY_NAMES = {"_git", "read_manifest", "refresh", "project"}
 
     def _daemon_uses(self) -> set[str]:
@@ -444,6 +468,52 @@ class TheAbilityAuthorityIsNotADaemon(unittest.TestCase):
                 if node.value.id == "ability_projection_mod":
                     used.add(node.attr)
         return used
+
+    def _defined_functions(self) -> dict[str, ast.AST]:
+        tree = ast.parse(self.PROJECTION.read_text())
+        return {
+            n.name: n
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def _defined_constants(self) -> set[str]:
+        tree = ast.parse(self.PROJECTION.read_text())
+        names: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+        return names
+
+    def _call_closure(self, name: str) -> set[str]:
+        """Module-level functions `name` can reach by calling, transitively.
+
+        Intra-module only. An imported helper is a different question, and the
+        loader-closure tests in the sibling file are the ones that ask it.
+        """
+        funcs = self._defined_functions()
+        seen: set[str] = set()
+        stack = [name]
+        while stack:
+            fn = funcs.get(stack.pop())
+            if fn is None:  # a constant, or a name that is not defined here
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and node.id in funcs:
+                    if node.id not in seen:
+                        seen.add(node.id)
+                        stack.append(node.id)
+        return seen
+
+    def _reaches_git(self, name: str) -> bool:
+        """Whether asking the daemon to touch `name` would fork git.
+
+        `_git` itself counts: it IS the fork, so the walk has nothing to find
+        and the name comparison is what answers for it.
+        """
+        return name == "_git" or "_git" in self._call_closure(name)
 
     def test_the_daemon_reaches_only_the_pure_half(self):
         used = self._daemon_uses()
@@ -475,6 +545,75 @@ class TheAbilityAuthorityIsNotADaemon(unittest.TestCase):
         # daemon calls, and a reader who assumes "the daemon loads it, so it is
         # pure" is making the mistake this test names.
         self.assertIn("subprocess", (REPO / "runtime" / "ability_projection.py").read_text())
+
+    def test_every_admitted_name_is_pure(self):
+        """The allow-list is checked, not trusted.
+
+        `test_the_daemon_reaches_only_the_pure_half` asserts which NAMES the
+        daemon touches, and on its own that is satisfied by adding any name to
+        ALLOWED_NAMES — including `refresh`. This is the other half, and it is
+        the half the docstring above claims: an admitted name must be pure,
+        which here has one mechanical meaning — it cannot reach `_git`, so it
+        cannot put a `git show` against another repository onto the control
+        loop's latency budget (§28).
+
+        A constant is admitted by being declared at module level. A name that is
+        neither a function nor a declared constant is admitted by nothing: it
+        is a typo, and a typo here is worse than an unused entry, because it
+        looks like it admitted something while the daemon's use of it would
+        still have to be caught by the other test.
+        """
+        funcs = self._defined_functions()
+        constants = self._defined_constants()
+        for name in sorted(self.ALLOWED_NAMES):
+            if name in funcs:
+                self.assertFalse(
+                    self._reaches_git(name),
+                    f"{name} is admitted to the daemon but reaches _git",
+                )
+            else:
+                self.assertIn(
+                    name,
+                    constants,
+                    f"{name} is admitted but is neither a function nor a "
+                    "module-level constant of the projection",
+                )
+
+        # Both halves of the list must be doing work, or the loop above is
+        # passing over an empty set.
+        self.assertTrue(funcs, "no module-level functions parsed")
+        self.assertTrue(
+            self.ALLOWED_NAMES & set(funcs),
+            "no admitted name is a function — the purity half asserts nothing",
+        )
+        self.assertTrue(
+            self.ALLOWED_NAMES & constants,
+            "no admitted name is a constant — the declaration half asserts nothing",
+        )
+
+    def test_the_purity_predicate_is_not_vacuous(self):
+        """The negative control for the gate above.
+
+        `_reaches_git` is a call-closure walk, and a walk that finds nothing
+        reports "pure" for every input. Two things make the assertion above mean
+        something: the module's actual git path must come back impure, and the
+        predicate must return BOTH answers across the module rather than one
+        answer to everything.
+        """
+        funcs = self._defined_functions()
+        for name in ("_git", "read_manifest", "refresh"):
+            self.assertIn(name, funcs, f"{name} is gone from the projection")
+            self.assertTrue(
+                self._reaches_git(name),
+                f"the predicate reports {name} as pure; it forks git",
+            )
+        verdicts = {self._reaches_git(name) for name in funcs}
+        self.assertEqual(
+            verdicts,
+            {True, False},
+            f"the predicate is not discriminating: it answered {verdicts} for "
+            f"all {len(funcs)} module-level functions",
+        )
 
 
 class ASessionIsNotAManagedRuntime(unittest.TestCase):
