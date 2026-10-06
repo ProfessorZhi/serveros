@@ -1089,7 +1089,33 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   really sent: measured on this node, the transport was called twice for one
 #   evening. The identity moves because that key is computed from the payload a
 #   session holds — a session left on j would keep producing a second card.
-cachebuster: srv0005.20261006l
+#
+#   k → l: recorded here after the fact. This entry was not written when `l`
+#   was promoted — PR64's diff is the source, read rather than remembered.
+#   `runtime/inventory.py` stops declaring `/opt/applications` as DATA_FS and
+#   resolves that role from this node's binding like the other two, and grades
+#   disk pressure as `used / (used + free)` instead of `used / total`: the
+#   filesystem total counts reserved blocks this user cannot allocate, so the
+#   artifact and `df` were quoting different percentages for one mount, and
+#   the reading that looked safe was the one that was wrong. Counters that
+#   disagree with each other now return UNAVAILABLE rather than a percentage
+#   nobody should act on. The identity moved because a session holding `k`
+#   keeps answering a disk-pressure question with the arithmetic `l` replaced.
+#
+#   l → m: `runtime/document_transport.py` answers where the CLI is instead of
+#   leaving the bare name to the caller's `PATH`. That was never a question
+#   about this node and always a question about the caller, and the caller is
+#   a systemd user unit, which is not a login shell: measured on this node,
+#   `command -v lark-cli` inside `systemd-run --user` prints nothing while the
+#   CLI is installed at `~/.local/bin/lark-cli` and runs at 1.0.96 from any
+#   shell. `serveros-evening-alignment` was exiting 2 every night for that
+#   reason, and the night it finally had a recipient it would have refused at
+#   the send step with "lark-cli is not on this host" — about a host that has
+#   it. The identity moves because this file is the whole delta: a session
+#   left on `l` carries a `report evening` path that cannot reach the CLI at
+#   the one moment it matters, and it would report that as a missing tool
+#   rather than as its own defect.
+cachebuster: srv0005.20261006m
 
 skills:
   - name: runtime-management
