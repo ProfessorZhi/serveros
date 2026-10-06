@@ -1239,6 +1239,11 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
 
     urgent = [row for row in digest["shown"]
               if row["immediate"] and may_interrupt(row, table=face)]
+    floor = proactive_severities(block)
+    proactive = [row for row in digest["rows"]
+                 if row.get("kind") in _PROACTIVE_KINDS
+                 and row.get("severity") in floor]
+    worthy = [row for row in proactive if may_interrupt(row, table=face)]
 
     since_digest = None
     if cursor.last_digest_at():
@@ -1301,6 +1306,11 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     key = f"alert-digest-{digest.get('device_ref') or 'device'}-{generation}"
     out = {"send": False, "why": "", "generation": generation,
            "idempotency_key": key, "immediate": [r["key"] for r in urgent],
+           # Declining a diagnostic and deferring a worthwhile message are
+           # different outcomes. The sender must not account a cooldown as a
+           # permanent decline. Keep worthy overflow beyond `shown` pending too.
+           "still_owed": "shown" if urgent or worthy or integrity_face else "none",
+           "pending_keys": sorted({r["key"] for r in urgent + worthy}),
            "interval_seconds": interval,
            "seconds_since_last_digest": since_digest,
            "seconds_since_last_attempt": since_attempt,
@@ -1346,10 +1356,6 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # never makes one exist. A NOTICE is excluded because it is context for a
     # card somebody is reading, and hourly context on a quiet host is a robot
     # that talks to itself.
-    floor = proactive_severities(block)
-    proactive = [row for row in digest["rows"]
-                 if row.get("kind") in _PROACTIVE_KINDS
-                 and row.get("severity") in floor]
 
     # §27's second half, and the half that was missing. The severity floor is
     # NECESSARY and not sufficient: it asks "may this cause a card" without ever
@@ -1357,7 +1363,6 @@ def decision(digest: dict, cursor: DeliveryCursor, *, at: str,
     # printing is a reason to send a card announcing that there is nothing to
     # report, so the face test decides, and the two doors above and here are the
     # same door.
-    worthy = [row for row in proactive if may_interrupt(row, table=face)]
 
     # §八-B, the door `held` never had. An integrity finding is a subject this
     # node SAID should exist and can no longer observe. It is not a delta and
@@ -1720,9 +1725,14 @@ def account(cursor: DeliveryCursor, *, at: str, digest: dict, why: str,
     pending their first send. A caller has to state which it means, and the
     three real callers each have one answer:
 
-      * the decision was not to send at all      -> `owed=()`
+      * the decision declined the findings      -> `owed=()`
+      * a worthwhile message waits on a timer   -> `owed=shown_keys`
       * the send was delivered                   -> `owed=shown_keys`
       * the send failed and will be retried      -> `owed=shown_keys`
+
+    The decision's `pending_keys` additionally protects worthwhile rows beyond
+    the displayed limit. The sender uses `decision.still_owed`; `send: false`
+    alone cannot distinguish a decline from an interval or cooldown wait.
 
     AN IMMEDIATE ROW IS NEVER ACCOUNTED HERE
     ----------------------------------------
@@ -1748,6 +1758,11 @@ def account(cursor: DeliveryCursor, *, at: str, digest: dict, why: str,
         key = item.get("key") if isinstance(item, dict) else item
         if key:
             owed_keys.add(str(key))
+    # The composer's attention decision protects worthwhile rows that did not
+    # fit `shown`, including while an interval or failed send delays delivery.
+    # Receipted rows still leave the next delta through record(), not account().
+    pending = (digest.get("decision") or {}).get("pending_keys") or []
+    owed_keys.update(str(key) for key in pending)
 
     rows = [row for row in (digest.get("rows") or [])
             if str(row.get("key") or "") and str(row["key"]) not in owed_keys]

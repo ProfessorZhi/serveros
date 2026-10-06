@@ -329,8 +329,16 @@ class TheWindowIsEightToTwentyInclusive(unittest.TestCase):
         self.assertTrue(answer["in_window"])
         self.assertEqual(answer["tick"], 13)
 
-    def test_one_second_past_twenty_is_after_the_window(self):
-        answer = self.window(PLAIN_WEEKDAY, 20, 0, 1)
+    def test_last_tick_accepts_bounded_scheduler_and_collection_delay(self):
+        for minute, second in ((0, 1), (0, 32), (4, 59)):
+            with self.subTest(minute=minute, second=second):
+                answer = self.window(PLAIN_WEEKDAY, 20, minute, second)
+                self.assertTrue(answer["in_window"])
+                self.assertEqual(answer["tick"], 13)
+                self.assertEqual(answer["route"], "ROUTINE_UPDATE")
+
+    def test_last_tick_grace_ends_at_twenty_oh_five(self):
+        answer = self.window(PLAIN_WEEKDAY, 20, 5, 0)
         self.assertFalse(answer["in_window"])
         self.assertEqual(answer["reason"], "AFTER_WINDOW")
         self.assertNotEqual(answer["route"], "ROUTINE_UPDATE")

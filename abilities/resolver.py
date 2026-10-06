@@ -307,7 +307,7 @@ def _one_declaration(entry: dict, field: str) -> dict | None:
     """The single declaration in one Thin Link slot, or None.
 
     The catalogue carries each slot as a LIST of the distinct declarations made
-    by the records that name this ability (`runtime/cli.py#_distinct_declarations`).
+    by the records that name this ability (`runtime/ability_projection.py#resolution_catalogue`).
     Exactly one element is the only shape that answers a question about what
     the ability IS; zero is "declared nothing" and two or more is two records
     that disagree, and neither of those may be read as a value by picking one.
