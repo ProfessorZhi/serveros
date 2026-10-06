@@ -1172,7 +1172,25 @@ class TestAgainstTheRecordedCapture:
             assert record["coverage"]["components"]["body"]["facts"][
                 "content_sha256_chars"] == 12
 
-    def test_the_two_unpaginated_chats_carry_no_independent_denominator(self):
+    def test_the_captures_with_no_independent_denominator_are_undecidable(self):
+        """Three captures, and the third arrived by design rather than by drift.
+
+        The first two were taken before the collector recorded an independent
+        count at all: their `sync` block carries `msg_count` and nothing to
+        check it against. The third is a capture the collector bounded at an
+        anchor — `information/raw/sync_feishu_chat.py` on records `origin/main`,
+        commit `db30ffc` — and on that path it records
+        `tail_unique_message_count` and REMOVES `remote_unique_message_count`,
+        with the reason in its own comment: "tail is not a full remote count".
+
+        That is why this test cannot say "unpaginated": the third capture
+        FINISHED paging (`pagination_complete: true`, and a page loop that
+        stopped early is INCOMPLETE, which beats UNDECIDABLE), and it is still
+        undecidable because the one thing a denominator needs — a number from
+        outside this capture — was deliberately not claimed. The census stays
+        exact, because what it is for is that the reader calls these
+        UNDECIDABLE for the stated reason rather than COMPLETE.
+        """
         if not LIVE_RECORDS.is_dir():
             pytest.skip("this node's records checkout is not here")
         report = cc.read_root(LIVE_RECORDS)
@@ -1182,8 +1200,15 @@ class TestAgainstTheRecordedCapture:
         assert sorted(o["path"] for o in undecided) == sorted([
             "feishu/chats/people/venus-liu/oc_89c0764c0664c7ec492220164e29a328/manifest.json",
             "feishu/chats/people/yale-huang/oc_f4b9ed4885415a496e8f0b5d24d321c8/manifest.json",
+            "feishu/chats/people/zhangzhengji/oc_ddc206bb6093ec959b51752cc7a59533/manifest.json",
         ])
         for record in undecided:
-            facts = record["coverage"]["components"]["messages"]["facts"]
-            assert "pagination_complete" not in facts
+            component = record["coverage"]["components"]["messages"]
+            facts = component["facts"]
             assert "remote_unique_message_count" not in facts
+            assert any("remote_unique_message_count" in line
+                       for line in component["why"]), component["why"]
+            # Where the fact survived the capture it can only say the page loop
+            # reached the end: a recorded shortfall is INCOMPLETE, and a
+            # flagless capture keeps no such fact at all.
+            assert facts.get("pagination_complete", True) is True
