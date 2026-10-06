@@ -10842,6 +10842,16 @@ def _reading_current(semantic, report: dict, reading: dict, *,
                 if row.get("manifest") == source.get("manifest")
                 and row.get("from_position") == source.get("from_position")
                 and row.get("to_position") == source.get("to_position")]
+    if not matching and source.get("from_position") is not None:
+        # The finite reader uses bounded subsets of the same proposed ranges.
+        # Regenerate those exact subsets, never accept an arbitrary caller span.
+        delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
+                                  "serveros_semantic_batch_delta")
+        bounded = delta.bounded_report(report, Path(report["records_root"]))
+        batch_card = next(c for c in bounded["cards"] if c.get("card") == source.get("card"))
+        matching = [r for r in batch_card["judged"]["review_ranges"]
+                    if all(r.get(k) == source.get(k) for k in
+                           ("manifest", "from_position", "to_position"))]
     if not matching:
         proposed = ", ".join(
             f"{row.get('manifest')} {row.get('from_position')}–"
