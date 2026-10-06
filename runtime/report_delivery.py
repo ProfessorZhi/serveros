@@ -71,6 +71,12 @@ OUTBOX_STATES = ("PENDING", "WITHDRAWN")
 #: a reader could actually have received.
 PUBLICATION_RECEIPT = "publication-receipt.json"
 
+#: The other file a directory can hold its version in. A report states it in a
+#: publication receipt; anything else — the 19:20 alignment brief is the one
+#: that exists — states it here. `held_version` reads one or the other through
+#: one resolver, so the delivery discipline below stays about delivery.
+VERSION_FILE = "version.json"
+
 #: What a caller says when it has just re-checked that this delivery is still
 #: authorized. Required, and the module will not invent a yes: authorization is a
 #: property of the moment of sending, not of the moment of asking — "静默期间可
@@ -212,41 +218,74 @@ def _now(at=None) -> str:
         timespec="seconds")
 
 
-def published_version(out_dir) -> dict:
-    """The report this directory is holding, and the version it claims to be.
+def held_version(out_dir) -> dict:
+    """The version this directory is holding, and the file that says so.
 
-    The bytes are hashed HERE rather than trusted from the publication receipt,
-    and the two are then compared. A receipt that names a hash the file no
-    longer has is the one failure mode that makes a delivery receipt worthless:
-    it would tie a receiver's copy to a version that was never published.
+    Two kinds of directory state their version and this is the one place that
+    difference is written down, because the discipline below is about putting
+    ONE version in front of ONE receiver and does not care what the bytes are:
+
+      * a **report** directory states it in `publication-receipt.json`, whose
+        `document.file` + `document.sha256` are the report's own publication
+        record;
+      * a directory holding anything else — the 19:20 alignment brief is the
+        one that exists — states it in `version.json`, whose `file` +
+        `sha256` name the artefact the same way.
+
+    What is NOT different between them is the rule: the bytes are hashed HERE
+    and compared to what the record claims. A record that names a hash the file
+    no longer has is the one failure mode that makes a delivery receipt
+    worthless — it would tie a receiver's copy to a version that was never
+    published. Reading the two kinds through one resolver is also what keeps
+    `request`/`deliver` (and therefore `report request`/`report deliver`, and
+    the idempotency and receipt discipline they carry) usable for both: a
+    second module for the second kind would be a second copy of everything
+    below, and the copies would drift the day one gained a state.
+
+    `published_version` is this function's old name and its report-only body;
+    it was renamed rather than kept beside this one because two functions that
+    answer "which version" are two things a caller can pick wrong.
     """
     directory = _dir(out_dir)
     receipt = _read_json(directory / PUBLICATION_RECEIPT)
-    if receipt is None:
-        raise Refused(
-            f"{directory} 里没有 {PUBLICATION_RECEIPT}：这份目录没有发布过任何报告。"
-            f"没有发布过的东西不能被投递，也没法说投递的是哪一版")
-    document = receipt.get("document") or {}
-    name = document.get("file")
-    if not name:
-        raise Refused(
-            f"{PUBLICATION_RECEIPT} 里没有 document.file，所以它没有指明是哪一份报告。"
-            f"一份不指明对象的回执不能给另一次投递背书")
-    path = Path(name)
+    if receipt is not None:
+        where = PUBLICATION_RECEIPT
+        record = receipt.get("document") or {}
+        if not record.get("file"):
+            raise Refused(
+                f"{PUBLICATION_RECEIPT} 里没有 document.file，所以它没有指明是哪一份报告。"
+                f"一份不指明对象的回执不能给另一次投递背书")
+        period = (receipt.get("report") or {}).get("period")
+        schema = receipt.get("schema")
+    else:
+        statement = _read_json(directory / VERSION_FILE)
+        if statement is None:
+            raise Refused(
+                f"{directory} 里既没有 {PUBLICATION_RECEIPT} 也没有 {VERSION_FILE}："
+                f"这份目录没有发布过任何报告，也没有写下过任何版本。"
+                f"没有发布过的东西不能被投递，也没法说投递的是哪一版")
+        where = VERSION_FILE
+        record = statement
+        if not record.get("file"):
+            raise Refused(
+                f"{VERSION_FILE} 里没有 file，所以它没有指明是哪一份东西。"
+                f"一份不指明对象的版本声明不能给一次投递背书")
+        period = statement.get("period")
+        schema = statement.get("schema")
+    path = Path(record["file"])
     if not path.is_file():
         raise Refused(
-            f"发布回执指向 {path}，而这份文件不在那里。要么报告被移走了，要么回执指向了"
+            f"{where} 指向 {path}，而这份文件不在那里。要么文件被移走了，要么记录指向了"
             f"别处；两种情况下这次投递都不是「投递这一版」")
     actual = _sha(path.read_bytes())
-    claimed = document.get("sha256")
+    claimed = record.get("sha256")
     if claimed != actual:
         raise Refused(
-            f"发布回执声称这一版的 sha256 是 {claimed!r}，而 {path} 现在的 sha256 是 "
-            f"{actual!r}。文件在发布之后被改过，回执说的那一版已经不在这里了——"
-            f"投出去的话，收件人拿到的是一份没有任何回执为它背书的内容")
-    report = receipt.get("report") or {}
+            f"{where} 声称这一版的 sha256 是 {claimed!r}，而 {path} 现在的 sha256 是 "
+            f"{actual!r}。文件在记录之后被改过，记录说的那一版已经不在这里了——"
+            f"投出去的话，收件人拿到的是一份没有任何记录为它背书的内容")
     return {"file": str(path), "sha256": actual, "bytes": len(path.read_bytes()),
-            "period": report.get("period"), "schema": receipt.get("schema")}
+            "period": period, "schema": schema}
 
 
 def intent_key(version: dict, recipient: str, channel: str | None) -> str:
@@ -301,7 +340,7 @@ def request(out_dir, *, recipient, requested_by, why, channel=None,
     if not reason:
         raise Refused("没有说为什么要发。留在 outbox 里的每一条都要能回答这个问题")
 
-    version = published_version(out_dir)
+    version = held_version(out_dir)
     key = intent_key(version, recipient, channel)
     outbox = read_outbox(out_dir)
     entries = list(outbox.get("entries") or [])
@@ -420,7 +459,7 @@ def deliver(out_dir, *, sender, authorization=None, at=None) -> dict:
         return _nothing_pending(directory, out_dir, all_entries)
 
     entry = entries[-1]
-    version = published_version(out_dir)
+    version = held_version(out_dir)
     key = intent_key(version, entry["audience"]["recipient"],
                      entry["audience"].get("channel"))
     if key != entry["intent"]:
