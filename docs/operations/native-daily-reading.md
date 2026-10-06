@@ -84,6 +84,29 @@ serverosctl report deliver  --out-dir <投递目录> --conversation user:<open_i
 收件人由人指定（`--conversation`，或服务里的 `SERVEROS_REPORT_CONVERSATION`）；
 没有指定时回答 `PENDING_CONSUMER`——一条待发，不是一次失败，也没有任何人被打扰。
 
+### 定时器只调一条命令，三条判断在命令里
+
+一个每晚 20:00 的单元不能自己算「今天是哪一天（北京）」「今晚的运行记录是哪一份」——
+写进单元文件的一行 shell 没有东西能测，而它们**取错值时都不报错**。所以这三样在
+`report evening` 里算：
+
+```text
+serverosctl report evening --run-dir <19:20 的目录> --record-dir <perception 运行记录目录>
+  --out-root <投递根> --requested-by <谁要的> --why <为什么> [--conversation user:<open_id>]
+```
+
+它按北京日取当天目录（`<out-root>/<YYYY-MM-DD>/`），所以同一晚跑第二次落在**同一版**上，
+而不是造出第二版。运行记录按**记录自己的 `finished_at`** 挑，不按文件 mtime：从备份还原、
+手工拷贝或 `retake` 留下的记录，mtime 是今天而 `finished_at` 是昨天——按 mtime 挑，缺口
+那一节就会由**另一天**的那一次来填，而填满的一节和真量过的一节长得一模一样。当天没有
+记录时它宁可不填，缺口那一节照实写「没有量过」。
+
+`--requested-by` 与 `--why` 是必填的，理由与 `report request` 相同：定时器触发不是「有人
+要求过」。收件人没配置时，`report evening` **连待发意图都不记**，退出码 2——一份写好了
+却没有任何人会被通知的简报，与一份送达的简报，在任何一张健康表上都必须是不同的两行。
+配置好收件人之后再跑：同一天同一版只会有一条待发记录（幂等键取自版本 sha256），
+所以重试不会变成第二封消息。
+
 Focus 从 Work Engine 投影中的唯一 READY Activity 读取动作，从当前 Item card
 计算 scope digest，再关联唯一有效 grant。多个可执行 Activity 或多个 grant 不自动择一。
 scope 变化会被原有准入政策拒绝；旧投影的时间不会被重新标成当前时间。

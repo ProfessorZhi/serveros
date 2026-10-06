@@ -136,6 +136,65 @@ def read_record(path) -> dict | None:
     return _read(Path(path))
 
 
+def beijing_day(at=None) -> str:
+    """The Beijing day `at` names, as `YYYY-MM-DD`. The wall clock if absent.
+
+    Exposed because the 20:00 entry has to ask the same question three times —
+    which day's preparation, which day's run record, which directory to deliver
+    into — and three private calls to `_moment` would be three chances to answer
+    it differently inside one evening's act.
+    """
+    return _moment(at).strftime("%Y-%m-%d")
+
+
+def select_run_record(record_dir, day: str) -> tuple[dict | None, str]:
+    """The perception run that finished on `day`, and the sentence saying which.
+
+    Dated by the record's own `finished_at`, never by the file's modification
+    time. A record restored from a backup, copied by hand, or left behind by a
+    `retake` carries the time it finished and not the time it was touched — and
+    mtime would let last night's run answer for tonight's. The gap section would
+    then be filled from a pass that read a different day's sources, which looks
+    exactly like a measured answer.
+
+    The second return value is the reason, and it is returned rather than logged
+    because the card is where it has to end up: "there is no record" and "the
+    newest record is from another day" are different sentences to the person
+    reading the 理解缺口 section, and only the caller can print either.
+    """
+    directory = Path(record_dir)
+    if not directory.is_dir():
+        return None, f"{directory} 不存在——这一轮没有可读的 perception 运行记录"
+    newest = None
+    newest_at = None
+    skipped = 0
+    for path in sorted(directory.glob("*.json")):
+        record = read_record(path)          # raises on a file that exists and is unreadable
+        if record is None:                  # a glob hit that is not a readable file
+            skipped += 1
+            continue
+        stamp = record.get("finished_at") or record.get("claimed_at")
+        try:
+            finished = datetime.datetime.fromisoformat(str(stamp))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=datetime.timezone.utc)
+        finished = finished.astimezone(BEIJING)
+        if finished.strftime("%Y-%m-%d") != day:
+            continue
+        if newest_at is None or finished > newest_at:
+            newest, newest_at = record, finished
+    if newest is None:
+        return None, (f"{directory} 里没有 {day}（北京）完成的运行记录——后面缺口那一节"
+                      f"因此写的是「没有量过」，不是「没有缺口」")
+    note = f"{newest_at:%Y-%m-%d %H:%M}（北京）完成"
+    if skipped:
+        note += f"；另有 {skipped} 份没有可解析的完成时间，没有被算进来"
+    return newest, note
+
+
 def _atomic_text(path: Path, text: str) -> None:
     """Write, or refuse. A half-written brief is one that names a version of itself.
 

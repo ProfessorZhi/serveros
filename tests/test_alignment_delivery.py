@@ -303,3 +303,95 @@ def test_stating_the_day_a_backfill_belongs_to_lets_it_through(tmp_path):
                                          at="2026-10-05T11:20:00+00:00")
 
     assert written["counts"]["decision"] == 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# the 20:00 entry: which day, and which run record answers for it
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_the_evening_day_is_the_beijing_day_and_not_the_utc_one():
+    """19:20 Beijing is 11:20Z the same day; 01:30 Beijing is 17:30Z the day before.
+
+    One line, two days: the second case is the one that would put a card about
+    the 6th into the 5th's directory, or select the 5th's run record for the
+    6th's brief.
+    """
+    assert alignment_delivery.beijing_day("2026-10-06T11:20:00+00:00") == "2026-10-06"
+    assert alignment_delivery.beijing_day("2026-10-05T17:30:00+00:00") == "2026-10-06"
+
+
+def record(finished, *, state="STOPPED", code="NO_CHANGE"):
+    return {"state": state, "stopped_because": code, "finished_at": finished,
+            "outcomes": {"unread": []}}
+
+
+def records_dir(tmp_path, **named):
+    folder = tmp_path / "perception"
+    folder.mkdir()
+    for name, payload in named.items():
+        (folder / f"{name}.json").write_text(json.dumps(payload))
+    return folder
+
+
+def test_the_latest_record_finished_that_day_is_the_one_selected(tmp_path):
+    folder = records_dir(tmp_path,
+                         early=record("2026-10-06T12:00:00+08:00"),
+                         late=record("2026-10-06T19:20:30+08:00"))
+    chosen, note = alignment_delivery.select_run_record(folder, "2026-10-06")
+
+    assert chosen["finished_at"] == "2026-10-06T19:20:30+08:00"
+    assert "19:20" in note
+
+
+def test_a_record_is_dated_by_its_own_finished_at_and_never_by_mtime(tmp_path):
+    """The failure this ordering exists for, in the shape it actually arrives in.
+
+    A record restored from a backup, or copied by hand, has today's mtime and
+    yesterday's `finished_at`. Selecting by mtime would fill tonight's 理解缺口
+    from a pass that read another day's sources — and a filled gap section and a
+    measured one are the same picture.
+    """
+    folder = records_dir(tmp_path, yesterday=record("2026-10-05T19:20:30+08:00"))
+    stamp = datetime.datetime.fromisoformat("2026-10-06T19:30:00+08:00").timestamp()
+    os.utime(folder / "yesterday.json", (stamp, stamp))
+
+    chosen, note = alignment_delivery.select_run_record(folder, "2026-10-06")
+
+    assert chosen is None
+    assert "没有 2026-10-06" in note
+
+
+def test_a_directory_with_no_record_of_that_day_names_the_missing_measurement(tmp_path):
+    folder = records_dir(tmp_path, other=record("2026-10-04T19:20:30+08:00"))
+    chosen, note = alignment_delivery.select_run_record(folder, "2026-10-06")
+
+    assert chosen is None
+    assert "没有量过" in note
+
+
+def test_a_record_directory_that_is_not_there_is_reported_rather_than_treated_as_none(tmp_path):
+    chosen, note = alignment_delivery.select_run_record(tmp_path / "absent", "2026-10-06")
+
+    assert chosen is None
+    assert str(tmp_path / "absent") in note
+
+
+def test_a_record_with_no_usable_finished_at_is_counted_rather_than_silently_dropped(tmp_path):
+    folder = records_dir(tmp_path, good=record("2026-10-06T19:20:30+08:00"),
+                         stamp_less={"state": "STOPPED", "outcomes": {}})
+    chosen, note = alignment_delivery.select_run_record(folder, "2026-10-06")
+
+    assert chosen["finished_at"] == "2026-10-06T19:20:30+08:00"
+    assert "1 份没有可解析的完成时间" in note
+
+
+def test_a_selected_record_reaches_the_gap_section(tmp_path):
+    """The two halves joined: the record picked is the one the brief measures from."""
+    folder = records_dir(tmp_path, only=record("2026-10-06T19:20:30+08:00",
+                                              code="BUDGET_EXHAUSTED"))
+    directory = build(tmp_path, readings={"a": resolution()}, pending=[])
+    chosen, _ = alignment_delivery.select_run_record(folder, "2026-10-06")
+
+    brief = alignment_delivery.gather(directory, run_record=chosen)
+
+    assert [row["id"] for row in brief["gap"]] == ["run:BUDGET_EXHAUSTED"]
