@@ -802,7 +802,7 @@ def test_disk_roles_are_named_by_role_not_device():
     """Policy depends on the role: "protect the system disk", not
     "protect /dev/vda2"."""
     assert Inventory.FILESYSTEM_ROLES["/"] == "ROOT_FS"
-    assert Inventory.FILESYSTEM_ROLES["/opt/applications"] == "DATA_FS"
+    assert Inventory.SEMANTIC_FILESYSTEM_ROLES["DATA_FS"] == "data"
 
 
 def test_docker_summary_never_runs_the_unbounded_df():

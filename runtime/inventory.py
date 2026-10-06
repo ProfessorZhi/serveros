@@ -435,12 +435,11 @@ class Inventory:
     # is what policy depends on. `/dev/vda2` is not meaningful to a policy
     # that says "protect the system disk"; `ROOT_FS` is.
     #
-    # These two are declared because they are the same path on every host this
-    # product runs on. The other three are LOOKED UP, because they are not: see
+    # Only the OS root is the same path on every managed Linux host.
+    # Other roles are LOOKED UP from this node's bindings: see
     # `_resolved_roles`.
     FILESYSTEM_ROLES = {
         "/": "ROOT_FS",
-        "/opt/applications": "DATA_FS",
     }
 
     # Roots that come from `paths.Paths()` rather than from a constant. Keyed
@@ -448,6 +447,7 @@ class Inventory:
     # declares — so a root that moves is a change in one contract file and not
     # a search for a second copy of the path.
     SEMANTIC_FILESYSTEM_ROLES = {
+        "DATA_FS": "data",
         "STATE_FS": "state",
         "ARTIFACTS_FS": "artifacts",
     }
@@ -1332,12 +1332,20 @@ class Inventory:
             entry["state"] = UNAVAILABLE
             return entry
         used = usage.used
+        # disk_usage.free is available to this caller, excluding reserved
+        # blocks. df measures pressure against used + available, not the
+        # filesystem total that includes capacity this user cannot allocate.
+        capacity = used + usage.free
+        if (usage.total <= 0 or used < 0 or usage.free < 0 or capacity <= 0
+                or used > usage.total or usage.free > usage.total):
+            return {**entry, "state": UNAVAILABLE,
+                    "reason": "inconsistent filesystem counters; usage cannot be graded"}
         entry.update({
             "state": "PRESENT",
             "total_bytes": usage.total,
             "used_bytes": used,
             "free_bytes": usage.free,
-            "used_percent": round(100.0 * used / usage.total, 1) if usage.total else None,
+            "used_percent": round(100.0 * used / capacity, 1),
             # A second exhaustion axis on the same filesystem. A disk with free
             # bytes and no free inodes cannot create a file, and until now the
             # two role mounts — the ones policy actually reads — had no inode
@@ -1352,11 +1360,13 @@ class Inventory:
             entry["source"] = parts[0]
             entry["fstype"] = parts[1] if len(parts) > 1 else None
             entry["mount_point"] = parts[2] if len(parts) > 2 else None
-        # HOME is on ROOT_FS on this host, which is why the root filesystem is
-        # a capacity gate and not merely the place the OS lives.
+        # An existing home directory does not prove it lives on the root disk.
         home = str(_paths.Paths().root("home"))
         if path == "/" and self.host.exists(home):
-            entry["note"] = f"HOME ({home}) is on this filesystem"
+            home_code, home_mount, _ = self.host.read(
+                ["findmnt", "-no", "TARGET", "--target", home], BUDGET["fast"])
+            if home_code == 0 and home_mount.strip() == entry.get("mount_point"):
+                entry["note"] = f"HOME ({home}) is on this filesystem"
         return entry
 
     @staticmethod
