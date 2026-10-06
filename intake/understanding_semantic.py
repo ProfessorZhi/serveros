@@ -67,10 +67,13 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA = "serveros/understanding-semantic.v1"
 READING_SCHEMA = "serveros/understanding-reading.v1"
+# v6 adds predecessor receipt hashes for additive acceptance. Existing v4/v5
+# receipts remain readable and are never rewritten merely to upgrade schema.
 #: Bumped when the receipt's SHAPE changed, and bumped for that reason alone.
 #: Three times, so far, and the second bump is the interesting one:
 #:
@@ -104,7 +107,7 @@ READING_SCHEMA = "serveros/understanding-reading.v1"
 #:     was looking at, and a withdrawal whose durable evidence names a claim and
 #:     a source revision but not the text it was reasoned against is evidence
 #:     nobody can re-examine.
-RECEIPT_SCHEMA = "serveros/understanding-receipt.v5"
+RECEIPT_SCHEMA = "serveros/understanding-receipt.v6"
 
 #: The receipt schemas this version can READ, newest first. v4 is on the list
 #: and v1–v3 are not, and the difference is what each bump changed:
@@ -121,7 +124,8 @@ RECEIPT_SCHEMA = "serveros/understanding-receipt.v5"
 #:     no file, so it recorded none. An old receipt is read as what it is and is
 #:     never rewritten into the newer shape; nothing here migrates a file on
 #:     disk.
-READABLE_RECEIPT_SCHEMAS = (RECEIPT_SCHEMA, "serveros/understanding-receipt.v4")
+READABLE_RECEIPT_SCHEMAS = (RECEIPT_SCHEMA, "serveros/understanding-receipt.v5",
+                          "serveros/understanding-receipt.v4")
 
 #: Where the understanding layer sits under the records root. The same two
 #: segments `understanding_delta` walks, and repeated here rather than imported
@@ -1097,6 +1101,8 @@ COMMIT_PRODUCED = {
 }
 
 RECEIPT_PRODUCED = {
+    "previous_receipts": "optional immutable predecessor names and digests for a "
+                         "later acceptance of still-uncommitted claims",
     "schema": "this module's own schema string",
     "key": "the proposal identity the receipt is for, copied from the commit",
     "reading_digest": "the reading that produced it, copied from the commit",
@@ -1377,6 +1383,28 @@ def write(commit_document: dict, records_root: Path | str, *,
             "machine, and the comparison is what makes a replay detectable")
     base = _understanding_root(records_root)
     receipt_path = base / ".serveros" / f"receipt-{_key_slug(commit_document['key'])}.json"
+    with _writer_lock(records_root):
+        return _write_at(commit_document, records_root, receipt_path,
+                         committed_at=committed_at)
+
+
+@contextmanager
+def _writer_lock(records_root):
+    """Serialize local writer transactions without adding lock files to records."""
+    import fcntl
+    fd = os.open(_understanding_root(records_root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _write_at(commit_document, records_root, receipt_path, *, committed_at,
+              previous_receipts=None, owner_baselines=None):
+    if not isinstance(committed_at, str) or not committed_at:
+        raise Refused("committed_at must be supplied by the caller")
+    base = _understanding_root(records_root)
     retracted = list(commit_document.get("retracted") or [])
     prior = _read_receipt(receipt_path)
     if prior is not None:
@@ -1406,6 +1434,7 @@ def write(commit_document: dict, records_root: Path | str, *,
     if not commit_document["lines"]:
         receipt = no_unsourced({
             "schema": RECEIPT_SCHEMA,
+            "previous_receipts": [],
             "key": commit_document["key"],
             "reading_digest": commit_document["reading_digest"],
             "accepted": commit_document.get("accepted"),
@@ -1446,7 +1475,8 @@ def write(commit_document: dict, records_root: Path | str, *,
     # from, so a view edited since the read is a view whose text this write still
     # does not touch.
     for card, claimed in sorted(by_card.items()):
-        written.append(_write_fence(records_root, base, card, claimed, baseline,
+        expected = (owner_baselines or {}).get(card, baseline)
+        written.append(_write_fence(records_root, base, card, claimed, expected,
                                     superseded=superseded, role=OWNER))
 
     pending = []
@@ -1461,6 +1491,7 @@ def write(commit_document: dict, records_root: Path | str, *,
 
     receipt = no_unsourced({
         "schema": RECEIPT_SCHEMA,
+        "previous_receipts": previous_receipts or [],
         "key": commit_document["key"],
         "reading_digest": commit_document["reading_digest"],
         "accepted": commit_document.get("accepted"),
@@ -1533,6 +1564,8 @@ def _resume(prior: dict, records_root: Path | str, receipt_path: Path) -> dict:
         **{key: prior.get(key) for key in ("schema", "key", "reading_digest",
                                            "accepted", "baseline",
                                            "committed_at")},
+        **({"previous_receipts": prior["previous_receipts"]}
+           if "previous_receipts" in prior else {}),
         "written": written,
         "pending_views": pending,
         "state": "PARTIAL" if pending else "COMPLETE",
@@ -1572,6 +1605,12 @@ def _understanding_root(records_root: Path | str) -> Path:
 def apply(reading_path: Path | str, records_root: Path | str, *, measure,
           delegation: dict | None = None,
           accepted: dict[tuple, dict] | None = None, committed_at: str) -> dict:
+    with _writer_lock(records_root):
+        return _apply(reading_path, records_root, measure=measure,
+                      delegation=delegation, accepted=accepted, committed_at=committed_at)
+
+
+def _apply(reading_path, records_root, *, measure, delegation, accepted, committed_at):
     """Read, resolve, commit and write — in the one order that is correct.
 
     The order is the whole reason this function exists rather than the caller
@@ -1598,16 +1637,96 @@ def apply(reading_path: Path | str, records_root: Path | str, *, measure,
     document = read_reading(reading_path)
     prior = _read_receipt(_receipt_path(base, document))
     if prior is not None:
+        mine = _accepted_as_written(acceptance_for(document, accepted))
+        if mine is not None and mine != prior.get("accepted") and prior.get("written"):
+            return _accept_remaining(prior, document, records_root, measure=measure,
+                                     accepted=accepted, committed_at=committed_at)
         resumed = _replay(prior, document, records_root, accepted=accepted)
         if resumed is not None:
             return resumed
     result = resolve(document, measure(), delegation, accepted)
     plan = commit(result, document)
-    return write(plan, records_root, committed_at=committed_at)
+    return _write_at(plan, records_root, _receipt_path(base, document), committed_at=committed_at)
+
+
+def _accept_remaining(prior, reading, records_root, *, measure, accepted, committed_at):
+    """Append a person's answer without replacing the earlier facts or receipt.
+
+    The original proposal and acceptance identity stay fixed. Only our recorded
+    writes may have moved its baseline; a source change or any intervening edit
+    requires a new reading. Completed acceptance receipts replay without writes.
+    """
+    base = _understanding_root(records_root)
+    original = _receipt_path(base, reading)
+    if prior.get("reading_digest") != reading_digest(reading):
+        raise Refused(_reading_mismatch(original))
+    mine = _accepted_as_written(acceptance_for(reading, accepted))
+    target = original.with_name(f"{original.stem}-acceptance-{mine['digest']}.json")
+    held = _read_receipt(target)
+    if held is not None:
+        return _replay(held, reading, records_root, accepted=accepted,
+                       receipt_path=target)
+    history = [(original, prior)]
+    for path in original.parent.glob(f"{original.stem}-acceptance-*.json"):
+        receipt = _read_receipt(path)
+        if (not receipt or receipt.get("key") != prior["key"]
+                or receipt.get("reading_digest") != prior["reading_digest"]):
+            raise Refused("acceptance history does not match this reading")
+        history.append((path, receipt))
+    # Each extension lists all its predecessors, giving a causal order even
+    # when two writes share the same timestamp. Divergent histories are refused.
+    history.sort(key=lambda row: len(row[1].get("previous_receipts", [])))
+    predecessors = []
+    for path, receipt in history:
+        if path != original and receipt.get("previous_receipts") != predecessors:
+            raise Refused("acceptance receipt history diverged or was changed")
+        if receipt.get("state") != "COMPLETE":
+            raise Refused("resume pending Views before accepting more claims")
+        predecessors.append({"name": path.name,
+                             "digest": hashlib.sha256(path.read_bytes()).hexdigest()})
+    already = {claim_id for _, receipt in history
+               for entry in receipt.get("written", []) if entry.get("role") == OWNER
+               for claim_id in entry.get("claims", [])}
+    named = set(mine["claims"])
+    known = {claim["id"] for claim in reading["claims"]
+             if claim["kind"] != RETRACTION}
+    if not named or not named <= known or named & already:
+        raise Refused(_acceptance_mismatch(prior, mine, original)
+                      + "; later acceptance must name only uncommitted claims")
+    latest = {entry["card"]: entry["after"] for _, receipt in history
+              for entry in receipt.get("written", [])}
+    card = reading["source"]["card"]
+    current = measure()
+    expected = latest.get(card, reading["read"]["card_digest"])
+    if current.get("card_digest") != expected:
+        raise Refused("understanding card changed after the recorded write; re-read before acceptance")
+    # Only the proven effects of our previous write are discounted. Source
+    # revision, range and exact quotations are still checked by resolve.
+    resolution = resolve(reading, {**current, "card_digest": reading["read"]["card_digest"]},
+                         None, accepted)
+    plan = commit(resolution, reading)
+    plan["baseline"] = {"card": card, "card_digest": expected}
+    owner_baselines = {}
+    for entry in plan["lines"].values():
+        owner = entry["card"]
+        target_card = Path(records_root) / owner
+        if (".." in Path(owner).parts or target_card != target_card.resolve()
+                or not target_card.resolve().is_relative_to(base.resolve())):
+            raise Refused("later acceptance owner is not under the understanding root")
+        if owner != card and owner not in latest:
+            raise Refused("later acceptance requires a recorded baseline for every owner card")
+        digest = latest.get(owner, expected)
+        # Check every owner before the first write, then again at each write.
+        if card_digest((Path(records_root) / owner).read_text(encoding="utf-8")) != digest:
+            raise Refused("owner card changed after the recorded write; re-read before acceptance")
+        owner_baselines[owner] = {"card": owner, "card_digest": digest}
+    return _write_at(plan, records_root, target, committed_at=committed_at,
+                     previous_receipts=predecessors, owner_baselines=owner_baselines)
 
 
 def _replay(prior: dict, reading: dict, records_root: Path | str, *,
-            accepted: dict[tuple, dict] | None = None) -> dict | None:
+            accepted: dict[tuple, dict] | None = None,
+            receipt_path: Path | None = None) -> dict | None:
     """An earlier write for this proposal, returned or finished — never redone.
 
     `None` means there is something for this run to do after all, and there is
@@ -1636,7 +1755,7 @@ def _replay(prior: dict, reading: dict, records_root: Path | str, *,
     if prior.get("state") == "COMPLETE":
         return {**prior, "reused": True}
     base = _understanding_root(records_root)
-    return _resume(prior, records_root, _receipt_path(base, reading))
+    return _resume(prior, records_root, receipt_path or _receipt_path(base, reading))
 
 
 def _write_fence(records_root: Path | str, base: Path, card: str,
