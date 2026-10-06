@@ -58,16 +58,30 @@
 # always recommends REVIEW / MONITOR / GOVERNANCE_REQUIRED and always says that
 # nothing was stopped. An alert is not an authorization.
 #
-# WHY THERE IS NO PATH= HERE — MEASURED 2026-09-14
-# ------------------------------------------------
-# `hwz-monitor.service` sets an explicit PATH because its ExecStart is a shell
-# script calling `lark-cli`, which lives in /usr/local/bin. Neither of those is
-# true of this unit: ExecStart is an absolute path inside the revision, and its
-# interpreter comes from the shim's `#!/usr/bin/env python3`. Measured rather
-# than assumed —
+# WHY THERE IS NO PATH= HERE — MEASURED 2026-09-14, CORRECTED 2026-10-07
+# ---------------------------------------------------------------------
+# The conclusion stands; two things the original argument rested on do not.
+#
+# CORRECTED FACTS, measured on this node 2026-10-07:
+#   * `/usr/local/bin/lark-cli` does not exist here, and `/usr/local/bin` is
+#     root:root 0755, so it is not writable by this unit's user either.
+#     `lark-cli` resolves to `~/.local/bin/lark-cli`.
+#   * the user manager's PATH (below) DOES contain /usr/local/bin — but it does
+#     NOT contain `~/.local/bin`. So "lark-cli is on the PATH" was never what
+#     made this unit work, and copying the sibling's PATH= would not have fixed
+#     anything if it had been missing.
+#   * the sibling being cited is installed here but cannot run: its ExecStart is
+#     `/opt/applications/data/home-hwz/...`, a Beijing path that does not exist
+#     on this node, and its timer is disabled.
+#
+# The scope error is the one worth keeping: "ExecStart is an absolute path"
+# answers for THIS unit's own exec and says nothing about the CLIs that the
+# processes it spawns have to resolve. What makes the absence of `PATH=` correct
+# here is the code, not the environment — the runtime resolves the CLI itself
+# (`runtime/document_transport.py`, `resolve_cli`, 2026-10-06).
 #
 #     $ systemctl --user show-environment | grep ^PATH
-#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...
+#     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin
 #
 # — which is the environment a user unit is started with. A PATH= copied from
 # the sibling unit would be a declaration that outlived its measurement, which
