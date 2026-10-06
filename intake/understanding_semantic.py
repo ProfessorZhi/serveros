@@ -1302,9 +1302,14 @@ def _claim_line(claim: dict) -> str:
               else claim["assertion"]["now"])
     where = ", ".join(str(position)
                       for position in claim["support"]["positions"]) or "无位置"
-    return (f"- `{claim['id']}` **[{claim['kind']}]** {claim['subject']}：{change}"
+    line = (f"- `{claim['id']}` **[{claim['kind']}]** {claim['subject']}：{change}"
             f"（{claim['confirmation']}；来源 pos {where}；"
             f"excerpt: {claim['support']['excerpt']}）")
+    # The card merger identifies one claim per physical line. A multiline
+    # source quote must not create anonymous lines that make the next commit
+    # unreadable. Exact source bytes remain in the reading and its digest.
+    return (line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("\r\n", " ⏎ ").replace("\n", " ⏎ ").replace("\r", " ⏎ "))
 
 
 def _view_reference(claim: dict) -> str:
@@ -1663,7 +1668,8 @@ def _write_fence(records_root: Path | str, base: Path, card: str,
     # used to write a claim into the raw layer: everything this module writes
     # goes into the understanding layer, and a card path that points anywhere
     # else is a reading that has asked it to edit a source.
-    if not target.is_relative_to(base):
+    if (".." in Path(card).parts or not target.resolve().is_relative_to(base.resolve())
+            or target != target.resolve()):
         raise Refused(
             f"{target} is not under {base}: this module writes understanding "
             f"cards and nothing else. A claim about a source is not written "

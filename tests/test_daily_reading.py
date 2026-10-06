@@ -130,3 +130,31 @@ def test_document_quote_uses_original_escaped_bytes_and_not_model_im_positions()
     output["claims"][0]["support"]["end_line"] = 3
     with pytest.raises(ValueError, match="outside"):
         native_reader.reading_from(packet, output)
+
+
+def test_multiline_source_quote_remains_one_mergeable_claim_line():
+    writer = daily_reading._load("intake/understanding_semantic.py")
+    claim = {**model(None, None, None)["claims"][0], "id": "quoted", "confirmation": "agent_reconciled",
+             "support": {"positions": [], "excerpt": "line one\nline two\r\n<!-- untrusted -->"}}
+    line = writer._claim_line(claim)
+    assert "\n" not in line and "\r" not in line
+    assert "<!--" not in line
+    ids, _, _ = writer._merge_claims(line + "\n", [("next", "- `next` another claim")], [])
+    assert ids == ["next", "quoted"]
+
+
+@pytest.mark.parametrize("escape", ["traversal", "symlink"])
+def test_semantic_writer_cannot_escape_through_claim_card(tmp_path, escape):
+    writer = daily_reading._load("intake/understanding_semantic.py")
+    base = tmp_path / "information/understanding"
+    base.mkdir(parents=True)
+    other = tmp_path / "private.md"
+    other.write_text("Unrelated human content.\n")
+    if escape == "symlink":
+        (base / "linked.md").symlink_to(other)
+        card = "information/understanding/linked.md"
+    else:
+        card = "information/understanding/../../private.md"
+    with pytest.raises(writer.Refused, match="not under"):
+        writer._write_fence(tmp_path, base, card, [("c1", "- `c1` text")], role=writer.OWNER)
+    assert other.read_text() == "Unrelated human content.\n"
