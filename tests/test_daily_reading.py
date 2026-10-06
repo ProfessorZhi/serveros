@@ -35,6 +35,48 @@ def model(transport, ask, ctx):
                         "applies_to": None, "touches": [], "supersedes": [], "conflicts": []}]}
 
 
+def im_fixture(tmp_path):
+    records, card = fixture(tmp_path)
+    manifest = "feishu/chats/people/x/oc_x/manifest.json"
+    raw = records / "information/raw" / manifest
+    raw.write_text(json.dumps({"chat": {"chat_id": "oc_x", "chat_type": "p2p", "name": "X"},
+                              "sync": {"msg_count": 2, "remote_unique_message_count": 2,
+                                       "pagination_complete": True, "fetched_page_count": 1,
+                                       "last_message_id": "om_1"}}))
+    raw.with_name("messages.jsonl").write_text("".join(json.dumps({
+        "message_id": f"om_{p}", "message_position": str(p), "content": "The endpoint returned HTTP 200.",
+        "updated": False, "deleted": False}) + "\n" for p in range(2)))
+    messages = Path(manifest).with_name("messages.jsonl")
+    (records / card).write_text(f"# Example\n\n## Sources\n- `information/raw/{messages}` message_position 0-0\n")
+    sources = records / "projects/example/context/sources.yaml"
+    data = yaml.safe_load(sources.read_text())
+    data["sources"][0]["manifest"] = manifest
+    sources.write_text(yaml.safe_dump(data))
+    return records, card
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_committed_im_range_is_not_sent_again_after_card_changes(tmp_path, monkeypatch, pending):
+    records, card = im_fixture(tmp_path)
+    cli = daily_reading._load("runtime/cli.py")
+    monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (
+        {"covers": ["example"], "until": "2026-10-31T00:00:00Z", "granted_by": "fixture"}, "test grant"))
+    def reading(*args):
+        result = model(*args)
+        result["claims"][0]["support"] = {"positions": [1], "start_line": None, "end_line": None}
+        if pending:
+            result["claims"].append({**result["claims"][0], "kind": "PROPOSAL", "touches": ["goal"]})
+        return result
+    before = (records / card).read_bytes()
+    first = run(tmp_path, records, call=reading)
+    assert first["outcomes"]["readings"][0]["receipt"]["state"] == "COMPLETE", first
+    assert (records / card).read_bytes() != before
+    second = run(tmp_path, records, call=lambda *_: pytest.fail("committed IM sent again"), day=7)
+    assert second["model_calls"] == 0
+    assert second["stopped_because"] == ("NEEDS_DECISION" if pending else "NO_CHANGE"), second
+    assert second["outcomes"]["alignment"]["pending_readings"] == int(pending)
+
+
 def run(tmp_path, records, call=model, day=6):
     engine = recipes.Engine(state_root=tmp_path / "state", records_root=records,
                             scope="project:example", period={"id": f"day-{day}", "start": f"2026-10-{day:02}T00:00:00Z",
@@ -46,6 +88,10 @@ def run(tmp_path, records, call=model, day=6):
 def test_pending_reading_is_cached_and_never_turned_into_authority(tmp_path, monkeypatch):
     records, card = fixture(tmp_path)
     cli = daily_reading._load("runtime/cli.py")
+    # Bound reading must not enumerate unrelated private sources or cards.
+    for module in ("intake/capture_coverage.py", "intake/understanding_delta.py"):
+        monkeypatch.setattr(daily_reading._load(module), "read_root",
+                            lambda *_: pytest.fail("full library scan from one bound source"))
     monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (None, "unbound fixture"))
     before = (records / card).read_bytes()
     result = run(tmp_path, records)
@@ -58,6 +104,15 @@ def test_pending_reading_is_cached_and_never_turned_into_authority(tmp_path, mon
     assert len(result["outcomes"]["readings"][0]["awaiting"]) == 1
     # No source body in the durable recipe state; the packet invocation owns it.
     assert "The endpoint" not in json.dumps(result["steps"])
+
+
+@pytest.mark.parametrize("field", ["card", "manifest"])
+def test_bound_reading_locator_cannot_escape_owner(tmp_path, field):
+    records, card = fixture(tmp_path)
+    source = yaml.safe_load((records / 'projects/example/context/sources.yaml').read_text())["sources"][0]
+    source[field] = "../outside"
+    with pytest.raises(ValueError, match="escapes"):
+        daily_reading.scoped_report(records, source)
 
 
 def test_granted_reading_uses_writer_then_recall_and_next_period_no_model(tmp_path, monkeypatch):

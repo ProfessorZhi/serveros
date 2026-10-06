@@ -76,6 +76,34 @@ def alignment(directory, entries, records_root=None):
     return {"path": str(target), "pending_readings": len(pending)}
 
 
+def scoped_report(records_root, entry):
+    """Measure exactly the bound card/source pair through existing owner readers.
+
+    A finite pass must not scan every chat and card once per selected source.
+    Each write remeasures this pair, so scope reduction does not cache a stale
+    source or weaken the semantic writer's version check.
+    """
+    capture = _load("intake/capture_coverage.py")
+    delta = _load("intake/understanding_delta.py")
+    root = Path(records_root).resolve()
+    raw = capture.raw_root(root)
+    base = delta.understanding_root(root)
+    paths = ((base, root / entry["card"], entry["card"]),
+             (raw, raw / entry["manifest"], entry["manifest"]))
+    for boundary, path, locator in paths:
+        if (Path(locator).is_absolute() or ".." in Path(locator).parts
+                or path != path.resolve() or not path.resolve().is_relative_to(boundary)):
+            raise ValueError("bound reading locator escapes its owner root")
+    source = capture.read_manifest(raw / entry["manifest"])
+    source["path"] = entry["manifest"]
+    index = delta.source_index([source])
+    card = delta.read_card(root / entry["card"], root)
+    card["citations"] = [c for c in card.get("citations", []) if delta.expand(c, index)]
+    if not card["citations"]:
+        raise ValueError("bound understanding card does not cite this source")
+    return delta.reconcile([card], index, root)
+
+
 def run(ctx, entries):
     """Only explicitly bound card/manifest pairs. Never promote a requirement."""
     if ctx.run_dir is None or not ctx.run_dir.is_absolute() or ctx.run_dir != ctx.run_dir.resolve():
@@ -96,7 +124,7 @@ def run(ctx, entries):
         if any(not p.is_absolute() for p in assets):
             raise ValueError("source asset roots must be absolute")
         try:
-            report = delta.read_and_reconcile(ctx.records_root, capture.read_root(ctx.records_root)["objects"])
+            report = scoped_report(ctx.records_root, entry)
             # Scope before materialization: unrelated private sources do not enter
             # the model or its prompt, and we do not read every packet to select one.
             selected = []
@@ -130,8 +158,7 @@ def run(ctx, entries):
                     # Invalid model output remains an artifact, never accepted.
                     reading = semantic.read_reading(reading_path)
                 def measure():
-                    current_report = delta.read_and_reconcile(
-                        ctx.records_root, capture.read_root(ctx.records_root)["objects"])
+                    current_report = scoped_report(ctx.records_root, entry)
                     return cli._reading_current(semantic, current_report, reading,
                                                 allowed_asset_roots=assets)
                 delegation, reason = None, "no recorded grant bound; prepared for alignment"
