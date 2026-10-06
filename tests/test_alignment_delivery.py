@@ -395,3 +395,53 @@ def test_a_selected_record_reaches_the_gap_section(tmp_path):
     brief = alignment_delivery.gather(directory, run_record=chosen)
 
     assert [row["id"] for row in brief["gap"]] == ["run:BUDGET_EXHAUSTED"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# what the footer claims about where these rows came from
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_the_footer_names_when_the_preparation_was_written_not_when_it_was_due(tmp_path):
+    """The footer used to say "由 19:20 的准备结果生成", which is a claim about a
+    clock rather than about a file. On this node the first real card came from a
+    preparation that finished at 14:17 Beijing, and the reader had a provenance
+    line they could not check against anything — the run record line right above
+    it said a different time. The stamp is read off `alignment.json` now.
+    """
+    directory = prepared_at(build(tmp_path, readings={"a": resolution()}, pending=[]),
+                            "2026-10-06T06:17:00+00:00")   # 14:17 Beijing
+    out = tmp_path / "delivery"
+
+    alignment_delivery.compose(directory, out, at=AT)
+    text = (out / alignment_delivery.BRIEF_FILE).read_text()
+
+    assert "由 2026-10-06 14:17（北京）写出的准备结果生成" in text
+    assert "19:20 的准备结果生成" not in text
+
+
+def test_a_generated_brief_carries_the_preparation_stamp_in_its_version(tmp_path):
+    """Provenance that is only in prose cannot be checked; this one is a field."""
+    directory = prepared_at(build(tmp_path, readings={"a": resolution()}, pending=[]),
+                            "2026-10-06T06:17:00+00:00")
+    out = tmp_path / "delivery"
+
+    alignment_delivery.compose(directory, out, at=AT)
+
+    written = json.loads((out / alignment_delivery.VERSION_FILE).read_text())
+    assert written["prepared_at"].startswith("2026-10-06T14:17")
+
+
+def test_a_render_that_read_no_preparation_says_so_rather_than_naming_1920(tmp_path):
+    """`render` is callable on a gathered brief with no composition behind it.
+
+    That path has no stamp to name, and the old hardcoded time was exactly the
+    thing being removed — so it falls back to saying the time was not read,
+    which is a sentence a person can act on ("which pass was this?"), rather
+    than a schedule that nothing recorded as having run.
+    """
+    directory = build(tmp_path, readings={"a": resolution()}, pending=[])
+
+    text = alignment_delivery.render(alignment_delivery.gather(directory), at=AT)
+
+    assert "没有读出它是什么时候写下的" in text
+    assert "19:20 的准备结果生成" not in text
