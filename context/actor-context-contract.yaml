@@ -142,6 +142,28 @@ freshness:
     freshness is a function of the clock, and the clock is not a field. Writing
     it down produces a record that says FRESH forever.
 
+standing_delegation:
+  evidence_schema: serveros/human-delegation.v1
+  receipt_schema: serveros/delegation-issuance.v1
+  trust_binding: ~/.config/serveros/human-control-trust.json
+  signature: Ed25519 over UTF-8 JSON with sorted keys, compact separators and literal Unicode
+  issuance: >-
+    A trusted provider must bind the human's acceptance of the exact grant to
+    actor_report.message_ref. The signed payload includes provider_id, key_id,
+    audience, issued_at, actor_report and the complete grant. A fresh actor
+    alone does not approve any scope requested by an Agent. The daemon uses
+    its own clock and operator-configured public keys; requests cannot choose keys.
+  execution: >-
+    Reverify the signature, signed scope and freshness at the owner-recorded
+    accepted_at. Actor-context expiry or sweeping does not cancel an issued grant.
+    The grant's own expiry, revocation, scope, budget and checkpoint epoch still
+    apply. Removing or disabling a trusted key stops its grants from authorizing.
+    Legacy grants keep their existing live-context check and cannot be upgraded.
+  provider_readiness: >-
+    Unsigned BotMux current-actor v2/v3 reports do not support durable issuance.
+    Provider approval signing and an owner key binding are required; absent
+    bindings return DELEGATION_PROVIDER_UNBOUND and create no grant.
+
 forgery:
   # The tests for this are named `test_*forged*` in tests/test_actor_context.py.
   rules:

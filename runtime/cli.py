@@ -8126,6 +8126,20 @@ def cmd_work_grants(args) -> int:
     return EXIT_OK
 
 
+def cmd_work_issue_grant(args) -> int:
+    """Submit signed provider evidence; trust roots and the clock belong to the daemon."""
+    try:
+        evidence = json.loads(args.request.read_text(encoding="utf-8"))
+        payload = ask_daemon("agent.grant.issue", {"evidence": evidence})
+    except (OSError, ValueError, DaemonUnavailable) as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+    emit(payload, as_json=args.json,
+         lines=[f"grant       {payload.get('grant', {}).get('grant_ref', '—')}",
+                "basis       provider-signed-delegation"])
+    return EXIT_OK
+
+
 def cmd_work_delegate(args) -> int:
     """§12/§5 — record a standing delegation; the root is a trusted context or nothing.
 
@@ -13290,6 +13304,12 @@ def build_parser() -> argparse.ArgumentParser:
                                 "neither does `context/delegation.py`, so this "
                                 "is the one place the question is answered")
     wk_grants.set_defaults(func=cmd_work_grants)
+
+    wk_issue = work_sub.add_parser(
+        "issue-grant", help="record an exact human-approved scope from signed provider evidence", **_COMMON)
+    wk_issue.add_argument("--request", type=Path, required=True,
+                          help="provider-signed evidence; contains no caller-selected trust key")
+    wk_issue.set_defaults(func=cmd_work_issue_grant)
 
     wk_delegate = work_sub.add_parser(
         "delegate", help="§12/§5 — record a standing delegation. `--context-ref` "
