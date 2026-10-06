@@ -10787,7 +10787,8 @@ def cmd_work_understanding_patch(args) -> int:
     return EXIT_OK
 
 
-def _reading_current(semantic, report: dict, reading: dict) -> dict:
+def _reading_current(semantic, report: dict, reading: dict, *,
+                     allowed_asset_roots: tuple[Path, ...] = ()) -> dict:
     """What the span a reading is about measures at, now — from the reader's report.
 
     Not recomputed here. The reader already decided which ranges each card is
@@ -10826,10 +10827,21 @@ def _reading_current(semantic, report: dict, reading: dict) -> dict:
             + ". Read the current proposal rather than applying an "
               "interpretation of a span nothing is asking about")
     row = matching[0]
-    return {"card_digest": card_row["card_digest"],
-            "content_identity": row.get("content_identity"),
-            "from_position": row.get("from_position"),
-            "to_position": row.get("to_position")}
+    current = {"card_digest": card_row["card_digest"],
+               "content_identity": row.get("content_identity"),
+               "from_position": row.get("from_position"),
+               "to_position": row.get("to_position")}
+    if row.get("kind") == "WHOLE_DOCUMENT":
+        reader = _load_module_from(REPO_ROOT / "intake" / "source_reading.py",
+                                   "serveros_intake_source_reading")
+        try:
+            current["source_packet"] = reader.read_packet(
+                row["manifest"], report["records_root"],
+                expected_identity=row.get("content_identity"),
+                allowed_asset_roots=allowed_asset_roots)
+        except reader.Refused as exc:
+            raise semantic.Refused(str(exc)) from exc
+    return current
 
 
 def cmd_work_understanding_brief(args) -> int:
@@ -10891,7 +10903,8 @@ def cmd_work_understanding_brief(args) -> int:
         # what the reader proposes rather than to a second opinion about it.
         objects = capture.read_root(records)["objects"]
         report = delta.read_and_reconcile(records, objects)
-        pinned, unpinnable = brief_mod.briefs(report, records)
+        pinned, unpinnable = brief_mod.briefs(
+            report, records, allowed_asset_roots=tuple(getattr(args, "source_asset_root", ()) or ()))
         chosen = brief_mod.select(
             pinned, refused=unpinnable,
             card=getattr(args, "card", "") or None,
@@ -11068,7 +11081,9 @@ def cmd_work_understanding_semantic(args) -> int:
         document = semantic.read_reading(args.reading)
 
         def measure():
-            return _reading_current(semantic, report, document)
+            return _reading_current(
+                semantic, report, document,
+                allowed_asset_roots=tuple(getattr(args, "source_asset_root", ()) or ()))
     except (capture.Refused, delta.Refused, semantic.Refused) as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         return EXIT_FAULT
@@ -13665,6 +13680,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 "manifest key")
     wk_ubrief.add_argument("--position", type=int, default=None,
                            help="only the range whose span contains this position")
+    wk_ubrief.add_argument("--source-asset-root", type=Path, action="append", default=[],
+                           help="explicit absolute root for captured external body copies; repeatable")
     wk_ubrief.add_argument("--write", type=Path, default=None,
                            help="write ONE selected brief here as the packet a "
                                 "session is handed. Must be absolute")
@@ -13684,6 +13701,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the records checkout to read and, with --commit, "
                               "to write into. Default: this node's workspace "
                               "root + /records. Must be absolute")
+    wk_usem.add_argument("--source-asset-root", type=Path, action="append", default=[],
+                         help="explicit absolute root for captured external body copies; repeatable")
     wk_usem_authority = wk_usem.add_mutually_exclusive_group()
     wk_usem_authority.add_argument("--delegation", type=Path, default=None,
                                    help="the standing grant that lets machine "

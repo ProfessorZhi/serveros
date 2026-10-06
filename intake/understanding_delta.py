@@ -818,7 +818,7 @@ def _measure_one(citation: dict, key: str, obj: dict, records_root: Path,
     if facts.get("last_message_id") is not None:
         row["last_message_id"] = facts["last_message_id"]
 
-    if shape == "document_capture":
+    if shape in ("document_capture", "web_capture"):
         recorded = facts.get("content_sha256")
         row["kind"] = "DIGEST" if digest else "WHOLE_FILE"
         if digest:
