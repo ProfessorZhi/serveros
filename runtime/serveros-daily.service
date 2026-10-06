@@ -65,10 +65,14 @@
 #
 # WHY THERE IS NO PATH= HERE
 # --------------------------
-# Same measurement as the sibling unit's header: ExecStart is an absolute path
-# inside the revision, and its interpreter comes from the shim's
-# `#!/usr/bin/env python3`. A PATH= copied from a shell-script unit would be a
-# declaration that outlived its measurement.
+# Same measurement as the sibling unit's header — which was CORRECTED
+# 2026-10-07: the sibling's premise (`lark-cli` in /usr/local/bin) is false on
+# this node, and "ExecStart is an absolute path" covers this unit's own exec
+# only, not the CLIs its spawned processes must resolve. What makes no `PATH=`
+# correct here is the code-side resolution
+# (`runtime/document_transport.py`, `resolve_cli`, 2026-10-06). A PATH= copied
+# from a shell-script unit would be a declaration that outlived its
+# measurement.
 
 [Unit]
 Description=ServerOS daily workbench render — leave a current START-HERE set where a person will find it
