@@ -2113,7 +2113,15 @@ def cmd_ability_tree(args) -> int:
     "nobody has asked ability-management".
     """
     try:
-        payload = ask_daemon("ability.tree")
+        params = {}
+        if getattr(args, "view", "domain") == "product":
+            params["view"] = "product"
+        if getattr(args, "responsibility", None):
+            if not params:
+                sys.stderr.write("--responsibility requires --view product\n")
+                return EXIT_COULD_NOT_ANSWER
+            params["responsibility"] = args.responsibility
+        payload = ask_daemon("ability.tree", params) if params else ask_daemon("ability.tree")
     except DaemonUnavailable as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         if args.json:
@@ -2127,12 +2135,25 @@ def cmd_ability_tree(args) -> int:
              f"projection  {payload.get('registry_status')}",
              f"basis       {payload.get('basis')}"]
     if nodes is None:
-        lines.append("tree        none — no local capability projection is "
-                     "materialized, so there is nothing to derive from")
+        lines.append("tree        unavailable — required metadata is not materialized")
         lines.append(f"            {payload.get('note', '')}")
         emit(payload, as_json=args.json, lines=lines)
         # NOT an error. §28: an unreachable authority is a supported answer —
         # the node says so and names the command that would produce it.
+        return EXIT_OK
+
+    if payload.get("basis") == "product_role.primary":
+        for row in nodes:
+            names = ", ".join(r["name"] for r in row["realizations"]) or "no primary mapping"
+            lines.append(f"{row['id']:>3}  {row['name']}: {names}")
+            if getattr(args, "responsibility", None):
+                for sub in row["subroles"]:
+                    mapped = sub not in row["unmapped_subroles"]
+                    lines.append(f"     {sub}: {'mapped' if mapped else 'unmapped'}")
+                lines.append("     related: " + ", ".join(row["cross_references"]))
+        lines.append(f"responsibilities {payload['returned']} of {payload['responsibility_count']}")
+        lines.append("completion  NOT_ASSESSED — mappings are not journey acceptance")
+        emit(payload, as_json=args.json, lines=lines)
         return EXIT_OK
 
     placements = payload.get("placements") or {}
@@ -12744,6 +12765,9 @@ def build_parser() -> argparse.ArgumentParser:
         "tree",
         help="the logical ability tree this node derives from `domain.primary` (§4)",
         **_COMMON)
+    ab_tree.add_argument("--view", choices=("domain", "product"), default="domain",
+                         help="installed navigation or full product responsibilities")
+    ab_tree.add_argument("--responsibility", help="one product responsibility, e.g. A7")
     ab_tree.set_defaults(func=cmd_ability_tree)
     ab_inspect = ability_sub.add_parser(
         "inspect",
