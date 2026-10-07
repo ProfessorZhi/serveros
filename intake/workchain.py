@@ -206,6 +206,244 @@ def _resolve_document(item_dir: Path, rule: dict) -> tuple[Path | None, str, int
 
 
 # ---------------------------------------------------------------------------
+# Which generation of the records a read was taken from
+# ---------------------------------------------------------------------------
+
+TREE_FOLLOWING = "FOLLOWING"
+TREE_AHEAD = "AHEAD"
+TREE_BEHIND = "BEHIND"
+TREE_DIVERGED = "DIVERGED"
+TREE_UNREAD = "UNREAD"
+
+
+class TreePosition:
+    """Where the tree a read was taken from stands, and what its ref holds.
+
+    THE DEFECT THIS EXISTS FOR
+    --------------------------
+    On 2026-10-07 `work item SRV-0011` printed
+
+        × brief.md  MISSING  an Item in ACTIVE is expected to have it, and it
+                             resolves under none of ['exact-file']
+
+    and the sentence was true of the tree it read and false about the Item.
+    `brief.md` had been written, merged to `origin/main` and read back on this
+    node; the canonical records checkout here was 13 commits behind the ref that
+    carries it, and nothing on the node follows that ref. The reader bound
+    itself to a working tree, found no file, and reported the absence as a fact
+    about somebody's work — the fifth instance of this module's one defect, the
+    other four being the path defects the header lists.
+
+    WHAT IT IS, AND WHAT IT REFUSES
+    -------------------------------
+    It is read-only and it never fetches. `holds()` asks the git object store
+    what the branch's ref contains — a question about bytes this node already
+    has. Asking the network instead would make a read verb's answer depend on
+    connectivity and on somebody else's push schedule, so a tree whose refs were
+    never fetched reports `UNREAD` with that as its reason rather than a lag it
+    cannot see.
+
+    `git` is injected rather than imported, for the reason the rest of this
+    module takes paths instead of composing them: a projection that cannot run
+    without a git binary is a projection no fixture can exercise, and every test
+    of the document rules would otherwise start needing a repository.
+
+    `None` FROM `holds()` IS NOT `False`
+    ------------------------------------
+    A path this cannot ask about — no ref, no git, a path outside the root —
+    answers `None`, and a caller must leave its sentence alone rather than
+    report an absent document. That third answer is the whole point: it is the
+    difference between "the authority does not have it either" and "nobody
+    established where it is".
+    """
+
+    def __init__(self, *, root, revision=None, branch=None, upstream_ref=None,
+                 upstream_revision=None, ahead=None, behind=None,
+                 state=TREE_UNREAD, why="", git=None):
+        self.root = Path(root) if root else None
+        self.revision = revision or None
+        self.branch = branch or None
+        self.upstream_ref = upstream_ref or None
+        self.upstream_revision = upstream_revision or None
+        self.ahead = ahead
+        self.behind = behind
+        self.state = state
+        self.why = why
+        self._git = git
+        self._held: dict[str, bool | None] = {}
+
+    def relative(self, path) -> str | None:
+        """`path` as the ref spells it, or None when it lies outside the root."""
+        if self.root is None:
+            return None
+        try:
+            return str(Path(path).resolve().relative_to(self.root))
+        except (ValueError, OSError):
+            return None
+
+    def holds(self, relpath: str | None) -> bool | None:
+        """Whether `relpath` exists at the upstream ref.
+
+        Exit 128 is git's "no such path at that object" and is the only code
+        read as absent; anything else is unanswerable rather than missing. The
+        ref is verified before it is stored, so 128 cannot mean "the ref itself
+        is bad" — a caller that skipped that check would be reading a broken ref
+        as an absent document, which is the same misattribution one level down.
+        """
+        if relpath is None:
+            return None
+        if relpath in self._held:
+            return self._held[relpath]
+        answer: bool | None = None
+        if self._git is not None and self.root is not None and self.upstream_ref:
+            code, _out = self._git(self.root, "cat-file", "-e",
+                                   f"{self.upstream_ref}:{relpath}")
+            if code == 0:
+                answer = True
+            elif code == 128:
+                answer = False
+        self._held[relpath] = answer
+        return answer
+
+
+def tree_position(records_root: Path, *, git) -> TreePosition:
+    """The records tree's own generation, resolved against the ref it follows.
+
+    `@{upstream}` IS NOT ENOUGH, AND ON THE MAIN RECORDS CHECKOUT IT IS A FATAL.
+    On 2026-10-07 `/data/home/vince/workspace/records` had `branch.main.remote`
+    and `branch.main.merge` both unset, so `git rev-parse @{upstream}` exited
+    128 there and every derivation from it failed. A checkout whose branch
+    declares no authority cannot be told it has fallen behind that authority,
+    which is how a 13-commit lag sat unnoticed under a verb that reads it every
+    day. The fallback to `origin/<branch>` is what makes a position readable at
+    all on that tree, and `why` records that the branch declares nothing, so a
+    reader can tell a branch that follows its authority from one that merely
+    has a same-named remote ref.
+    """
+    root = Path(records_root)
+    code, out = git(root, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return TreePosition(root=root, why=(
+            f"{root} is not a git checkout: `git rev-parse --show-toplevel` "
+            f"exited {code}. The documents were still read; only which "
+            f"generation of them was read is unknown"), git=git)
+    top = Path(out.strip().splitlines()[0]) if out.strip() else root
+
+    code, out = git(top, "rev-parse", "HEAD")
+    if code != 0:
+        return TreePosition(root=top, why=(
+            f"`git rev-parse HEAD` in {top} exited {code}: {out.strip()}"), git=git)
+    revision = out.strip()
+
+    _code, out = git(top, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = out.strip() or None
+    if branch == "HEAD":
+        branch = None
+
+    declared = True
+    _code, out = git(top, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                     "@{upstream}")
+    ref = out.strip() if _code == 0 else ""
+    if not ref:
+        declared = False
+        ref = f"origin/{branch}" if branch else ""
+        if not ref:
+            return TreePosition(root=top, revision=revision, branch=None,
+                                why=(f"{top} is on a detached HEAD, so there is "
+                                     f"no branch whose ref could be followed"),
+                                git=git)
+        code, _out = git(top, "rev-parse", "--verify", "--quiet",
+                         f"refs/remotes/{ref}")
+        if code != 0:
+            return TreePosition(root=top, revision=revision, branch=branch, why=(
+                f"{top} is on {branch}, which declares no upstream "
+                f"(`branch.{branch}.remote` and `.merge` are both unset) and "
+                f"has no {ref} ref to fall back to. Nothing on this node states "
+                f"what this branch is supposed to follow"), git=git)
+
+    code, out = git(top, "rev-list", "--left-right", "--count", f"HEAD...{ref}")
+    if code != 0:
+        return TreePosition(root=top, revision=revision, branch=branch,
+                            upstream_ref=ref, why=(
+                                f"`git rev-list --left-right --count HEAD...{ref}` "
+                                f"exited {code}, so how far this tree stands from "
+                                f"{ref} was not established"), git=git)
+    parts = out.split()
+    ahead, behind = (int(parts[0]), int(parts[1])) if len(parts) == 2 else (None, None)
+
+    _code, out = git(top, "rev-parse", ref)
+    upstream_revision = out.strip() or None
+
+    if ahead is None:
+        state = TREE_UNREAD
+    elif behind and ahead:
+        state = TREE_DIVERGED
+    elif behind:
+        state = TREE_BEHIND
+    elif ahead:
+        state = TREE_AHEAD
+    else:
+        state = TREE_FOLLOWING
+
+    why = ""
+    if not declared:
+        why = (f"`branch.{branch}.merge` is unset on this checkout, so {ref} is "
+               f"the remote-tracking ref a reader falls back to and not one this "
+               f"branch follows")
+    return TreePosition(root=top, revision=revision, branch=branch,
+                        upstream_ref=ref, upstream_revision=upstream_revision,
+                        ahead=ahead, behind=behind, state=state, why=why, git=git)
+
+
+def _document_spellings(rule: dict) -> list[str]:
+    """The filenames a rule would accept, in the order it would accept them.
+
+    Shared with `_resolve_document`'s vocabulary on purpose: the question "is it
+    at the ref" has to be asked with the same spellings as "is it in the tree",
+    or a document could be reported absent at the ref because this looked for
+    the one name the rule does not use.
+    """
+    names = []
+    for kind in rule["resolved_by"]:
+        if kind == "suffixed-file":
+            names.append(f"{rule['name']}.md")
+        else:
+            names.append(rule["name"])
+    return names
+
+
+def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> None:
+    """Record what the authority holds, and only then say why nothing resolved.
+
+    `held_by_upstream` is set on every branch of this — True, False, or None —
+    because "the ref has it and this tree does not" is a fact a JSON consumer
+    needs too, and a fact that exists only inside a rendered sentence is not
+    one. `why` is rewritten ONLY when the answer is True: for False the existing
+    sentence already names the right party, and for None nobody established a
+    cause, so claiming one would be this class's own defect.
+    """
+    spellings = _document_spellings(rule)
+    held = [tree.holds(tree.relative(item_dir / name)) for name in spellings]
+    verdict = True if any(h is True for h in held) else (
+        False if held and all(h is False for h in held) else None)
+    answer["held_by_upstream"] = verdict
+    answer["upstream_ref"] = tree.upstream_ref
+    if verdict is not True:
+        return
+    which = spellings[held.index(True)]
+    answer["upstream_path"] = which
+    answer["why"] = (
+        f"`{which}` is not in the working tree this reader is bound to "
+        f"({tree.root} at {str(tree.revision or '?')[:12]}), and it IS present "
+        f"at {tree.upstream_ref}"
+        + (f", which that tree is {tree.behind} behind" if tree.behind else "")
+        + f". The document is not missing from the Item — it was never "
+          f"materialized into this tree"
+        + (f", and this branch declares no upstream to tell it so"
+           if not tree.branch or "unset" in tree.why else "") + ".")
+
+
+# ---------------------------------------------------------------------------
 # The skeletons: what a document of each kind is expected to contain.
 # ---------------------------------------------------------------------------
 
@@ -625,7 +863,8 @@ def _priority(card: dict | None) -> dict:
 
 
 def _documents(item_dir: Path, state: str, rules: list[dict],
-               skeletons: dict | None = None) -> list[dict]:
+               skeletons: dict | None = None, tree: "TreePosition | None" = None,
+               ) -> list[dict]:
     """Every document, with PRESENT / MISSING / NOT_YET_REQUIRED / UNREADABLE.
 
     `state` is the Item's own state, read from the projection. The two-word
@@ -636,6 +875,12 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
     A document that resolves is reported with how it resolved and how much is
     there, so `design/` holding three research notes and `design.md` holding one
     are told apart without this module reading either one.
+
+    `tree` is optional and changes nothing when it is absent, which keeps every
+    existing caller and fixture on exactly the answer it had. When it is given,
+    a document that resolves under no rule is checked against the ref the tree
+    follows, so a lagging checkout stops being reported as an Item that owes a
+    document nobody wrote.
     """
     out = []
     for rule in rules:
@@ -668,6 +913,8 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
                        "why": (f"an Item in {state} is expected to have it, and "
                                f"it resolves under none of "
                                f"{list(rule['resolved_by'])}")}
+            if tree is not None:
+                _explain_absence_by_tree(answer, item_dir, rule, tree)
         else:
             answer |= {"state": NOT_YET_REQUIRED,
                        "why": f"an Item in {state} is not expected to have it yet"}
@@ -824,7 +1071,8 @@ def completion_of(row: dict, rules: dict) -> dict:
 
 def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
              documents: list[dict], completion: dict,
-             skeletons: dict | None = None) -> list[dict]:
+             skeletons: dict | None = None,
+             tree: "TreePosition | None" = None) -> list[dict]:
     rows = []
     for project in projects:
         if project["state"] != "READ":
@@ -862,7 +1110,7 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "superseded_by": ((card["document"] or {}).get("superseded_by")
                                   if card["state"] == PRESENT else None),
                 "documents": _documents(item_dir, str(item.get("state") or ""),
-                                        documents, skeletons),
+                                        documents, skeletons, tree),
                 "runs": sum(len(a.get("runs") or ())
                             for a in item.get("activities") or ()),
                 "deliverables": len(item.get("deliverables") or ()),
@@ -1085,13 +1333,19 @@ def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
 
 def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
                  project: str, item_id: str, projects: list[dict],
-                 skeletons: dict | None = None) -> dict:
+                 skeletons: dict | None = None,
+                 tree: "TreePosition | None" = None) -> dict:
     """One Item's chain: what it is, and which adjacent document resolves.
 
     The documents are listed in the contract's order, which is the chain's
     order — card, brief, design, plan, report — so a reader sees where the
     chain stops. `undecided` is empty when every required document is present
     and names each one that is not, with the state that made it required.
+
+    `tree`, when the caller supplies one, is carried on the payload as
+    `position` as well as being used to attribute an absence. A reader that has
+    to open a second tool to learn which generation the answer came from will
+    not, and the answer is only meaningful with it.
     """
     documents = _document_rules(contract)
     row = None
@@ -1099,7 +1353,7 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
                               workspace_root=workspace_root,
                               documents=documents,
                               completion=_completion_rules(contract),
-                              skeletons=skeletons):
+                              skeletons=skeletons, tree=tree):
         if candidate["project"] == project and candidate["id"] == item_id:
             row = candidate
             break
@@ -1129,6 +1383,12 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
         "completion": row["completion"],
         "runs": row["runs"], "deliverables": row["deliverables"],
         "undecided": undecided,
+        "position": None if tree is None else {
+            "state": tree.state, "root": str(tree.root) if tree.root else None,
+            "revision": tree.revision, "branch": tree.branch,
+            "upstream_ref": tree.upstream_ref,
+            "upstream_revision": tree.upstream_revision,
+            "ahead": tree.ahead, "behind": tree.behind, "why": tree.why},
     }
 
 
