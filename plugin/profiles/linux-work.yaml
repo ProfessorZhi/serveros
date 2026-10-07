@@ -1142,7 +1142,32 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   checker that no longer behaves that way. The identity moves because a
 #   session left on `m` goes on being told its HOME is over budget by a number
 #   that was never this node's.
-cachebuster: srv0005.20261006n
+#
+# Bumped to `srv0005.20261007a` on 2026-10-07, by the same rule. This node
+# moves from `serveros-capacity-20261006n` (source `72cc6f2`) to `origin/main`
+# `5c835d5`, which is 26 commits (16 non-merge), and eleven members of this
+# composition change with it:
+#
+#   context/resolver.py                          项目别名解析（28f9745）
+#   intake/global_board.py                       需求页保留人工区（c89b75c）
+#   intake/daily_cycle.py
+#   intake/workchain.py                          别名折叠与采集普查（4d3bef6）
+#   runtime/cli.py                               STALE_BOARD 说出哪几份投影旧（0f533f0）
+#   runtime/card_shots.py
+#   runtime/actuator-contract.yaml               声明的七个站点（c27951d）
+#   runtime/serveros-alert-sync.service
+#   runtime/serveros-continuation-wake.service
+#   runtime/serveros-daily.service               三个单元的 PATH= 推理订正（1cf6448）
+#   skills/serveros/scripts/mutation_guard.py    逐站判陈旧（f0c00c2）
+#
+# Every one of the eleven is a member of this composition, so leaving the label
+# at `n` is not bookkeeping: an installed cache would go on serving the old
+# payload under `3.1.0+srv0005.20261006n`, a string that already names a
+# released revision — and one of the eleven is `intake/global_board.py`, the
+# producer that silently erases the requirement board's `<!-- human:begin -->`
+# section and exits 0 while doing it. The bump is what stops a session from
+# running the eraser under a version string that claims it was fixed.
+cachebuster: srv0005.20261007a
 
 skills:
   - name: runtime-management
