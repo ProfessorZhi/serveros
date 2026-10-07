@@ -198,10 +198,13 @@ def _cmd_candidate(args):
                 kind=args.kind,
             )
         raise ValueError('promotion requires explicit --item or --create-new approval')
-    state={'merge':'MERGED','reject':'REJECTED','defer':'DEFERRED'}[args.action]
-    with s.transaction(immediate=True) as c:
-        c.execute('UPDATE item_candidates SET state=? WHERE candidate_id=?',(state,args.id))
-        return dict(c.execute('SELECT * FROM item_candidates WHERE candidate_id=?',(args.id,)).fetchone())
+    # The decision lives in the store, not here. Written inline first, this was
+    # an `UPDATE … WHERE candidate_id=?` whose no-match case fell through to
+    # `dict(None)` — a `TypeError` that `main` does not catch, so the three
+    # decision verbs were the only ones in this CLI that answered a caller with
+    # a Python traceback. The store answers for both the absent candidate and
+    # the already-taken decision now.
+    return s.decide_candidate(args.id, args.action)
 
 def _cmd_federation(args):
     store=ServerOSStore(_state_dir(args))

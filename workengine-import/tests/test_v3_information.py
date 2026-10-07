@@ -557,3 +557,178 @@ class InformationV3Tests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 2)
             self.assertEqual(json.loads(result.stderr)["error"]["code"], "INVALID_INPUT")
+
+
+class ADecisionThatHasBeenTakenIsNotOverwritten(unittest.TestCase):
+    """One requirement, one candidate, and a decision that stays decided.
+
+    Measured 2026-10-08 against the tree before this class existed, each on its
+    own fresh store through the CLI:
+
+      * `candidate merge cnd-1` then `candidate reject cnd-1` both exited 0 and
+        left the row REJECTED — one decision silently replacing another.
+      * `candidate reject cnd-1` then `candidate promote cnd-1 --create-new`
+        exited 0 and produced a real second Item from a rejected requirement.
+      * `candidate match cnd-1 --item DEM-0001` then `candidate promote cnd-1
+        --item DEM-0002` exited 0, answered with DEM-0002, and left the row
+        pointing there — a human's recorded match exchanged for another Item
+        without a word.
+      * `candidate merge cnd-NOPE` — a candidate nobody has — exited 1 with a
+        Python traceback (`dict(None)` is a TypeError, which `main` does not
+        catch), where every other verb in this CLI answers a JSON error and 2.
+
+    The rule these pin is one rule: a concluded candidate is not re-decided, and
+    an Item already named is not silently exchanged for another. `DEFERRED` is
+    deliberately not concluded — deferring says "not yet", so a deferred
+    candidate is still decidable, and that is the way to revise one without
+    deciding it twice.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.state = Path(self.td.name) / "state"
+        self.store = ServerOSStore(self.state)
+        self.store.register_project("demo", "DEM")
+        source = self.store.register_source("github", "issue-1", revision="r1", locator="https://x")
+        observation = self.store.record_observation(
+            source["source_id"], "obs-1", semantic_type="bug", content_hash="a" * 64
+        )
+        self.store.record_claim("claim-1", "/claim", [observation["observation_id"]])
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _candidate(self, candidate_id="candidate-1", dedupe_key="dedupe-1"):
+        return self.store.create_candidate(
+            candidate_id, "demo", "candidate", "bug",
+            dedupe_key=dedupe_key, claim_ids=["claim-1"],
+        )
+
+    def _item(self, item_id="DEM-0001"):
+        return self.store.create_item(WorkItem(item_id, "demo", "existing", "bug", "/card"))
+
+    def _stored(self, candidate_id="candidate-1"):
+        with self.store.connection() as conn:
+            row = conn.execute(
+                "SELECT state,approved_item_id FROM item_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            ).fetchone()
+        return (row["state"], row["approved_item_id"])
+
+    def _cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "workengine.cli", "--state-dir", str(self.state), *args],
+            check=False, capture_output=True, text=True, cwd="/data/scratch/vince",
+            env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])),
+        )
+
+    # --- the decision verbs -------------------------------------------------
+
+    def test_a_decision_verb_answers_for_a_candidate_nobody_has(self):
+        """The absence of a candidate is an answer, not a stack trace.
+
+        Asserted on the process's exit code and its two streams together: the
+        previous version exited 1 with a traceback on stderr, so a test that
+        only read the payload would have had nothing to read.
+        """
+        for verb in ("merge", "reject", "defer"):
+            result = self._cli("candidate", verb, "candidate-nope")
+            self.assertEqual(result.returncode, 2, f"`candidate {verb}`: {result.stderr}")
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(json.loads(result.stderr)["error"]["code"], "INVALID_INPUT")
+            self.assertIn("candidate-nope", result.stderr)
+
+    def test_a_second_decision_does_not_overwrite_the_first(self):
+        self._candidate()
+        self.assertEqual(self._cli("candidate", "merge", "candidate-1").returncode, 0)
+        refused = self._cli("candidate", "reject", "candidate-1")
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("MERGED", refused.stderr, "the refusal names the state that is actually stored")
+        self.assertEqual(self._stored()[0], "MERGED", "and the stored decision is unchanged")
+
+    def test_replaying_the_same_decision_is_not_a_second_one(self):
+        """A retried call must not be refused for having been tried twice."""
+        self._candidate()
+        first = self._cli("candidate", "reject", "candidate-1")
+        second = self._cli("candidate", "reject", "candidate-1")
+        self.assertEqual((first.returncode, second.returncode), (0, 0), second.stderr)
+        self.assertEqual(json.loads(first.stdout), json.loads(second.stdout))
+
+    def test_deferring_is_not_deciding_so_a_deferred_candidate_still_is(self):
+        # The control for the guard above: it must refuse a concluded candidate,
+        # not every second call. A park is not a verdict.
+        self._candidate()
+        self.assertEqual(self._cli("candidate", "defer", "candidate-1").returncode, 0)
+        decided = self._cli("candidate", "merge", "candidate-1")
+        self.assertEqual(decided.returncode, 0, decided.stderr)
+        self.assertEqual(self._stored()[0], "MERGED")
+
+    # --- promotion honours the decision ------------------------------------
+
+    def test_a_rejected_requirement_does_not_become_an_item(self):
+        """The load-bearing one: a rejection that an Item can still be built from.
+
+        `--create-new` was the path that did it, and the assertion is on the
+        item count as well as the refusal, because a version that refused the
+        call after inserting the row would satisfy the exit code alone.
+        """
+        self._candidate()
+        self._item()
+        self.assertEqual(self._cli("candidate", "reject", "candidate-1").returncode, 0)
+        refused = self._cli(
+            "candidate", "promote", "candidate-1", "--create-new",
+            "--project", "demo", "--prefix", "DEM", "--title", "t", "--kind", "bug",
+        )
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("REJECTED", refused.stderr)
+        with self.store.connection() as conn:
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM items_index").fetchone()[0], 1,
+                "the only Item is the one that existed before the promotion was refused",
+            )
+
+    def test_a_match_is_not_exchanged_for_another_item_by_promotion(self):
+        self._candidate()
+        self._item("DEM-0001")
+        self._item("DEM-0002")
+        self.assertEqual(self.store.match_candidate("candidate-1", "DEM-0001")["state"], "MATCHED")
+        refused = self._cli("candidate", "promote", "candidate-1", "--item", "DEM-0002")
+        self.assertEqual(refused.returncode, 2)
+        for named in ("DEM-0001", "DEM-0002"):
+            self.assertIn(named, refused.stderr, "both the recorded Item and the named one are said")
+        self.assertEqual(self._stored(), ("MATCHED", "DEM-0001"))
+
+    def test_promoting_to_the_item_already_matched_is_a_replay(self):
+        # The control: naming the Item that is already recorded is not a
+        # re-pointing, and must still go through.
+        self._candidate()
+        self._item("DEM-0001")
+        self.store.match_candidate("candidate-1", "DEM-0001")
+        promoted = self._cli("candidate", "promote", "candidate-1", "--item", "DEM-0001")
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        self.assertEqual(self._stored(), ("PROMOTED", "DEM-0001"))
+
+    def test_a_promoted_candidate_is_not_promoted_to_a_second_item(self):
+        self._candidate()
+        self._item("DEM-0001")
+        self._item("DEM-0002")
+        self.store.match_candidate("candidate-1", "DEM-0001")
+        self.store.promote_candidate("candidate-1", "DEM-0001")
+        refused = self._cli("candidate", "promote", "candidate-1", "--item", "DEM-0002")
+        self.assertEqual(refused.returncode, 2)
+        self.assertEqual(self._stored(), ("PROMOTED", "DEM-0001"))
+
+    def test_a_concluded_candidate_is_not_matched_again(self):
+        """`PROMOTED` read back as `MATCHED` would take the Item off it.
+
+        Match is a decision about which Item a requirement is, so it is subject
+        to the same rule as the other three.
+        """
+        self._candidate()
+        self._item("DEM-0001")
+        self._item("DEM-0002")
+        self.store.match_candidate("candidate-1", "DEM-0001")
+        self.store.promote_candidate("candidate-1", "DEM-0001")
+        with self.assertRaisesRegex(ValueError, "PROMOTED"):
+            self.store.match_candidate("candidate-1", "DEM-0002")
+        self.assertEqual(self._stored(), ("PROMOTED", "DEM-0001"))
