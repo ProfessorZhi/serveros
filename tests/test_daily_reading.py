@@ -233,6 +233,112 @@ def test_unreadable_bound_source_is_not_no_change(tmp_path):
     path.write_text('{"not":"a capture"}')
     result = run(tmp_path, records, call=lambda *_: pytest.fail("unreadable source"))
     assert result["stopped_because"] == "SOURCE_UNAVAILABLE", result
+    row = result["outcomes"]["reading_progress"][0]
+    assert row["state"] == "UNKNOWN" and row["why"], row
+    assert result["stopped_because"] != "NO_CHANGE"
+
+
+def grow_im(records, count):
+    raw = records / "information/raw/feishu/chats/people/x/oc_x"
+    manifest = json.loads((raw / "manifest.json").read_text())
+    manifest["sync"].update(msg_count=count, remote_unique_message_count=count,
+                            last_message_id=f"om_{count - 1}")
+    (raw / "manifest.json").write_text(json.dumps(manifest))
+    (raw / "messages.jsonl").write_text("".join(json.dumps({
+        "message_id": f"om_{p}", "message_position": str(p), "content": f"message {p}",
+        "updated": False, "deleted": False}) + "\n" for p in range(count)))
+
+
+def reading_at_low(_, ask, __):
+    result = model(None, None, None)
+    result["claims"][0]["support"] = {"positions": [ask["brief"]["source"]["from_position"]],
+                                      "start_line": None, "end_line": None}
+    return result
+
+
+def test_no_grant_reading_progress_grows_across_periods(tmp_path, monkeypatch):
+    """No grant still prepares, and the per-source progress is what grows.
+
+    A reading prepared for alignment is not an accepted claim: across periods
+    the model is not re-asked for batches it already read, the card (and so any
+    Requirement or Work derived from it) is untouched, and the cursor does not
+    move. What grows is `reading_progress` -- cache reuse plus new batches.
+    """
+    records, card = im_fixture(tmp_path)
+    grow_im(records, 105)
+    cli = daily_reading._load("runtime/cli.py")
+    monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (None, "no grant bound"))
+    before = (records / card).read_bytes()
+    first = run(tmp_path, records, call=reading_at_low, budget=1)
+    assert first["stopped_because"] == "BUDGET_EXHAUSTED", first
+    row0 = first["outcomes"]["reading_progress"][0]
+    assert (row0["prepared"], row0["model_calls"], row0["cache_reused"]) == (1, 1, 0)
+    assert [b["from_position"] for b in row0["unread_batches"]] == [50, 100]
+    second = run(tmp_path, records, call=reading_at_low, day=7, budget=1)
+    row1 = second["outcomes"]["reading_progress"][0]
+    assert row1["cache_reused"] == 1 and row1["model_calls"] == 1
+    assert row1["prepared"] == row1["cache_reused"] + row1["model_calls"] == 2
+    assert row1["prepared"] > row0["prepared"]
+    assert (records / card).read_bytes() == before
+    assert second["cursor"] == {}
+
+
+def test_zero_budget_reuses_cache_without_a_model_call(tmp_path, monkeypatch):
+    """A ceiling of zero is a complete run of every step that needs no model."""
+    records, card = fixture(tmp_path)
+    cli = daily_reading._load("runtime/cli.py")
+    monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (None, "no grant bound"))
+    first = run(tmp_path, records)
+    assert first["stopped_because"] == "NEEDS_DECISION", first
+    second = run(tmp_path, records, call=lambda *_: pytest.fail("zero-budget pass sent a model"),
+                 day=7, budget=0)
+    row = second["outcomes"]["reading_progress"][0]
+    assert second["model_calls"] == 0
+    assert (row["prepared"], row["cache_reused"], row["model_calls"]) == (1, 1, 0)
+    assert row["awaiting"] == 1 and row["state"] == "READ"
+    assert second["stopped_because"] == "NEEDS_DECISION", second
+    assert second["outcomes"]["alignment"]["pending_readings"] == 1
+
+
+def test_budget_spent_on_one_source_does_not_hide_another_sources_cache(tmp_path, monkeypatch):
+    """The first source is unread for lack of budget; the second is still shown.
+
+    The pass scans every source for a reusable reading even after the ceiling is
+    spent, records the first source's unread batch, and only then stops on
+    BUDGET_EXHAUSTED -- with the alignment it produced still on disk.
+    """
+    records, _ = fixture(tmp_path)
+    card_b = "information/understanding/projects/second.md"
+    manifest_b = "feishu/chats/people/y/oc_y/links/doc/manifest.json"
+    raw_b = records / "information/raw" / manifest_b
+    raw_b.parent.mkdir(parents=True)
+    body_b = raw_b.with_name("content.md")
+    body_b.write_text("The second endpoint returned HTTP 204.\n")
+    raw_b.write_text(json.dumps({"url": "https://example.test/second", "type": "wiki",
+                                 "content_sha256": hashlib.sha256(body_b.read_bytes()).hexdigest()}))
+    (records / card_b).parent.mkdir(parents=True, exist_ok=True)
+    (records / card_b).write_text(f"# Second\n\n## Sources\n- `information/raw/{manifest_b}` sha deadbeef\n")
+    sources = records / "projects/example/context/sources.yaml"
+    document = yaml.safe_load(sources.read_text())
+    document["sources"].append({"id": "second", "kind": "understanding",
+                                "card": card_b, "manifest": manifest_b})
+    cli = daily_reading._load("runtime/cli.py")
+    monkeypatch.setattr(cli, "_delegation_from_grant", lambda *_: (None, "no grant bound"))
+    # Warm ONLY the second source's reading, then put it back after the first.
+    sources.write_text(yaml.safe_dump({"sources": [document["sources"][1]]}))
+    warm = run(tmp_path, records)
+    assert warm["stopped_because"] == "NEEDS_DECISION", warm
+    sources.write_text(yaml.safe_dump(document))
+
+    result = run(tmp_path, records, call=lambda *_: pytest.fail("no budget to spend"),
+                 day=7, budget=0)
+    assert result["stopped_because"] == "BUDGET_EXHAUSTED", result
+    rows = {row["id"]: row for row in result["outcomes"]["reading_progress"]}
+    assert rows["doc"]["state"] == "UNREAD_BUDGET" and rows["doc"]["unread_batches"]
+    assert (rows["second"]["prepared"], rows["second"]["cache_reused"]) == (1, 1)
+    assert rows["second"]["state"] == "READ"
+    assert result["model_calls"] == 0
+    assert result["outcomes"]["alignment"]["path"]
 
 
 def test_oversized_source_is_refused_before_invocation(tmp_path, monkeypatch):
