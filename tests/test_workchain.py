@@ -226,6 +226,103 @@ class TheBoardPlacesEveryState(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 别名是同一个项目的第二个名字，不是第二个项目。
+# ---------------------------------------------------------------------------
+
+class AnAliasIsASecondNameAndNotASecondProject(unittest.TestCase):
+    """`litellm-observability` 是 `litellm` 的另一个名字（见 `projects.yaml`）。
+
+    折叠本身很短，值得测的是它的两个下游后果：读两次同一个投影会让同一个 Item
+    在板上出现两行，而重复 ID 在 `select_focus` 那里是抛错的 —— 一件看起来只是
+    「多一行」的事，实际是整个周期算不出来。所以这里测的是**行的数量**，不是
+    字典的内容。
+    """
+
+    def _fixture(self, root: Path, names) -> None:
+        for name in names:
+            out = root / "boards" / name / "current.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(
+                a_projection(name, [an_item(f"{name.upper()[:3]}-0001")])),
+                encoding="utf-8")
+        (root / "records" / "projects").mkdir(parents=True, exist_ok=True)
+        (root / "workspace").mkdir(parents=True, exist_ok=True)
+
+    def test_two_names_for_one_project_read_one_projection(self):
+        aliases = {"obs": {"project": "litellm", "declared_by": "README.md"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, ["litellm", "marketops"])
+            loaded = chain.load_projects(
+                boards_root=root / "boards",
+                projects=["litellm", "marketops", "obs"], aliases=aliases)
+            board = chain.compose_board(
+                contract=CONTRACT, projects=loaded,
+                records_root=root / "records", workspace_root=root / "workspace")
+        # 三个名字，两份投影。多出来的那一行会让同一个 Item 出现两次。
+        self.assertEqual([p["project"] for p in loaded], ["litellm", "marketops"])
+        self.assertEqual(board["counts"]["projects_read"], 2)
+        rows = [r["id"] for s in board["sections"] for r in s["rows"]]
+        self.assertEqual(len(rows), len(set(rows)),
+                         "同一个 Item 出现在两行里，周期就算不出来了")
+        # 而且那一行说得出它同时回答了哪个名字 —— 「点了三个、拿到两行」的差
+        # 不能由这一步替调用者咽下去。
+        answered = {p["project"]: p["also_named"] for p in board["projects"]}
+        self.assertEqual(answered, {"litellm": ["obs"], "marketops": []})
+
+    def test_a_name_that_is_already_the_target_is_read_once(self):
+        """点两次同一个名字，和点一个名字加一个别名，是同一件事。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, ["litellm"])
+            loaded = chain.load_projects(boards_root=root / "boards",
+                                         projects=["litellm", "litellm"], aliases={})
+        self.assertEqual([p["project"] for p in loaded], ["litellm"])
+
+    def test_a_broken_alias_does_not_answer_for_another_project(self):
+        """别名指向一个没注册的名字，是一个坏掉的绑定，不是「换个名字」。
+
+        它的表现是一行 UNREADABLE，行名是**注册表让它去读的那个名字**，而
+        `also_named` 说得出是谁把自己带到这里来的 —— 于是「这个别名指错了」
+        在看得见的地方，而不是被猜成别的项目。这条测的正是那个「不猜」：
+        盘上有 `litellm` 的投影，而这个别名一个字段都不提它。
+        """
+        aliases = {"obs": {"project": "nobody-registered-this"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, ["litellm"])
+            loaded = chain.load_projects(boards_root=root / "boards",
+                                         projects=["obs"], aliases=aliases)
+        self.assertEqual([p["project"] for p in loaded], ["nobody-registered-this"])
+        self.assertEqual(loaded[0]["state"], chain.UNREADABLE)
+        self.assertEqual(loaded[0]["also_named"], ["obs"])
+        self.assertNotIn("litellm", [p["project"] for p in loaded],
+                         "别名指错时读到了盘上别的项目：这就是那个不出声的错")
+
+    def test_the_record_names_the_target_and_not_the_alias(self):
+        names, renamed = chain.resolve_aliases(
+            ["obs", "litellm", "marketops"],
+            {"obs": {"project": "litellm", "declared_by": "README.md"}})
+        self.assertEqual(names, ["litellm", "marketops"])
+        self.assertEqual(renamed, {"litellm": ["obs"]})
+
+    def test_the_glob_branch_is_not_told_about_aliases(self):
+        """不许别名在走磁盘的那条分支上凭空造出一个项目。
+
+        另一条分支列的是**盘上有什么**，而一个叫 `obs` 的目录不是任何注册项
+        能造出来的。在那里应用别名，等于用一个回答去填一个没人问过的问题 ——
+        和凭空发明一个项目无法区分。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, ["litellm"])
+            loaded = chain.load_projects(
+                boards_root=root / "boards",
+                aliases={"obs": {"project": "litellm"}})
+        self.assertEqual([p["project"] for p in loaded], ["litellm"])
+
+
+# ---------------------------------------------------------------------------
 # The locator is resolved, never recomposed.
 # ---------------------------------------------------------------------------
 

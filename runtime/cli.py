@@ -7717,6 +7717,30 @@ def _delegation_from_grant(ref: str, now_raw: str) -> tuple[dict | None, str]:
             "source": f"{control.path}#{ref}"}, ""
 
 
+def _project_aliases(workspace_root: Path) -> dict:
+    """注册表的 `project_aliases` 段：别名 → `{project, declared_by}`。
+
+    走 `context/resolver.py` 而不是在这个文件里再拼一次路径 ——
+    `Roots.projects_yaml` 是「注册表在哪」的唯一定义。`Roots` 由 workspace、
+    artifacts、state 三个根构成，而这里只覆盖 workspace（因为 `--workspace-root`
+    是 fixture 可达的），其余两个从环境取：别名表一个都不用它俩。
+
+    表读不出来不是这条路要报的错。`load_project_aliases` 把原因交回来，原因
+    写进 stderr，请求照旧进行 —— 一个读不到的注册表只会让别名不再被解析，于是
+    那些名字落成它们本来就是的样子（一行 UNREADABLE，说「这个名字下没有投影」）。
+    静默地把「读不到」当成「没有别名」才是这里要避免的，所以它出声。
+    """
+    resolver = _load_module_from(REPO_ROOT / "context" / "resolver.py",
+                                 "serveros_context_resolver")
+    base = resolver.Roots.from_env()
+    roots = resolver.Roots(Path(workspace_root), base.artifacts_root,
+                           base.state_db, data_root=base.data_root)
+    aliases, why = resolver.load_project_aliases(roots)
+    if why:
+        sys.stderr.write(f"serverosctl: {why}；别名不再解析\n")
+    return aliases
+
+
 def _work_board_document(args):
     """The composed personal board, shared by every verb that reads it.
 
@@ -7732,9 +7756,14 @@ def _work_board_document(args):
         return None
     contract = chain.load_contract(
         REPO_ROOT / "intake" / "workchain-contract.yaml")
+    # 别名只在调用者**点名**项目时才有意义：另一条分支走磁盘，而一个叫
+    # `litellm-observability` 的目录不是任何注册项能造出来的。所以没有
+    # `--project` 时连注册表都不读 —— 那不是省一次 IO，是不给「没问的问题」
+    # 准备一个答案。
+    named = args.project.split(",") if getattr(args, "project", "") else None
     projects = chain.load_projects(
-        boards_root=boards,
-        projects=(args.project.split(",") if getattr(args, "project", "") else None))
+        boards_root=boards, projects=named,
+        aliases=_project_aliases(workspace) if named else {})
     return chain.compose_board(contract=contract, projects=projects,
                                records_root=records,
                                workspace_root=workspace,
@@ -7784,6 +7813,11 @@ def _work_board_lines(board: dict) -> list[str]:
              f"{counts['projects_unread']} 未读到",
              f"条目       {counts['items']}"]
     for project in board["projects"]:
+        if project.get("also_named"):
+            # 这一行同时回答了别的名字。一个点了三个项目、拿到两行投影的调用者，
+            # 要看得见第三项是其中一行的**第二个名字**，不是少了一个项目。
+            lines.append(f"  {project['project']}  也被点名为 "
+                         + "、".join(project["also_named"]))
         if project["state"] != "READ":
             lines.append(f"  {project['project']}  {project['state']} —— "
                          f"{project['why']}")

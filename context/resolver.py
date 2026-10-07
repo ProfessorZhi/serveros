@@ -235,6 +235,35 @@ def load_projects(roots: Roots) -> dict:
     return (_read_yaml(roots.projects_yaml).get("projects") or {})
 
 
+def load_project_aliases(roots: Roots) -> tuple[dict, str]:
+    """`project_aliases` 段 — 别名 → `{project, declared_by}`，以及为什么读不到。
+
+    别名是一个已经在跑的项目的**另一个名字**（`litellm-observability` 就是
+    `litellm`）。它不签发 ID，也不带 prefix，所以查它的人要的答案是「归谁」，
+    不是「还有哪些项目」—— 这也是它不并进 `load_projects` 的原因：并进去会让
+    「别名」和「项目」在调用方眼里变成同一种东西，而它们下游的处置完全不同。
+
+    和 `load_projects` 一样，读不到就是空表。**但这里把空表分成了两种**，因为
+    这两种在下游长得不一样：注册表里没有 `project_aliases` 时，一个别名会原样
+    落到 `load_projects` 手里、在那里成为一行 UNREADABLE（「控制面还没写这份
+    投影」）；而注册表**根本读不出来**时，所有别名都会变成 UNREADABLE —— 那时
+    下游说的是真话但指错了原因，`why` 就是给那一刻准备的。`load_projects`
+    不需要这个区分，因为它的空表和「没注册任何项目」是同一件事。
+    """
+    path = roots.projects_yaml
+    try:
+        document = yaml.safe_load(path.read_text())
+    except FileNotFoundError:
+        return {}, f"没有注册表：{path}"
+    except OSError as exc:
+        return {}, f"注册表读不出来：{path}（{exc}）"
+    except yaml.YAMLError as exc:
+        return {}, f"注册表不是 YAML：{path}（{exc.__class__.__name__}）"
+    if not isinstance(document, dict):
+        return {}, f"注册表解析成 {type(document).__name__}，不是映射：{path}"
+    return (document.get("project_aliases") or {}), ""
+
+
 def _query_state(roots: Roots, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
     """Read ServerOS machine state read-only. Absent DB is not an error."""
     if not roots.state_db.is_file():
