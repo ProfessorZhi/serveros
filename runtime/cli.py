@@ -11279,16 +11279,22 @@ def cmd_work_understanding(args) -> int:
         lines.append(f"{heading}  [{card['sources_marker']}]  {verdict['state']}")
         lines.append(f"    {verdict['why']}")
         if verdict.get("partial"):
-            # Both kinds of unchecked citation are named, because they are
-            # different answers to different questions: one named no reach, the
-            # other named a source that is not on this node. A partial line
-            # reporting only the first would read as though the rest of the card
-            # had been compared.
+            # Every kind of unchecked citation is named, because they are
+            # different answers to different questions: one named no reach, one
+            # named a source that is not on this node, one quoted a digest the
+            # manifest it cites could not be compared with. A partial line
+            # reporting only some of them would read as though the rest of the
+            # card had been compared — and a partial line that named none of
+            # them ends in the separator with nothing after it.
             unchecked = []
             if verdict["unmeasured"]:
                 unchecked.append(f"{verdict['unmeasured']} 条没有可比的位置")
             if verdict.get("unresolved"):
                 unchecked.append(f"{verdict['unresolved']} 条没有对应的源")
+            if verdict.get("uncheckable"):
+                unchecked.append(
+                    f"{verdict['uncheckable']} 条引文所引的摘要与 manifest "
+                    f"记的那份无法比对")
             lines.append(f"    部分：{verdict['measured']} 条引文可比、"
                          + "、".join(unchecked))
         for row in card["measurements"]:
@@ -11321,6 +11327,16 @@ _STANDING_SAYS = {
     "NO_PREVIOUS_VERSION_RECORDED": "引文摘要不是现版",
 }
 
+#: 一行测量里的「与 manifest 一致」是**和什么**一致的（判据在
+#: `understanding_delta.RECORDED_DIGEST_STANDINGS`）。三种不是本文件摘要的记录
+#: 都印出来，因为「一个这儿没人能哈希的值」和「正文自己的摘要」印出来是同一句
+#: 「一致」；`RECORDED_IS_THIS_FILES_DIGEST` 不印，那是默认情形。
+_RECORDED_IS = {
+    "RECORDED_IS_NOT_THIS_FILES_DIGEST": "记录不描述旁边的正文",
+    "RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE": "旁边没有可比对的正文",
+    "RECORDED_IS_A_BODY_HELD_ELSEWHERE": "记录的是别处持有的正文（此处未比对字节）",
+}
+
 
 def _measurement_line(row: dict) -> str:
     """One citation's measurement, with the two watermarks kept apart."""
@@ -11344,6 +11360,12 @@ def _measurement_line(row: dict) -> str:
                 + (f"（{_STANDING_IS[row['cited_digest_standing']]}）"
                    if not agreed and row.get("cited_digest_standing")
                    in _STANDING_IS else "")
+                # What the 一致 above was agreed WITH. Without this, a comparison
+                # against a value nobody here can hash reads exactly like one
+                # against the body's own digest.
+                + (f"  · {_RECORDED_IS[row['recorded_digest_standing']]}"
+                   if row.get("recorded_digest_standing") in _RECORDED_IS
+                   else "")
                 + (f" —— {row['digest_why']}" if row.get("digest_why") else ""))
     if kind == "WHOLE_FILE":
         return (f"{where}  整份引用，没有位置"
@@ -11501,12 +11523,23 @@ def _reading_current(semantic, report: dict, reading: dict, *,
             f"{row.get('manifest')} {row.get('from_position')}–"
             f"{row.get('to_position')}"
             for row in (card_row.get("judged") or {}).get("review_ranges", []))
+        # Why there is no range, where the reader measured a reason. Absence is
+        # not an explanation, and the two reasons a document card can lose its
+        # range call for different acts: a citation that could not be compared
+        # because the recorded digest no longer describes the body beside it is
+        # answered by recapturing the snapshot, and one that was simply moved
+        # past is answered by reading the card again. The reader already put
+        # these words in the report; a refusal that says only "no range" makes
+        # the person ask the same question a second time.
+        uncompared = [row["digest_why"] for row in card_row.get("measurements", [])
+                      if row.get("digest_why")]
         raise semantic.Refused(
             f"the reader no longer proposes {source.get('manifest')} "
             f"{source.get('from_position')}–{source.get('to_position')} for "
             f"{source.get('card')!r}"
             + (f"; it now proposes {proposed}" if proposed else
                "; it proposes no range for this card at all")
+            + ("; " + " · ".join(uncompared) if uncompared else "")
             + ". Read the current proposal rather than applying an "
               "interpretation of a span nothing is asking about")
     row = matching[0]

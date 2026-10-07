@@ -32,6 +32,7 @@ from the tree fails as a drift and not as an edit.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -95,13 +96,40 @@ def chat_manifest(**over) -> dict:
     return document
 
 
-def document_manifest(**over) -> dict:
+DOC_BODY = "body\n"
+
+
+def document_manifest(body: str = DOC_BODY, **over) -> dict:
+    """A document capture shaped like the real ones, with one body behind it.
+
+    `content_sha256` is computed from `body` rather than written by hand. It used
+    to be a literal (`"a" * 64`) with no `content.md` anywhere, i.e. a manifest
+    whose recorded digest describes no bytes — which is the DEFECT this reader
+    now reports as `recorded_digest_standing`, and is the live shape of 14 of the
+    tree's 21 link manifests. A fixture may not assume the defect while testing
+    something else: the tests below are about which version a CARD names, and
+    `write_document` writes the file this digest names. A test that wants the two
+    to disagree says so, and `TestAManifestsRecordIsNotItsFilesDigest` does.
+    """
     document = {
         "source_message_id": "om_x", "url": "https://example.invalid/d",
         "type": "docx", "title": "T", "fetched_at": "2026-09-07",
-        "content_sha256": "a" * 64, "redaction_applied": False,
+        "content_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "redaction_applied": False,
     }
     document.update(over)
+    return document
+
+
+def write_document(records: Path, relative: str, body: str = DOC_BODY,
+                   **over) -> dict:
+    """One document capture AND the body its digest names. Returns the manifest."""
+    document = document_manifest(body, **over)
+    where = records / RAW / relative
+    where.mkdir(parents=True, exist_ok=True)
+    (where / "content.md").write_text(body, encoding="utf-8")
+    (where / "manifest.json").write_text(
+        json.dumps(document, ensure_ascii=False), encoding="utf-8")
     return document
 
 
@@ -305,15 +333,14 @@ class TestAStaleCardIsNotACurrentOne:
         assert kinds == ["BEYOND_APPLIED", "REVISITED_IN_PLACE"]
 
     def test_a_cited_digest_that_no_longer_matches_is_stale_in_place(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="beef1234" + "0" * 56))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="beef1234" + "0" * 56)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         row = card["measurements"][0]
         assert row["kind"] == "DIGEST"
         assert row["cited_digest"] == "beef1234"
-        assert row["content_sha256"] == "b" * 64
+        assert row["content_sha256"] == document["content_sha256"]
         assert row["lag"] == 1
         assert card["judged"]["state"] == "STALE_IN_PLACE"
 
@@ -328,23 +355,22 @@ class TestAStaleCardIsNotACurrentOne:
         document was re-published" is one of three standings and the range is
         read by a person deciding what to do about it.
         """
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="beef1234" + "0" * 56))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="beef1234" + "0" * 56)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         ranges = only_card(tree)["judged"]["review_ranges"]
         assert [row["kind"] for row in ranges] == ["WHOLE_DOCUMENT"]
         assert ranges[0]["from_position"] is None
         assert ranges[0]["to_position"] is None
         assert ranges[0]["cited_digest"] == "beef1234"
-        assert ranges[0]["content_sha256"] == "b" * 64
+        assert ranges[0]["content_sha256"] == document["content_sha256"]
         assert ranges[0]["prev_content_sha256"] == "beef1234" + "0" * 56
 
     def test_a_matching_digest_prefix_is_current(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="beef1234" + "0" * 56,
-                                        prev_content_sha256="c" * 64))
-        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="c" * 64)
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{document['content_sha256'][:8]}`）\n"))
         card = only_card(tree)
         assert card["measurements"][0]["lag"] == 0
         assert card["judged"]["state"] == "CURRENT"
@@ -376,12 +402,12 @@ class TestACitedDigestStandsSomewhere:
     """
 
     def test_a_citation_of_the_recorded_predecessor_is_a_measured_transition(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="beef1234" + "0" * 56))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="beef1234" + "0" * 56)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         row = card["measurements"][0]
+        assert row["content_sha256"] == document["content_sha256"]
         assert row["lag"] == 1
         assert row["cited_digest_standing"] == "CITED_IS_PREVIOUS_VERSION"
         assert row["prev_content_sha256"] == "beef1234" + "0" * 56
@@ -391,12 +417,12 @@ class TestACitedDigestStandsSomewhere:
         assert rng["prev_content_sha256"] == "beef1234" + "0" * 56
 
     def test_a_citation_that_is_neither_version_is_named_and_not_called_a_change(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="c" * 64))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="c" * 64)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         row = card["measurements"][0]
+        assert row["content_sha256"] == document["content_sha256"]
         assert row["lag"] == 1
         assert row["cited_digest_standing"] == "CITED_IS_NEITHER_RECORDED_VERSION"
         assert row["prev_content_sha256"] == "c" * 64
@@ -414,11 +440,11 @@ class TestACitedDigestStandsSomewhere:
         assert "neither the version the manifest records now" in card["judged"]["why"]
 
     def test_a_manifest_with_no_predecessor_cannot_support_a_transition(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64))
+        write_document(tree, "people/x/oc_x/links/d")
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         row = card["measurements"][0]
+        assert row["lag"] == 1
         assert row["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
         # Present exactly when the manifest records a predecessor, at both
         # layers: a key that was always there would make "no previous version
@@ -445,12 +471,10 @@ class TestACitedDigestStandsSomewhere:
         two versions that manifest keeps.
         """
         other = "information/raw/feishu/chats/people/x/oc_x/links/e/content.md"
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="beef1234" + "0" * 56))
-        write_capture(tree, "people/x/oc_x/links/e",
-                      document_manifest(content_sha256="d" * 64,
-                                        prev_content_sha256="e" * 64))
+        write_document(tree, "people/x/oc_x/links/d",
+                       prev_content_sha256="beef1234" + "0" * 56)
+        write_document(tree, "people/x/oc_x/links/e",
+                       prev_content_sha256="e" * 64)
         write_card(tree, "people", "x.md",
                    heading_card(f"- `{DOC}`（sha `beef1234`）\n"
                                 f"- `{other}`（sha `cafe0000`）\n"))
@@ -458,6 +482,248 @@ class TestACitedDigestStandsSomewhere:
         assert verdict["state"] == "STALE_IN_PLACE"
         assert len(verdict["review_ranges"]) == 2
         assert "1 of those cite a digest that is neither" in verdict["why"]
+
+
+class TestAManifestsRecordIsNotItsFilesDigest:
+    """THE PRIOR QUESTION: does the record describe the bytes beside it?
+
+    `content_identity` for a document range is the digest the manifest
+    RECORDED, and until the file that record names is hashed, that value is a
+    fact about the capture's own record. On this node it frequently is not the
+    file's digest: of the twenty-one link manifests under `information/raw`,
+    fourteen record a 64-hex value that describes no bytes there and three
+    record a twelve-character prefix of the file's digest. Four wrong answers
+    came out of not asking, all four measured on the live tree and reproduced
+    against the installed CLI:
+
+      * a card quoting the file's own digest was blamed for naming neither the
+        version the manifest records nor its predecessor, and the range was
+        pinned to a digest no bytes on this node have;
+      * the same for a card quoting a short record that matches nothing;
+      * a card agreeing with a twelve-character record to twelve of sixteen
+        characters was called a mismatch — the shorter instrument's resolution
+        reported as a fact about the document;
+      * an uncomparable digest was counted in `measured`, so a card whose only
+        citation had never been checked came out `CURRENT` with
+        `partial: False`, which is the laundering `partial` exists to prevent.
+
+    Three answers rather than two, because "I hashed the file and this record
+    does not describe it" and "there is no file here to hash" are answers about
+    different parties, and a manifest is not to be blamed for a reader that was
+    not given the body's location.
+    """
+
+    #: A 64-hex record that describes no bytes in the fixture. The live tree's
+    #: fourteen are the same shape; their values are quoted in the probe under
+    #: this Run's artifacts rather than here, so this file does not assert a
+    #: measurement of a tree that can change underneath it.
+    OTHER_BYTES = "deadbeef" + "0" * 56
+
+    def test_a_record_that_describes_other_bytes_measures_nothing(self, tree):
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256=self.OTHER_BYTES)
+        true_digest = hashlib.sha256(DOC_BODY.encode("utf-8")).hexdigest()
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{true_digest[:8]}`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["kind"] == "DIGEST"
+        assert row["cited_digest"] == true_digest[:8]
+        # Copied out, not compared with: who recorded what is still readable.
+        assert row["content_sha256"] == self.OTHER_BYTES
+        assert row["recorded_digest_standing"] == "RECORDED_IS_NOT_THIS_FILES_DIGEST"
+        assert self.OTHER_BYTES[:12] in row["digest_why"]
+        assert true_digest[:12] in row["digest_why"]
+        assert "lag" not in row and "cited_digest_standing" not in row
+        # And the consequence: nothing on this card was compared.
+        verdict = card["judged"]
+        assert verdict["state"] == "UNMEASURABLE"
+        assert verdict["measured"] == 0
+        assert verdict["uncheckable"] == 1
+        assert verdict["partial"] is False
+        assert verdict["review_ranges"] == []
+        assert "could not be compared with" in verdict["why"]
+
+    def test_the_record_that_lies_is_never_handed_out_as_a_range_identity(self, tree):
+        """The pin is the whole point: a range must not confirm a revision no file has.
+
+        The card here quotes the manifest's OWN value, so before the fix the
+        comparison agreed, the card came out `CURRENT`, and a range went out
+        pinned to a digest that describes nothing on this node — a confirmation
+        of a revision nobody can read. Asserted over the serialised report,
+        because a range carrying the value is what a consumer acts on.
+        """
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256=self.OTHER_BYTES)
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{self.OTHER_BYTES}`）\n"))
+        card = only_card(tree)
+        assert card["judged"]["review_ranges"] == []
+        assert card["judged"]["state"] == "UNMEASURABLE"
+        assert f'"content_identity": "{self.OTHER_BYTES}"' not in json.dumps(
+            card, ensure_ascii=False)
+
+    def test_a_short_record_is_compared_at_its_own_resolution(self, tree):
+        """Twelve characters that ARE this file's prefix are a weaker instrument.
+
+        The card cites more characters than the manifest kept. Both readings
+        agree on every character either of them has, and a mismatch reported
+        here would be the instrument's resolution said as a fact about the
+        document — which is what the live layer said about three manifests.
+        """
+        document = write_document(tree, "people/x/oc_x/links/d")
+        full = document["content_sha256"]
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256=full[:12])
+        for cited in (full[:8], full[:16], full):
+            write_card(tree, "people", "x.md", heading_card(
+                f"- `{DOC}`（sha `{cited}`）\n"))
+            card = only_card(tree)
+            row = card["measurements"][0]
+            assert row["lag"] == 0, cited
+            assert "digest_why" not in row, cited
+            assert row["recorded_digest_standing"] == "RECORDED_IS_THIS_FILES_DIGEST"
+            assert card["judged"]["state"] == "CURRENT"
+
+    def test_a_short_record_that_is_not_the_files_prefix_is_the_defect_too(self, tree):
+        """Short and wrong is not short and right. Only the file's bytes separate them.
+
+        `capture_coverage` flags a short digest as INCOMPLETE and calls a
+        64-character one COMPLETE, so the two classes this reader has to keep
+        apart — a record at a coarser resolution and a record describing other
+        bytes — are told apart by hashing the file and by nothing else.
+        """
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256="4657fe883c6e")
+        true_digest = hashlib.sha256(DOC_BODY.encode("utf-8")).hexdigest()
+        assert not true_digest.startswith("4657fe883c6e")
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{true_digest[:8]}`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["recorded_digest_standing"] == "RECORDED_IS_NOT_THIS_FILES_DIGEST"
+        assert "4657fe883c6e" in row["digest_why"]
+        assert card["judged"]["state"] == "UNMEASURABLE"
+        assert card["judged"]["review_ranges"] == []
+
+    def test_no_file_beside_the_record_is_could_not_check_not_a_verdict(self, tree):
+        """The third answer, and the one that must not blame the manifest.
+
+        A manifest with no `content.md` beside it is a capture this reader
+        cannot complete. It is not evidence that the record is wrong, so the
+        standing is the "not checked" one and the reason names the absence
+        rather than asserting a disagreement.
+        """
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256=self.OTHER_BYTES))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        row = only_card(tree)["measurements"][0]
+        assert row["recorded_digest_standing"] == \
+            "RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE"
+        assert "no readable document body sits beside it" in row["digest_why"]
+        assert only_card(tree)["judged"]["state"] == "UNMEASURABLE"
+
+    def test_a_web_capture_is_compared_but_says_what_it_compared_with(self, tree):
+        """A web capture's body is a verification copy under an asset root.
+
+        The reader is not given that root and must not go looking for it, so it
+        cannot hash the body — but the body exists and the record is a claim
+        about it, so the comparison is made and the standing travels beside it.
+        Treating this like the file that is absent (no comparison) would disable
+        every web capture; treating it like agreement with a body check would
+        report a comparison this reader never made.
+        """
+        # Written directly rather than through `write_capture`, whose RAW is the
+        # feishu capture root: a page capture lives under `information/raw/web/`,
+        # and putting it under the chat tree to reuse a helper would make the
+        # fixture's layout a claim about where pages are kept.
+        where = tree / "information" / "raw" / "web" / "ref" / "x"
+        where.mkdir(parents=True)
+        (where / "manifest.json").write_text(json.dumps({
+            "schema": "serveros/web-capture.v1",
+            "source": {"provider": "web", "requested_url": "https://example.invalid/a",
+                       "final_url": "https://example.invalid/a", "redirected": False},
+            "fetch": {"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                      "sha256": self.OTHER_BYTES, "captured_by": "curl"},
+            "identity_observed": {"title": "T"},
+        }, ensure_ascii=False), encoding="utf-8")
+        web = "information/raw/web/ref/x/content.md"
+        write_card(tree, "people", "x.md", heading_card(f"- `{web}`（sha `beef1234`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["kind"] == "DIGEST"
+        assert row["recorded_digest_standing"] == "RECORDED_IS_A_BODY_HELD_ELSEWHERE"
+        # Compared, and the reason the comparison is not a body check is the
+        # standing itself — which is why it is not a `digest_why`.
+        assert "digest_why" not in row
+        assert row["lag"] == 1
+        assert row["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
+        assert card["judged"]["state"] == "STALE_IN_PLACE"
+        assert card["judged"]["review_ranges"][0]["content_identity"] == \
+            self.OTHER_BYTES
+
+    def test_a_manifest_with_no_digest_is_not_a_comparison_either(self, tree):
+        """The key present and null is not a version anybody can be behind."""
+        write_document(tree, "people/x/oc_x/links/d", content_sha256=None)
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert "recorded_digest_standing" not in row
+        assert "no `content_sha256`" in row["digest_why"]
+        assert "lag" not in row
+        assert card["judged"]["state"] == "UNMEASURABLE"
+        assert card["judged"]["measured"] == 0
+
+    def test_a_current_card_still_names_the_citation_it_could_not_check(self, tree):
+        """`CURRENT` is the verdict for the citations that were compared.
+
+        The comparison that happened is real and is reported; the one that did
+        not is reported beside it rather than left out, because a reader seeing
+        「CURRENT」 alone would take the unchecked citation for a checked one.
+        """
+        write_capture(tree, "people/x/oc_x", chat_manifest())
+        write_messages(tree, "people/x/oc_x", messages(4))
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256=self.OTHER_BYTES)
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{CHAT}` message_position 0-3\n"
+                                f"- `{DOC}`（sha `beef1234`）\n"))
+        verdict = only_card(tree)["judged"]
+        assert verdict["state"] == "CURRENT"
+        assert verdict["measured"] == 1
+        assert verdict["uncheckable"] == 1
+        assert verdict["partial"] is True
+        assert "1 further citation(s) quote a content digest the manifest they " \
+               "cite could not be compared with" in verdict["why"]
+
+    def test_a_lagging_card_mixed_with_an_uncheckable_one_is_partial(self, tree):
+        """One comparison happened and one could not be made, and both are said.
+
+        The state is the one the comparison supports and `partial` says it is
+        not the whole card, with the uncheckable count carried out so a caller
+        rendering a reason can name all three kinds of unchecked citation.
+        """
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="beef1234" + "0" * 56)
+        other = "information/raw/feishu/chats/people/x/oc_x/links/e/content.md"
+        write_document(tree, "people/x/oc_x/links/e",
+                       content_sha256=self.OTHER_BYTES)
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{DOC}`（sha `beef1234`）\n"
+                                f"- `{other}`（sha `cafe0000`）\n"))
+        verdict = only_card(tree)["judged"]
+        assert verdict["state"] == "STALE_IN_PLACE"
+        assert verdict["measured"] == 1
+        assert verdict["uncheckable"] == 1
+        assert verdict["partial"] is True
+        # One range, and it is about the document that was compared: the
+        # uncheckable citation contributes no range, so the other document's
+        # record is nowhere in the pins.
+        assert len(verdict["review_ranges"]) == 1
+        assert verdict["review_ranges"][0]["content_identity"] == \
+            document["content_sha256"]
+        assert verdict["review_ranges"][0]["prev_content_sha256"] == \
+            "beef1234" + "0" * 56
 
 
 class TestAPositionIsNotAVersion:
@@ -1009,20 +1275,33 @@ class TestTheCli:
         assert "--project" not in done.stdout
         assert "--records-root" in done.stdout
 
-    def test_the_partial_line_names_both_kinds_of_unchecked_citation(self, tree):
+    def test_the_partial_line_names_every_kind_of_unchecked_citation(self, tree):
+        """Three kinds, told apart in the sentence a person reads.
+
+        A citation that named no reach was not compared; one that resolved to
+        nothing was not read; one that quoted a digest the manifest could not
+        be compared with had nothing to compare against. A partial line naming
+        only the first leaves a reader to conclude the rest were checked — and
+        a partial line that named none of them would end at the separator with
+        nothing after it, which is what this test was written after seeing.
+        """
         write_capture(tree, "people/x/oc_x", chat_manifest())
         write_messages(tree, "people/x/oc_x", messages(4))
         write_capture(tree, "groups/g/oc_g", chat_manifest())
+        write_document(tree, "people/x/oc_x/links/d",
+                       content_sha256="deadbeef" + "0" * 56)
         write_card(tree, "people", "x.md",
                    heading_card(f"- `{CHAT}` message_position 0-3\n"
                                 f"- `{GROUP}`\n"
                                 f"- `information/raw/feishu/chats/absent/oc_a/"
-                                f"messages.jsonl`\n"))
+                                f"messages.jsonl`\n"
+                                f"- `{DOC}`（sha `beef1234`）\n"))
         done = cli("work", "understanding", "--records-root", str(tree))
         assert done.returncode == 0, done.stderr
         assert "部分：1 条引文可比" in done.stdout
         assert "1 条没有可比的位置" in done.stdout
         assert "1 条没有对应的源" in done.stdout
+        assert "1 条引文所引的摘要与 manifest 记的那份无法比对" in done.stdout
 
     def test_the_entry_point_does_not_call_a_mismatch_a_version_change(self, tree):
         """The sentence a person acts on, on the tree that produced the defect.
@@ -1032,8 +1311,7 @@ class TestTheCli:
         digest in none of that document's twelve committed versions — was
         rendered as 「文档已换版 摘要 b9fe2535 → 7a586f53」.
         """
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64))
+        write_document(tree, "people/x/oc_x/links/d")
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         done = cli("work", "understanding", "--records-root", str(tree))
         assert done.returncode == 0, done.stderr
@@ -1043,15 +1321,15 @@ class TestTheCli:
         assert "manifest 未记录上一版" in done.stdout
 
     def test_a_citation_of_a_version_the_manifest_does_not_record_says_so(self, tree):
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="c" * 64))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="c" * 64)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         done = cli("work", "understanding", "--records-root", str(tree))
         assert done.returncode == 0, done.stderr
         assert "文档已换版" not in done.stdout
         assert "引文摘要不在记录的两版里" in done.stdout
-        assert f"引的 beef1234 ≠ 现版 {'b' * 64}、≠ 上一版 {'c' * 64}" in done.stdout
+        assert (f"引的 beef1234 ≠ 现版 {document['content_sha256']}"
+                f"、≠ 上一版 {'c' * 64}") in done.stdout
 
     def test_a_recorded_predecessor_is_still_rendered_as_a_version_change(self, tree):
         """The control: the standing that does support the arrow keeps it.
@@ -1059,15 +1337,51 @@ class TestTheCli:
         Without this, a fix that stopped saying 「文档已换版」 entirely would
         pass the two tests above.
         """
-        write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64,
-                                        prev_content_sha256="beef1234" + "0" * 56))
+        document = write_document(tree, "people/x/oc_x/links/d",
+                                  prev_content_sha256="beef1234" + "0" * 56)
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         done = cli("work", "understanding", "--records-root", str(tree))
         assert done.returncode == 0, done.stderr
         assert "文档已换版" in done.stdout
-        assert f"摘要 beef1234 → {'b' * 64}" in done.stdout
+        assert f"摘要 beef1234 → {document['content_sha256']}" in done.stdout
         assert "引文正是 manifest 记的上一版" in done.stdout
+
+    def test_a_comparison_made_without_the_body_says_so_on_the_line(self, tree):
+        """「一致」 is the same word for two different comparisons.
+
+        A `web_capture`'s digest names a body kept under an asset root this
+        reader is not given, so the comparison is made and reported as 「一致」
+        — the same word a card that agrees with the file beside its manifest
+        gets. The standing travels on the line for exactly that reason, and the
+        control below is the other half: if it were printed unconditionally it
+        would say nothing.
+        """
+        where = tree / "information" / "raw" / "web" / "ref" / "x"
+        where.mkdir(parents=True)
+        (where / "manifest.json").write_text(json.dumps({
+            "schema": "serveros/web-capture.v1",
+            "source": {"provider": "web",
+                       "requested_url": "https://example.invalid/a",
+                       "final_url": "https://example.invalid/a",
+                       "redirected": False},
+            "fetch": {"at": "2026-09-23T18:31+08:00", "http_status": 200,
+                      "sha256": "beef1234" + "0" * 56, "captured_by": "curl"},
+            "identity_observed": {"title": "T"},
+        }, ensure_ascii=False), encoding="utf-8")
+        web = "information/raw/web/ref/x/content.md"
+        write_card(tree, "people", "x.md", heading_card(f"- `{web}`（sha `beef1234`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "一致" in done.stdout
+        assert "记录的是别处持有的正文（此处未比对字节）" in done.stdout
+
+        document = write_document(tree, "people/x/oc_x/links/d")
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{document['content_sha256'][:8]}`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "一致" in done.stdout
+        assert "记录的是别处持有的正文" not in done.stdout
 
     def test_it_loads_the_module_rather_than_shelling_out_to_it(self):
         source = (REPO_ROOT / "runtime" / "cli.py").read_text(encoding="utf-8")

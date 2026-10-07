@@ -73,6 +73,23 @@ different CONTENT, and an older decision about it is about something that is no
 longer there. The write half keys its decisions on this, which is why a
 confirmation can stop applying without anybody editing the card.
 
+A RECORDED DIGEST IS NOT A MEASURED BODY
+----------------------------------------
+`content_identity` for a document range is the digest the manifest RECORDED, and
+that is a fact about the capture's own record until the file it names is hashed.
+On this node's tree it is often not that file's digest: of the twenty-one link
+manifests under `information/raw`, fourteen record a 64-hex value that is not the
+`content.md` beside them and three record a twelve-character prefix of it. So
+before this module compares a card's digest to a document's record, or hands that
+record out as a range's identity, it hashes the file beside the manifest — the
+one prior question, asked in one place. When the two disagree the citation is
+unmeasured with the manifest named as the reason, and no range is formed: a range
+pinned to a digest no file here has would be a confirmation of a revision nobody
+can read. `source_reading.read_packet` enforces the same rule one floor down by
+refusing to build a packet whose body does not hash to its manifest; this module
+states it where the card is judged, rather than letting a reading arrive at that
+refusal with the pin already emitted.
+
 THE DIGEST IS ONE-WAY, AND THE NO-CLAIM RULE STANDS
 ---------------------------------------------------
 Hashing a record means reading it, and this module states above that it does not
@@ -147,6 +164,49 @@ CITED_STANDINGS = (CITED_IS_PREVIOUS_VERSION,
                    CITED_IS_NEITHER_RECORDED_VERSION,
                    NO_PREVIOUS_VERSION_RECORDED)
 
+#: Whether the digest a manifest RECORDS describes the document file beside it.
+#: Everything above compares a card's digest against that recorded value as
+#: though it were the document's version, and on this node it often is not: of
+#: the twenty-one link manifests under `information/raw`, fourteen record a
+#: 64-hex value that is not the `content.md` beside them and three record a
+#: twelve-character prefix of it. So the recorded value is a fact about what the
+#: CAPTURE recorded until the file it names is hashed, and this is that hash.
+#:
+#: FOUR ANSWERS, because three of them are not disagreements and two of them do
+#: not stop the comparison:
+#:
+#:   * the file beside the manifest hashes to the recorded value, or to a longer
+#:     digest the recorded value begins — the record IS this body's digest, and
+#:     the comparison means what it says;
+#:   * it hashes to something else — the record describes other bytes, so the
+#:     comparison is not made: the finding is the manifest's, not the card's;
+#:   * no readable file sits beside the manifest, so there is no body here to
+#:     compare with. Not made either, for the same reason: an unreadable body is
+#:     not evidence about the card;
+#:   * the body is held ELSEWHERE, under an asset root this reader is not given
+#:     (`web_capture`). Here the comparison IS made and the standing is emitted
+#:     beside it, because the record is a claim about a body that exists and that
+#:     cannot be read here. It is not a version this reader confirmed, and the
+#:     row says so rather than leaving a reader to take `一致` for a body check:
+#:     every consumer of the pin this row feeds (`understanding_brief`,
+#:     `claim_recall`, the `understanding-semantic` verb) re-reads that body
+#:     through `source_reading.read_packet` with the identity expected, and
+#:     `read_packet` refuses when the admitted copy does not hash to it.
+RECORDED_IS_THIS_FILES_DIGEST = "RECORDED_IS_THIS_FILES_DIGEST"
+RECORDED_IS_NOT_THIS_FILES_DIGEST = "RECORDED_IS_NOT_THIS_FILES_DIGEST"
+RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE = \
+    "RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE"
+RECORDED_IS_A_BODY_HELD_ELSEWHERE = "RECORDED_IS_A_BODY_HELD_ELSEWHERE"
+RECORDED_DIGEST_STANDINGS = (RECORDED_IS_THIS_FILES_DIGEST,
+                             RECORDED_IS_NOT_THIS_FILES_DIGEST,
+                             RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE,
+                             RECORDED_IS_A_BODY_HELD_ELSEWHERE)
+#: The standings under which the comparison is NOT made. Named once because
+#: `_measure_one` decides the row and `judge_card` counts the rows, and two
+#: readers of one rule drift.
+UNCOMPARABLE_RECORDED_STANDINGS = (RECORDED_IS_NOT_THIS_FILES_DIGEST,
+                                   RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE)
+
 #: Emitted under `measurement`, each key beside where its value comes from. The
 #: guard in `no_unsourced` refuses any key not named here, so a future field has
 #: to state its producer before it can leave this module.
@@ -185,6 +245,19 @@ MEASUREMENT_PRODUCED = {
                              "there is no previous version to compare against",
     "prev_content_sha256": "the digest the manifest records as its predecessor, "
                            "copied from the manifest",
+    # Present exactly when the manifest recorded a digest AND the card cited one:
+    # that is when this reader asked the prior question. `digest_why` is present
+    # exactly when the standing is in UNCOMPARABLE_RECORDED_STANDINGS, i.e. when
+    # the comparison was not made at all; a row whose recorded digest does not
+    # describe a body on this node is not a measurement of the card — it is a
+    # measurement of the manifest.
+    "recorded_digest_standing": "one of RECORDED_DIGEST_STANDINGS: how the digest "
+                                "this manifest recorded stands to the body it "
+                                "names — this file's own digest, other bytes, no "
+                                "body here to compare with, or a body held under "
+                                "an asset root this reader was not given — "
+                                "decided by hashing the file beside the manifest "
+                                "where there is one",
     "coverage": "the source component states that are not COMPLETE, copied from "
                 "capture_coverage so a lag and a capture gap stay apart",
     "unresolved_why": "why a cited path matched nothing, or why a cited reach "
@@ -252,9 +325,13 @@ VERDICT_PRODUCED = {
     "unmeasured": "citations that named no reach, so nothing was compared",
     "unresolved": "citations that resolved to no captured source, so they were "
                   "not read at all",
+    "uncheckable": "citations whose quoted content digest could not be compared "
+                   "with the manifest they cite, because the record does not "
+                   "describe the file beside it or no record was written",
     "partial": "true when the state covers some of the card's citations and not "
-               "all of them, whether because a citation named no reach or "
-               "because it resolved to nothing",
+               "all of them, whether because a citation named no reach, because "
+               "it resolved to nothing, or because the digest it quoted could "
+               "not be compared with the record",
 }
 
 _LOCATOR = re.compile(r"`([^`]*information/raw/[^`]*)`")
@@ -563,15 +640,85 @@ def expand(citation: dict, index: dict) -> list[str]:
     return sorted(candidate for candidate in index if matcher.match(candidate))
 
 
-def messages_file(key: str, records_root: Path) -> Path:
-    """The messages file beside a capture object named by its manifest key.
+def _beside(key: str, name: str, records_root: Path) -> Path:
+    """The file `name` beside a capture object named by its manifest key.
 
     One derivation, in one place, because two of them drift and the one that
     drifts is the one that decides which file a digest was taken over.
     """
     directory = key.rsplit("/", 1)[0] if "/" in key else ""
     return raw_root(records_root).joinpath(
-        *[part for part in directory.split("/") if part]) / "messages.jsonl"
+        *[part for part in directory.split("/") if part]) / name
+
+
+def messages_file(key: str, records_root: Path) -> Path:
+    """The messages file beside a capture object named by its manifest key."""
+    return _beside(key, "messages.jsonl", records_root)
+
+
+def document_file(key: str, records_root: Path) -> Path:
+    """The document body beside a capture object named by its manifest key.
+
+    `content.md` is the layout `records`' own `expand_feishu_doc.py` writes (the
+    module `source_reading` names), so this is a documented sibling and not a
+    guess about the file. It is the file a document manifest's `content_sha256`
+    is supposed to describe.
+    """
+    return _beside(key, "content.md", records_root)
+
+
+def _digests_agree(recorded: str, cited: str) -> bool:
+    """Whether two hex digests refute each other. A prefix in EITHER direction.
+
+    A comparison reaches only as far as the SHORTER of the two records, and here
+    either side can be the short one: a card may quote eight characters of a
+    document the manifest recorded in full, or sixteen characters of one the
+    manifest recorded in twelve — which is the live shape, because three of this
+    tree's twenty-one link manifests record twelve. Two digests of different
+    bodies cannot be prefixes of one another, so a prefix is the whole of what
+    agreement can be shown to be, and calling the rest a mismatch would report
+    the limit of the shorter RECORD as a fact about the document.
+    """
+    return recorded.startswith(cited) or cited.startswith(recorded)
+
+
+def recorded_digest_standing(recorded: str, key: str, shape: str | None,
+                             records_root: Path) -> tuple[str, str]:
+    """Whether the digest this manifest records describes the file beside it.
+
+    THE ONE PRIOR QUESTION. Everything this module says about a document — that
+    a card is behind it, that a card names a digest this manifest does not
+    account for, what version a range about it is pinned to — rests on the
+    manifest's `content_sha256` being that document's digest, and nothing above
+    asked. On this node it frequently is not, so the answer is measured here,
+    once, from the file's own bytes.
+
+    A web capture is the fourth answer rather than a second one: its body is not
+    the manifest's sibling but a verification copy named inside the manifest and
+    living under a caller-owned asset root, which this reader is not given and
+    must not go looking for. The comparison is still made — the record is a
+    claim about a body that exists, and the pin is re-checked where that body is
+    admitted — but the standing travels with the row so nobody reads the
+    agreement as a body check.
+    """
+    if shape == "web_capture":
+        return RECORDED_IS_A_BODY_HELD_ELSEWHERE, ""
+    path = document_file(key, records_root)
+    try:
+        body = path.read_bytes()
+    except OSError as exc:
+        return RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE, (
+            f"the manifest records `content_sha256` and no readable document "
+            f"body sits beside it ({exc}), so whether that digest describes this "
+            f"document is not something this reader can show")
+    measured = hashlib.sha256(body).hexdigest()
+    if measured.startswith(recorded):
+        return RECORDED_IS_THIS_FILES_DIGEST, ""
+    return RECORDED_IS_NOT_THIS_FILES_DIGEST, (
+        f"the manifest records `content_sha256` {recorded[:12]} and the "
+        f"`content.md` beside it hashes to {measured[:12]}, so the recorded "
+        f"digest does not describe this document and cannot be read as its "
+        f"version")
 
 
 def _scan_positions(source_file: Path) -> dict:
@@ -869,17 +1016,36 @@ def _measure_one(citation: dict, key: str, obj: dict, records_root: Path,
             row["cited_digest"] = digest
             if recorded:
                 row["content_sha256"] = recorded
-                row["lag"] = 0 if recorded.startswith(digest) else 1
-                if row["lag"]:
-                    if not previous:
-                        row["cited_digest_standing"] = NO_PREVIOUS_VERSION_RECORDED
-                    elif previous.startswith(digest):
-                        row["cited_digest_standing"] = CITED_IS_PREVIOUS_VERSION
-                        row["prev_content_sha256"] = previous
-                    else:
-                        row["cited_digest_standing"] = \
-                            CITED_IS_NEITHER_RECORDED_VERSION
-                        row["prev_content_sha256"] = previous
+                # THE PRIOR QUESTION, before the two records are compared with
+                # each other: does the manifest's record describe the file it
+                # names? A recorded digest that describes other bytes cannot be
+                # the version a card is behind, so the comparison below is not
+                # made and the row says why — the card is then unmeasured against
+                # a manifest that is itself the finding.
+                standing, digest_why = recorded_digest_standing(
+                    recorded, key, shape, records_root)
+                row["recorded_digest_standing"] = standing
+                if standing in UNCOMPARABLE_RECORDED_STANDINGS:
+                    row["digest_why"] = digest_why
+                else:
+                    row["lag"] = 0 if _digests_agree(recorded, digest) else 1
+                    if row["lag"]:
+                        if not previous:
+                            row["cited_digest_standing"] = \
+                                NO_PREVIOUS_VERSION_RECORDED
+                        elif _digests_agree(previous, digest):
+                            # The same instrument as the comparison above: the
+                            # two records can be as long as either one wrote, and
+                            # a card citing more characters than this manifest
+                            # kept of its predecessor is not thereby citing a
+                            # third version.
+                            row["cited_digest_standing"] = \
+                                CITED_IS_PREVIOUS_VERSION
+                            row["prev_content_sha256"] = previous
+                        else:
+                            row["cited_digest_standing"] = \
+                                CITED_IS_NEITHER_RECORDED_VERSION
+                            row["prev_content_sha256"] = previous
             else:
                 row["digest_why"] = (
                     "the card quoted a digest and this manifest records no "
@@ -1005,6 +1171,14 @@ def _content_identity(row: dict, kind: str, low, high,
     One function rather than a branch at each range: the identity is a property
     of the RANGE, and a reader that computed it in three places would be three
     readers of one rule, two of which are wrong.
+
+    For a WHOLE_DOCUMENT the value is the manifest's recorded digest, which is
+    the one this module had to hash the file to accept: a document row carries a
+    digest only when `recorded_digest_standing` is
+    `RECORDED_IS_THIS_FILES_DIGEST`, and a range is proposed only for a row that
+    was measured. So a range that exists is pinned to a version some file here
+    has, and a document whose record describes other bytes is a card that is
+    unmeasured rather than a range pinned to nothing.
     """
     if kind == "WHOLE_DOCUMENT":
         recorded = row.get("content_sha256")
@@ -1077,7 +1251,8 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
     if card.get("state"):
         return no_unsourced(
             {"state": card["state"], "why": card["why"], "review_ranges": [],
-             "measured": 0, "unmeasured": 0, "partial": False},
+             "measured": 0, "unmeasured": 0, "uncheckable": 0,
+             "partial": False},
             VERDICT_PRODUCED, "verdict")
 
     behind = [row for row in measurements
@@ -1090,8 +1265,16 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
                     if row.get("kind") == "WHOLE_FILE"]
     digest_differs = [row for row in measurements
                       if row.get("kind") == "DIGEST" and row.get("lag")]
+    # A cited digest that could not be compared is not a comparison. It carries
+    # `digest_why` — the manifest records no digest, or the one it records does
+    # not describe the file beside it — and counting such a row as `measured`
+    # made a card whose only citation was never checked come out CURRENT with
+    # `partial: False`, which is the laundering `partial` exists to prevent.
+    uncheckable = [row for row in measurements
+                   if row.get("kind") == "DIGEST" and row.get("digest_why")]
     measured = [row for row in measurements
-                if row.get("kind") in ("POSITION", "DIGEST")]
+                if row.get("kind") in ("POSITION", "DIGEST")
+                and not row.get("digest_why")]
 
     ranges = [
         _review_range(card, row, "BEYOND_APPLIED", row["applied"] + 1,
@@ -1167,6 +1350,10 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
             unchecked.append(f"{len(unresolved)} further citation(s) resolve to "
                              f"no captured source, so there was nothing to "
                              f"compare them against")
+        if uncheckable:
+            unchecked.append(f"{len(uncheckable)} further citation(s) quote a "
+                             f"content digest the manifest they cite could not "
+                             f"be compared with")
         why = ("every citation that names a reach is at the source's newest "
                "position" + ("; " + "; ".join(unchecked) if unchecked else ""))
     elif unresolved:
@@ -1180,12 +1367,19 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
                f"be behind")
     else:
         state = "UNMEASURABLE"
-        why = "the card cites sources and none of them could be measured"
+        if uncheckable:
+            why = (f"{len(uncheckable)} citation(s) quote a content digest that "
+                   f"the manifest they cite could not be compared with — the "
+                   f"record does not describe the file beside it, or no record "
+                   f"was written to compare with — so nothing on this card was "
+                   f"compared, and an unchecked citation is not an up-to-date one")
+        else:
+            why = "the card cites sources and none of them could be measured"
     return no_unsourced({
         "state": state, "why": why, "review_ranges": ranges,
         "measured": len(measured), "unmeasured": len(unmeasurable),
-        "unresolved": len(unresolved),
-        "partial": bool(measured and (unmeasurable or unresolved)),
+        "unresolved": len(unresolved), "uncheckable": len(uncheckable),
+        "partial": bool(measured and (unmeasurable or unresolved or uncheckable)),
     }, VERDICT_PRODUCED, "verdict")
 
 
