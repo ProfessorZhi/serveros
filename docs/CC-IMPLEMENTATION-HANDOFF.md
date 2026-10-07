@@ -1,5 +1,7 @@
 # 给Tokyo Claude Code的实施交接
 
+> 2026-10-07：当前执行入口已转到 [原生工作环境 V2 计划](plans/plan-01-native-work-environment.md)。本文件保留为既有子系统与历史执行参考，不再作为另一条并行总计划；权限和接口约束按 V2 的兼容迁移说明保留。
+
 这是后续用户明确委托实施时使用的短提示，不是本次已经启动的工作。完整顺序/验收只维护在[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)，带时间的现场事实在[Implementation Baseline](IMPLEMENTATION-BASELINE-20260925.md)。
 
 ## 可交给CC的任务正文
