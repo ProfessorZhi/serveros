@@ -310,14 +310,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = groups.add_parser("run", parents=[_common()])
     run_actions = run.add_subparsers(dest="action", required=True)
+    # The rule, not just the flag name. `advance --to` next door declares its
+    # vocabulary with `choices`; a verdict's membership is open (this node's Runs
+    # carry PARTIAL, INCONCLUSIVE, SUCCESS and BUDGET_EXHAUSTED) but the rule that
+    # gives each word its effect is not, and it was nowhere a caller could read
+    # it. A caller who wrote `pass` where `PASS` was meant got no error and a Run
+    # concluded FAILED, so the sentence is stated here and the spelling is folded
+    # in the store.
+    _verdict_help = ("the word this Run is judged by, folded case-insensitively: "
+                     "`PASS` concludes it SUCCEEDED, any other word concludes it FAILED")
     begin = run_actions.add_parser("begin", parents=[_common()])
     begin.add_argument("item"); begin.add_argument("activity"); begin.add_argument("--worker", required=True)
     begin.add_argument("--idempotency-key", required=True)
     show_run = run_actions.add_parser("show", parents=[_common()]); show_run.add_argument("item"); show_run.add_argument("run")
     advance = run_actions.add_parser("advance", parents=[_common()]); advance.add_argument("item"); advance.add_argument("run")
     advance.add_argument("--to", required=True, choices=[state.value for state in RunState])
-    evidence = run_actions.add_parser("evidence", parents=[_common()]); evidence.add_argument("item"); evidence.add_argument("run"); evidence.add_argument("--kind",required=True); evidence.add_argument("--locator",required=True); evidence.add_argument("--command",required=True); evidence.add_argument("--case",action="append",default=[]); evidence.add_argument("--exit-code",type=int,required=True); evidence.add_argument("--revision",required=True); evidence.add_argument("--verdict",required=True); evidence.add_argument("--dirty",action="store_true")
-    finalize = run_actions.add_parser("finalize", parents=[_common()]); finalize.add_argument("item"); finalize.add_argument("run"); finalize.add_argument("--verdict",required=True); finalize.add_argument("--exit-code",type=int,required=True); finalize.add_argument("--command",required=True); finalize.add_argument("--case",action="append",default=[]); finalize.add_argument("--revision",required=True); finalize.add_argument("--dirty",action="store_true")
+    evidence = run_actions.add_parser("evidence", parents=[_common()]); evidence.add_argument("item"); evidence.add_argument("run"); evidence.add_argument("--kind",required=True); evidence.add_argument("--locator",required=True); evidence.add_argument("--command",required=True); evidence.add_argument("--case",action="append",default=[]); evidence.add_argument("--exit-code",type=int,required=True); evidence.add_argument("--revision",required=True); evidence.add_argument("--verdict",required=True,help=_verdict_help); evidence.add_argument("--dirty",action="store_true")
+    finalize = run_actions.add_parser("finalize", parents=[_common()]); finalize.add_argument("item"); finalize.add_argument("run"); finalize.add_argument("--verdict",required=True,help=_verdict_help); finalize.add_argument("--exit-code",type=int,required=True); finalize.add_argument("--command",required=True); finalize.add_argument("--case",action="append",default=[]); finalize.add_argument("--revision",required=True); finalize.add_argument("--dirty",action="store_true")
 
     # Terminating a Run is destructive control-plane action: it is deliberately
     # one Run at a time, with a mandatory reason and actor, and no bulk form.

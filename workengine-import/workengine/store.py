@@ -34,6 +34,30 @@ def _reject_secrets(value):
     if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
 
 
+def _verdict_word(verdict) -> str:
+    """One judgement, one spelling — the membership is left open on purpose.
+
+    A verdict is judged by its WORD. `finalize_run` concludes a Run SUCCEEDED on
+    `PASS` and FAILED on anything else, and `record_evidence` treats a changed
+    word as a conflict, because the word is part of the evidence's identity.
+    Nothing used to state which spelling was the one that counted, so `pass` and
+    `PASS` were two different facts: the first concluded the Run FAILED and the
+    second concluded it SUCCEEDED. A caller who wrote the lower-case one got
+    back `{"state": "FAILED", "verdict": "pass"}` — a record that contradicts
+    itself, produced by a call that reported no error.
+
+    The membership stays open because the corpus is open: `PARTIAL`,
+    `INCONCLUSIVE`, `SUCCESS` and `BUDGET_EXHAUSTED` are all recorded on this
+    node's Runs, and closing the set would refuse history rather than spell it
+    consistently. What is fixed here is the spelling.
+
+    Case-folding is applied to what is compared as well as to what is written,
+    so a row recorded before this change still replays as the SAME judgement
+    instead of as a conflict about a different one.
+    """
+    return str(verdict).strip().upper()
+
+
 class ActiveWorkerAckRequired(ValueError):
     """A RUNNING Run was terminated without anyone saying they meant to.
 
@@ -528,6 +552,7 @@ class ServerOSStore:
         raise KeyError(f"unknown Run: {item_id}/{run_id}")
 
     def record_evidence(self, item_id, run_id, *, kind, locator, command, cases, exit_code, revision, dirty, verdict):
+        verdict = _verdict_word(verdict)
         if not Path(locator).is_absolute() or not Path(locator).is_file(): raise ValueError("evidence must be an existing absolute file")
         digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
         if not digest: raise ValueError("evidence requires SHA-256")
@@ -539,7 +564,14 @@ class ServerOSStore:
             requested = dict(kind=kind, sha256=digest, command=command, cases_json=json.dumps(cases),
                              exit_code=exit_code, revision=revision, dirty=int(dirty), verdict=verdict)
             if previous is not None:
-                changed = [field for field, value in requested.items() if previous[field] != value]
+                # The stored verdict is folded before comparison for the same
+                # reason the arriving one is: a row written as `pass` and a
+                # replay written as `PASS` are one judgement, and reporting them
+                # as a conflict would refuse a caller who corrected their own
+                # spelling. A genuinely different word (`FAIL` for `PASS`) still
+                # differs after folding, so the conflict that test pins remains.
+                changed = [field for field, value in requested.items()
+                           if (_verdict_word(previous[field]) if field == "verdict" else previous[field]) != value]
                 if changed:
                     raise EvidenceConflict(
                         f"evidence_id {previous['evidence_id']} already records this locator; "
@@ -551,6 +583,7 @@ class ServerOSStore:
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
 
     def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
+        verdict = _verdict_word(verdict)
         with self.transaction(immediate=True) as c:
             r=self._require_run(c, item_id, run_id)
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
