@@ -1342,5 +1342,207 @@ class WhatIsRefused(unittest.TestCase):
         self.assertIn("has not written", projects[0]["why"])
 
 
+# ---------------------------------------------------------------------------
+# The fifth instance of the same defect: a fact about the reader's tree
+# ---------------------------------------------------------------------------
+
+def _fake_git(*, toplevel, head="headsha000000", branch="main",
+              upstream_error=True, ref_exists=True, counts="0\t0",
+              has_files=(), rev_of_ref="refsha000000"):
+    """A git that answers exactly the questions `tree_position` asks.
+
+    Not a repository. `tree_position` takes its git callable injected so that
+    the question "is this absence the tree's" can be asked in a test without
+    building one, and so that a fixture cannot accidentally start depending on
+    a working copy of somebody's records.
+    """
+    files = set(has_files)
+
+    def git(path, *args):
+        if args[:2] == ("rev-parse", "--show-toplevel"):
+            return 0, f"{toplevel}\n"
+        if args == ("rev-parse", "HEAD"):
+            return 0, f"{head}\n"
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return 0, f"{branch}\n"
+        if args == ("rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                    "@{upstream}"):
+            if upstream_error:
+                return 128, "fatal: no upstream configured for branch 'main'\n"
+            return 0, f"origin/{branch}\n"
+        if args[:2] == ("rev-parse", "--verify"):
+            return (0, "") if ref_exists else (1, "")
+        if args[:2] == ("rev-list", "--left-right"):
+            return 0, f"{counts}\n"
+        if args[:1] == ("rev-parse",):
+            return 0, f"{rev_of_ref}\n"
+        if args[:2] == ("cat-file", "-e"):
+            _ref, _, rel = args[2].partition(":")
+            return (0, "") if rel in files else (128, "")
+        return 127, f"unexpected call: {args}"
+
+    return git
+
+
+class ThePositionOfTheTreeAReadWasTakenFrom(unittest.TestCase):
+    """`work item SRV-0011` said `brief.md MISSING`, and that was about the tree.
+
+    On 2026-10-07 the canonical records checkout was 13 commits behind the ref
+    carrying a brief that had been merged and read back, and the verb rendered
+    the lag as an Item that owes a document nobody wrote. Every assertion below
+    is about keeping those two apart.
+    """
+
+    def test_a_tree_with_no_upstream_declared_falls_back_and_says_so(self):
+        # The exact shape of /data/home/vince/workspace/records on that day.
+        position = chain.tree_position(
+            "/somewhere/records",
+            git=_fake_git(toplevel="/somewhere/records", counts="0\t13"))
+        self.assertEqual(position.state, chain.TREE_BEHIND)
+        self.assertEqual((position.ahead, position.behind), (0, 13))
+        self.assertEqual(position.upstream_ref, "origin/main")
+        # The fallback is reported AS a fallback: a branch that merely has a
+        # same-named remote ref is not a branch that follows one.
+        self.assertIn("branch.main.merge", position.why)
+        self.assertIn("not one this branch follows", position.why)
+
+    def test_no_upstream_and_no_ref_to_fall_back_to_is_unread(self):
+        position = chain.tree_position(
+            "/somewhere/records",
+            git=_fake_git(toplevel="/somewhere/records", ref_exists=False))
+        self.assertEqual(position.state, chain.TREE_UNREAD)
+        self.assertIsNone(position.upstream_ref)
+        self.assertIn("states what this branch is supposed to follow",
+                      position.why)
+
+    def test_a_path_that_is_not_a_checkout_is_unread_and_holds_nothing(self):
+        position = chain.tree_position(
+            "/somewhere/plain",
+            git=lambda path, *a: (128, "fatal: not a git repository\n"))
+        self.assertEqual(position.state, chain.TREE_UNREAD)
+        self.assertIn("not a git checkout", position.why)
+        # Not False. Nothing was established about this path, and reporting an
+        # unanswerable question as an absent document is the defect itself.
+        self.assertIsNone(position.holds("projects/p/items/I/brief.md"))
+
+    def test_holds_reads_128_as_absent_and_anything_else_as_unanswerable(self):
+        position = chain.tree_position(
+            "/somewhere/records",
+            git=_fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          has_files=("projects/p/items/I/brief.md",)))
+        self.assertIs(True, position.holds("projects/p/items/I/brief.md"))
+        self.assertIs(False, position.holds("projects/p/items/I/design"))
+        self.assertIsNone(position.holds(None))
+        other = chain.tree_position(
+            "/somewhere/records",
+            git=lambda path, *a: (0, "/somewhere/records\n") if a == (
+                "rev-parse", "--show-toplevel") else (128, "fatal: bad object\n"))
+        self.assertIsNone(other.holds("projects/p/items/I/brief.md"))
+
+    def test_it_never_fetches(self):
+        """A read verb's answer must not depend on the network.
+
+        Every call the helper makes is either a `rev-parse`, a `rev-list` or a
+        `cat-file -e` against refs already on disk. If a `fetch` ever appears
+        here, `work item` starts answering differently depending on whether the
+        network was up — which is how a read verb becomes a flaky one.
+        """
+        seen = []
+        inner = _fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          has_files=("projects/p/items/I/brief.md",))
+
+        def git(path, *args):
+            seen.append(args)
+            return inner(path, *args)
+
+        position = chain.tree_position("/somewhere/records", git=git)
+        self.assertIs(True, position.holds("projects/p/items/I/brief.md"))
+        self.assertTrue(seen, "the helper asked its git nothing at all")
+        for args in seen:
+            self.assertNotIn("fetch", args)
+            self.assertNotIn("pull", args)
+            self.assertNotIn("ls-remote", args)
+
+
+class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
+    """The distinction has to survive out to the payload, not just the sentence."""
+
+    RULE = {"name": "brief.md", "resolved_by": ("exact-file",),
+            "required_at": {"ACTIVE"}}
+
+    def _documents(self, tmp, *, held, spellings=None, state="ACTIVE"):
+        rule = dict(self.RULE)
+        if spellings is not None:
+            rule["resolved_by"] = tuple(spellings)
+        position = chain.TreePosition(
+            root=tmp, revision="a" * 40, branch="main", upstream_ref="origin/main",
+            ahead=0, behind=13, state=chain.TREE_BEHIND,
+            git=_fake_git(toplevel=str(tmp), counts="0\t13", has_files=held))
+        return chain._documents(Path(tmp) / "projects/p/items/I", state, [rule],
+                                None, position)[0]
+
+    def test_the_authority_holding_it_rewrites_the_cause_and_not_the_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(tmp, held=(
+                "projects/p/items/I/brief.md",))
+        self.assertEqual(answer["state"], "MISSING",
+                         "materializing nothing must not make the document readable")
+        self.assertIs(True, answer["held_by_upstream"])
+        self.assertEqual(answer["upstream_ref"], "origin/main")
+        self.assertEqual(answer["upstream_path"], "brief.md")
+        self.assertIn("not missing from the Item", answer["why"])
+        self.assertIn("13 behind", answer["why"])
+        self.assertNotIn("resolves under none of", answer["why"])
+
+    def test_the_negative_control_leaves_the_sentence_alone(self):
+        """The ref does not have it either, so the Item is the right party."""
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(tmp, held=())
+        self.assertEqual(answer["state"], "MISSING")
+        self.assertIs(False, answer["held_by_upstream"])
+        self.assertIn("resolves under none of", answer["why"])
+        self.assertNotIn("not missing from the Item", answer["why"])
+
+    def test_an_unanswerable_question_claims_no_cause(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            position = chain.TreePosition(
+                root=tmp, revision=None, branch=None, upstream_ref=None,
+                state=chain.TREE_UNREAD, why="nothing follows anything here",
+                git=None)
+            answer = chain._documents(
+                Path(tmp) / "projects/p/items/I", "ACTIVE", [dict(self.RULE)],
+                None, position)[0]
+        self.assertEqual(answer["state"], "MISSING")
+        self.assertIsNone(answer["held_by_upstream"])
+        self.assertIn("resolves under none of", answer["why"])
+
+    def test_no_tree_at_all_leaves_every_existing_caller_unchanged(self):
+        """The whole reason `tree` is optional and last."""
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = chain._documents(
+                Path(tmp) / "projects/p/items/I", "ACTIVE", [dict(self.RULE)],
+                None)[0]
+        self.assertEqual(answer["state"], "MISSING")
+        self.assertNotIn("held_by_upstream", answer)
+        self.assertNotIn("upstream_ref", answer)
+
+    def test_the_ref_is_asked_with_the_spellings_the_rule_would_accept(self):
+        """`design/` is a DIRECTORY on this node; `design` is not the question.
+
+        Asking the ref about `design` for a `suffixed-file` rule would report a
+        document absent at the ref because the wrong name was looked for —
+        this module's defect, one level down.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",),
+                spellings=("exact-file", "suffixed-file"))
+        # `brief.md` resolves under `exact-file`; the suffixed spelling is
+        # `brief.md.md` and is not at the ref. One True wins, and the line still
+        # names the spelling that WAS found.
+        self.assertIs(True, answer["held_by_upstream"])
+        self.assertEqual(answer["upstream_path"], "brief.md")
+
+
 if __name__ == "__main__":
     unittest.main()
