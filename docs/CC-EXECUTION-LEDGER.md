@@ -9948,3 +9948,225 @@ NO_AUTHORIZING_GRANT`。所以这与 9.56 那条「正确的事实配了错误�
 
 **这一刀没有改 serveros 仓库的代码。** 它改的是一个节点本地、由产品**指到**而非**生成**的
 可执行件；那句话本身也是这一刀的发现之一。
+
+### 9.59 四条接缝的第三次收口：卡片面与交付面、发布链、两个插件面，以及本机接续的实际边界
+
+这一轮的动作是被四条接缝驱动的：**正式文档消费、决定到 Work、本机接续、验收到 Outcome**。
+记录一律落在 `artifacts/work-items/serveros/SRV-0011/RUN-0019/`，登记在 evidence 213–223。
+下面按那一轮要求报的五项写，先说方法上被纠正的地方，因为这一轮有两处**发现本身**就是
+被一条更早的错误示范逼出来的。
+
+#### 9.59.1 这一轮出现两次的同一个形状
+
+本模块反复出的一类缺陷是**「关于读取方的事实被当成世界的事实报出去」**。这一轮它出现了两次，
+两次都不是靠把话说得更准解决的，是靠**把决定收到唯一一处**解决的。
+
+1. **卡片面与它下面那一行说的是两面。** 同一次运行里，`● card.yaml` 那行报 `PRESENT`
+   （读自 `origin/main@d7f79d80f03a`），而卡片头部报「没有卡片，所以没有任何东西声明过它」。
+   成因是两处各自决定「哪一面可以借文档」，而判据有三条（树在 ref 后面 / 本树确实没有这份文件 /
+   字节真的回来了）。做法：新增 `_authority_bytes()` 作为**唯一**那处决定，`●` 行与卡片头部
+   都从它取，两个面从此不可能漂移。
+2. **同一台节点上的两条停车记录互相否认。** `work continuations` 一次印出的两行里，
+   `SRV-0011#1` 说「a real Native Parent launcher **never having been exercised**」，
+   而同一块里的 `SRV-9902#1` 记着 2026-09-29 00:42 生产 launcher 本体被 `work wake` 拉起过、
+   exit 0、6.9 秒、Parent 自己报出工具面。**前一条写于 2026-09-28 17:24（北京），
+   后一次测量发生在约一小时后的 18:26**——所以它不是谎言，是一句在写下时是真的、
+   之后一直以现在时说出来的话。
+
+第 2 条**没有**按第 1 条的办法修，理由写在下面 9.59.7：本机没有「改一条记录的理由」这个动词
+（`work park` 拒绝二次停车，唯一的路是写新 epoch，而新 epoch 会**取代**旧记录并把一条非 parked
+的 checkpoint 放进生产 daemon 的唤醒集）。既然两条事实已经并排显现在同一个命令的输出里，
+缺的只是一个指针，指针放在这里，不新造状态。
+
+#### 9.59.2 用户现在实际可以走通的完整工作路径
+
+判据是**装上去之后的入口**读到正确内容，不是源码树上的测试结果。
+
+```text
+$ /data/home/vince/.local/bin/serverosctl work item --project serveros SRV-0011
+SRV-0011  ACTIVE
+来源优先级 UNPRODUCED —— the card declares no source_priority. The field is proposed in
+                        intake/workchain-contract.yaml#card_extension and is not approved,
+                        so nothing here invents one
+交付面      声明 8 类 · 登记 18 条（2 类） · 按 `kind` 字面比对：对上 0 类
+     ↳ 声明了但没有该 kind 的登记 8 类：coverage-matrix、start-here、release-manifest、…
+     ↳ 登记了但卡片没声明：pull_request、report（登记面比声明面宽，不因此算多做了）
+● card.yaml    PRESENT            ← exact-file
+● brief.md     PRESENT            ← exact-file · 读自 origin/main@d7f79d80f03a，未物化进这棵树
+卡片       已读到  ← 读自 origin/main@d7f79d80f03a，未物化进这棵树
+卡片定位   UNRESOLVED —— the locator 'records/projects/litellm/items/LIT-0220/card.yaml'
+                         resolves to nothing under /data/home/vince/workspace
+```
+
+**交付面这一栏是真的在工作，不是摆设。** 抽样四个有登记的 Item，按 `kind` 字面比对：
+LIT-0103 对上 1 类、LIT-0101 对上 1 类、MUC-0105 对上 1 类、LIT-0104 对上 0 类
+（LIT-0104 声明 `investigation-report` / `evidence-manifest` 两类，13 条登记落在 11 个别种
+kind 上）。**对上 0 类不等于没交付**——同一栏接着印「登记面比声明面宽，不因此算多做了」，
+两个方向分开说，这是它刻意的。
+
+**断言「对上 0 类」遍及全节点是错的，我先前差点这么写。** 我最初只看了 SRV-0011 与 LIT-0220
+两个 Item（前者 8 类全不匹配、后者 0 条登记），推出的结论是「比对永远不可能对上」。
+多抽两个就推翻了它。这一条记在这里，是因为它正是本模块那类错误的一个实例：
+**从一个读者身上量到的形状，被当成世界的形状。**
+
+四条接缝各自的现状：
+
+| 接缝 | 现在能做什么 | 边界 |
+|---|---|---|
+| 正式文档消费 | 落后 17 个提交的 `records` 检出也能读到自己没有的卡片：`● card.yaml PRESENT ← exact-file · 读自 origin/main@d7f79d80f03a，未物化进这棵树`，且**头部行与 `●` 行指向同一面** | `卡片定位 UNRESOLVED` 仍然照印——那是**指针**的读数（本树里没有这个路径），与「读到了没有」是两件事，现在分两行印 |
+| 决定到 Work | `requirement board` 把 §S 的档位渲染成空，并说明为什么：这一套编织里**根本不存在 priority / severity / P-level 字段**（`items_index` 没有、卡 schema 的必需键没有、本仓也没有），并明确拒绝用 kind 或 state 顶替 | 引入这个字段**是人要做的决定**，不是可以推出来的。所以 23 条全 `UNPRODUCED` |
+| 本机接续 | `work continuations` 现在把「停过」和「停过又被走过」分开印（`SRV-9902#1  SUPERSEDED` 而不是 `PARKED`），`checkpoints 0 live of 4 recorded, 4 parked` | **0 live 是构造出来的，不是坏的**：四条记录都是刻意放下的。所以这条面给不出「接着做什么」 |
+| 验收到 Outcome | 交付面四行 + 对上/缺的/多的一一列出，抽样有真值；卡片与 brief 的 PRESENT/MISSING 按契约分档（`NOT_YET_REQUIRED` 是档位不是断链） | `feedback` 表 **0 行**：Outcome 那一端在本机从未有过输入 |
+
+#### 9.59.3 已合并、已安装、已加载、已消费
+
+| 层 | 读数 |
+|---|---|
+| 已合并 | PR #92（`intake/workchain.py` + `runtime/cli.py` + 3 个测试类，1729→2035 行）、PR #93（cachebuster `i → j`）→ `origin/main` = `7e78673`；`records` 侧 PR #9（MKT-0001..0005 五张卡，11 files/+305）与 PR #10（LIT-0220 的卡，2 files/+152）已合入 `ProfessorZhi/hwz-records` main（`9aa40cc` / `d7f79d8`） |
+| 已安装 | `product-tree-20261008j@7e78673`，`3.1.0+srv0005.20261008j`，`tree_clean` true，`ability_management c3fa0720…`。三步链分开走：`build --write` → `release.py promote --kind node-runtime`（**promote 不重启**，promote 后 `status` 的 scope 自己也写着 `installed files; loaded units/processes not checked`）→ `systemctl --user restart serverosd`（pid 19013 → 1254312），`agreement AGREE` |
+| 已加载 | 装上去之后的 shim 读回：`/data/home/vince/.local/bin/serverosctl` → `revisions/product-tree-20261008j@7e78673/bin/serverosctl`，对 SRV-0011 与 LIT-0220 各印一次，两面一致（evidence 218） |
+| 已消费 | **只有节点运行时这一面。** 见下 |
+
+**发布收据自己说：插件面从来没有被当作一个 kind 发布过。** `revisions/*/RELEASE.json` 全树
+`kind` 字段**零个 `plugin`**（`g`/`i`/`j` 三代都是 `node-runtime (chosen)`）。所以：
+
+```text
+serverosd / serverosctl   runtime-assets/…/serveros-linux-work/current → j@7e78673   AGREEMENT
+Claude 插件缓存           ~/.claude/plugins/cache/…/3.1.0-srv0005.20261007g
+Codex 插件缓存            ~/.codex/plugins/cache/…/3.1.0+srv0005.20261007a
+```
+
+两面**分别量**，因为解析规则不同（这一条是既有实测，不是推断）：
+
+- **Claude 侧与 `current` 只差 9 个文件**：三份清单/收据的版本串、`ARTIFACT.json`、`RELEASE.json`、
+  `README.md`、`intake/workchain.py`、`runtime/cli.py`、`mcp/continuation_mcp.py`。
+  **`skills/` 一个字节都不差**——而 `plugin.json` 声明的面就是那五个 Skill 加 `mcpServers`，
+  且两个 MCP 写作 `${CLAUDE_PLUGIN_ROOT}/mcp/bin/…`，Claude Code 把这个变量解析到 marketplace
+  源（`current`），不解析到缓存格。**所以 Claude 侧缓存落后不蕴含 Skill 组合落后。**
+- **Codex 侧差 19 个文件**：`context/trust_binding.py` 在缓存格里**根本不存在**，
+  `mcp/{node_mcp,agent_mcp,agent_session_service,continuation_mcp}.py` 与
+  `runtime/{cli,daemon,ability_projection}.py` 等全部不同。Codex 的 `.codex-mcp.json` 用**相对**
+  路径 `./mcp/bin/…` 加 `cwd: "."`，解析到自装缓存格，**所以 Codex 侧的 serveros MCP 真跑
+  `07a` 的代码**。
+
+**这一轮不动手，因为缓存格有活体持有者**（新取快照，未复用更早的）：
+
+```text
+lsof +D ~/.codex/plugins/cache/hwz-server-os-linux-work-local
+python3 2516509 / 2516563  cwd  …/3.1.0+srv0005.20261007a   （父进程 codex app-server pid 2149695，已跑 47 小时）
+python3 3682415 / 3682477  cwd  …/3.1.0+srv0005.20261007a
+```
+
+`codex plugin add` 是**替换式**（旧版本目录当场删），在这四个活体 MCP 的 `cwd` 上做这件事，
+是共享主机策略明写要挡的破坏性动作。Claude 侧那一格 `lsof` 0 持有者、动作安全，但量出来它对
+**内容**没有影响，所以也不做。提案与判据写在 9.59.8。
+
+#### 9.59.4 接续面与最终交付证据
+
+```text
+$ serverosctl work continuations
+checkpoints   0 live of 4 recorded, 4 parked
+receivers     routine:serveros-continuation-wake
+waits         0 over, 0 still open, 0 unreadable — nothing held to wait on
+attempts      0 recorded on 0 live checkpoints
+```
+
+生产 timer `serveros-continuation-wake.timer` 每分 :20 一跳，考虑四个 checkpoint，
+报 `to wake: none — every checkpoint here is held, refused or taken over`。**所以它从来不写信封，
+不是它坏了，是没有可唤醒物。** 这台「本机接续」当前的真实形态是：
+**链路被量过（两次 WOKEN、exit 0、receipt 与 stdin 逐字节同），而路面是空的。**
+
+**接续真正剩下的那一格不是链路，是消费。** 2026-10-05 用活载荷、scratch store、真实当前时刻、
+生产 launcher 本体重跑：`WOKEN`、exit 0、29.0 秒、receipt `EXITED`——接收器那一半完好；
+但**被唤醒的 Parent 四步对账一步都没做成**，它自己的话是 `serverosctl` 每次
+`requires approval` 且未获批（`-p` 模式下没有审批人）。也就是说：
+**唤醒一件东西是通的，被唤醒的那个东西用不了它被要求用的工具。** 这一格留给 A 类待决问题
+（无人值守 Parent 用哪一层强制边界），不是这一轮能替人定的。
+
+交付证据：evidence 213–223 全部登记在 `SRV-0011/RUN-0019`。两次自伤都按既有做法**追加更正、
+不覆盖**：
+
+- **evidence 202** 的 `revision` 是手敲的占位串（正控：同一条命令对真值报 `commit`）→
+  `EVIDENCE-202-REVISION-CORRECTION.md`。
+- **evidence 221** 的 verdict 里三个 revision 值**是空的**：登记命令把它们写了反引号，
+  `bash` 当命令替换执行掉了（`ceaa6fa2: command not found` 就印在我自己的终端上，我没读），
+  于是那句「三者不同」把主语丢了 → `EVIDENCE-221-VERDICT-CORRECTION.md`，
+  真值是投影 `ceaa6fa2…`（= `origin/main`，PR #26）、目录规范与运行发布件所钉同为
+  `c3fa0720…`（PR #25），且 `c3fa072` 是 `ceaa6fa2` 的**祖先**（包含，不是分叉）。
+
+**非空转是量出来的，不是声称的。** 三次变更测试都先存 `.orig`、改、跑定向测试、
+再还原、sha256 复核：关掉 `load_card` 的借用 → 恰好 2 条红；把「声明了」写成「对上了」→
+4 条红；把「卡片没声明」并回「未读到卡片」→ 1 条红。还原后 `intake/workchain.py`
+（`1fb535b8…`）与 `runtime/cli.py`（`d9aee504…`）与工作树逐字节相同。
+其中**第二次第一次跑空过**（缩进对不上、assert 先炸），那次空跑差点被读成「变更存活」——
+真值和这次更正一起登记在案（evidence 219/220）。
+
+#### 9.59.5 效率
+
+**从 transcript 的 `usage` 读，不用字节估算。** 本会话的 transcript：
+95 MB、带 usage 的 assistant 轮 **10,856**、压缩摘要 **69** 条。首轮
+`input 4,253 + cache_read 54,912 + cache_write 0` = **59,165** tokens。
+
+这一条要**照实说它量到了什么**：59,165 是**整台 harness 的起手量**（系统提示、工具定义、
+记忆索引、`CLAUDE.md`、插件面全都在里面）。所以它是此前那句「≈14k 起手价」静态估算的替身，
+**不是**「ServerOS 的加价」——把整台起手量报成产品的成本，正是本模块那类错误的另一个实例。
+要拆出 ServerOS 的份额得有对照组，本机没有。
+
+目录收口（新取的读数）：`WORKSPACE_ROOT` 顶层**恰好**是允许的六个目录
+（`src` `worktrees` `test-envs` `ops` `knowledge` `records`）加三个仓文件
+（`AGENTS.md` `CLAUDE.md` `README.md`）；`HOME` 顶层三个替代根都在位，没有第四个；
+`ARTIFACTS_ROOT` **156** 项（记忆里记过 158——三个活定时单元每天在写，这个数会呼吸）。
+`data/` 没有进任何仓树。
+
+#### 9.59.6 21 项职责的真实剩余条件
+
+由受委派的后继角色产出、本轮核实并登记为 `coverage-21-product-responsibilities.md`
+（evidence 221 + 其更正 223）。六种边界分开写，互不替代：
+
+| 边界 | 数 | 是哪几条 |
+|---|---|---|
+| 缺映射 | 2 | B1、B3——`ability-management` 目录里没有 primary 映射 |
+| 缺代码（有映射、未安装） | 14 | G1、A1–A10、B5、B7、B10（投影 `installed=false`） |
+| 已安装 | 5 | B2、B4、B6、B8、B9 |
+| 未调用 | 21/21 **不可测** | 从 ServerOS 自身读数测不出来，不是「没调用」 |
+| 未验收 | 21/21 | 无任何职责级证据 |
+| 人执行 | — | priority/severity 字段本身要由人引入（见 9.59.2） |
+
+另记一处**三份 revision 不是同一个值**：投影 `ceaa6fa2`（= `origin/main`，PR #26）
+≠ 目录规范 `c3fa072`（PR #25）≠ 运行发布件所钉 `c3fa072`。关系是**包含**（前者是后者的后代），
+所以投影报 FRESH 是**就地年龄**口径，**不与运行 release 同源**。
+
+`work understanding` 现状（本轮未动）：14 份卡 · BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4；
+`understanding-patch` 15 条提议全部 `AWAITING`，并且它自己说明为什么另外 11 份没有提议
+（7 份没写读到哪、4 份根本没写引用——**缺陷在卡里，不是有滞后要追**）。
+
+#### 9.59.7 照实说：这一轮**没**关掉什么
+
+- **A1 的真实条件没关**：唤醒链通、被唤醒者用不了工具（9.59.4）。而且限制它的围栏宽度**等于
+  Parent 的 cwd**（生产单元不给 `--cwd` ⇒ `$HOME` 整个数据根），"只在 write scope 内行动"
+  **仍只是 briefing 里的散文**。闭合它的两条路（接收方交出机器可读 scope／唤醒单元上的
+  OS 级沙箱）是提案。
+- **Codex 插件面停在 `07a`**（9.59.3），它的 serveros MCP 因此真跑旧码。有活体持有者，不动手。
+- **`SRV-0011#1` 那句 stale 的停车理由**仍是记录在案的现在时说法（9.59.1 第 2 条）。
+  本机没有「改一条理由」的动词，唯一的路会取代记录并把非 parked 记录放进唤醒集，
+  代价大于收益；两条事实已经并排显现在同一次输出里。
+- **`feedback` 表 0 行**：Outcome 那一端在本机从无输入，所以「验收到 Outcome」这条接缝
+  只走得到「验收」，走不到「Outcome」。
+- **`records` 本机 `main` 落后 `origin/main` 17 个提交，带另一位参与者 16 处未提交改动**：
+  全程未动（新分支从 `origin/main` 起、物化在独立 worktree 里做，读 ref 正是为这种情况存在的）。
+- **`ARTIFACTS_ROOT` 顶层 156 项未声明**，三个活定时单元每天在写——不是这一轮引入的，也不清。
+
+#### 9.59.8 提案（一律未执行）
+
+1. **Codex 插件面收口**：在 `lsof +D ~/.codex/plugins/cache/hwz-server-os-linux-work-local`
+   无输出时跑 `codex plugin add hwz-server-os-linux-work@hwz-server-os-linux-work-local`；
+   Claude 侧同一窗口跑 `claude plugin marketplace update` + `claude plugin update`。
+   判据是**缓存格与 `current` 逐字节相同**（`diff -rq` 0 行），**不是 MCP 绿灯**
+   （Claude 侧 MCP 从 `current` 加载，插件包停在旧版本时照样绿）。
+2. **引入 priority / severity 字段**：`requirement board` 明说这必须由人决定。
+3. **清理三个保留的 worktree**（`worktrees/records/lit-0220-card-20261008`、
+   `worktrees/records/marketops-intake-20261008`、`worktrees/serveros/declared-deliverables-20261008`）：
+   保留是因为验收证据逐字点名了这三个路径。**清理在获批之前始终只是提案。**
+4. **`litellm-work-doc` 的两份 on-disk 契约对 `relation` 说法不一致**
+   （`EXTERNAL_MAINTAINED` vs `OWNED`），且 `SRV-0003/RUN-0013` 的 profile 在
+   2026-10-07 14:38 被就地覆盖过。都不是这一轮引入的，登记在案，不动。
