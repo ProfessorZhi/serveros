@@ -10811,10 +10811,26 @@ def cmd_work_item(args) -> int:
             lines.append(f"           ↳ 缺文档   {name}")
         for name in completion.get("unreported_documents") or []:
             lines.append(f"           ↳ 链上未报告 {name} —— 既不说在有，也不说没有")
-    lines.append(f"卡片       {item['card']['how']}"
-                 + (f" —— {item['card']['resolution_why']}"
-                    if item["card"]["resolution_why"] else ""))
-    lines.append(f"卡片定位   {item['card']['path']}")
+    # HOW THE LOCATOR RESOLVED, which is a fact about the pointer and not about
+    # whether the card was read. It said `卡片 UNRESOLVED` on an Item whose card
+    # the very next block reported PRESENT, and a reader takes that for a card
+    # nobody can find. The two facts are printed separately now: `卡片` answers
+    # whether there is content and from which surface, `卡片定位` answers only
+    # what the locator did.
+    card = item["card"]
+    surface = card.get("read_from") or "worktree"
+    label = {"PRESENT": "已读到", "MISSING": "没有",
+             "UNREADABLE": "读到了但读不通"}.get(card["state"], card["state"])
+    lines.append(f"卡片       {label}"
+                 + ("" if surface == "worktree"
+                    else f"  ← 读自 {surface}"
+                         + (f"@{str(card['read_from_revision'] or '?')[:12]}"
+                            if card.get("read_from_revision") else "")
+                         + "，未物化进这棵树"))
+    lines.append(f"卡片定位   {card['how']}"
+                 + (f" —— {card['resolution_why']}"
+                    if card["resolution_why"] else ""))
+    lines.append(f"卡片路径   {card['path']}")
     position = item.get("position")
     if position:
         lines.append(_records_position_line(position))
