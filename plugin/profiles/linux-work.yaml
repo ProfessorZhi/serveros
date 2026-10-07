@@ -1378,7 +1378,32 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   from the projection with no `控制面` line; a document that is genuinely
 #   absent is still absent. `tests/` is not a member of this composition, so the
 #   tests and the two mutations that come with this do not move the label.
-cachebuster: srv0005.20261008k
+#
+# Two members change, and the reason is a sentence the promoted revision says
+# aloud rather than a rule it applies:
+#   intake/understanding_delta.py  a card citing a content digest records WHERE
+#     that digest stands among the two versions the manifest keeps, instead of
+#     contributing only `lag`.
+#   intake/understanding_patch.py  and runtime/cli.py  carry that standing to the
+#     proposal and to the line an operator reads.
+#
+#   The label moves because the previous one states a transition it did not
+#   measure. Measured on the promoted revision, one command: a card citing
+#   `b9fe2535` for the LiteLLM work-doc link is rendered as
+#   `文档已换版  摘要 b9fe2535 → 7a586f53…`. That digest appears in none of the
+#   document's twelve committed versions — on 2026-09-07 it was the value the
+#   manifest itself recorded as `content_sha256` while the committed file hashed
+#   to `9c480c4f` — so the sentence names a version that never existed on the
+#   page. Reading "the citation does not match the current version" and saying
+#   "the document changed version" is this module's recurring shape: a fact about
+#   the reader reported as a fact about the world.
+#
+#   No state changes. A mismatch is still `STALE_IN_PLACE` with a whole-document
+#   range; a citation that IS the recorded predecessor still renders as
+#   「文档已换版」; a citation of the current version is still `CURRENT` with no
+#   range. `tests/` is not a member of this composition, so the tests and the
+#   thirteen mutations that come with this do not move the label.
+cachebuster: srv0005.20261008l
 
 skills:
   - name: runtime-management

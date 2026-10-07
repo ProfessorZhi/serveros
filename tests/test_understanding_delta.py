@@ -306,7 +306,8 @@ class TestAStaleCardIsNotACurrentOne:
 
     def test_a_cited_digest_that_no_longer_matches_is_stale_in_place(self, tree):
         write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64))
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="beef1234" + "0" * 56))
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         row = card["measurements"][0]
@@ -322,10 +323,14 @@ class TestAStaleCardIsNotACurrentOne:
         It used to contribute the state and no range, so the verdict read
         STALE_IN_PLACE beside an empty list — a card told it is stale with
         nothing to re-read. A document has no positions, so the range carries
-        the two digests that made the comparison instead of inventing a span.
+        the digests that made the comparison instead of inventing a span: the
+        one the card cites and the ones the manifest records, because "the
+        document was re-published" is one of three standings and the range is
+        read by a person deciding what to do about it.
         """
         write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="b" * 64))
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="beef1234" + "0" * 56))
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         ranges = only_card(tree)["judged"]["review_ranges"]
         assert [row["kind"] for row in ranges] == ["WHOLE_DOCUMENT"]
@@ -333,14 +338,126 @@ class TestAStaleCardIsNotACurrentOne:
         assert ranges[0]["to_position"] is None
         assert ranges[0]["cited_digest"] == "beef1234"
         assert ranges[0]["content_sha256"] == "b" * 64
+        assert ranges[0]["prev_content_sha256"] == "beef1234" + "0" * 56
 
     def test_a_matching_digest_prefix_is_current(self, tree):
         write_capture(tree, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="beef1234" + "0" * 56))
+                      document_manifest(content_sha256="beef1234" + "0" * 56,
+                                        prev_content_sha256="c" * 64))
         write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         card = only_card(tree)
         assert card["measurements"][0]["lag"] == 0
         assert card["judged"]["state"] == "CURRENT"
+        # No comparison was made against a predecessor, so no standing is
+        # reported: an absent key is the answer, and a `CURRENT` row carrying a
+        # standing would invite a reader to treat the comparison as having
+        # happened.
+        assert "cited_digest_standing" not in card["measurements"][0]
+
+
+class TestACitedDigestStandsSomewhere:
+    """A mismatch is not a version change, and the two are repaired differently.
+
+    `lag` says the card is not at the version the manifest records. It does not
+    say that the card ever read THIS document, and the reader used to answer as
+    though it did: on the live layer a card citing `b9fe2535` was told the
+    document had changed from `b9fe2535` to `7a586f53` — a digest appearing in
+    none of that document's twelve committed versions, while the manifest's own
+    predecessor was `13977522`. So the sentence named a version that never
+    existed, which is this module's recurring defect: a fact about the reader
+    (its comparison failed) reported as a fact about the world (a transition
+    happened).
+
+    A manifest keeps exactly two digests, so the reader can decide WHICH of
+    three standings a citation is in, and it cannot decide more than that: a
+    card two versions behind and a card quoting a digest that was never this
+    document's measure the same here. The window says so by naming the two
+    versions it compared rather than asserting a transition.
+    """
+
+    def test_a_citation_of_the_recorded_predecessor_is_a_measured_transition(self, tree):
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="beef1234" + "0" * 56))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["lag"] == 1
+        assert row["cited_digest_standing"] == "CITED_IS_PREVIOUS_VERSION"
+        assert row["prev_content_sha256"] == "beef1234" + "0" * 56
+        rng = card["judged"]["review_ranges"][0]
+        assert rng["kind"] == "WHOLE_DOCUMENT"
+        assert rng["cited_digest_standing"] == "CITED_IS_PREVIOUS_VERSION"
+        assert rng["prev_content_sha256"] == "beef1234" + "0" * 56
+
+    def test_a_citation_that_is_neither_version_is_named_and_not_called_a_change(self, tree):
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="c" * 64))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["lag"] == 1
+        assert row["cited_digest_standing"] == "CITED_IS_NEITHER_RECORDED_VERSION"
+        assert row["prev_content_sha256"] == "c" * 64
+        rng = card["judged"]["review_ranges"][0]
+        assert rng["kind"] == "WHOLE_DOCUMENT"
+        assert rng["cited_digest_standing"] == "CITED_IS_NEITHER_RECORDED_VERSION"
+        assert rng["prev_content_sha256"] == "c" * 64
+        # The state is the one it has always been; the reason is not. A
+        # sentence saying the digest "no longer" matches would claim the card
+        # once held the manifest's version, and this is the case where it
+        # provably did not.
+        assert card["judged"]["state"] == "STALE_IN_PLACE"
+        assert "does not match" in card["judged"]["why"]
+        assert "no longer" not in card["judged"]["why"]
+        assert "neither the version the manifest records now" in card["judged"]["why"]
+
+    def test_a_manifest_with_no_predecessor_cannot_support_a_transition(self, tree):
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
+        # Present exactly when the manifest records a predecessor, at both
+        # layers: a key that was always there would make "no previous version
+        # was recorded" and "the previous version is null" the same reading, and
+        # only the first of those is this reader's situation.
+        assert "prev_content_sha256" not in row
+        rng = card["judged"]["review_ranges"][0]
+        assert rng["kind"] == "WHOLE_DOCUMENT"
+        assert rng["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
+        assert "prev_content_sha256" not in rng
+        # An unrecorded predecessor is not evidence that the citation is
+        # unplaceable — it is the absence of a comparison — so it is not
+        # counted in the sentence above.
+        assert "neither the version the manifest records now" not in card["judged"]["why"]
+
+    def test_the_reason_counts_only_the_citations_that_are_unplaceable(self, tree):
+        """Two lagging documents, and only one of them is a proven straddle.
+
+        The count is what a person triages on, so it has to be the number of
+        citations the reader can show never named this document's version — not
+        the number of citations that failed to match, which is the number it
+        already had. `d` is a real version change (its citation IS the recorded
+        predecessor); `e` is a citation of `cafe0000`, which is neither of the
+        two versions that manifest keeps.
+        """
+        other = "information/raw/feishu/chats/people/x/oc_x/links/e/content.md"
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="beef1234" + "0" * 56))
+        write_capture(tree, "people/x/oc_x/links/e",
+                      document_manifest(content_sha256="d" * 64,
+                                        prev_content_sha256="e" * 64))
+        write_card(tree, "people", "x.md",
+                   heading_card(f"- `{DOC}`（sha `beef1234`）\n"
+                                f"- `{other}`（sha `cafe0000`）\n"))
+        verdict = only_card(tree)["judged"]
+        assert verdict["state"] == "STALE_IN_PLACE"
+        assert len(verdict["review_ranges"]) == 2
+        assert "1 of those cite a digest that is neither" in verdict["why"]
 
 
 class TestAPositionIsNotAVersion:
@@ -906,6 +1023,51 @@ class TestTheCli:
         assert "部分：1 条引文可比" in done.stdout
         assert "1 条没有可比的位置" in done.stdout
         assert "1 条没有对应的源" in done.stdout
+
+    def test_the_entry_point_does_not_call_a_mismatch_a_version_change(self, tree):
+        """The sentence a person acts on, on the tree that produced the defect.
+
+        With no predecessor recorded there is no comparison to report, and the
+        live layer is where this was read aloud: a citation of `b9fe2535` — a
+        digest in none of that document's twelve committed versions — was
+        rendered as 「文档已换版 摘要 b9fe2535 → 7a586f53」.
+        """
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "文档已换版" not in done.stdout
+        assert "manifest 未记录上一版，无从比对" in done.stdout
+        assert "引文摘要不是现版" in done.stdout
+        assert "manifest 未记录上一版" in done.stdout
+
+    def test_a_citation_of_a_version_the_manifest_does_not_record_says_so(self, tree):
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="c" * 64))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "文档已换版" not in done.stdout
+        assert "引文摘要不在记录的两版里" in done.stdout
+        assert f"引的 beef1234 ≠ 现版 {'b' * 64}、≠ 上一版 {'c' * 64}" in done.stdout
+
+    def test_a_recorded_predecessor_is_still_rendered_as_a_version_change(self, tree):
+        """The control: the standing that does support the arrow keeps it.
+
+        Without this, a fix that stopped saying 「文档已换版」 entirely would
+        pass the two tests above.
+        """
+        write_capture(tree, "people/x/oc_x/links/d",
+                      document_manifest(content_sha256="b" * 64,
+                                        prev_content_sha256="beef1234" + "0" * 56))
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "文档已换版" in done.stdout
+        assert f"摘要 beef1234 → {'b' * 64}" in done.stdout
+        assert "引文正是 manifest 记的上一版" in done.stdout
 
     def test_it_loads_the_module_rather_than_shelling_out_to_it(self):
         source = (REPO_ROOT / "runtime" / "cli.py").read_text(encoding="utf-8")
