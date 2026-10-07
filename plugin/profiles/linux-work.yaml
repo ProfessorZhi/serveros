@@ -1581,7 +1581,60 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   fourteen unreadable captures, and it holds none. `tests/` is not a member of
 #   this composition, so the tests and the thirteen mutations that come with this
 #   do not move the label.
-cachebuster: srv0005.20261008p
+#
+#   p → q: a trust root this execution can replace names whichever key it last
+#   wrote there. `d` added this verb and measured the custodian each key
+#   DECLARES; it never measured the one thing this host can measure directly,
+#   and on this node the answer was the wrong way around.
+#
+#   context/trust_binding.py
+#     The new `resolve_root()` reads the file the verifier opens: its owner, its
+#     mode, and whether this execution can write the file or the directory
+#     holding it — either is enough to substitute the file, and the directory is
+#     the one that gets overlooked, because `_write` creates the binding 0644
+#     and makes the parent 0700 only when the parent did not already exist. On
+#     this node `~/.config/serveros` is `drwxrwxr-x` owned by the execution's own
+#     uid, so every binding written there has been replaceable by the process
+#     that reads it. A `trust_root` block now carries
+#     `ROOT_REPLACEABLE_BY_EXECUTION` / `ROOT_NOT_REPLACEABLE_BY_EXECUTION` /
+#     `ROOT_ABSENT` beside `keys`, and a present binding in a replaceable root
+#     closes the durable route through `TRUST_ROOT_REPLACEABLE_BY_EXECUTION` —
+#     blocking, and ahead of custody, for the reason `_custodian` already refuses
+#     a same-uid custodian: a separation that does not exist must not be reported
+#     as one that merely went unmeasured.
+#
+#     `bind` still writes into such a root. Refusing would leave hand-editing a
+#     security file as the only way to author one, which is the change nobody can
+#     review afterwards; instead the verdict the verb returns — the same one
+#     `work trust status` prints — carries the closure, so it is answered at the
+#     write rather than at the first signature.
+#
+#     `verify_delegation` is untouched by design. It does not consult custody
+#     either, and the file this verb writes is still the file that reader opens:
+#     that coupling is the one assertion that keeps the writer from drifting away
+#     from the reader, and breaking it to make an unreachable route fail closed
+#     would be a policy change dressed as a bug fix.
+#
+#   context/actor-context-contract.yaml
+#     The `standing_delegation` block records the second condition beside the
+#     first: the keys are held by a principal separate from the execution, AND
+#     the file cannot be replaced by it — writable itself, owned by it, or
+#     sitting in a writable directory, any of which is enough.
+#
+#   The label moves because a node left on `p` goes on answering
+#   `REACHABLE_IF_CUSTODY_HOLDS` — a sentence that reads as "one custody away" —
+#   for a root whose key the execution could have chosen itself, and its
+#   `missing` list names only `CUSTODY_UNMEASURED`. The measurement behind the
+#   flip is on this node and is not a fixture: a binding written by the shipped
+#   verb into `~/.config/serveros` is mode 644, owned by uid 1002, in a directory
+#   uid 1002 can write, and a rename over it returns 0. The end-to-end exploit is
+#   latent rather than live here, because no provider on this node signs and
+#   `work delegate` still travels the legacy trusted-context route — the defect
+#   is the answer the tool gives, which is the thing a person acts on when they
+#   decide whether a durable route exists. `tests/` is not a member of this
+#   composition, so the six tests and the two mutations that come with this do
+#   not move the label.
+cachebuster: srv0005.20261008q
 
 skills:
   - name: runtime-management
