@@ -99,6 +99,13 @@ PRESENT = "PRESENT"
 MISSING = "MISSING"
 NOT_YET_REQUIRED = "NOT_YET_REQUIRED"
 
+#: The delivery surface's two faces. `NOT_DECLARED` is not a shortfall and is
+#: not the same fact as `UNREADABLE`: a card that states no delivery surface
+#: cannot be read as one whose surface is unmet, and neither can be read as one
+#: that was never read.
+DECLARED = "DECLARED"
+NOT_DECLARED = "NOT_DECLARED"
+
 #: The completion boundary's own vocabulary. `NOT_ASSESSED` is here so that
 #: "nothing was owed at this state" and "everything owed was found" are two
 #: answers rather than one: a check that was never run is not a check that
@@ -1054,6 +1061,48 @@ def _priority(card: dict | None) -> dict:
     return levels
 
 
+def _delivery(document: dict | None, registered) -> dict:
+    """The delivery surface: what the card SAYS, against what the REGISTER holds.
+
+    The work entry printed `制品 18` and nothing else. That number answers a
+    question about the register — how many rows were written into it — and it
+    was read as an answer about the delivery. On 2026-10-08 `SRV-0011` showed
+    18 against a card declaring eight deliverable kinds, none of which was
+    among them; the same shape held for 19 of the 20 Items that declare any.
+    A fact about the reader reported as a fact about the world is this module's
+    recurring defect, so the two faces are computed here and kept apart.
+
+    `compared_by` is not decoration. The comparison is the literal kind string,
+    and a reader who cannot tell «this name is absent from the register» from
+    «this artifact was never produced» will read the first as the second — the
+    register's vocabulary and the cards' are not one vocabulary yet, and saying
+    so is the honest half of the answer.
+    """
+    if document is None:
+        declared, state = [], UNREADABLE
+        why = "no card was read, so nothing here declared a delivery surface"
+    else:
+        declared = [str(d) for d in (document.get("expected_deliverables") or [])]
+        state = DECLARED if declared else NOT_DECLARED
+        why = ("" if declared else
+               "the card declares no `expected_deliverables`. This is not the "
+               "same fact as an unmet delivery: no surface was stated, so "
+               "nothing can be compared against one")
+    by_kind: dict[str, int] = {}
+    for row in registered:
+        kind = str((row or {}).get("kind") or "")
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    return {
+        "declared": {"state": state, "kinds": declared, "why": why},
+        "registered": {"count": len(list(registered)), "by_kind": by_kind,
+                       "kinds": sorted(by_kind)},
+        "matched": [d for d in declared if d in by_kind],
+        "absent": [d for d in declared if d not in by_kind],
+        "undeclared": sorted(k for k in by_kind if k not in declared),
+        "compared_by": "exact kind string",
+    }
+
+
 def _documents(item_dir: Path, state: str, rules: list[dict],
                skeletons: dict | None = None, tree: "TreePosition | None" = None,
                ) -> list[dict]:
@@ -1318,6 +1367,8 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "runs": sum(len(a.get("runs") or ())
                             for a in item.get("activities") or ()),
                 "deliverables": len(item.get("deliverables") or ()),
+                "delivery": _delivery(card["document"],
+                                      item.get("deliverables") or ()),
                 "ready_activities": [{"id": a.get("id"), "kind": a.get("kind")}
                                      for a in item.get("activities", []) if a.get("state") == "READY"],
             }
@@ -1596,6 +1647,7 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
         "documents": row["documents"],
         "completion": row["completion"],
         "runs": row["runs"], "deliverables": row["deliverables"],
+        "delivery": row["delivery"],
         "undecided": undecided,
         "position": None if tree is None else {
             "state": tree.state, "root": str(tree.root) if tree.root else None,
