@@ -13,6 +13,8 @@
 
 ## 批次 P0：研究交接可用入口（先做）
 
+2026-10-07：仓库/模板/离线校验部分已由 CC 实施，Parent 补正并验收，见 research-exchange PR1/PR2 和 SRV-0011/RUN-0010。实际 GPT 研究与返回仍待对应真实任务验证；下一批工程从 P1 开始，不重复已完成 P0。
+
 在私有 research-exchange 独立 worktree 实施 E1 的最小版本：
 - 对应 packet/result JSON Schema 和短模板。
 - 标准库优先的离线检查器：检查必填内容、输入版本、仓内路径、symlink/遍历、文件 digest、结果 request/input 关联和引用定位格式；不调用网络、不执行研究建议、不签发授权。
