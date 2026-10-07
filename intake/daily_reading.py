@@ -104,8 +104,36 @@ def scoped_report(records_root, entry):
     return delta.bounded_report(delta.reconcile([card], index, root), root)
 
 
+def _unread_row(packet):
+    """The range of one batch that was not read, named as the packet names it."""
+    source = packet["source"]
+    return {"manifest": source.get("manifest"),
+            "from_position": source.get("from_position"),
+            "to_position": source.get("to_position"),
+            "kind": (packet.get("range") or {}).get("kind")}
+
+
 def run(ctx, entries):
-    """Only explicitly bound card/manifest pairs. Never promote a requirement."""
+    """Only explicitly bound card/manifest pairs. Never promote a requirement.
+
+    Two facts are held apart here, and the separation is the point:
+
+      * **a reading was prepared.** Its resolution is written, so the next stage
+        can show it and a person can answer it. This is what `reading_progress`
+        records per source, batch by batch, whether the reading came from this
+        run's own model call or from a cache a previous period produced.
+      * **a reading was accepted.** Only the semantic writer's version-checked
+        receipt says that, and nothing here treats a prepared reading as one.
+        A missing grant is "prepared for alignment", never "unread".
+
+    A budget is spent at the model boundary and nowhere else. When a source's
+    first unread batch has no budget left, that batch is recorded as unread and
+    the pass CONTINUES: every other source is still scanned for cached readings
+    that need no model, and only at the end does the run stop accurately on
+    BUDGET_EXHAUSTED. A cache is never trusted for being on disk (let alone for
+    its mtime): it is handed to the same semantic version check a live reading
+    is, so a stale one is a gap and not a reused reading.
+    """
     if ctx.run_dir is None or not ctx.run_dir.is_absolute() or ctx.run_dir != ctx.run_dir.resolve():
         raise ValueError("understanding perception requires an absolute owned --run-dir")
     brief_mod = _load("intake/understanding_brief.py")
@@ -114,15 +142,25 @@ def run(ctx, entries):
     semantic = _load("intake/understanding_semantic.py")
     native = _load("runtime/native_reader.py")
     cli = _load("runtime/cli.py")
-    failures, results = [], []
+    failures, results, progress = [], [], []
     ctx.running["outcomes"]["readings"] = results
     ctx.running["outcomes"]["unread"] = failures
+    # One row per followed source, in the authored order and never reordered.
+    # It records the pass's own reading work -- prepared / cache-reused / this
+    # run's model calls / awaiting decisions / the batches a spent budget left
+    # unread -- separately from the semantic acceptance record.
+    ctx.running["outcomes"]["reading_progress"] = progress
+    budget_stop = None
     for entry in entries:
         if not all(isinstance(entry.get(k), str) and entry[k] for k in ("id", "card", "manifest")):
             raise ValueError("understanding source requires id, card and manifest")
         assets = tuple(Path(p) for p in entry.get("source_asset_roots", []))
         if any(not p.is_absolute() for p in assets):
             raise ValueError("source asset roots must be absolute")
+        row = {"id": entry["id"], "card": entry["card"], "manifest": entry["manifest"],
+               "state": "READ", "prepared": 0, "cache_reused": 0, "model_calls": 0,
+               "awaiting": 0, "refused": 0, "unread_batches": [], "why": ""}
+        progress.append(row)
         try:
             report = scoped_report(ctx.records_root, entry)
             # Scope before materialization: unrelated private sources do not enter
@@ -142,7 +180,11 @@ def run(ctx, entries):
                 raise ValueError("bound understanding card is absent")
             packets, refused = brief_mod.briefs({**report, "cards": selected}, ctx.records_root,
                                                allowed_asset_roots=assets)
-            failures.extend({"id": entry["id"], **row} for row in refused)
+            row["refused"] = len(refused)
+            if refused:
+                row["state"] = "UNKNOWN"
+                row["why"] = "one or more source ranges could not be prepared"
+            failures.extend({"id": entry["id"], **ref} for ref in refused)
             for packet in packets:
                 # The preceding batch may have updated this same card. Refresh
                 # its context before spending another call; never reuse our own
@@ -161,11 +203,33 @@ def run(ctx, entries):
                                                       sort_keys=True).encode()).hexdigest()
                 directory = ctx.run_dir / "readings" / identity
                 reading_path = directory / "reading.json"
-                if reading_path.is_file():
+                cached = reading_path.is_file()
+                if cached:
+                    # A reused reading is validated below by the same semantic
+                    # version check a fresh one goes through; existing bytes are
+                    # never accepted in place of that check.
                     reading = semantic.read_reading(reading_path)
+                elif budget_stop is not None:
+                    # The ceiling was spent on an earlier source. Record the
+                    # batch as unread and keep scanning for caches; the stop is
+                    # raised once every source has been looked at.
+                    row["unread_batches"].append(_unread_row(packet))
+                    row["state"] = "UNREAD_BUDGET"
+                    continue
                 else:
-                    reply = ctx.spend("refresh", ask={"kind": "understanding", "brief": packet,
-                                                     "directory": str(directory)})
+                    calls_before = ctx.running["model_calls"]
+                    try:
+                        reply = ctx.spend("refresh", ask={"kind": "understanding", "brief": packet,
+                                                         "directory": str(directory)})
+                    except Exception as exc:
+                        if getattr(exc, "reason", None) != "BUDGET_EXHAUSTED":
+                            raise
+                        budget_stop = exc
+                        row["unread_batches"].append(_unread_row(packet))
+                        row["state"] = "UNREAD_BUDGET"
+                        continue
+                    finally:
+                        row["model_calls"] += ctx.running["model_calls"] - calls_before
                     reading = native.reading_from(packet, reply)
                     _write(reading_path, reading)
                     # Invalid model output remains an artifact, never accepted.
@@ -189,6 +253,9 @@ def run(ctx, entries):
                           "awaiting": resolution.get("awaiting", []),
                           "authority": reason, "receipt": receipt}
                 results.append(result)
+                row["prepared"] += 1
+                row["cache_reused"] += int(cached)
+                row["awaiting"] += len(result["awaiting"])
                 # Budget exhaustion on the next batch must leave the already
                 # produced decisions visible, not an absent alignment file.
                 ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
@@ -200,12 +267,18 @@ def run(ctx, entries):
                 if not result["awaiting"] and (receipt is None and not reading["claims"] or
                                                 receipt and receipt.get("state") == "COMPLETE"):
                     ctx.refresh_cursor({**(ctx.running.get("cursor") or {}), entry["id"]: identity})
-        except (ValueError, OSError, semantic.Refused, brief_mod.Refused, delta.Refused, capture.Refused) as exc:
+        except (ValueError, OSError, semantic.Refused, brief_mod.Refused,
+                delta.Refused, capture.Refused) as exc:
             failures.append({"id": entry["id"], "why": str(exc)})
-    if failures:
-        ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
-        ctx.unbound("SOURCE_UNAVAILABLE", "one or more bound readings could not be completed")
+            row["state"] = "UNKNOWN"
+            row["why"] = str(exc)
+    # Written before any stop, so a budget-exhausted pass keeps both the reading
+    # it produced and the alignment a person answers from.
     ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, entries, ctx.records_root)
+    if failures:
+        ctx.unbound("SOURCE_UNAVAILABLE", "one or more bound readings could not be completed")
+    if budget_stop is not None:
+        raise budget_stop
     if ctx.running["outcomes"]["alignment"]["pending_readings"]:
         ctx.stop("NEEDS_DECISION", "readings prepared; only the claims requiring decisions remain pending")
     if not results:
