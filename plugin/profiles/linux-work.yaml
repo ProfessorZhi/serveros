@@ -1235,7 +1235,29 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   changes: `verify_delegation`, `delegation.derivation`, the admission gate
 #   and `work grants`'s four counters are untouched, and a node with no trust
 #   binding behaves exactly as it does on `d`.
-cachebuster: srv0005.20261007e
+#
+#   e → f: the `c → d` prose fix reaches the second sentence that made the same
+#   mistake. `c → d` changed `work focus`'s paragraph about unnamed
+#   `grant_ref`s, which told a person "a row without a `grant_ref` is a card
+#   field nobody built" and sent them to produce a field nothing authors. One
+#   sentence over, in the same composition, is the refusal `work admit` prints
+#   to a caller who is about to act on it:
+#
+#     nothing can be admitted until `intake/focus_source.py`'s missing card
+#     field is produced
+#
+#   which is the same wrong producer, in the imperative. `grant_ref` is DERIVED
+#   by `focus_source.control_join`, which names a grant exactly when an
+#   authorizing delegation covers both the row's Item and its project; a board
+#   names none because no recorded delegation authorizes, and `work focus`
+#   already reports those two counts beside the same line. One member changes
+#   and it is prose the CLI prints: `intake/daily_cycle.py`. The refusal word
+#   `SELECTION_CARRIES_NO_GRANT` is unchanged, so the two pins on it do not
+#   move, and no enforcing path changes — `admission_plan`'s decision logic,
+#   `control_join`, `grant_reason`, `standing_reason` and the admission gate
+#   are untouched. A session left on `e` goes on handing a person blocked at
+#   `work admit` a repair task against a field no card has to carry.
+cachebuster: srv0005.20261007f
 
 skills:
   - name: runtime-management
