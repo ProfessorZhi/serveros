@@ -89,6 +89,42 @@ def _refuse_if_concluded(row, action, *, candidate_id):
     return state
 
 
+def _changed_fields(stored, asked):
+    """Which of the fields this call supplied the stored row does not already say.
+
+    Only ever called once a row has been found by this call's own key, so an
+    empty answer IS the replay and anything in it IS the conflict. Comparing the
+    stored row against the arguments is what makes that readable: `INSERT OR
+    IGNORE` returns no error whether or not it wrote, so the write cannot tell
+    the two cases apart, and the row read back afterwards becomes a statement
+    about the reader rather than about the call.
+
+    Measured through the installed CLI before this existed: `observation` with a
+    changed `--content-hash` exited 0 and printed the OLD hash, and `source` with
+    a changed `--locator` did the same. The caller was told a value they never
+    wrote had been accepted, and the call reported no problem. `create_candidate`
+    settled the shape of this fix on 2026-09-25; the three writers below are the
+    same defect in the three that did not get it.
+    """
+    return {k: (stored[k], v) for k, v in asked.items() if stored[k] != v}
+
+
+def _conflict_sentence(kind, key, diff):
+    """The refusal, naming BOTH sides of every field that differs.
+
+    A refusal is read as a statement of fact, so it states the stored value first
+    and the caller's second, and it spells both out: a caller told only their own
+    value has learned nothing about what is already there, which is exactly what
+    they need in order to decide whether to reuse it or to record something else.
+    The order of `diff` is the order the call site supplies its fields, so the
+    field the caller is most likely to have got wrong is the one read first.
+    """
+    naming = "; ".join(
+        f"{k} is {s!r} in the store and this call says {a!r}"
+        for k, (s, a) in diff.items())
+    return f"{kind} {key} already exists with different content: {naming}; nothing was written."
+
+
 class ActiveWorkerAckRequired(ValueError):
     """A RUNNING Run was terminated without anyone saying they meant to.
 
@@ -301,27 +337,126 @@ class ServerOSStore:
         return {"id": deliverable_id, "item": item_id, "kind": kind, "locator": locator, "created_at": at}
 
     def register_source(self, domain, stable_id, *, revision, locator):
+        """One row per (domain, stable_id, revision), and a second address says so.
+
+        The identity is the provenance triple; `locator` is where that revision is
+        read from, and it is single-valued — one source cannot be in two places,
+        so a second differing value is not a correction the store may make
+        silently. The row is looked up FIRST and the two cases are answered
+        separately:
+
+          * the same triple and the same locator — a replay. The stored row is
+            returned and the call succeeds, which is what makes re-running an
+            intake idempotent.
+          * the same triple and a different locator — refused by name, with both
+            addresses in the sentence. Keeping the old one and reporting it as
+            this call's is the one answer that is not available.
+
+        The second case is where a question is left open on purpose: «更正一个
+        已登记来源的地址» is not answered here, because this entry point has no
+        verb that means "the same source, moved". A caller who needs one needs
+        that verb rather than a call that reads as a replay.
+        """
         if not all(str(x).strip() for x in (domain, stable_id, revision, locator)): raise ValueError("source requires provenance")
         with self.transaction(immediate=True) as c:
-            c.execute("INSERT OR IGNORE INTO source_objects VALUES (?,?,?,?,?,?)", (f"{domain}:{stable_id}:{revision}",domain,stable_id,revision,locator,now_iso()))
-            r=c.execute("SELECT * FROM source_objects WHERE domain=? AND stable_id=? AND revision=?",(domain,stable_id,revision)).fetchone()
-        return dict(r)
+            stored = c.execute("SELECT * FROM source_objects WHERE domain=? AND stable_id=? AND revision=?",(domain,stable_id,revision)).fetchone()
+            if stored is None:
+                c.execute("INSERT INTO source_objects VALUES (?,?,?,?,?,?)", (f"{domain}:{stable_id}:{revision}",domain,stable_id,revision,locator,now_iso()))
+                stored = c.execute("SELECT * FROM source_objects WHERE domain=? AND stable_id=? AND revision=?",(domain,stable_id,revision)).fetchone()
+            else:
+                diff = _changed_fields(stored, {"locator": locator})
+                if diff:
+                    raise ValueError(_conflict_sentence("source", stored["source_id"], diff) +
+                        " A source keeps the address it was registered at: this entry point does not "
+                        "move one, so reuse the stored locator or register the other address as a "
+                        "source of its own.")
+            return dict(stored)
 
     def record_observation(self, source_id, observation_id, *, semantic_type, content_hash, source_origin="online", carrier="other", information_form="curated"):
+        """One row per observation id, and a second reading says so.
+
+        An observation is one reading of one source at one hash, so every field
+        this call supplies is part of what it asserts — the hash of what was
+        read, what was made of it, and which source it came from. All six are
+        therefore compared, and the row is looked up FIRST: the same six are a
+        replay and return the stored row; any one of them differing is refused by
+        name, with the stored value beside the caller's.
+
+        Comparing `source_id` as well is not decoration. The primary key is
+        `observation_id` while the UNIQUE constraint is `(source_id,
+        observation_id)`, so the same id under a different source conflicts with
+        the PRIMARY KEY rather than with that constraint — and `INSERT OR IGNORE`
+        swallows it exactly as silently as it swallows everything else. This was
+        written down as "it comes back as `IntegrityError`" before it was
+        measured, and the measurement says otherwise: through the installed CLI
+        the call returned 0 and answered with the OLD `source_id`. Which
+        constraint decided an answer has to be visible to the caller, so both keys
+        are compared here.
+
+        The returned row is the stored one, unchanged, with no field added: a
+        caller who replays gets exactly what a caller who wrote it got, and
+        `test_v3_information.py` compares that dict whole.
+        """
         if not source_id or not observation_id or not semantic_type or not re.fullmatch(r"[0-9a-fA-F]{64}", content_hash): raise ValueError("observation requires provenance and SHA-256")
         with self.transaction(immediate=True) as c:
             if not c.execute("SELECT 1 FROM source_objects WHERE source_id=?",(source_id,)).fetchone(): raise KeyError(f"unknown source: {source_id}")
-            c.execute("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?)",(observation_id,source_id,semantic_type,source_origin,carrier,information_form,content_hash,now_iso()))
-            return dict(c.execute("SELECT * FROM observations WHERE observation_id=?",(observation_id,)).fetchone())
+            stored = c.execute("SELECT * FROM observations WHERE observation_id=?",(observation_id,)).fetchone()
+            if stored is None:
+                c.execute("INSERT INTO observations VALUES (?,?,?,?,?,?,?,?)",(observation_id,source_id,semantic_type,source_origin,carrier,information_form,content_hash,now_iso()))
+                stored = c.execute("SELECT * FROM observations WHERE observation_id=?",(observation_id,)).fetchone()
+            else:
+                diff = _changed_fields(stored, {
+                    "content_hash": content_hash, "semantic_type": semantic_type,
+                    "source_id": source_id, "source_origin": source_origin,
+                    "carrier": carrier, "information_form": information_form})
+                if diff:
+                    raise ValueError(_conflict_sentence("observation", observation_id, diff) +
+                        " An observation records one reading of one source at one hash, so a "
+                        "different reading belongs under a different id; the id that already "
+                        "answers keeps answering the same thing.")
+            return dict(stored)
 
     def record_claim(self, claim_id, locator, observation_ids, *, status="ACTIVE"):
+        """A claim's single-valued fields do not change; its observations accumulate.
+
+        The two kinds of field are treated differently because they behave
+        differently, and the difference is what decides this entry point's two
+        answers. `locator` and `status` are single-valued — where a claim is
+        written, and whether it stands — so one of two differing values would have
+        to lose, and a silent loss is the defect this fix is about. They are
+        therefore refused by name, as `register_source` refuses a second locator.
+        The observations a claim rests on are a SET: it can grow, and growing it
+        loses nothing, so a replay carrying observations the claim does not yet
+        rest on EXTENDS the claim. There is no other verb that adds an
+        observation to a claim, and refusing here would leave that statement
+        unsayable.
+
+        What the extension may not do is go unmentioned. The answer used to be the
+        bare `claims` row, which names no observations at all, so a caller passing
+        `--observation obs-2` on a claim that already rested on `obs-1` was told
+        nothing about either. The stored set is read back and returned as
+        `observation_ids`, which is the one field added to this answer: a key that
+        was not there before cannot break a caller who did not ask for it.
+        """
         if not observation_ids: raise ValueError("claim requires observations")
         with self.transaction(immediate=True) as c:
             missing = [x for x in observation_ids if not c.execute("SELECT 1 FROM observations WHERE observation_id=?",(x,)).fetchone()]
             if missing: raise KeyError(f"unknown observation: {', '.join(missing)}")
-            c.execute("INSERT OR IGNORE INTO claims VALUES (?,?,?,?)",(claim_id,locator,status,now_iso()))
+            stored = c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone()
+            if stored is None:
+                c.execute("INSERT INTO claims VALUES (?,?,?,?)",(claim_id,locator,status,now_iso()))
+            else:
+                diff = _changed_fields(stored, {"locator": locator, "status": status})
+                if diff:
+                    raise ValueError(_conflict_sentence("claim", claim_id, diff) +
+                        " A claim's locator and state are single-valued, so a second value is a "
+                        "conflict rather than a correction; the observations it rests on are the "
+                        "field that grows, and those were not touched.")
             for x in observation_ids: c.execute("INSERT OR IGNORE INTO claim_observations VALUES (?,?)",(claim_id,x))
-            return dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
+            answer = dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
+            answer["observation_ids"] = [r[0] for r in c.execute(
+                "SELECT observation_id FROM claim_observations WHERE claim_id=? ORDER BY observation_id",(claim_id,))]
+        return answer
 
     def create_candidate(self, candidate_id, project, title, kind, *, dedupe_key, claim_ids=(), domain="", external_id=None, external_revision=None):
         """One candidate per requirement identity, and a collision says so.
