@@ -251,3 +251,108 @@ class FinalizeV3Tests(unittest.TestCase):
         a=build_parser().parse_args(['run','evidence','DEM-0001','RUN-0001','--kind','report','--locator','/tmp/report','--command','pytest','--exit-code','0','--revision','r','--verdict','PASS'])
         b=build_parser().parse_args(['run','finalize','DEM-0001','RUN-0001','--verdict','PASS','--exit-code','0','--command','pytest','--revision','r'])
         self.assertEqual((a.action,b.action),('evidence','finalize'))
+
+
+class TheVerdictIsJudgedByItsWordNotItsSpelling(unittest.TestCase):
+    """A judgement has one word; the case it arrives in is not a second fact.
+
+    Measured 2026-10-08: `run finalize … --verdict pass` (lower case, exit 0)
+    recorded `{"state": "FAILED", "verdict": "pass"}` and reported no error, on a
+    Run whose work had passed. `advance --to` next door declares its vocabulary
+    with `choices`; `--verdict` declared nothing, so the spelling that counted
+    was knowable only by reading the comparison in the store.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.s = ServerOSStore(Path(self.td.name) / "state")
+        self.s.register_project("demo", "DEM"); self.item = self.s.create_item(__import__('workengine').WorkItem("DEM-0001", "demo", "x", "test", "/card"))
+        self.s.add_activity(Activity(self.item.id, "test", "test")); self.s.attach_context(__import__('workengine').ExecutionContext(self.item.id, "test", "repo", ContextMode.TEST, "base"))
+        self.run = self.s.begin_run(self.item.id, "test", "worker", "key", Path(self.td.name) / "artifacts")
+        for state in (RunState.PREPARING, RunState.RUNNING, RunState.FINALIZING): self.run = self.s.advance_run(self.item.id, self.run.id, state)
+
+    def tearDown(self): self.td.cleanup()
+
+    def _finalize(self, verdict):
+        return self.s.finalize_run(self.item.id, self.run.id, verdict=verdict, exit_code=0,
+                                  command="pytest", cases=["one"], revision="final", dirty=False)
+
+    def test_a_lower_case_pass_concludes_the_run_succeeded(self):
+        result = self._finalize("pass")
+        self.assertEqual(result["state"], "SUCCEEDED")
+        self.assertEqual(result["verdict"], "PASS", "the recorded word is the engine's, not the caller's")
+        self.assertEqual(self.s.get_run(self.item.id, self.run.id).state, RunState.SUCCEEDED)
+
+    def test_the_word_still_decides_and_folding_does_not_conclude_everything_succeeded(self):
+        # The negative control: folding the case must not turn every verdict into
+        # a pass. A different word is still a different judgement.
+        self.assertEqual(self._finalize("fail")["state"], "FAILED")
+
+    def test_surrounding_whitespace_is_not_a_second_judgement_either(self):
+        self.assertEqual(self._finalize("  PASS \n")["state"], "SUCCEEDED")
+
+    def test_a_verdict_the_corpus_carries_is_recorded_without_being_refused(self):
+        # `INCONCLUSIVE`, `PARTIAL`, `SUCCESS` and `BUDGET_EXHAUSTED` are all on
+        # this node's Runs. The spelling is fixed here; the membership is not
+        # closed, because closing it would refuse history rather than spell it.
+        result = self._finalize("inconclusive")
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        self.assertEqual(result["state"], "FAILED")
+
+    def _plant_a_row_from_before_the_change(self, path, verdict):
+        """Write a row the way the store would have written it before today.
+
+        The fold on the STORED side only matters for a row that is already on
+        disk in the old spelling — a row written through `record_evidence` today
+        arrives folded, so replaying it proves nothing about this. Reaching into
+        the table is the point: this is the row a node carries forward.
+        """
+        import hashlib
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        with self.s.connection() as conn:
+            conn.execute(
+                "INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,"
+                "exit_code,revision,dirty,verdict,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (self.item.id, self.run.id, "report", str(path), digest, "pytest",
+                 json.dumps(["one"]), 0, "r", 0, verdict, "2026-01-01T00:00:00Z"))
+            return dict(conn.execute("SELECT * FROM evidence ORDER BY evidence_id DESC LIMIT 1").fetchone())
+
+    def test_a_replay_that_only_changes_the_spelling_is_not_a_conflict(self):
+        path = Path(self.td.name) / "evidence.txt"; path.write_text("evidence")
+        planted = self._plant_a_row_from_before_the_change(path, "pass")
+        self.assertEqual(planted["verdict"], "pass", "the planted row is the old spelling, or this proves nothing")
+        replayed = self.s.record_evidence(self.item.id, self.run.id, locator=str(path), verdict="PASS",
+                                          kind="report", command="pytest", cases=["one"],
+                                          exit_code=0, revision="r", dirty=False)
+        self.assertEqual(replayed["evidence_id"], planted["evidence_id"],
+                         "the same judgement in a different case is the same judgement, not a new row")
+
+    def test_a_row_written_in_the_old_spelling_is_still_a_different_word_from_another(self):
+        # The control for the test above: folding must not make every word equal
+        # to every other, or the conflict this module exists to raise is gone.
+        path = Path(self.td.name) / "evidence.txt"; path.write_text("evidence")
+        self._plant_a_row_from_before_the_change(path, "fail")
+        with self.assertRaisesRegex(EvidenceConflict, "verdict"):
+            self.s.record_evidence(self.item.id, self.run.id, locator=str(path), verdict="PASS",
+                                   kind="report", command="pytest", cases=["one"],
+                                   exit_code=0, revision="r", dirty=False)
+
+    def test_a_genuinely_different_verdict_is_still_a_conflict(self):
+        path = Path(self.td.name) / "evidence.txt"; path.write_text("evidence")
+        metadata = dict(kind="report", command="pytest", cases=["one"], exit_code=0,
+                        revision="r", dirty=False)
+        self.s.record_evidence(self.item.id, self.run.id, locator=str(path), verdict="fail", **metadata)
+        with self.assertRaisesRegex(EvidenceConflict, "verdict"):
+            self.s.record_evidence(self.item.id, self.run.id, locator=str(path), verdict="PASS", **metadata)
+
+    def test_the_cli_states_the_rule_a_caller_could_not_read_before(self):
+        # Read the help a caller actually sees, not the parser's internals: the
+        # defect was that nothing addressable said which word counted, so the
+        # thing to pin is the rendered sentence.
+        def _run_actions(parser):
+            return parser._subparsers._group_actions[0].choices["run"]._subparsers._group_actions[0].choices
+        actions = _run_actions(build_parser())
+        for verb in ("evidence", "finalize"):
+            help_text = actions[verb].format_help()
+            self.assertIn("PASS", help_text, f"`run {verb}` does not name the word that concludes a Run")
+            self.assertIn("SUCCEEDED", help_text, f"`run {verb}` does not say what the word concludes")
+            self.assertIn("FAILED", help_text, f"`run {verb}` does not say what any other word concludes")
