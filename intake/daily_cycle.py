@@ -778,15 +778,27 @@ def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
             # draws MISSING_OR_REVOKED_GRANT and is excluded. So this is the
             # decision and the board disagreeing about one row, and it is
             # reported as that rather than as "nothing was selected".
+            #
+            # What it is NOT is a producer anybody is missing. An earlier
+            # version of this sentence sent the reader to
+            # `intake/focus_source.py`'s "missing card field", which is the one
+            # reading that file's own `NOT_PRODUCED_ELSEWHERE` retracts: a row's
+            # `grant_ref` is not a field anything authors, `control_join`
+            # DERIVES it, and the sentence a person acting on this refusal
+            # reads must send them to the delegation that is absent rather than
+            # to a card field that was never meant to exist.
             return {"refused": "SELECTION_CARRIES_NO_GRANT",
                     "because": (f"{item_id} is in this decision's `selected` and "
                                 f"the row it was selected from names no "
                                 f"`grant_ref`, which `select_focus` excludes a row "
                                 f"for. The decision and the board disagree about "
-                                f"this row — on a board that names no grant at all "
-                                f"(the live one does not), nothing can be admitted "
-                                f"until `intake/focus_source.py`'s missing card "
-                                f"field is produced")}
+                                f"this row. `grant_ref` is DERIVED, not authored: "
+                                f"`intake/focus_source.py#control_join` names one "
+                                f"exactly when an authorizing delegation covers "
+                                f"both the row's Item and its project, so this "
+                                f"board names none because no recorded delegation "
+                                f"authorizes now — `work focus` reports those "
+                                f"counts beside the same line")}
         named.setdefault(str(ref), []).append(str(item_id))
     if len(named) > 1:
         pairs = "; ".join(f"{ref} ({', '.join(items)})"
