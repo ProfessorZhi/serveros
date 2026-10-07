@@ -2130,6 +2130,12 @@ def cmd_ability_tree(args) -> int:
             sys.stdout.write("\n")
         return EXIT_COULD_NOT_ANSWER
 
+    if getattr(args, "view", "domain") == "product" and payload.get("basis") != "product_role.primary":
+        detail = "running daemon does not support the product view; reload the installed daemon"
+        emit({"ok": False, "reason": "PRODUCT_VIEW_UNSUPPORTED", "detail": detail},
+             as_json=args.json, lines=[detail])
+        return EXIT_COULD_NOT_ANSWER
+
     nodes = payload.get("nodes")
     lines = [f"authority   {payload.get('authority')}",
              f"projection  {payload.get('registry_status')}",
