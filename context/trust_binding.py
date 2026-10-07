@@ -27,6 +27,17 @@ manufacture the separation. Naming it is the point: an unreachable durable
 route is a fact a person can act on, and an unstated one is the fact that gets
 mistaken for "one human turn away".
 
+The same sentence holds one level up, at the file rather than the key. A binding
+whose custodian is a separate principal is worth nothing if this execution can
+put different bytes where the verifier reads: the key named there would be one
+this execution chose, and the custody of a key nobody uses is a detail. So this
+module also measures the container — whether this process can write the trust
+root or the directory holding it — and reports a root it can replace as
+`ROOT_REPLACEABLE_BY_EXECUTION`, which closes the durable route by itself. That
+one is not a claim the operator makes, the way a custodian is: it is a fact
+about this filesystem, measured, with no optimistic word for the case where it
+cannot be measured.
+
 Read `context/actor-context-contract.yaml` first; the freshness numbers and the
 grammar of a provider report belong to it and are not repeated here.
 """
@@ -37,6 +48,7 @@ import importlib.util
 import json
 import os
 import pwd
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -58,6 +70,18 @@ CUSTODY_KINDS = ("unix-user", "external-system", "hardware-token")
 SEPARATE = "SEPARATE_PRINCIPAL"
 SAME_UID = "SAME_UID_AS_EXECUTION"
 UNVERIFIED = "UNVERIFIED"
+
+# Root states. The custody words above answer "who holds the private half";
+# these answer "can this execution put different bytes in the verifier's file".
+# Both are needed, because a separate custodian under a key the execution can
+# substitute measures nothing. `ROOT_ABSENT` is a state and not a failure, as
+# everywhere else here.
+ROOT_REPLACEABLE = "ROOT_REPLACEABLE_BY_EXECUTION"
+ROOT_NOT_REPLACEABLE = "ROOT_NOT_REPLACEABLE_BY_EXECUTION"
+ROOT_ABSENT = "ROOT_ABSENT"
+
+# The blocking form of the first state, in the `missing` vocabulary.
+ROOT_BLOCKER = "TRUST_ROOT_REPLACEABLE_BY_EXECUTION"
 
 # The fields each level may carry. Unknown ones are refused rather than
 # ignored: `audiance` is one keystroke from `audience` and would otherwise
@@ -145,6 +169,90 @@ def resolve_custody(custodian: dict) -> tuple[str, str]:
         f"execution's uid {os.getuid()}")
 
 
+def resolve_root(target: Path) -> dict:
+    """Whether THIS execution can put different bytes at the verifier's path.
+
+    The custody question above is about the private half, and it may end at
+    `UNVERIFIED`, because "an off-host signer really holds that key" is not a
+    fact this process can look up. This question is not like that one: whether a
+    file can be replaced is a fact about this filesystem and this uid, so it is
+    measured here or not answered at all. There is deliberately no optimistic
+    word for it, because an assurance nobody measured is the thing this module
+    exists to refuse.
+
+    Two ways in, either of which is enough. The report names which one was
+    measured rather than saying "writable":
+
+      * the file is writable, or owned by this uid — an owner can always make a
+        file writable, so ownership counts even at mode 0400;
+      * the directory holding it is writable — enough to unlink the file or
+        rename over it, without ever opening it.
+
+    The second is the one that gets overlooked, and it is the one that holds on
+    this node: the writer below creates the file 0644 but makes the parent 0700
+    only when the parent did not already exist. An operator whose
+    `~/.config/serveros` is already there and group-writable therefore ends up
+    with a trust root this execution can replace, whatever custodian the keys
+    inside it name.
+    """
+    uid = os.getuid()
+    directory = target.parent
+    directory_exists = directory.exists()
+    directory_writable = directory_exists and os.access(directory, os.W_OK)
+    common = {"path": str(target), "directory": str(directory),
+              "directory_exists": directory_exists,
+              "directory_writable": directory_writable}
+    try:
+        info = target.stat()
+    except FileNotFoundError:
+        if directory_writable:
+            because = (f"no trust root is at {target} yet, and the directory that "
+                       f"would hold it ({directory}) is writable by uid {uid}, so "
+                       f"a binding written there could be replaced by this "
+                       f"execution")
+        else:
+            because = (f"no trust root is at {target} yet, and the directory that "
+                       f"would hold it ({directory}) is not writable by uid {uid}")
+        return {**common, "state": ROOT_ABSENT, "exists": False, "owner_uid": None,
+                "owner_is_execution": False, "mode": None, "file_writable": False,
+                "because": because}
+    except OSError as exc:
+        # Something is at the path but its ownership cannot be read. Reported as
+        # replaceable rather than as protected, because the other default is the
+        # optimistic one: a root this process cannot even measure is not a root
+        # it may call closed to itself.
+        return {**common, "state": ROOT_REPLACEABLE, "exists": True, "owner_uid": None,
+                "owner_is_execution": False, "mode": None, "file_writable": False,
+                "because": (f"{target} could not be measured ({exc}), so this "
+                            f"execution cannot show that it is unable to replace it")}
+
+    mode = stat.S_IMODE(info.st_mode)
+    owner_uid = info.st_uid
+    owner_is_execution = owner_uid == uid
+    file_writable = os.access(target, os.W_OK)
+    ways = []
+    if owner_is_execution:
+        ways.append(f"it is owned by uid {owner_uid}, this execution's own uid, "
+                    f"which can always make it writable")
+    if file_writable:
+        ways.append(f"it is writable by this execution (mode {mode:04o})")
+    if directory_writable:
+        ways.append(f"its directory {directory} is writable by this execution, "
+                    f"which is enough to replace the file by rename")
+    if ways:
+        state = ROOT_REPLACEABLE
+        because = ("this execution can put different bytes where the verifier "
+                   "reads: " + "; ".join(ways))
+    else:
+        state = ROOT_NOT_REPLACEABLE
+        because = (f"this execution can write neither the file (mode {mode:04o}, "
+                   f"owner uid {owner_uid}) nor its directory {directory}, so the "
+                   f"binding it holds cannot be substituted from here")
+    return {**common, "state": state, "exists": True, "owner_uid": owner_uid,
+            "owner_is_execution": owner_is_execution, "mode": mode,
+            "file_writable": file_writable, "because": because}
+
+
 def _keys(document: dict) -> list[dict]:
     rows = []
     providers = document.get("providers")
@@ -184,6 +292,7 @@ def verdict(path: Path | None = None) -> dict:
 
     rows = _keys(document) if document is not None else []
     enabled = [row for row in rows if row["enabled"]]
+    root = resolve_root(target)
 
     # Blocking conditions are separated from the conditional one, because
     # "measured to be the execution's own uid" and "nothing here can measure
@@ -198,6 +307,16 @@ def verdict(path: Path | None = None) -> dict:
         missing.append("TRUST_BINDING_INVALID")
     if binding == "PRESENT" and not enabled:
         missing.append("NO_ENABLED_KEY")
+    if binding == "PRESENT" and root["state"] == ROOT_REPLACEABLE:
+        # A binding that verifies but can be swapped authorises nothing: the key
+        # it names is whichever one whoever wrote the file last chose. Blocking,
+        # and blocking ahead of custody, for the same reason `_custodian` refuses
+        # a same-uid custodian rather than recording it: a separation that does
+        # not exist must not be reported as one that merely went unmeasured.
+        # Only for a present binding — with no readable binding there is nothing
+        # for a substitution to put into effect, and the file-level code above
+        # already closes the route.
+        missing.append(ROOT_BLOCKER)
     if enabled and not any(row["custody"] == SEPARATE for row in enabled):
         missing.append("CUSTODY_SHARED_WITH_EXECUTION" if any(
             row["custody"] == SAME_UID for row in enabled) else "CUSTODY_UNMEASURED")
@@ -214,6 +333,10 @@ def verdict(path: Path | None = None) -> dict:
     contract = module.contract()["freshness"]
     return {
         "path": str(target),
+        # The container, measured, beside the custody of what it holds. A reader
+        # who gets only one of the two cannot tell a durable route that is one
+        # key away from a durable route that is one `chown` away.
+        "trust_root": root,
         "binding": binding,
         "because": because,
         "audience": (document or {}).get("audience", ""),
@@ -417,8 +540,10 @@ def _write(target: Path, document: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def render(result: dict) -> list[str]:
+    root = result["trust_root"]
     lines = [f"binding       {result['binding']} — {result['because']}",
              f"path          {result['path']}",
+             f"trust root    {root['state']} — {root['because']}",
              f"durable route {result['durable_route']}"]
     if result["missing"]:
         lines.append("missing       " + ", ".join(result["missing"]))
