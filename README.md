@@ -2,7 +2,12 @@
 
 [中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
-Implementation entry: [the single P0–P12 plan](docs/CC-EXECUTION-PLAN.md), [dated Tokyo baseline](docs/IMPLEMENTATION-BASELINE-20260925.md), and [CC handoff](docs/CC-IMPLEMENTATION-HANDOFF.md). These cover implementation, authorized installation, real acceptance, finite activation and directory convergence; they are not deployment receipts.
+Current target: [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md).
+Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-environment.md),
+[verified gaps and changes](docs/architecture/IMPLEMENTATION-DELTA-20261007.md), and
+[CC/GPT research exchange](docs/architecture/RESEARCH-EXCHANGE.md).
+The [earlier P0–P12 plan](docs/CC-EXECUTION-PLAN.md) remains a subsystem reference;
+none of these design documents is a deployment receipt.
 
 **A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
 
