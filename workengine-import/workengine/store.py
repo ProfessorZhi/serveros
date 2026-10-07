@@ -310,14 +310,15 @@ class ServerOSStore:
     def record_observation(self, source_id, observation_id, *, semantic_type, content_hash, source_origin="online", carrier="other", information_form="curated"):
         if not source_id or not observation_id or not semantic_type or not re.fullmatch(r"[0-9a-fA-F]{64}", content_hash): raise ValueError("observation requires provenance and SHA-256")
         with self.transaction(immediate=True) as c:
-            if not c.execute("SELECT 1 FROM source_objects WHERE source_id=?",(source_id,)).fetchone(): raise KeyError(source_id)
+            if not c.execute("SELECT 1 FROM source_objects WHERE source_id=?",(source_id,)).fetchone(): raise KeyError(f"unknown source: {source_id}")
             c.execute("INSERT OR IGNORE INTO observations VALUES (?,?,?,?,?,?,?,?)",(observation_id,source_id,semantic_type,source_origin,carrier,information_form,content_hash,now_iso()))
             return dict(c.execute("SELECT * FROM observations WHERE observation_id=?",(observation_id,)).fetchone())
 
     def record_claim(self, claim_id, locator, observation_ids, *, status="ACTIVE"):
         if not observation_ids: raise ValueError("claim requires observations")
         with self.transaction(immediate=True) as c:
-            if any(not c.execute("SELECT 1 FROM observations WHERE observation_id=?",(x,)).fetchone() for x in observation_ids): raise KeyError("unknown observation")
+            missing = [x for x in observation_ids if not c.execute("SELECT 1 FROM observations WHERE observation_id=?",(x,)).fetchone()]
+            if missing: raise KeyError(f"unknown observation: {', '.join(missing)}")
             c.execute("INSERT OR IGNORE INTO claims VALUES (?,?,?,?)",(claim_id,locator,status,now_iso()))
             for x in observation_ids: c.execute("INSERT OR IGNORE INTO claim_observations VALUES (?,?)",(claim_id,x))
             return dict(c.execute("SELECT * FROM claims WHERE claim_id=?",(claim_id,)).fetchone())
@@ -359,7 +360,8 @@ class ServerOSStore:
         """
         if not claim_ids: raise ValueError("candidate requires claim provenance")
         with self.transaction(immediate=True) as c:
-            if any(not c.execute("SELECT 1 FROM claims WHERE claim_id=?",(x,)).fetchone() for x in claim_ids): raise KeyError("unknown claim")
+            missing = [x for x in claim_ids if not c.execute("SELECT 1 FROM claims WHERE claim_id=?",(x,)).fetchone()]
+            if missing: raise KeyError(f"unknown claim: {', '.join(missing)}")
             # The identity half mirrors the INDEX it reports on, and `=` is what
             # mirrors it: SQLite treats every NULL as distinct in a UNIQUE
             # index, and `col = NULL` is false for every row, so a triple with a
@@ -476,7 +478,7 @@ class ServerOSStore:
             # `MATCHED` would take an Item off the requirement it already names,
             # and a rejected or merged requirement is not one being matched again.
             _refuse_if_concluded(candidate, "match", candidate_id=candidate_id)
-            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(item_id,)).fetchone(): raise KeyError(item_id)
+            self._require_item(c, item_id)
             c.execute("UPDATE item_candidates SET state='MATCHED',approved_item_id=? WHERE candidate_id=?",(item_id,candidate_id))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
 
@@ -507,7 +509,12 @@ class ServerOSStore:
                     f"Promoting it to another Item would discard that match "
                     f"without saying so.")
             target=item_id
-            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(target,)).fetchone(): raise ValueError("approved Item mapping required")
+            # The caller supplied this Item; the store's own words for "there is
+            # no such Item" are the only ones that fit. Measured before this:
+            # `candidate promote cnd-1 --item DEM-9999` answered "approved Item
+            # mapping required", which tells a caller who named an Item that
+            # they named none.
+            self._require_item(c, target)
             c.execute("UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",(target,candidate_id))
             if r['domain'] and r['external_id'] and r['external_revision']:
                 c.execute("INSERT OR IGNORE INTO external_item_mappings(domain,external_id,revision,item_id) VALUES(?,?,?,?)",(r['domain'],r['external_id'],r['external_revision'],target))
@@ -596,8 +603,11 @@ class ServerOSStore:
     def transition_activity(self, item_id, activity_id, target):
         allowed={ActivityState.PENDING:{ActivityState.READY,ActivityState.CANCELLED},ActivityState.READY:{ActivityState.RUNNING,ActivityState.CANCELLED},ActivityState.RUNNING:{ActivityState.SUCCEEDED,ActivityState.FAILED,ActivityState.BLOCKED,ActivityState.CANCELLED},ActivityState.BLOCKED:{ActivityState.READY,ActivityState.CANCELLED}}
         with self.transaction(immediate=True) as c:
-            r=c.execute("SELECT * FROM activities WHERE item_id=? AND activity_id=?",(item_id,activity_id)).fetchone()
-            if not r: raise KeyError(activity_id)
+            # The lookup here raised `KeyError(activity_id)` — the bare id, and
+            # never the Item: `activity transition DEM-9999 act-1` answered
+            # `'act-1'`, naming the half that exists. `_require_activity` names
+            # the half that matched.
+            r = self._require_activity(c, item_id, activity_id)
             target=ActivityState(target); current=ActivityState(r['state'])
             if target not in allowed.get(current,set()): raise ValueError(f"illegal activity transition {current} -> {target}")
             c.execute("UPDATE activities SET state=? WHERE item_id=? AND activity_id=?",(target.value,item_id,activity_id))
@@ -605,8 +615,69 @@ class ServerOSStore:
 
     def upsert_context(self, context):
         with self.transaction(immediate=True) as c:
+            # `execution_contexts` carries a composite foreign key onto
+            # `activities(item_id, activity_id)`, so attaching a context to an
+            # activity that does not exist used to answer with the constraint's
+            # sentence rather than with the activity's name. Attaching to an
+            # activity that *does* exist is the upsert this method is named for
+            # and is unchanged.
+            self._require_activity(c, context.item_id, context.activity_id)
             c.execute("INSERT INTO execution_contexts(item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,activity_id,repo) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,worktree=excluded.worktree,dirty=excluded.dirty",(context.item_id,context.activity_id,context.repo,context.mode.value,context.revision,context.worktree,int(context.dirty)))
         return context
+
+    def _require_item(self, connection, item_id):
+        """The `items_index` row for `item_id`, or a refusal that names it.
+
+        Four CLI paths used to reach the database without this check and let the
+        constraint answer for them. `activity add`, `context attach` and
+        `run begin` named an Item that does not exist and got back
+        `sqlite3.IntegrityError: FOREIGN KEY constraint failed` — a sentence
+        about a constraint, in a module whose whole vocabulary is Items and
+        Runs. `run begin` was worse: it dereferenced `get_item(item_id).project`
+        and answered `AttributeError: 'NoneType' object has no attribute
+        'project'`. None of the three shapes is a caller's fact; the caller's
+        fact is "there is no Item DEM-9999", and that is what this raises.
+
+        Returning the row rather than `None`/`True` keeps the two callers that
+        need the Item's own fields — `begin_run` needs `project` to place the
+        artifact directory — from looking it up a second time, which is where
+        the `AttributeError` came from.
+        """
+        row = connection.execute(
+            "SELECT * FROM items_index WHERE item_id=?", (item_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown Item: {item_id}")
+        return row
+
+    def _require_activity(self, connection, item_id, activity_id):
+        """The `activities` row for (item_id, activity_id), or a refusal naming which half is wrong.
+
+        The same three answers as `_require_run`, one plane up: an Item that
+        does not exist and an activity that does not exist are different
+        repairs, and an activity that exists under some *other* Item is a third
+        — the row is real, it is just not this Item's. The database has an
+        opinion about all three (`activities.item_id REFERENCES items_index`,
+        and `runs`/`execution_contexts`/`activity_dependencies` each hold a
+        composite foreign key onto `(item_id, activity_id)`) and its opinion is
+        "FOREIGN KEY constraint failed", which does not say which of the three
+        it means.
+        """
+        self._require_item(connection, item_id)
+        row = connection.execute(
+            "SELECT * FROM activities WHERE item_id=? AND activity_id=?",
+            (item_id, activity_id),
+        ).fetchone()
+        if row is not None:
+            return row
+        owners = [r["item_id"] for r in connection.execute(
+            "SELECT item_id FROM activities WHERE activity_id=? ORDER BY item_id",
+            (activity_id,))]
+        if owners:
+            raise KeyError(
+                f"activity {activity_id} belongs to Item"
+                f"{'s' if len(owners) > 1 else ''} {', '.join(owners)}, not {item_id}")
+        raise KeyError(f"unknown activity: {item_id}/{activity_id}")
 
     def _require_run(self, connection, item_id, run_id):
         """The `runs` row for (item_id, run_id), or a refusal that names which half is wrong.
@@ -632,8 +703,7 @@ class ServerOSStore:
         where an `IntegrityError` naming a constraint is rejected in favour of
         naming the table the caller actually has to look at.
         """
-        if connection.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
-            raise KeyError(f"unknown Item: {item_id}")
+        self._require_item(connection, item_id)
         row = connection.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
         if row is not None:
             return row
@@ -702,10 +772,9 @@ class ServerOSStore:
         if not all(str(value).strip() for value in (item_id, locator, kind, observation_id)):
             raise ValueError("feedback requires Item, Observation, kind, and locator")
         with self.transaction(immediate=True) as c:
-            if not c.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone():
-                raise KeyError(item_id)
+            self._require_item(c, item_id)
             if not c.execute("SELECT 1 FROM observations WHERE observation_id=?", (observation_id,)).fetchone():
-                raise KeyError(observation_id)
+                raise KeyError(f"unknown observation: {observation_id}")
             c.execute(
                 """INSERT OR IGNORE INTO feedback(item_id,observation_id,locator,kind,created_at)
                    VALUES(?,?,?,?,?)""",
@@ -778,6 +847,28 @@ class ServerOSStore:
 
     def add_activity(self, activity: Activity, needs: list[str] | None = None) -> Activity:
         with self.transaction(immediate=True) as conn:
+            self._require_item(conn, activity.item_id)
+            declared = conn.execute(
+                "SELECT * FROM activities WHERE item_id=? AND activity_id=?",
+                (activity.item_id, activity.id),
+            ).fetchone()
+            if declared is not None:
+                # Measured before this refusal: `activity add` twice for one id
+                # answered with `sqlite3.IntegrityError: UNIQUE constraint
+                # failed` — the primary key, in the database's words. Nothing is
+                # added by a second `add`: the row it would write is the row
+                # that is there. Its `kind` is not rewritten by a second add and
+                # its `state` belongs to `transition_activity`, so the only
+                # thing a re-add could do is disagree silently. It is refused
+                # instead, and the refusal says which activity and which kind
+                # the store already has.
+                raise ValueError(
+                    f"activity {activity.item_id}/{activity.id} is already declared as "
+                    f"{declared['kind']}; adding it again would not declare a second one. "
+                    "Its state is moved by `activity transition`, not by re-adding it."
+                )
+            for dependency in needs or ():
+                self._require_activity(conn, activity.item_id, dependency)
             conn.execute(
                 "INSERT INTO activities(item_id,activity_id,kind,state,graph_revision) VALUES (?,?,?,?,?)",
                 (activity.item_id, activity.id, activity.kind, activity.state.value, activity.graph_revision),
@@ -817,6 +908,16 @@ class ServerOSStore:
         from .artifacts import artifact_dir
 
         with self.transaction(immediate=True) as conn:
+            # Both halves of the key `runs` is foreign-keyed on are named before
+            # anything is written. Before this, an unknown Item reached
+            # `self.get_item(item_id).project` one line below and answered
+            # `AttributeError: 'NoneType' object has no attribute 'project'`,
+            # and an unknown activity reached the foreign key and answered
+            # `FOREIGN KEY constraint failed`. Validating first also removes a
+            # second lookup of the same row: the Item is read once, here, and
+            # its `project` is used from that read.
+            item = self._require_item(conn, item_id)
+            self._require_activity(conn, item_id, activity_id)
             existing = conn.execute(
                 "SELECT * FROM runs WHERE item_id=? AND activity_id=? AND idempotency_key=?",
                 (item_id, activity_id, key),
@@ -828,7 +929,7 @@ class ServerOSStore:
             attempt = conn.execute(
                 "SELECT COUNT(*) AS n FROM runs WHERE item_id=? AND activity_id=?", (item_id, activity_id)
             ).fetchone()["n"] + 1
-            path = artifact_dir(artifact_root, self.get_item(item_id).project, item_id, run_id)
+            path = artifact_dir(artifact_root, item["project"], item_id, run_id)
             started = now_iso()
             conn.execute(
                 """INSERT INTO runs
@@ -844,6 +945,22 @@ class ServerOSStore:
         with self.connection() as conn:
             row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
         return self._run(row) if row else None
+
+    def require_run(self, item_id: str, run_id: str) -> Run:
+        """`get_run` for the callers that have nowhere to put "it is not there".
+
+        `get_run` answering `None` is a fact about the store and the caller
+        decides what it means. A verb handed an Item and a Run by a human has
+        already decided: it is going to report on that Run. Two such callers
+        (`run show`, which is `engine.resume_run`, and `run_events_summary`)
+        wrote the sentence themselves — `unknown Run: {item}/{run}` — and that
+        sentence is wrong twice over: a Run that exists under another Item is
+        not unknown, and an Item that does not exist at all is not the Run's
+        fault. `_require_run` distinguishes all three; this is that boundary,
+        offered without a connection so a read-only verb can reach it.
+        """
+        with self.connection() as conn:
+            return self._run(self._require_run(conn, item_id, run_id))
 
     def list_runs(self, item_id: str | None = None, *, state: RunState | str | None = None) -> list[Run]:
         """Runs, newest first, optionally narrowed to one Item or one state.
@@ -896,9 +1013,7 @@ class ServerOSStore:
         empty history, because a Run that does not exist and a Run that nothing
         was recorded about are different findings.
         """
-        run = self.get_run(item_id, run_id)
-        if run is None:
-            raise KeyError(f"unknown Run: {item_id}/{run_id}")
+        run = self.require_run(item_id, run_id)
         events = self.run_events(item_id, run_id)
         return {
             "item": item_id,
@@ -933,9 +1048,14 @@ class ServerOSStore:
                 "and audit event are preserved"
             )
         with self.transaction(immediate=True) as conn:
-            row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
-            if row is None:
-                raise KeyError(f"unknown Run: {item_id}/{run_id}")
+            # This lookup used to be written out here, and it answered
+            # `unknown Run: {item}/{run}` for every miss — including a Run that
+            # exists under another Item and an Item that does not exist at all.
+            # `_require_run` answers those three separately; measured on the
+            # installed shim, `run advance DEM-0001 RUN-0001` (a Run of
+            # DEM-0002) said "unknown Run" while `run evidence` with the same
+            # arguments named the Item that owns it.
+            row = self._require_run(conn, item_id, run_id)
             current = RunState(row["state"])
             # SUCCEEDED and FAILED are verdicts, not steps. A Run that reaches
             # either one through here would carry a claim — "this run succeeded"
@@ -1007,9 +1127,7 @@ class ServerOSStore:
             raise ValueError("termination evidence references must be absolute paths")
 
         with self.transaction(immediate=True) as conn:
-            row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
-            if row is None:
-                raise KeyError(f"unknown Run: {item_id}/{run_id}")
+            row = self._require_run(conn, item_id, run_id)
             current = RunState(row["state"])
             if current in RUN_TERMINAL:
                 if current != target:
