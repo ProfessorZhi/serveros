@@ -1403,7 +1403,46 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   「文档已换版」; a citation of the current version is still `CURRENT` with no
 #   range. `tests/` is not a member of this composition, so the tests and the
 #   thirteen mutations that come with this do not move the label.
-cachebuster: srv0005.20261008l
+#
+#   l → m: the word for "some projects chose and some did not" travels with the
+#   projects that made it that word, and the recommender's slot count stops
+#   wearing the continuation's name. Two members change:
+#
+#   intake/daily_cycle.py  `continue_focus` carries `accepted_why` beside
+#     `accepted_state` — `intake/workchain.compose_board` computes both and
+#     `work board` already prints both — and `select_focus` returns `spare_slots`
+#     instead of `unused_slots`, which was the continuation's name for a
+#     different set. The continuation keeps `unused_slots` on all three of its
+#     own paths, unchanged.
+#   runtime/cli.py         `work focus` prints the projects behind `PARTIAL`,
+#     and prints the recommender's slot count under the sentence that describes
+#     the recommender's count rather than under the continuation's.
+#
+#   The label moves because the promoted revision reports a partial READING as a
+#   state with nothing behind it, and prints a number beside a sentence about a
+#   set it was not computed over. Measured on the promoted revision, two
+#   commands: `serverosctl work board` says
+#   `今日重点   PARTIAL：litellm: UNPRODUCED；marketops: UNPRODUCED；
+#   multi-user-claw: UNPRODUCED；tokyo: UNPRODUCED`, while `serverosctl work
+#   focus` — the verb a person reads to ask what today's focus is — says
+#   `accepted    PARTIAL` and never which project produced the word, so
+#   `UNPRODUCED` (nobody recorded a selection at all) and `UNREADABLE` (a
+#   selection this reader could not open) are one answer; and the same
+#   invocation prints `spare       0 of 2 slot(s) the accepted objectives did
+#   not take` beside `objectives  1`, a count over the six rows on the node
+#   carrying a sentence about the one objective that was accepted. Both are this
+#   module's recurring shape: a fact about the reading reported as a fact about
+#   the world.
+#
+#   No classification changes. What `PARTIAL` is composed from is untouched:
+#   `compose_board` still merges the per-project states by the same rule and
+#   `why` still names every project whose state is not `SELECTED`. The
+#   recommender still excludes the rows already in flight and still counts a
+#   slot the read could not decide, so `spare_slots` carries `unused_slots`'s
+#   former value under a name that says which question it answers. `tests/` is
+#   not a member of this composition, so the seven tests and the nine mutations
+#   that come with this do not move the label.
+cachebuster: srv0005.20261008m
 
 skills:
   - name: runtime-management
