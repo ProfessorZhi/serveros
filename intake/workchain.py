@@ -360,16 +360,57 @@ def _read_projection(path: Path) -> tuple[dict | None, str | None]:
     return document, None
 
 
-def load_projects(*, boards_root: Path, projects=None) -> list[dict]:
+def resolve_aliases(names, aliases) -> tuple[list[str], dict[str, list[str]]]:
+    """别名换成它归属的项目名。返回 `(要读的名字, 谁被换成了谁)`。
+
+    `litellm-observability` 不是一个项目，是 `litellm` 的**另一个名字**（见
+    `projects.yaml` 的 `project_aliases`，那里写了为什么它不能是一个项目）。
+    所以一个同时点名 `litellm` 和 `litellm-observability` 的调用者，要的是
+    **一份**投影而不是两份：读两次同一个 `current.json` 会让同一个 Item 在组合
+    视图里出现两行，而 `select_focus` 对重复 ID 是抛错的 —— 重复不会静静地
+    过去，它会让整个周期算不出来。于是折叠发生在这里，而不是在它下游。
+
+    返回的第二项按「被读到的项目」归并，因为它是给**那一行**用的：一行要说得出
+    它同时回答了哪几个被点名的名字。一个调用者点名三个项目、拿到两份投影，
+    这个差是调用者要知道的事，不是这一步该替它咽下去的事。
+
+    别名表里没有的名字原样放行 —— 包括一个指错方向的别名。那不是「换个名字」，
+    是一个坏掉的绑定，而它的下游表现是一个实实在在的 UNREADABLE 行（「这个名字
+    下没有投影」），不是被悄悄读成别的项目。绑定本身对不对由 ops 的
+    `test_a_project_alias_names_a_registered_project_and_issues_no_ids` 钉住：
+    注册表缺陷是注册表测试的事，不是运行期猜的事。
+    """
+    resolved: list[str] = []
+    renamed: dict[str, list[str]] = {}
+    for requested in names:
+        entry = aliases.get(requested)
+        target = (entry or {}).get("project") if isinstance(entry, dict) else None
+        name = target if target and target != requested else requested
+        if name != requested:
+            renamed.setdefault(name, []).append(requested)
+        if name not in resolved:
+            resolved.append(name)
+    return resolved, renamed
+
+
+def load_projects(*, boards_root: Path, projects=None, aliases=None) -> list[dict]:
     """Every project's projection, as `{project, document, state, why, path}`.
 
     A project named by `projects` and absent from the disk is UNREAD and stays
     in the list. Dropping it would make "this project has no Items" and "this
     project is not on this node" the same row, which is the collapse this
     module spends most of its length avoiding.
+
+    `aliases` is the registry's `project_aliases` (name → `{project, …}`), and
+    it applies only when the caller NAMES projects. The other branch walks the
+    disk, and a directory named `litellm-observability` is not a thing a
+    registry entry could create — so an alias there would be answering a
+    question nobody asked, which is indistinguishable from inventing a project.
     """
+    renamed: dict[str, list[str]] = {}
     found = []
     if projects:
+        projects, renamed = resolve_aliases(projects, aliases or {})
         candidates = [(name, boards_root / name / "current.json") for name in projects]
     else:
         candidates = [(path.parent.name, path) for path in sorted(boards_root.glob("*/current.json"))]
@@ -382,7 +423,8 @@ def load_projects(*, boards_root: Path, projects=None) -> list[dict]:
         document, why = _read_projection(path)
         if document is None:
             found.append({"project": name, "state": UNREADABLE, "why": why,
-                          "path": str(path), "document": None})
+                          "path": str(path), "document": None,
+                          "also_named": list(renamed.get(name) or [])})
             continue
         schema = document.get("schema")
         if schema != BOARD_SCHEMA:
@@ -391,10 +433,12 @@ def load_projects(*, boards_root: Path, projects=None) -> list[dict]:
                                   f"{BOARD_SCHEMA!r}; a board read from a "
                                   f"document that is not the one it says it is "
                                   f"has no authority"),
-                          "path": str(path), "document": None})
+                          "path": str(path), "document": None,
+                          "also_named": list(renamed.get(name) or [])})
             continue
         found.append({"project": name, "state": "READ", "why": "",
-                      "path": str(path), "document": document})
+                      "path": str(path), "document": document,
+                      "also_named": list(renamed.get(name) or [])})
     return found
 
 
@@ -998,7 +1042,13 @@ def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
         # when the projection was taken, not whether that is recent.
         "projects": [{"project": p["project"], "state": p["state"],
                       "why": p["why"], "path": p["path"],
-                      "taken": (p.get("document") or {}).get("generated_at")}
+                      "taken": (p.get("document") or {}).get("generated_at"),
+                      # The names this one projection answered for, when the
+                      # caller named an alias. Carried rather than swallowed:
+                      # a caller who asked for three projects and got two rows
+                      # must be able to see that the third was a second name for
+                      # one of them, not a third project that went missing.
+                      "also_named": list(p.get("also_named") or [])}
                      for p in projects],
         "counts": {
             "items": len(rows),
