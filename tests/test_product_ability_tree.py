@@ -113,3 +113,10 @@ def test_mcp_product_arguments_are_forwarded_without_another_tree_owner():
                  arguments={'view': 'product', 'responsibility': 'A7'})['result']
     assert result['isError'] is False
     assert daemon.calls == [('ability.tree', {'view': 'product', 'responsibility': 'A7'})]
+
+
+def test_new_cli_does_not_silently_accept_old_daemon_domain_tree(monkeypatch, capsys):
+    from test_serverosctl import cli_mod
+    monkeypatch.setattr(cli_mod, 'ask_daemon', lambda *_: {'basis': 'domain.primary', 'nodes': []})
+    assert cli_mod.main(['ability', 'tree', '--view', 'product', '--json']) == 2
+    assert 'PRODUCT_VIEW_UNSUPPORTED' in capsys.readouterr().out
