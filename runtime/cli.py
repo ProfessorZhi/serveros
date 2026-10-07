@@ -8068,11 +8068,13 @@ def _focus_decision(args):
         continuation = cycle.continue_focus(
             composed["rows"], delegations["envelopes"], accepted, now=now,
             observed_at=composed["observed_at"],
-            ttl_seconds=args.ttl, limit=args.limit)
+            ttl_seconds=args.ttl, limit=args.limit,
+            projection_times=composed["projection_times"])
         proposal = cycle.select_focus(
             composed["rows"], delegations["envelopes"], now=now,
             observed_at=composed["observed_at"],
-            ttl_seconds=args.ttl, limit=args.limit, accepted=accepted)
+            ttl_seconds=args.ttl, limit=args.limit, accepted=accepted,
+            projection_times=composed["projection_times"])
     return composed, delegations, continuation, proposal, now
 
 
@@ -8229,6 +8231,13 @@ def cmd_work_focus(args) -> int:
     lines.append("— 建议（不是周期，不产生任何准入） —")
     lines.append(f"proposal    {proposal['status']}"
                  + (f" ({proposal['reason']})" if proposal.get("reason") else ""))
+    # Printed here for the same reason the cycle prints its own: the two
+    # questions are answered by two calls, and a reader who found the sentence
+    # under one block and not the other would take the silence for
+    # "the recommendation was refused on its merits" rather than "it was never
+    # reached". Both read the same `stale_because`.
+    if proposal.get("blocked_because"):
+        lines.append(f"because     {proposal['blocked_because']}")
     spare = proposal.get("unused_slots")
     if spare is not None:
         lines.append(f"spare       {spare} of {args.limit} slot(s) "
