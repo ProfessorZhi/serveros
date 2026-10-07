@@ -7815,6 +7815,8 @@ def _work_board_document(args):
                                records_root=records,
                                workspace_root=workspace,
                                skeletons=_workchain_skeletons(chain),
+                               tree=chain.tree_position(
+                                   records, git=_workchain_git()),
                                today_by_project=_today_for(chain, records, projects))
 
 
@@ -10655,7 +10657,8 @@ def _records_position_line(position: dict) -> str:
         return f"记录树     {revision} · {branch} · 与 {ref} 一致"
     if state == "BEHIND":
         return (f"记录树     {revision} · {branch} · 落后 {ref} "
-                f"{position.get('behind')} 个提交 —— 这棵树的文档不是远端那批")
+                f"{position.get('behind')} 个提交 —— 这棵树缺的文档改从 {ref} "
+                f"读，逐行标出读自哪一面")
     if state == "AHEAD":
         return (f"记录树     {revision} · {branch} · 领先 {ref} "
                 f"{position.get('ahead')} 个提交（本地有未推的提交）")
@@ -10709,6 +10712,15 @@ def cmd_work_item(args) -> int:
             shape = ("  ← 目录，共 %d 份" % document["count"]
                      if document["resolved_by"] == "directory" else
                      "  ← %s" % document["resolved_by"])
+            # Which surface answered, on the same line as the row it answers
+            # for. A document read out of the authority is a document this
+            # checkout does not hold, and a reader who is not told that will
+            # take the `●` for a fact about the working tree.
+            surface = document.get("read_from") or "worktree"
+            if surface != "worktree":
+                at = str(document.get("read_from_revision") or "")
+                shape += (f" · 读自 {surface}" + (f"@{at[:12]}" if at else "")
+                          + "，未物化进这棵树")
         lines.append(f"{mark} {document['document']:<12} {document['state']:<17}"
                      + f"{shape or (' ' + document['why'] if document['why'] else '')}")
         check = document.get("skeleton") or {}

@@ -1348,15 +1348,28 @@ class WhatIsRefused(unittest.TestCase):
 
 def _fake_git(*, toplevel, head="headsha000000", branch="main",
               upstream_error=True, ref_exists=True, counts="0\t0",
-              has_files=(), rev_of_ref="refsha000000"):
+              has_files=(), rev_of_ref="refsha000000", head_files=None,
+              texts=None, dirs=None):
     """A git that answers exactly the questions `tree_position` asks.
 
     Not a repository. `tree_position` takes its git callable injected so that
     the question "is this absence the tree's" can be asked in a test without
     building one, and so that a fixture cannot accidentally start depending on
     a working copy of somebody's records.
+
+    `has_files` is what the UPSTREAM REF holds and `head_files` is what this
+    checkout's own HEAD holds. They are two questions because the reader has to
+    tell two situations apart: a document this tree never had, and one somebody
+    removed from it. `head_files=None` means "the same as the ref", which is the
+    ordinary shape of a checkout that is merely behind — it has not lost
+    anything, it just has not caught up. Pass `head_files=()` to model a tree
+    that never carried the document at all, which is the case that was
+    misreported as an Item owing a brief nobody wrote.
     """
     files = set(has_files)
+    at_head = files if head_files is None else set(head_files)
+    blobs = dict(texts or {})
+    trees = dict(dirs or {})
 
     def git(path, *args):
         if args[:2] == ("rev-parse", "--show-toplevel"):
@@ -1377,8 +1390,20 @@ def _fake_git(*, toplevel, head="headsha000000", branch="main",
         if args[:1] == ("rev-parse",):
             return 0, f"{rev_of_ref}\n"
         if args[:2] == ("cat-file", "-e"):
+            ref, _, rel = args[2].partition(":")
+            known = at_head if ref == "HEAD" else files
+            return (0, "") if rel in known else (128, "")
+        if args[:2] == ("cat-file", "blob"):
             _ref, _, rel = args[2].partition(":")
-            return (0, "") if rel in files else (128, "")
+            if rel in files:
+                return 0, blobs.get(rel, "")
+            return 128, ""
+        if args[:1] == ("ls-tree",):
+            _ref, _, rel = args[1].partition(":")
+            if rel in trees:
+                return 0, "".join(f"100644 blob {'0' * 40}\t{name}\n"
+                                  for name in trees[rel])
+            return 128, ""
         return 127, f"unexpected call: {args}"
 
     return git
@@ -1439,6 +1464,65 @@ class ThePositionOfTheTreeAReadWasTakenFrom(unittest.TestCase):
                 "rev-parse", "--show-toplevel") else (128, "fatal: bad object\n"))
         self.assertIsNone(other.holds("projects/p/items/I/brief.md"))
 
+    def test_the_bytes_are_read_from_the_ref_and_read_once(self):
+        """Reading is what closes an absence; a cause only explains one."""
+        calls = []
+        inner = _fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          has_files=("projects/p/items/I/brief.md",),
+                          texts={"projects/p/items/I/brief.md": "# Brief\n"})
+
+        def git(path, *args):
+            calls.append(args)
+            return inner(path, *args)
+
+        position = chain.tree_position("/somewhere/records", git=git)
+        self.assertEqual(position.read_text("projects/p/items/I/brief.md"),
+                         "# Brief\n")
+        self.assertEqual(position.read_text("projects/p/items/I/brief.md"),
+                         "# Brief\n")
+        self.assertEqual(
+            sum(1 for a in calls if a[:2] == ("cat-file", "blob")), 1,
+            "the document was read twice; a row is composed once per Item and "
+            "a second read is a second chance to answer differently")
+        self.assertIsNone(position.read_text("projects/p/items/I/design"))
+
+    def test_holds_at_head_asks_about_this_checkout_not_the_authority(self):
+        """The two questions the reader has to keep apart."""
+        position = chain.tree_position(
+            "/somewhere/records",
+            git=_fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          has_files=("projects/p/items/I/brief.md",),
+                          head_files=()))
+        self.assertIs(True, position.holds("projects/p/items/I/brief.md"))
+        self.assertIs(False,
+                      position.holds_at_head("projects/p/items/I/brief.md"))
+
+    def test_an_unanswerable_read_is_none_and_not_an_empty_document(self):
+        """Code 127 is not "absent", and a document that could not be asked
+        about must not be reported as one the authority does not have."""
+        inner = _fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          has_files=("projects/p/items/I/brief.md",))
+
+        def git(path, *args):
+            if args[:1] in (("cat-file",), ("ls-tree",)):
+                return 127, "not a question this git can answer\n"
+            return inner(path, *args)
+
+        position = chain.tree_position("/somewhere/records", git=git)
+        self.assertIsNone(position.read_text("projects/p/items/I/brief.md"))
+        self.assertIsNone(position.count_files("projects/p/items/I/design"))
+
+    def test_count_files_counts_documents_and_not_subdirectories(self):
+        """The rule the working-tree resolver already carries, on this surface."""
+        position = chain.tree_position(
+            "/somewhere/records",
+            git=_fake_git(toplevel="/somewhere/records", counts="0\t13",
+                          dirs={"projects/p/items/I/design": ("a.md", "b.md")}))
+        self.assertEqual(position.count_files("projects/p/items/I/design"), 2)
+        # Nothing there is not the same as nothing in it: a path the ref has no
+        # tree at is unanswerable, and the row keeps the sentence it had.
+        self.assertIsNone(position.count_files("projects/p/items/I/plan"))
+
     def test_it_never_fetches(self):
         """A read verb's answer must not depend on the network.
 
@@ -1470,29 +1554,124 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
     RULE = {"name": "brief.md", "resolved_by": ("exact-file",),
             "required_at": {"ACTIVE"}}
 
-    def _documents(self, tmp, *, held, spellings=None, state="ACTIVE"):
+    def _documents(self, tmp, *, held, spellings=None, state="ACTIVE",
+                   head=(), texts=None, dirs=None, tree_state=None,
+                   skeletons=None, name=None):
         rule = dict(self.RULE)
+        if name is not None:
+            rule["name"] = name
         if spellings is not None:
             rule["resolved_by"] = tuple(spellings)
         position = chain.TreePosition(
             root=tmp, revision="a" * 40, branch="main", upstream_ref="origin/main",
-            ahead=0, behind=13, state=chain.TREE_BEHIND,
-            git=_fake_git(toplevel=str(tmp), counts="0\t13", has_files=held))
+            upstream_revision="refsha000000",
+            ahead=0, behind=13, state=tree_state or chain.TREE_BEHIND,
+            git=_fake_git(toplevel=str(tmp), counts="0\t13", has_files=held,
+                          head_files=head, texts=texts, dirs=dirs))
         return chain._documents(Path(tmp) / "projects/p/items/I", state, [rule],
-                                None, position)[0]
+                                skeletons, position)[0]
 
-    def test_the_authority_holding_it_rewrites_the_cause_and_not_the_state(self):
+    def test_a_brief_the_authority_holds_is_read_and_not_only_explained(self):
+        """Naming the cause left every consumer still unable to open the file.
+
+        That was the half-fix, and it is the wrong half. The row said the
+        document was "not missing from the Item — it was never materialized
+        into this tree", and the Item's own work still could not read the brief
+        it was waiting on. A cause is not a document.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            answer = self._documents(tmp, held=(
-                "projects/p/items/I/brief.md",))
-        self.assertEqual(answer["state"], "MISSING",
-                         "materializing nothing must not make the document readable")
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                texts={"projects/p/items/I/brief.md": "# Brief\n\nbody\n"})
+        self.assertEqual(answer["state"], "PRESENT")
+        self.assertEqual(answer["read_from"], "origin/main")
+        self.assertEqual(answer["read_from_revision"], "refsha000000")
+        self.assertEqual(answer["upstream_path"], "projects/p/items/I/brief.md")
+        self.assertEqual(answer["resolved_by"], "exact-file")
         self.assertIs(True, answer["held_by_upstream"])
-        self.assertEqual(answer["upstream_ref"], "origin/main")
-        self.assertEqual(answer["upstream_path"], "brief.md")
-        self.assertIn("not missing from the Item", answer["why"])
+        # On the row, not left to be inferred from the absence of something:
+        # nothing was written into that checkout to make this readable.
+        self.assertIn("nothing was written into that checkout", answer["why"])
         self.assertIn("13 behind", answer["why"])
-        self.assertNotIn("resolves under none of", answer["why"])
+
+    def test_the_bytes_are_the_authoritys_and_they_reach_the_shape_check(self):
+        """PRESENT is only honest if something was actually read.
+
+        `skeletons=None` reports `NOT_CHECKED` for every document, so a test
+        that passed one would be asserting nothing. This passes a real skeleton
+        and reads a real body, so the check can only answer from bytes.
+        """
+        skeleton = {"documents": [{"id": "brief.md", "file": "brief.md",
+                                   "sections": [{"heading": "定性"}]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                texts={"projects/p/items/I/brief.md": "## 定性\n\n正文\n"},
+                skeletons=skeleton)
+            empty = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                texts={"projects/p/items/I/brief.md": "  \n"},
+                skeletons=skeleton)
+        self.assertEqual(answer["skeleton"]["state"], "MATCHES")
+        # The same read surface, a file with nothing in it: still PRESENT,
+        # still a defect. An empty document is not a lagging checkout.
+        self.assertEqual(empty["state"], "PRESENT")
+        self.assertEqual(empty["skeleton"]["state"], "EMPTY")
+
+    def test_a_document_deleted_from_this_tree_is_not_resurrected(self):
+        """HEAD carried it and the working tree does not: a change HERE.
+
+        This tree is the party that made the difference, so it is the party to
+        ask. Reading the authority's copy back would put a document nobody
+        asked for in front of a consumer under a `●`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",),
+                head=("projects/p/items/I/brief.md",))
+        self.assertEqual(answer["state"], "MISSING")
+        self.assertIs(True, answer["held_by_upstream"])
+        self.assertNotIn("not missing from the Item", answer["why"])
+        self.assertIn("resolves under none of", answer["why"])
+
+    def test_a_tree_that_is_not_behind_borrows_nothing(self):
+        """Level with the ref it has nothing to borrow; ahead of it, it is newer.
+
+        A branch that committed a deletion still has the document at the ref,
+        and answering from there would be answering about a different tree.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            for tree_state in (chain.TREE_FOLLOWING, chain.TREE_AHEAD,
+                               chain.TREE_DIVERGED):
+                answer = self._documents(
+                    tmp, held=("projects/p/items/I/brief.md",), head=(),
+                    tree_state=tree_state)
+                self.assertEqual(answer["state"], "MISSING", tree_state)
+                self.assertNotIn("not missing from the Item", answer["why"])
+
+    def test_an_empty_directory_at_the_ref_is_not_a_design(self):
+        """`mkdir` must not close the gap on this surface either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=(), head=(), name="design",
+                spellings=("exact-file", "directory"),
+                dirs={"projects/p/items/I/design": ()})
+        self.assertEqual(answer["state"], "MISSING")
+
+    def test_a_directory_the_authority_holds_is_read_as_a_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=(), head=(), name="design",
+                spellings=("exact-file", "directory"),
+                dirs={"projects/p/items/I/design": ("a.md", "b.md", "c.md")})
+        self.assertEqual(answer["state"], "PRESENT")
+        self.assertEqual(answer["resolved_by"], "directory")
+        self.assertEqual(answer["count"], 3)
+        self.assertEqual(answer["read_from"], "origin/main")
+        # A directory is a SET of documents written separately for different
+        # reasons; there is no single text to check, and this does not invent
+        # a joined view of it.
+        self.assertEqual(answer["skeleton"]["state"], "NOT_CHECKED")
 
     def test_the_negative_control_leaves_the_sentence_alone(self):
         """The ref does not have it either, so the Item is the right party."""
@@ -1535,13 +1714,15 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             answer = self._documents(
-                tmp, held=("projects/p/items/I/brief.md",),
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                texts={"projects/p/items/I/brief.md": "# Brief\n"},
                 spellings=("exact-file", "suffixed-file"))
         # `brief.md` resolves under `exact-file`; the suffixed spelling is
-        # `brief.md.md` and is not at the ref. One True wins, and the line still
-        # names the spelling that WAS found.
+        # `brief.md.md` and is not at the ref. The row names the spelling that
+        # WAS found, on the surface it was found on.
         self.assertIs(True, answer["held_by_upstream"])
-        self.assertEqual(answer["upstream_path"], "brief.md")
+        self.assertEqual(answer["upstream_path"], "projects/p/items/I/brief.md")
+        self.assertEqual(answer["resolved_by"], "exact-file")
 
 
 if __name__ == "__main__":

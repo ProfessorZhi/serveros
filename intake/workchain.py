@@ -271,6 +271,9 @@ class TreePosition:
         self.why = why
         self._git = git
         self._held: dict[str, bool | None] = {}
+        self._head: dict[str, bool | None] = {}
+        self._text: dict[str, str | None] = {}
+        self._counts: dict[str, int | None] = {}
 
     def relative(self, path) -> str | None:
         """`path` as the ref spells it, or None when it lies outside the root."""
@@ -303,6 +306,84 @@ class TreePosition:
             elif code == 128:
                 answer = False
         self._held[relpath] = answer
+        return answer
+
+    def holds_at_head(self, relpath: str | None) -> bool | None:
+        """Whether this tree's OWN HEAD carries `relpath`.
+
+        `holds()` answers for the authority and this answers for the checkout
+        doing the reading, and both are needed to keep two situations apart: a
+        document this tree never had, and a document somebody removed from it.
+        Only the first is the authority's to answer for. Resurrecting a file a
+        branch deliberately deleted would be this module inventing a document,
+        which is the same defect as reporting the tree's lag as the Item's.
+
+        Read the way `holds()` reads: exit 128 is "not at that object" and
+        anything else is unanswerable rather than absent.
+        """
+        if relpath is None:
+            return None
+        if relpath in self._head:
+            return self._head[relpath]
+        answer: bool | None = None
+        if self._git is not None and self.root is not None:
+            code, _out = self._git(self.root, "cat-file", "-e",
+                                   f"HEAD:{relpath}")
+            if code == 0:
+                answer = True
+            elif code == 128:
+                answer = False
+        self._head[relpath] = answer
+        return answer
+
+    def read_text(self, relpath: str | None) -> str | None:
+        """The document's text as the authority holds it, or None.
+
+        None covers "the ref does not have it" and "the ref could not be asked"
+        alike, because the caller's next move is the same either way. What this
+        adds over `holds()` is the point of the method: a reader that reports
+        the CAUSE of an absence has explained it, and a reader that returns the
+        bytes has closed it. A brief nobody can read is still a brief the Item
+        is waiting on, however accurately the wait was described.
+        """
+        if relpath is None or not self.upstream_ref:
+            return None
+        if relpath in self._text:
+            return self._text[relpath]
+        answer: str | None = None
+        if self._git is not None and self.root is not None:
+            code, out = self._git(self.root, "cat-file", "blob",
+                                  f"{self.upstream_ref}:{relpath}")
+            if code == 0:
+                answer = out
+        self._text[relpath] = answer
+        return answer
+
+    def count_files(self, relpath: str | None) -> int | None:
+        """How many documents sit directly under a directory at the authority.
+
+        `cat-file -e` says the tree EXISTS and says nothing about anybody having
+        put anything in it. The rule `_resolve_document` already carries — an
+        empty `design/` is a directory somebody made, not a design — has to
+        hold at the ref too, or `mkdir` would close the same gap on a second
+        surface. Subtrees are not counted, for the reason they are not counted
+        in the working tree either: the question is how many documents are in
+        there, and a directory inside it is not one.
+        """
+        if relpath is None or not self.upstream_ref:
+            return None
+        if relpath in self._counts:
+            return self._counts[relpath]
+        answer: int | None = None
+        if self._git is not None and self.root is not None:
+            code, out = self._git(self.root, "ls-tree",
+                                  f"{self.upstream_ref}:{relpath}")
+            if code == 0:
+                entries = [line.split("\t", 1)[0].split()
+                           for line in out.splitlines()]
+                answer = sum(1 for parts in entries
+                             if len(parts) >= 2 and parts[1] == "blob")
+        self._counts[relpath] = answer
         return answer
 
 
@@ -412,6 +493,101 @@ def _document_spellings(rule: dict) -> list[str]:
     return names
 
 
+def _resolve_from_ref(item_dir: Path, rule: dict, tree,
+                      ) -> tuple[str, str, int] | None:
+    """Where the authority holds a document this checkout does not have.
+
+    The spellings and their ORDER are `_resolve_document`'s, asked of a second
+    surface: a document reported absent at the ref because this looked for a
+    name the rule does not use would be the same misattribution one level down.
+    Returns `(the path as the ref spells it, how it resolved, how many)`.
+
+    Called only when this checkout is behind the authority AND never carried
+    the path. A tree level with the ref has nothing the ref has and it lacks;
+    a tree ahead of the ref may have deleted the document on purpose, and
+    answering that from the ref would be answering a question about a
+    different tree.
+    """
+    base = tree.relative(item_dir)
+    if base is None:
+        return None
+    base = "" if base == "." else base + "/"
+    name = rule["name"]
+    for kind in rule["resolved_by"]:
+        if kind == "exact-file":
+            if tree.holds(f"{base}{name}"):
+                return f"{base}{name}", "exact-file", 1
+        elif kind == "suffixed-file":
+            if tree.holds(f"{base}{name}.md"):
+                return f"{base}{name}.md", "suffixed-file", 1
+        elif kind == "directory":
+            count = tree.count_files(f"{base}{name}")
+            if count:
+                return f"{base}{name}", "directory", count
+    return None
+
+
+def _read_from_the_authority(item_dir: Path, rule: dict, tree, skeletons,
+                             name: str) -> dict:
+    """The row a lagging checkout borrows from the authority, or nothing.
+
+    Returns the fields to merge when the authority holds a document this tree
+    never had, and an empty dict when it does not — in which case the caller
+    falls through to the absence it was always going to report. Three
+    conditions have to hold at once, and each stops a different mistake:
+
+      * the tree is BEHIND the ref. Level with it there is nothing to borrow,
+        and ahead of it the tree is the newer surface;
+      * the tree's own HEAD never carried the path, so a document somebody
+        deleted here is not a document nobody materialized;
+      * the bytes come back. Presence alone would let a row claim to have been
+        read when only its existence was established.
+
+    The state becomes PRESENT because the document IS read — the bytes are the
+    authority's and the skeleton check runs on them, which is what the previous
+    version of this could not do while it reported only the cause. What keeps
+    that honest is `read_from` naming the surface on the row itself, and `why`
+    saying that nothing was written into the checkout to make it readable.
+    """
+    if tree.state != TREE_BEHIND:
+        return {}
+    found = _resolve_from_ref(item_dir, rule, tree)
+    if found is None:
+        return {}
+    relpath, how, count = found
+    if tree.holds_at_head(relpath) is not False:
+        # Either this tree's HEAD has it — so it was removed from the working
+        # tree here, and this tree is the party to ask — or nobody established
+        # whether it does. An unestablished question is not a licence to read
+        # from somewhere else, which is this module's whole defect.
+        return {}
+    text = None if how == "directory" else tree.read_text(relpath)
+    if how != "directory" and text is None:
+        return {}
+    which = relpath.rsplit("/", 1)[-1]
+    return {
+        "state": PRESENT,
+        "read_from": tree.upstream_ref,
+        "read_from_revision": tree.upstream_revision,
+        "resolved_by": how,
+        "count": count,
+        "held_by_upstream": True,
+        "upstream_ref": tree.upstream_ref,
+        "upstream_path": relpath,
+        "skeleton": check_skeleton(text, skeleton_of(skeletons, name)),
+        "why": (
+            f"`{which}` is not in the working tree this reader is bound to "
+            f"({tree.root} at {str(tree.revision or '?')[:12]}), and it IS "
+            f"present at {tree.upstream_ref}"
+            + (f", which that tree is {tree.behind} behind"
+               if tree.behind else "")
+            + f". Read from there: the content is {tree.upstream_ref}'s, and "
+              f"nothing was written into that checkout to make it readable"
+            + (f", because this branch declares no upstream to tell it so"
+               if not tree.branch or "unset" in tree.why else "") + "."),
+    }
+
+
 def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> None:
     """Record what the authority holds, and only then say why nothing resolved.
 
@@ -421,6 +597,17 @@ def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> 
     one. `why` is rewritten ONLY when the answer is True: for False the existing
     sentence already names the right party, and for None nobody established a
     cause, so claiming one would be this class's own defect.
+
+    This runs only when `_read_from_the_authority` did NOT resolve the
+    document, so every case here is one where nothing could be read. Two guards
+    on top of the name-level answer, because a sentence about whose fault an
+    absence is has to be as narrow as the evidence:
+
+      * the name exists at the ref but not in a shape the rule accepts — an
+        empty `design/` is the case this catches, and there the Item is still
+        the right party;
+      * the tree is not behind, or its own HEAD carries the path — a document
+        this checkout removed on purpose is a change here, not a lag there.
     """
     spellings = _document_spellings(rule)
     held = [tree.holds(tree.relative(item_dir / name)) for name in spellings]
@@ -430,10 +617,15 @@ def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> 
     answer["upstream_ref"] = tree.upstream_ref
     if verdict is not True:
         return
-    which = spellings[held.index(True)]
-    answer["upstream_path"] = which
+    found = _resolve_from_ref(item_dir, rule, tree)
+    if found is None:
+        return
+    relpath = found[0]
+    answer["upstream_path"] = relpath
+    if tree.state != TREE_BEHIND or tree.holds_at_head(relpath) is True:
+        return
     answer["why"] = (
-        f"`{which}` is not in the working tree this reader is bound to "
+        f"`{relpath.rsplit('/', 1)[-1]}` is not in the working tree this reader is bound to "
         f"({tree.root} at {str(tree.revision or '?')[:12]}), and it IS present "
         f"at {tree.upstream_ref}"
         + (f", which that tree is {tree.behind} behind" if tree.behind else "")
@@ -878,9 +1070,13 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
 
     `tree` is optional and changes nothing when it is absent, which keeps every
     existing caller and fixture on exactly the answer it had. When it is given,
-    a document that resolves under no rule is checked against the ref the tree
-    follows, so a lagging checkout stops being reported as an Item that owes a
-    document nobody wrote.
+    a document that resolves under no rule is asked of the ref the tree
+    follows, and when that tree is behind it and never carried the path, the
+    document is READ from there: the row becomes PRESENT with `read_from`
+    naming the surface that answered. Reporting only the cause of an absence
+    was the half-fix — the Item is waiting on a brief its consumers still could
+    not open. A document nothing could be read from keeps MISSING and gets the
+    cause attributed, which is the answer for the negative control.
     """
     out = []
     for rule in rules:
@@ -893,6 +1089,10 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
                   "why": ""}
         if path is not None:
             answer["state"] = PRESENT
+            # Which surface answered, on every row and not only the unusual
+            # ones: a consumer that has to infer it from the presence of some
+            # other field will infer it wrongly exactly once and keep the bug.
+            answer["read_from"] = "worktree"
             # What is IN it, when there is one thing to read. A `●` beside a
             # one-line file and a `●` beside a finished brief looked identical
             # before this, which made the board's mark a fact about a filename.
@@ -909,12 +1109,16 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
                                "lets a candidate enter on a card alone, so a "
                                "candidate with no card has nothing")}
         elif required:
-            answer |= {"state": MISSING,
-                       "why": (f"an Item in {state} is expected to have it, and "
-                               f"it resolves under none of "
-                               f"{list(rule['resolved_by'])}")}
             if tree is not None:
-                _explain_absence_by_tree(answer, item_dir, rule, tree)
+                answer |= _read_from_the_authority(item_dir, rule, tree,
+                                                   skeletons, name)
+            if answer["state"] is None:
+                answer |= {"state": MISSING,
+                           "why": (f"an Item in {state} is expected to have it, and "
+                                   f"it resolves under none of "
+                                   f"{list(rule['resolved_by'])}")}
+                if tree is not None:
+                    _explain_absence_by_tree(answer, item_dir, rule, tree)
         else:
             answer |= {"state": NOT_YET_REQUIRED,
                        "why": f"an Item in {state} is not expected to have it yet"}
@@ -1224,12 +1428,22 @@ def _select(rows: list[dict], spec: dict, today: dict) -> list[dict]:
 
 def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
                   workspace_root: Path, today_by_project: dict | None = None,
-                  skeletons: dict | None = None) -> dict:
-    """The personal board: §6's sections, in §6's order, top to bottom."""
+                  skeletons: dict | None = None,
+                  tree: "TreePosition | None" = None) -> dict:
+    """The personal board: §6's sections, in §6's order, top to bottom.
+
+    `tree` is the same optional position `compose_item` takes, and it is here
+    for the reason the two readers must not disagree: the board counts what is
+    present and composes each row's completion boundary from that count, so a
+    board read without the position would report a document MISSING in the
+    same breath as `work item` reporting it PRESENT — two answers to one
+    question, both looking authoritative.
+    """
     documents = _document_rules(contract)
     rows = _rows_of(projects, records_root=records_root,
                     workspace_root=workspace_root, documents=documents,
-                    completion=_completion_rules(contract), skeletons=skeletons)
+                    completion=_completion_rules(contract), skeletons=skeletons,
+                    tree=tree)
     today_by_project = today_by_project or {}
     section_specs = (contract.get("personal_board") or {}).get("sections") or []
     if not section_specs:

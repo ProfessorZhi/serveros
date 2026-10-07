@@ -175,12 +175,18 @@ def _completion_reader(cli):
                 cli.REPO_ROOT / "intake" / "workchain-contract.yaml")
             skeletons = cli._workchain_skeletons(chain)
             projects = chain.load_projects(boards_root=boards)
+            # The same position `work item` reads, from the same helper: this
+            # composes a COMPLETION BOUNDARY, and a boundary read without it
+            # reports a required document as missing on the strength of a
+            # checkout that had not caught up. Two readers of one contract that
+            # disagree about what is present are two completion authorities.
+            position = chain.tree_position(records, git=cli._workchain_git())
             for project in projects:
                 item = chain.compose_item(
                     contract=contract, records_root=records,
                     workspace_root=workspace, skeletons=skeletons,
                     project=project["project"], item_id=item_id,
-                    projects=projects)
+                    projects=projects, tree=position)
                 if item.get("found"):
                     completion = item.get("completion")
                     if isinstance(completion, dict):
