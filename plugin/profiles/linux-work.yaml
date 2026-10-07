@@ -1287,6 +1287,39 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   nothing could be read from is still MISSING with its cause attributed, and
 #   a document somebody deleted from the tree is not resurrected from the ref.
 #
+#   i → j: the card's own read joins the one the `●` row already made, and the
+#   delivery surface stops being a count of registered rows. Two members change:
+#
+#   intake/workchain.py     the decision to borrow from the ref moves out of
+#     `_read_from_the_authority` into `_authority_bytes`, and `load_card` takes
+#     the same read through it. Both readers now go through one function, so the
+#     header and the row beneath it cannot answer about different surfaces.
+#     `read_from` is set on every outcome of `load_card`, including the
+#     unreadable one, and the two new keywords are optional, so a caller that
+#     passes nothing keeps the behaviour it had. `_parse_yaml_text` is the
+#     extracted verdict about CONTENT, so bytes from either surface get the same
+#     one. Separately, `_delivery` compares the card's `expected_deliverables`
+#     against the register's `kind` strings and reports both directions —
+#     `matched`, `absent`, `undeclared` — with `DECLARED`, `NOT_DECLARED` and
+#     `UNREADABLE` kept as three distinct states.
+#   runtime/cli.py          `work item` prints the delivery surface under the
+#     count instead of leaving `制品 18` as the only answer about delivery, and
+#     `卡片` answers whether there is content and from which surface while the
+#     locator's own state moves to `卡片定位`.
+#
+#   The label moves because the previous one answers a question wrongly, and the
+#   measurement is one Item: `serverosctl work item LIT-0220`, whose card lives
+#   at `origin/main` and not in this checkout's records, prints `交付面 未读到
+#   卡片`, `来源优先级 ... no card` and `卡片 UNRESOLVED` around a `● card.yaml
+#   PRESENT` line that is reading the card. Three faces of one card disagreeing
+#   is this module's own defect with its newest field as one of the faces, and a
+#   node left on `i` cannot tell a card it may not read from a card nobody can.
+#   No classification rule changes: an absent document is still absent, and the
+#   three delivery states stay three.
+#
+#   `tests/` is not a member of this composition, so the 104 tests and the three
+#   mutations that come with this do not move the label.
+#
 #   `h` is skipped, and the reason is a defect in the round before this one.
 #   The revision currently promoted is named `product-tree-20261007h@3f9f6e8`
 #   and was built WITHOUT a bump, so it claims `srv0005.20261007g` — the same
@@ -1305,7 +1338,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `check_skeleton` runs on the real bytes. `tests/` is not a member of this
 #   composition, so the ten tests and the non-vacuity check that come with it
 #   do not move the label.
-cachebuster: srv0005.20261007i
+cachebuster: srv0005.20261008j
 
 skills:
   - name: runtime-management
