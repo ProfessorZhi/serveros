@@ -10685,6 +10685,18 @@ def _delivery_lines(delivery: dict) -> list[str]:
     registered = delivery.get("registered") or {}
     state = declared.get("state")
     count = registered.get("count", 0)
+    if count is None:
+        # `0` is a count and `None` is the absence of one: the register lives on
+        # the Item's row in a projection, and there is no row, so nothing was
+        # looked in. Printing `登记 0 条` there would be the same defect this
+        # function exists for — what this reader consulted, said as a fact about
+        # the delivery.
+        kinds = declared.get("kinds") or []
+        label = {"DECLARED": f"声明 {len(kinds)} 类",
+                 "NOT_DECLARED": "卡片未声明 `expected_deliverables`",
+                 "UNREADABLE": "未读到卡片"}.get(state, str(state))
+        return [f"交付面      {label} · 登记未查 —— "
+                f"{registered.get('why') or '未记原因'}"]
     if state == "DECLARED":
         kinds = declared.get("kinds") or []
         matched = delivery.get("matched") or []
@@ -10734,16 +10746,37 @@ def cmd_work_item(args) -> int:
     lines = [f"{item['item']}  {item['state']}" + (f" / {item['outcome']}"
                                                    if item["outcome"] else ""),
              f"标题       {item['title']}",
-             f"项目       {item['project']} · 类型 {item['kind']}",
-             f"来源优先级 {item['priority']['source']['state']}"
-             + (f" —— {item['priority']['source']['why']}"
-                if item["priority"]["source"]["why"] else ""),
-             f"个人优先级 {item['priority']['personal']['state']}",
-             f"Run        {item['runs']} · 制品 {item['deliverables']}", ""]
+             f"项目       {item['project']} · 类型 {item['kind']}"]
+    in_projection = item.get("in_projection") or {}
+    if in_projection.get("listed") is False:
+        # Above the columns it explains, because a reader who meets `UNKNOWN` on
+        # the Run line first reads it as "this Item has no Runs". The chain below
+        # is real and read from the records tree; what is missing is the row that
+        # carries state, Runs and deliverables, and that is a fact about the
+        # projection which the header would otherwise spend on the Item.
+        lines.append(f"控制面     没有这个 Item 的行 —— {in_projection.get('why')}")
+    lines += [
+        f"来源优先级 {item['priority']['source']['state']}"
+        + (f" —— {item['priority']['source']['why']}"
+           if item["priority"]["source"]["why"] else ""),
+        f"个人优先级 {item['priority']['personal']['state']}",
+    ]
+    if item["runs"] == chain.UNKNOWN or item["deliverables"] == chain.UNKNOWN:
+        # Not `0 · 0`. Both numbers are columns of the projection's row and there
+        # is no row, so they were not read — which is a different answer from
+        # either one being zero, and the one a reader would otherwise supply.
+        lines.append("Run        未读 —— Run 数与制品数是控制面那一行的列，"
+                     "这里没有那一行，所以两个数不是 0，是没读到")
+    else:
+        lines.append(f"Run        {item['runs']} · 制品 {item['deliverables']}")
+    lines.append("")
     lines += _delivery_lines(item.get("delivery") or {})
     for document in item["documents"]:
-        mark = {"PRESENT": "●", "MISSING": "×", "NOT_YET_REQUIRED": "○"}.get(
-            document["state"], "?")
+        mark = {"PRESENT": "●", "MISSING": "×", "NOT_YET_REQUIRED": "○",
+                # Not `?`: that mark is what an unrecognised state falls back to,
+                # and this one is recognised — the file is not here and whether it
+                # is owed is not knowable from this node.
+                "REQUIREMENT_UNKNOWN": "◇"}.get(document["state"], "?")
         # How it resolved and how much it holds, because `design/` with three
         # research notes and `design.md` with one line are not the same answer,
         # and a reader deciding whether a design exists needs both.
