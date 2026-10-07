@@ -8084,7 +8084,14 @@ def _focus_decision(args):
         # though it could not date itself — so it is carried onto the blocked
         # shape rather than dropped. What was NOT decidable is the age of the
         # facts, and that is the only thing `PROJECTION_AGE_UNKNOWN` says.
-        accepted_here = {"accepted_state": (board.get("today") or {}).get("state", "?")}
+        #
+        # `accepted_why` comes with it, and for the same reason one step
+        # further: the word `PARTIAL` is a claim about a reading, and the
+        # document that carries it also carries WHICH projects made it partial.
+        # Printing the state without that names a reading nobody took.
+        today_here = board.get("today") or {}
+        accepted_here = {"accepted_state": today_here.get("state", "?"),
+                         "accepted_why": today_here.get("why", "")}
         continuation = {**unreadable, **accepted_here, "continuation": True}
         proposal = {**unreadable, **accepted_here, "recommendation_only": True}
     else:
@@ -8204,6 +8211,18 @@ def cmd_work_focus(args) -> int:
     lines.append("— 本次周期：人已选定、可以继续的 —")
     lines.append(f"accepted    {continuation.get('accepted_state','?')} "
                  f"— 本周期读的是 `records/projects/<p>/board/today.yaml`")
+    # The state word and the projects that produced it, kept together. `PARTIAL`
+    # is true of a board where four projects never recorded a selection AND of
+    # one where a recorded selection could not be opened; the producer writes
+    # the difference into `why` (`intake/workchain.py`'s `compose_board`) and
+    # `work board` prints it (`今日重点   PARTIAL：sample-beta: UNPRODUCED`).
+    # Until this line existed, `work focus` — the verb a person reads to ask
+    # what today's focus is — printed the word alone, so a reader could not tell
+    # a normal board from one whose accepted objectives are incomplete, which is
+    # the reading that decides whether `objectives 0` means "nothing was chosen"
+    # or "what was chosen was not read".
+    if continuation.get("accepted_why"):
+        lines.append(f"            为什么：{continuation['accepted_why']}")
     lines.append(f"focus       {continuation['status']}"
                  + (f" ({continuation['reason']})" if continuation.get("reason") else ""))
     if continuation.get("blocked_because"):
@@ -8271,10 +8290,21 @@ def cmd_work_focus(args) -> int:
     # reached". Both read the same `stale_because`.
     if proposal.get("blocked_because"):
         lines.append(f"because     {proposal['blocked_because']}")
-    spare = proposal.get("unused_slots")
+    # `spare_slots`, the recommender's own count: the profile's slots that
+    # NOTHING occupies — not the rows already in flight, not the candidates this
+    # proposal just chose. It used to be printed as `unused_slots`, under the
+    # sentence below, which describes the CONTINUATION's count of the same name:
+    # the slots the accepted objectives did not take. Two questions, one name,
+    # and the sentence that belonged to the other one — measured on this node as
+    # `spare 0 of 2 slot(s) the accepted objectives did not take` printed beside
+    # `objectives 1`, a claim about a set of one that was computed over a set of
+    # six. The number was right and the sentence was about something else, which
+    # is the shape this fabric keeps finding. `test_admission.py` pins the
+    # sentence against the block above it.
+    spare = proposal.get("spare_slots")
     if spare is not None:
         lines.append(f"spare       {spare} of {args.limit} slot(s) "
-                     f"the accepted objectives did not take")
+                     f"没有被已在进行的工作或本次建议占用")
     proposed = proposal.get("selected") or []
     lines.append(f"proposed    {len(proposed)}"
                  + ("" if proposed else " — 没有可提议的"))

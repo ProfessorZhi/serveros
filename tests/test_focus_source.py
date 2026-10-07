@@ -1020,7 +1020,13 @@ class ThePolicyOnTheRealBoard(unittest.TestCase):
         decision = self.choose()
         self.assertEqual(decision["status"], "OVER_CAPACITY")
         self.assertEqual(decision["selected"], [])
-        self.assertEqual(decision["unused_slots"], 0)
+        # `spare_slots`, the recommender's own count of the profile's slots
+        # nothing occupies. NOT `unused_slots`, which is `continue_focus`'s
+        # count of the slots the ACCEPTED objectives did not take — one name
+        # over both is how the printed sentence came to describe a set the
+        # number was not computed over.
+        self.assertEqual(decision["spare_slots"], 0)
+        self.assertNotIn("unused_slots", decision)
 
     def test_the_reading_this_replaced_called_all_seventeen_in_flight(self):
         """The positive control, and the only evidence that the fix is a fix.
