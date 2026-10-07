@@ -26,7 +26,7 @@ class FinalizeV3Tests(unittest.TestCase):
         path.write_text("evidence")
         return path
 
-    def _record_evidence(self, locator, **overrides):
+    def _record_evidence(self, locator, item=None, run=None, **overrides):
         metadata = {
             "kind": "report",
             "locator": str(locator),
@@ -38,7 +38,7 @@ class FinalizeV3Tests(unittest.TestCase):
             "verdict": "PASS",
         }
         metadata.update(overrides)
-        return self.s.record_evidence(self.item.id, self.run.id, **metadata)
+        return self.s.record_evidence(item or self.item.id, run or self.run.id, **metadata)
 
     def test_finalize_preserves_context_and_is_idempotent(self):
         result = self.s.finalize_run(self.item.id, self.run.id, verdict="PASS", exit_code=0, command="pytest", cases=["one"], revision="final", dirty=False)
@@ -101,6 +101,67 @@ class FinalizeV3Tests(unittest.TestCase):
             with self.assertRaises(OSError): self.s.finalize_run(self.item.id,self.run.id,verdict='PASS',exit_code=0,command='pytest',cases=['one'],revision='final',dirty=False)
         result=self.s.finalize_run(self.item.id,self.run.id,verdict='PASS',exit_code=0,command='pytest',cases=['one'],revision='final',dirty=False)
         self.assertTrue(Path(self.run.artifact_dir,'finalize.json').exists()); self.assertEqual(result['state'],'SUCCEEDED')
+
+    def test_evidence_refuses_a_run_that_does_not_exist_and_records_nothing(self):
+        """Measured 2026-10-08 against the production store, before the fix.
+
+        `workengine run evidence SRV-0011 19 --locator …` wrote `evidence_id 224`
+        with `run_id '19'` and exited 0, and no `runs` row anywhere carried that
+        id. The refusal is not enough on its own: the point of the check is that
+        the bad row must not land, so this asserts the row count too.
+        """
+        with self.assertRaisesRegex(KeyError, "unknown Run"):
+            self._record_evidence(self._evidence_file(), run="RUN-9999")
+        with self.s.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0], 0)
+
+    def test_evidence_refuses_an_unknown_item_by_name(self):
+        with self.assertRaisesRegex(KeyError, "unknown Item: DEM-9999"):
+            self._record_evidence(self._evidence_file(), item="DEM-9999")
+        with self.s.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0], 0)
+
+    def test_evidence_names_the_item_that_owns_the_run(self):
+        """A real Run id under the wrong Item is a third answer, not "unknown Run".
+
+        Saying "unknown Run" there sends the caller hunting a typo in an id they
+        copied correctly; the row they named exists and belongs to someone else.
+
+        Run ids are per-Item sequences, so this case needs the other Item to be
+        *ahead* of this one: DEM-0001 has only RUN-0001, and asking it for
+        DEM-0002's RUN-0002 is the reachable form of the mistake. Handing it
+        DEM-0002's RUN-0001 is not a mistake at all — this Item has a RUN-0001
+        too, and the write lands on the caller's own Run, which is why the test
+        advances DEM-0002 twice rather than once.
+        """
+        other = self.s.create_item(__import__('workengine').WorkItem("DEM-0002", "demo", "y", "test", "/card"))
+        self.s.add_activity(Activity(other.id, "test", "test"))
+        self.s.attach_context(__import__('workengine').ExecutionContext(other.id, "test", "repo", ContextMode.TEST, "base"))
+        self.s.begin_run(other.id, "test", "worker", "key-2", Path(self.td.name) / "artifacts-2")
+        theirs = self.s.begin_run(other.id, "test", "worker", "key-3", Path(self.td.name) / "artifacts-2")
+        self.assertNotEqual(theirs.id, self.run.id)
+        with self.assertRaisesRegex(KeyError, f"Run {theirs.id} belongs to Item DEM-0002, not DEM-0001"):
+            self._record_evidence(self._evidence_file(), run=theirs.id)
+
+    def test_evidence_still_accepts_the_run_the_caller_owns(self):
+        """Positive control: the guard must refuse the wrong pair, not every pair."""
+        recorded = self._record_evidence(self._evidence_file("owned.txt"))
+        self.assertEqual((recorded["run_id"], recorded["item_id"]), (self.run.id, self.item.id))
+
+    def test_cli_refuses_an_unknown_run_and_records_nothing(self):
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            code = main(["run", "evidence", self.item.id, "RUN-9999",
+                         "--state-dir", str(self.s.state_dir), "--kind", "report",
+                         "--locator", str(self._evidence_file()), "--command", "python -m unittest",
+                         "--case", "test_case", "--exit-code", "0",
+                         "--revision", "revision-1", "--verdict", "PASS"])
+        self.assertEqual(code, 2)
+        error = json.loads(stderr.getvalue())["error"]
+        self.assertEqual(error["code"], "INVALID_INPUT")
+        self.assertIn("unknown Run", error["message"])
+        with self.s.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0], 0)
 
     def test_evidence_requires_existing_hashable_file(self):
         with self.assertRaises(ValueError): self.s.record_evidence(self.item.id,self.run.id,kind='x',locator='/nope',command='x',cases=[],exit_code=0,revision='r',dirty=False,verdict='PASS')
