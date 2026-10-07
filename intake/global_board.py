@@ -36,10 +36,23 @@ being completed, before anybody updates a board. There is no path by which
 this file and the store can come to different conclusions about what is
 finished, because there is only one of them holding that fact.
 
-For the same reason there is nothing to preserve. §S says completion keeps
-the priority, the title and the history; a derived board keeps all three by
-never having dropped them, and "not deleting history" is not a rule this file
-follows but a thing it is structurally unable to do.
+For the same reason there is nothing of the Item's history to preserve. §S says
+completion keeps the priority, the title and the history; a derived board keeps
+all three by never having dropped them, and "not deleting history" is not a rule
+this file follows but a thing it is structurally unable to do.
+
+THE ONE REGION THAT IS NOT DERIVED
+----------------------------------
+§5 keeps two rules that pull against each other: the board is regenerated from
+facts, and a person's note on it is not a fact this module may drop. So the page
+carries one marked region — `HUMAN_BEGIN` … `HUMAN_END` — which `render` reads
+out of the page it is about to replace and writes back verbatim, while
+everything outside it is rebuilt. It is the only place in this fabric where a
+person's own words and a derived projection are the same file, and a
+regeneration that dropped them silently would make the board write-only for the
+one reader it has. `extract_human` returns the reason when it cannot read the
+block, and `render` puts that on stderr, because losing a note is recoverable
+and losing it without a word is not.
 
 WHICH ITEMS ARE COMPLETE, AND WHERE THAT COMES FROM
 ---------------------------------------------------
@@ -145,7 +158,8 @@ def _summary(row: dict) -> str:
 
 
 def item_row(item: dict, *, project: str, card: dict | None,
-             binding: dict | None, card_known: bool = False) -> dict:
+             binding: dict | None, card_known: bool = False,
+             resolution: dict | None = None) -> dict:
     """One Item, as the board needs it. Every field read, none inferred.
 
     `card` and `binding` are the two joins this projection makes, and both are
@@ -165,6 +179,13 @@ def item_row(item: dict, *, project: str, card: dict | None,
     card became `None`, `None` meant NOT_FOUND, and a card sitting on disk with
     a YAML error in it would have been reported as a card that is not there —
     which sends a reader to look for a file they are standing next to.
+
+    `resolution` is the rule that turned the locator into a path, when the
+    caller ran one. It travels on the row because NOT_FOUND has two causes that
+    send a reader to two different places: a card that is genuinely absent, and
+    a locator written on a machine this one is not. Only the caller knows which,
+    and without it the board would print "这张卡不在本机" about cards that are
+    sitting on this node under their own records root.
     """
     activities = item.get("activities") or []
     runs = [run for activity in activities for run in (activity.get("runs") or [])]
@@ -204,6 +225,7 @@ def item_row(item: dict, *, project: str, card: dict | None,
             "state": card_state,
             "source_refs": source_refs,
             "aliases": aliases,
+            "resolution": resolution,
         },
         "candidate_mappings": item.get("candidate_mappings") or [],
         # One field, one fact. A first draft carried `strikethrough` beside it
@@ -245,7 +267,8 @@ def _levels_named_in_a_title(rows: list[dict]) -> list[dict]:
 
 
 def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
-            bindings: dict[str, dict] | None = None) -> dict:
+            bindings: dict[str, dict] | None = None,
+            card_resolutions: dict[str, dict] | None = None) -> dict:
     """The global board, from the per-project projections and two joins.
 
     `boards` are `serveros/board.v3` documents as the control plane wrote them.
@@ -286,7 +309,8 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
             row = item_row(item, project=project,
                            card=cards.get(ref),
                            card_known=ref in cards,
-                           binding=bindings.get(ref))
+                           binding=bindings.get(ref),
+                           resolution=(card_resolutions or {}).get(ref))
             rows.append(row)
 
     active = [r for r in rows if not r["completed"]]
@@ -332,12 +356,64 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
         },
         "completed_states": list(COMPLETED_STATES),
         "sections": sections,
-        "counts": {"items": len(rows), "active": len(active),
-                   "completed": len(completed),
-                   "without_a_card": sum(1 for r in rows
-                                         if r["source"]["state"] != "JOINED")},
+        "counts": {
+            "items": len(rows), "active": len(active),
+            "completed": len(completed),
+            "without_a_card": sum(1 for r in rows
+                                  if r["source"]["state"] != "JOINED"),
+            # Counted apart from `without_a_card` because a rebased card is
+            # readable and the row it produced is correct, while the locator
+            # beside it is still wrong. A reader who saw one number would have
+            # no reason to go and fix the pointer, which is the only thing here
+            # that is actually broken. `JOINED` is required as well as
+            # `REBASED`, which makes the two counts disjoint: re-hanging a
+            # locator that then found nothing did not read a card off the other
+            # machine's path, and counting it here would claim it did.
+            "cards_rebased": sum(1 for r in rows
+                                 if (r["source"].get("resolution") or {}
+                                     ).get("how") == "REBASED"
+                                 and r["source"]["state"] == "JOINED"),
+            "cards_unresolved": sum(1 for r in rows
+                                    if (r["source"].get("resolution") or {}
+                                        ).get("how") == "UNRESOLVED"),
+        },
         "items": sorted(rows, key=lambda r: r["item_ref"]),
     }
+
+
+# The hand-written region of the page. `render` carries it across a
+# regeneration; everything outside it is rewritten from the facts.
+HUMAN_BEGIN = "<!-- human:begin -->"
+HUMAN_END = "<!-- human:end -->"
+HUMAN_EMPTY = "_（人工批注区：这一段在重新生成时原样保留，可自由编辑）_"
+
+
+def extract_human(text: str) -> tuple[str, str]:
+    """The hand-written region of a page, and why it could not be read.
+
+    §5 asks for two things at once: the board is regenerated from facts, and a
+    person's note on it is not a fact this module is allowed to drop. So
+    `render` reads the page it is about to replace and carries this block over
+    verbatim.
+
+    An unbalanced pair returns `("", why)` rather than the text after the
+    opening marker. That matters on the NEXT render: text that was never closed
+    would be carried over and then immediately re-emitted with a fresh closing
+    marker, so a single missing marker would grow the block once per render.
+    Losing a note is the smaller loss, and the caller is given the reason so it
+    is not a silent one — the failure this whole function exists to prevent is
+    a person's sentence disappearing between two runs.
+    """
+    began = text.find(HUMAN_BEGIN)
+    if began < 0:
+        return "", ""
+    opened = began + len(HUMAN_BEGIN)
+    ended = text.find(HUMAN_END, opened)
+    if ended < 0:
+        return "", f"{HUMAN_BEGIN} 没有配对的 {HUMAN_END}"
+    if text.find(HUMAN_BEGIN, opened) >= 0:
+        return "", f"{HUMAN_BEGIN} 出现了不止一次"
+    return text[opened:ended].strip("\n"), ""
 
 
 def render(document: dict, output_dir: Path | str) -> dict:
@@ -348,6 +424,12 @@ def render(document: dict, output_dir: Path | str) -> dict:
     together so they cannot describe different generations of the board. The
     directory must be absolute — a projection that landed in whatever
     directory the caller was standing in is a second board nobody knows about.
+
+    The page is REPLACED, not appended to, and the one thing that survives the
+    replacement is the block between the human markers: this is the only place
+    in the fabric where a person's own words and a derived projection are the
+    same file, and a regeneration that silently dropped them would make the
+    board write-only for its reader.
     """
     output_dir = Path(output_dir)
     if not output_dir.is_absolute():
@@ -355,9 +437,17 @@ def render(document: dict, output_dir: Path | str) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "current.json"
     markdown_path = output_dir / "current.md"
+    human = ""
+    if markdown_path.is_file():
+        human, why = extract_human(markdown_path.read_text(encoding="utf-8"))
+        if why:
+            sys.stderr.write(
+                f"serverosctl: {markdown_path} 里的人工批注读不出来（{why}）；"
+                f"这一段在这次重新生成里不会保留\n")
     for path, content in ((json_path, json.dumps(document, ensure_ascii=False,
                                                 indent=2) + "\n"),
-                          (markdown_path, str(markdown(document)))):
+                          (markdown_path, str(markdown(document,
+                                                       human=human)))):
         temporary = path.with_name(f".{path.name}.serveros.tmp")
         temporary.write_text(content, encoding="utf-8")
         temporary.replace(path)
@@ -385,17 +475,62 @@ def _age_days(now_iso, then_iso) -> int | None:
     return max(0, (now - then).days)
 
 
-def markdown(document: dict) -> str:
+def _item_block(row: dict) -> list[str]:
+    """One Item as a block, which is what a 390-pixel page can carry.
+
+    §5 asks for the board to be read on a phone, and the table this replaced
+    had eight columns: at 390 px a reader scrolls sideways per row and loses
+    the Item the row is about. The fields are the same ones; what changed is
+    that they are lines under a heading instead of cells in a row.
+
+    Every line is conditional on its fact existing. `-` is printed where the
+    fabric has nothing, and it is the same `-` the table used, so an Item with
+    no session does not read as an Item whose session is the empty string.
+    """
+    title = str(row.get("title") or "")
+    if row["completed"]:
+        # Drawn from the state, never stored. Reopening removes the tildes
+        # because the Item is no longer CLOSED, not because anyone cleared
+        # them. See the module docstring.
+        title = f"~~{title}~~"
+    lines = [f"#### {row['item_ref']} — {title}", "",
+             f"- 状态：{row['summary']}",
+             f"- 优先级：{row['priority'] or '待排'}"
+             + ("（本 fabric 没有优先级生产者）" if not row["priority"] else ""),
+             f"- 会话：{row['execution_session'] or '-'}"
+             + (f"（{row['session_role']}）" if row.get("session_role") else "")]
+    if row["completed"]:
+        outcome = (f" · {row['outcome']}" if row.get("outcome")
+                   else "（outcome 未记录）")
+        lines.append(f"- 结论：{row['state']}{outcome}")
+    source = [str(a) for a in (row["source"]["aliases"]
+                               or row["source"]["source_refs"] or [])]
+    lines.append(f"- 来源：{', '.join(source) or '-'}")
+    lines.append("")
+    return lines
+
+
+def markdown(document: dict, *, human: str = "") -> str:
     """The board a person reads.
 
-    `~~title~~` on a completed Item is the strikethrough §S asks for, and it
-    is drawn from `row["completed"]` — a rendering of the Item's state and
-    nothing else. There is no branch here that sets it, which is why reopening
-    removes it: the Item is no longer CLOSED, so the field is false, so the
-    tildes are not written.
+    Shaped by §5 rather than by what is easiest to emit: 未完成 as blocks a
+    phone can read, 已完成 folded away but keeping its title, its original
+    priority and its resolution, and a region at the bottom that belongs to a
+    person rather than to this function.
+
+    TWO THINGS THIS DOES NOT DO, both because §5 names a field this fabric has
+    no producer for. Per-Item 「目标」and 「下一步」are not rendered: no
+    projection, card schema or store column carries either, and a heading
+    followed by a guess is worse than a heading that is absent. The reader is
+    told once, in the note under 未完成, rather than left to conclude that the
+    Items have no next step.
+
+    The priority column is the other half of the same rule read the other way:
+    the machine value is `UNPRODUCED`, and the page says 待排 — §5's own word
+    for it. One fact, two audiences. Neither is a filled-in bucket.
     """
     lines = ["# 需求总看板", "",
-             f"Generated: `{document['generated_at']}`"]
+             f"生成：`{document['generated_at']}`"]
     # The composition's own time says when this page was drawn. It does NOT
     # say when the Item state on it was measured — that came from the board
     # documents, and `board-contract.yaml` carries their `generated_at` so a
@@ -410,32 +545,101 @@ def markdown(document: dict) -> str:
             age = _age_days(document["generated_at"], at)
             stated.append(f"{project} `{at}`"
                           + (f"（{age} 天前）" if age is not None else ""))
-        lines.append(f"看板状态取出时间: {'；'.join(stated)}")
+        lines.append(f"看板状态取出时间：{'；'.join(stated)}")
     lines.append(f"Projects: {', '.join(document['source']['projects']) or 'none'}")
     lines.append("")
     priority = document["priority"]
-    lines += [f"> priority: **{priority['state']}** — {priority['because']}", ""]
-    for section in document["sections"]:
-        lines += [f"## {section['title']} ({len(section['items'])})", ""]
-        if section["kind"] == "priority" and not section["items"]:
-            lines += ["_no Item carries this level; the axis has no producer_", ""]
+    # The reason is one sentence a reader needs and a paragraph they do not
+    # need twice. At 390 px the paragraph pushed the first Item below the fold
+    # on every visit, which is §5's "机器字段/完整日志折叠到证据入口" read as a
+    # layout rule: the state stays on the page face, the argument behind it is
+    # one tap away. The document keeps the full string -- this is a rendering
+    # of it, not a shortening of the fact.
+    lines += [f"> 优先级：**{priority['state']}**（待排）—— 本 fabric 没有"
+              f"任何优先级生产者，五级因此是空的", "",
+              "<details><summary>为什么这五级是空的</summary>", "",
+              str(priority["because"]), "", "</details>", ""]
+    counts = document["counts"]
+    if counts.get("cards_rebased"):
+        # Said once, here, and not per row, because it is one fact about the
+        # whole page: these rows' locators were written where the workspace
+        # root was somewhere else. The cards were read from THIS node. A
+        # reader who saw only "N 行没有可读的 card.yaml" would be told the
+        # cards are elsewhere while the 来源 column beside it is filled in.
+        lines += [f"> 卡片：{counts['cards_rebased']} 行的 card_locator 写的是"
+                  f"另一台机器的路径，按本机 workspace 重挂后读到了；"
+                  f"locator 本身仍指向旧机器", ""]
+    if counts.get("without_a_card"):
+        # The other cause, and it is not the same fact. Two sub-causes send a
+        # reader to two different places, so both are on the page: a locator
+        # that resolved to nothing under the roots this board reads (the
+        # pointer, or the root, is wrong), and a row that never carried one
+        # (nothing is wrong; there is no card to point at). Said here rather
+        # than left to thirteen empty 来源 cells, which read as "this Item has
+        # no source".
+        #
+        # The sentence names the ROOT and not the machine, and that is a
+        # correction: an earlier draft said 「那张卡不在本机」, which was
+        # false. The five marketops cards this board cannot join are on this
+        # node, in `worktrees/records/MKT-0001` — a checkout of the records
+        # branch `marketops/intake`, which the canonical `records/` root does
+        # not carry. The board reads the canonical checkout and NOT a worktree,
+        # deliberately: a worktree is somebody's un-landed checkout, and
+        # reporting Items out of one would publish work that has not landed and
+        # would make this page depend on a directory another actor may delete.
+        # What it can truthfully say is which root it read.
+        unresolved = counts.get("cards_unresolved") or 0
+        note = (f"> 卡片：{counts['items']} 行里 {counts['without_a_card']} 行"
+                f"没有可读的 card.yaml，这些行的「来源」为空 —— 这不是"
+                f"「没有来源」，是本看板读的 `records/` 根下没有这张卡")
+        if unresolved:
+            note += f"（其中 {unresolved} 行的 card_locator 在该根下解析不到文件）"
+        lines += [note, ""]
+    # Split on `key`, not on `kind`. A section's `kind` says what SHAPE its
+    # rows are and the completed one's is lowercase `completed`, while the
+    # constant is uppercase `COMPLETED` — so the first version of these two
+    # lines matched nothing, filed 已完成 back into 未完成, and rendered it as
+    # one more unfilled level. The key is the section's name; that is what this
+    # is asking about.
+    active = [s for s in document["sections"] if s["key"] != COMPLETED]
+    completed = next((s for s in document["sections"]
+                      if s["key"] == COMPLETED), None)
+    unfinished = sum(len(s["items"]) for s in active)
+    lines += [f"## 未完成（{unfinished}）", ""]
+    # §5 asks each unfinished Item for 目标 / 当前状态 / 下一步 / 来源与证据.
+    # Two of the four have no producer anywhere in this fabric, and the note
+    # says so once rather than leaving two headings that read as "this Item
+    # has no next step". It is conditional on that still being true: the day a
+    # producer appears, the sentence has to go by itself.
+    if all(not s["items"] for s in active if s["kind"] == "priority"):
+        lines += ["> 每一级下面还没有 Item，是因为本 fabric 没有任何优先级生产"
+                  "者（见上）；下面按 Item 列出。§5 的「目标」「下一步」两栏"
+                  "同样没有生产者，因此不渲染。", ""]
+    for section in active:
+        lines += [f"### {section['title']}（{len(section['items'])}）", ""]
+        if section["kind"] == "priority":
+            lines += ["_无 Item 带这一级；该轴没有生产者_", ""]
             continue
-        if not section["items"]:
-            lines += ["_none_", ""]
-            continue
-        lines += ["| Item | Title | Project | State | Priority | Session | Runs | Source |",
-                  "|---|---|---|---|---|---|---:|---|"]
         for row in section["items"]:
-            title = str(row["title"] or "")
-            if row["completed"]:
-                title = f"~~{title}~~"
-            source = row["source"]["aliases"] or []
-            lines.append(
-                f"| {row['item_ref']} | {title} | {row['project']} | "
-                f"{row['state']} | {row['priority'] or 'UNPRODUCED'} | "
-                f"{row['execution_session'] or '-'} | {row['run_count']} | "
-                f"{', '.join(str(a) for a in source) or '-'} |")
-        lines.append("")
+            lines += _item_block(row)
+    if completed is not None:
+        lines += [f"## 已完成（{len(completed['items'])}）", ""]
+        if not completed["items"]:
+            lines += ["_无_", ""]
+        else:
+            # §5: 默认折叠. A completed Item is history, and history that
+            # takes the top of the page is history that buries the work. The
+            # summary says what unfolding costs so the fold is a choice.
+            lines += ["<details>",
+                      f"<summary>展开 {len(completed['items'])} 项"
+                      f"（删除线标题 = 权威状态为 "
+                      f"{'/'.join(document['completed_states'])}；重新打开会"
+                      f"由状态本身去掉删除线）</summary>", ""]
+            for row in completed["items"]:
+                lines += _item_block(row)
+            lines += ["</details>", ""]
+    lines += [HUMAN_BEGIN, (human.strip("\n") if human.strip() else HUMAN_EMPTY),
+              HUMAN_END, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -468,27 +672,37 @@ def load_boards(boards_root: Path) -> list[dict]:
     return documents
 
 
-def load_cards(locators: dict[str, str]) -> dict[str, dict | None]:
-    """The Item cards this node can actually read, keyed by `<project>/<id>`.
+def load_cards(resolutions: dict[str, dict]) -> tuple[dict, dict]:
+    """The Item cards this node can actually read, and how each was found.
 
-    A locator whose file is missing is left out of the mapping, and a locator
-    whose file is there but does not parse is mapped to `None`. Those are two
-    different facts and `item_row` reports them as two different values; the
-    first draft collapsed them and would have called a YAML error "no card
-    here". `card_locator` is written by the authority and has been seen in both
-    absolute and repository-relative form, so the caller resolves it — see
-    `intake` in `runtime/cli.py`.
+    A path with no file is left out of the mapping, and a path whose file is
+    there but does not parse is mapped to `None`. Those are two different facts
+    and `item_row` reports them as two different values; the first draft
+    collapsed them and would have called a YAML error "no card here".
+
+    `card_locator` is written by the authority and has been seen in three
+    forms — repository-relative, absolute and present, and absolute and naming
+    ANOTHER node's root. The caller resolves it, because only the caller knows
+    what a relative locator is relative to and what this node's workspace is;
+    `intake/workchain.py::resolve_card_path` is that rule, and it returns the
+    `{path, how, why}` this function takes. Passing just a path would lose the
+    difference between "no card" and "the locator is on another machine",
+    which is the difference a reader needs to know which of the two to fix.
     """
     cards: dict[str, dict | None] = {}
-    for ref, path in locators.items():
-        candidate = Path(path)
+    how: dict[str, dict] = {}
+    for ref, resolution in resolutions.items():
+        candidate = Path(resolution["path"])
+        how[ref] = {"path": str(candidate), "how": resolution.get("how"),
+                    "why": resolution.get("why") or "",
+                    "locator": resolution.get("locator")}
         if not candidate.is_file():
             continue
         try:
             cards[ref] = yaml.safe_load(candidate.read_text(encoding="utf-8"))
         except Exception:
             cards[ref] = None
-    return cards
+    return cards, how
 
 
 def _bindings_by_item(bindings: dict) -> dict[str, dict]:
@@ -525,21 +739,26 @@ def build(*, boards_root: Path, card_locator_resolver,
     Item read `NOT_FOUND` — "no card file is there" reported for cards sitting
     on disk. That is the same defect `item_row`'s UNREADABLE exists to prevent,
     one layer up: a failure of this process reported as a fact about the world.
-    The locator is written by the authority in both absolute and
-    repository-relative form, so only the caller knows what it is relative to,
-    and the caller must say.
+
+    It is called as `resolver(project, item_id, locator)` and returns
+    `{"path", "how", "why", "locator"}` — the resolution rule's own answer,
+    not just a path. Two reasons for the whole dict rather than the string the
+    first version took: the project and the item id are two of the three things
+    `workchain.resolve_card_path` needs to fall back to the conventional
+    records path, and `how` is the only thing that tells "this Item has no
+    card" apart from "this locator was written on another machine".
     """
     boards = load_boards(boards_root)
-    locators: dict[str, str] = {}
+    resolutions: dict[str, dict] = {}
     for document in boards:
-        project = document.get("project")
+        project = str(document.get("project") or "")
         for item in document.get("items") or []:
-            locator = item.get("card_locator")
-            if not locator:
-                continue
-            locators[f"{project}/{item.get('id')}"] = card_locator_resolver(locator)
+            item_id = str(item.get("id") or "")
+            resolutions[f"{project}/{item_id}"] = card_locator_resolver(
+                project, item_id, item.get("card_locator"))
     bindings: dict = {}
     if binding_store is not None and Path(binding_store).is_file():
         bindings = json.loads(Path(binding_store).read_text(encoding="utf-8")).get("bindings") or {}
-    return compose(boards, cards=load_cards(locators),
-                   bindings=_bindings_by_item(bindings))
+    cards, how = load_cards(resolutions)
+    return compose(boards, cards=cards, bindings=_bindings_by_item(bindings),
+                   card_resolutions=how)

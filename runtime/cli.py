@@ -7334,6 +7334,7 @@ def cmd_requirement_board(args) -> int:
     """
     board_mod = _load_module_from(REPO_ROOT / "intake" / "global_board.py",
                                   "serveros_global_board")
+    chain = _workchain_module()
     paths = paths_mod.Paths()
     boards_root = Path(paths.resolve("state/boards")["path"])
     workspace = Path(paths.root("workspace"))
@@ -7343,17 +7344,30 @@ def cmd_requirement_board(args) -> int:
     # which is a fact and not a missing measurement.
     binding_store = _agent_control_store_path()
 
-    def resolve_locator(locator: str) -> str:
-        """A card locator as an absolute path, relative to the WORKSPACE root.
+    def resolve_locator(project: str, item_id: str, locator: str) -> dict:
+        """`workchain.resolve_card_path`'s answer, which is the rule this node
+        already settled on.
 
-        `card_locator` is written by the authority and has been seen in both
-        forms. Relative means relative to the workspace — the cards live under
-        `records/`, a workspace child — and never to the cwd: a board composed
-        from a different directory would silently join a different set of
-        cards, and every row would look complete.
+        This used to be a two-line version of it here — absolute stays
+        absolute, everything else joins the workspace root — and that was a
+        THIRD answer to a question two other surfaces already answer: the
+        personal board (`workchain.resolve_card_path`, which reports
+        `cards_rebased` / `cards_unresolved`) and `work item`. The visible cost
+        was eight LiteLLM cards sitting at `records/projects/litellm/items/
+        <ID>/card.yaml` on this node, addressed by the authority as
+        `/opt/applications/data/home-hwz/...`, and read as "no card file is
+        there" by this verb alone. A projection that reports a card absent
+        while the file is on disk under its own records root is the failure
+        `item_row`'s UNREADABLE exists to prevent, one hop further out.
+
+        It takes the project and the item id now because the rule needs them:
+        when a locator resolves to nothing under either root, the conventional
+        records path is still tried, and that path is built from those two.
         """
-        candidate = Path(locator)
-        return str(candidate if candidate.is_absolute() else workspace / locator)
+        return chain.resolve_card_path(locator=locator, project=project,
+                                       item_id=item_id,
+                                       records_root=workspace / "records",
+                                       workspace_root=workspace)
 
     try:
         document = board_mod.build(boards_root=boards_root,
@@ -7416,7 +7430,13 @@ def cmd_requirement_board(args) -> int:
         f"items       {counts['items']} ({counts['active']} active, "
         f"{counts['completed']} completed)",
         f"cards       {counts['items'] - counts['without_a_card']} joined, "
-        f"{counts['without_a_card']} not joined",
+        f"{counts['without_a_card']} not joined"
+        # A locator written on another machine is not a missing card, and the
+        # count beside it would otherwise read as one more card found here.
+        # This is the number a person acts on: these rows' 来源 columns are
+        # filled in and the pointer under them is still wrong.
+        + (f" ({counts['cards_rebased']} rebased from another node's locator)"
+           if counts.get("cards_rebased") else ""),
         f"priority    {priority['state']}",
     ]
     if priority["state"] == "UNPRODUCED":
@@ -7717,6 +7737,30 @@ def _delegation_from_grant(ref: str, now_raw: str) -> tuple[dict | None, str]:
             "source": f"{control.path}#{ref}"}, ""
 
 
+def _project_aliases(workspace_root: Path) -> dict:
+    """注册表的 `project_aliases` 段：别名 → `{project, declared_by}`。
+
+    走 `context/resolver.py` 而不是在这个文件里再拼一次路径 ——
+    `Roots.projects_yaml` 是「注册表在哪」的唯一定义。`Roots` 由 workspace、
+    artifacts、state 三个根构成，而这里只覆盖 workspace（因为 `--workspace-root`
+    是 fixture 可达的），其余两个从环境取：别名表一个都不用它俩。
+
+    表读不出来不是这条路要报的错。`load_project_aliases` 把原因交回来，原因
+    写进 stderr，请求照旧进行 —— 一个读不到的注册表只会让别名不再被解析，于是
+    那些名字落成它们本来就是的样子（一行 UNREADABLE，说「这个名字下没有投影」）。
+    静默地把「读不到」当成「没有别名」才是这里要避免的，所以它出声。
+    """
+    resolver = _load_module_from(REPO_ROOT / "context" / "resolver.py",
+                                 "serveros_context_resolver")
+    base = resolver.Roots.from_env()
+    roots = resolver.Roots(Path(workspace_root), base.artifacts_root,
+                           base.state_db, data_root=base.data_root)
+    aliases, why = resolver.load_project_aliases(roots)
+    if why:
+        sys.stderr.write(f"serverosctl: {why}；别名不再解析\n")
+    return aliases
+
+
 def _work_board_document(args):
     """The composed personal board, shared by every verb that reads it.
 
@@ -7732,9 +7776,14 @@ def _work_board_document(args):
         return None
     contract = chain.load_contract(
         REPO_ROOT / "intake" / "workchain-contract.yaml")
+    # 别名只在调用者**点名**项目时才有意义：另一条分支走磁盘，而一个叫
+    # `litellm-observability` 的目录不是任何注册项能造出来的。所以没有
+    # `--project` 时连注册表都不读 —— 那不是省一次 IO，是不给「没问的问题」
+    # 准备一个答案。
+    named = args.project.split(",") if getattr(args, "project", "") else None
     projects = chain.load_projects(
-        boards_root=boards,
-        projects=(args.project.split(",") if getattr(args, "project", "") else None))
+        boards_root=boards, projects=named,
+        aliases=_project_aliases(workspace) if named else {})
     return chain.compose_board(contract=contract, projects=projects,
                                records_root=records,
                                workspace_root=workspace,
@@ -7784,6 +7833,11 @@ def _work_board_lines(board: dict) -> list[str]:
              f"{counts['projects_unread']} 未读到",
              f"条目       {counts['items']}"]
     for project in board["projects"]:
+        if project.get("also_named"):
+            # 这一行同时回答了别的名字。一个点了三个项目、拿到两行投影的调用者，
+            # 要看得见第三项是其中一行的**第二个名字**，不是少了一个项目。
+            lines.append(f"  {project['project']}  也被点名为 "
+                         + "、".join(project["also_named"]))
         if project["state"] != "READ":
             lines.append(f"  {project['project']}  {project['state']} —— "
                          f"{project['why']}")
@@ -8014,11 +8068,13 @@ def _focus_decision(args):
         continuation = cycle.continue_focus(
             composed["rows"], delegations["envelopes"], accepted, now=now,
             observed_at=composed["observed_at"],
-            ttl_seconds=args.ttl, limit=args.limit)
+            ttl_seconds=args.ttl, limit=args.limit,
+            projection_times=composed["projection_times"])
         proposal = cycle.select_focus(
             composed["rows"], delegations["envelopes"], now=now,
             observed_at=composed["observed_at"],
-            ttl_seconds=args.ttl, limit=args.limit, accepted=accepted)
+            ttl_seconds=args.ttl, limit=args.limit, accepted=accepted,
+            projection_times=composed["projection_times"])
     return composed, delegations, continuation, proposal, now
 
 
@@ -8175,6 +8231,13 @@ def cmd_work_focus(args) -> int:
     lines.append("— 建议（不是周期，不产生任何准入） —")
     lines.append(f"proposal    {proposal['status']}"
                  + (f" ({proposal['reason']})" if proposal.get("reason") else ""))
+    # Printed here for the same reason the cycle prints its own: the two
+    # questions are answered by two calls, and a reader who found the sentence
+    # under one block and not the other would take the silence for
+    # "the recommendation was refused on its merits" rather than "it was never
+    # reached". Both read the same `stale_because`.
+    if proposal.get("blocked_because"):
+        lines.append(f"because     {proposal['blocked_because']}")
     spare = proposal.get("unused_slots")
     if spare is not None:
         lines.append(f"spare       {spare} of {args.limit} slot(s) "
