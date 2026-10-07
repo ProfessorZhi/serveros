@@ -104,12 +104,13 @@ def document_manifest(body: str = DOC_BODY, **over) -> dict:
 
     `content_sha256` is computed from `body` rather than written by hand. It used
     to be a literal (`"a" * 64`) with no `content.md` anywhere, i.e. a manifest
-    whose recorded digest describes no bytes — which is the DEFECT this reader
-    now reports as `recorded_digest_standing`, and is the live shape of 14 of the
-    tree's 21 link manifests. A fixture may not assume the defect while testing
-    something else: the tests below are about which version a CARD names, and
-    `write_document` writes the file this digest names. A test that wants the two
-    to disagree says so, and `TestAManifestsRecordIsNotItsFilesDigest` does.
+    whose recorded digest describes no bytes at all — a shape the tree does not
+    actually have, but one that made every test here assume the defect while
+    claiming to be about which version a CARD names. `write_document` now writes
+    the file this digest names, so the default fixture is a manifest whose record
+    describes its file, and a test that wants the two apart says so:
+    `TestAManifestsRecordIsNotItsFilesDigest` does, and the four live-wrong
+    answers it separates are quoted in its own docstring.
     """
     document = {
         "source_message_id": "om_x", "url": "https://example.invalid/d",
@@ -491,10 +492,11 @@ class TestAManifestsRecordIsNotItsFilesDigest:
     RECORDED, and until the file that record names is hashed, that value is a
     fact about the capture's own record. On this node it frequently is not the
     file's digest: of the twenty-one link manifests under `information/raw`,
-    fourteen record a 64-hex value that describes no bytes there and three
-    record a twelve-character prefix of the file's digest. Four wrong answers
-    came out of not asking, all four measured on the live tree and reproduced
-    against the installed CLI:
+    fourteen record a 64-hex value that is not what `sha256sum content.md`
+    prints and three record a twelve-character prefix of it. Four wrong answers
+    came out of not
+    asking, all four measured on the live tree and reproduced against the
+    installed CLI:
 
       * a card quoting the file's own digest was blamed for naming neither the
         version the manifest records nor its predecessor, and the range was
@@ -507,16 +509,32 @@ class TestAManifestsRecordIsNotItsFilesDigest:
         citation had never been checked came out `CURRENT` with
         `partial: False`, which is the laundering `partial` exists to prevent.
 
-    Three answers rather than two, because "I hashed the file and this record
+    Answers rather than a verdict, because "I hashed the file and this record
     does not describe it" and "there is no file here to hash" are answers about
     different parties, and a manifest is not to be blamed for a reader that was
     not given the body's location.
+
+    And the second answer — "it hashes to something else" — is itself two
+    answers, which this class learned the hard way. The fourteen live manifests
+    are NOT records that describe no bytes: each is the digest of exactly the
+    body beside it, taken before the collector appended the newline it writes
+    (`records`' `information/raw/expand_feishu_doc.py` says so in `render_doc`'s
+    own docstring — before 2026-09-14 `main()` wrote `redacted + "\n"` and
+    hashed `sha256(redacted)` — and names fifteen manifests written that way).
+    A reader that stopped at `sha256(content.md) != recorded` and called it "the
+    record describes other bytes" would report its own failed comparison as a
+    fact about the document — the same defect this module keeps committing,
+    committed by the fix for the previous instance of it.
+    `test_a_record_of_the_content_before_the_writers_newline_is_this_file` is
+    that second hash; nothing on the live tree is in the `OTHER_BYTES` class at
+    all, so the guard below is exercised by the fixtures here rather than by the
+    tree.
     """
 
-    #: A 64-hex record that describes no bytes in the fixture. The live tree's
-    #: fourteen are the same shape; their values are quoted in the probe under
-    #: this Run's artifacts rather than here, so this file does not assert a
-    #: measurement of a tree that can change underneath it.
+    #: A 64-hex record that describes no bytes the fixture can produce, under
+    #: EITHER of the collector's conventions. Deliberately not a live value: the
+    #: tree has no manifest in this class, and a fixture that quoted one of the
+    #: fourteen would be asserting the very defect this class now separates out.
     OTHER_BYTES = "deadbeef" + "0" * 56
 
     def test_a_record_that_describes_other_bytes_measures_nothing(self, tree):
@@ -533,7 +551,14 @@ class TestAManifestsRecordIsNotItsFilesDigest:
         assert row["content_sha256"] == self.OTHER_BYTES
         assert row["recorded_digest_standing"] == "RECORDED_IS_NOT_THIS_FILES_DIGEST"
         assert self.OTHER_BYTES[:12] in row["digest_why"]
+        # BOTH of the hashes this reader took, because the sentence it replaces
+        # named only one and then concluded about the document. `DOC_BODY` ends
+        # in a newline, as every collector-written body does, so this row is in
+        # the class where the second hash had to be taken and still did not
+        # match.
         assert true_digest[:12] in row["digest_why"]
+        assert hashlib.sha256(DOC_BODY[:-1].encode("utf-8")).hexdigest()[:12] \
+            in row["digest_why"]
         assert "lag" not in row and "cited_digest_standing" not in row
         # And the consequence: nothing on this card was compared.
         verdict = card["judged"]
@@ -543,6 +568,64 @@ class TestAManifestsRecordIsNotItsFilesDigest:
         assert verdict["partial"] is False
         assert verdict["review_ranges"] == []
         assert "could not be compared with" in verdict["why"]
+
+    def test_a_record_of_the_content_before_the_writers_newline_is_this_file(self, tree):
+        """The live shape of fourteen manifests: the same file, hashed one byte early.
+
+        `DOC_BODY` is `"body\\n"` and the collector writes it as it stands, so a
+        record of `sha256(b"body")` is exactly what `render_doc` produced before
+        2026-09-14 — a record of THIS document, not a record of other bytes. The
+        card cites what the manifest of that era recorded, which is the live
+        shape: `litellm.md` cites `b9fe2535`, the value recorded for that
+        snapshot under the same convention.
+
+        Measured, not closed. The record is this document's version pin, so the
+        row keeps its comparison — and a row that refused to make it would
+        report "I could not hash this" as "the document cannot be read", which
+        is the same defect one hash earlier.
+        """
+        written = hashlib.sha256(DOC_BODY.encode("utf-8")).hexdigest()
+        content = hashlib.sha256(b"body").hexdigest()
+        assert DOC_BODY.endswith("\n") and written != content
+        write_document(tree, "people/x/oc_x/links/d", content_sha256=content)
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{content}`）\n"))
+        card = only_card(tree)
+        row = card["measurements"][0]
+        assert row["recorded_digest_standing"] == \
+            "RECORDED_IS_THIS_FILES_CONTENT_DIGEST"
+        # Comparable: no reason-to-refuse, and the comparison is on the row.
+        assert "digest_why" not in row
+        assert row["lag"] == 0
+        # And the pin is still the recorded value, because the record is of this
+        # document — the whole reason this standing is not the refusal.
+        assert row["content_sha256"] == content
+        verdict = card["judged"]
+        assert verdict["state"] == "CURRENT"
+        assert verdict["measured"] == 1
+        assert verdict["uncheckable"] == 0
+        assert verdict["partial"] is False
+
+    def test_the_second_hash_is_only_taken_where_a_writer_added_a_newline(self, tree):
+        """A file with no trailing newline has no "content" to hash separately.
+
+        Chopping the last byte off a body that never had one hashes a byte
+        string no writer produced, so a record that happened to equal it would be
+        read as this file's — a match neither of them can show. The last byte of
+        a file without a newline is content, and dropping it is the same
+        mistake as dropping the newline when there is no newline.
+        """
+        body = "no newline at all"
+        chopped = hashlib.sha256(body[:-1].encode("utf-8")).hexdigest()
+        assert not body.endswith("\n") and chopped != hashlib.sha256(
+            body.encode("utf-8")).hexdigest()
+        write_document(tree, "people/x/oc_x/links/d", body, content_sha256=chopped)
+        write_card(tree, "people", "x.md", heading_card(
+            f"- `{DOC}`（sha `{chopped[:8]}`）\n"))
+        row = only_card(tree)["measurements"][0]
+        assert row["recorded_digest_standing"] == "RECORDED_IS_NOT_THIS_FILES_DIGEST"
+        assert "lag" not in row
+        assert only_card(tree)["judged"]["state"] == "UNMEASURABLE"
 
     def test_the_record_that_lies_is_never_handed_out_as_a_range_identity(self, tree):
         """The pin is the whole point: a range must not confirm a revision no file has.
@@ -1382,6 +1465,34 @@ class TestTheCli:
         assert done.returncode == 0, done.stderr
         assert "一致" in done.stdout
         assert "记录的是别处持有的正文" not in done.stdout
+
+    def test_the_line_says_which_of_the_two_hashes_the_record_was_taken_of(self, tree):
+        """The same 「一致」, and now the other comparison that reads alike.
+
+        `RECORDED_IS_THIS_FILES_CONTENT_DIGEST` is *also* a digest of this file
+        — of its bytes up to the newline the collector appends on the way out.
+        So the line says 「一致」 and stays true, while a reader who runs
+        `sha256sum content.md` gets a value the manifest does not contain. The
+        standing travels on the line for exactly that reason, and the control
+        below is the other half: printed unconditionally it would say nothing.
+        """
+        recorded = hashlib.sha256(DOC_BODY[:-1].encode("utf-8")).hexdigest()
+        assert DOC_BODY.endswith("\n")
+        assert recorded != hashlib.sha256(DOC_BODY.encode("utf-8")).hexdigest()
+        write_document(tree, "people/x/oc_x/links/d", content_sha256=recorded)
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `{recorded}`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "一致" in done.stdout
+        assert "记录是本文件内容的摘要（写的人落盘时补的换行不计）" in done.stdout
+
+        honest = hashlib.sha256(DOC_BODY.encode("utf-8")).hexdigest()
+        write_document(tree, "people/x/oc_x/links/d")
+        write_card(tree, "people", "x.md", heading_card(f"- `{DOC}`（sha `{honest}`）\n"))
+        done = cli("work", "understanding", "--records-root", str(tree))
+        assert done.returncode == 0, done.stderr
+        assert "一致" in done.stdout
+        assert "记录是本文件内容的摘要" not in done.stdout
 
     def test_it_loads_the_module_rather_than_shelling_out_to_it(self):
         source = (REPO_ROOT / "runtime" / "cli.py").read_text(encoding="utf-8")
