@@ -18,6 +18,7 @@ when the reader misbehaves is the point and a fabricated report is how to do it.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -84,13 +85,51 @@ def chat_manifest(**over) -> dict:
     return document
 
 
-def document_manifest(**over) -> dict:
+def digest_of(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+#: The body every document fixture below writes, so a manifest's recorded digest
+#: and the file beside it describe the same bytes.
+DOC_BODY = "文档正文\n"
+
+
+def document_manifest(body: str = DOC_BODY, **over) -> dict:
+    """A link snapshot's manifest, recording the digest of a body that exists.
+
+    It used to record `"a" * 64` with no `content.md` beside it, and the tests
+    below asserted against that recorded value. That is the defect this package
+    fixes — a recorded digest reported as the document's version without being
+    checked against the bytes it claims to describe — and a fixture may not
+    assume the defect while testing something else. This is also the live shape:
+    14 of the 21 link manifests under the real records root record a digest that
+    no longer describes the `content.md` beside them. So the digest here is the
+    digest of `body`, and a test that wants a *disagreeing* record passes the
+    body whose digest disagrees.
+    """
     document = {
         "source_message_id": "om_x", "url": "https://example.invalid/d",
         "type": "docx", "title": "T", "fetched_at": "2026-09-07",
-        "content_sha256": "a" * 64, "redaction_applied": False,
+        "content_sha256": digest_of(body), "redaction_applied": False,
     }
     document.update(over)
+    return document
+
+
+def write_document(records: Path, relative: str, body: str = DOC_BODY,
+                   **over) -> dict:
+    """Write `content.md` and the manifest that describes it, as a pair.
+
+    A manifest written alone is a claim about a body nothing here can hash; the
+    reader now hashes the file beside the manifest, so the two have to be
+    written together for the pair to be a document at all.
+    """
+    document = document_manifest(body, **over)
+    where = records / RAW / relative
+    where.mkdir(parents=True, exist_ok=True)
+    (where / "content.md").write_text(body, encoding="utf-8")
+    (where / "manifest.json").write_text(json.dumps(document, ensure_ascii=False),
+                                         encoding="utf-8")
     return document
 
 
@@ -246,15 +285,17 @@ class TestThePatchProposesAndNeverConfirms:
         # The document's own manifest carries the digest, not the chat's: the
         # capture for `links/d/` is a separate object from the conversation it
         # arrived in, and the reader compares the citation against that one.
-        write_capture(records, "people/x/oc_x/links/d",
-                      document_manifest(content_sha256="f" * 64))
+        document = write_document(records, "people/x/oc_x/links/d")
         write_card(records, "projects", "p.md",
                    heading_card(f"- `{DOC}`（sha `beef1234`）\n"))
         item = item_of(records)
         assert item["review"] == "WHOLE_DOCUMENT"
         assert item["from_position"] is None and item["to_position"] is None
         assert item["cited_digest"] == "beef1234"
-        assert item["content_sha256"] == "f" * 64
+        # The version the item carries is the one measured off the body beside
+        # the manifest, not a value the manifest asserted on its own.
+        assert item["content_sha256"] == digest_of(DOC_BODY)
+        assert document["content_sha256"] == digest_of(DOC_BODY)
         # Which of the manifest's two versions the citation is, carried to the
         # person deciding. The item is a proposition someone confirms, and
         # 「文档已换版」 and 「引文不在记录的两版里」 are two different
@@ -304,37 +345,45 @@ class TestAStandingTravelsWithTheProposal:
     that appears in none of the document's committed versions.
     """
 
-    def _item(self, tmp_path, *, cited: str, content: str, prev):
+    def _item(self, tmp_path, *, cited: str, prev):
+        """A proposal about a document whose recorded version is the live one.
+
+        The recorded digest is derived from a body that is written beside it,
+        because that is the only shape in which the reader will compare a
+        citation against a manifest at all: a manifest recording a digest for a
+        body nothing here holds is reported as unmeasurable and proposes
+        nothing, which is the package's fix and not what these tests are about.
+        """
         records = tmp_path / "records"
         for relative in ("information/understanding/projects",
                          "information/raw/feishu/chats"):
             (records / relative).mkdir(parents=True, exist_ok=True)
-        over = {"content_sha256": content}
-        if prev is not None:
-            over["prev_content_sha256"] = prev
-        write_capture(records, "people/x/oc_x/links/d", document_manifest(**over))
+        over = {} if prev is None else {"prev_content_sha256": prev}
+        write_document(records, "people/x/oc_x/links/d", **over)
         write_card(records, "projects", "p.md",
                    heading_card(f"- `{DOC}`（sha `{cited}`）\n"))
         return item_of(records)
 
     def test_the_recorded_predecessor_is_carried_and_rendered_as_a_transition(self, tmp_path):
-        item = self._item(tmp_path, cited="beef1234", content="b" * 64,
+        item = self._item(tmp_path, cited="beef1234",
                           prev="beef1234" + "0" * 56)
         assert item["cited_digest_standing"] == "CITED_IS_PREVIOUS_VERSION"
         assert item["prev_content_sha256"] == "beef1234" + "0" * 56
+        assert item["content_sha256"] == digest_of(DOC_BODY)
         line = up._item_line(item)
-        assert f"摘要 beef1234 → {'b' * 64}" in line
+        assert f"摘要 beef1234 → {digest_of(DOC_BODY)}" in line
         assert "整份重读" in line
 
     def test_a_citation_that_is_neither_recorded_version_is_not_rendered_as_a_change(self, tmp_path):
-        item = self._item(tmp_path, cited="beef1234", content="b" * 64, prev="c" * 64)
+        item = self._item(tmp_path, cited="beef1234", prev="c" * 64)
         assert item["cited_digest_standing"] == "CITED_IS_NEITHER_RECORDED_VERSION"
         line = up._item_line(item)
         assert "→" not in line
-        assert f"引的 beef1234 ≠ 现版 {'b' * 64}、≠ 上一版 {'c' * 64}" in line
+        assert (f"引的 beef1234 ≠ 现版 {digest_of(DOC_BODY)}、"
+                f"≠ 上一版 {'c' * 64}") in line
 
     def test_an_unrecorded_predecessor_is_not_a_recorded_change(self, tmp_path):
-        item = self._item(tmp_path, cited="beef1234", content="b" * 64, prev=None)
+        item = self._item(tmp_path, cited="beef1234", prev=None)
         assert item["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
         assert item["prev_content_sha256"] is None
         line = up._item_line(item)
