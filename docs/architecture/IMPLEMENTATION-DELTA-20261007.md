@@ -4,6 +4,8 @@
 
 目标规范：[Native Work Environment](NATIVE-WORK-ENVIRONMENT.md)。已有 SYS-01–SYS-24 与专项验收不因本表消失；新增体验验收补充它们，不能降低安全或证据标准。
 
+本轮实施更新：E1/P0 的私有仓库、模板、packet/result schema 和标准库离线检查器已通过 `serveros-research-exchange` PR1/PR2 交付；CC 实施后经 Parent 补正并通过 23 项定向检查。当前会话的 GitHub app 读取已实测。研究模式的实际读取/研究/写回及后续 Parent 业务接受仍未验收，E2–E8 继续按计划推进。不要重做 P0。
+
 ## 1. 已有能力必须复用
 
 | 已有组件/入口 | 当前可确认状态 | 本次处理 |

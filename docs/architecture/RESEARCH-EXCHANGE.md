@@ -15,8 +15,8 @@ CC 准备既有事实与最小问题包；Native Agent 可直接进行普通联�
 ```text
 README.md                              入口与使用边界
 contracts/                             交接格式的版本化实现
-  research-packet.schema.json           计划新增：结构/版本校验
-  research-result.schema.json          计划新增：结构/引用校验
+  research-packet.schema.json           初版已实现：输入结构
+  research-result.schema.json          初版已实现：结果结构
 templates/
   packet.json                          空模板，不是可执行请求
   brief.md
@@ -35,7 +35,7 @@ packets/<project>/<request-id>/
 
 输入以完整 Git commit 固定；后续修订形成新 commit，并明确是否使原研究失效。结果必须引用实际读取的输入 commit，不能只说读了 main。不同结果保留不同目录，不覆盖他人结果或已登记证据。
 
-## 3. 最小输入契约（拟新增）
+## 3. 最小输入契约（v1）
 
 `research-packet.v1` 的内容：
 
@@ -52,7 +52,7 @@ packets/<project>/<request-id>/
 
 先提交最小 brief 和索引，细节按需读。既有代码应优先用准确 repo@commit:path 引用；只有连接器看不到且传播已获准的必要片段才物化进 inputs，不复制整个业务仓库。
 
-## 4. 最小结果契约（拟新增）
+## 4. 最小结果契约（v1）
 
 `research-result.v1` 包括：`request_id`、`input_revision`、`result_id`、`status`（COMPLETE/PARTIAL/BLOCKED）、逐问题回答、来源引用、反证与不确定性、推荐和替代、复现/实验建议、未覆盖内容以及实际 Provider/能力信息。
 
