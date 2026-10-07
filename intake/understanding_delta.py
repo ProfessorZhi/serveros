@@ -126,6 +126,27 @@ CARD_STATES = ("CURRENT", "BEHIND", "STALE_IN_PLACE", "UNTRACEABLE",
 #: matched no source this node captured.
 MEASUREMENTS = ("POSITION", "DIGEST", "WHOLE_FILE", "UNRESOLVED")
 
+#: Where a cited digest STANDS, when it is not the digest the manifest records
+#: now. `lag` says the card no longer matches the manifest; on its own it does
+#: not say whether the card ever read THIS document, and the two are repaired
+#: differently — one is cleared by reading the document again, the other is not
+#: cleared by reading anything, because the citation names a version this
+#: manifest does not account for.
+#:
+#: A manifest keeps exactly TWO digests (see `watch_coverage.drift`, which reads
+#: the same pair for a different question — whether the CAPTURE moved). So the
+#: middle value below is the honest answer to a question this reader can decide,
+#: and it also marks the limit of that decision: a card more than one version
+#: behind and a card quoting a digest that was never this document's measure the
+#: same here, and the sentence says which two versions were compared rather than
+#: asserting a transition that was never measured.
+CITED_IS_PREVIOUS_VERSION = "CITED_IS_PREVIOUS_VERSION"
+CITED_IS_NEITHER_RECORDED_VERSION = "CITED_IS_NEITHER_RECORDED_VERSION"
+NO_PREVIOUS_VERSION_RECORDED = "NO_PREVIOUS_VERSION_RECORDED"
+CITED_STANDINGS = (CITED_IS_PREVIOUS_VERSION,
+                   CITED_IS_NEITHER_RECORDED_VERSION,
+                   NO_PREVIOUS_VERSION_RECORDED)
+
 #: Emitted under `measurement`, each key beside where its value comes from. The
 #: guard in `no_unsourced` refuses any key not named here, so a future field has
 #: to state its producer before it can leave this module.
@@ -153,6 +174,17 @@ MEASUREMENT_PRODUCED = {
     "cited_digest": "the digest prefix the card quoted",
     "content_sha256": "the digest the manifest recorded for that content",
     "digest_why": "why a cited digest could not be compared",
+    # Measured, never inferred from the mismatch: a mismatch says the card is not
+    # at the manifest's version, and neither of these two says anything the other
+    # does. `prev_content_sha256` is copied from the manifest, which keeps it for
+    # the drift check (`watch_coverage`), and it is what makes the standing
+    # checkable rather than a verdict — a reader of this record can see which two
+    # digests the cited one was compared against.
+    "cited_digest_standing": "one of CITED_STANDINGS: which of the two versions "
+                             "this manifest records the cited digest is, or that "
+                             "there is no previous version to compare against",
+    "prev_content_sha256": "the digest the manifest records as its predecessor, "
+                           "copied from the manifest",
     "coverage": "the source component states that are not COMPLETE, copied from "
                 "capture_coverage so a lag and a capture gap stay apart",
     "unresolved_why": "why a cited path matched nothing, or why a cited reach "
@@ -175,6 +207,14 @@ REVIEW_PRODUCED = {
     "revisions": "edited/deleted counts inside the range, for REVISITED_IN_PLACE",
     "cited_digest": "the digest prefix the card quoted, for WHOLE_DOCUMENT",
     "content_sha256": "the digest the manifest now records, for WHOLE_DOCUMENT",
+    # The standing, copied from the measurement. A range says WHAT to look at and
+    # why; this says which two versions the proposition rests on, so a reader of
+    # the range can tell "re-read it, the document moved" from "the citation
+    # names a digest neither recorded version is".
+    "cited_digest_standing": "one of CITED_STANDINGS, copied from the measurement "
+                             "that made this range",
+    "prev_content_sha256": "the digest the manifest records as its predecessor, "
+                           "copied from the measurement",
     # The version pair, copied from the measurement this range came out of.
     # Copied rather than recomputed: a range that said only "positions 761-1491"
     # would be a range a reader cannot check, because the other half of the
@@ -820,12 +860,26 @@ def _measure_one(citation: dict, key: str, obj: dict, records_root: Path,
 
     if shape in ("document_capture", "web_capture"):
         recorded = facts.get("content_sha256")
+        # Copied from the manifest's own top level, where the drift check reads
+        # it (`capture_coverage.py` lifts it out of the document). Read here
+        # because a mismatch on its own cannot say WHICH mismatch this is.
+        previous = obj.get("prev_content_sha256")
         row["kind"] = "DIGEST" if digest else "WHOLE_FILE"
         if digest:
             row["cited_digest"] = digest
             if recorded:
                 row["content_sha256"] = recorded
                 row["lag"] = 0 if recorded.startswith(digest) else 1
+                if row["lag"]:
+                    if not previous:
+                        row["cited_digest_standing"] = NO_PREVIOUS_VERSION_RECORDED
+                    elif previous.startswith(digest):
+                        row["cited_digest_standing"] = CITED_IS_PREVIOUS_VERSION
+                        row["prev_content_sha256"] = previous
+                    else:
+                        row["cited_digest_standing"] = \
+                            CITED_IS_NEITHER_RECORDED_VERSION
+                        row["prev_content_sha256"] = previous
             else:
                 row["digest_why"] = (
                     "the card quoted a digest and this manifest records no "
@@ -930,6 +984,17 @@ def _review_range(card: dict, row: dict, kind: str, low, high,
         # proposal needs in order to agree or disagree with it.
         record["cited_digest"] = row.get("cited_digest")
         record["content_sha256"] = row.get("content_sha256")
+        # And WHERE the cited one stands among the versions the manifest keeps.
+        # The pair above says the card is not at the current version; it cannot
+        # say whether the document moved away from the card or the citation
+        # names something else, and those two are not the same proposition.
+        record["cited_digest_standing"] = row.get("cited_digest_standing")
+        # Present exactly when the manifest records a predecessor, the same rule
+        # the measurement follows: a key that appeared for every document would
+        # make "the manifest records no previous version" and "the previous
+        # version is null" the same reading.
+        if row.get("prev_content_sha256"):
+            record["prev_content_sha256"] = row["prev_content_sha256"]
     return record
 
 
@@ -1037,12 +1102,21 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
                       row["applied"], records_root)
         for row in stale
     ] + [
-        # A cited digest that no longer matches the manifest is a state that
-        # implies work and carries no position: the document was re-published,
-        # and which part of it changed is not recorded anywhere this reader can
-        # see. It used to contribute the state and no range at all, so the
-        # verdict said STALE_IN_PLACE and proposed nothing to look at. A range
-        # with no positions says "the whole document" without inventing a span.
+        # A cited digest that does not match the manifest is a state that
+        # implies work and carries no position: the document is not at the
+        # version the card names, and which part of it changed is not recorded
+        # anywhere this reader can see. It used to contribute the state and no
+        # range at all, so the verdict said STALE_IN_PLACE and proposed nothing
+        # to look at. A range with no positions says "the whole document"
+        # without inventing a span.
+        #
+        # The range stands for every standing, because in all of them the card
+        # is not at the version the manifest records and the reader cannot see
+        # which part moved. What differs is which proposition the range supports
+        # — "re-read it, the document moved" against "the citation names a
+        # digest this manifest does not account for" — and that travels with the
+        # range as `cited_digest_standing` so the renderer can say which one it
+        # is instead of asserting a transition nobody measured.
         _review_range(card, row, "WHOLE_DOCUMENT", None, None, records_root)
         for row in digest_differs
     ]
@@ -1058,8 +1132,19 @@ def judge_card(card: dict, measurements: list[dict], records_root: Path) -> dict
                f"already read that were edited or deleted afterwards")
     elif digest_differs:
         state = "STALE_IN_PLACE"
-        why = ("the cited content digest no longer matches the one the manifest "
+        # "does not match", not "no longer matches": this reader measured the
+        # second, and a mismatch cannot show that the citation ever named the
+        # manifest's version. `unplaceable` counts the ones where it provably
+        # did not.
+        why = ("the cited content digest does not match the one the manifest "
                "records for that path")
+        unplaceable = [row for row in digest_differs
+                       if row.get("cited_digest_standing")
+                       == CITED_IS_NEITHER_RECORDED_VERSION]
+        if unplaceable:
+            why += (f"; {len(unplaceable)} of those cite a digest that is "
+                    f"neither the version the manifest records now nor the one "
+                    f"it records as its predecessor")
     elif measured:
         # A card can be partly measured: some citations name a reach and some do
         # not. `CURRENT` is the verdict for the ones that were compared, and

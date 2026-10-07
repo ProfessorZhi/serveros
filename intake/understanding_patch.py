@@ -119,6 +119,18 @@ ITEM_PRODUCED = {
     "source_count": "`sync.msg_count`, the collector's count, from the range",
     "cited_digest": "the digest prefix the card quoted, for a document range",
     "content_sha256": "the digest the manifest records now, for a document range",
+    # The standing, copied from the range. `cited_digest` and `content_sha256`
+    # say the card is not at the manifest's version; they cannot say whether the
+    # document moved away from the card or the citation names a digest this
+    # manifest does not account for. A person confirming this proposal is
+    # confirming one of those two propositions and not the other, so the item
+    # has to carry which one it is.
+    "cited_digest_standing": "one of the reader's CITED_STANDINGS, copied from "
+                             "the range: which of the two versions the manifest "
+                             "keeps the cited digest is, or that there is no "
+                             "previous version to compare against",
+    "prev_content_sha256": "the digest the manifest records as its predecessor, "
+                           "copied from the range",
     # The version half, copied from the range. `content_sha256` is what the
     # DOCUMENT now holds and `content_identity` is what the RANGE is about;
     # they are the same value for a document and only the second exists for a
@@ -384,6 +396,8 @@ def item_for(card: dict, range_: dict, state: str, state_why: str) -> dict:
         "source_count": range_.get("source_count"),
         "cited_digest": range_.get("cited_digest"),
         "content_sha256": range_.get("content_sha256"),
+        "cited_digest_standing": range_.get("cited_digest_standing"),
+        "prev_content_sha256": range_.get("prev_content_sha256"),
         "content_identity": range_.get("content_identity"),
         "content_identity_why": range_.get("content_identity_why"),
         "revisions": range_.get("revisions"),
@@ -577,8 +591,26 @@ def _item_line(item: dict) -> str:
                 f"  已读区间被改：改 {revisions.get('edited', 0)} "
                 f"删 {revisions.get('deleted', 0)}  重读 {item['from_position']}"
                 f"–{item['to_position']}")
-    return (f"{where}  摘要 {item['cited_digest']} → "
-            + (item["content_sha256"] or "manifest 未记录") + "  整份重读")
+    # The standing decides the sentence, and the arrow is only one of the three
+    # answers. The names are literals the way this file already names the range
+    # kinds: the source of truth is `understanding_delta.CITED_STANDINGS`, and
+    # this module copies the value rather than defining it.
+    if item.get("cited_digest_standing") == "CITED_IS_PREVIOUS_VERSION":
+        # The one standing that supports the arrow: the cited digest IS the
+        # version the manifest records as this document's predecessor, so the
+        # transition is one that was measured.
+        span = f"摘要 {item['cited_digest']} → {item['content_sha256']}"
+    elif not item.get("content_sha256"):
+        # Nothing on the manifest records the digest now, so there is nothing to
+        # compare the citation against and no arrow to draw.
+        span = f"摘要 {item['cited_digest']}"
+    elif item.get("prev_content_sha256"):
+        span = (f"引的 {item['cited_digest']} ≠ 现版 {item['content_sha256']}、"
+                f"≠ 上一版 {item['prev_content_sha256']}")
+    else:
+        span = (f"引的 {item['cited_digest']} ≠ 现版 {item['content_sha256']}；"
+                f"manifest 未记录上一版")
+    return f"{where}  {span}  整份重读"
 
 
 def dumps(patch: dict) -> str:
