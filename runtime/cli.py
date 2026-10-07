@@ -8281,6 +8281,21 @@ def cmd_work_grants(args) -> int:
     `context/delegation.py`, so a grant cannot authorize in one and not the
     other.
 
+    TWO questions, and the row answers both. Whether the delegation at a
+    grant's root authorizes right now is `context/delegation.derivation`'s.
+    Whether the grant ITSELF is in force — unrevoked, and inside its own window
+    — is `intake/daily_cycle.standing_reason`'s, and `derivation`'s docstring
+    hands it there by name. This verb used to print the first alone, so a grant
+    a person had since revoked was reported `AUTHORIZED` on a line directly
+    above `revoked  True`, and a grant whose window had closed was reported the
+    same way; `work revoke` promises in its own output that this verb reports a
+    revocation as `MISSING_OR_REVOKED_GRANT`, and until the two were joined here
+    it did not. The join is made in this consumer, and not inside `envelopes`,
+    for the reason `runtime/wake.py` gives for making it in the same place: a
+    second comparison of `valid_from`/`expires_at`/`revoked` in the module that
+    supplies the envelope would be a second answer to whether a grant is
+    current. `tests/test_delegation.py` pins that separation by name.
+
     What it will not do, and the reason each is missing rather than pending:
 
       * it writes nothing. There is no `--approve` and no way to mint a grant
@@ -8295,6 +8310,8 @@ def cmd_work_grants(args) -> int:
     """
     delegation_mod = _load_module_from(REPO_ROOT / "context" / "delegation.py",
                                        "serveros_context_delegation")
+    cycle = _load_module_from(REPO_ROOT / "intake" / "daily_cycle.py",
+                              "serveros_intake_daily_cycle")
     store_mod, control = _control_store()
     # The one place this question is answered from a clock. `--now` is offered
     # rather than hidden because the reader's clock IS part of the answer: a
@@ -8319,28 +8336,87 @@ def cmd_work_grants(args) -> int:
         return EXIT_FAULT
 
     summary = report["summary"]
+    # The question `envelopes` does NOT answer, asked of its owner. A grant the
+    # `derivation` reached AUTHORIZED on is by construction a mapping, so every
+    # such row has an entry; a row missing from the map is one whose record is
+    # too malformed to have a window at all, and it stays missing rather than
+    # being filled with `None` — «in force» and «nobody could ask» are not the
+    # same answer, and a reader who could not tell them apart would be reading
+    # this verb for a fact it does not have.
+    at = datetime.datetime.fromisoformat(now)
+    in_force: dict[str, str | None] = {}
+    for row in report["rows"]:
+        grant = recorded.get(row["grant_ref"])
+        if isinstance(grant, dict):
+            in_force[row["grant_ref"]] = cycle.standing_reason(
+                delegation_mod.envelope_of(grant, row["grant_ref"]), now=at)
+    authorizing = [row["grant_ref"] for row in report["rows"]
+                   if row["state"] == "AUTHORIZED"
+                   and in_force.get(row["grant_ref"]) is None]
+    usable = sum(1 for reason in in_force.values() if reason is None)
+    lapsed: dict[str, int] = {}
+    for reason in in_force.values():
+        if reason is not None:
+            lapsed[reason] = lapsed.get(reason, 0) + 1
+
+    def verdict(row: dict) -> str:
+        """The word beside the ref, and the sentence that qualifies it.
+
+        This verb's headline question is the conjunction, so the conjunction is
+        what the first line says. When the two halves disagree the line names
+        the half that failed: «the root context is gone» and «a person revoked
+        this grant» are two different repairs, and one word for both would send
+        a reader to the wrong producer.
+        """
+        ref = row["grant_ref"]
+        if ref not in in_force:
+            return row["state"], ""
+        if in_force[ref] is None:
+            return (row["state"],
+                    "  (in the envelope)" if row["in_envelope"] else "")
+        if row["state"] == "AUTHORIZED":
+            return (f"{in_force[ref]}  (the delegation at its root authorizes; "
+                    f"the grant itself is not in force)", "")
+        return row["state"], ""
+
     lines = [f"store       {control.path}",
              f"now         {now}",
              f"recorded    {summary['recorded']}"
              + ("" if summary["recorded"] else
                 " — nothing has delegated work on this node"),
-             f"authorizing {summary['authorizing']} of {summary['recorded']}"
-             + (" (the rest are excluded, each with its reason below)"
+             f"authorizing {len(authorizing)} of {summary['recorded']}"
+             + (" — the delegation authorizes now AND the grant is in force; "
+                "the rest are excluded, each with its reason below"
                 if summary["recorded"] else ""),
+             f"delegation  {summary['authorizing']} of {summary['recorded']} "
+             f"derive from a trusted context that authorizes now",
+             f"in force    {usable} of {len(in_force)} are unrevoked and inside "
+             f"their own window"
+             + ("" if len(in_force) == summary["recorded"] else
+                f" ({summary['recorded'] - len(in_force)} record(s) have no "
+                f"window to be judged against)"),
              f"contexts    {len(contexts)} trusted context(s) held; a grant "
              f"derives from one and cannot outlive it"]
     if summary["states"]:
         lines.append("states      " + ", ".join(
             f"{state} {count}" for state, count in sorted(summary["states"].items())))
+    if lapsed:
+        lines.append("lapsed      " + ", ".join(
+            f"{reason} {count}" for reason, count in sorted(lapsed.items())))
     for row in report["rows"]:
+        word, suffix = verdict(row)
         lines.append("")
-        lines.append(f"{row['grant_ref']}  {row['state']}"
-                     + ("  (in the envelope)" if row["in_envelope"] else ""))
+        lines.append(f"{row['grant_ref']}  {word}{suffix}")
         lines.append(f"  delegated by  {row.get('delegated_by') or '—'}")
         if row.get("revoked") is not None:
             lines.append(f"  revoked       {row['revoked']}"
                          + (f" at {row.get('revoked_at')}"
                             if row.get("revoked_at") else ""))
+        if row["grant_ref"] in in_force:
+            lines.append("  in force      " + (
+                "yes" if in_force[row["grant_ref"]] is None else
+                f"no — {in_force[row['grant_ref']]} "
+                f"(intake/daily_cycle.standing_reason)"))
         for label, field in (("window", "valid_from"), ("until", "expires_at")):
             if row.get(field):
                 lines.append(f"  {label:<13} {row[field]}")
@@ -8353,7 +8429,12 @@ def cmd_work_grants(args) -> int:
         if row.get("budget"):
             lines.append(f"  budget        {json.dumps(row['budget'], sort_keys=True)}")
         lines.append(f"  because       {row['because']}")
-    emit({"delegations": report, "store": str(control.path), "now": now},
+    # `delegations` is `envelopes`' own report, unchanged: its `state` is the
+    # derivation's answer and stays that answer here. `in_force` is beside it
+    # rather than merged into it, so a machine reader gets the two facts from
+    # the two functions that own them and no field means two things.
+    emit({"delegations": report, "in_force": in_force,
+          "store": str(control.path), "now": now},
          as_json=args.json, lines=lines)
     return EXIT_OK
 
