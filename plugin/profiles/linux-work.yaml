@@ -1490,7 +1490,40 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   covered. `tests/` is not a member of this composition, so the fourteen tests
 #   (four of them parametrized, twenty-two cases) and the fourteen mutations that
 #   come with this do not move the label.
-cachebuster: srv0005.20261008n
+#
+#   n → o: a recorded digest is not a measured body. Two members change:
+#
+#   intake/understanding_delta.py
+#     `content_identity` for a document range is the digest the manifest
+#     RECORDED, and this module compared a card's citation against it and handed
+#     it out as a range's revision without asking whether that value describes
+#     the `content.md` it names. On this node it often does not: of the
+#     twenty-one link manifests under `information/raw`, fourteen record a
+#     64-hex value that is not the file beside them and three record a
+#     twelve-character prefix of it. The prior question is now asked once, from
+#     the file's own bytes, with four answers — the record is this file's digest;
+#     it describes other bytes (comparison NOT made, citation unmeasured, the
+#     manifest named, no range formed); no readable body is beside it (not made
+#     either, and kept apart from the previous answer); or the body is held under
+#     an asset root this reader is not given (`web_capture`, where the comparison
+#     IS made and the standing travels beside it). The comparison reaches only
+#     as far as the shorter of the two records, in either direction. `partial`
+#     counts the citations whose digest could not be compared.
+#
+#   runtime/cli.py
+#     The measurement line says what the `一致` was agreed WITH, and the refusal
+#     for a reading about a span the reader no longer proposes names the reason
+#     the reader measured instead of ending at "it proposes no range".
+#
+#   The label moves because an installed cache left on `n` would answer the prior
+#   question the old way — printing a comparison against a value no file here has
+#   as though it were a body check. The measurement behind the four answers is on
+#   this node's own tree (21 manifests: MATCH 4 / ABBREV 3 / DIFFERS 14), and the
+#   live layer changes no verdict today: of 21 citations on 14 cards exactly one
+#   carries a digest and its manifest is MATCH, so the fix is preventive for the
+#   layer as it stands. `tests/` is not a member of this composition, so the
+#   tests and the eighteen mutations that come with this do not move the label.
+cachebuster: srv0005.20261008o
 
 skills:
   - name: runtime-management
