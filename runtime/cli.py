@@ -7674,10 +7674,17 @@ def _delegation_from_grant(ref: str, now_raw: str) -> tuple[dict | None, str]:
       * the grant's ROOT is `context/delegation.py`'s question (`delegated_by`
         must resolve to a context that authorizes now), and its answer is copied,
         never re-worded;
-      * the SCOPE is the record's own `covers`, copied as written. A grant that
-        records no `covers` covers nothing — which is the safe direction, and
-        reported rather than silently widened: every claim then lands as a
-        candidate awaiting a person.
+      * the SCOPE is the record's own `covers`, copied as written, and the RULE
+        that reads a scope is `understanding_semantic.delegation_scope`'s —
+        asked, not restated, because the question "which subjects does this
+        delegation name" has one answer and a copy of the check that drifted
+        would give a second one. A grant that records no `covers` covers
+        nothing — which is the safe direction, and reported rather than
+        silently widened: every claim then lands as a candidate awaiting a
+        person. A `covers` that is not a list of subject prefixes is refused
+        here, by the same function the reading is resolved with, so the shape a
+        caller's file cannot have and the shape a record cannot have are the
+        same shape.
 
     What this does NOT do is invent a mapping. The store's other scope fields
     (`projects`, `items`, `actions`) are a work scope, judged by
@@ -7747,16 +7754,36 @@ def _delegation_from_grant(ref: str, now_raw: str) -> tuple[dict | None, str]:
     if verdict["state"] != "AUTHORIZED":
         return None, (f"{verdict['state']}: {verdict['because']}")
     # Non-null: `derivation` cannot reach AUTHORIZED for anything but a mapping.
-    covers = envelope.get("covers")
-    if covers is None:
-        covers = []
-    if not isinstance(covers, list) or not all(
-            isinstance(prefix, str) and prefix.strip() for prefix in covers):
+    # Kept as a guard rather than as an assertion, because the alternative is a
+    # silent one: `delegation_scope(None)` answers "no delegation", which on this
+    # line would be read as "the scope is empty", and a grant whose envelope was
+    # never built would be reported as a grant that names nothing.
+    if not isinstance(envelope, dict):
         return None, (
-            f"{ref!r} records `covers` as {covers!r}, which is not a list of "
-            f"subject prefixes. The module that decides what this scope covers "
-            f"reads it as one, and a scope it cannot read is not a broad one")
-    return {"covers": list(covers),
+            f"{ref!r} is recorded and authorizes, and no envelope was built for "
+            f"it, so its scope was never read. An envelope that could not be "
+            f"built is not an empty scope")
+    # The scope's RULE is the module's, asked rather than restated. A second
+    # implementation here would be a second answer to "which subjects does this
+    # delegation name", and the two would diverge exactly on the shapes that
+    # matter: `delegation_scope` refuses a bare string and a blank prefix, and a
+    # copy that drifted would read one of them as a scope and WIDEN the grant
+    # rather than refuse it. Loaded under the module's own name, which
+    # `_load_module_from` caches in `sys.modules`, so this is the object
+    # `cmd_work_understanding_semantic` hands the reading to — and therefore its
+    # `Refused`, which is the class that verb catches. Two copies would be two
+    # classes and the catch would miss.
+    semantic = _load_module_from(
+        REPO_ROOT / "intake" / "understanding_semantic.py",
+        "serveros_intake_understanding_semantic")
+    try:
+        covers = semantic.delegation_scope(envelope)
+    except semantic.Refused as exc:
+        return None, (
+            f"{ref!r} is recorded and authorizes, and {exc}. The reading is "
+            f"refused rather than admitted under a scope nobody can read, and "
+            f"nothing here widens one to make it fit")
+    return {"covers": covers,
             "until": envelope.get("expires_at"),
             "granted_by": envelope.get("delegated_by"),
             # The locator, not a paraphrase: a receipt carrying this can be
@@ -8660,6 +8687,26 @@ def cmd_work_delegate(args) -> int:
             "is one that routine could only match by guessing.\n")
         return EXIT_FAULT
 
+    covers = tuple(getattr(args, "covers", None) or ())
+    if any(not value.strip() for value in covers):
+        # Refused rather than filtered, and refused HERE rather than only at read
+        # time. A blank prefix is a prefix of every subject there is, so a record
+        # carrying one is a record whose scope is unbounded — and a verb that
+        # dropped the entry instead would leave the caller believing the scope
+        # they typed had been recorded. Asking the whole question here rather
+        # than a `min_length` on the flag is deliberate: this verb's other scope
+        # fields are lists too, and the one that is a SCOPE is the one whose
+        # emptiness has a direction.
+        sys.stderr.write(
+            "serverosctl: --covers cannot carry an empty entry. A blank prefix "
+            "matches every subject, so a delegation recorded with one would "
+            "cover the whole tree; `intake/understanding_semantic."
+            "delegation_scope` refuses such a value on every read, and a grant "
+            "this store cannot hand to a reader is not a grant. Name the "
+            "subjects, or record the grant with no `--covers` at all — a grant "
+            "that names nothing is read as covering nothing, which is the safe "
+            "direction.\n")
+        return EXIT_FAULT
     record = {
         "grant_ref": grant_ref,
         "delegated_by": context_ref,
@@ -8670,11 +8717,15 @@ def cmd_work_delegate(args) -> int:
         "actions": sorted({str(v) for v in (getattr(args, "action", None) or [])}),
         "budget": budget,
     }
-    if getattr(args, "covers", None):
-        # `intake/understanding_semantic._delegation_covers` reads this to decide
-        # whether a standing delegation covers a claim's subject. Copied as
-        # written, not expanded: what it covers is what it says.
-        record["covers"] = sorted({str(v) for v in args.covers})
+    if covers:
+        # `intake/understanding_semantic.delegation_scope` reads this to decide
+        # which subjects a standing delegation names, and it refuses anything
+        # that is not a list of non-blank strings. Copied as written, not
+        # expanded: what it covers is what it says. The rule stays in the one
+        # module that reads scopes; the refusal above is this verb declining to
+        # record a value that rule would reject, so that a recorded grant is one
+        # every reader can read.
+        record["covers"] = sorted({str(value) for value in covers})
 
     held = contexts[context_ref]
     if getattr(args, "dry_run", False):

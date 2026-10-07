@@ -856,6 +856,124 @@ class TestTheAuthorityIsResolved:
         assert result.returncode != 0
         assert "not a list of subject prefixes" in result.stderr
 
+    @pytest.mark.parametrize("scope", [[""], ["x", ""], [" "], [123], 123,
+                                       {"a": 1}])
+    def test_every_shape_that_widens_the_grant_is_refused_too(
+            self, tmp_path, scope):
+        """`"x"` was one shape; these are the rest, and they are the ones that
+        matter more. Read as a scope, `[""]` is a prefix of every subject there
+        is and `["x", ""]` silently turns a correct scope into an unbounded one,
+        so a claim commits inside a grant that never named it — and the
+        resolution still prints the reason a real prefix prints, because that
+        sentence names the SUBJECT. `123` and `[123]` reach the same commit
+        through a `str()` nobody would write."""
+        env = seeded(tmp_path)
+        store = store_mod.AgentControlStore(
+            Path(env["SERVEROS_STATE_DIR"]) / "runtime" / "agent-control"
+            / "store.json")
+        store.put_grant(a_grant(grant_ref="grant:odd", covers=scope))
+        records = records_tree(tmp_path)
+        result = self.commit(tmp_path, env, records, grant="grant:odd")
+        assert result.returncode != 0, result.stdout
+        assert "not a list of subject prefixes" in result.stderr
+        assert (records / CARD).read_text(encoding="utf-8") == card_prose()
+
+    def test_the_recorded_grant_and_the_callers_file_answer_with_one_sentence(
+            self, tmp_path):
+        """The question «which subjects does this delegation name» has one
+        answer, and the two paths that ask it — the record in Agent Control and
+        the file a caller hands in — must be the same answer, not two sentences
+        that mean the same thing.
+
+        Asserted as the module's OWN sentence appearing in both, because a
+        paraphrase that matched would pass a substring test on a shared fragment
+        while being a second implementation of the rule. The two paths reach it
+        differently: the record's scope is read by `_delegation_from_grant`,
+        which asks the module rather than restating the check, and the file's is
+        read inside `resolve` itself.
+        """
+        with pytest.raises(us.Refused) as caught:
+            us.delegation_scope({"covers": [""]})
+        sentence = str(caught.value)
+        records = records_tree(tmp_path)
+        packet = the_brief(records)
+        reading = write_reading(tmp_path, reading_from(packet))
+
+        env = seeded(tmp_path)
+        store = store_mod.AgentControlStore(
+            Path(env["SERVEROS_STATE_DIR"]) / "runtime" / "agent-control"
+            / "store.json")
+        store.put_grant(a_grant(grant_ref="grant:odd", covers=[""]))
+        recorded = self.commit(tmp_path, env, records, grant="grant:odd")
+        assert recorded.returncode != 0
+        assert sentence in recorded.stderr, recorded.stderr
+
+        grant = tmp_path / "delegation.json"
+        grant.write_text(json.dumps({"covers": [""], "until": None,
+                                     "granted_by": "user", "source": "s"}),
+                         encoding="utf-8")
+        handed = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--delegation", grant,
+                     env_extra=env)
+        assert handed.returncode != 0
+        assert sentence in handed.stderr, handed.stderr
+        assert (records / CARD).read_text(encoding="utf-8") == card_prose()
+
+    @pytest.mark.parametrize("body,expected", [
+        ("alice", "not an object carrying a `covers`"),
+        (3, "not an object carrying a `covers`"),
+        (["x"], "not an object carrying a `covers`"),
+        ({"covers": 3}, "not a list of subject prefixes"),
+        ({"covers": "alice"}, "not a list of subject prefixes"),
+    ])
+    def test_a_delegation_that_is_not_an_object_is_refused_not_read_as_absent(
+            self, tmp_path, body, expected):
+        """`--delegation` is a JSON file, so every JSON scalar is a shape a
+        caller can hand in. Read as an absent delegation it would put a claim in
+        a card and report the result as nothing having authorized it; read as a
+        scope it would match a subject against a value that is not one. `["x"]`
+        is the one worth naming: it is a well-formed list, so the refusal is
+        about the delegation being a list RATHER THAN an object, which is a
+        different sentence from a bad `covers` and sends a different reader to a
+        different fix."""
+        env = seeded(tmp_path)
+        records = records_tree(tmp_path)
+        packet = the_brief(records)
+        reading = write_reading(tmp_path, reading_from(packet))
+        grant = tmp_path / "delegation.json"
+        grant.write_text(json.dumps(body), encoding="utf-8")
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--delegation", grant, env_extra=env)
+        assert result.returncode != 0, result.stdout
+        assert expected in result.stderr, result.stderr
+        assert (records / CARD).read_text(encoding="utf-8") == card_prose()
+
+    def test_a_grant_that_names_no_subject_is_not_reported_as_no_grant(
+            self, tmp_path):
+        """The other conflation in the same five lines, and the one a person is
+        most likely to meet: a recorded grant with no scope. Every claim still
+        awaits a person — the safe direction is unchanged — but the report says
+        which of the two happened, because «record a grant» and «widen the grant
+        you recorded» are different next actions."""
+        env = seeded(tmp_path)
+        store = store_mod.AgentControlStore(
+            Path(env["SERVEROS_STATE_DIR"]) / "runtime" / "agent-control"
+            / "store.json")
+        store.put_grant(a_grant(grant_ref="grant:bare", covers=[]))
+        records = records_tree(tmp_path)
+        packet = the_brief(records)
+        reading = write_reading(tmp_path, reading_from(packet))
+        result = cli("work", "understanding-semantic", "--records-root", records,
+                     "--reading", reading, "--now", NOW, "--grant", "grant:bare",
+                     "--json", env_extra=env)
+        assert result.returncode == 0, result.stderr
+        resolution = json.loads(result.stdout)
+        assert resolution["delegation"]["covers"] == []
+        assert resolution["committed"] == []
+        why = resolution["awaiting"][0]["confirmation_why"]
+        assert "names no subject" in why
+        assert "no standing delegation covers this work" not in why
+
     def test_the_two_forms_of_authority_are_mutually_exclusive(self, tmp_path):
         result = cli("work", "understanding-semantic", "--reading",
                      tmp_path / "nothing.json", "--grant", "grant:x",

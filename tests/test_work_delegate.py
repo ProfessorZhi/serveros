@@ -65,6 +65,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
 CLI = REPO / "bin" / "serverosctl"
@@ -88,6 +90,11 @@ store_mod = _load("serveros_runtime_agent_control_store",
 continuation = _load("serveros_runtime_continuation",
                      RUNTIME / "continuation.py")
 wake = _load("serveros_runtime_wake", RUNTIME / "wake.py")
+# Loaded under the name `runtime/cli.py` uses, so a value this verb records is
+# judged by the same function the reading is resolved with rather than by a
+# restatement of it here.
+semantic = _load("serveros_intake_understanding_semantic",
+                 REPO / "intake" / "understanding_semantic.py")
 
 AgentControlStore = store_mod.AgentControlStore
 StoreError = store_mod.StoreError
@@ -320,6 +327,76 @@ class TestTheRecordDerivesItsActorAndNeverCarriesOne:
         assert done.returncode == 0, done.stderr
         assert json.loads(done.stdout)["would_record"]["delegated_by"] == CONTEXT
         assert recorded_grant(env) is None
+
+
+# ---------------------------------------------------------------------------
+# 2b. The scope is recorded as written, and never as a shape no reader can read.
+# ---------------------------------------------------------------------------
+
+
+class TestTheScopeIsRecordedSoEveryReaderCanReadIt:
+    def test_the_scope_is_copied_as_written(self, tmp_path):
+        env = env_for(tmp_path)
+        seed_context(env)
+        done = delegate(env, "--covers", "bruce", "--covers", "alice")
+        assert done.returncode == 0, done.stderr
+        assert recorded_grant(env)["covers"] == ["alice", "bruce"]
+
+    def test_a_grant_without_a_scope_records_no_scope_key(self, tmp_path):
+        """Absent, not empty: `put_grant` is handed a record without the key and
+        the reader answers «names no subject» for it either way — two spellings
+        of one fact that must not become two facts."""
+        env = env_for(tmp_path)
+        seed_context(env)
+        assert delegate(env).returncode == 0
+        assert "covers" not in recorded_grant(env)
+
+    @pytest.mark.parametrize("blank", ["", " ", "\t"])
+    def test_a_blank_prefix_is_refused_before_it_is_recorded(
+            self, tmp_path, blank):
+        """A blank prefix matches every subject, so recording one is recording an
+        unbounded scope — and `understanding_semantic.delegation_scope` refuses
+        such a value on every read. Refused here rather than filtered, because a
+        verb that dropped the entry would leave the caller believing the scope
+        they typed had been recorded."""
+        env = env_for(tmp_path)
+        seed_context(env)
+        done = delegate(env, "--covers", blank)
+        assert done.returncode == 1, done.stdout
+        assert "--covers cannot carry an empty entry" in done.stderr
+        assert recorded_grant(env) is None
+
+    def test_every_scope_this_verb_records_can_be_read_by_the_reader(
+            self, tmp_path):
+        """The anti-drift property, and the reason the verb asks the module's
+        question instead of its own: a grant the store hands out whose scope the
+        reader refuses is a grant that authorizes nothing while looking recorded,
+        and the two halves — what this verb writes and what that module reads —
+        have no shared test today except this one.
+
+        Stated as a disjunction over adversarial values rather than as a list of
+        expected recordings, because that is the property: for each value, either
+        the verb refused it and recorded nothing, or it recorded it and the
+        reader reads it back as what was typed. There is no third outcome. Read
+        through `understanding_semantic.delegation_scope` — not through a copy of
+        the rule written here, which would be the drift it guards against.
+        """
+        env = env_for(tmp_path)
+        seed_context(env)
+        # A ref per value: `put_grant` refuses to overwrite an existing ref, and
+        # a reuse would show up as a refusal that says nothing about the value.
+        for index, value in enumerate(("", " ", "\t", "x", "a:b", "*",
+                                       "alice smith", "0")):
+            ref = f"grant:shape-{index}"
+            done = delegate(env, "--covers", value, grant=ref)
+            if done.returncode != 0:
+                assert recorded_grant(env, ref) is None, (
+                    f"{value!r} was refused and recorded anyway")
+            else:
+                assert semantic.delegation_scope(
+                    recorded_grant(env, ref)) == [value], (
+                    f"{value!r} was recorded and the reader does not read it "
+                    f"back as what was typed")
 
 
 # ---------------------------------------------------------------------------

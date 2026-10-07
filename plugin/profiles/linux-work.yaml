@@ -1442,7 +1442,55 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   former value under a name that says which question it answers. `tests/` is
 #   not a member of this composition, so the seven tests and the nine mutations
 #   that come with this do not move the label.
-cachebuster: srv0005.20261008m
+#   m → n: the subjects a delegation names are read as a SCOPE, and a value that
+#   is not one is refused rather than matched against. Two members change:
+#
+#   intake/understanding_semantic.py  `_delegation_covers` (a boolean: «is there
+#     a grant at all») becomes `delegation_scope`, which answers with the
+#     prefixes and refuses a `covers` that is not a list of non-blank strings.
+#     `_confirmation_for` takes that scope, so «there is no delegation» and «the
+#     delegation names no subject» stop being one sentence.
+#   runtime/cli.py  `_delegation_from_grant` asks that function instead of
+#     restating the check, so the record path and the caller's-file path cannot
+#     answer «which subjects does this delegation name» differently; `work
+#     delegate` refuses a blank `--covers` instead of recording one.
+#
+#   The label moves because the promoted revision reads a value's SHAPE as a
+#   SCOPE, and every way of doing that WIDENS the grant instead of failing to
+#   match it. Measured on the promoted revision, six `covers` shapes, same tree,
+#   same reading, judged by exit code and by the card's bytes:
+#
+#     covers=['x']      rc=0 state=COMPLETE         written=2 card_changed=True
+#     covers=['']       rc=0 state=COMPLETE         written=2 card_changed=True
+#     covers='xyz'      rc=0 state=COMPLETE         written=2 card_changed=True
+#     covers=['x','']   rc=0 state=COMPLETE         written=2 card_changed=True
+#     covers=[' ']      rc=0 state=NOTHING_TO_WRITE written=0 card_changed=False
+#     covers=[123]      rc=0 state=NOTHING_TO_WRITE written=0 card_changed=False
+#
+#   `[""]` is a prefix of every subject there is, so one blank entry turns a
+#   bounded scope into an unbounded one; `"xyz"` is iterated character by
+#   character, so it covers every subject beginning with `x`, `y` or `z`; `[123]`
+#   is coerced by `str()` into a prefix nobody wrote. Each of the three then
+#   commits an ordinary fact on the grant's own authority — and the commit is the
+#   smaller half, because the sentence a resolution carries names the SUBJECT, so
+#   all four committing shapes printed BYTE-IDENTICAL `confirmation_why` lines. A
+#   misread scope that leaves no trace in the output is the one thing a reader has
+#   no way to check. The same five lines also reported «no standing delegation
+#   covers this work» for a grant that IS on the record and merely names nothing,
+#   while `work grants` warns at the moment it hands that same grant over that it
+#   «names no `covers` — so it delegates no subject». That is this module's
+#   recurring shape: a fact about the reading reported as a fact about the world.
+#
+#   No commit rule changes. An ordinary fact inside a real prefix still commits
+#   as `agent_reconciled` with the reason it printed before; a `PROPOSAL` or a
+#   `MAJOR_CHANGES` touch still awaits a person however certain the facts are; a
+#   grant that records no scope still covers nothing and every claim under it
+#   still lands as a candidate. What changed is that the five shapes above are
+#   refusals with a sentence naming what reading them as a scope would have
+#   covered. `tests/` is not a member of this composition, so the fourteen tests
+#   (four of them parametrized, twenty-two cases) and the fourteen mutations that
+#   come with this do not move the label.
+cachebuster: srv0005.20261008n
 
 skills:
   - name: runtime-management
