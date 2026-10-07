@@ -11331,7 +11331,15 @@ _STANDING_SAYS = {
 #: `understanding_delta.RECORDED_DIGEST_STANDINGS`）。三种不是本文件摘要的记录
 #: 都印出来，因为「一个这儿没人能哈希的值」和「正文自己的摘要」印出来是同一句
 #: 「一致」；`RECORDED_IS_THIS_FILES_DIGEST` 不印，那是默认情形。
+#:
+#: `RECORDED_IS_THIS_FILES_CONTENT_DIGEST` 印，虽然它**也是**本文件的摘要：这正是
+#: 那 14 份 manifest 的形状（collector 落盘时补了一个换行，算的却是补之前的那串）。
+#: 人自己跑 `sha256sum content.md` 会看到对不上，而这一行刚跟他说过「一致」——不印
+#: 就等于又把一个读数器的事实当成世界的事实，只不过这回是在两个都真的回答之间不说
+#: 是哪一个。
 _RECORDED_IS = {
+    "RECORDED_IS_THIS_FILES_CONTENT_DIGEST":
+        "记录是本文件内容的摘要（写的人落盘时补的换行不计）",
     "RECORDED_IS_NOT_THIS_FILES_DIGEST": "记录不描述旁边的正文",
     "RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE": "旁边没有可比对的正文",
     "RECORDED_IS_A_BODY_HELD_ELSEWHERE": "记录的是别处持有的正文（此处未比对字节）",
