@@ -378,9 +378,13 @@ class TestEveryRefusalHasItsOwnState:
     def test_a_named_grant_nothing_recorded_is_not_an_empty_store(self, tmp_path):
         """The board's gap and the store's gap are different producers.
 
-        On this node both are true at once and neither sentence may stand in
-        for the other: an empty store is a delegation nobody made, and a row
-        without a `grant_ref` is a card field nobody built.
+        Neither sentence may stand in for the other: a ref a row names that the
+        store has never been told about is a fact about the board's producer,
+        and a store that records nothing authorizing is a fact about the store.
+        This docstring used to close by calling a row without a `grant_ref` "a
+        card field nobody built", which named a producer that does not exist —
+        the field is joined by `control_join`, and `tests/test_focus_source.py`
+        pins that direction.
         """
         store = AgentControlStore(tmp_path / "store.json")
 
