@@ -490,12 +490,50 @@ class ServerOSStore:
             c.execute("INSERT INTO execution_contexts(item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,activity_id,repo) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,worktree=excluded.worktree,dirty=excluded.dirty",(context.item_id,context.activity_id,context.repo,context.mode.value,context.revision,context.worktree,int(context.dirty)))
         return context
 
+    def _require_run(self, connection, item_id, run_id):
+        """The `runs` row for (item_id, run_id), or a refusal that names which half is wrong.
+
+        Until 2026-10-08 `run evidence` took an Item and a Run as two bare
+        positionals and checked neither. `record_evidence` wrote the pair
+        through, so `workengine run evidence SRV-0011 19 --locator …` returned
+        `evidence_id 224` for a Run that does not exist — measured on this
+        node's production store, exit code 0 — and the ledger held a row
+        attributed to a Run nobody can look up. The `evidence` table declares
+        no foreign key (v4 SQL, `migrations.py`) while `publication_receipts`
+        does, so the database never had an opinion either.
+
+        An unknown Item and an unknown Run are two different answers and are
+        reported as two different answers, because a caller who mistyped the
+        Item and a caller who mistyped the Run have different repairs to make.
+        A Run id that exists under some *other* Item is a third: the row the
+        caller named is real, it is just not theirs, and saying "unknown Run"
+        would send them looking for a typo that is not there.
+
+        This is the lookup SQLite's own foreign key would have done, said in
+        words — the same choice `create_candidate` makes one method above,
+        where an `IntegrityError` naming a constraint is rejected in favour of
+        naming the table the caller actually has to look at.
+        """
+        if connection.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
+            raise KeyError(f"unknown Item: {item_id}")
+        row = connection.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
+        if row is not None:
+            return row
+        owners = [r["item_id"] for r in connection.execute(
+            "SELECT item_id FROM runs WHERE run_id=? ORDER BY item_id", (run_id,))]
+        if owners:
+            raise KeyError(
+                f"Run {run_id} belongs to Item{'s' if len(owners) > 1 else ''} "
+                f"{', '.join(owners)}, not {item_id}")
+        raise KeyError(f"unknown Run: {item_id}/{run_id}")
+
     def record_evidence(self, item_id, run_id, *, kind, locator, command, cases, exit_code, revision, dirty, verdict):
         if not Path(locator).is_absolute() or not Path(locator).is_file(): raise ValueError("evidence must be an existing absolute file")
         digest=hashlib.sha256(Path(locator).read_bytes()).hexdigest()
         if not digest: raise ValueError("evidence requires SHA-256")
         _reject_secrets({'kind':kind,'locator':locator,'command':command,'cases':cases,'revision':revision,'verdict':verdict,'exit_code':exit_code,'dirty':dirty})
         with self.transaction(immediate=True) as c:
+            self._require_run(c, item_id, run_id)
             previous = c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",
                                  (item_id, run_id, locator)).fetchone()
             requested = dict(kind=kind, sha256=digest, command=command, cases_json=json.dumps(cases),
@@ -514,8 +552,7 @@ class ServerOSStore:
 
     def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
         with self.transaction(immediate=True) as c:
-            r=c.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?",(item_id,run_id)).fetchone()
-            if not r: raise KeyError(run_id)
+            r=self._require_run(c, item_id, run_id)
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
                 e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone()
                 if e and not Path(e['locator']).exists():
