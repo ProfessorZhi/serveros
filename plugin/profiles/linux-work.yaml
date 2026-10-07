@@ -1167,7 +1167,28 @@ short_description: Agent Engineering Workbench for a Linux work node
 # producer that silently erases the requirement board's `<!-- human:begin -->`
 # section and exits 0 while doing it. The bump is what stops a session from
 # running the eraser under a version string that claims it was fixed.
-cachebuster: srv0005.20261007b
+#   b → c: `runtime/cli.py` stops calling a revoked grant AUTHORIZED. `work
+#   grants` printed the word beside each recorded grant from
+#   `context/delegation.derivation` alone, which judges whether the delegation
+#   at the grant's ROOT authorizes now and says in its own `because` that the
+#   grant's own window and revocation are somebody else's to judge. So a grant
+#   a person had since revoked was reported `AUTHORIZED` on a line directly
+#   above its own `revoked  True`, an expired one was reported `AUTHORIZED`
+#   with an `until` already past, and the summary line counted both —
+#   measured on this node against a fixture store whose root context was still
+#   fresh at the judged instant, which is the case a stale node cannot reach
+#   and therefore the case a node full of expired contexts hides. The verb now
+#   asks `intake/daily_cycle.standing_reason`, the owner of that question, the
+#   same join `runtime/wake.py` and `_authorizing_grant` already make, and
+#   reports the two facts apart (`delegation` / `in force` / their conjunction
+#   `authorizing`). Nothing on an enforcing path changes: the envelope map,
+#   `derivation`'s states and every refusal are as they were. `tests/` is not a
+#   member of this composition, so the three regressions that come with it do
+#   not move the label. The identity moves because the label is part of the
+#   delivered bytes: a session left on `b` goes on being told that a grant a
+#   person ended is still authorizing, and `work revoke`'s own output promises
+#   the opposite verbatim.
+cachebuster: srv0005.20261007c
 
 skills:
   - name: runtime-management
