@@ -11218,6 +11218,29 @@ def cmd_work_understanding(args) -> int:
     return EXIT_OK
 
 
+#: 引文摘要的三种站位（判据在 `understanding_delta.CITED_STANDINGS`），各自在这里
+#: 怎么说。两个表，因为它们在回答两个问题：
+#:
+#: `_STANDING_IS` 给测量行用 —— 一行测量的职责是**诊断**：这次「对不上」是哪一种。
+#: `_STANDING_SAYS` 给范围行用 —— 一行范围的职责是**提议**：为什么值得去读。
+#:
+#: 说「文档已换版」只有一个条件：引文摘要确实是 manifest 记录的那一版前一版。
+#: 另外两种站位**不许**说改版：改版这件事读者没有量到。它量到的是「对不上」，
+#: 而对不上有两种，修法不同 —— 一种是文档跑了、再读一遍就清了；另一种是引文引了
+#: 一个这份 manifest 不记账的摘要，再读多少遍也清不掉，得把引文重新引一次。
+#: 站位缺失（读的是旧记录）时两处都不添话，也不说改版。
+_STANDING_IS = {
+    "CITED_IS_PREVIOUS_VERSION": "引文正是 manifest 记的上一版",
+    "CITED_IS_NEITHER_RECORDED_VERSION": "引文不是 manifest 记录的两版中的任何一版",
+    "NO_PREVIOUS_VERSION_RECORDED": "manifest 未记录上一版，无从比对",
+}
+_STANDING_SAYS = {
+    "CITED_IS_PREVIOUS_VERSION": "文档已换版",
+    "CITED_IS_NEITHER_RECORDED_VERSION": "引文摘要不在记录的两版里",
+    "NO_PREVIOUS_VERSION_RECORDED": "引文摘要不是现版",
+}
+
+
 def _measurement_line(row: dict) -> str:
     """One citation's measurement, with the two watermarks kept apart."""
     kind = row["kind"]
@@ -11237,6 +11260,9 @@ def _measurement_line(row: dict) -> str:
         agreed = row.get("lag") == 0
         return (f"{where}  摘要 {row['cited_digest']} 与 manifest "
                 f"{'一致' if agreed else '不一致'}"
+                + (f"（{_STANDING_IS[row['cited_digest_standing']]}）"
+                   if not agreed and row.get("cited_digest_standing")
+                   in _STANDING_IS else "")
                 + (f" —— {row['digest_why']}" if row.get("digest_why") else ""))
     if kind == "WHOLE_FILE":
         return (f"{where}  整份引用，没有位置"
@@ -11246,18 +11272,33 @@ def _measurement_line(row: dict) -> str:
 
 def _review_line(row: dict) -> str:
     """One range to look at. A range, never a claim."""
-    what = {"BEYOND_APPLIED": "需要往下读",
-            "REVISITED_IN_PLACE": "已读区间被改动过",
-            "WHOLE_DOCUMENT": "文档已换版"}[row["kind"]]
+    if row["kind"] == "WHOLE_DOCUMENT":
+        what = _STANDING_SAYS.get(row.get("cited_digest_standing"),
+                                  "引文摘要与 manifest 不一致")
+    else:
+        what = {"BEYOND_APPLIED": "需要往下读",
+                "REVISITED_IN_PLACE": "已读区间被改动过"}[row["kind"]]
     if row["kind"] == "BEYOND_APPLIED":
         span = f"位置 {row['to_position']}"
     elif row["kind"] == "REVISITED_IN_PLACE":
         span = f"位置 {row['from_position']}–{row['to_position']}"
+    elif not row.get("content_sha256"):
+        span = "整份重读"
+    elif row.get("cited_digest_standing") == "CITED_IS_PREVIOUS_VERSION":
+        # The one standing that supports the arrow: the cited digest IS the
+        # version the manifest records as this document's predecessor, so
+        # "from the cited one to the current one" is a transition that was
+        # measured, not an inference from a mismatch.
+        span = f"摘要 {row['cited_digest']} → {row['content_sha256']}"
+    elif row.get("prev_content_sha256"):
+        # Same shape, without the arrow and without the claim: the two versions
+        # the manifest keeps are printed beside the cited one, and which of them
+        # it is stays a question for whoever reads this.
+        span = (f"引的 {row['cited_digest']} ≠ 现版 {row['content_sha256']}、"
+                f"≠ 上一版 {row['prev_content_sha256']}")
     else:
-        # No positions to print: a document has none, and printing one would be
-        # the reader naming a span it never measured.
-        span = (f"摘要 {row['cited_digest']} → {row['content_sha256']}"
-                if row.get("content_sha256") else "整份重读")
+        span = (f"引的 {row['cited_digest']} ≠ 现版 {row['content_sha256']}；"
+                f"manifest 未记录上一版")
     detail = (f"  改 {row['revisions']['edited']} 删 {row['revisions']['deleted']}"
               if row.get("revisions") else
               f"  最新 {row['latest_create_time']}" if row.get("latest_create_time")
