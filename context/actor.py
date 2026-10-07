@@ -121,10 +121,20 @@ def contract() -> dict:
     return data
 
 
-def delegation_trust() -> dict:
-    """Operator-owned public keys; a request cannot choose its trust root."""
+def delegation_trust(path: Path | None = None) -> dict:
+    """Operator-owned public keys; a request cannot choose its trust root.
+
+    `path` exists so that a fixture can run this reader against a file it owns.
+    `verify_delegation` deliberately does NOT take one and always calls this
+    with the operator's own location: a trust root that an admission path could
+    point elsewhere would be a trust root a caller selects, which is the thing
+    this function's docstring rules out. Reading the shape of a chosen file is
+    a different act from deciding whether a signature under it is trusted, and
+    only the first one is parameterizable.
+    """
+    target = Path(path) if path is not None else DELEGATION_TRUST
     try:
-        data = json.loads(DELEGATION_TRUST.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise Rejected("DELEGATION_PROVIDER_UNBOUND: human-control trust binding unavailable") from exc
     if not isinstance(data, dict) or data.get("schema") != "serveros/human-control-trust.v1":

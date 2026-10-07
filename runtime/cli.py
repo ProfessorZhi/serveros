@@ -8457,6 +8457,46 @@ def cmd_work_issue_grant(args) -> int:
     return EXIT_OK
 
 
+def _trust_binding_module():
+    return _load_module_from(REPO_ROOT / "context" / "trust_binding.py",
+                             "serveros_context_trust_binding")
+
+
+def cmd_work_trust(args) -> int:
+    """§12 — the operator's trust root: write it, read it, say if it can be used.
+
+    A local file, so this verb does not ask the daemon. The daemon reads the
+    same path from its own HOME, and the verifier in `context/actor.py` is the
+    one authority for whether a binding is acceptable; this verb reports that
+    verdict rather than forming one.
+
+    `status` is the reading that was missing: `work grants` could already say a
+    delegation does not authorize, and nothing said whether a *durable* one was
+    reachable at all on this node. On a host where every participant runs as
+    one uid the honest answer is often UNREACHABLE, and that is a state a
+    person can act on — unlike the same fact left unstated, which reads as
+    "one human turn away" and is not.
+    """
+    module = _trust_binding_module()
+    verb = getattr(args, "trust_verb", "")
+    try:
+        if verb == "status":
+            result = module.verdict(args.path)
+        elif verb == "bind":
+            result = module.bind(args.provider, args.key_id, args.public_key,
+                                 audience=args.audience,
+                                 custodian_kind=args.custodian_kind,
+                                 custodian_name=args.custodian_name,
+                                 replace=args.replace, path=args.path)
+        else:
+            result = module.disable(args.provider, args.key_id, path=args.path)
+    except module.Refused as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_REFUSED
+    emit(result, as_json=args.json, lines=module.render(result))
+    return EXIT_OK
+
+
 def cmd_work_delegate(args) -> int:
     """§12/§5 — record a standing delegation; the root is a trusted context or nothing.
 
@@ -13637,6 +13677,51 @@ def build_parser() -> argparse.ArgumentParser:
     wk_issue.add_argument("--request", type=Path, required=True,
                           help="provider-signed evidence; contains no caller-selected trust key")
     wk_issue.set_defaults(func=cmd_work_issue_grant)
+
+    wk_trust = work_sub.add_parser(
+        "trust", help="§12 — the operator's key binding for durable delegation: "
+                      "author it, read it, and say whether a signed scope could "
+                      "be accepted on this node at all", **_COMMON)
+    trust_sub = wk_trust.add_subparsers(dest="trust_verb", required=True)
+    tr_status = trust_sub.add_parser(
+        "status", help="read the binding and report whether the durable route is "
+                       "reachable, naming what is missing rather than leaving the "
+                       "question unstated", **_COMMON)
+    tr_status.add_argument("--path", type=Path, default=None,
+                           help="the binding to read, overriding the verifier's "
+                                "own location. A fixture and an operator read the "
+                                "same shape")
+    tr_status.set_defaults(func=cmd_work_trust)
+    tr_bind = trust_sub.add_parser(
+        "bind", help="merge one trusted provider public key into the binding, "
+                     "atomically. Binds a public key only: there is no flag that "
+                     "accepts a private half, and a custodian that resolves to "
+                     "this execution's own uid is refused rather than recorded",
+        **_COMMON)
+    tr_bind.add_argument("--provider", required=True,
+                         help="the provider id a signed payload must name")
+    tr_bind.add_argument("--key-id", required=True, dest="key_id")
+    tr_bind.add_argument("--public-key", required=True, dest="public_key",
+                         help="base64 of the raw 32-byte Ed25519 public key")
+    tr_bind.add_argument("--audience", required=True,
+                         help="what a signed payload's `audience` must equal. "
+                              "Changing it later silently unbinds every key here")
+    tr_bind.add_argument("--custodian-kind", required=True, dest="custodian_kind",
+                         choices=("unix-user", "external-system", "hardware-token"))
+    tr_bind.add_argument("--custodian-name", required=True, dest="custodian_name")
+    tr_bind.add_argument("--replace", action="store_true",
+                         help="permit overwriting a key id already present — how "
+                              "a rotation is stated, as opposed to a substitution")
+    tr_bind.add_argument("--path", type=Path, default=None)
+    tr_bind.set_defaults(func=cmd_work_trust)
+    tr_off = trust_sub.add_parser(
+        "disable", help="turn one trusted key off and change nothing else — the "
+                        "named verb for \"this key may have leaked\"",
+        **_COMMON)
+    tr_off.add_argument("--provider", required=True)
+    tr_off.add_argument("--key-id", required=True, dest="key_id")
+    tr_off.add_argument("--path", type=Path, default=None)
+    tr_off.set_defaults(func=cmd_work_trust)
 
     wk_delegate = work_sub.add_parser(
         "delegate", help="§12/§5 — record a standing delegation. `--context-ref` "
