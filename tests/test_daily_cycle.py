@@ -111,7 +111,13 @@ class SelectionTests(unittest.TestCase):
     def test_missing_priority_not_invented(self):
         self.assertEqual(self.choose([item(priority=None)])["selected"],[])
     def test_does_not_fill_empty_slots_with_work(self):
-        self.assertEqual(self.choose([])['unused_slots'],2)
+        ans = self.choose([])
+        self.assertEqual(ans["spare_slots"], 2)
+        # And the COUNT THE CONTINUATION RETURNS IS NOT HERE TO BE READ. Both
+        # functions used to return `unused_slots`, meaning different things —
+        # see `test_the_two_functions_do_not_share_the_slot_count`. A caller
+        # that borrowed one for the other got no error, only a number.
+        self.assertNotIn("unused_slots", ans)
     def test_timezone_required(self):
         with self.assertRaises(ValueError):instant('2026-09-22T00:00:00')
 
@@ -192,6 +198,69 @@ class ContinuationIsNotRecommendation(unittest.TestCase):
         self.assertEqual(kept["unused_slots"], 2)
         # The same board, asked the other question, proposes two.
         self.assertEqual(self.propose(rows)["selected"], ["T-2", "T-3"])
+
+    def test_the_two_functions_do_not_share_the_slot_count(self):
+        """One board, one acceptance, two counts, and they are not the same
+        number.
+
+        `continue_focus` answers "how many of the profile's slots did the
+        ACCEPTED objectives not take" (2 − 1 = 1). `select_focus` answers "how
+        many does nothing occupy" — the rows in flight and the candidates it
+        just chose are both taken — over the same profile (T-1 in flight, T-2
+        proposed, 0 left). They were returned under one name and printed under
+        one sentence, so the recommender's number carried the continuation's
+        words; `runtime/cli.py` printed `spare 0 of 2 slot(s) the accepted
+        objectives did not take` beside `objectives 1`. Each name is asserted
+        ABSENT from the other's answer, because a caller that could read either
+        one off one name is the state this test exists to make impossible.
+        """
+        rows = [item("T-1", state="ACTIVE"), item("T-2"), item("T-3")]
+        chosen = selection(["T-1"])
+        kept = self.carry(rows, chosen)
+        proposed = self.propose(rows, accepted=chosen)
+        self.assertEqual(kept["selected"], ["T-1"])
+        self.assertEqual(proposed["carryover"], ["T-1"])
+        self.assertEqual(proposed["selected"], ["T-2"])
+        # Two answers, two numbers.
+        self.assertEqual(kept["unused_slots"], 1)
+        self.assertEqual(proposed["spare_slots"], 0)
+        # And neither function carries the other's.
+        self.assertNotIn("spare_slots", kept)
+        self.assertNotIn("unused_slots", proposed)
+
+    def test_the_partial_selection_carries_which_projects_made_it_partial(self):
+        """`accepted_state` alone is a word about a reading; which projects
+        produced it is the fact that word stands for.
+
+        Both boards below are `PARTIAL`. One is a project nobody chose in; the
+        other is a project whose authored selection was not read — a person's
+        objective that is not in `selected`, which is the difference between
+        `objectives 0` meaning "nothing was chosen" and meaning "what was chosen
+        was not read". `intake/workchain.py` writes the two apart and
+        `accepted_items` returns them; carrying only the state here is what left
+        the rendering with nothing to print but the word.
+        """
+        rows = [item("T-1")]
+        nobody = self.carry(rows, selection(["T-1"], state="PARTIAL",
+                                            why="P2: UNPRODUCED"))
+        unread = self.carry(rows, selection(["T-1"], state="PARTIAL",
+                                            why="P2: UNREADABLE"))
+        self.assertEqual(nobody["accepted_state"], "PARTIAL")
+        self.assertEqual(unread["accepted_state"], "PARTIAL")
+        self.assertEqual(nobody["accepted_why"], "P2: UNPRODUCED")
+        self.assertEqual(unread["accepted_why"], "P2: UNREADABLE")
+        # The pair is one expression in the producer, so every shape that
+        # carries the state carries the reason with it — including the shapes
+        # that decide not to plan at all, where the selection was still READ.
+        for decision in (nobody,
+                         self.carry(rows, selection(["T-1"], state="PARTIAL",
+                                                    why="P2: UNREADABLE"),
+                                    observed_at="2026-09-21T00:00:00Z"),
+                         self.carry(rows, {"state": "UNREADABLE", "items": [],
+                                           "why": "the file did not parse"})):
+            self.assertIn("accepted_state", decision)
+            self.assertTrue(decision["accepted_why"],
+                            "a shape carries the state with no reason beside it")
 
     def test_nobody_having_chosen_is_not_someone_choosing_nothing(self):
         chosen = self.carry([item()], selection([]))

@@ -2441,6 +2441,66 @@ class TestTheCycleIsWhatAPersonAcceptedNotWhatTheFabricProposes:
         assert "in flight   5" in proposal
         assert "SAMP-0007" in proposal
 
+    def test_a_partial_selection_says_which_project_made_it_partial(self, tmp_path):
+        """`accepted PARTIAL` is a claim about a READING, and the word on its own
+        does not say which reading.
+
+        The fixture has two projects and only one of them recorded a selection,
+        so the composed document already carries `sample-beta: UNPRODUCED` —
+        `work board` prints it (`今日重点   PARTIAL：…`) and `work focus` did
+        not, which left the verb that answers "what is today's focus" unable to
+        tell a board where nobody chose from one whose author's selection could
+        not be opened. Those are one word apart and opposite in meaning: the
+        second is a person's objective that is missing from `selected`.
+        """
+        done = self.focus(self.tree(tmp_path))
+        assert done.returncode == 0, done.stderr
+        cycle = self.cycle_block(done.stdout)
+        assert "accepted    PARTIAL" in cycle
+        assert "为什么：sample-beta: UNPRODUCED" in cycle
+
+    def test_and_the_state_it_prints_is_the_one_the_producer_wrote(self, tmp_path):
+        """The control, one file apart: the other way a board composes to
+        `PARTIAL`.
+
+        `sample-beta` gets a `today.yaml` that does not parse. Its state is
+        `UNREADABLE`, which is not the state the line above prints, and both
+        boards are `PARTIAL`. A line that printed a fixed sentence would show
+        the two identically — so the assertion is that the word moves with the
+        file, and that it moves to what `intake/workchain.py` wrote rather than
+        to a word this renderer chose.
+        """
+        tree = self.tree(tmp_path)
+        broken = tree["records"] / "projects" / "sample-beta" / "board"
+        broken.mkdir(parents=True)
+        (broken / "today.yaml").write_text("[ this is not a mapping\n",
+                                           encoding="utf-8")
+        done = self.focus(tree)
+        assert done.returncode == 0, done.stderr
+        cycle = self.cycle_block(done.stdout)
+        assert "accepted    PARTIAL" in cycle
+        assert "为什么：sample-beta: UNREADABLE" in cycle
+        assert "为什么：sample-beta: UNPRODUCED" not in cycle
+
+    def test_the_spare_line_counts_the_slots_nothing_occupies(self, tmp_path):
+        """The other printed sentence whose subject was not its value.
+
+        `spare` is the recommender's count of the profile's slots that nothing
+        occupies — not the rows already in flight, not the candidates it just
+        chose. It was printed under `the accepted objectives did not take`,
+        which is the CONTINUATION's count of a different set, and on this board
+        the two disagree: the accepted objectives took 1 of the profile's 2, and
+        5 rows are in flight. A reader was told the selection had saturated the
+        profile while `objectives 1` sat two lines above.
+        """
+        done = self.focus(self.tree(tmp_path))
+        assert done.returncode == 0, done.stderr
+        proposal = self.proposal_block(done.stdout)
+        assert "objectives  1" in self.cycle_block(done.stdout)
+        assert "spare       0 of 2 slot(s) 没有被已在进行的工作或本次建议占用" \
+            in proposal
+        assert "the accepted objectives did not take" not in done.stdout
+
     def test_a_chosen_objective_that_is_finished_leaves_focus_at_zero(self, tmp_path):
         """Acceptance A, on the command line.
 
