@@ -255,6 +255,13 @@ class TestThePatchProposesAndNeverConfirms:
         assert item["from_position"] is None and item["to_position"] is None
         assert item["cited_digest"] == "beef1234"
         assert item["content_sha256"] == "f" * 64
+        # Which of the manifest's two versions the citation is, carried to the
+        # person deciding. The item is a proposition someone confirms, and
+        # 「文档已换版」 and 「引文不在记录的两版里」 are two different
+        # propositions: only one of them is cleared by reading the document
+        # again, so a person must be told which one they are confirming.
+        assert item["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
+        assert item["prev_content_sha256"] is None
 
     def test_nothing_anywhere_in_the_patch_is_called_a_claim(self, behind):
         """The module reads no content, so it may not name a content assertion.
@@ -284,6 +291,62 @@ class TestThePatchProposesAndNeverConfirms:
 # --------------------------------------------------------------------------
 # a confirmation is authored input
 # --------------------------------------------------------------------------
+
+class TestAStandingTravelsWithTheProposal:
+    """「文档已换版」 and 「引文不在记录的两版里」 are two different proposals.
+
+    A person reading the patch is deciding whether the proposal is right, and
+    the two are not cleared by the same act: re-reading the document answers a
+    version change, and does not answer a citation of a digest this manifest
+    does not account for. So the standing the reader measured travels with the
+    proposal, and the arrow 「A → B」 is rendered only for the one standing where
+    a transition was actually measured — the live layer rendered it for a digest
+    that appears in none of the document's committed versions.
+    """
+
+    def _item(self, tmp_path, *, cited: str, content: str, prev):
+        records = tmp_path / "records"
+        for relative in ("information/understanding/projects",
+                         "information/raw/feishu/chats"):
+            (records / relative).mkdir(parents=True, exist_ok=True)
+        over = {"content_sha256": content}
+        if prev is not None:
+            over["prev_content_sha256"] = prev
+        write_capture(records, "people/x/oc_x/links/d", document_manifest(**over))
+        write_card(records, "projects", "p.md",
+                   heading_card(f"- `{DOC}`（sha `{cited}`）\n"))
+        return item_of(records)
+
+    def test_the_recorded_predecessor_is_carried_and_rendered_as_a_transition(self, tmp_path):
+        item = self._item(tmp_path, cited="beef1234", content="b" * 64,
+                          prev="beef1234" + "0" * 56)
+        assert item["cited_digest_standing"] == "CITED_IS_PREVIOUS_VERSION"
+        assert item["prev_content_sha256"] == "beef1234" + "0" * 56
+        line = up._item_line(item)
+        assert f"摘要 beef1234 → {'b' * 64}" in line
+        assert "整份重读" in line
+
+    def test_a_citation_that_is_neither_recorded_version_is_not_rendered_as_a_change(self, tmp_path):
+        item = self._item(tmp_path, cited="beef1234", content="b" * 64, prev="c" * 64)
+        assert item["cited_digest_standing"] == "CITED_IS_NEITHER_RECORDED_VERSION"
+        line = up._item_line(item)
+        assert "→" not in line
+        assert f"引的 beef1234 ≠ 现版 {'b' * 64}、≠ 上一版 {'c' * 64}" in line
+
+    def test_an_unrecorded_predecessor_is_not_a_recorded_change(self, tmp_path):
+        item = self._item(tmp_path, cited="beef1234", content="b" * 64, prev=None)
+        assert item["cited_digest_standing"] == "NO_PREVIOUS_VERSION_RECORDED"
+        assert item["prev_content_sha256"] is None
+        line = up._item_line(item)
+        assert "→" not in line
+        assert "manifest 未记录上一版" in line
+
+    def test_a_chat_item_carries_no_standing_because_none_was_measured(self, behind):
+        item = item_of(behind)
+        assert item["review"] == "BEYOND_APPLIED"
+        assert item["cited_digest_standing"] is None
+        assert item["prev_content_sha256"] is None
+
 
 class TestAConfirmationIsAuthoredInput:
     def test_a_decision_marks_one_item_confirmed_and_names_who(self, behind, tmp_path):
