@@ -673,7 +673,8 @@ class LocalLoopbackTransport(AgentControlTransport):
             self._admit(request)
             return service.send(session_ref_value=request.session_ref,
                                 instruction=p["instruction"],
-                                turn_idempotency_key=p["turn_idempotency_key"])
+                                turn_idempotency_key=p["turn_idempotency_key"],
+                                context_ref=request.context_ref)
         if request.verb == "session.result":
             return service.result(session_ref_value=request.session_ref,
                                   trigger_id=p.get("trigger_id"))
@@ -681,13 +682,28 @@ class LocalLoopbackTransport(AgentControlTransport):
             return service.session_inspect(request.session_ref)
         if request.verb == "session.resume":
             self._admit(request)
-            return service.resume(session_ref_value=request.session_ref)
+            return service.resume(session_ref_value=request.session_ref,
+                                  context_ref=request.context_ref)
+        # The three below forward `context_ref` for the same reason `send` and
+        # `resume` do, and the omission is worth naming because it was invisible
+        # rather than harmless. ServerOS asks TWO separate authorities about a
+        # human-gated verb: this router's resolver, whose approval input arrives
+        # on the request, and the daemon's admission, whose approval input is
+        # its own store keyed by the actor it resolves. Only the second one is
+        # reached from here, and it can resolve nobody unless the identity
+        # travels with the call. Forwarding it is not what makes these verbs
+        # succeed — the resolver above refuses them first while no approval can
+        # exist — but without it the daemon's answer is about no one in
+        # particular, which is a refusal that cannot be acted on.
         if request.verb == "session.interrupt":
-            return service.interrupt(session_ref_value=request.session_ref)
+            return service.interrupt(session_ref_value=request.session_ref,
+                                     context_ref=request.context_ref)
         if request.verb == "session.stop":
-            return service.stop(session_ref_value=request.session_ref)
+            return service.stop(session_ref_value=request.session_ref,
+                                context_ref=request.context_ref)
         if request.verb == "session.handoff":
-            return service.handoff(session_ref_value=request.session_ref)
+            return service.handoff(session_ref_value=request.session_ref,
+                                   context_ref=request.context_ref)
         raise TransportFailure(
             "ACTION_UNSUPPORTED",
             f"the loopback has no implementation for {request.verb!r}; this is a "

@@ -248,7 +248,43 @@ class SessionService:
         raise ProviderNotReady(provider_id, refusal["status"], refusal.get("reason"),
                                refusal.get("reason_text"))
 
-    def _admit(self, action: str, context: dict) -> dict:
+    def _admit(self, action: str, context: dict, *,
+               context_ref: str | None = None) -> dict:
+        """Ask ServerOS whether this action is admitted. The caller's OWN
+        identity travels with the question, not beside it.
+
+        WHY THE IDENTITY IS HERE AT ALL, and what its absence cost. `session.
+        stop`, `session.handoff` and `session.interrupt` are human-gated: the
+        daemon may not answer ALLOW unless it can resolve an actor, decide
+        whether that actor's context still authorizes, and match an approval to
+        them. All three of those are keyed by the actor, and the actor is
+        resolved FROM `context_ref` — the daemon takes it from no other place
+        (`agent.action.admit` refuses a payload that carries identity: §5).
+        This method forwarded none, so on the only production path the daemon
+        was handed a question with its subject missing and answered the only
+        way it could: `APPROVAL_REQUIRED`, before it had even looked.
+
+        It travels INSIDE `context` rather than as a further parameter, and that
+        is not tidiness. The admission callable is `(action, context)` — a
+        two-argument contract that a dozen callers, several of them test
+        fixtures, already satisfy. Widening the signature would break every one
+        of them to deliver one field, and `context` is already the channel whose
+        documented purpose is "the subject this decision is about". The subject
+        belongs in the envelope it is the subject of.
+
+        Merged rather than replaced: a caller that already put an entry in
+        `context` keeps it, and this method only ever ADDS what it was handed.
+
+        NOT AN APPROVAL CHANNEL. `approvals` is deliberately absent from this
+        signature. An approval is evidence about a person, and `approval.decide`
+        compares a presented record's fields against the request — so a caller
+        that can compute a fingerprint can satisfy it. The node's position is
+        that no Agent-facing surface grants or presents an approval
+        (`agent.approval.record` refuses on every served call); carrying one
+        through here would be that surface with a different name.
+        """
+        if context_ref is not None:
+            context = {**context, "context_ref": context_ref}
         if self.admission is None:
             raise ActionNotAdmitted(
                 f"{action} refused: no ServerOS admission authority was supplied"
@@ -330,11 +366,13 @@ class SessionService:
         return matches[0]
 
     def create(self, *, provider_id: str, agent_id: str, instruction: str,
-               idempotency_key: str, workspace: str | None = None) -> dict:
+               idempotency_key: str, workspace: str | None = None,
+               context_ref: str | None = None) -> dict:
         context = {"provider": provider_id, "agent_id": agent_id,
                    "workspace": workspace, "device_ref": self.device_ref}
         ready = self._preflight(provider_id)
-        admission = self._admit("session.create", context)
+        admission = self._admit("session.create", context,
+                                context_ref=context_ref)
         result = self._provider(provider_id).create(
             device_ref=self.device_ref, agent_id=agent_id,
             instruction=instruction, idempotency_key=idempotency_key,
@@ -344,7 +382,7 @@ class SessionService:
                 "provider_readiness": _readiness_summary(ready)}
 
     def send(self, *, session_ref_value: str, instruction: str,
-             turn_idempotency_key: str) -> dict:
+             turn_idempotency_key: str, context_ref: str | None = None) -> dict:
         """Hand one follow-up turn to an existing session.
 
         The session's own declared support is consulted before admission, the
@@ -371,7 +409,7 @@ class SessionService:
         admission = self._admit("session.send", {
             "provider": provider_id, "session_ref": session_ref_value,
             "device_ref": self.device_ref,
-        })
+        }, context_ref=context_ref)
         result = provider.send(
             device_ref=self.device_ref, provider_session_id=native_id,
             instruction=instruction, turn_idempotency_key=turn_idempotency_key,
@@ -387,7 +425,8 @@ class SessionService:
             provider_session_id=native_id, trigger_id=trigger_id,
         )
 
-    def session_control(self, *, action: str, session_ref_value: str) -> dict:
+    def session_control(self, *, action: str, session_ref_value: str,
+                        context_ref: str | None = None) -> dict:
         """Run a session-control verb through provider support, then admission.
 
         Support is checked FIRST and can only narrow. A provider's own declaration
@@ -426,7 +465,7 @@ class SessionService:
         admission = self._admit(action, {
             "provider": provider_id, "session_ref": session_ref_value,
             "device_ref": self.device_ref,
-        })
+        }, context_ref=context_ref)
         result = method(provider_session_id=native_id)
         return {**result, "session_ref": session_ref_value, "action": action,
                 "admission": admission, "provider_readiness": _readiness_summary(ready)}
@@ -440,18 +479,26 @@ class SessionService:
             f"provider {provider.provider_id!r} has no session {provider_session_id!r}"
         )
 
-    def interrupt(self, *, session_ref_value: str) -> dict:
+    def interrupt(self, *, session_ref_value: str,
+                  context_ref: str | None = None) -> dict:
         return self.session_control(action="session.interrupt",
-                                    session_ref_value=session_ref_value)
+                                    session_ref_value=session_ref_value,
+                                    context_ref=context_ref)
 
-    def resume(self, *, session_ref_value: str) -> dict:
+    def resume(self, *, session_ref_value: str,
+               context_ref: str | None = None) -> dict:
         return self.session_control(action="session.resume",
-                                    session_ref_value=session_ref_value)
+                                    session_ref_value=session_ref_value,
+                                    context_ref=context_ref)
 
-    def handoff(self, *, session_ref_value: str) -> dict:
+    def handoff(self, *, session_ref_value: str,
+                context_ref: str | None = None) -> dict:
         return self.session_control(action="session.handoff",
-                                    session_ref_value=session_ref_value)
+                                    session_ref_value=session_ref_value,
+                                    context_ref=context_ref)
 
-    def stop(self, *, session_ref_value: str) -> dict:
+    def stop(self, *, session_ref_value: str,
+             context_ref: str | None = None) -> dict:
         return self.session_control(action="session.stop",
-                                    session_ref_value=session_ref_value)
+                                    session_ref_value=session_ref_value,
+                                    context_ref=context_ref)

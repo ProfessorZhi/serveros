@@ -914,6 +914,17 @@ class AgentControlClient:
         for field_name in ("session_role", "bound_item_ref"):
             if arguments.get(field_name) is not None:
                 payload[field_name] = arguments[field_name]
+        # `approvals` is deliberately NOT built here, and the omission is the
+        # enforcement rather than an oversight. The router's
+        # `request_from_payload` accepts the key and threads it into every
+        # admission decision, so adding a line for it would make this surface a
+        # presenter of approvals — and `approval.decide` compares an approval's
+        # fields against the request, which a caller able to compute a
+        # fingerprint can satisfy. The node's position is that the interface an
+        # Agent speaks has no approval verb (`agent.approval.record` refuses on
+        # every served call, `agent.control.status` publishes it); a presenter
+        # here would replace that with a surface that does not grant approval
+        # only because nobody has typed the arguments yet.
         if arguments.get("timeout_s") is not None:
             payload["timeout_s"] = arguments["timeout_s"]
         declared = set(router_mod.action_params().get(name, ())) | set(
@@ -1192,7 +1203,36 @@ def _service(daemon, providers, device_ref: str):
         providers = [botmux_mod.BotMuxProvider(), codex_mod.CodexAppServerProvider()]
 
     def admit(action: str, context: dict) -> dict:
-        return daemon.call("agent.action.admit", {"action": action, "context": context})
+        """The admission callable, and the last seam before the daemon.
+
+        `context_ref` is lifted OUT of `context` and onto the request, because
+        that is where the daemon reads it: its handler treats `context` as the
+        subject being adjudicated and the context_ref as a field of the call,
+        and the actor is resolved from that field alone (§5 forbids the payload
+        carrying identity). So it has to be promoted here or not at all — a
+        `context_ref` left sitting inside `context` would be echoed back to the
+        caller as part of the subject and never resolved into an actor, which is
+        a human-gated verb answered before its subject was read.
+
+        It is absent by default, and absent is not "empty string": a service
+        that was not handed one sends exactly the payload it sent before this
+        line existed. That is what keeps a read-only or delegation call — the
+        overwhelming majority — decided by the contract alone, with no store
+        read and no dependence on a control-plane file being readable.
+
+        `approvals` is deliberately NOT promoted. The daemon reads approvals
+        from its own store, keyed by the actor it resolved; accepting them from
+        a caller would make this surface the grantor of the very thing
+        `agent.approval.record` refuses to grant, and `approval.decide` cannot
+        tell a fabricated record from a real one.
+        """
+        context_ref = context.get("context_ref")
+        if context_ref is None:
+            return daemon.call("agent.action.admit",
+                               {"action": action, "context": context})
+        return daemon.call("agent.action.admit", {
+            "action": action, "context": context, "context_ref": context_ref,
+        })
 
     return service_mod.SessionService(
         device_ref=device_ref, providers=list(providers), admission=admit)
