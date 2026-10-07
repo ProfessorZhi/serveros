@@ -242,10 +242,12 @@ class ServerOS:
         return self.store.cancel_run(item_id, run_id, reason=reason, actor=actor, **options)
 
     def resume_run(self, item_id: str, run_id: str):
-        run = self.store.get_run(item_id, run_id)
-        if run is None:
-            raise KeyError(f"unknown Run: {item_id}/{run_id}")
-        return run
+        # `run show` is this method, so its refusal is a CLI answer, and the
+        # sentence that used to be written here — `unknown Run: {item}/{run}` —
+        # was measured wrong twice: a Run of another Item is not unknown, and an
+        # Item that does not exist is not the Run's fault. `store.require_run`
+        # is the boundary that tells those three apart.
+        return self.store.require_run(item_id, run_id)
 
 
 WorkEngine = ServerOS
