@@ -1,6 +1,18 @@
 # ServerOS Architecture
 
-> **Canonical product architecture — product-first consolidation, 2026-09-24.**
+> **2026-10-07 current target revision:** [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md)
+> owns the daily workflow, conditional human checkpoints, research/reproduction,
+> reusable Session roles, three-project portfolio, progressive disclosure and
+> efficiency/verification policy. [Research exchange](docs/architecture/RESEARCH-EXCHANGE.md)
+> defines the CC/GPT handoff; [implementation delta](docs/architecture/IMPLEMENTATION-DELTA-20261007.md)
+> and [the current CC plan](docs/plans/plan-01-native-work-environment.md) make it executable.
+> This root remains the canonical architecture entry. Where the retained detailed
+> baseline below differs on those subjects, V2 takes precedence; existing authority,
+> security and versioned interface guarantees remain until explicitly migrated.
+> These are target requirements, not claims of deployed integration. Load only the
+> relevant section for the current task, not this entire document at session start.
+
+> **Retained detailed product/implementation baseline — 2026-09-24.**
 >
 > This document owns the intended behavior and boundaries of the broad ServerOS
 > system. README files explain it; discovery notes record its history; code and
