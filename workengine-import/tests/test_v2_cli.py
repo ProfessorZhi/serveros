@@ -147,6 +147,57 @@ class ServerOSCliTest(unittest.TestCase):
             self.assertEqual(board["items"][0]["deliverables"][0]["kind"], "report")
             self.assertIn("SRV-0001", (board_dir / "current.md").read_text(encoding="utf-8"))
 
+    def test_board_render_refuses_to_replace_a_populated_board_with_an_empty_one(self):
+        """A project whose items are absent from the state dir must not erase a populated board.
+
+        The board is a projection, but for a project whose items live somewhere the state
+        directory cannot see, the file on disk is the only record of them, and a second
+        render cannot bring them back. Fail closed; make the operator say it on purpose.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = str(Path(td) / "artifacts")
+            created = self.run_cli(
+                td, artifacts, "item", "create", "--project", "litellm", "--prefix", "LIT",
+                "--title", "billing", "--kind", "ops", "--card-locator", "/records/LIT-0001/card.yaml",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            board_dir = Path(td) / "board"
+            kept = self.run_cli(td, artifacts, "board", "render", "--project", "litellm", "--output-dir", str(board_dir))
+            self.assertEqual(kept.returncode, 0, kept.stderr)
+            self.assertEqual(json.loads(kept.stdout)["items"], 1)
+            before = (board_dir / "current.json").read_text(encoding="utf-8")
+            self.assertIn("LIT-0001", before)
+
+            # Same output directory, a project the state dir has no items for.
+            empty = self.run_cli(td, artifacts, "board", "render", "--project", "multi-user-claw", "--output-dir", str(board_dir))
+            self.assertEqual(empty.returncode, 2, empty.stdout)
+            self.assertIn("refusing to render the board", empty.stderr)
+            self.assertIn("multi-user-claw", empty.stderr)
+            self.assertEqual((board_dir / "current.json").read_text(encoding="utf-8"), before)
+
+    def test_board_render_allows_an_empty_board_on_purpose_or_on_a_first_render(self):
+        """The guard must not become the reason a board cannot be written at all."""
+        with tempfile.TemporaryDirectory() as td:
+            artifacts = str(Path(td) / "artifacts")
+            # First render of a project with no items: no board exists yet, nothing to erase.
+            fresh_dir = Path(td) / "fresh"
+            first = self.run_cli(td, artifacts, "board", "render", "--project", "litellm", "--output-dir", str(fresh_dir))
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(json.loads(first.stdout)["items"], 0)
+
+            # Overwriting it then needs the explicit flag.
+            kept_dir = Path(td) / "kept"
+            self.run_cli(
+                td, artifacts, "item", "create", "--project", "litellm", "--prefix", "LIT",
+                "--title", "billing", "--kind", "ops", "--card-locator", "/records/LIT-0001/card.yaml",
+            )
+            self.run_cli(td, artifacts, "board", "render", "--project", "litellm", "--output-dir", str(kept_dir))
+            forced = self.run_cli(
+                td, artifacts, "board", "render", "--project", "other", "--output-dir", str(kept_dir), "--allow-empty",
+            )
+            self.assertEqual(forced.returncode, 0, forced.stderr)
+            self.assertEqual(json.loads((kept_dir / "current.json").read_text(encoding="utf-8"))["items"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

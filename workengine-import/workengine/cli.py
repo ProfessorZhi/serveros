@@ -219,7 +219,10 @@ def _cmd_federation(args):
 
 def _cmd_board(args):
     if args.action == "render":
-        return render_board(ServerOSStore(_state_dir(args)), args.project, args.output_dir)
+        return render_board(
+            ServerOSStore(_state_dir(args)), args.project, args.output_dir,
+            allow_empty=getattr(args, "allow_empty", False),
+        )
     raise ValueError("unsupported board action")
 
 
@@ -353,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     board_actions = board.add_subparsers(dest="action", required=True)
     render = board_actions.add_parser("render", parents=[_common()])
     render.add_argument("--project", required=True); render.add_argument("--output-dir", required=True)
+    render.add_argument("--allow-empty", action="store_true")
 
     migrate = groups.add_parser("migrate", parents=[_common()])
     migrate_actions = migrate.add_subparsers(dest="action", required=True)
