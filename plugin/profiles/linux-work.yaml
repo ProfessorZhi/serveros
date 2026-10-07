@@ -1188,7 +1188,26 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   delivered bytes: a session left on `b` goes on being told that a grant a
 #   person ended is still authorizing, and `work revoke`'s own output promises
 #   the opposite verbatim.
-cachebuster: srv0005.20261007c
+#   c → d: `work focus` stops naming a producer that does not exist. Its
+#   paragraph about unnamed `grant_ref`s said, in the words a person reads,
+#   that "a row without a `grant_ref` is a card field nobody built" — a second,
+#   independent absence beside the empty store, with a producer of its own to
+#   go and build. Nothing authors the field: `control_join` in the same module
+#   derives it, and `PRODUCED["grant_ref"]` in that module already named the
+#   join as its producer. A reader repairing the sentence would have gone
+#   looking for a card field nothing has to carry — the same wrong-producer
+#   mistake the sentence's own first half was written to prevent. Two members
+#   change, both of them prose the CLI prints: `intake/focus_source.py` and
+#   `runtime/cli.py`. One absence remains and is what the reader now sees: the
+#   envelope is empty because no recorded delegation authorizes, which
+#   `work focus` already reports as the recorded and authorizing counts.
+#   `tests/` is not a member of this composition, so the three pins that come
+#   with it do not move the label. No enforcing path changes: `control_join`'s
+#   logic, `standing_reason`, `grant_reason` and dispatch-time
+#   `continuation_control.verify` are untouched. The identity moves because the
+#   label is part of the delivered bytes: a session left on `c` goes on handing
+#   the reader a repair task against a field no card has to carry.
+cachebuster: srv0005.20261007d
 
 skills:
   - name: runtime-management
