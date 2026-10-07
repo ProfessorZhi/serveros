@@ -632,6 +632,97 @@ class TestTheCli:
         assert "authorizing 0 of 1" in stale.stdout
         assert "DELEGATION_DOES_NOT_AUTHORIZE" in stale.stdout
 
+    def test_a_revoked_grant_is_not_authorized_while_its_root_is_still_fresh(
+            self, tmp_path):
+        """The two questions, taken apart on the one record that has both answers.
+
+        Reported from the derivation alone, this row read `AUTHORIZED` directly
+        above its own `revoked True`, and `work revoke` promises in its output
+        that `work grants` reports a revocation as `MISSING_OR_REVOKED_GRANT`.
+        The clock is the sharp part: the context authorizes at this instant
+        (the `delegation 1 of 1` assertion is what says so), so a display that
+        only looked right because every context on the node had gone stale
+        cannot pass this test.
+        """
+        env = data_root(tmp_path)
+        path = Path(env["DATA_ROOT"]) / "state/serveros/runtime/agent-control/store.json"
+        store = AgentControlStore(path)
+        store.put_context(a_context())
+        store.put_grant(a_grant())
+        # Before the instant judged below: this is a grant ended, not one that
+        # ended later than the reader is standing.
+        store.revoke_grant("grant:tokyo-2026-09-22", at="2026-09-22T11:59:00+00:00")
+
+        done = cli("work", "grants", "--now", FRESH_AT, env_extra=env)
+
+        assert done.returncode == 0, done.stderr
+        # The root context is still trusted at this instant — the fact the old
+        # label was reading, and the reason it got the other fact wrong.
+        assert "delegation  1 of 1" in done.stdout
+        assert "in force    0 of 1" in done.stdout
+        assert "authorizing 0 of 1" in done.stdout
+        assert "MISSING_OR_REVOKED_GRANT" in done.stdout
+        assert "the delegation at its root authorizes" in done.stdout
+        assert "AUTHORIZED  (in the envelope)" not in done.stdout
+        # Not the grant's absence either: the record is here and says what ended it.
+        assert "revoked       True at 2026-09-22T11:59:00+00:00" in done.stdout
+        assert "  in force      no — MISSING_OR_REVOKED_GRANT" in done.stdout
+
+    def test_a_grant_whose_own_window_closed_is_not_authorized_either(
+            self, tmp_path):
+        """The other half of «revoked or expired», from the same owner.
+
+        `derivation` judges the root context and nothing else, so a grant past
+        its `expires_at` derives from a context that authorizes perfectly well.
+        `standing_reason` is the reader that owns the window, and it is asked
+        here rather than a second comparison being written beside it.
+        """
+        env = data_root(tmp_path)
+        path = Path(env["DATA_ROOT"]) / "state/serveros/runtime/agent-control/store.json"
+        store = AgentControlStore(path)
+        store.put_context(a_context())
+        store.put_grant(a_grant(expires_at="2026-09-22T11:00:00+00:00"))
+
+        done = cli("work", "grants", "--now", FRESH_AT, env_extra=env)
+
+        assert done.returncode == 0, done.stderr
+        assert "delegation  1 of 1" in done.stdout
+        assert "authorizing 0 of 1" in done.stdout
+        assert "GRANT_NOT_CURRENT" in done.stdout
+        assert "AUTHORIZED  (in the envelope)" not in done.stdout
+
+    def test_the_module_report_is_unchanged_and_the_join_is_the_cli_s(
+            self, tmp_path):
+        """Where the second judgement lives, pinned so it does not migrate.
+
+        `envelopes`' `state` stays the derivation's answer — a revoked grant
+        whose root authorizes is `AUTHORIZED` there, as the store-level test
+        above pins from the other side — and the envelope still holds it, so
+        `work focus`'s join and `runtime/wake.py`'s own reading of the same
+        report are untouched. What changed is that this verb now reports the
+        grant's own life beside it: a `revoked` comparison written into the
+        module would be a second judge of a question `standing_reason` owns.
+        """
+        env = data_root(tmp_path)
+        path = Path(env["DATA_ROOT"]) / "state/serveros/runtime/agent-control/store.json"
+        store = AgentControlStore(path)
+        store.put_context(a_context())
+        store.put_grant(a_grant())
+        store.revoke_grant("grant:tokyo-2026-09-22", at="2026-09-22T11:59:00+00:00")
+
+        done = cli("work", "grants", "--now", FRESH_AT, "--json", env_extra=env)
+        payload = json.loads(done.stdout)
+        row = payload["delegations"]["rows"][0]
+
+        assert row["state"] == "AUTHORIZED"
+        assert row["revoked"] is True
+        assert "grant:tokyo-2026-09-22" in payload["delegations"]["envelopes"]
+        assert payload["delegations"]["summary"]["authorizing"] == 1
+        assert payload["in_force"] == {
+            "grant:tokyo-2026-09-22": "MISSING_OR_REVOKED_GRANT"}
+
+
+
     def test_work_grants_refuses_a_clock_it_cannot_read(self, tmp_path):
         env = data_root(tmp_path)
 
