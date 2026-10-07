@@ -1167,7 +1167,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 # producer that silently erases the requirement board's `<!-- human:begin -->`
 # section and exits 0 while doing it. The bump is what stops a session from
 # running the eraser under a version string that claims it was fixed.
-cachebuster: srv0005.20261007a
+cachebuster: srv0005.20261007b
 
 skills:
   - name: runtime-management
