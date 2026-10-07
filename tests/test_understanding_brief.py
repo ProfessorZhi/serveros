@@ -1188,15 +1188,19 @@ class TestDocumentReading:
                      "--reading", reading, "--delegation", delegation_file(tmp_path), "--json")
         assert result.returncode != 0
         # The refusal names the manifest and gives the reason the reader measured
-        # — the recorded digest no longer describes the body beside it — rather
-        # than only "that span is gone". Two floors can catch this drift, the
-        # reader's comparison of the record against the file and the writer's
-        # re-read of the admitted bytes, and which one catches it is an
-        # implementation fact; that the person is told which document drifted and
-        # why is not. `read_packet`'s own drift refusal is covered at
-        # `tests/test_source_reading.py:40-49`.
+        # — the recorded digest describes neither the body beside it nor that
+        # body's content — rather than only "that span is gone". Two floors can
+        # catch this drift, the reader's comparison of the record against the
+        # file and the writer's re-read of the admitted bytes, and which one
+        # catches it is an implementation fact; that the person is told which
+        # document drifted and why is not. `read_packet`'s own drift refusal is
+        # covered at `tests/test_source_reading.py:40-49`.
         assert "links/doc/manifest.json" in result.stderr
-        assert "does not describe this document" in result.stderr
+        assert "cannot be read as this document's version" in result.stderr
+        # Both hashes the reader took are named, so the sentence is checkable:
+        # the body as it stands, and the body the collector's newline removed.
+        assert result.stderr.count("hashes to") == 1
+        assert "without the trailing newline its collector appends" in result.stderr
         assert "Read the current proposal" in result.stderr
         assert (records / CARD).read_bytes() == before
 

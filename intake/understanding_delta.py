@@ -77,18 +77,40 @@ A RECORDED DIGEST IS NOT A MEASURED BODY
 ----------------------------------------
 `content_identity` for a document range is the digest the manifest RECORDED, and
 that is a fact about the capture's own record until the file it names is hashed.
-On this node's tree it is often not that file's digest: of the twenty-one link
-manifests under `information/raw`, fourteen record a 64-hex value that is not the
-`content.md` beside them and three record a twelve-character prefix of it. So
-before this module compares a card's digest to a document's record, or hands that
-record out as a range's identity, it hashes the file beside the manifest — the
-one prior question, asked in one place. When the two disagree the citation is
-unmeasured with the manifest named as the reason, and no range is formed: a range
-pinned to a digest no file here has would be a confirmation of a revision nobody
-can read. `source_reading.read_packet` enforces the same rule one floor down by
-refusing to build a packet whose body does not hash to its manifest; this module
-states it where the card is judged, rather than letting a reading arrive at that
-refusal with the pin already emitted.
+On this node's tree that hash often does not come out equal: of the twenty-one
+link manifests under `information/raw`, four record exactly the `content.md`
+beside them, three record a twelve-character prefix of it, and fourteen record a
+64-hex value that is not what `sha256sum content.md` prints. Those fourteen are
+not records of other bytes — see the section below — but a reader comparing the
+two strings cannot tell that apart from a record of nothing, so the file beside
+the manifest has to be hashed before either question is answered. So before this
+module compares a card's digest to a document's record, or hands that record out
+as a range's identity, it hashes the file beside the manifest — the one prior
+question, asked in one place.
+
+THAT HASH IS TAKEN TWICE, AND THE SECOND ONE IS NOT OPTIONAL
+-----------------------------------------------------------
+The fourteen are the reason. Their record IS the digest of the body beside them,
+taken before the collector appended the newline it writes — `records`' own
+`expand_feishu_doc.py` says so in `render_doc`'s docstring: before 2026-09-14
+`main()` wrote `redacted + "\n"` and hashed `sha256(redacted)`, and it names the
+fifteen manifests that were written that way and never migrated. This node's tree
+now shows fourteen of them and none in any other class; the count is the
+collector's, the set is measured here (21 link manifests, of which 4 match the
+file exactly and 3 more match as a prefix). A reader that
+hashed the file once and stopped at `sha256(content.md) != recorded` would report
+its own failed comparison as a fact about the document, and would close a card
+that cites a record which in fact describes it. So the file's content without
+that trailing newline is hashed too, and a record matching either hash is a
+record of THIS document. Only a record matching neither is the finding — the
+manifest's, not the card's: then the citation is unmeasured with both hashes
+named as the reason, and no range is formed, because a range pinned to a digest
+no file here has would be a confirmation of a revision nobody can read.
+
+`source_reading.read_packet` enforces the same rule one floor down by refusing to
+build a packet whose body does not hash to its manifest; this module states it
+where the card is judged, rather than letting a reading arrive at that refusal
+with the pin already emitted.
 
 THE DIGEST IS ONE-WAY, AND THE NO-CLAIM RULE STANDS
 ---------------------------------------------------
@@ -167,19 +189,41 @@ CITED_STANDINGS = (CITED_IS_PREVIOUS_VERSION,
 #: Whether the digest a manifest RECORDS describes the document file beside it.
 #: Everything above compares a card's digest against that recorded value as
 #: though it were the document's version, and on this node it often is not: of
-#: the twenty-one link manifests under `information/raw`, fourteen record a
-#: 64-hex value that is not the `content.md` beside them and three record a
-#: twelve-character prefix of it. So the recorded value is a fact about what the
-#: CAPTURE recorded until the file it names is hashed, and this is that hash.
+#: the twenty-one link manifests under `information/raw`, four record exactly
+#: the `content.md` beside them, three record a twelve-character prefix of it,
+#: and fourteen record a 64-hex value that is NOT that file's hash. So the
+#: recorded value is a fact about what the CAPTURE recorded until the file it
+#: names is hashed, and this is that hash.
 #:
-#: FOUR ANSWERS, because three of them are not disagreements and two of them do
+#: The fourteen are the reason the last test below has to be the right one.
+#: `sha256sum` says they disagree with the file; the collector says why — its
+#: own `render_doc` docstring: before 2026-09-14 `main()` wrote `redacted + "\n"`
+#: and hashed `redacted`, and the manifests it wrote then were never migrated.
+#: So the value these fourteen record IS the digest of the body the collector
+#: read, and the byte between them was added by the writer, not by a later edit.
+#: A reader that stops at `sha256(content.md) != recorded` and calls that "the
+#: record describes other bytes" reports its own failed comparison as a fact
+#: about the document — which is the defect this module keeps committing, here
+#: committed by the fix for the previous instance of it. Hence the second test:
+#: hash the body the way its own writer hashed it before concluding anything.
+#:
+#: FIVE ANSWERS, because four of them are not disagreements and three of them do
 #: not stop the comparison:
 #:
 #:   * the file beside the manifest hashes to the recorded value, or to a longer
 #:     digest the recorded value begins — the record IS this body's digest, and
 #:     the comparison means what it says;
-#:   * it hashes to something else — the record describes other bytes, so the
-#:     comparison is not made: the finding is the manifest's, not the card's;
+#:   * it hashes to something else, but the file WITHOUT the trailing newline
+#:     the collector appends hashes to the recorded value — the record is this
+#:     body's digest under the convention in force when it was written, so this
+#:     is the same ANSWER as the first and the comparison is made. A distinct
+#:     value rather than the first with a note, because the two arrived by
+#:     hashing different byte strings and one value for two measurements is the
+#:     collapse this whole block exists to prevent;
+#:   * it hashes to something else under BOTH conventions — only here does the
+#:     record describe other bytes, and only here is the comparison not made:
+#:     the finding is the manifest's, not the card's. Nothing on this node is in
+#:     this class today, so the sentence below is a guard rather than a report;
 #:   * no readable file sits beside the manifest, so there is no body here to
 #:     compare with. Not made either, for the same reason: an unreadable body is
 #:     not evidence about the card;
@@ -193,17 +237,22 @@ CITED_STANDINGS = (CITED_IS_PREVIOUS_VERSION,
 #:     through `source_reading.read_packet` with the identity expected, and
 #:     `read_packet` refuses when the admitted copy does not hash to it.
 RECORDED_IS_THIS_FILES_DIGEST = "RECORDED_IS_THIS_FILES_DIGEST"
+RECORDED_IS_THIS_FILES_CONTENT_DIGEST = "RECORDED_IS_THIS_FILES_CONTENT_DIGEST"
 RECORDED_IS_NOT_THIS_FILES_DIGEST = "RECORDED_IS_NOT_THIS_FILES_DIGEST"
 RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE = \
     "RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE"
 RECORDED_IS_A_BODY_HELD_ELSEWHERE = "RECORDED_IS_A_BODY_HELD_ELSEWHERE"
 RECORDED_DIGEST_STANDINGS = (RECORDED_IS_THIS_FILES_DIGEST,
+                             RECORDED_IS_THIS_FILES_CONTENT_DIGEST,
                              RECORDED_IS_NOT_THIS_FILES_DIGEST,
                              RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE,
                              RECORDED_IS_A_BODY_HELD_ELSEWHERE)
 #: The standings under which the comparison is NOT made. Named once because
 #: `_measure_one` decides the row and `judge_card` counts the rows, and two
-#: readers of one rule drift.
+#: readers of one rule drift. `RECORDED_IS_THIS_FILES_CONTENT_DIGEST` is
+#: deliberately absent: the record describes this body, so the comparison is
+#: made, and a standing that answered "yes, this file" would have no business
+#: stopping one.
 UNCOMPARABLE_RECORDED_STANDINGS = (RECORDED_IS_NOT_THIS_FILES_DIGEST,
                                    RECORDED_WAS_NOT_CHECKED_AGAINST_THE_FILE)
 
@@ -248,16 +297,18 @@ MEASUREMENT_PRODUCED = {
     # Present exactly when the manifest recorded a digest AND the card cited one:
     # that is when this reader asked the prior question. `digest_why` is present
     # exactly when the standing is in UNCOMPARABLE_RECORDED_STANDINGS, i.e. when
-    # the comparison was not made at all; a row whose recorded digest does not
-    # describe a body on this node is not a measurement of the card — it is a
-    # measurement of the manifest.
+    # the comparison was not made at all; a row whose recorded digest describes
+    # other bytes under both of the collector's conventions is not a measurement
+    # of the card — it is a measurement of the manifest.
     "recorded_digest_standing": "one of RECORDED_DIGEST_STANDINGS: how the digest "
                                 "this manifest recorded stands to the body it "
-                                "names — this file's own digest, other bytes, no "
-                                "body here to compare with, or a body held under "
-                                "an asset root this reader was not given — "
-                                "decided by hashing the file beside the manifest "
-                                "where there is one",
+                                "names — this file's own digest, the digest of "
+                                "this file's content before the newline its "
+                                "collector appends, other bytes under both "
+                                "readings, no body here to compare with, or a "
+                                "body held under an asset root this reader was "
+                                "not given — decided by hashing the file beside "
+                                "the manifest where there is one",
     "coverage": "the source component states that are not COMPLETE, copied from "
                 "capture_coverage so a lag and a capture gap stay apart",
     "unresolved_why": "why a cited path matched nothing, or why a cited reach "
@@ -693,7 +744,16 @@ def recorded_digest_standing(recorded: str, key: str, shape: str | None,
     asked. On this node it frequently is not, so the answer is measured here,
     once, from the file's own bytes.
 
-    A web capture is the fourth answer rather than a second one: its body is not
+    TWO HASHES, because the collector has written one byte string and hashed
+    another. `information/raw/expand_feishu_doc.py` appends a newline to the
+    body it writes and, before 2026-09-14, hashed the string without it; its
+    `render_doc` docstring records the change and the fourteen manifests it left
+    behind. So a record that matches neither `sha256(body)` nor
+    `sha256(body)` minus that trailing newline is the only one that describes
+    other bytes, and a reader that skipped the second hash would report its own
+    failed comparison as a fact about the document.
+
+    A web capture is the fifth answer rather than a second one: its body is not
     the manifest's sibling but a verification copy named inside the manifest and
     living under a caller-owned asset root, which this reader is not given and
     must not go looking for. The comparison is still made — the record is a
@@ -714,6 +774,20 @@ def recorded_digest_standing(recorded: str, key: str, shape: str | None,
     measured = hashlib.sha256(body).hexdigest()
     if measured.startswith(recorded):
         return RECORDED_IS_THIS_FILES_DIGEST, ""
+    if body.endswith(b"\n"):
+        # The same file, hashed the way the process that wrote it hashed it
+        # before appending the newline. Not a weaker comparison: the record is
+        # the digest of exactly these bytes, and the one byte between the two
+        # strings is the writer's.
+        content = hashlib.sha256(body[:-1]).hexdigest()
+        if content.startswith(recorded):
+            return RECORDED_IS_THIS_FILES_CONTENT_DIGEST, ""
+        return RECORDED_IS_NOT_THIS_FILES_DIGEST, (
+            f"the manifest records `content_sha256` {recorded[:12]} and the "
+            f"`content.md` beside it hashes to {measured[:12]} — and to "
+            f"{content[:12]} without the trailing newline its collector "
+            f"appends — so the recorded digest is neither, and cannot be read "
+            f"as this document's version")
     return RECORDED_IS_NOT_THIS_FILES_DIGEST, (
         f"the manifest records `content_sha256` {recorded[:12]} and the "
         f"`content.md` beside it hashes to {measured[:12]}, so the recorded "
@@ -1174,11 +1248,12 @@ def _content_identity(row: dict, kind: str, low, high,
 
     For a WHOLE_DOCUMENT the value is the manifest's recorded digest, which is
     the one this module had to hash the file to accept: a document row carries a
-    digest only when `recorded_digest_standing` is
-    `RECORDED_IS_THIS_FILES_DIGEST`, and a range is proposed only for a row that
-    was measured. So a range that exists is pinned to a version some file here
-    has, and a document whose record describes other bytes is a card that is
-    unmeasured rather than a range pinned to nothing.
+    digest only when `recorded_digest_standing` is one of the two standings that
+    say the record describes this body — the file itself, or its content before
+    the newline its collector appends — and a range is proposed only for a row
+    that was measured. So a range that exists is pinned to a version some file
+    here has, and a document whose record describes other bytes is a card that
+    is unmeasured rather than a range pinned to nothing.
     """
     if kind == "WHOLE_DOCUMENT":
         recorded = row.get("content_sha256")
