@@ -317,6 +317,45 @@ class TestWhatCommitsWithoutAPerson:
         assert "'bruce'" in result["awaiting"][0]["confirmation_why"]
         assert "'alice'" in result["awaiting"][0]["confirmation_why"]
 
+    def test_a_delegation_that_names_no_subject_is_not_the_same_as_no_delegation(
+            self, tmp_path):
+        """Two facts a boolean merged, and they have different next actions: no
+        grant at all means somebody has to record one; a grant that names no
+        subject means somebody has to widen the one already on the record. Both
+        leave every claim awaiting — the safe direction does not change — but a
+        report that gave them one sentence would send one of the two readers to
+        the wrong producer."""
+        root = records_tree(tmp_path)
+        bare = resolved(tmp_path, root, reading(root),
+                        delegation={"covers": [], "until": None,
+                                    "granted_by": "user", "source": "session-1"})
+        none = resolved(tmp_path, root, reading(root))
+        for result in (bare, none):
+            assert result["committed"] == []
+            assert result["awaiting"][0]["confirmation"] == us.AWAITING_DECISION
+        assert ("names no subject" in bare["awaiting"][0]["confirmation_why"])
+        assert ("no standing delegation covers this work"
+                not in bare["awaiting"][0]["confirmation_why"])
+        assert ("no standing delegation covers this work"
+                in none["awaiting"][0]["confirmation_why"])
+        assert bare["awaiting"][0]["confirmation_why"] != \
+            none["awaiting"][0]["confirmation_why"]
+        # The delegation is still reported as the one it is: a claim awaiting a
+        # person does not make the grant absent.
+        assert bare["delegation"] == {"covers": [], "until": None,
+                                      "granted_by": "user", "source": "session-1"}
+        assert none["delegation"] is None
+
+    def test_a_delegation_that_is_not_an_object_is_refused(self, tmp_path):
+        """`None` is an absent delegation and is answered; a string is a value
+        somebody wrote that this module could not read, and reading it as absent
+        would put a claim in a card and report the result as nothing having
+        authorized it."""
+        root = records_tree(tmp_path)
+        with pytest.raises(us.Refused) as caught:
+            resolved(tmp_path, root, reading(root), delegation="alice")
+        assert "not an object carrying a `covers`" in str(caught.value)
+
     def test_the_delegation_is_copied_and_not_paraphrased(self, tmp_path):
         root = records_tree(tmp_path)
         grant = {"covers": ["alice"], "until": "2026-10-01",
@@ -365,6 +404,66 @@ class TestWhatCommitsWithoutAPerson:
                           delegation={"covers": ["alice"], "until": None,
                                       "granted_by": "user", "source": "session-1"})
         assert [c["id"] for c in result["committed"]] == ["c1"]
+
+
+# --------------------------------------------------------------------------
+# the scope is read as a scope, not as a yes/no
+# --------------------------------------------------------------------------
+
+class TestTheScopeIsReadAsAScope:
+
+    def test_an_absent_delegation_and_an_unwritten_scope_are_both_empty(
+            self, tmp_path):
+        """`[]` is an answer and not an absence, and this function cannot tell
+        the two apart — which is why it does not try: a boolean returned here
+        would have merged «there is no grant» with «the grant names nothing»,
+        and the caller, which holds the delegation, is the one that can."""
+        assert us.delegation_scope(None) == []
+        assert us.delegation_scope({}) == []
+        assert us.delegation_scope({"covers": None}) == []
+        assert us.delegation_scope({"covers": []}) == []
+
+    def test_a_scope_comes_back_as_written(self, tmp_path):
+        assert us.delegation_scope({"covers": ["alice", "bruce"]}) == \
+            ["alice", "bruce"]
+        assert us.delegation_scope({"covers": ["alice"]}) == ["alice"]
+
+    @pytest.mark.parametrize("scope", ["", "alice", [""], [" "],
+                                       ["alice", ""], [123], 123, {"a": 1}])
+    def test_a_scope_that_is_not_a_scope_refuses_the_reading(self, tmp_path, scope):
+        """The defect this guards, stated as the behaviour that used to happen.
+
+        Read as a scope, EVERY one of these WIDENS the grant rather than failing
+        to match it: `[""]` is a prefix of every subject there is, so one blank
+        entry inside an otherwise correct list covers the whole tree; a bare
+        `"alice"` is iterated character by character, so it covers `a`, `l`, `i`,
+        `c` and `e`; `[123]` is stringified into a prefix nobody wrote. Each of
+        them used to commit an ordinary fact on the grant's own authority — and
+        the commit is the smaller half, because the sentence the resolution
+        carries names the SUBJECT, so a blank entry, a character iteration and a
+        real prefix printed identically and the misreading left no trace.
+
+        `[" "]` and `123` did not commit; they awaited, which is the right
+        outcome reached by an accident of string matching rather than by a
+        refusal, and they are here because a rule stated for the whole shape is
+        the one that stays true.
+        """
+        root = records_tree(tmp_path)
+        with pytest.raises(us.Refused) as caught:
+            resolved(tmp_path, root, reading(root),
+                     delegation={"covers": scope, "until": None,
+                                 "granted_by": "user", "source": "session-1"})
+        assert "not a list of subject prefixes" in str(caught.value)
+
+    def test_a_refusal_says_what_reading_it_anyway_would_have_done(self, tmp_path):
+        """The sentence is the whole product here: a caller handed only «that is
+        not a list» goes and looks at the JSON, and one handed the consequence
+        knows a widened grant is what is being prevented."""
+        with pytest.raises(us.Refused) as caught:
+            us.delegation_scope({"covers": "litellm"})
+        message = str(caught.value)
+        assert "not a list of subject prefixes" in message
+        assert "the grant never named" in message
 
 
 # --------------------------------------------------------------------------

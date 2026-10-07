@@ -826,7 +826,12 @@ def resolve(reading: dict, current: dict, delegation: dict | None,
             f"from_position={low!r}, to_position={high!r}. Without it no "
             f"citation can be checked, and an unchecked citation is a claim "
             f"nobody can refuse")
-    delegable = _delegation_covers(delegation)
+    # Read once, before any claim is looked at, and read as a SCOPE rather than
+    # as a yes/no. A `covers` that is not a list of subject prefixes is refused
+    # here rather than matched against, and the empty scope is left as an answer
+    # the sentences below can tell apart from there being no delegation at all.
+    # See `delegation_scope` for what reading one anyway would have covered.
+    scope = delegation_scope(delegation)
     mine = acceptance_for(reading, accepted)
     accepting = set(mine["claims"]) if mine else set()
 
@@ -876,7 +881,7 @@ def resolve(reading: dict, current: dict, delegation: dict | None,
                                  "committing it into a card is a separate, "
                                  "visible act a person performs"})
             continue
-        confirmation, why = _confirmation_for(claim, delegation, delegable)
+        confirmation, why = _confirmation_for(claim, delegation, scope)
         if claim["id"] in accepting:
             if confirmation == AGENT_RECONCILED:
                 # The delegation had already committed this one on its own
@@ -952,11 +957,59 @@ def _check_binding(reading: dict, current: dict) -> str | None:
             "changed")
 
 
-def _delegation_covers(delegation: dict | None) -> bool:
-    """Whether there is a grant at all. Its SCOPE is checked per claim."""
+def delegation_scope(delegation: dict | None) -> list[str]:
+    """The subject prefixes this delegation names, or a refusal.
+
+    `[]` is an answer and not an absence: a delegation whose `covers` is missing
+    or empty names no subject and so covers nothing, which is a different fact
+    from there being no delegation at all. This function cannot tell the two
+    apart and does not pretend to — the caller holds the delegation itself, and
+    a boolean returned here would have merged them.
+
+    A `covers` that is not a list of non-blank strings is not a narrow scope. It
+    is a value that was never a scope, and every way of reading one anyway
+    WIDENS the grant instead of refusing it:
+
+      * a bare string is iterated character by character, so `"litellm"` covers
+        every subject beginning with `l`, `i`, `t`, `e` or `m`, subjects the
+        word has nothing to do with included;
+      * `""` is a prefix of every subject there is, so one blank entry inside an
+        otherwise correct list turns a bounded scope into an unbounded one;
+      * a number is coerced by `str()` into a prefix nobody wrote.
+
+    Each of the three then commits an ordinary fact on the grant's own
+    authority, and the commit is the smaller half of it: the sentence a
+    resolution carries names the SUBJECT the delegation covers, so a blank
+    entry, a character iteration and a real prefix are reported in this module's
+    own words and print IDENTICALLY. A misread scope that leaves no trace in the
+    output is the one thing a reader has no way to check.
+
+    `runtime/cli._delegation_from_grant` refuses the same values before they
+    reach here, and it asks THIS function, so the path that reads a recorded
+    grant and the path that reads a caller's file cannot answer the question
+    differently. That is `intake/daily_cycle.standing_reason`'s arrangement
+    applied to the scope rather than to the window.
+    """
+    if delegation is None:
+        return []
     if not isinstance(delegation, dict):
-        return False
-    return bool(delegation.get("covers"))
+        raise Refused(
+            f"the delegation is {delegation!r}, which is not an object carrying "
+            f"a `covers`. A delegation that could not be read is not an absent "
+            f"one: read as absent it would put a claim in a card and report the "
+            f"result as nothing having authorized it")
+    covers = delegation.get("covers")
+    if covers is None:
+        return []
+    if not isinstance(covers, list) or not all(
+            isinstance(prefix, str) and prefix.strip() for prefix in covers):
+        raise Refused(
+            f"`covers` is {covers!r}, which is not a list of subject prefixes. "
+            f"A prefix is what a subject is matched against, and a scope this "
+            f"module cannot read is not a broad one — reading it as one would "
+            f"commit, on the grant's own authority, claims the grant never "
+            f"named, and would report the result as a scope the grant does name")
+    return list(covers)
 
 
 def _delegation_as_written(delegation: dict | None) -> dict | None:
@@ -968,8 +1021,24 @@ def _delegation_as_written(delegation: dict | None) -> dict | None:
 
 
 def _confirmation_for(claim: dict, delegation: dict | None,
-                      delegable: bool) -> tuple[str, str]:
-    """`(confirmation, why)` for one claim. The why is the point of the pair."""
+                      scope: list[str]) -> tuple[str, str]:
+    """`(confirmation, why)` for one claim. The why is the point of the pair.
+
+    `scope` is `delegation_scope`'s answer, and `delegation` is passed as well
+    because two facts a boolean merged are kept apart here: there being no
+    delegation at all, and a delegation that names no subject. Both leave every
+    claim awaiting a person — the safe direction, unchanged — but they are
+    different situations and the second is the one this module is most likely to
+    be asked about, since the verb that resolves a recorded grant warns about an
+    empty scope as it hands the reading over. A person who wrote a grant with no
+    scope and a person who wrote no grant have different next actions, and a
+    report that gave them one sentence would send one of them to the wrong
+    producer.
+
+    Neither side of the match is coerced with `str()`: the subject is validated
+    where the reading is read, and a prefix that is not a string is refused in
+    `delegation_scope` rather than stringified into one.
+    """
     if claim["touches"]:
         return AWAITING_DECISION, (
             f"this claim changes {', '.join(claim['touches'])}, which is a "
@@ -979,15 +1048,20 @@ def _confirmation_for(claim: dict, delegation: dict | None,
             f"a {claim['kind']} is about what to do, and what to do is not a "
             f"machine's to accept; machine facts commit inside a delegation and "
             f"nothing else does")
-    if not delegable:
+    if delegation is None:
         return AWAITING_DECISION, (
             "no standing delegation covers this work, so nothing commits on its "
             "own authority — the claims are prepared and a person accepts them")
-    covers = (delegation or {}).get("covers") or []
-    if not any(str(claim["subject"]).startswith(str(prefix)) for prefix in covers):
+    if not scope:
+        return AWAITING_DECISION, (
+            "the standing delegation names no subject, so it covers nothing and "
+            "nothing commits on its own authority — the claims are prepared and "
+            "a person accepts them. This is not a missing grant: the grant is "
+            "the one on the record and the scope is what it left unwritten")
+    if not any(claim["subject"].startswith(prefix) for prefix in scope):
         return AWAITING_DECISION, (
             f"the standing delegation covers "
-            f"{', '.join(repr(str(c)) for c in covers)}, which does not include "
+            f"{', '.join(repr(c) for c in scope)}, which does not include "
             f"{claim['subject']!r}")
     return AGENT_RECONCILED, (
         f"a {claim['kind']} inside the standing delegation covering "
