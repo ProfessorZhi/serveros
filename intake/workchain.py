@@ -99,6 +99,13 @@ PRESENT = "PRESENT"
 MISSING = "MISSING"
 NOT_YET_REQUIRED = "NOT_YET_REQUIRED"
 
+#: The delivery surface's two faces. `NOT_DECLARED` is not a shortfall and is
+#: not the same fact as `UNREADABLE`: a card that states no delivery surface
+#: cannot be read as one whose surface is unmet, and neither can be read as one
+#: that was never read.
+DECLARED = "DECLARED"
+NOT_DECLARED = "NOT_DECLARED"
+
 #: The completion boundary's own vocabulary. `NOT_ASSESSED` is here so that
 #: "nothing was owed at this state" and "everything owed was found" are two
 #: answers rather than one: a check that was never run is not a check that
@@ -527,14 +534,21 @@ def _resolve_from_ref(item_dir: Path, rule: dict, tree,
     return None
 
 
-def _read_from_the_authority(item_dir: Path, rule: dict, tree, skeletons,
-                             name: str) -> dict:
-    """The row a lagging checkout borrows from the authority, or nothing.
+def _authority_bytes(item_dir: Path, rule: dict, tree,
+                     ) -> tuple[str, str, int, str | None] | None:
+    """What the authority holds for a document this checkout never had.
 
-    Returns the fields to merge when the authority holds a document this tree
-    never had, and an empty dict when it does not — in which case the caller
-    falls through to the absence it was always going to report. Three
-    conditions have to hold at once, and each stops a different mistake:
+    The ONE place that decides a lagging checkout may borrow a document from
+    the ref. Two readers ask it — the `● name` row in `_documents`, and, since
+    2026-10-08, `load_card` for the card itself — and they share the decision
+    so that a header and the line directly beneath it cannot come to different
+    answers about the same file. That disagreement is not hypothetical: the
+    documents row reported `card.yaml PRESENT ← 读自 origin/main@d7f79d80`, and
+    the two lines above it reported `UNPRODUCED —— no card` and `卡片
+    UNRESOLVED`, because those two had asked a different question of a
+    different surface.
+
+    Three conditions have to hold at once, and each stops a different mistake:
 
       * the tree is BEHIND the ref. Level with it there is nothing to borrow,
         and ahead of it the tree is the newer surface;
@@ -543,27 +557,47 @@ def _read_from_the_authority(item_dir: Path, rule: dict, tree, skeletons,
       * the bytes come back. Presence alone would let a row claim to have been
         read when only its existence was established.
 
-    The state becomes PRESENT because the document IS read — the bytes are the
-    authority's and the skeleton check runs on them, which is what the previous
-    version of this could not do while it reported only the cause. What keeps
-    that honest is `read_from` naming the surface on the row itself, and `why`
-    saying that nothing was written into the checkout to make it readable.
+    Returns `(the path as the ref spells it, how it resolved, how many, text)`.
+    `text` is None for a `directory` resolution, which holds a SET of documents
+    and is not one text to read.
     """
     if tree.state != TREE_BEHIND:
-        return {}
+        return None
     found = _resolve_from_ref(item_dir, rule, tree)
     if found is None:
-        return {}
+        return None
     relpath, how, count = found
     if tree.holds_at_head(relpath) is not False:
         # Either this tree's HEAD has it — so it was removed from the working
         # tree here, and this tree is the party to ask — or nobody established
         # whether it does. An unestablished question is not a licence to read
         # from somewhere else, which is this module's whole defect.
-        return {}
+        return None
     text = None if how == "directory" else tree.read_text(relpath)
     if how != "directory" and text is None:
+        return None
+    return relpath, how, count, text
+
+
+def _read_from_the_authority(item_dir: Path, rule: dict, tree, skeletons,
+                             name: str) -> dict:
+    """The row a lagging checkout borrows from the authority, or nothing.
+
+    Returns the fields to merge when the authority holds a document this tree
+    never had, and an empty dict when it does not — in which case the caller
+    falls through to the absence it was always going to report. The decision
+    itself is `_authority_bytes`'.
+
+    The state becomes PRESENT because the document IS read — the bytes are the
+    authority's and the skeleton check runs on them, which is what the previous
+    version of this could not do while it reported only the cause. What keeps
+    that honest is `read_from` naming the surface on the row itself, and `why`
+    saying that nothing was written into the checkout to make it readable.
+    """
+    found = _authority_bytes(item_dir, rule, tree)
+    if found is None:
         return {}
+    relpath, how, count, text = found
     which = relpath.rsplit("/", 1)[-1]
     return {
         "state": PRESENT,
@@ -767,6 +801,18 @@ def _read_yaml(path: Path) -> tuple[dict | None, str | None]:
         return None, "not present"
     except OSError as exc:
         return None, f"unreadable: {exc}"
+    return _parse_yaml_text(text)
+
+
+def _parse_yaml_text(text: str) -> tuple[dict | None, str | None]:
+    """(document, why-not) for text already in hand.
+
+    Split out from `_read_yaml` because two surfaces now hand this function
+    bytes: the working tree's own file, and the ref a lagging checkout borrows
+    from. The verdict about the CONTENT has to be the same both ways — a card
+    that does not parse is a card that does not parse wherever it was read —
+    and what differs is only which surface the caller names on the row.
+    """
     try:
         document = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -987,7 +1033,8 @@ def resolve_card_path(*, locator, project: str, item_id: str,
                     f"{workspace_root}")}
 
 
-def load_card(resolution: dict, item_id: str) -> dict:
+def load_card(resolution: dict, item_id: str, *, item_dir: Path | None = None,
+              rule: dict | None = None, tree=None) -> dict:
     """One Item's card, with the ways it can fail kept apart.
 
     An absent card is `MISSING` whether the cause is that the file is not there
@@ -995,11 +1042,28 @@ def load_card(resolution: dict, item_id: str) -> dict:
     two call for different actions — one is a document to write and the other is
     a pointer to fix. An unreadable card is a third state and is never reported
     as absence.
+
+    `rule` and `tree` are how a lagging checkout gets the card's CONTENT and not
+    only the news that the ref has it. Without them this reader answered about
+    one surface while the `● card.yaml` row two lines below answered about
+    another, and the header said `no card, so nothing declared one` about a card
+    the same block had just reported PRESENT. The content is read through the
+    same `_authority_bytes` that row uses, so the two cannot drift; `read_from`
+    on the result names which surface answered, and it is set on every outcome,
+    including the unreadable one.
     """
     path = resolution["path"]
     base = {"path": str(path), "how": resolution["how"],
-            "locator": resolution["locator"], "resolution_why": resolution["why"]}
+            "locator": resolution["locator"], "resolution_why": resolution["why"],
+            "read_from": "worktree"}
     document, why = _read_yaml(path)
+    if document is None and why == "not present" and tree is not None and rule is not None:
+        found = _authority_bytes(item_dir, rule, tree)
+        if found is not None and found[3] is not None:
+            base = {**base, "read_from": tree.upstream_ref,
+                    "read_from_revision": tree.upstream_revision,
+                    "authority_path": found[0]}
+            document, why = _parse_yaml_text(found[3])
     if document is None:
         if why != "not present":
             return {**base, "state": UNREADABLE, "why": why, "document": None}
@@ -1052,6 +1116,48 @@ def _priority(card: dict | None) -> dict:
                         f"nearest one"),
             }
     return levels
+
+
+def _delivery(document: dict | None, registered) -> dict:
+    """The delivery surface: what the card SAYS, against what the REGISTER holds.
+
+    The work entry printed `制品 18` and nothing else. That number answers a
+    question about the register — how many rows were written into it — and it
+    was read as an answer about the delivery. On 2026-10-08 `SRV-0011` showed
+    18 against a card declaring eight deliverable kinds, none of which was
+    among them; the same shape held for 19 of the 20 Items that declare any.
+    A fact about the reader reported as a fact about the world is this module's
+    recurring defect, so the two faces are computed here and kept apart.
+
+    `compared_by` is not decoration. The comparison is the literal kind string,
+    and a reader who cannot tell «this name is absent from the register» from
+    «this artifact was never produced» will read the first as the second — the
+    register's vocabulary and the cards' are not one vocabulary yet, and saying
+    so is the honest half of the answer.
+    """
+    if document is None:
+        declared, state = [], UNREADABLE
+        why = "no card was read, so nothing here declared a delivery surface"
+    else:
+        declared = [str(d) for d in (document.get("expected_deliverables") or [])]
+        state = DECLARED if declared else NOT_DECLARED
+        why = ("" if declared else
+               "the card declares no `expected_deliverables`. This is not the "
+               "same fact as an unmet delivery: no surface was stated, so "
+               "nothing can be compared against one")
+    by_kind: dict[str, int] = {}
+    for row in registered:
+        kind = str((row or {}).get("kind") or "")
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    return {
+        "declared": {"state": state, "kinds": declared, "why": why},
+        "registered": {"count": len(list(registered)), "by_kind": by_kind,
+                       "kinds": sorted(by_kind)},
+        "matched": [d for d in declared if d in by_kind],
+        "absent": [d for d in declared if d not in by_kind],
+        "undeclared": sorted(k for k in by_kind if k not in declared),
+        "compared_by": "exact kind string",
+    }
 
 
 def _documents(item_dir: Path, state: str, rules: list[dict],
@@ -1297,7 +1403,11 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
             # brief next to a card is one Item's brief; the same filename under
             # a directory this module guessed is a different document.
             item_dir = resolution["item_dir"]
-            card = load_card(resolution, item_id)
+            card = load_card(
+                resolution, item_id, item_dir=item_dir,
+                rule=next((r for r in documents
+                           if r.get("name") == ENTRY_DOCUMENT), None),
+                tree=tree)
             row = {
                 "id": item_id,
                 "project": project["project"],
@@ -1308,6 +1418,8 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "card_locator": item.get("card_locator"),
                 "card": {"state": card["state"], "why": card["why"],
                          "path": card["path"], "how": card["how"],
+                         "read_from": card.get("read_from"),
+                         "read_from_revision": card.get("read_from_revision"),
                          "resolution_why": card["resolution_why"]},
                 "item_dir": str(item_dir),
                 "priority": _priority(card["document"]),
@@ -1318,6 +1430,8 @@ def _rows_of(projects: list[dict], *, records_root: Path, workspace_root: Path,
                 "runs": sum(len(a.get("runs") or ())
                             for a in item.get("activities") or ()),
                 "deliverables": len(item.get("deliverables") or ()),
+                "delivery": _delivery(card["document"],
+                                      item.get("deliverables") or ()),
                 "ready_activities": [{"id": a.get("id"), "kind": a.get("kind")}
                                      for a in item.get("activities", []) if a.get("state") == "READY"],
             }
@@ -1596,6 +1710,7 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
         "documents": row["documents"],
         "completion": row["completion"],
         "runs": row["runs"], "deliverables": row["deliverables"],
+        "delivery": row["delivery"],
         "undecided": undecided,
         "position": None if tree is None else {
             "state": tree.state, "root": str(tree.root) if tree.root else None,
