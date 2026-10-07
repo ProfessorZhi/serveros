@@ -1207,7 +1207,35 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `continuation_control.verify` are untouched. The identity moves because the
 #   label is part of the delivered bytes: a session left on `c` goes on handing
 #   the reader a repair task against a field no card has to carry.
-cachebuster: srv0005.20261007d
+#
+#   d → e: the durable route's reachability becomes a readable fact. Two
+#   members change and one is ADDED, so the payload differs and the label
+#   moves for the third reason named above — a session left on `d` would go on
+#   asking `work grants` alone, which reports whether a delegation authorizes
+#   and says nothing about whether a durable one could exist here at all:
+#
+#   context/trust_binding.py             (new) — the operator's trust root as
+#     a verb. It writes, disables and reads back the file that
+#     `context/actor.delegation_trust` reads, and it REFUSES to record a
+#     binding whose custodian resolves to this execution's own uid. On a host
+#     where every participant runs as one uid the honest answer is that the
+#     durable route is UNREACHABLE, and the point is for that answer to exist
+#     as a sentence rather than as an absence somebody reads as "one human
+#     turn away". It has no key generator and no path that reads a private
+#     key: it cannot manufacture the separation it reports on.
+#   context/actor.py                     the reader takes an optional `path`
+#     so a fixture can drive it against a file it owns.
+#     `verify_delegation` deliberately does NOT pass one and always reads the
+#     operator's own location — a trust root a caller could point elsewhere
+#     would be a trust root a caller selects.
+#   runtime/cli.py                       +`work trust status|bind|disable`.
+#
+#   `tests/test_trust_binding.py` is not a member of this composition, so the
+#   fifteen pins that come with it do not move the label. No enforcing path
+#   changes: `verify_delegation`, `delegation.derivation`, the admission gate
+#   and `work grants`'s four counters are untouched, and a node with no trust
+#   binding behaves exactly as it does on `d`.
+cachebuster: srv0005.20261007e
 
 skills:
   - name: runtime-management
