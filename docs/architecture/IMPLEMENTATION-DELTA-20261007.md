@@ -25,6 +25,7 @@
 |---|---|---|---|
 | E1 | GPT 研究交换：输入/结果版本、检查与回传 | 新 `serveros-research-exchange`；B5/B8/G1 提供薄 metadata | 指定输入 commit 可读，结果可核对写回，Parent 接受；无私密原文/伪批准 |
 | E2 | 审核面与决定回写 | `intake/alignment_delivery.py`、semantic writer、`mcp/human_control.py`、Work Engine candidate API | 一次真实决定只更新被选 scope；过期版本拒绝；普通事实不逐条审批 |
+| E2-LIT | 工作文档/聊天状态对账与自有看板样式 | 既有 SourceReadingPacket、semantic writer、B3/B4、B9 style profile | 已完成费用异常不重复成新需求；仍开放的 WorkBuddy 400 问题不误关闭；保留删除线/章节语义与解决范围 |
 | E3 | 三项目组合与交付方案形态 | ops `projects.yaml`、Work owner、`intake/global_board.py`、`workchain.py` | 全局 0–2 Focus；IMPLEMENT/VERIFY/RESEARCH/REPORT 均可完成，不强迫 PR |
 | E4 | Session 资源与角色接任 | `runtime/agent-session-contract.yaml`、Agent Control、`context/resolver.py`、continuation adapter | 新/已有 Session 接任对齐/协调/Parent；旧 epoch 不能写，新角色不扩大权限 |
 | E5 | 调研、生产只读与复现连接 | B5/A9/A5/A7 realization 与项目 contract；`litellm-log-analysis` source adapter | 有界生产事实进入合法脱敏复现与研究；需人项只阻塞本段 |

@@ -4,7 +4,7 @@
 
 这是当前产品运行方式的目标规范，不是 LIVE 认证。代码、安装、实际消费和业务旅程分别验收。入口及优先级由根目录 `ARCHITECTURE.md` 声明；既有安全、单一 owner、证据和共享机保护约束继续有效。
 
-相关交付：[调研与 GPT 交接](RESEARCH-EXCHANGE.md)、[现状与改动清单](IMPLEMENTATION-DELTA-20261007.md)、[CC 执行计划](../plans/plan-01-native-work-environment.md)。
+相关交付：[调研与 GPT 交接](RESEARCH-EXCHANGE.md)、[LiteLLM 重点来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)、[现状与改动清单](IMPLEMENTATION-DELTA-20261007.md)、[CC 执行计划](../plans/plan-01-native-work-environment.md)。
 
 ## 1. 产品目标与边界
 
@@ -25,6 +25,8 @@
 7. 完成后保持 Focus 空缺；不自动用 backlog 补齐。报告按真实成果生成，不为保持活跃而安排工作。
 
 对齐只展示自动更新、需要决定、冲突、理解缺口。阶段性小修复可汇总，禁止每次 grep、测试或子任务各发一次消息。
+
+LiteLLM 工作文档和相关飞书聊天是该项目重点来源。读取须保留完成区、删除线等语义格式，结合正文范围纠正旧认识并去重候选；自己的看板借鉴它的优先级标题、需求说明和已完成呈现。源文档已完成与内部 Work 验收分别记录，具体规则见项目 profile。
 
 ## 3. 四个审核面，集中呈现、条件触发
 
