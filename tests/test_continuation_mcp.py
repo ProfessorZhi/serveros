@@ -1043,6 +1043,62 @@ class TestBoundedEngineering:
         assert denied["decision"] == "DENY"
         assert denied["executed"] is False
 
+    def test_an_item_in_no_projection_cannot_license_a_wake(self, tmp_path):
+        """The guard that keeps a reader's blindness out of a permission.
+
+        `intake/workchain.compose_item` falls back to the records tree for an
+        Item no projection carries, which is what makes `work item LIT-0106`
+        answer at all. That boundary is `NOT_ASSESSED` with `state: UNKNOWN`,
+        and `runtime/continuation_control.verify` denies on `COMPLETE` alone —
+        so if this reader accepted it, a wake that is refused today would be
+        allowed, on the strength of a state nobody read.
+
+        The Item below has a real card on the disk and no row anywhere, which is
+        the shape of the six litellm Items on this node. The second half of the
+        test is the positive control: the same Item WITH a projection row
+        returns its boundary, so the guard refuses a missing row and not every
+        row.
+        """
+        types = __import__("types")
+        chain = _load("serveros_intake_workchain", REPO / "intake" / "workchain.py")
+        root = tmp_path / "node"
+        (root / "boards" / "px").mkdir(parents=True)
+        (root / "boards" / "px" / "current.json").write_text(json.dumps(
+            {"schema": "serveros/board.v3", "project": "px",
+             "generated_at": "2026-01-01T00:00:00+00:00",
+             "generation_source_revision": None, "items": []}), encoding="utf-8")
+        item_dir = root / "records" / "projects" / "px" / "items" / "IT-9"
+        item_dir.mkdir(parents=True)
+        (item_dir / "card.yaml").write_text("id: IT-9\ntitle: one\n",
+                                            encoding="utf-8")
+
+        def no_git(*_args, **_kwargs):
+            return 1, ""
+
+        cli = types.SimpleNamespace(
+            REPO_ROOT=REPO, _workchain_module=lambda: chain,
+            _workchain_skeletons=lambda module: None,
+            _workchain_git=lambda: no_git,
+            _workchain_roots=lambda _args: (root / "boards", root / "records",
+                                            root))
+        read = mcp._completion_reader(cli)
+        answer = read("IT-9")
+        assert "unreadable" in answer, answer
+        assert "none of the" in answer["unreadable"] or "no projection" in \
+            answer["unreadable"] or "cannot be composed" in answer["unreadable"], \
+            answer
+
+        (root / "boards" / "px" / "current.json").write_text(json.dumps(
+            {"schema": "serveros/board.v3", "project": "px",
+             "generated_at": "2026-01-01T00:00:00+00:00",
+             "generation_source_revision": None,
+             "items": [{"id": "IT-9", "title": "one", "kind": "feature",
+                        "state": "ACTIVE", "outcome": None, "card_locator": None,
+                        "activities": [], "deliverables": []}]}), encoding="utf-8")
+        boundary = read("IT-9")
+        assert boundary.get("state") == "NOT_ASSESSED", boundary
+        assert "unreadable" not in boundary
+
     @pytest.mark.skipif("SERVEROS_TEST_DOCKER_IMAGE" not in os.environ,
                         reason="requires an explicitly selected existing local image")
     def test_real_mcp_execute_uses_live_scope_and_replays(
