@@ -19,6 +19,7 @@ that fails when somebody adds the thing.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import sys
@@ -596,9 +597,39 @@ def test_the_control_agent_mcp_surface_has_no_approval_granting_tool():
 
     # And the daemon methods the surface can reach are a closed set, so a
     # granting verb cannot become reachable by adding a call site.
-    source = (MCP / "agent_mcp.py").read_text()
+    #
+    # Read as CODE, not as text. The earlier version scanned the whole file for
+    # each method's NAME, which made prose load-bearing in two directions at
+    # once: a comment that mentioned the method failed the test, and a call site
+    # assembled from two literals would have passed it. Neither outcome is a
+    # statement about what the surface can reach, so neither belonged in a guard
+    # whose whole purpose is that statement. An AST walk finds the string
+    # literals actually handed to a daemon call and ignores every other byte.
+    reached = _daemon_methods_called(MCP / "agent_mcp.py")
+    assert reached, "no daemon call site was found, so this test proves nothing"
     for method in ("agent.approval.record", "agent.approval.grant"):
-        assert method not in source, method
+        assert method not in reached, (method, sorted(reached))
+
+
+def _daemon_methods_called(path: Path) -> set[str]:
+    """Every method name this module hands to a daemon call as a literal.
+
+    A literal first argument to anything named `call` is what a daemon
+    invocation looks like on this surface. Names assembled at runtime are not
+    reachable from here and are not claimed to be: this narrows the field rather
+    than proving closure, and saying which of the two it does is the point.
+    """
+    reached: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if (getattr(func, "attr", None) or getattr(func, "id", None)) != "call":
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            reached.add(first.value)
+    return reached
 
 
 def test_the_daemon_refuses_to_record_an_approval_from_a_caller(daemon):
