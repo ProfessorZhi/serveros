@@ -1257,7 +1257,55 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `control_join`, `grant_reason`, `standing_reason` and the admission gate
 #   are untouched. A session left on `e` goes on handing a person blocked at
 #   `work admit` a repair task against a field no card has to carry.
-cachebuster: srv0005.20261007g
+#
+#   g → i: the reader is bound to the authority instead of to a checkout that
+#   is behind it. Three members change:
+#
+#   intake/workchain.py     `TreePosition` gains `holds_at_head`, `read_text`
+#     and `count_files`, and `_read_from_the_authority` reads a required
+#     document's bytes out of the ref the checkout follows when the checkout is
+#     BEHIND that ref and its own HEAD never carried the path. The three guards
+#     are what keep it from inventing a document: only BEHIND, only a path this
+#     tree never had, and only when the bytes actually come back. `compose_board`
+#     takes the position too, so the board counts what is present rather than
+#     what one surface can see.
+#   runtime/cli.py          `work item` names the surface on each row and says
+#     on the records line that the documents this tree lacks are read from the
+#     ref. The verb's answer depended on which checkout it was bound to and did
+#     not say so; that was the previous round's finding, and this round is the
+#     half that lets the answer be USED.
+#   mcp/continuation_mcp.py the other reader of the same contract passes the
+#     position. Two readers that disagree about what is present are two
+#     completion authorities.
+#
+#   The label moves for the third reason named above and the measurement is one
+#   Item: `serverosctl work item SRV-0011` prints `brief.md MISSING` on the
+#   payload in force and `brief.md PRESENT` on this one, for one Item and one
+#   records checkout. A node left on the previous label cannot read a merged
+#   brief it is entitled to read, which is the gap this round exists to close.
+#   The absence classification is unchanged where it applies: a document
+#   nothing could be read from is still MISSING with its cause attributed, and
+#   a document somebody deleted from the tree is not resurrected from the ref.
+#
+#   `h` is skipped, and the reason is a defect in the round before this one.
+#   The revision currently promoted is named `product-tree-20261007h@3f9f6e8`
+#   and was built WITHOUT a bump, so it claims `srv0005.20261007g` — the same
+#   version string as the payload it replaced. Two promoted revisions, two
+#   different payloads, one version string: exactly the failure this file's own
+#   rule names, and the builder cannot see it because it compares a profile
+#   against its parent and not against what is released. The letter is not
+#   reused for the revision name either, so no two revisions carry the same
+#   name AND the same version. `h` stays on the node it is; the next build from
+#   this profile cannot repeat it, because g is now behind whatever is current
+#   rather than beside it.
+#
+#   No enforcing path changes. `_resolve_document`'s spellings and their ORDER
+#   are reused rather than restated — `_resolve_from_ref` walks the same
+#   `resolved_by` list in the same sequence against the second surface — and
+#   `check_skeleton` runs on the real bytes. `tests/` is not a member of this
+#   composition, so the ten tests and the non-vacuity check that come with it
+#   do not move the label.
+cachebuster: srv0005.20261007i
 
 skills:
   - name: runtime-management
