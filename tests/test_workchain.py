@@ -1961,6 +1961,145 @@ class TheDeliverySurfaceIsTwoFacesAndNotOneNumber(unittest.TestCase):
         self.assertEqual(answer["matched"], ["report"])
 
 
+class AnItemTheProjectionDoesNotCarryIsStillAnsweredFor(unittest.TestCase):
+    """`未找到` was a fact about the board reported as a fact about the Item.
+
+    Measured on this node 2026-10-08. `serverosctl work item LIT-0106` answered
+
+        未找到     LIT-0106 —— LIT-0106 is in no projection under … Either it
+                   belongs to another project or no projection for this project
+                   reached this host.
+
+    and the card was in `records/projects/litellm/items/LIT-0106/card.yaml` the
+    whole time. Six litellm Items are in that position here — `0106`, `0107`,
+    `0215`, `0216`, `0217`, `0218` — which is also why `LIT-0220`'s first
+    acceptance criterion, ruling on its relation to `LIT-0106`, could not be
+    acted on by anyone reading through the formal entry: the Item it names could
+    not be opened.
+
+    The fix is not to invent the missing row. It is to answer for the Item from
+    the record that exists, and to say on the payload which surface answered —
+    so the columns the projection OWNS stay unanswered instead of being read off
+    the disk as `0` and `MISSING`.
+    """
+
+    CARD = ("id: {item}\ntitle: the unprojected one\nkind: investigation\n"
+            "expected_deliverables: [report]\n")
+
+    def _roots(self, tmp, *, items=(), cards=("IT-9",)):
+        root = Path(tmp)
+        (root / "boards" / "px").mkdir(parents=True)
+        (root / "boards" / "px" / "current.json").write_text(
+            json.dumps(a_projection("px", list(items))), encoding="utf-8")
+        for item_id in cards:
+            item_dir = root / "records" / "projects" / "px" / "items" / item_id
+            item_dir.mkdir(parents=True)
+            (item_dir / "card.yaml").write_text(
+                self.CARD.format(item=item_id), encoding="utf-8")
+        return root
+
+    def _compose(self, root, item_id="IT-9"):
+        return chain.compose_item(
+            contract=CONTRACT, records_root=root / "records",
+            workspace_root=root, skeletons=None,
+            project="px", item_id=item_id,
+            projects=chain.load_projects(boards_root=root / "boards"),
+            tree=None)
+
+    def test_the_card_on_the_disk_is_read_and_the_row_is_marked_unprojected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            item = self._compose(self._roots(tmp))
+        self.assertTrue(item["found"])
+        self.assertIs(False, item["in_projection"]["listed"])
+        self.assertEqual(item["title"], "the unprojected one")
+        self.assertEqual(item["kind"], "investigation")
+        self.assertEqual(item["card"]["state"], chain.PRESENT)
+        self.assertIn("no projection on this node carries a row",
+                      item["in_projection"]["why"])
+        # The card's own locator sentence, which must not claim a projection
+        # stated nothing — there is no projection row to have stated anything.
+        self.assertIn("no projection on this node carries a row for this Item, "
+                      "so no card locator was declared either",
+                      item["card"]["resolution_why"])
+
+    def test_the_columns_the_projection_owns_are_not_read_off_the_disk(self):
+        """`state`, `runs` and `deliverables` are the projection's, not the tree's.
+
+        The disk holds a card and a brief. It holds no statement about how many
+        Runs the Item has, and a reader that answered `0` would be reporting its
+        own not-looking as the Item's fact — which is what `制品 18` was.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            item = self._compose(self._roots(tmp))
+        self.assertEqual(item["state"], chain.UNKNOWN)
+        self.assertEqual(item["runs"], chain.UNKNOWN)
+        self.assertEqual(item["deliverables"], chain.UNKNOWN)
+        self.assertIsNone(item["delivery"]["registered"]["count"])
+        self.assertIsNone(item["delivery"]["matched"])
+        self.assertIn("was not consulted", item["delivery"]["registered"]["why"])
+        # And the boundary is not assessed, because the state it is assessed AT
+        # is the thing that was never read.
+        self.assertEqual(item["completion"]["state"], chain.NOT_ASSESSED)
+        self.assertIn("UNKNOWN", item["completion"]["why"])
+
+    def test_a_document_the_item_may_or_may_not_owe_is_not_called_missing(self):
+        """`MISSING` and `NOT_YET_REQUIRED` are both claims about a state.
+
+        Neither is available here, and the fourth answer is what keeps the
+        reader from calling a document overdue on the strength of a state it
+        never read — or excusing it on the same strength.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._roots(tmp)
+            item_dir = root / "records" / "projects" / "px" / "items" / "IT-9"
+            item = self._compose(root)
+            rows = {d["document"]: d for d in item["documents"]}
+            self.assertEqual(rows["brief.md"]["state"], chain.REQUIREMENT_UNKNOWN)
+            self.assertIsNone(rows["brief.md"]["required"])
+            self.assertNotEqual(rows["brief.md"]["state"], chain.MISSING)
+            self.assertNotEqual(rows["brief.md"]["state"],
+                                chain.NOT_YET_REQUIRED)
+            # The positive control: a document that IS here is PRESENT, and the
+            # marker is about the file rather than about the state.
+            (item_dir / "brief.md").write_text("# Brief\n", encoding="utf-8")
+            again = self._compose(root)
+        written = {d["document"]: d for d in again["documents"]}
+        self.assertEqual(written["brief.md"]["state"], chain.PRESENT)
+
+    def test_an_item_a_projection_carries_is_answered_from_the_projection(self):
+        """The positive control for the whole fallback: it must not take over.
+
+        Both surfaces are present here — a projection row AND a card on the
+        disk — and the row's state, its Run count and its deliverable count are
+        the projection's answers, not the tree's.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._roots(tmp, items=[an_item("IT-9", state="ACTIVE")])
+            item = self._compose(root)
+        self.assertIs(True, item["in_projection"]["listed"])
+        self.assertEqual(item["in_projection"]["why"], "")
+        self.assertEqual(item["state"], "ACTIVE")
+        self.assertEqual(item["runs"], 0)
+        self.assertEqual(item["deliverables"], 0)
+        self.assertEqual(item["delivery"]["registered"]["count"], 0)
+
+    def test_an_item_in_neither_place_is_still_not_found(self):
+        """The negative control, and it names BOTH places now.
+
+        An Item in no projection may be missing a row or missing a card, and the
+        two call for different actions; a message that names only the boards
+        sends a reader to fix a projection when the card is what is absent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._roots(tmp, cards=())
+            item = self._compose(root)
+        self.assertFalse(item["found"])
+        self.assertIn("is in no projection under", item["why"])
+        self.assertIn(str(root / "records" / "projects" / "px" / "items" / "IT-9"
+                         / "card.yaml"), item["why"])
+        self.assertEqual(item["records"]["state"], chain.MISSING)
+
+
 class TheCommandLineSaysWhichSurfaceTheCardCameFrom(unittest.TestCase):
     """The rendered block, because that is what a person actually reads."""
 
@@ -1988,6 +2127,20 @@ class TheCommandLineSaysWhichSurfaceTheCardCameFrom(unittest.TestCase):
             {"id": "IT-1"}, [{"kind": "report"}])))
         self.assertIn("没有声明过交付面", not_declared)
         self.assertNotIn("未读到卡片", not_declared)
+
+    def test_a_register_nobody_consulted_does_not_render_as_a_count_of_zero(self):
+        """`登记 0 条` and `登记未查` are different sentences.
+
+        The first is a measurement and the second is the absence of one. A
+        reader who is shown the first will take the delivery for empty; the
+        second sends them to the row that is missing.
+        """
+        cli = self._cli()
+        joined = "\n".join(cli._delivery_lines(chain._delivery(
+            {"expected_deliverables": ["report", "coverage-matrix"]}, None)))
+        self.assertIn("声明 2 类", joined)
+        self.assertIn("登记未查", joined)
+        self.assertNotIn("登记 0 条", joined)
 
 
 if __name__ == "__main__":

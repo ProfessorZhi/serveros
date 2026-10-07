@@ -99,6 +99,14 @@ PRESENT = "PRESENT"
 MISSING = "MISSING"
 NOT_YET_REQUIRED = "NOT_YET_REQUIRED"
 
+#: A third way a document can be absent, for the reader that has the record and
+#: not the control plane. Whether an Item owes a document is a function of its
+#: STATE, so a reader holding no state cannot answer it — and `MISSING` and
+#: `NOT_YET_REQUIRED` are both answers. The first would call a document overdue
+#: on the strength of a state nobody read; the second would excuse it on the
+#: same strength. What IS known, and all this says, is whether the file is here.
+REQUIREMENT_UNKNOWN = "REQUIREMENT_UNKNOWN"
+
 #: The delivery surface's two faces. `NOT_DECLARED` is not a shortfall and is
 #: not the same fact as `UNREADABLE`: a card that states no delivery surface
 #: cannot be read as one whose surface is unmet, and neither can be read as one
@@ -1134,6 +1142,13 @@ def _delivery(document: dict | None, registered) -> dict:
     «this artifact was never produced» will read the first as the second — the
     register's vocabulary and the cards' are not one vocabulary yet, and saying
     so is the honest half of the answer.
+
+    `registered` is `None` when the register was never looked in — the register
+    is read off the Item's row in a projection, so an Item no projection carries
+    has no register to compare against. `0` is a count and `None` is the absence
+    of one: reporting `登记 0 条` there would be this module's recurring defect
+    again, a fact about what the reader consulted reported as a fact about the
+    delivery.
     """
     if document is None:
         declared, state = [], UNREADABLE
@@ -1145,6 +1160,21 @@ def _delivery(document: dict | None, registered) -> dict:
                "the card declares no `expected_deliverables`. This is not the "
                "same fact as an unmet delivery: no surface was stated, so "
                "nothing can be compared against one")
+    if registered is None:
+        return {
+            "declared": {"state": state, "kinds": declared, "why": why},
+            "registered": {
+                "count": None, "by_kind": {}, "kinds": [],
+                "why": ("the register was not consulted: it is read from this "
+                        "Item's row in a projection, and no projection on this "
+                        "node carries one, so neither the count nor which kinds "
+                        "it holds is known here"),
+            },
+            # `None` and not `[]`: an empty list is the answer "nothing
+            # matched", and this is the answer "nothing was compared".
+            "matched": None, "absent": None, "undeclared": None,
+            "compared_by": "exact kind string",
+        }
     by_kind: dict[str, int] = {}
     for row in registered:
         kind = str((row or {}).get("kind") or "")
@@ -1160,7 +1190,7 @@ def _delivery(document: dict | None, registered) -> dict:
     }
 
 
-def _documents(item_dir: Path, state: str, rules: list[dict],
+def _documents(item_dir: Path, state: str | None, rules: list[dict],
                skeletons: dict | None = None, tree: "TreePosition | None" = None,
                ) -> list[dict]:
     """Every document, with PRESENT / MISSING / NOT_YET_REQUIRED / UNREADABLE.
@@ -1168,7 +1198,9 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
     `state` is the Item's own state, read from the projection. The two-word
     answer matters more than the list: a board that showed only the files that
     exist would be unable to say whether the rest were missing or had not been
-    asked for.
+    asked for. `state` is `None` for an Item the control plane does not carry,
+    and then the answer for an absent document is the fourth word rather than
+    either of those two — see `REQUIREMENT_UNKNOWN`.
 
     A document that resolves is reported with how it resolved and how much is
     there, so `design/` holding three research notes and `design.md` holding one
@@ -1188,7 +1220,7 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
     for rule in rules:
         name = rule["name"]
         path, how, count = _resolve_document(item_dir, rule)
-        required = state in rule["required_at"]
+        required = None if state is None else state in rule["required_at"]
         answer = {"document": name, "state": None, "required": required,
                   "resolved_by": how, "count": count,
                   "path": str(path if path is not None else item_dir / name),
@@ -1204,6 +1236,18 @@ def _documents(item_dir: Path, state: str, rules: list[dict],
             # before this, which made the board's mark a fact about a filename.
             answer["skeleton"] = check_skeleton(
                 read_document_text(path, how), skeleton_of(skeletons, name))
+            out.append(answer)
+            continue
+        if state is None:
+            # Placed BEFORE the card's own branch on purpose: that branch's
+            # sentence is "the Item is on the board and has no card", and the
+            # whole reason this state exists is that the Item is on no board.
+            # Saying it here would be this module's recurring defect — a fact
+            # about the projection reported as a fact about the Item.
+            answer |= {"state": REQUIREMENT_UNKNOWN,
+                       "why": ("whether this Item owes it depends on its state, "
+                               "and no projection on this node states one. What "
+                               "is answered is that the file is not here")}
             out.append(answer)
             continue
         if name == ENTRY_DOCUMENT and not required:
@@ -1659,6 +1703,98 @@ def compose_board(*, contract: dict, projects: list[dict], records_root: Path,
     }
 
 
+def _row_from_the_records(*, project: str, item_id: str, documents: list[dict],
+                          completion: dict, records_root: Path,
+                          workspace_root: Path,
+                          skeletons: dict | None = None,
+                          tree: "TreePosition | None" = None) -> dict | None:
+    """One Item's row from the records tree alone, when no projection names it.
+
+    THE DEFECT THIS EXISTS FOR
+    --------------------------
+    `serverosctl work item LIT-0106` answered `未找到 —— LIT-0106 is in no
+    projection under …`. The card was on this node's disk the whole time, and
+    `未找到` is a fact about the BOARD PROJECTION reported as a fact about the
+    Item — the shape of `制品 18` and of `卡片 UNRESOLVED`, one surface over.
+    Measured on this node, 2026-10-08: TWELVE Items carry a card under
+    `records/projects/<project>/items/` and no row in that project's projection
+    — `LIT-0106`, `0107`, `0215`, `0216`, `0217`, `0218`, `0219`, and
+    `SRV-0001`, `0002`, `0003`, `0005`, `0008`. It is also why `LIT-0220`'s first
+    acceptance criterion — ruling on its relation to `LIT-0106` — could not be
+    acted on by anyone reading through the formal entry.
+
+    WHAT IT DOES NOT DO
+    -------------------
+    It reads no control-plane column off the disk and guesses none of them. The
+    projection owns `state`, `runs` and `deliverables`; they come back `UNKNOWN`
+    here, and `_delivery` reports that the register was not consulted rather
+    than counting it as empty. Which documents the Item OWES depends on that
+    same state, so an absent document is `REQUIREMENT_UNKNOWN` and not `MISSING`.
+
+    Nothing here is fed to `_rows_of`, so the board and the focus source keep
+    reading exactly the rows their projections hold. A consumer that needs a
+    projection's answer must ask for one: `compose_item` marks the payload with
+    `in_projection`, and `mcp/continuation_mcp._completion_reader` requires it,
+    because a boundary composed for an Item no projection carries would be this
+    adapter's blindness wearing the Item's name.
+
+    The CARD may be read from the authority ref when the tree is behind and
+    never carried it, through the same `load_card`/`_authority_bytes` the
+    projection path uses. The sibling documents may not: their requirement is
+    unknowable here, so borrowing bytes to answer "present" would answer a
+    question nobody asked while the question that matters stays open.
+
+    `None` means no card resolves on the conventional path either, which keeps
+    `found: False` for an Item that is in neither place on this node.
+    """
+    resolution = resolve_card_path(locator=None, project=project,
+                                   item_id=item_id, records_root=records_root,
+                                   workspace_root=workspace_root)
+    # `resolve_card_path`'s own wording for a locator-less resolution is "the
+    # projection carries no `card_locator`" — true on the path that HAS a
+    # projection row and false here, where the reason is that there is no row at
+    # all. A fact about a row that does not exist is the defect this whole
+    # function is about, so the sentence is replaced rather than reused.
+    resolution = {**resolution, "why": (
+        "no projection on this node carries a row for this Item, so no card "
+        "locator was declared either; the conventional records path is used "
+        "and nothing is claimed about whether an authority meant a different "
+        "one")}
+    item_dir = resolution["item_dir"]
+    card = load_card(
+        resolution, item_id, item_dir=item_dir,
+        rule=next((r for r in documents if r.get("name") == ENTRY_DOCUMENT),
+                  None),
+        tree=tree)
+    if card["state"] != PRESENT:
+        return None
+    document = card["document"] or {}
+    row = {
+        "id": item_id,
+        "project": project,
+        "kind": document.get("kind"),
+        "title": document.get("title"),
+        "state": UNKNOWN,
+        "outcome": None,
+        "card_locator": None,
+        "card": {"state": card["state"], "why": card["why"],
+                 "path": card["path"], "how": card["how"],
+                 "read_from": card.get("read_from"),
+                 "read_from_revision": card.get("read_from_revision"),
+                 "resolution_why": card["resolution_why"]},
+        "item_dir": str(item_dir),
+        "priority": _priority(card["document"]),
+        "superseded_by": document.get("superseded_by"),
+        "documents": _documents(item_dir, None, documents, skeletons, tree),
+        "runs": UNKNOWN,
+        "deliverables": UNKNOWN,
+        "delivery": _delivery(card["document"], None),
+        "ready_activities": [],
+    }
+    row["completion"] = completion_of(row, completion)
+    return row
+
+
 def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
                  project: str, item_id: str, projects: list[dict],
                  skeletons: dict | None = None,
@@ -1674,27 +1810,46 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
     `position` as well as being used to attribute an absence. A reader that has
     to open a second tool to learn which generation the answer came from will
     not, and the answer is only meaningful with it.
+
+    The projection is asked first and the RECORDS TREE second, and which one
+    answered is on the payload as `in_projection`. `found` answers whether this
+    node can answer for the Item at all; it never answered whether a projection
+    carries it, and reading it as that is what made `未找到` a fact about the
+    Item.
     """
     documents = _document_rules(contract)
+    completion = _completion_rules(contract)
     row = None
     for candidate in _rows_of(projects, records_root=records_root,
                               workspace_root=workspace_root,
-                              documents=documents,
-                              completion=_completion_rules(contract),
+                              documents=documents, completion=completion,
                               skeletons=skeletons, tree=tree):
         if candidate["project"] == project and candidate["id"] == item_id:
             row = candidate
             break
+    listed = row is not None
     if row is None:
-        # Not found is not the same as found-and-broken, and the message names
-        # where it looked. A projection that does not carry the Item may mean
-        # the Item is in another project or that no projection reached here.
+        row = _row_from_the_records(
+            project=project, item_id=item_id, documents=documents,
+            completion=completion, records_root=records_root,
+            workspace_root=workspace_root, skeletons=skeletons, tree=tree)
+    if row is None:
+        # Neither place holds it. The message names BOTH, because a reader told
+        # only about the projection will go looking for a projection to fix
+        # when the card may be the thing that is missing — and the two call for
+        # different actions. A projection that does not carry the Item may also
+        # mean the Item is in another project.
+        conventional = (project_dir(records_root, project) / "items" / item_id
+                        / ENTRY_DOCUMENT)
         return {"schema": "serveros/item-chain.v1", "found": False,
                 "project": project, "item": item_id,
                 "why": (f"{item_id} is in no projection under "
-                        f"{', '.join(p['path'] for p in projects) or 'no board root'}. "
-                        f"Either it belongs to another project or no projection "
-                        f"for this project reached this host."),
+                        f"{', '.join(p['path'] for p in projects) or 'no board root'}, "
+                        f"and no card for it is under {conventional} either. "
+                        f"Either it belongs to another project, or no "
+                        f"projection for this project reached this host, or it "
+                        f"has no card yet."),
+                "records": {"path": str(conventional), "state": MISSING},
                 "projects": [{"project": p["project"], "state": p["state"],
                               "why": p["why"]} for p in projects]}
     undecided = [{"document": d["document"], "state": d["state"],
@@ -1703,6 +1858,18 @@ def compose_item(*, contract: dict, records_root: Path, workspace_root: Path,
     return {
         "schema": "serveros/item-chain.v1", "found": True,
         "project": project, "item": item_id,
+        "in_projection": {
+            "listed": listed,
+            "why": ("" if listed else
+                    (f"no projection on this node carries a row for {item_id} "
+                     f"— the board roots read were "
+                     f"{', '.join(p['path'] for p in projects) or 'none'}. The "
+                     f"chain below is composed from the records tree at "
+                     f"{row['item_dir']}, so it answers for the Item's "
+                     f"documents and does NOT know the Item's state, Run count "
+                     f"or deliverable count; those are the projection's "
+                     f"columns and no projection here holds them")),
+        },
         "title": row["title"], "kind": row["kind"], "state": row["state"],
         "outcome": row["outcome"], "superseded_by": row["superseded_by"],
         "priority": row["priority"], "card": row["card"],

@@ -157,11 +157,13 @@ def _completion_reader(cli):
     because a person knows which project they mean, and a capability envelope
     carries no project (a checkpoint records none — measured, and `runtime/
     cli.py` says so at the site where a grant is asked for one). So the projects
-    the boards declare are tried in turn and the first projection holding the
-    Item answers. An Item in none of them has no composable boundary here, and
-    that is reported as unreadable rather than guessed at — `verify` turns it into
-    UNASKABLE, which stops the mutation, because «this adapter could not look» is
-    not «the Item is unfinished».
+    the boards declare are tried in turn and the first PROJECTION holding the
+    Item answers — a projection, not merely a tree that has the card, which is
+    why the test below is `in_projection.listed` and not `found`. An Item in none
+    of them has no composable boundary here, and that is reported as unreadable
+    rather than guessed at — `verify` turns it into UNASKABLE, which stops the
+    mutation, because «this adapter could not look» is not «the Item is
+    unfinished».
     """
     chain = cli._workchain_module()
     args = types.SimpleNamespace()
@@ -187,7 +189,16 @@ def _completion_reader(cli):
                     workspace_root=workspace, skeletons=skeletons,
                     project=project["project"], item_id=item_id,
                     projects=projects, tree=position)
-                if item.get("found"):
+                # `in_projection` is required as well as `found`, and it is not
+                # decoration: `compose_item` falls back to the records tree for
+                # an Item no projection carries, and a boundary composed that way
+                # is `NOT_ASSESSED` with `state: UNKNOWN`. Letting it through
+                # would turn a wake that is refused UNASKABLE today into an
+                # ALLOW, on the strength of a state nobody read — this adapter's
+                # blindness converted into a permission. The boundary this
+                # function exists to compose is a reading of a PROJECTION's row,
+                # so an Item in no projection stays "could not look".
+                if item.get("found") and (item.get("in_projection") or {}).get("listed"):
                     completion = item.get("completion")
                     if isinstance(completion, dict):
                         return completion
