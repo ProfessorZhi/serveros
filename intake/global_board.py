@@ -158,7 +158,8 @@ def _summary(row: dict) -> str:
 
 
 def item_row(item: dict, *, project: str, card: dict | None,
-             binding: dict | None, card_known: bool = False) -> dict:
+             binding: dict | None, card_known: bool = False,
+             resolution: dict | None = None) -> dict:
     """One Item, as the board needs it. Every field read, none inferred.
 
     `card` and `binding` are the two joins this projection makes, and both are
@@ -178,6 +179,13 @@ def item_row(item: dict, *, project: str, card: dict | None,
     card became `None`, `None` meant NOT_FOUND, and a card sitting on disk with
     a YAML error in it would have been reported as a card that is not there —
     which sends a reader to look for a file they are standing next to.
+
+    `resolution` is the rule that turned the locator into a path, when the
+    caller ran one. It travels on the row because NOT_FOUND has two causes that
+    send a reader to two different places: a card that is genuinely absent, and
+    a locator written on a machine this one is not. Only the caller knows which,
+    and without it the board would print "这张卡不在本机" about cards that are
+    sitting on this node under their own records root.
     """
     activities = item.get("activities") or []
     runs = [run for activity in activities for run in (activity.get("runs") or [])]
@@ -217,6 +225,7 @@ def item_row(item: dict, *, project: str, card: dict | None,
             "state": card_state,
             "source_refs": source_refs,
             "aliases": aliases,
+            "resolution": resolution,
         },
         "candidate_mappings": item.get("candidate_mappings") or [],
         # One field, one fact. A first draft carried `strikethrough` beside it
@@ -258,7 +267,8 @@ def _levels_named_in_a_title(rows: list[dict]) -> list[dict]:
 
 
 def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
-            bindings: dict[str, dict] | None = None) -> dict:
+            bindings: dict[str, dict] | None = None,
+            card_resolutions: dict[str, dict] | None = None) -> dict:
     """The global board, from the per-project projections and two joins.
 
     `boards` are `serveros/board.v3` documents as the control plane wrote them.
@@ -299,7 +309,8 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
             row = item_row(item, project=project,
                            card=cards.get(ref),
                            card_known=ref in cards,
-                           binding=bindings.get(ref))
+                           binding=bindings.get(ref),
+                           resolution=(card_resolutions or {}).get(ref))
             rows.append(row)
 
     active = [r for r in rows if not r["completed"]]
@@ -345,10 +356,27 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
         },
         "completed_states": list(COMPLETED_STATES),
         "sections": sections,
-        "counts": {"items": len(rows), "active": len(active),
-                   "completed": len(completed),
-                   "without_a_card": sum(1 for r in rows
-                                         if r["source"]["state"] != "JOINED")},
+        "counts": {
+            "items": len(rows), "active": len(active),
+            "completed": len(completed),
+            "without_a_card": sum(1 for r in rows
+                                  if r["source"]["state"] != "JOINED"),
+            # Counted apart from `without_a_card` because a rebased card is
+            # readable and the row it produced is correct, while the locator
+            # beside it is still wrong. A reader who saw one number would have
+            # no reason to go and fix the pointer, which is the only thing here
+            # that is actually broken. `JOINED` is required as well as
+            # `REBASED`, which makes the two counts disjoint: re-hanging a
+            # locator that then found nothing did not read a card off the other
+            # machine's path, and counting it here would claim it did.
+            "cards_rebased": sum(1 for r in rows
+                                 if (r["source"].get("resolution") or {}
+                                     ).get("how") == "REBASED"
+                                 and r["source"]["state"] == "JOINED"),
+            "cards_unresolved": sum(1 for r in rows
+                                    if (r["source"].get("resolution") or {}
+                                        ).get("how") == "UNRESOLVED"),
+        },
         "items": sorted(rows, key=lambda r: r["item_ref"]),
     }
 
@@ -532,14 +560,41 @@ def markdown(document: dict, *, human: str = "") -> str:
               "<details><summary>为什么这五级是空的</summary>", "",
               str(priority["because"]), "", "</details>", ""]
     counts = document["counts"]
+    if counts.get("cards_rebased"):
+        # Said once, here, and not per row, because it is one fact about the
+        # whole page: these rows' locators were written where the workspace
+        # root was somewhere else. The cards were read from THIS node. A
+        # reader who saw only "N 行没有可读的 card.yaml" would be told the
+        # cards are elsewhere while the 来源 column beside it is filled in.
+        lines += [f"> 卡片：{counts['cards_rebased']} 行的 card_locator 写的是"
+                  f"另一台机器的路径，按本机 workspace 重挂后读到了；"
+                  f"locator 本身仍指向旧机器", ""]
     if counts.get("without_a_card"):
-        # Said once, here, and not per row. A reader who sees an empty 来源 on
-        # twelve rows needs to know that the card is on another machine, not
-        # that the Item has no source — those are two different facts and only
-        # one of them is a problem with the Item.
-        lines += [f"> 卡片：{counts['items']} 行里 {counts['without_a_card']} 行"
-                  f"没有可读的 card.yaml，这些行的「来源」为空 —— 这不是"
-                  f"「没有来源」，是那张卡不在本机", ""]
+        # The other cause, and it is not the same fact. Two sub-causes send a
+        # reader to two different places, so both are on the page: a locator
+        # that resolved to nothing under the roots this board reads (the
+        # pointer, or the root, is wrong), and a row that never carried one
+        # (nothing is wrong; there is no card to point at). Said here rather
+        # than left to thirteen empty 来源 cells, which read as "this Item has
+        # no source".
+        #
+        # The sentence names the ROOT and not the machine, and that is a
+        # correction: an earlier draft said 「那张卡不在本机」, which was
+        # false. The five marketops cards this board cannot join are on this
+        # node, in `worktrees/records/MKT-0001` — a checkout of the records
+        # branch `marketops/intake`, which the canonical `records/` root does
+        # not carry. The board reads the canonical checkout and NOT a worktree,
+        # deliberately: a worktree is somebody's un-landed checkout, and
+        # reporting Items out of one would publish work that has not landed and
+        # would make this page depend on a directory another actor may delete.
+        # What it can truthfully say is which root it read.
+        unresolved = counts.get("cards_unresolved") or 0
+        note = (f"> 卡片：{counts['items']} 行里 {counts['without_a_card']} 行"
+                f"没有可读的 card.yaml，这些行的「来源」为空 —— 这不是"
+                f"「没有来源」，是本看板读的 `records/` 根下没有这张卡")
+        if unresolved:
+            note += f"（其中 {unresolved} 行的 card_locator 在该根下解析不到文件）"
+        lines += [note, ""]
     # Split on `key`, not on `kind`. A section's `kind` says what SHAPE its
     # rows are and the completed one's is lowercase `completed`, while the
     # constant is uppercase `COMPLETED` — so the first version of these two
@@ -617,27 +672,37 @@ def load_boards(boards_root: Path) -> list[dict]:
     return documents
 
 
-def load_cards(locators: dict[str, str]) -> dict[str, dict | None]:
-    """The Item cards this node can actually read, keyed by `<project>/<id>`.
+def load_cards(resolutions: dict[str, dict]) -> tuple[dict, dict]:
+    """The Item cards this node can actually read, and how each was found.
 
-    A locator whose file is missing is left out of the mapping, and a locator
-    whose file is there but does not parse is mapped to `None`. Those are two
-    different facts and `item_row` reports them as two different values; the
-    first draft collapsed them and would have called a YAML error "no card
-    here". `card_locator` is written by the authority and has been seen in both
-    absolute and repository-relative form, so the caller resolves it — see
-    `intake` in `runtime/cli.py`.
+    A path with no file is left out of the mapping, and a path whose file is
+    there but does not parse is mapped to `None`. Those are two different facts
+    and `item_row` reports them as two different values; the first draft
+    collapsed them and would have called a YAML error "no card here".
+
+    `card_locator` is written by the authority and has been seen in three
+    forms — repository-relative, absolute and present, and absolute and naming
+    ANOTHER node's root. The caller resolves it, because only the caller knows
+    what a relative locator is relative to and what this node's workspace is;
+    `intake/workchain.py::resolve_card_path` is that rule, and it returns the
+    `{path, how, why}` this function takes. Passing just a path would lose the
+    difference between "no card" and "the locator is on another machine",
+    which is the difference a reader needs to know which of the two to fix.
     """
     cards: dict[str, dict | None] = {}
-    for ref, path in locators.items():
-        candidate = Path(path)
+    how: dict[str, dict] = {}
+    for ref, resolution in resolutions.items():
+        candidate = Path(resolution["path"])
+        how[ref] = {"path": str(candidate), "how": resolution.get("how"),
+                    "why": resolution.get("why") or "",
+                    "locator": resolution.get("locator")}
         if not candidate.is_file():
             continue
         try:
             cards[ref] = yaml.safe_load(candidate.read_text(encoding="utf-8"))
         except Exception:
             cards[ref] = None
-    return cards
+    return cards, how
 
 
 def _bindings_by_item(bindings: dict) -> dict[str, dict]:
@@ -674,21 +739,26 @@ def build(*, boards_root: Path, card_locator_resolver,
     Item read `NOT_FOUND` — "no card file is there" reported for cards sitting
     on disk. That is the same defect `item_row`'s UNREADABLE exists to prevent,
     one layer up: a failure of this process reported as a fact about the world.
-    The locator is written by the authority in both absolute and
-    repository-relative form, so only the caller knows what it is relative to,
-    and the caller must say.
+
+    It is called as `resolver(project, item_id, locator)` and returns
+    `{"path", "how", "why", "locator"}` — the resolution rule's own answer,
+    not just a path. Two reasons for the whole dict rather than the string the
+    first version took: the project and the item id are two of the three things
+    `workchain.resolve_card_path` needs to fall back to the conventional
+    records path, and `how` is the only thing that tells "this Item has no
+    card" apart from "this locator was written on another machine".
     """
     boards = load_boards(boards_root)
-    locators: dict[str, str] = {}
+    resolutions: dict[str, dict] = {}
     for document in boards:
-        project = document.get("project")
+        project = str(document.get("project") or "")
         for item in document.get("items") or []:
-            locator = item.get("card_locator")
-            if not locator:
-                continue
-            locators[f"{project}/{item.get('id')}"] = card_locator_resolver(locator)
+            item_id = str(item.get("id") or "")
+            resolutions[f"{project}/{item_id}"] = card_locator_resolver(
+                project, item_id, item.get("card_locator"))
     bindings: dict = {}
     if binding_store is not None and Path(binding_store).is_file():
         bindings = json.loads(Path(binding_store).read_text(encoding="utf-8")).get("bindings") or {}
-    return compose(boards, cards=load_cards(locators),
-                   bindings=_bindings_by_item(bindings))
+    cards, how = load_cards(resolutions)
+    return compose(boards, cards=cards, bindings=_bindings_by_item(bindings),
+                   card_resolutions=how)
