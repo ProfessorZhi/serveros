@@ -780,13 +780,16 @@ def admission_plan(decision: dict, rows: list[dict], grants: dict[str, dict], *,
             # reported as that rather than as "nothing was selected".
             #
             # What it is NOT is a producer anybody is missing. An earlier
-            # version of this sentence sent the reader to
-            # `intake/focus_source.py`'s "missing card field", which is the one
-            # reading that file's own `NOT_PRODUCED_ELSEWHERE` retracts: a row's
-            # `grant_ref` is not a field anything authors, `control_join`
-            # DERIVES it, and the sentence a person acting on this refusal
-            # reads must send them to the delegation that is absent rather than
-            # to a card field that was never meant to exist.
+            # version of this sentence sent the reader to a card field it named
+            # as unbuilt, which is the one reading `intake/focus_source.py`'s
+            # own `NOT_PRODUCED_ELSEWHERE` retracts: a row's `grant_ref` is not
+            # a field anything authors, `control_join` DERIVES it, and the
+            # sentence a person acting on this refusal reads must send them to
+            # the delegation that is absent rather than to a card field that was
+            # never meant to exist. That phrase is deliberately not reproduced
+            # here: the point of removing it was that a reader must stop finding
+            # it, and a `grep` that still matches a comment is the same
+            # misdirection one level down.
             return {"refused": "SELECTION_CARRIES_NO_GRANT",
                     "because": (f"{item_id} is in this decision's `selected` and "
                                 f"the row it was selected from names no "
