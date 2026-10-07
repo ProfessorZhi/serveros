@@ -146,6 +146,16 @@ standing_delegation:
   evidence_schema: serveros/human-delegation.v1
   receipt_schema: serveros/delegation-issuance.v1
   trust_binding: ~/.config/serveros/human-control-trust.json
+  trust_root: >-
+    The binding's own integrity is part of the separation and not a detail of
+    where it is kept. A trust root this execution can replace names whichever key
+    that execution last wrote there, which makes the custodian recorded inside it
+    worth nothing. Two conditions are required and separately measured: the keys
+    are held by a principal separate from the execution, and the file cannot be
+    replaced by it — writable itself, owned by it, or sitting in a writable
+    directory, any of which is enough. `work trust status` reports the durable
+    route closed when either fails. Where the separation does not exist it is
+    reported as not ready, never completed with a same-uid self-signature.
   signature: Ed25519 over UTF-8 JSON with sorted keys, compact separators and literal Unicode
   issuance: >-
     A trusted provider must bind the human's acceptance of the exact grant to

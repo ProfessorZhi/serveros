@@ -10,6 +10,13 @@ document nothing consumes.
 The rest are refusals, because that is what this module mostly is: it cannot
 create the separation between the signer and the execution, so its contribution
 is declining to record a binding that pretends the separation exists.
+
+One measurement here is about neither signatures nor refusals: the trust root's
+own container. `tmp_path` belongs to the uid running these tests, so the real
+resolver reports every fixture binding as replaceable by this execution and the
+durable route comes back closed whatever the custodian says. Tests about the
+custody arithmetic therefore patch that one measurement to the other answer, so
+that each fails for its own reason; tests about the container take it as it is.
 """
 import base64
 import copy
@@ -75,6 +82,26 @@ def binding(tmp_path, public_key):
     return path
 
 
+@pytest.fixture
+def protected_root(monkeypatch):
+    """The container measurement, answered the other way.
+
+    A fixture path under `tmp_path` is owned by the uid running the tests and
+    sits in a directory that uid writes to, so the real resolver correctly calls
+    it replaceable — and a replaceable root closes the durable route by itself,
+    which would drown out the assertion the test is actually making. Only the
+    container is stubbed here; the custodian is resolved for real.
+    """
+    def protected(target):
+        return {"path": str(target), "directory": str(Path(target).parent),
+                "directory_exists": True, "directory_writable": False,
+                "state": trust.ROOT_NOT_REPLACEABLE, "exists": True,
+                "owner_uid": 0, "owner_is_execution": False, "mode": 0o400,
+                "file_writable": False,
+                "because": "fixture: a root held outside this execution"}
+    monkeypatch.setattr(trust, "resolve_root", protected)
+
+
 # ---------------------------------------------------------------- absence
 
 def test_no_binding_is_a_state_not_a_fault(tmp_path):
@@ -125,7 +152,7 @@ def test_custodian_that_is_this_execution_is_refused_not_recorded(tmp_path, publ
     assert not path.exists()
 
 
-def test_separate_unix_custodian_is_measured_and_reported(tmp_path, binding):
+def test_separate_unix_custodian_is_measured_and_reported(tmp_path, binding, protected_root):
     result = trust.verdict(binding)
     assert result["binding"] == "PRESENT"
     assert result["durable_route"] == "REACHABLE"
@@ -133,7 +160,7 @@ def test_separate_unix_custodian_is_measured_and_reported(tmp_path, binding):
     assert result["missing"] == []
 
 
-def test_unnameable_custodian_cannot_claim_reachability(tmp_path, public_key):
+def test_unnameable_custodian_cannot_claim_reachability(tmp_path, public_key, protected_root):
     """An off-host signer is a claim nothing here can look up, and is not 'separate'."""
     _, encoded = public_key
     path = tmp_path / "human-control-trust.json"
@@ -145,7 +172,7 @@ def test_unnameable_custodian_cannot_claim_reachability(tmp_path, public_key):
     assert result["missing"] == ["CUSTODY_UNMEASURED"]
 
 
-def test_missing_user_is_not_a_separate_one(tmp_path, public_key):
+def test_missing_user_is_not_a_separate_one(tmp_path, public_key, protected_root):
     """A custodian naming nobody resolves to UNVERIFIED, and UNVERIFIED is not
     "separate" — it is a claim, and the route is reported as one that depends on it."""
     _, encoded = public_key
@@ -169,7 +196,8 @@ def test_bind_merges_rather_than_replacing_the_document(tmp_path, binding, publi
     assert sorted(row["provider_id"] for row in result["keys"]) == ["provider:second", "provider:test"]
 
 
-def test_existing_key_id_is_not_overwritten_without_saying_so(tmp_path, binding, public_key):
+def test_existing_key_id_is_not_overwritten_without_saying_so(tmp_path, binding, public_key,
+                                                              protected_root):
     _, encoded = public_key
     with pytest.raises(trust.Refused, match="already has key"):
         trust.bind("provider:test", "key-1", encoded, audience=AUDIENCE,
@@ -186,7 +214,8 @@ def test_audience_cannot_be_changed_under_existing_keys(tmp_path, binding, publi
                    custodian_kind="unix-user", custodian_name=other_user(), path=binding)
 
 
-def test_disable_is_a_named_verb_and_leaves_the_rest_alone(tmp_path, binding, public_key):
+def test_disable_is_a_named_verb_and_leaves_the_rest_alone(tmp_path, binding, public_key,
+                                                           protected_root):
     private2 = Ed25519PrivateKey.generate()
     encoded2 = base64.b64encode(private2.public_key().public_bytes(Encoding.Raw,
                                                                    PublicFormat.Raw)).decode()
@@ -221,6 +250,111 @@ def test_a_secret_handed_in_as_a_public_key_is_named_and_refused(tmp_path):
         trust.bind("provider:test", "key-1", "not base64 at all!!",
                    audience=AUDIENCE, custodian_kind="unix-user",
                    custodian_name=other_user(), path=tmp_path / "t.json")
+
+
+# ---------------------------------------------------------------- the container
+
+def test_a_root_this_execution_can_replace_closes_the_route_by_itself(binding):
+    """The question is not only who holds the key but who can change which key.
+
+    The binding here names a custodian that is a different unix user — the
+    strongest custody this host can measure — and the durable route is still
+    closed, because the file naming that key sits in a directory this execution
+    writes to. Nothing is simulated: `bind` really wrote it there, the mode and
+    the ownership below are the ones the filesystem reports.
+    """
+    result = trust.verdict(binding)
+    assert result["keys"][0]["custody"] == trust.SEPARATE
+    assert result["trust_root"]["state"] == trust.ROOT_REPLACEABLE
+    assert result["trust_root"]["owner_is_execution"] is True
+    assert "writable by this execution" in result["trust_root"]["because"]
+    assert result["missing"] == [trust.ROOT_BLOCKER]
+    assert result["durable_route"] == "UNREACHABLE"
+
+
+def test_the_directory_alone_is_enough_even_when_the_file_is_not_writable(tmp_path, binding):
+    """Mode 0444 in a writable directory is still a binding you can replace.
+
+    The file's own mode is the measurement people expect to be the answer, and
+    it is the one that misses: unlinking or renaming over a read-only file needs
+    only the directory.
+    """
+    os.chmod(binding, 0o444)
+    root = trust.verdict(binding)["trust_root"]
+    assert root["file_writable"] is False
+    assert root["directory_writable"] is True
+    assert root["state"] == trust.ROOT_REPLACEABLE
+    assert "by rename" in root["because"]
+
+
+def test_an_absent_root_still_says_where_it_would_be_written(tmp_path):
+    """The actionable half of "no binding yet": where it would go, and whether
+    that place is one this execution can write into afterwards."""
+    result = trust.verdict(tmp_path / "absent.json")
+    assert result["trust_root"]["state"] == trust.ROOT_ABSENT
+    assert result["trust_root"]["directory_writable"] is True
+    assert "could be replaced by this execution" in result["trust_root"]["because"]
+    # Reported, but not a second reason the route is closed: on this path the
+    # binding itself is already the reason, and one code per fact is the point.
+    assert result["missing"] == ["TRUST_BINDING_ABSENT"]
+
+
+def test_a_root_held_outside_the_execution_leaves_the_route_open(tmp_path, binding,
+                                                                 monkeypatch):
+    """The other branch, through the real resolver rather than a stub.
+
+    On a host where every participant runs as one uid this branch cannot be
+    reached by arranging files: an owner can always make its own file writable,
+    so `NOT_REPLACEABLE` needs a uid that is not this one and a filesystem that
+    refuses it. Both are substituted here, and only for `trust.os`, so the
+    pathlib calls that do the real measuring are untouched.
+    """
+    class Elsewhere:
+        """A uid that is not ours, and a filesystem that declines it."""
+
+        W_OK = os.W_OK  # the real constant, from this module's own `os`
+
+        @staticmethod
+        def getuid():
+            return 4242
+
+        @staticmethod
+        def access(path, mode):
+            return False
+
+    monkeypatch.setattr(trust, "os", Elsewhere)
+    result = trust.verdict(binding)
+    assert result["trust_root"]["state"] == trust.ROOT_NOT_REPLACEABLE
+    assert result["trust_root"]["owner_is_execution"] is False
+    assert result["missing"] == []
+    assert result["durable_route"] == "REACHABLE"
+
+
+def test_bind_still_writes_to_a_root_it_cannot_protect_and_says_so(tmp_path, public_key):
+    """Authoring stays possible, and the honest answer travels with it.
+
+    Refusing the write would leave hand-editing a security file as the only way
+    to author one, and a hand edit is the change nobody can review afterwards.
+    So the verb writes, and the verdict it returns — the same one `status`
+    prints — carries the closure.
+    """
+    _, encoded = public_key
+    path = tmp_path / "human-control-trust.json"
+    result = trust.bind("provider:test", "key-1", encoded, audience=AUDIENCE,
+                        custodian_kind="unix-user", custodian_name=other_user(),
+                        path=path)
+    assert path.exists()
+    assert result["durable_route"] == "UNREACHABLE"
+    assert result["trust_root"]["state"] == trust.ROOT_REPLACEABLE
+
+
+def test_render_prints_where_the_root_stands(binding):
+    """The line a person reads. `durable route UNREACHABLE` alone, next to a
+    key marked `custody=SEPARATE`, is the reading that sends someone looking for
+    a signer when the answer is a chown."""
+    text = "\n".join(trust.render(trust.verdict(binding)))
+    assert f"trust root    {trust.ROOT_REPLACEABLE}" in text
+    assert "its directory" in text
 
 
 # ---------------------------------------------------------------- the consumer
