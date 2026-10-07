@@ -33,6 +33,8 @@ serverosctl recipe run --recipe perception --scope project:example
 
 Node/Item scope 可用 `--sources <absolute-yaml>` 指定绑定。跨时段复用同一个
 阅读产物目录，已产生的 reading 和 invocation receipt 可复用；有歧义的调用不盲目重试。
+每次运行的 `outcomes.reading_progress` 分来源记录已准备批次、通过版本核验的缓存复用、实际模型调用和未读范围。模型预算用尽后继续检查其他来源的缓存，最后仍如实返回 `BUDGET_EXHAUSTED`。这不是语义接受水位：缺少 grant 时，已准备阅读保留为待对齐，不反复当作“未读”发给模型，也不冒充已接受事实。
+
 模型仅收到所选 packet，关闭工具、插件、hooks、MCP 和其他自定义上下文。
 文档引用由模型选行，控制器复制原始字节；IM 使用已读位置。超出输入预算明确拒绝，
 不静默截断来源。写入前重新核对来源与卡片版本，使用已有 semantic writer。
