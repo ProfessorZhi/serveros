@@ -10668,6 +10668,45 @@ def _records_position_line(position: dict) -> str:
     return f"记录树     未读 —— {position.get('why') or '原因未记录'}"
 
 
+def _delivery_lines(delivery: dict) -> list[str]:
+    """The delivery surface, said in two faces instead of one number.
+
+    `制品 18` on the line above counts REGISTERED rows. Read alone it looks
+    like an answer about the delivery, and on this node it was the only answer
+    the entry gave — for `SRV-0011` that was 18 rows against a card declaring
+    eight kinds, none of them present. The line below never replaces the count;
+    it says which of the card's own declared kinds the register actually
+    answers, and says that the comparison is the literal `kind` string, so
+    «absent from the register» cannot be read as «never produced».
+    """
+    if not delivery:
+        return ["交付面      未计算 —— 本读取器没有拿到声明面"]
+    declared = delivery.get("declared") or {}
+    registered = delivery.get("registered") or {}
+    state = declared.get("state")
+    count = registered.get("count", 0)
+    if state == "DECLARED":
+        kinds = declared.get("kinds") or []
+        matched = delivery.get("matched") or []
+        lines = [f"交付面      声明 {len(kinds)} 类 · 登记 {count} 条"
+                 f"（{len(registered.get('kinds') or [])} 类）"
+                 f" · 按 `kind` 字面比对：对上 {len(matched)} 类"]
+        absent = delivery.get("absent") or []
+        if absent:
+            lines.append(f"     ↳ 声明了但没有该 kind 的登记 {len(absent)} 类："
+                         + "、".join(absent))
+        undeclared = delivery.get("undeclared") or []
+        if undeclared:
+            lines.append(f"     ↳ 登记了但卡片没声明：" + "、".join(undeclared)
+                         + "（登记面比声明面宽，不因此算多做了）")
+        return lines
+    if state == "NOT_DECLARED":
+        return [f"交付面      卡片未声明 `expected_deliverables` —— 登记 {count} 条"
+                f"不构成交付面。这不是「交付未满足」，是「没有声明过交付面」"]
+    return [f"交付面      未读到卡片 —— 无从比对。登记 {count} 条只说明登记面，"
+            f"不说明交付面"]
+
+
 def cmd_work_item(args) -> int:
     """§6 — one Item's chain: which document exists, and where it stops."""
     chain = _workchain_module()
@@ -10701,6 +10740,7 @@ def cmd_work_item(args) -> int:
                 if item["priority"]["source"]["why"] else ""),
              f"个人优先级 {item['priority']['personal']['state']}",
              f"Run        {item['runs']} · 制品 {item['deliverables']}", ""]
+    lines += _delivery_lines(item.get("delivery") or {})
     for document in item["documents"]:
         mark = {"PRESENT": "●", "MISSING": "×", "NOT_YET_REQUIRED": "○"}.get(
             document["state"], "?")
