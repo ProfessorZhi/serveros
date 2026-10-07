@@ -16,6 +16,7 @@ from intake.daily_cycle import (
     invalidate_claims,
     review_gate,
     select_focus,
+    stale_because,
 )
 from runtime.bounded_invocation import invoke_once
 
@@ -616,5 +617,102 @@ class NativeReceiptTests(unittest.TestCase):
                 body={'verdict':verdict,'findings':[],'limitations':[]}
                 a=normalize_review(events=[{'type':'thread.started','thread_id':'s'}, {'type':'turn.started'}, {'type':'turn.completed'}],final_text=json.dumps(body),process_receipt={'status':'EXITED','process_exit_code':0},packet=packet(),configured_model='verified-model',reasoning_effort='high',observed_at=STAMP)
                 self.assertEqual(a['reason'],'INVALID_REVIEW_VERDICT')
+
+class TheStaleBoardSaysWhichProjectionsAreOld(unittest.TestCase):
+    """`STALE_BOARD` used to name an age and nothing else.
+
+    An age is not a diagnosis: a projection is old because its producer has not
+    run for that project, or because no producer covers the project at all, and
+    the projection file cannot tell those apart. What the sentence CAN do is
+    name the set that has to move, and say that it is not claiming the cause.
+    These pin both halves — including the closing clause, because a list of
+    stale projects with nothing saying what it is silent about reads as a
+    finding about why they are stale.
+    """
+
+    NOW2 = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+
+    def sentence(self, times, observed_at="2026-09-10T07:03:23+00:00", ttl=900):
+        return stale_because(observed_at, now=self.NOW2, ttl_seconds=ttl,
+                             projection_times=times)
+
+    def test_it_names_the_oldest_projection_and_its_age(self):
+        text = self.sentence({"litellm": "2026-09-10T07:03:23+00:00"})
+        self.assertIn("2026-09-10T07:03:23+00:00", text)
+        self.assertIn("s old", text)
+
+    def test_it_names_every_projection_outside_the_window_and_not_only_the_oldest(self):
+        """The oldest one is what `observed_at` is; the set is what has to move.
+        A sentence naming only the minimum would send a reader to refresh one
+        project and run again into the same block."""
+        text = self.sentence({"litellm": "2026-09-10T07:03:23+00:00",
+                              "multi-user-claw": "2026-09-10T07:03:24+00:00",
+                              "serveros": "2026-09-22T11:59:00+00:00"})
+        self.assertIn("litellm", text)
+        self.assertIn("multi-user-claw", text)
+        self.assertNotIn("serveros", text)
+
+    def test_it_says_it_is_not_claiming_why_any_one_of_them_is_old(self):
+        text = self.sentence({"litellm": "2026-09-10T07:03:23+00:00"})
+        self.assertIn("not why any one of them is", text)
+
+    def test_an_undated_projection_is_counted_among_the_ones_to_look_at(self):
+        """`oldest()` returns None when any projection is undated, so the CLI
+        blocks with `PROJECTION_AGE_UNKNOWN` before reaching here. A caller that
+        reached here anyway must not let the undated project vanish from the
+        set: an age nobody can read is not a fresh one."""
+        text = self.sentence({"litellm": "2026-09-10T07:03:23+00:00",
+                              "serveros": None})
+        self.assertIn("serveros", text)
+
+    def test_an_unparseable_stamp_is_counted_rather_than_raised(self):
+        """A description that crashes is a description nobody reads."""
+        text = self.sentence({"litellm": "2026-09-10T07:03:23+00:00",
+                              "serveros": "the 22nd"})
+        self.assertIn("serveros", text)
+
+    def test_a_future_projection_says_so_rather_than_reading_as_very_old(self):
+        text = stale_because("2026-09-23T00:00:00+00:00", now=self.NOW2,
+                             ttl_seconds=900, projection_times=None)
+        self.assertIn("AHEAD of now", text)
+        self.assertNotIn("s old", text)
+
+    def test_without_the_times_it_still_names_the_age_and_claims_no_cause(self):
+        text = self.sentence(None)
+        self.assertIn("2026-09-10T07:03:23+00:00", text)
+        self.assertNotIn("not why any one of them is", text)
+
+    def test_both_branches_carry_the_sentence_and_the_list(self):
+        # `NOW` in this file is 2026-09-22T01:00Z, so the second stamp below is
+        # one minute old rather than in the future: a future stamp is a
+        # different failure and is pinned by its own test.
+        times = {"litellm": "2026-09-10T07:03:23+00:00",
+                 "serveros": "2026-09-22T00:59:00+00:00"}
+        rows, accepted = [item()], selection(["T-1"])
+        continuation = continue_focus(rows, {"g": grant()}, accepted, now=NOW,
+                                      observed_at="2026-09-10T07:03:23+00:00",
+                                      projection_times=times)
+        proposal = select_focus(rows, {"g": grant()}, now=NOW,
+                                observed_at="2026-09-10T07:03:23+00:00",
+                                projection_times=times)
+        for decision in (continuation, proposal):
+            self.assertEqual(decision["reason"], "STALE_BOARD")
+            self.assertIn("litellm", decision["blocked_because"])
+            self.assertNotIn("serveros", decision["blocked_because"])
+
+    def test_the_two_questions_get_the_same_sentence(self):
+        """They are one question about one board. Two sentences would be two
+        answers to "why was this not reached"."""
+        times = {"litellm": "2026-09-10T07:03:23+00:00"}
+        rows, accepted = [item()], selection(["T-1"])
+        continuation = continue_focus(rows, {"g": grant()}, accepted, now=NOW,
+                                      observed_at="2026-09-10T07:03:23+00:00",
+                                      projection_times=times)
+        proposal = select_focus(rows, {"g": grant()}, now=NOW,
+                                observed_at="2026-09-10T07:03:23+00:00",
+                                projection_times=times)
+        self.assertEqual(continuation["blocked_because"],
+                         proposal["blocked_because"])
+
 
 if __name__=='__main__':unittest.main()
