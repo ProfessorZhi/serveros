@@ -1725,5 +1725,270 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
         self.assertEqual(answer["resolved_by"], "exact-file")
 
 
+class TheCardAndTheLineBeneathItAnswerAboutOneSurface(unittest.TestCase):
+    """One Item, one card, one answer — and this was four answers.
+
+    The reading fix landed in `_documents` and not in `load_card`, and the two
+    asked different questions of different surfaces. Run against `LIT-0220`,
+    whose card sits at the ref and not in this checkout's records, one block of
+    output said all of these at once:
+
+        来源优先级 UNPRODUCED —— no card, so nothing declared one
+        交付面      未读到卡片 —— 无从比对。登记 0 条只说明登记面，不说明交付面
+        ● card.yaml    PRESENT    ← exact-file · 读自 origin/main@d7f79d80…
+        卡片       UNRESOLVED
+
+    The `●` was right. The three lines around it were reading a fact about
+    THIS CHECKOUT as a fact about the card. The fix is one shared decision
+    (`_authority_bytes`) behind both readers, and these tests hold the faces
+    together rather than holding either one in isolation — a test of the
+    documents row alone would have passed the whole time the block contradicted
+    itself.
+    """
+
+    CARD = ("id: IT-1\ntitle: one item\nexpected_deliverables: [report, "
+            "coverage-matrix]\n")
+    HELD = "projects/px/items/IT-1/card.yaml"
+
+    def _composed(self, tmp, *, held=(), head=(), texts=None, deliverables=None,
+                  local_card=None):
+        """One Item composed the way `serverosctl work item` composes it.
+
+        The roots are the node's shape and not a convenient one: `records` is
+        a CHILD of the workspace root, which is what makes the locator
+        `records/projects/...` resolve under both. A fixture that hung them
+        side by side would have put `item_dir` outside the records tree, and
+        `relative()` would have returned None — the borrow would have failed
+        for a reason that does not exist on the node.
+        """
+        root = Path(tmp)
+        (root / "boards" / "px").mkdir(parents=True)
+        (root / "boards" / "px" / "current.json").write_text(json.dumps(
+            a_projection("px", [an_item("IT-1", state="ACTIVE",
+                                        deliverables=deliverables or [])])),
+            encoding="utf-8")
+        item_dir = (root / "records" / "projects" / "px" / "items" / "IT-1")
+        item_dir.mkdir(parents=True)
+        if local_card is not None:
+            (item_dir / "card.yaml").write_text(local_card, encoding="utf-8")
+        position = chain.TreePosition(
+            root=root / "records", revision="a" * 40, branch="main",
+            upstream_ref="origin/main", upstream_revision="refsha000000",
+            ahead=0, behind=13, state=chain.TREE_BEHIND,
+            git=_fake_git(toplevel=str(root / "records"),
+                          has_files=held, head_files=head, texts=texts))
+        return chain.compose_item(
+            contract=CONTRACT, records_root=root / "records",
+            workspace_root=root, skeletons=None,
+            project="px", item_id="IT-1",
+            projects=chain.load_projects(boards_root=root / "boards"),
+            tree=position)
+
+    def test_the_header_reads_the_same_surface_the_dotted_row_reports(self):
+        """The card's CONTENT, not just the news that the ref has it.
+
+        Naming the surface on the `●` row was only half a fix while the header
+        above it had no document at all. A cause is not a card, and neither is
+        a `PRESENT` two lines further down: the priority field and the delivery
+        surface both need the bytes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            item = self._composed(
+                tmp, held=(self.HELD,), head=(), texts={self.HELD: self.CARD},
+                deliverables=[{"id": "D-1", "kind": "report"}])
+        card_row = next(d for d in item["documents"] if d["document"] == "card.yaml")
+        self.assertEqual(card_row["state"], chain.PRESENT)
+        self.assertEqual(item["card"]["state"], chain.PRESENT)
+        # ONE VOICE: both name the same surface and the same revision.
+        self.assertEqual(item["card"]["read_from"], card_row["read_from"])
+        self.assertEqual(item["card"]["read_from_revision"], "refsha000000")
+        self.assertEqual(card_row["read_from"], "origin/main")
+        # ...and the content actually reached the two readers that were
+        # answering `no card` while a card was being read.
+        self.assertNotIn("no card", item["priority"]["source"]["why"])
+        self.assertEqual(item["delivery"]["declared"]["state"], chain.DECLARED)
+        self.assertEqual(item["delivery"]["declared"]["kinds"],
+                         ["report", "coverage-matrix"])
+        self.assertEqual(item["delivery"]["matched"], ["report"])
+        self.assertEqual(item["delivery"]["absent"], ["coverage-matrix"])
+
+    def test_a_card_this_checkout_holds_is_still_answered_from_here(self):
+        """The fallback is a fallback. It does not outrank the working tree.
+
+        A `read_from` that named the ref on a card sitting on the disk would be
+        the same defect pointed the other way, and it would hide a local edit
+        behind the authority's copy of the same file.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            item = self._composed(
+                tmp, held=(self.HELD,), head=(), texts={self.HELD: self.CARD},
+                local_card="id: IT-1\ntitle: edited here\n")
+        self.assertEqual(item["card"]["state"], chain.PRESENT)
+        self.assertEqual(item["card"]["read_from"], "worktree")
+        self.assertIsNone(item["card"]["read_from_revision"])
+        card_row = next(d for d in item["documents"] if d["document"] == "card.yaml")
+        self.assertEqual(card_row["read_from"], "worktree")
+
+    def test_without_a_tree_the_reader_reports_only_the_pointer(self):
+        """The fallback is opt-in, so an existing caller cannot silently gain it.
+
+        `load_card` has callers that pass nothing else, and a version that
+        reached for a ref on its own would answer with a surface the caller
+        never asked to be read from.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resolution = chain.resolve_card_path(
+                locator="records/projects/px/items/IT-1/card.yaml", project="px",
+                item_id="IT-1", records_root=root / "records",
+                workspace_root=root / "workspace")
+            card = chain.load_card(resolution, "IT-1")
+        self.assertEqual(card["state"], chain.MISSING)
+        self.assertEqual(card["read_from"], "worktree")
+
+    def test_a_card_at_the_ref_that_does_not_parse_is_unreadable_not_absent(self):
+        """Borrowing the bytes does not borrow a different verdict about them.
+
+        An unreadable card is a third state and is never reported as absence —
+        that rule was written for the working tree and it is the same rule for
+        the ref, because it is a fact about the CONTENT.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            item = self._composed(
+                tmp, held=(self.HELD,), head=(),
+                texts={self.HELD: "\t- : : not a mapping\n"})
+        self.assertEqual(item["card"]["state"], chain.UNREADABLE)
+        # ...and it still names the surface it tried, so the reader is not left
+        # thinking the local file was the problem.
+        self.assertEqual(item["card"]["read_from"], "origin/main")
+
+    def test_a_tree_that_is_not_behind_borrows_the_card_too(self):
+        """The same guard `_documents` has, because it is the same decision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "records" / "projects" / "px" / "items" / "IT-1").mkdir(
+                parents=True)
+            position = chain.TreePosition(
+                root=root / "records", revision="a" * 40, branch="main",
+                upstream_ref="origin/main", upstream_revision="refsha000000",
+                ahead=0, behind=0, state=chain.TREE_FOLLOWING,
+                git=_fake_git(toplevel=str(root / "records"), counts="0\t0",
+                              has_files=(self.HELD,)))
+            resolution = chain.resolve_card_path(
+                locator="records/projects/px/items/IT-1/card.yaml", project="px",
+                item_id="IT-1", records_root=root / "records",
+                workspace_root=root / "workspace")
+            card = chain.load_card(
+                resolution, "IT-1",
+                item_dir=resolution["item_dir"],
+                rule={"name": "card.yaml", "resolved_by": ("exact-file",)},
+                tree=position)
+        self.assertEqual(card["state"], chain.MISSING)
+
+
+class TheDeliverySurfaceIsTwoFacesAndNotOneNumber(unittest.TestCase):
+    """`制品 18` is a count of REGISTERED rows, read as an answer about delivery.
+
+    On this node it was the only answer the entry gave. For `SRV-0011` that was
+    18 rows against a card declaring eight kinds — `coverage-matrix`,
+    `start-here`, `release-manifest`, `acceptance-evidence`, `daily-report`,
+    `quay-result`, `rollback-procedure`, `blocker-list` — and not one of the 18
+    carried any of those kinds. Both numbers were true and the pair of them was
+    misleading, which is the shape this module keeps having to fix.
+    """
+
+    def _delivery(self, document, registered):
+        return chain._delivery(document, registered)
+
+    def test_the_comparison_is_the_kind_string_and_it_names_both_directions(self):
+        answer = self._delivery(
+            {"expected_deliverables": ["report", "coverage-matrix"]},
+            [{"kind": "report"}, {"kind": "report"},
+             {"kind": "pull_request"}])
+        self.assertEqual(answer["declared"]["state"], chain.DECLARED)
+        self.assertEqual(answer["matched"], ["report"])
+        self.assertEqual(answer["absent"], ["coverage-matrix"])
+        self.assertEqual(answer["undeclared"], ["pull_request"])
+        self.assertEqual(answer["registered"]["by_kind"], {"report": 2,
+                                                           "pull_request": 1})
+        self.assertEqual(answer["compared_by"], "exact kind string")
+
+    def test_a_wider_register_is_not_a_finding(self):
+        """The register holds kinds the workflow adds on its own — pull_request,
+        report — and a card is not asked to have declared them.
+
+        Reporting those as a shortfall would put a permanent alarm on every
+        Item on the node, which is how a board stops being read.
+        """
+        answer = self._delivery({"expected_deliverables": ["report"]},
+                                [{"kind": "pull_request"}])
+        self.assertEqual(answer["matched"], [])
+        self.assertEqual(answer["absent"], ["report"])
+        self.assertEqual(answer["undeclared"], ["pull_request"])
+
+    def test_a_card_declaring_nothing_is_not_a_delivery_that_was_not_met(self):
+        """Three blanks: no surface stated, a surface unmet, and no card read.
+
+        Collapsing any two of them is the defect. `NOT_DECLARED` says the card
+        was read and states no surface; `UNREADABLE` says nothing was read; and
+        neither is the fact that a declared kind is absent from the register.
+        """
+        nothing = self._delivery({"id": "IT-1"}, [])
+        self.assertEqual(nothing["declared"]["state"], chain.NOT_DECLARED)
+        self.assertEqual(nothing["declared"]["kinds"], [])
+        self.assertIn("declares no `expected_deliverables`",
+                      nothing["declared"]["why"])
+        unread = self._delivery(None, [])
+        self.assertEqual(unread["declared"]["state"], chain.UNREADABLE)
+        self.assertIn("no card was read", unread["declared"]["why"])
+        # An empty list is NOT_DECLARED. A card that says `[]` has stated that
+        # it declares nothing, which is a different sentence from silence —
+        # and both are different from a set that was stated and not met.
+        stated_empty = self._delivery({"expected_deliverables": []}, [])
+        self.assertEqual(stated_empty["declared"]["state"], chain.NOT_DECLARED)
+
+    def test_a_directory_of_deliverables_is_listed_and_not_lost(self):
+        """`by_kind` counts what the register actually holds, including repeats.
+
+        The count beside the kinds is the whole reason the old line was wrong:
+        two `report` rows are two rows and one kind, and a reader has to be
+        able to see which number they are looking at.
+        """
+        answer = self._delivery({"expected_deliverables": ["report"]},
+                                [{"kind": "report"}, {"kind": "report"}])
+        self.assertEqual(answer["registered"]["count"], 2)
+        self.assertEqual(answer["registered"]["kinds"], ["report"])
+        self.assertEqual(answer["matched"], ["report"])
+
+
+class TheCommandLineSaysWhichSurfaceTheCardCameFrom(unittest.TestCase):
+    """The rendered block, because that is what a person actually reads."""
+
+    def _cli(self):
+        return _load("serveros_runtime_cli_for_delivery",
+                     REPO / "runtime" / "cli.py")
+
+    def test_a_declared_surface_names_what_is_absent_and_what_is_extra(self):
+        cli = self._cli()
+        lines = cli._delivery_lines(chain._delivery(
+            {"expected_deliverables": ["report", "coverage-matrix"]},
+            [{"kind": "report"}, {"kind": "pull_request"}]))
+        joined = "\n".join(lines)
+        self.assertIn("声明 2 类", joined)
+        self.assertIn("coverage-matrix", joined)
+        self.assertIn("对上 1 类", joined)
+        self.assertIn("登记面比声明面宽", joined)
+
+    def test_the_unread_case_does_not_read_as_a_delivery_that_was_not_met(self):
+        cli = self._cli()
+        joined = "\n".join(cli._delivery_lines(chain._delivery(None, [])))
+        self.assertIn("未读到卡片", joined)
+        self.assertIn("不说明交付面", joined)
+        not_declared = "\n".join(cli._delivery_lines(chain._delivery(
+            {"id": "IT-1"}, [{"kind": "report"}])))
+        self.assertIn("没有声明过交付面", not_declared)
+        self.assertNotIn("未读到卡片", not_declared)
+
+
 if __name__ == "__main__":
     unittest.main()
