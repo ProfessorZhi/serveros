@@ -24,6 +24,8 @@
 
 ## 批次 P1：决定与工作 join
 
+先读 `docs/architecture/LITELLM-SOURCE-AND-BOARD-PROFILE.md`，将 LiteLLM 工作文档与已授权聊天作为重点来源。准确读取当前版本、章节及完成标记，先对账旧认识/候选，避免已完成问题再次进入新需求或 Focus。自己的长期看板沿用源文档的优先级标题、需求说明和完成区风格，保留人工内容与正式 Work 状态的权威。
+
 复用 semantic writer、候选表和 Work owner，完成 C1/C2 的单次决定应用：来源/认识/需求 revision 绑定，明确接受/修改/合并/拒绝，正式目标唯一映射。普通事实使用真实 standing policy/grant；一个待决不阻塞独立条目。
 
 组合视图只覆盖三业务项目的当前工作，全局 0–2 Focus。为已有 litellm-observability 身份补 registry/owner 绑定，保留历史 LIT ID 与路径。
