@@ -4,7 +4,7 @@
 
 这是当前产品运行方式的目标规范，不是 LIVE 认证。代码、安装、实际消费和业务旅程分别验收。入口及优先级由根目录 `ARCHITECTURE.md` 声明；既有安全、单一 owner、证据和共享机保护约束继续有效。
 
-相关交付：[调研与 GPT 交接](RESEARCH-EXCHANGE.md)、[LiteLLM 重点来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)、[现状与改动清单](IMPLEMENTATION-DELTA-20261007.md)、[CC 执行计划](../plans/plan-01-native-work-environment.md)。
+配套合同：[21 项 Ability 要求与验收](ABILITY-REQUIREMENTS.md)、[目录与深度收敛](DIRECTORY-CONVERGENCE.md)、[唯一 CC 执行计划](../plans/plan-01-native-work-environment.md)、[夜间执行委托](../CC-OVERNIGHT-MANDATE.md)。专题按需读取：[调研与 GPT 交接](RESEARCH-EXCHANGE.md)、[LiteLLM 重点来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)。历史差距快照保留在 IMPLEMENTATION-DELTA-20261007.md，不能代替最新状态。
 
 ## 1. 产品目标与边界
 
@@ -13,6 +13,25 @@
 支持实现、测试、调研、分析、运维准备和报告等工作。各阶段方法由 Agent 决定；不得要求所有任务顺序经过研究、设计、编码、测试，也不得要求每项任务建立 21 个 Ability 步骤。
 
 原生工具的直接路径始终可用。已知上下文、目标和边界时直接工作；读取文件、搜索代码、普通 Git 操作不必逐次经过 daemon。任何可选 Provider 不可用，只影响依赖它的工作。
+
+### 产品需求的固定分母
+
+| ID | 必须满足的用户结果 |
+|---|---|
+| R01 | 已授权来源的变化进入认识与需求对齐，LiteLLM 工作文档与聊天重点参考，旧完成事项不复活 |
+| R02 | 人主要接受目标/Focus、重大取舍和必要责任决定；普通授权工程持续自动推进 |
+| R03 | 同一正式目标只有一个交付责任对象，重复决定/触发幂等，Focus 完成可归零 |
+| R04 | 任一合适本机 Session 可通过明确后继接任工作，角色不产生权限，子任务结果回到逻辑 Parent |
+| R05 | 调研、设计、实现、测试、报告由 Native Agent 按需组合，无额外强制阶段或独立 selector |
+| R06 | 能力按需发现/采用，第三方原件可保持原样，实际输入输出和结果接收可核 |
+| R07 | 持续执行受真实身份/意图、scope、期限、撤销、预算和 epoch 约束；签发/信任根与受限执行域隔离 |
+| R08 | 验收证明 AC，报告复用证据，适当的 PR/文档/报告与 Outcome 能实际交付 |
+| R09 | 最小必要上下文，渐进式披露；少量同条件对照检验效率，不把静态字节估算当加价 |
+| R10 | 本地/飞书/GitHub owner、入口、读写版本清楚，目录导航浅，保留必要身份层级与活动开发 |
+| R11 | 状态、事故、待决定、投递分开，手机可读，噪声受控，监控不自动获得修复权限 |
+| R12 | 所有 21 项职责有明确实现方式与边界；任何单项 PASS 或安装一致均不替代产品验收 |
+
+R01–R12 是本产品的验收范围，不是每个日常任务的步骤。细项由 Ability 合同与实施计划承接。
 
 ## 2. 一天如何运转
 
