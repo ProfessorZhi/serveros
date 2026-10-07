@@ -69,6 +69,70 @@ def fresh(observed_at: str, now: datetime, ttl_seconds: int) -> bool:
     return 0 <= age <= ttl_seconds
 
 
+def stale_because(observed_at: str, *, now: datetime, ttl_seconds: int,
+                  projection_times: dict | None = None) -> str:
+    """The sentence `STALE_BOARD` owes a reader, and the one thing it will not say.
+
+    `blocked()` says where the prose goes, and the other two reasons that end a
+    decision this way supply it: `PROJECTION_AGE_UNKNOWN` and
+    `SELECTION_UNREADABLE` both name what nobody could read. `STALE_BOARD`
+    named an age and nothing else. An age alone is not a diagnosis — a
+    projection twenty-seven days old is written either by a producer that has
+    not run for that project or by one that no longer covers it, and this
+    module cannot tell those apart. `work focus` printed every project's age
+    and left the comparison to the reader, which works at four projects and
+    stops working well before twenty.
+
+    So this names the oldest projection, its age, and every projection that
+    falls outside the window — the set that has to move before the decision can
+    be reached. It deliberately does NOT say why any one of them is old, and
+    the closing clause says so rather than letting the list read as a cause.
+    The producer that covers a project is a fact of the control plane's
+    registry, and this module reads a projection file; a sentence that guessed
+    from the file would be the substitution `PROJECTION_AGE_UNKNOWN` exists to
+    refuse, one step over.
+    """
+    age = int((now - instant(observed_at)).total_seconds())
+    if age < 0:
+        head = (f"the oldest projection behind this board is dated "
+                f"{observed_at}, {-age}s AHEAD of now. A timestamp from the "
+                f"future is not a fresh one: the window this decision is made "
+                f"inside cannot contain it, and reading it as young would be "
+                f"reading an unreadable clock as a good one.")
+    else:
+        head = (f"the oldest projection behind this board is {observed_at}, "
+                f"{age}s old — past the {ttl_seconds}s window inside which Item "
+                f"state may be decided on.")
+
+    def outside_window(stamp: str | None) -> bool:
+        if not stamp:
+            return True
+        try:
+            return not fresh(stamp, now, ttl_seconds)
+        except ValueError:
+            # `oldest` refuses an unparseable stamp before this helper is
+            # reached on the real path. One arriving here anyway is counted
+            # among the ones to look at: an age nobody can read is not a
+            # fresh one, which is this module's rule about silence.
+            return True
+
+    sentence = (head + " The decision was not reached; it was not refused — "
+                "nothing here says the work is wrong, only that what is known "
+                "about it is too old to plan from.")
+    outside = sorted(name for name, stamp in (projection_times or {}).items()
+                     if outside_window(stamp))
+    if outside:
+        sentence += (f" {len(outside)} of the projections this board was "
+                     f"composed from fall outside that window: "
+                     f"{', '.join(outside)}. This names which of them are old, "
+                     f"not why any one of them is: a projection whose producer "
+                     f"still covers the project is refreshed by running that "
+                     f"producer, and one that no producer covers will not move "
+                     f"at all — and from the projection file the two are "
+                     f"indistinguishable.")
+    return sentence
+
+
 def standing_reason(grant: dict, *, now: datetime) -> str | None:
     """The two judgements about a grant that need no Item and no action.
 
@@ -389,7 +453,8 @@ def accepted_items(accepted: dict | None) -> dict:
 
 def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | None,
                    *, now: datetime, observed_at: str,
-                   ttl_seconds: int = 900, limit: int = 2) -> dict:
+                   ttl_seconds: int = 900, limit: int = 2,
+                   projection_times: dict | None = None) -> dict:
     """Continue the objectives a PERSON accepted — and recommend nothing.
 
     This is the half `select_focus` could not be, and the reason it could not:
@@ -451,7 +516,11 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
     # would make a blocker about the BOARD's age read as a blocker about the
     # selection.
     if not fresh(observed_at, now, ttl_seconds):
-        return {**blocked("STALE_BOARD"), "accepted_state": selection["state"],
+        return {**blocked("STALE_BOARD",
+                          because=stale_because(observed_at, now=now,
+                                                ttl_seconds=ttl_seconds,
+                                                projection_times=projection_times)),
+                "accepted_state": selection["state"],
                 "selection_items": list(selection["items"])}
     if selection["state"] == "UNREADABLE":
         return {**blocked("SELECTION_UNREADABLE", because=selection["why"]),
@@ -546,7 +615,8 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
 
 def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
                  observed_at: str, ttl_seconds: int = 900, limit: int = 2,
-                 accepted: dict | None = None) -> dict:
+                 accepted: dict | None = None,
+                 projection_times: dict | None = None) -> dict:
     """What might be worth PROPOSING for the spare slots — never what to carry.
 
     Rows are normalized by the board adapter (`intake/focus_source.py`, reached
@@ -583,7 +653,11 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
     if type(limit) is not int or not 0 < limit <= 2:
         raise ValueError("this profile supports one or two focus objectives")
     if not fresh(observed_at, now, ttl_seconds):
-        return {**blocked("STALE_BOARD"), "recommendation_only": True}
+        return {**blocked("STALE_BOARD",
+                          because=stale_because(observed_at, now=now,
+                                                ttl_seconds=ttl_seconds,
+                                                projection_times=projection_times)),
+                "recommendation_only": True}
     ids = [r.get("id") for r in rows]
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise ValueError("missing or duplicate canonical Item ID")
