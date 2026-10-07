@@ -1338,7 +1338,47 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `check_skeleton` runs on the real bytes. `tests/` is not a member of this
 #   composition, so the ten tests and the non-vacuity check that come with it
 #   do not move the label.
-cachebuster: srv0005.20261008j
+#
+#   j → k: an Item the projection does not carry is still answered for. Three
+#   members change:
+#
+#   intake/workchain.py     `_row_from_the_records` reads the card at the
+#     conventional records path when no projection row carries the Item, and
+#     marks the row `in_projection.listed=False`. The three columns a projection
+#     row owns — state, Run count, deliverable count — are reported `UNKNOWN`
+#     and not as zero, because zero is a count and this is the absence of a
+#     read. `_documents` gains a fourth answer, `REQUIREMENT_UNKNOWN`: whether an
+#     Item owes a document is a function of its STATE, so a reader holding no
+#     state cannot fall back on either `MISSING` or `NOT_YET_REQUIRED`. And
+#     `_delivery` accepts a register that was never consulted, answering
+#     `登记未查` rather than a count of zero.
+#   runtime/cli.py          `work item` prints a `控制面` line above the columns
+#     that line explains, renders the Run row as `未读` instead of a number, and
+#     prints the delivery surface as `声明 N 类 · 登记未查` instead of `登记 0 条`.
+#   mcp/continuation_mcp.py the wake gate requires `in_projection.listed` as well
+#     as `found`. This is the member that keeps the label honest rather than the
+#     one that moves it: `runtime/continuation_control.verify` denies only on
+#     `state == "COMPLETE"`, so a boundary carrying a card but no state would turn
+#     today's UNASKABLE wake into an ALLOW — a permission widened by a fact about
+#     the reader, which is this module's oldest defect wearing a new field.
+#
+#   The label moves because the previous one cannot answer a question it is
+#   asked. Measured on the promoted revision, one command and twelve Items:
+#   `serverosctl work item LIT-0106 --project litellm` prints `未找到 —— LIT-0106
+#   is in no projection under …` while the card has been at
+#   `records/projects/litellm/items/LIT-0106/card.yaml` all along. Seven litellm
+#   Items (0106, 0107, 0215, 0216, 0217, 0218, 0219) and five serveros Items
+#   (SRV-0001, 0002, 0003, 0005, 0008) answer `未找到` with rc=2, and all twelve
+#   carry a card on the same disk. A node left on `j` reports a fact about its
+#   board projection as a fact about the Item: that is the module's recurring
+#   shape, and it was measured, not reasoned about.
+#
+#   No classification rule changes. An Item in neither place is still `未找到`
+#   and now names both places; an Item a projection carries is still answered
+#   from the projection with no `控制面` line; a document that is genuinely
+#   absent is still absent. `tests/` is not a member of this composition, so the
+#   tests and the two mutations that come with this do not move the label.
+cachebuster: srv0005.20261008k
 
 skills:
   - name: runtime-management
