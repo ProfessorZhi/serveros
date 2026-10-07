@@ -7334,6 +7334,7 @@ def cmd_requirement_board(args) -> int:
     """
     board_mod = _load_module_from(REPO_ROOT / "intake" / "global_board.py",
                                   "serveros_global_board")
+    chain = _workchain_module()
     paths = paths_mod.Paths()
     boards_root = Path(paths.resolve("state/boards")["path"])
     workspace = Path(paths.root("workspace"))
@@ -7343,17 +7344,30 @@ def cmd_requirement_board(args) -> int:
     # which is a fact and not a missing measurement.
     binding_store = _agent_control_store_path()
 
-    def resolve_locator(locator: str) -> str:
-        """A card locator as an absolute path, relative to the WORKSPACE root.
+    def resolve_locator(project: str, item_id: str, locator: str) -> dict:
+        """`workchain.resolve_card_path`'s answer, which is the rule this node
+        already settled on.
 
-        `card_locator` is written by the authority and has been seen in both
-        forms. Relative means relative to the workspace — the cards live under
-        `records/`, a workspace child — and never to the cwd: a board composed
-        from a different directory would silently join a different set of
-        cards, and every row would look complete.
+        This used to be a two-line version of it here — absolute stays
+        absolute, everything else joins the workspace root — and that was a
+        THIRD answer to a question two other surfaces already answer: the
+        personal board (`workchain.resolve_card_path`, which reports
+        `cards_rebased` / `cards_unresolved`) and `work item`. The visible cost
+        was eight LiteLLM cards sitting at `records/projects/litellm/items/
+        <ID>/card.yaml` on this node, addressed by the authority as
+        `/opt/applications/data/home-hwz/...`, and read as "no card file is
+        there" by this verb alone. A projection that reports a card absent
+        while the file is on disk under its own records root is the failure
+        `item_row`'s UNREADABLE exists to prevent, one hop further out.
+
+        It takes the project and the item id now because the rule needs them:
+        when a locator resolves to nothing under either root, the conventional
+        records path is still tried, and that path is built from those two.
         """
-        candidate = Path(locator)
-        return str(candidate if candidate.is_absolute() else workspace / locator)
+        return chain.resolve_card_path(locator=locator, project=project,
+                                       item_id=item_id,
+                                       records_root=workspace / "records",
+                                       workspace_root=workspace)
 
     try:
         document = board_mod.build(boards_root=boards_root,
@@ -7416,7 +7430,13 @@ def cmd_requirement_board(args) -> int:
         f"items       {counts['items']} ({counts['active']} active, "
         f"{counts['completed']} completed)",
         f"cards       {counts['items'] - counts['without_a_card']} joined, "
-        f"{counts['without_a_card']} not joined",
+        f"{counts['without_a_card']} not joined"
+        # A locator written on another machine is not a missing card, and the
+        # count beside it would otherwise read as one more card found here.
+        # This is the number a person acts on: these rows' 来源 columns are
+        # filled in and the pointer under them is still wrong.
+        + (f" ({counts['cards_rebased']} rebased from another node's locator)"
+           if counts.get("cards_rebased") else ""),
         f"priority    {priority['state']}",
     ]
     if priority["state"] == "UNPRODUCED":

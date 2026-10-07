@@ -522,6 +522,157 @@ class TheHumanPageIsBuiltForItsReader(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# An empty 来源 column has two causes, and they are fixed in two places.
+# ---------------------------------------------------------------------------
+
+
+class TheTwoCausesOfAnEmptySourceColumn(unittest.TestCase):
+    """`how` travels from the resolver to the page, and it is the only thing
+    that keeps two different facts from being printed as one.
+
+    The personal board re-hangs a `card_locator` written against another
+    machine's workspace root and reads the card from THIS node; the
+    requirement board had its own two-line rule that took such a locator as
+    absolute-as-written. The same card was therefore JOINED on one page and
+    absent on the other, and the published requirement board said
+    「那张卡不在本机」 about the litellm cards sitting in
+    `records/projects/litellm/items/`. These tests hold the page to one rule.
+
+    The distinction the counts exist for: REBASED means the card WAS read and
+    the locator is still wrong, so the fix is a pointer. UNRESOLVED means
+    nothing under this node's roots matched, so the fix is a card. Sending a
+    reader to the wrong one of those is what the note at the top of §5's page
+    is for, and it is why `how` is carried at all.
+    """
+
+    def composed(self, cards=None, resolutions=None):
+        return board.compose([a_board("p", [an_item("X")])], cards=cards,
+                             card_resolutions=resolutions)
+
+    def test_a_rebased_card_is_read_and_the_locator_is_still_reported(self):
+        """The card is on this node; the pointer is to the other machine.
+
+        Counted in `cards_rebased` and NOT in `without_a_card`: the row is
+        correct and the 来源 column beside it is filled in, so a page that
+        said "N 行没有可读的 card.yaml" would be contradicting its own table.
+        """
+        document = self.composed(
+            cards={"p/X": {"source_refs": ["topic:abc"]}},
+            resolutions={"p/X": {"path": "/here/p/X/card.yaml",
+                                 "how": "REBASED",
+                                 "locator": "/opt/other/node/card.yaml"}})
+        self.assertEqual(document["items"][0]["source"]["state"], "JOINED")
+        self.assertEqual(document["counts"]["cards_rebased"], 1)
+        self.assertEqual(document["counts"]["without_a_card"], 0)
+        text = board.markdown(document)
+        self.assertIn("1 行的 card_locator 写的是另一台机器的路径", text)
+        self.assertNotIn("没有可读的 card.yaml", text)
+        self.assertIn("- 来源：topic:abc", text)
+
+    def test_a_rebased_locator_that_found_nothing_is_not_a_rebased_card(self):
+        """Re-hanging is a rule, not a result. The count is about the result.
+
+        `cards_rebased` requires `state == JOINED` as well as `how == REBASED`,
+        which makes the two counts disjoint. Without that, a request to re-hang
+        a locator that then matched nothing would be reported as a card read
+        off the other machine's path — a claim about a file nobody opened.
+        """
+        document = self.composed(
+            cards={},
+            resolutions={"p/X": {"path": "/here/p/X/card.yaml",
+                                 "how": "REBASED",
+                                 "locator": "/opt/other/node/card.yaml"}})
+        self.assertEqual(document["items"][0]["source"]["state"], "NOT_FOUND")
+        self.assertEqual(document["counts"]["cards_rebased"], 0)
+        self.assertEqual(document["counts"]["without_a_card"], 1)
+        self.assertNotIn("写的是另一台机器的路径",
+                         board.markdown(document))
+
+    def test_an_unresolved_locator_names_the_pointer_as_the_thing_to_fix(self):
+        document = self.composed(
+            cards={},
+            resolutions={"p/X": {"path": "", "how": "UNRESOLVED",
+                                 "locator": "/opt/other/node/card.yaml"}})
+        self.assertEqual(document["counts"]["without_a_card"], 1)
+        self.assertEqual(document["counts"]["cards_unresolved"], 1)
+        text = board.markdown(document)
+        self.assertIn("1 行没有可读的 card.yaml", text)
+        self.assertIn("其中 1 行的 card_locator 在该根下解析不到文件", text)
+
+    def test_the_note_names_the_root_it_read_and_not_the_machine(self):
+        """The false sentence this page actually carried, kept out.
+
+        The published board said 「那张卡不在本机」 about the marketops cards
+        while they sat on this node in `worktrees/records/MKT-0001` — a
+        checkout of the records branch `marketops/intake` that the board's
+        canonical `records/` root does not have. The board is right not to
+        read a worktree: that branch has not landed, and a page composed from
+        it would publish un-landed work and would depend on a directory
+        another actor may remove. So the sentence has to be about the root.
+        """
+        document = self.composed()
+        text = board.markdown(document)
+        self.assertIn("本看板读的 `records/` 根下没有这张卡", text)
+        for claim in ("不在本机", "本机没有", "本机解析不到"):
+            self.assertNotIn(claim, text)
+
+    def test_a_row_with_no_locator_does_not_blame_a_locator(self):
+        """The other sub-cause. Nothing is broken; there is nothing to point
+        at, and a page that sent this reader hunting for a bad pointer would
+        be inventing the pointer."""
+        document = self.composed()
+        self.assertEqual(document["counts"]["without_a_card"], 1)
+        self.assertEqual(document["counts"]["cards_unresolved"], 0)
+        text = board.markdown(document)
+        self.assertIn("1 行没有可读的 card.yaml", text)
+        self.assertNotIn("解析不到文件", text)
+
+    def test_both_causes_are_on_the_page_at_once(self):
+        document = board.compose(
+            [a_board("p", [an_item("X"), an_item("Y")])],
+            cards={"p/X": {"source_refs": ["topic:abc"]}},
+            card_resolutions={"p/X": {"path": "/here/p/X/card.yaml",
+                                      "how": "REBASED",
+                                      "locator": "/opt/other/card.yaml"},
+                              "p/Y": {"path": "", "how": "UNRESOLVED",
+                                      "locator": "/opt/other/card.yaml"}})
+        self.assertEqual(document["counts"]["cards_rebased"], 1)
+        self.assertEqual(document["counts"]["without_a_card"], 1)
+        self.assertEqual(document["counts"]["cards_unresolved"], 1)
+        text = board.markdown(document)
+        self.assertIn("1 行的 card_locator 写的是另一台机器的路径", text)
+        self.assertIn("2 行里 1 行没有可读的 card.yaml", text)
+
+    def test_build_hands_the_resolver_the_project_and_the_item(self):
+        """The contract that broke. A locator alone is not enough to resolve.
+
+        `resolve_card_path` falls back to the conventional
+        `records/<project>/items/<id>/card.yaml` when the locator does not
+        land, so the project and the item id are inputs to the rule and not
+        decoration. The first version of this call took only the locator, and
+        a resolver that needed the other two could not be written at all.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "boards" / "p").mkdir(parents=True)
+            (root / "boards" / "p" / "current.json").write_text(
+                json.dumps(a_board("p", [an_item("X")])), encoding="utf-8")
+            seen = []
+
+            def resolver(project, item_id, locator):
+                seen.append((project, item_id, locator))
+                return {"path": "", "how": "DECLARED", "why": "no file",
+                        "locator": locator}
+
+            document = board.build(boards_root=root / "boards",
+                                   card_locator_resolver=resolver)
+        self.assertEqual(seen, [("p", "X", "records/X/card.yaml")])
+        self.assertEqual(document["items"][0]["source"]["resolution"]["how"],
+                         "DECLARED")
+
+
+# ---------------------------------------------------------------------------
 # The one region of the page that is not derived.
 # ---------------------------------------------------------------------------
 
@@ -547,7 +698,10 @@ class TheHumanRegionBelongsToTheReader(unittest.TestCase):
 
     def document(self):
         return board.build(boards_root=self.boards,
-                           card_locator_resolver=lambda loc: str(self.root / loc))
+                           card_locator_resolver=lambda project, item_id, loc: {
+                               "path": str(self.root / loc) if loc else "",
+                               "how": "DECLARED", "locator": loc,
+                               "why": ""})
 
     def page(self):
         return (self.out / "current.md").read_text(encoding="utf-8")
@@ -651,7 +805,10 @@ class Writing(unittest.TestCase):
         exactly as the CLI says the workspace root.
         """
         return board.build(boards_root=self.boards,
-                           card_locator_resolver=lambda loc: str(self.root / loc),
+                           card_locator_resolver=lambda project, item_id, loc: {
+                               "path": str(self.root / loc) if loc else "",
+                               "how": "DECLARED", "locator": loc,
+                               "why": ""},
                            **kwargs)
 
     def test_both_files_are_written_and_agree(self):
@@ -701,7 +858,10 @@ class Writing(unittest.TestCase):
 
     def test_a_board_root_that_is_not_there_is_no_projects_not_a_failure(self):
         document = board.build(boards_root=self.root / "nowhere",
-                               card_locator_resolver=lambda loc: str(self.root / loc))
+                               card_locator_resolver=lambda project, item_id, loc: {
+                               "path": str(self.root / loc) if loc else "",
+                               "how": "DECLARED", "locator": loc,
+                               "why": ""})
         self.assertEqual(document["counts"]["items"], 0)
         self.assertEqual(document["source"]["projects"], [])
 
