@@ -1500,7 +1500,11 @@ short_description: Agent Engineering Workbench for a Linux work node
 #     the `content.md` it names. On this node it often does not: of the
 #     twenty-one link manifests under `information/raw`, fourteen record a
 #     64-hex value that is not the file beside them and three record a
-#     twelve-character prefix of it. The prior question is now asked once, from
+#     twelve-character prefix of it. [CORRECTED 2026-10-08 — see `o → p` below.
+#     Those fourteen are NOT records of other bytes; each is the digest of the
+#     body beside it taken before the collector's newline, so this entry's
+#     reading of them, and its `DIFFERS 14` count below, are both superseded.]
+#     The prior question is now asked once, from
 #     the file's own bytes, with four answers — the record is this file's digest;
 #     it describes other bytes (comparison NOT made, citation unmeasured, the
 #     manifest named, no range formed); no readable body is beside it (not made
@@ -1518,12 +1522,66 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   The label moves because an installed cache left on `n` would answer the prior
 #   question the old way — printing a comparison against a value no file here has
 #   as though it were a body check. The measurement behind the four answers is on
-#   this node's own tree (21 manifests: MATCH 4 / ABBREV 3 / DIFFERS 14), and the
+#   this node's own tree (21 manifests: MATCH 4 / ABBREV 3 / TRAILING-NEWLINE 14
+#   / DIFFERS 0 — the count as corrected in `o → p` below), and the
 #   live layer changes no verdict today: of 21 citations on 14 cards exactly one
 #   carries a digest and its manifest is MATCH, so the fix is preventive for the
 #   layer as it stands. `tests/` is not a member of this composition, so the
 #   tests and the eighteen mutations that come with this do not move the label.
-cachebuster: srv0005.20261008o
+#
+#   o → p: the fourteen records are the file's content, hashed one byte early.
+#   `o` moved the label for the right reason and stated this node's measurement
+#   wrongly. The fix `o` installed then made the same error one floor down,
+#   which is why the label moves again.
+#
+#   intake/understanding_delta.py
+#     `o` asked the prior question — does this manifest's `content_sha256`
+#     describe the `content.md` beside it — and answered it by hashing the file
+#     once. It then reported fourteen of the twenty-one link manifests as
+#     records that describe other bytes. They are not. Each is the digest of
+#     exactly the body beside it, taken before the collector appended the
+#     newline it writes: `records`' own `information/raw/expand_feishu_doc.py`
+#     says so in `render_doc`'s docstring — before 2026-09-14 `main()` wrote
+#     `redacted + "\n"` and hashed `sha256(redacted)` — and names fifteen
+#     manifests written that way and never migrated. This tree now shows
+#     fourteen of them.
+#
+#     So the reader stopped at `sha256(content.md) != recorded` and reported its
+#     own failed comparison as a fact about the document — the recurring shape
+#     of this module, committed by the fix for the previous instance of it. A
+#     card citing one of those fourteen came out UNMEASURABLE, and the refusal
+#     named a single hash and then concluded about the document, so a reader who
+#     ran `sha256sum content.md` got a mismatch and no reason for it.
+#
+#     The file's content without the trailing newline is hashed too, and a
+#     record matching either hash is a record of THIS document: a fifth standing,
+#     `RECORDED_IS_THIS_FILES_CONTENT_DIGEST`, measured and comparable — not
+#     folded into the first standing and not among the standings that refuse the
+#     comparison. The second hash is taken only where the body actually ends in a
+#     newline; chopping the last byte off a file that never had one would hash a
+#     byte string no writer produced. Only a record matching neither hash is the
+#     finding, and its refusal now prints both the hashes it failed to match.
+#
+#   runtime/cli.py
+#     The measurement line prints that fifth standing. The line already says
+#     「一致」 for it, and a reader who runs `sha256sum` on that file sees a value
+#     the manifest does not contain — so it is printed for exactly the reason the
+#     fourth standing is: two true answers read alike unless the line says which
+#     one it gave.
+#
+#   Measured on this node's tree, before and after this payload: 21 link
+#   manifests — MATCH 4 / ABBREV 3 / TRAILING-NEWLINE 14 / DIFFERS 0. No
+#   manifest here is in the other-bytes class at all; that class is exercised by
+#   fixtures, not by the tree. The live layer changes no verdict either way:
+#   across its fourteen cards exactly one citation carries a digest, and that
+#   manifest is MATCH. So the flip count on this node today is zero, and the fix
+#   is preventive for the layer as it stands — but it is not merely preventive
+#   for the record, because the sentence `o` left behind about those fourteen
+#   manifests was itself wrong: every reader of it was told this node holds
+#   fourteen unreadable captures, and it holds none. `tests/` is not a member of
+#   this composition, so the tests and the thirteen mutations that come with this
+#   do not move the label.
+cachebuster: srv0005.20261008p
 
 skills:
   - name: runtime-management
