@@ -235,17 +235,16 @@ TOOLS: tuple[dict, ...] = (
     {
         "name": "ability.tree",
         "description": (
-            "The taxonomy this node derives from its local capability "
-            "projection: the node set, where each observed ability falls, the "
-            "abilities that are in no node, and the cross-references kept "
-            "separately. Derived from classification metadata ALONE — never "
-            "from where a file lives, so the tree can be reorganised without "
-            "moving anything. An ability appears exactly once, under its "
-            "primary. `nodes` is null rather than empty when nothing has been "
-            "materialized: an empty tree would be a claim about "
-            "ability-management that nobody has read."
+            "Read a derived ability tree. view=domain (default) shows installed navigation. "
+            "view=product shows all declared product responsibilities from the pinned "
+            "catalogue; responsibility narrows it to one L2 such as A7. Missing mappings "
+            "stay visible and do not mean missing code. Neither view grants authority "
+            "or certifies implementation, installation or journey completion. "
+            "nodes=null means unavailable, not an empty catalogue."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {"type": "object", "properties": {
+            "view": {"type": "string", "enum": ["domain", "product"]},
+            "responsibility": {"type": "string"}}, "additionalProperties": False},
     },
     {
         "name": "ability.inspect",

@@ -419,6 +419,8 @@ def declared_catalogue(here: Path | None = None) -> dict:
         "generated_at": value.get("generated_at"),
         "source_revision": value.get("source_revision"),
         "entries": entries,
+        "product_vocabulary": value.get("product_vocabulary"),
+        "product_vocabulary_error": value.get("product_vocabulary_error"),
         "note": (
             "the authority's catalogue at a pinned revision, materialized by "
             "`serverosctl ability refresh`. It names NO device: an entry here "
@@ -1854,6 +1856,25 @@ class Daemon:
         the same distinction `_capability_view` already draws with
         `abilities: null` versus `abilities: []`.
         """
+        kind = params.get("view", "domain")
+        if kind not in ("domain", "product"):
+            raise ValueError("ability.tree view must be domain or product")
+        if kind == "product":
+            source = declared_catalogue()
+            header = {"authority": "ability-management", "source": source.get("source"),
+                      "source_revision": source.get("source_revision"),
+                      "generated_at": source.get("generated_at"),
+                      "registry_status": source.get("registry_status"),
+                      "basis": "product_role.primary"}
+            if not source.get("product_vocabulary") or source.get("entries") is None:
+                return {**header, "nodes": None, "completion": "NOT_ASSESSED",
+                        "note": source.get("product_vocabulary_error") or
+                        "Product vocabulary is not materialized. Refresh from an authority revision containing product-tree.yaml."}
+            return {**header, **ability_projection_mod.product_tree(
+                source["product_vocabulary"], source["entries"],
+                responsibility=params.get("responsibility"))}
+        if params.get("responsibility") is not None:
+            raise ValueError("responsibility requires view=product")
         view = self._capability_view()
         materials = view.get("abilities")
         if materials is None:
