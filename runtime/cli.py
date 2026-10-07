@@ -8095,11 +8095,15 @@ def cmd_work_focus(args) -> int:
         STALE_BOARD naming the age rather than a selection.
       * an age nobody can state — an unreadable or undated projection — which
         is `PROJECTION_AGE_UNKNOWN` and not "fresh enough".
-      * grants. None are recorded on this node, and a row cannot name one — the
-        board carries no `grant_ref`. Both halves are printed as the states
-        they are, because "the board names no grant" and "the store holds none"
-        are different gaps with different producers, and one sentence covering
-        both would point a reader at the wrong one.
+      * grants. A row's `grant_ref` is derived, not authored: `control_join`
+        names a grant on a row exactly when one authorizing delegation covers
+        both that row's Item and its project, and the board projection file
+        carries none because the join is what supplies it. So a board printed
+        with no named row is saying one thing — nothing recorded authorizes —
+        and this verb prints that reading's two counts (recorded, authorizing)
+        beside it. An earlier version of this paragraph described the unnamed
+        row as a second gap with a producer of its own, which sent a reader
+        looking for a field nobody has to build.
     """
     state = _focus_decision(args)
     if state is None:

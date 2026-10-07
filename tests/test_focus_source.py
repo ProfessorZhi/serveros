@@ -80,6 +80,7 @@ from intake.focus_source import (
     RECEIPT_LIVENESS,
     Refused,
     compose,
+    control_join,
     oldest,
     priority_level,
     resources_released_by_item,
@@ -244,6 +245,56 @@ class TheAdapterInventsNothing(unittest.TestCase):
     def test_a_board_that_is_not_a_board_is_refused(self):
         with self.assertRaises(Refused):
             rows_from_board({"items": []})
+
+
+class AGrantRefIsJoinedAndNeverAuthored(unittest.TestCase):
+    """A row's `grant_ref` has one producer, and no card field stands behind it.
+
+    Until this round `work focus` told a reader that a row without a `grant_ref`
+    was "a card field nobody built" — a second absence beside the empty store,
+    with a producer of its own to go and build. `PRODUCED` in the same module
+    says the opposite and always did: the field is joined by `control_join` from
+    the envelope `select_focus` is handed. A reader repairing the sentence would
+    have gone looking for a card nothing has to carry. Both directions are
+    pinned here — named when exactly one authorizing delegation covers the row,
+    absent with a stated reason when the envelope holds none or two.
+    """
+
+    def _join(self, grants: dict) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "records"
+            card = root / "projects" / "p" / "items" / "P-1" / "card.yaml"
+            card.parent.mkdir(parents=True)
+            card.write_text('id: P-1\nproject: p\nacceptance: ["a"]\n',
+                            encoding="utf-8")
+            composed = {"rows": [{"project": "p", "id": "P-1",
+                                  "state": "READY"}], "not_produced": {}}
+            board = {"sections": [{"id": "p", "title": "P", "rows": [
+                {"project": "p", "id": "P-1",
+                 "ready_activities": [{"id": "a1", "kind": "research"}]}]}]}
+            return control_join(composed, board, records_root=root, grants=grants)
+
+    def test_one_authorizing_delegation_names_the_row(self):
+        joined = self._join({"grant:one": {"items": ["P-1"], "projects": ["p"]}})
+
+        self.assertEqual(joined["rows"][0]["grant_ref"], "grant:one")
+        self.assertEqual(joined["control_join"][0]["gaps"], [])
+
+    def test_the_field_is_absent_because_nothing_authorizes_and_says_why(self):
+        """The empty-envelope case the live node is in, in its own words."""
+        joined = self._join({})
+
+        self.assertNotIn("grant_ref", joined["rows"][0])
+        self.assertIn("no unique authorizing grant names this Item",
+                      joined["control_join"][0]["gaps"])
+
+    def test_two_candidates_leave_the_row_unnamed_rather_than_guessed(self):
+        joined = self._join({"grant:one": {"items": ["P-1"], "projects": ["p"]},
+                             "grant:two": {"items": ["P-1"], "projects": ["p"]}})
+
+        self.assertNotIn("grant_ref", joined["rows"][0])
+        self.assertIn("no unique authorizing grant names this Item",
+                      joined["control_join"][0]["gaps"])
 
 
 class WorkerLivenessIsReadFromTheReceiptThatOwnsIt(unittest.TestCase):
