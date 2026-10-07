@@ -502,29 +502,44 @@ def continue_focus(rows: list[dict], grants: dict[str, dict], accepted: dict | N
     if type(limit) is not int or not 0 < limit <= 2:
         raise ValueError("this profile supports one or two focus objectives")
     selection = accepted_items(accepted)
+    # ONE PAIR, built together so it cannot be carried apart. `accepted_state`
+    # is the word for "some projects chose and some did not"; `accepted_why`
+    # says WHICH, and the states in it are not interchangeable — `UNPRODUCED` is
+    # nobody having recorded a selection at all, `UNREADABLE` is a selection
+    # this reader could not open, and a state word on its own makes those one
+    # fact. `intake/workchain.py` computes both and `work board` prints both
+    # (`今日重点   PARTIAL：sample-beta: UNPRODUCED`); this function used to carry
+    # the first and leave the second behind, which is why the one verb a person
+    # reads to ask what today's focus is reported a partial READING as a state
+    # with nothing behind it. Separating which projects failed from why they did
+    # is what the whole of `work today` exists for, and this is the place it
+    # matters most: an unread selection is a person's objective that is not in
+    # `selected`, so the answer here can be "nothing is chosen" over a board
+    # where something was.
+    selection_reading = {"accepted_state": selection["state"],
+                         "accepted_why": selection["why"]}
     # NOT `carryover`. In the recommender that word means "unresolved work
     # already in progress, holding a slot beside the chosen ones" — a set
     # disjoint from `selected`. Here the accepted objectives ARE the selection,
     # so a second list beside it would read as work on top of what a person
     # asked for. The per-Item reason travels in `because` instead.
     base = {"selected": [], "because": {}, "unevaluated": [], "excluded": [],
-            "accepted_state": selection["state"], "continuation": True,
+            **selection_reading, "continuation": True,
             "admission_required": True}
-    # `accepted_state` rides on the blocked shape too: the selection was READ
-    # before the board turned out to be stale, so what a person chose is known
-    # and is worth saying even though the cycle cannot be planned. Dropping it
-    # would make a blocker about the BOARD's age read as a blocker about the
-    # selection.
+    # The pair rides on the blocked shape too: the selection was READ before the
+    # board turned out to be stale, so what a person chose is known and is worth
+    # saying even though the cycle cannot be planned. Dropping it would make a
+    # blocker about the BOARD's age read as a blocker about the selection.
     if not fresh(observed_at, now, ttl_seconds):
         return {**blocked("STALE_BOARD",
                           because=stale_because(observed_at, now=now,
                                                 ttl_seconds=ttl_seconds,
                                                 projection_times=projection_times)),
-                "accepted_state": selection["state"],
+                **selection_reading,
                 "selection_items": list(selection["items"])}
     if selection["state"] == "UNREADABLE":
         return {**blocked("SELECTION_UNREADABLE", because=selection["why"]),
-                "accepted_state": selection["state"]}
+                **selection_reading}
     if selection["state"] in ("NOT_ON_THIS_PROJECTION", "UNPRODUCED"):
         return {**base, "status": "PLANNED", "reason": "NO_SELECTION_AUTHORED",
                 "unused_slots": limit, "recommendation_slots": limit,
@@ -705,10 +720,21 @@ def select_focus(rows: list[dict], grants: dict[str, dict], *, now: datetime,
     chosen = _order(candidates)
     slots = max(0, limit - len(carry))
     chosen = chosen[:slots]
+    # `spare_slots` and NOT `unused_slots`, which `continue_focus` also returns
+    # and which means something else there. That one counts the profile's slots
+    # the ACCEPTED objectives did not take; this one counts the slots nothing
+    # occupies — not the rows already in flight, not the candidates just chosen
+    # — so it is the smaller number whenever the recommender filled one. One
+    # name over both is how `runtime/cli.py` came to print this function's
+    # number under the other function's sentence (`spare 0 of 2 slot(s) the
+    # accepted objectives did not take`, beside an `objectives 1`), and a
+    # caller that reads the wrong one off the right name is a difference no
+    # guard here could catch. Two names, and `test_daily_cycle.py` pins that
+    # neither function carries the other's.
     return {"status": "OVER_CAPACITY" if len(carry) > limit else "PLANNED",
             "selected": [r["id"] for r in chosen], "carryover": carry,
             "carryover_because": carryover_because, "unevaluated": unevaluated,
-            "unused_slots": max(0, slots-len(chosen)), "excluded": excluded,
+            "spare_slots": max(0, slots-len(chosen)), "excluded": excluded,
             "selection_digest": fingerprint({"selected": chosen, "carryover": carry,
                                               "observed_at": observed_at}),
             "admission_required": True, "recommendation_only": True}
