@@ -10622,6 +10622,49 @@ def cmd_work_unpark(args) -> int:
     return EXIT_OK
 
 
+def _workchain_git():
+    """The one read-only git helper in this tree, reused and not restated.
+
+    `runtime/daily_report.py::_git` already carries the rule that matters here
+    — an absolute `-C` directory, and no bare file argument after the verb,
+    because `git -C <dir> <verb> <relative>` composes the relative path twice
+    and returns an empty answer with exit code 0. A second copy of that rule is
+    a second place for it to be forgotten.
+
+    Nothing here fetches. `workchain.tree_position` asks what refs this node
+    already has, so a read verb's answer never depends on network reachability
+    or on when somebody else last pushed.
+    """
+    mod = _load_module_from(REPO_ROOT / "runtime" / "daily_report.py",
+                            "serveros_daily_report")
+    return mod._git
+
+
+def _records_position_line(position: dict) -> str:
+    """One line naming which generation of the records this answer came from.
+
+    Printed on every `work item`, not only on a broken one. A verb whose answer
+    silently depends on a checkout's revision has to say which revision, or the
+    reader is left comparing two answers that were never about the same bytes.
+    """
+    state = position.get("state")
+    revision = str(position.get("revision") or "?")[:12]
+    branch = position.get("branch") or "(detached)"
+    ref = position.get("upstream_ref")
+    if state == "FOLLOWING":
+        return f"记录树     {revision} · {branch} · 与 {ref} 一致"
+    if state == "BEHIND":
+        return (f"记录树     {revision} · {branch} · 落后 {ref} "
+                f"{position.get('behind')} 个提交 —— 这棵树的文档不是远端那批")
+    if state == "AHEAD":
+        return (f"记录树     {revision} · {branch} · 领先 {ref} "
+                f"{position.get('ahead')} 个提交（本地有未推的提交）")
+    if state == "DIVERGED":
+        return (f"记录树     {revision} · {branch} · 与 {ref} 分叉（领先 "
+                f"{position.get('ahead')}、落后 {position.get('behind')}）")
+    return f"记录树     未读 —— {position.get('why') or '原因未记录'}"
+
+
 def cmd_work_item(args) -> int:
     """§6 — one Item's chain: which document exists, and where it stops."""
     chain = _workchain_module()
@@ -10631,11 +10674,15 @@ def cmd_work_item(args) -> int:
     contract = chain.load_contract(
         REPO_ROOT / "intake" / "workchain-contract.yaml")
     projects = chain.load_projects(boards_root=boards)
+    # Built BEFORE the composition, because the composition is the thing that
+    # consumes it: a document absent from the tree this reader is bound to is
+    # only attributable to the Item once the tree's own generation is known.
+    position = chain.tree_position(records, git=_workchain_git())
     item = chain.compose_item(contract=contract, records_root=records,
                               workspace_root=workspace,
                               skeletons=_workchain_skeletons(chain),
                               project=args.project, item_id=args.item,
-                              projects=projects)
+                              projects=projects, tree=position)
     if not item["found"]:
         emit(item, as_json=args.json,
              lines=[f"未找到     {args.item} —— {item['why']}"]
@@ -10716,6 +10763,11 @@ def cmd_work_item(args) -> int:
                  + (f" —— {item['card']['resolution_why']}"
                     if item["card"]["resolution_why"] else ""))
     lines.append(f"卡片定位   {item['card']['path']}")
+    position = item.get("position")
+    if position:
+        lines.append(_records_position_line(position))
+        if position.get("why"):
+            lines.append(f"           ↳ {position['why']}")
     if item["superseded_by"]:
         lines.append(f"\n被替代     {item['superseded_by']}")
     if item["undecided"]:
