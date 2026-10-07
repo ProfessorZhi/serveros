@@ -36,10 +36,23 @@ being completed, before anybody updates a board. There is no path by which
 this file and the store can come to different conclusions about what is
 finished, because there is only one of them holding that fact.
 
-For the same reason there is nothing to preserve. §S says completion keeps
-the priority, the title and the history; a derived board keeps all three by
-never having dropped them, and "not deleting history" is not a rule this file
-follows but a thing it is structurally unable to do.
+For the same reason there is nothing of the Item's history to preserve. §S says
+completion keeps the priority, the title and the history; a derived board keeps
+all three by never having dropped them, and "not deleting history" is not a rule
+this file follows but a thing it is structurally unable to do.
+
+THE ONE REGION THAT IS NOT DERIVED
+----------------------------------
+§5 keeps two rules that pull against each other: the board is regenerated from
+facts, and a person's note on it is not a fact this module may drop. So the page
+carries one marked region — `HUMAN_BEGIN` … `HUMAN_END` — which `render` reads
+out of the page it is about to replace and writes back verbatim, while
+everything outside it is rebuilt. It is the only place in this fabric where a
+person's own words and a derived projection are the same file, and a
+regeneration that dropped them silently would make the board write-only for the
+one reader it has. `extract_human` returns the reason when it cannot read the
+block, and `render` puts that on stderr, because losing a note is recoverable
+and losing it without a word is not.
 
 WHICH ITEMS ARE COMPLETE, AND WHERE THAT COMES FROM
 ---------------------------------------------------
@@ -340,6 +353,41 @@ def compose(boards: list[dict], *, cards: dict[str, dict] | None = None,
     }
 
 
+# The hand-written region of the page. `render` carries it across a
+# regeneration; everything outside it is rewritten from the facts.
+HUMAN_BEGIN = "<!-- human:begin -->"
+HUMAN_END = "<!-- human:end -->"
+HUMAN_EMPTY = "_（人工批注区：这一段在重新生成时原样保留，可自由编辑）_"
+
+
+def extract_human(text: str) -> tuple[str, str]:
+    """The hand-written region of a page, and why it could not be read.
+
+    §5 asks for two things at once: the board is regenerated from facts, and a
+    person's note on it is not a fact this module is allowed to drop. So
+    `render` reads the page it is about to replace and carries this block over
+    verbatim.
+
+    An unbalanced pair returns `("", why)` rather than the text after the
+    opening marker. That matters on the NEXT render: text that was never closed
+    would be carried over and then immediately re-emitted with a fresh closing
+    marker, so a single missing marker would grow the block once per render.
+    Losing a note is the smaller loss, and the caller is given the reason so it
+    is not a silent one — the failure this whole function exists to prevent is
+    a person's sentence disappearing between two runs.
+    """
+    began = text.find(HUMAN_BEGIN)
+    if began < 0:
+        return "", ""
+    opened = began + len(HUMAN_BEGIN)
+    ended = text.find(HUMAN_END, opened)
+    if ended < 0:
+        return "", f"{HUMAN_BEGIN} 没有配对的 {HUMAN_END}"
+    if text.find(HUMAN_BEGIN, opened) >= 0:
+        return "", f"{HUMAN_BEGIN} 出现了不止一次"
+    return text[opened:ended].strip("\n"), ""
+
+
 def render(document: dict, output_dir: Path | str) -> dict:
     """Write the board. `current.json` and `current.md`, atomically.
 
@@ -348,6 +396,12 @@ def render(document: dict, output_dir: Path | str) -> dict:
     together so they cannot describe different generations of the board. The
     directory must be absolute — a projection that landed in whatever
     directory the caller was standing in is a second board nobody knows about.
+
+    The page is REPLACED, not appended to, and the one thing that survives the
+    replacement is the block between the human markers: this is the only place
+    in the fabric where a person's own words and a derived projection are the
+    same file, and a regeneration that silently dropped them would make the
+    board write-only for its reader.
     """
     output_dir = Path(output_dir)
     if not output_dir.is_absolute():
@@ -355,9 +409,17 @@ def render(document: dict, output_dir: Path | str) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "current.json"
     markdown_path = output_dir / "current.md"
+    human = ""
+    if markdown_path.is_file():
+        human, why = extract_human(markdown_path.read_text(encoding="utf-8"))
+        if why:
+            sys.stderr.write(
+                f"serverosctl: {markdown_path} 里的人工批注读不出来（{why}）；"
+                f"这一段在这次重新生成里不会保留\n")
     for path, content in ((json_path, json.dumps(document, ensure_ascii=False,
                                                 indent=2) + "\n"),
-                          (markdown_path, str(markdown(document)))):
+                          (markdown_path, str(markdown(document,
+                                                       human=human)))):
         temporary = path.with_name(f".{path.name}.serveros.tmp")
         temporary.write_text(content, encoding="utf-8")
         temporary.replace(path)
@@ -385,17 +447,62 @@ def _age_days(now_iso, then_iso) -> int | None:
     return max(0, (now - then).days)
 
 
-def markdown(document: dict) -> str:
+def _item_block(row: dict) -> list[str]:
+    """One Item as a block, which is what a 390-pixel page can carry.
+
+    §5 asks for the board to be read on a phone, and the table this replaced
+    had eight columns: at 390 px a reader scrolls sideways per row and loses
+    the Item the row is about. The fields are the same ones; what changed is
+    that they are lines under a heading instead of cells in a row.
+
+    Every line is conditional on its fact existing. `-` is printed where the
+    fabric has nothing, and it is the same `-` the table used, so an Item with
+    no session does not read as an Item whose session is the empty string.
+    """
+    title = str(row.get("title") or "")
+    if row["completed"]:
+        # Drawn from the state, never stored. Reopening removes the tildes
+        # because the Item is no longer CLOSED, not because anyone cleared
+        # them. See the module docstring.
+        title = f"~~{title}~~"
+    lines = [f"#### {row['item_ref']} — {title}", "",
+             f"- 状态：{row['summary']}",
+             f"- 优先级：{row['priority'] or '待排'}"
+             + ("（本 fabric 没有优先级生产者）" if not row["priority"] else ""),
+             f"- 会话：{row['execution_session'] or '-'}"
+             + (f"（{row['session_role']}）" if row.get("session_role") else "")]
+    if row["completed"]:
+        outcome = (f" · {row['outcome']}" if row.get("outcome")
+                   else "（outcome 未记录）")
+        lines.append(f"- 结论：{row['state']}{outcome}")
+    source = [str(a) for a in (row["source"]["aliases"]
+                               or row["source"]["source_refs"] or [])]
+    lines.append(f"- 来源：{', '.join(source) or '-'}")
+    lines.append("")
+    return lines
+
+
+def markdown(document: dict, *, human: str = "") -> str:
     """The board a person reads.
 
-    `~~title~~` on a completed Item is the strikethrough §S asks for, and it
-    is drawn from `row["completed"]` — a rendering of the Item's state and
-    nothing else. There is no branch here that sets it, which is why reopening
-    removes it: the Item is no longer CLOSED, so the field is false, so the
-    tildes are not written.
+    Shaped by §5 rather than by what is easiest to emit: 未完成 as blocks a
+    phone can read, 已完成 folded away but keeping its title, its original
+    priority and its resolution, and a region at the bottom that belongs to a
+    person rather than to this function.
+
+    TWO THINGS THIS DOES NOT DO, both because §5 names a field this fabric has
+    no producer for. Per-Item 「目标」and 「下一步」are not rendered: no
+    projection, card schema or store column carries either, and a heading
+    followed by a guess is worse than a heading that is absent. The reader is
+    told once, in the note under 未完成, rather than left to conclude that the
+    Items have no next step.
+
+    The priority column is the other half of the same rule read the other way:
+    the machine value is `UNPRODUCED`, and the page says 待排 — §5's own word
+    for it. One fact, two audiences. Neither is a filled-in bucket.
     """
     lines = ["# 需求总看板", "",
-             f"Generated: `{document['generated_at']}`"]
+             f"生成：`{document['generated_at']}`"]
     # The composition's own time says when this page was drawn. It does NOT
     # say when the Item state on it was measured — that came from the board
     # documents, and `board-contract.yaml` carries their `generated_at` so a
@@ -410,32 +517,74 @@ def markdown(document: dict) -> str:
             age = _age_days(document["generated_at"], at)
             stated.append(f"{project} `{at}`"
                           + (f"（{age} 天前）" if age is not None else ""))
-        lines.append(f"看板状态取出时间: {'；'.join(stated)}")
+        lines.append(f"看板状态取出时间：{'；'.join(stated)}")
     lines.append(f"Projects: {', '.join(document['source']['projects']) or 'none'}")
     lines.append("")
     priority = document["priority"]
-    lines += [f"> priority: **{priority['state']}** — {priority['because']}", ""]
-    for section in document["sections"]:
-        lines += [f"## {section['title']} ({len(section['items'])})", ""]
-        if section["kind"] == "priority" and not section["items"]:
-            lines += ["_no Item carries this level; the axis has no producer_", ""]
+    # The reason is one sentence a reader needs and a paragraph they do not
+    # need twice. At 390 px the paragraph pushed the first Item below the fold
+    # on every visit, which is §5's "机器字段/完整日志折叠到证据入口" read as a
+    # layout rule: the state stays on the page face, the argument behind it is
+    # one tap away. The document keeps the full string -- this is a rendering
+    # of it, not a shortening of the fact.
+    lines += [f"> 优先级：**{priority['state']}**（待排）—— 本 fabric 没有"
+              f"任何优先级生产者，五级因此是空的", "",
+              "<details><summary>为什么这五级是空的</summary>", "",
+              str(priority["because"]), "", "</details>", ""]
+    counts = document["counts"]
+    if counts.get("without_a_card"):
+        # Said once, here, and not per row. A reader who sees an empty 来源 on
+        # twelve rows needs to know that the card is on another machine, not
+        # that the Item has no source — those are two different facts and only
+        # one of them is a problem with the Item.
+        lines += [f"> 卡片：{counts['items']} 行里 {counts['without_a_card']} 行"
+                  f"没有可读的 card.yaml，这些行的「来源」为空 —— 这不是"
+                  f"「没有来源」，是那张卡不在本机", ""]
+    # Split on `key`, not on `kind`. A section's `kind` says what SHAPE its
+    # rows are and the completed one's is lowercase `completed`, while the
+    # constant is uppercase `COMPLETED` — so the first version of these two
+    # lines matched nothing, filed 已完成 back into 未完成, and rendered it as
+    # one more unfilled level. The key is the section's name; that is what this
+    # is asking about.
+    active = [s for s in document["sections"] if s["key"] != COMPLETED]
+    completed = next((s for s in document["sections"]
+                      if s["key"] == COMPLETED), None)
+    unfinished = sum(len(s["items"]) for s in active)
+    lines += [f"## 未完成（{unfinished}）", ""]
+    # §5 asks each unfinished Item for 目标 / 当前状态 / 下一步 / 来源与证据.
+    # Two of the four have no producer anywhere in this fabric, and the note
+    # says so once rather than leaving two headings that read as "this Item
+    # has no next step". It is conditional on that still being true: the day a
+    # producer appears, the sentence has to go by itself.
+    if all(not s["items"] for s in active if s["kind"] == "priority"):
+        lines += ["> 每一级下面还没有 Item，是因为本 fabric 没有任何优先级生产"
+                  "者（见上）；下面按 Item 列出。§5 的「目标」「下一步」两栏"
+                  "同样没有生产者，因此不渲染。", ""]
+    for section in active:
+        lines += [f"### {section['title']}（{len(section['items'])}）", ""]
+        if section["kind"] == "priority":
+            lines += ["_无 Item 带这一级；该轴没有生产者_", ""]
             continue
-        if not section["items"]:
-            lines += ["_none_", ""]
-            continue
-        lines += ["| Item | Title | Project | State | Priority | Session | Runs | Source |",
-                  "|---|---|---|---|---|---|---:|---|"]
         for row in section["items"]:
-            title = str(row["title"] or "")
-            if row["completed"]:
-                title = f"~~{title}~~"
-            source = row["source"]["aliases"] or []
-            lines.append(
-                f"| {row['item_ref']} | {title} | {row['project']} | "
-                f"{row['state']} | {row['priority'] or 'UNPRODUCED'} | "
-                f"{row['execution_session'] or '-'} | {row['run_count']} | "
-                f"{', '.join(str(a) for a in source) or '-'} |")
-        lines.append("")
+            lines += _item_block(row)
+    if completed is not None:
+        lines += [f"## 已完成（{len(completed['items'])}）", ""]
+        if not completed["items"]:
+            lines += ["_无_", ""]
+        else:
+            # §5: 默认折叠. A completed Item is history, and history that
+            # takes the top of the page is history that buries the work. The
+            # summary says what unfolding costs so the fold is a choice.
+            lines += ["<details>",
+                      f"<summary>展开 {len(completed['items'])} 项"
+                      f"（删除线标题 = 权威状态为 "
+                      f"{'/'.join(document['completed_states'])}；重新打开会"
+                      f"由状态本身去掉删除线）</summary>", ""]
+            for row in completed["items"]:
+                lines += _item_block(row)
+            lines += ["</details>", ""]
+    lines += [HUMAN_BEGIN, (human.strip("\n") if human.strip() else HUMAN_EMPTY),
+              HUMAN_END, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 

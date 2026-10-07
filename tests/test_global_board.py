@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import json
 import sys
 import unittest
@@ -430,6 +431,199 @@ class TheStateHasAnAgeAndThePageSaysIt(unittest.TestCase):
         text = board.markdown(board.compose([odd]))
         self.assertIn("whenever", text)
         self.assertNotIn("天前", text)
+
+
+# ---------------------------------------------------------------------------
+# The page a phone reads. §5 asks for blocks, not columns.
+# ---------------------------------------------------------------------------
+
+
+class TheHumanPageIsBuiltForItsReader(unittest.TestCase):
+    """§5 shapes the page: 未完成 as blocks, 已完成 folded, 待排 rather than the
+    machine token, and a region that belongs to a person.
+
+    The table this replaced had eight columns. At 390 px a reader scrolls
+    sideways on every row and loses which Item the row is about, which is the
+    one thing a board is for.
+    """
+
+    def compose(self, items, **kwargs):
+        return board.compose([a_board("p", items)], **kwargs)
+
+    def test_an_item_is_lines_rather_than_a_row(self):
+        text = board.markdown(self.compose([an_item("X")]))
+        self.assertIn("#### p/X — item X", text)
+        self.assertNotIn("| Item | Title |", text)
+        self.assertIn("- 状态：ACTIVE", text)
+
+    def test_the_absent_priority_is_the_readers_word_not_the_stores(self):
+        """One fact, two audiences: the document carries `UNPRODUCED`, the page
+        says 待排. Neither is a filled-in bucket, and the page must not print a
+        machine state where §5 asked for a phrase."""
+        document = self.compose([an_item("X")])
+        self.assertEqual(document["items"][0]["priority"], None)
+        text = board.markdown(document)
+        self.assertIn("- 优先级：待排", text)
+
+    def test_a_completed_item_keeps_its_title_priority_and_resolution(self):
+        text = board.markdown(self.compose([an_item("A", state="CLOSED",
+                                                    outcome="FULFILLED")]))
+        self.assertIn("~~item A~~", text)
+        self.assertIn("- 优先级：待排", text)
+        self.assertIn("- 结论：CLOSED · FULFILLED", text)
+
+    def test_a_completed_item_with_no_outcome_says_so(self):
+        """`未记录` is a fact about the fabric. Printing nothing there would
+        read as a resolution of the empty string."""
+        text = board.markdown(self.compose([an_item("A", state="CLOSED")]))
+        self.assertIn("- 结论：CLOSED（outcome 未记录）", text)
+
+    def test_completed_is_folded_by_default(self):
+        text = board.markdown(self.compose([an_item("A", state="CLOSED"),
+                                            an_item("C")]))
+        self.assertIn("<details>", text)
+        self.assertIn("<summary>展开 1 项", text)
+        # Folded and still complete: the strikethrough is inside the fold, not
+        # replaced by the fold.
+        self.assertIn("~~item A~~", text)
+        self.assertLess(text.index("<details>"), text.index("~~item A~~"))
+
+    def test_the_priority_state_is_on_the_page_and_the_argument_is_behind_it(self):
+        """§5's "机器字段折叠到证据入口", measured rather than assumed.
+
+        The paragraph explaining why no Item has a P-level is one sentence of
+        state and eight lines of argument. Printed flat at 390 px it put the
+        first Item below the fold on every visit; the state stays visible and
+        the argument is one tap away. The document is unchanged — this is a
+        rendering of the fact, not a shortening of it.
+        """
+        document = self.compose([an_item("X")])
+        text = board.markdown(document)
+        self.assertIn("> 优先级：**UNPRODUCED**（待排）", text)
+        self.assertEqual(document["priority"]["because"], board.PRIORITY_BECAUSE)
+        self.assertIn(board.PRIORITY_BECAUSE, text)
+        self.assertLess(text.index("<details>"), text.index(board.PRIORITY_BECAUSE))
+
+    def test_a_missing_card_is_said_once_and_not_per_row(self):
+        """Twelve empty 来源 columns are two different facts and only one of
+        them is about the Item. The note keeps them apart."""
+        document = self.compose([an_item("A"), an_item("B")])
+        self.assertEqual(document["counts"]["without_a_card"], 2)
+        text = board.markdown(document)
+        self.assertIn("2 行没有可读的 card.yaml", text)
+
+    def test_a_page_with_every_card_joined_does_not_claim_a_gap(self):
+        document = board.compose([a_board("p", [an_item("A")])],
+                                 cards={"p/A": {"aliases": ["REQ-1"]}})
+        self.assertEqual(document["counts"]["without_a_card"], 0)
+        text = board.markdown(document)
+        self.assertNotIn("没有可读的 card.yaml", text)
+        self.assertIn("- 来源：REQ-1", text)
+
+
+# ---------------------------------------------------------------------------
+# The one region of the page that is not derived.
+# ---------------------------------------------------------------------------
+
+
+class TheHumanRegionBelongsToTheReader(unittest.TestCase):
+    """The board is regenerated. A person's note on it is not regenerated.
+
+    These two rules pull against each other in the same file, and the failure
+    they produce when unbalanced is silent: somebody's sentence is there until
+    the next run, and then it is not.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.boards = self.root / "boards"
+        (self.boards / "p").mkdir(parents=True)
+        (self.boards / "p" / "current.json").write_text(
+            json.dumps(a_board("p", [an_item("X")])), encoding="utf-8")
+        self.out = self.root / "requirement-board"
+
+    def document(self):
+        return board.build(boards_root=self.boards,
+                           card_locator_resolver=lambda loc: str(self.root / loc))
+
+    def page(self):
+        return (self.out / "current.md").read_text(encoding="utf-8")
+
+    def test_a_fresh_page_says_what_the_region_is(self):
+        board.render(self.document(), self.out)
+        self.assertIn(board.HUMAN_BEGIN, self.page())
+        self.assertIn(board.HUMAN_EMPTY, self.page())
+
+    def test_a_note_survives_the_next_regeneration(self):
+        board.render(self.document(), self.out)
+        note = "老张：LIT-0215 的 brief 里那条保留段已经和 0216 撞了。"
+        self.out.joinpath("current.md").write_text(
+            self.page().replace(board.HUMAN_EMPTY, note), encoding="utf-8")
+        board.render(self.document(), self.out)
+        self.assertIn(note, self.page())
+        # And the rest of the page was rebuilt rather than frozen: the note did
+        # not take the projection's place.
+        self.assertIn("#### p/X — item X", self.page())
+
+    def test_a_second_render_with_a_note_is_stable(self):
+        # ONE document for both renders. Composing twice would stamp two
+        # different `generated_at` values and the comparison would be of two
+        # boards rather than of one board rendered twice — which is the thing
+        # the note is supposed to survive.
+        document = self.document()
+        board.render(document, self.out)
+        self.out.joinpath("current.md").write_text(
+            self.page().replace(board.HUMAN_EMPTY, "一条批注"), encoding="utf-8")
+        board.render(document, self.out)
+        once = self.page()
+        board.render(document, self.out)
+        self.assertEqual(self.page(), once)
+
+    def test_a_note_is_not_read_from_inside_the_board(self):
+        """Text above the opening marker is the board's, not the reader's.
+
+        A run that carried the whole previous page forward would turn the board
+        into an append-only log — and every row it added would be a row that
+        stopped being derived.
+        """
+        board.render(self.document(), self.out)
+        page = self.page()
+        self.out.joinpath("current.md").write_text(
+            page.replace("# 需求总看板", "stale line nobody updated"), encoding="utf-8")
+        board.render(self.document(), self.out)
+        self.assertIn("# 需求总看板", self.page())
+        self.assertNotIn("stale line nobody updated", self.page())
+
+    def test_an_unclosed_region_is_dropped_loudly_and_does_not_grow(self):
+        """The unbalanced case, and why "" is the answer rather than the tail.
+
+        Carrying the unclosed text forward would re-emit it with a fresh
+        closing marker, so one missing marker would grow the block once per
+        render. Losing the note is smaller — and it is not silent: the reason
+        goes to stderr, which is what a person needs to fix the marker.
+        """
+        board.render(self.document(), self.out)
+        self.out.joinpath("current.md").write_text(
+            self.page().replace(board.HUMAN_END, ""), encoding="utf-8")
+        buffer = io.StringIO()
+        with mock.patch.object(sys, "stderr", buffer):
+            board.render(self.document(), self.out)
+        self.assertIn(board.HUMAN_END, self.page())
+        self.assertIn("人工批注读不出来", buffer.getvalue())
+        self.assertEqual(self.page().count(board.HUMAN_BEGIN), 1)
+
+    def test_a_second_opening_marker_is_a_reason_and_not_a_guess(self):
+        board.render(self.document(), self.out)
+        page = self.page()
+        doubled = page.replace(board.HUMAN_BEGIN,
+                               board.HUMAN_BEGIN + "another\n" + board.HUMAN_BEGIN)
+        self.out.joinpath("current.md").write_text(doubled, encoding="utf-8")
+        text, why = board.extract_human(self.out.joinpath("current.md").read_text())
+        self.assertEqual(text, "")
+        self.assertTrue(why)
 
 
 # ---------------------------------------------------------------------------
