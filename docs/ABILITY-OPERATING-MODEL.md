@@ -263,3 +263,7 @@ real source delta
 ### 实施验收
 
 每个被宣传为“自动”的异步接缝都要跑一次 producer完成后用户不发第二条消息的测试：receiver应自己收到/轮询到结果并继续，或者准确落为待续。如果测试只能靠操作者复制ID、打开另一个Session说“继续”、手工贴child结果，架构覆盖仍是PARTIAL。
+
+## 产品职责树的按需入口
+
+`serverosctl ability tree --view product` 从已物化的 canonical catalogue 显示 G1/A/B 全职责；`--responsibility A7` 只展开该职责。MCP 使用既有 `ability.tree`，参数同名。词表与 manifest 同 revision，刷新用既有 `ability refresh`。此视图表达职责和声明映射，不能宣称安装、授权或旅程完成；`view=domain` 保留安装导航语义。当前各职责的工程与验收边界见 [执行 ledger 当前入口](CC-EXECUTION-LEDGER.md#当前入口整棵产品职责树2026-10-07srv-0011--run-0018)，不要把完整 ledger 放进每次初始上下文。

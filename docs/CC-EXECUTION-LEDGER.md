@@ -14,6 +14,48 @@ implementation ledger（现有 Item/execution 记录），后续每包只更新�
 权威，`abilities-manifest.yaml` 是注册表的权威，这份文件只记录**它们落到
 盘上没有**。
 
+## 当前入口：整棵产品职责树（2026-10-07，SRV-0011 / RUN-0018）
+
+本节按 canonical `product-tree.yaml` 的 **G1 + A1–A10 + B1–B10** 对齐范围。后文各日期是历史证据，不能把历史 ENABLED、一个 Run PASS 或局部发布成功提升成当前全产品验收。主职责与 L3 来自 ability-management，本文不创造第二份 registry。
+
+运行入口：`serverosctl ability tree --view product` 查看全 21 项，`--responsibility A7` 只展开一项。MCP 复用 `ability.tree`，传 `view=product` 和可选 `responsibility`，不增加工具数。旧 `view=domain` 仍是安装面的导航。产品词表和实现 metadata 从同一 Git revision 进入既有 catalogue，失败保留旧数据及 STALE；没有词表返回 unavailable，不伪造空树。
+
+截至本节核对：ability-management `ceaa6fa22a9f637ccd223e149ebcbc169dd94a7e` 定义 **21 项职责、87 个子职责**，65 条 registry records 对应 60 个身份，其中 22 个身份有 product_role，38 个尚无此声明。主实现声明覆盖 51 个子职责，另外 36 个尚无主映射。**这是 metadata 覆盖度，不是代码完成率。** B1/B3 没有 primary realization，但有交叉引用/共享实现；不得为了让树全绿复制 Skill 或把 cross-ref 当第二个 owner。
+
+### 21 项逐项收口范围
+
+“已有”只取既有实现与明确证据，不在本节宣布未经重新测量的 LIVE。以下覆盖全职责，后续按任务展开当前相关行，不要求每个日常任务执行 21 步。
+
+| 职责 | 已有实现/可复用证据 | 尚需兑现或核对的完成条件 |
+|---|---|---|
+| G1 能力治理 | canonical registry、Thin Link、版本构建；本轮补 CLI/MCP 产品树消费 | 按需补来源与映射；未声明不等于无能力。安装、实际调用、任务结果分别证明 |
+| A1 Session 接续 | Agent Control、checkpoint、历史 Session 工具 | 真实后继角色激活/接任及干净上下文；不能用拒绝改绑测试代替 |
+| A2 Memory | shared-memory、OpenViking 接入及既有跨会话证据 | 当前 Claim 更正/撤回对召回生效，跨项目权限边界；复用历史有效证据，未核项保持未验证 |
+| A3 Workspace/Git/PR | 隔离 worktree、原生 Git/PR、placement/owner 检查已实际使用 | 修真实生产者与入口；未知历史对象合理保留，清理不作业务主链前置 |
+| A4 Runtime/资源 | serverosd registry、观察、资源与监控机制 | Session/worker 归因和功能健康按实际对象读回；进程 active 不替代功能验收 |
+| A5 Fleet/设备交接 | identity、transport/readiness、lease 机制 | 对目标设备验证真实 Provider 路线；本地 inventory UNKNOWN 不证明所有 transport 不通 |
+| A6 委派/并行 | 原生子代理/Quay 与结果 receipt；RUN-0017 有有界子任务 | 真实结果由逻辑 Parent 接收并推进验收；受控 Session 路线另验 binding/epoch |
+| A7 测试/验收 | automated-testing、TestRun、测试环境契约、定向测试已消费 | AC→真实路径→verdict→证据；只跑本次风险需要的测试，fixture 不替代业务验收 |
+| A8 构建/发布 | 多轮真实 build/promote/readback 与版本身份 | 准确区分 main、installed、loaded；回退保留。只证明对应产品/版本 |
+| A9 生产观察 | 窄查询方案、只读 Provider 边界 | 合法通路及指定运行目标的有界实际读取；付费模型请求不是只读，非通用必验前置 |
+| A10 生产变更 | 变更包、预检、后验与回退职责 | HUMAN_EXECUTED 是既定策略，不为“完成自动化”放开生产写；真实变更到来再验 |
+| B1 来源采集 | 文档+IM 的 19:20 周期及 capture；会议/Web 等 owner 已有 | 每种需要的来源版本、覆盖、缺口；源无变化不重读，没真实会议不造会议 |
+| B2 结构化认识 | packet/reader/semantic writer；阅读缓存与待对齐结果已实际产生 | 真实决定/standing policy 的受限应用与更正回流；prepared 不等于 accepted |
+| B3 需求 | candidate、需求范围/AC 及重点文档对账入口 | 接受/修改/合并/拒绝与唯一 Item 交接；已解决问题不复活，不自动建空壳 |
+| B4 Work/准入 | Work Engine、已恢复历史、全局板/Focus；准入控制机制 | 正式选择→有效准入→执行→Outcome；records 新 brief 的实际物化仍需工程处理，不能只引用已合并 PR |
+| B5 调研/证据 | research-evidence、原生检索、研究交换 packet/validator | 在有实际问题时真实消费并回传，Parent 核引用/版本；validator 只证结构与绑定 |
+| B6 方案设计 | design-and-contract、原生设计、grill-me Thin Link | 方案能按 IMPLEMENT/VERIFY/RESEARCH/REPORT 选择形态；来源 unknown 与重要决定明确处理 |
+| B7 实现交付 | 原生 Agent、implementation-delivery 与真实工程修复 | 交付实际选中目标、修本范围失败；不把 ServerOS 自身发版当 LiteLLM 业务完成 |
+| B8 汇报 | 证据复用、report/outbox，20:00 DELIVERED 已证 | 从被接受结果生成对应 PR/专项报告；投递与内容验收、Item Outcome 分开 |
+| B9 文档/知识维护 | document-stewardship、关系/patch/readback；人工区保留已有证据 | 受托正文局部更新、版本冲突和 materialization；不能整体快进有 WIP 的 records 来掩盖安装缺口 |
+| B10 人机控制/通知 | 日常/事故卡、对齐投递、可信输入/授权机制 | 长期签发者与执行域真实隔离、scope 绑定、到期撤销；“收到人消息”不自动获得任意动作授权 |
+
+### 继续执行的边界
+
+优先关闭当前真实旅程的工程接缝：B2/B3/B4 决定与工作交接，A1/A6 接任和结果接收，A7/B8/B9 到 Outcome，以及少量代表任务的效率对照。签发隔离影响需要长期委托的执行；生产通道影响 A5/A9；它们不阻塞 G1、普通授权开发、非冲突文档物化或效率测量准备。
+
+没有通过的证据保持 PARTIAL/NOT_VERIFIED，不写“工程全部完成”。没有匹配的真实事件可保留机制验收，不造事件。所有职责都进入核对范围，也不要求为它们各建一个 Skill、一个常驻 Session 或一个新审批流程。
+
 ## 1. 方法与边界
 
 计划 P0 有一句必须照做的话：「未读源码/未测状态不能用『缺失』一词盖过」。
