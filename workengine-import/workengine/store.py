@@ -58,6 +58,37 @@ def _verdict_word(verdict) -> str:
     return str(verdict).strip().upper()
 
 
+_CANDIDATE_CONCLUDED = ("MERGED", "REJECTED", "PROMOTED")
+
+
+def _refuse_if_concluded(row, action, *, candidate_id):
+    """A decision that has been taken is not overwritten by the next one.
+
+    Measured on a fresh store, before this guard existed: `candidate merge cnd-1`
+    then `candidate reject cnd-1` both returned 0 and left the row REJECTED — one
+    decision silently replacing another, with nothing said. `candidate reject`
+    followed by `promote --create-new` then produced a real Item from a
+    requirement a human had rejected. Neither call reported a problem.
+
+    The states that conclude a candidate are the three below. `DEFERRED` is not
+    one of them on purpose: deferring is how a human says "not yet", so a
+    deferred candidate is still decidable. That is also the way to revise a
+    candidate without deciding it twice — park it first, then decide.
+
+    Every refusal names the state read off the stored row, not the state this
+    call asked for: a caller told the wrong state goes and looks at the wrong
+    thing.
+    """
+    state = row["state"]
+    if state in _CANDIDATE_CONCLUDED:
+        raise ValueError(
+            f"candidate {candidate_id} is {state}: {action} would overwrite a "
+            f"decision that has already been taken. A concluded candidate is not "
+            f"re-decided; a deferred one still is."
+        )
+    return state
+
+
 class ActiveWorkerAckRequired(ValueError):
     """A RUNNING Run was terminated without anyone saying they meant to.
 
@@ -400,6 +431,40 @@ class ServerOSStore:
             for x in claim_ids: c.execute("INSERT OR IGNORE INTO candidate_claims VALUES (?,?)",(candidate_id,x))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
 
+    def decide_candidate(self, candidate_id, decision):
+        """Accept, reject or park one requirement — once, and out loud.
+
+        `decision` is the verb the human entrance uses (`merge`/`reject`/`defer`),
+        not the state it lands in, so the two spellings of one act cannot drift.
+
+        The candidate is looked up FIRST. Before this method existed the CLI ran
+        `UPDATE … WHERE candidate_id=?` and then read the row back to return it;
+        for a candidate nobody had, the update matched nothing, the read returned
+        nothing, and `dict(None)` raised a `TypeError` that `main`'s
+        `(ValueError, KeyError, OSError)` does not catch. Measured: `candidate
+        merge cnd-NOPE` exited 1 with a Python traceback, while every other verb
+        in this CLI answers with a JSON error and exits 2.
+        """
+        state = {"merge": "MERGED", "reject": "REJECTED", "defer": "DEFERRED"}[decision]
+        with self.transaction(immediate=True) as c:
+            row = c.execute(
+                "SELECT * FROM item_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(candidate_id)
+            if row["state"] == state:
+                # The same decision again is the same decision: a retried call
+                # must not be refused for having been tried twice.
+                return dict(row)
+            _refuse_if_concluded(row, decision, candidate_id=candidate_id)
+            c.execute(
+                "UPDATE item_candidates SET state=? WHERE candidate_id=?",
+                (state, candidate_id),
+            )
+            return dict(c.execute(
+                "SELECT * FROM item_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone())
+
     def match_candidate(self, candidate_id, item_id):
         with self.transaction(immediate=True) as c:
             candidate = c.execute(
@@ -407,6 +472,10 @@ class ServerOSStore:
             ).fetchone()
             if candidate is None:
                 raise KeyError(candidate_id)
+            # A concluded candidate is not re-matched: `PROMOTED` read back as
+            # `MATCHED` would take an Item off the requirement it already names,
+            # and a rejected or merged requirement is not one being matched again.
+            _refuse_if_concluded(candidate, "match", candidate_id=candidate_id)
             if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(item_id,)).fetchone(): raise KeyError(item_id)
             c.execute("UPDATE item_candidates SET state='MATCHED',approved_item_id=? WHERE candidate_id=?",(item_id,candidate_id))
             return dict(c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone())
@@ -415,9 +484,29 @@ class ServerOSStore:
         with self.transaction(immediate=True) as c:
             r=c.execute("SELECT * FROM item_candidates WHERE candidate_id=?",(candidate_id,)).fetchone()
             if not r: raise KeyError(candidate_id)
-            if r['state']=='PROMOTED': return self.get_item(r['approved_item_id'])
-            if not item_id or not r['approved_item_id'] and not item_id: raise ValueError("promotion requires approved Item mapping")
-            target=item_id or r['approved_item_id']
+            # An Item that is already named is not silently exchanged for another
+            # one. Measured before this guard: `promote --item DEM-0002` on a
+            # candidate matched to DEM-0001 returned 0, answered with DEM-0002,
+            # and left the row pointing there — the caller's explicit Item
+            # replaced a mapping a human had already recorded, and nothing said
+            # so. The same call naming the item already recorded is a replay.
+            if r['state']=='PROMOTED':
+                if item_id is not None and item_id != r['approved_item_id']:
+                    raise ValueError(
+                        f"candidate {candidate_id} is already PROMOTED to "
+                        f"{r['approved_item_id']}, and this call names {item_id}. "
+                        f"One requirement has one Item; re-pointing it would move "
+                        f"an Item off the requirement it was approved for.")
+                return self.get_item(r['approved_item_id'])
+            _refuse_if_concluded(r, 'promote', candidate_id=candidate_id)
+            if not item_id: raise ValueError("promotion requires approved Item mapping")
+            if r['approved_item_id'] is not None and r['approved_item_id'] != item_id:
+                raise ValueError(
+                    f"candidate {candidate_id} is matched to "
+                    f"{r['approved_item_id']}, and this call names {item_id}. "
+                    f"Promoting it to another Item would discard that match "
+                    f"without saying so.")
+            target=item_id
             if not c.execute("SELECT 1 FROM items_index WHERE item_id=?",(target,)).fetchone(): raise ValueError("approved Item mapping required")
             c.execute("UPDATE item_candidates SET state='PROMOTED',approved_item_id=? WHERE candidate_id=?",(target,candidate_id))
             if r['domain'] and r['external_id'] and r['external_revision']:
@@ -434,6 +523,11 @@ class ServerOSStore:
             if candidate["state"] == "PROMOTED":
                 target = candidate["approved_item_id"]
             else:
+                # MERGED and REJECTED stop here too. Measured before this guard:
+                # a rejected requirement reached this branch and produced a real
+                # Item, because only PROMOTED was special-cased and everything
+                # else fell through to creation.
+                _refuse_if_concluded(candidate, "promote", candidate_id=candidate_id)
                 if candidate["project"] != project:
                     raise ValueError("candidate project does not match new Item project")
                 if not project or not _PREFIX.fullmatch(prefix):
