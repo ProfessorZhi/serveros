@@ -1257,7 +1257,7 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `control_join`, `grant_reason`, `standing_reason` and the admission gate
 #   are untouched. A session left on `e` goes on handing a person blocked at
 #   `work admit` a repair task against a field no card has to carry.
-cachebuster: srv0005.20261007f
+cachebuster: srv0005.20261007g
 
 skills:
   - name: runtime-management

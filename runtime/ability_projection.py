@@ -501,6 +501,71 @@ def domain_tree(rows) -> dict:
     }
 
 
+def product_vocabulary(document: dict) -> dict:
+    """Keep only the product vocabulary; never copy registry or host fields."""
+    abilities = document.get("abilities")
+    families = document.get("families")
+    if not isinstance(abilities, dict) or not abilities or not isinstance(families, dict):
+        raise ValueError("product vocabulary requires abilities and families")
+    clean = {}
+    for key, row in abilities.items():
+        if (not isinstance(row, dict) or row.get("family") not in families
+                or not isinstance(row.get("name"), str)
+                or not isinstance(row.get("subroles"), list)
+                or not all(isinstance(v, str) for v in row["subroles"])):
+            raise ValueError(f"invalid product responsibility: {key}")
+        clean[str(key)] = {field: row[field] for field in ("name", "family", "subroles")}
+    return {"families": {str(k): str(v) for k, v in families.items()}, "abilities": clean}
+
+
+def product_tree(vocabulary: dict, records: list[dict], *, responsibility=None) -> dict:
+    """Product responsibilities and declared realizations, not completion or grants."""
+    vocabulary = product_vocabulary(vocabulary)
+    abilities = vocabulary["abilities"]
+    if responsibility is not None and responsibility not in abilities:
+        raise ValueError(f"unknown product responsibility: {responsibility}")
+    grouped = {}
+    for row in records:
+        grouped.setdefault(row.get("id") or row.get("name"), []).append(row)
+    realizations, conflicts, unannotated = [], [], []
+    for identity, forms in sorted(grouped.items(), key=lambda pair: str(pair[0])):
+        declarations = _distinct_declarations({
+            "primary": role.get("primary"), "realization_role": role.get("realization_role"),
+            "subroles": sorted(role.get("subroles") or []),
+            "cross_refs": sorted(role.get("cross_refs") or []),
+        } for row in forms if isinstance(role := row.get("product_role"), dict))
+        if not declarations:
+            unannotated.append(identity)
+            continue
+        role = declarations[0]
+        primary = role["primary"]
+        if (len(declarations) != 1 or primary not in abilities
+                or any(ref not in abilities for ref in role["cross_refs"])
+                or any(sub not in abilities[primary]["subroles"] for sub in role["subroles"])):
+            conflicts.append(identity)
+            continue
+        realizations.append({"id": identity, "name": forms[0].get("name"),
+                             "forms": sorted({r["type"] for r in forms if r.get("type")}),
+                             **role})
+    nodes = []
+    for key, row in abilities.items():
+        if responsibility is not None and key != responsibility:
+            continue
+        primary = [r for r in realizations if r["primary"] == key]
+        covered = {sub for r in primary for sub in r["subroles"]}
+        nodes.append({"id": key, **row, "realizations": primary,
+                      "cross_references": [r["id"] for r in realizations if key in r["cross_refs"]],
+                      "unmapped_subroles": [sub for sub in row["subroles"] if sub not in covered]})
+    return {"schema": "serveros/product-ability-tree.v1", "basis": "product_role.primary",
+            "families": vocabulary["families"], "nodes": nodes,
+            "responsibility_count": len(abilities), "returned": len(nodes),
+            "realization_count": len(realizations), "conflicts": conflicts,
+            "unannotated": unannotated, "completion": "NOT_ASSESSED",
+            "note": "Declared mappings only. Unmapped does not mean unimplemented; "
+                    "cross-references are not owners. Installation, actual consumption, "
+                    "journey verification and authority are separate facts."}
+
+
 def project(manifest: dict, device_ids: tuple[str, ...], *, resolved_sha: str,
             now: datetime) -> dict:
     """A FRESH projection. Only ever built from an authority read that worked."""
@@ -516,7 +581,8 @@ def project(manifest: dict, device_ids: tuple[str, ...], *, resolved_sha: str,
     }
 
 
-def catalogue(manifest: dict, *, resolved_sha: str, now: datetime) -> dict:
+def catalogue(manifest: dict, *, resolved_sha: str, now: datetime,
+              vocabulary: dict | None = None, vocabulary_error: str | None = None) -> dict:
     """The whole catalogue's bounded metadata, one entry per manifest record.
 
     `ABILITY_FIELDS` and nothing else, for exactly the reason the allow-list
@@ -550,6 +616,8 @@ def catalogue(manifest: dict, *, resolved_sha: str, now: datetime) -> dict:
         "generated_at": _iso(now),
         "source_revision": resolved_sha,
         "entries": entries,
+        "product_vocabulary": vocabulary,
+        "product_vocabulary_error": vocabulary_error,
     }
 
 
@@ -570,6 +638,8 @@ def catalogue_stale(previous: dict | None, *, reason: str, now: datetime) -> dic
         "generated_at": carried.get("generated_at"),
         "source_revision": carried.get("source_revision"),
         "entries": carried.get("entries") or [],
+        "product_vocabulary": carried.get("product_vocabulary"),
+        "product_vocabulary_error": carried.get("product_vocabulary_error"),
         "last_attempt_at": _iso(now),
         "unreachable_reason": reason,
         "note": (
@@ -705,9 +775,16 @@ def refresh(repo: Path, rev: str, device_ids: tuple[str, ...], state_root: Path,
             asked=asked, normalized=ids,
             manifest_device_ids=manifest_device_ids(manifest),
             records=len(manifest.get("abilities") or []))
+    vocabulary, vocabulary_error = None, None
+    try:
+        raw_vocabulary, _ = read_manifest(repo, resolved, "product-tree.yaml")
+        vocabulary = product_vocabulary(raw_vocabulary)
+    except (AuthorityUnreachable, ValueError) as exc:
+        vocabulary_error = str(exc)
     write_atomic(path, document)
     write_atomic(catalogue_path,
-                 catalogue(manifest, resolved_sha=resolved, now=moment))
+                 catalogue(manifest, resolved_sha=resolved, now=moment,
+                           vocabulary=vocabulary, vocabulary_error=vocabulary_error))
     return document
 
 
