@@ -227,6 +227,10 @@ def _cmd_board(args):
 
 
 def _cmd_migrate(args):
+    if args.action == "restore-archive":
+        from .archive_restore import restore_items
+        return restore_items(ServerOSStore(_state_dir(args)), args.archive, args.project,
+                             expected_sha256=args.sha256, apply=args.apply)
     manager = MigrationManager(ServerOSStore(_state_dir(args)))
     if args.action == "plan":
         return manager.plan(json.loads(Path(args.manifest).read_text(encoding="utf-8")))
@@ -360,6 +364,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     migrate = groups.add_parser("migrate", parents=[_common()])
     migrate_actions = migrate.add_subparsers(dest="action", required=True)
+    restore = migrate_actions.add_parser("restore-archive", parents=[_common()])
+    restore.add_argument("--archive", required=True)
+    restore.add_argument("--project", action="append", required=True)
+    restore.add_argument("--sha256")
+    restore.add_argument("--apply", action="store_true", help="restore missing Item-owned history atomically; default is preview")
     plan = migrate_actions.add_parser("plan", parents=[_common()]); plan.add_argument("--manifest", required=True)
     for action in ("inspect", "apply", "verify", "compensate"):
         child = migrate_actions.add_parser(action, parents=[_common()]); child.add_argument("project")
