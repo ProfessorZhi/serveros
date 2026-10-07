@@ -57,19 +57,18 @@ def snapshot(store: ServerOSStore, project: str) -> dict:
     return {"schema": "serveros/board.v3", "project": project, "generated_at": now_iso(), "generation_source_revision": max(revisions) if revisions else None, "items": items}
 
 
-def _board_item_count(json_path: Path) -> int:
-    """Items in the board already on disk, or 0 when there is no readable board.
-
-    A missing, truncated or otherwise unreadable file counts as 0 on purpose. The
-    guard below exists to stop a populated board being replaced by an empty one; it
-    must not also become the reason a project that has never rendered cannot render.
-    """
+def _board_item_ids(json_path: Path) -> set[str]:
+    """A missing board is new; an unreadable existing board is not empty."""
+    if not json_path.exists():
+        return set()
     try:
         previous = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return 0
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"refusing to render the board: existing projection is unreadable: {json_path}") from exc
     items = previous.get("items") if isinstance(previous, dict) else None
-    return len(items) if isinstance(items, list) else 0
+    if not isinstance(items, list) or any(not isinstance(row, dict) or not row.get("id") for row in items):
+        raise ValueError(f"refusing to render the board: existing projection has invalid item identities: {json_path}")
+    return {row["id"] for row in items}
 
 
 def render(store: ServerOSStore, project: str, output_dir: str | Path, allow_empty: bool = False) -> dict:
@@ -79,16 +78,17 @@ def render(store: ServerOSStore, project: str, output_dir: str | Path, allow_emp
     data = snapshot(store, project)
     json_path = output_dir / "current.json"
     markdown_path = output_dir / "current.md"
-    if not data["items"] and not allow_empty:
-        erased = _board_item_count(json_path)
+    missing = _board_item_ids(json_path) - {row["id"] for row in data["items"]}
+    if missing and not (allow_empty and not data["items"]):
+        erased = len(missing)
         if erased:
             raise ValueError(
                 f"refusing to render the board for {project!r}: the board on disk holds "
-                f"{erased} item(s) and this render found none for that project, so writing "
+                f"{erased} item(s) absent from this render ({', '.join(sorted(missing))}), so writing "
                 f"would erase them. A board is a projection, but when a project's items are "
                 f"absent from the state directory this file may be the only record of them, "
                 f"and a second render cannot bring them back. {json_path} is unchanged. "
-                f"Re-run with --allow-empty if {project!r} genuinely has no items now."
+                f"Recover the missing owner records first. --allow-empty only acknowledges an explicitly empty board."
             )
     output_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write(json_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")

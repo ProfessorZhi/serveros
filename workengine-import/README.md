@@ -130,3 +130,9 @@ pytest environment is an explicit environment gap, not PASS.
 This documentation alignment changes no Python code, state schema, CLI behavior,
 active worker, schedule, repository worktree or live cloud object. Implementation
 and LIVE evidence remain separate from the accepted design.
+
+## Recovering archived Work history
+
+`workengine migrate restore-archive --archive /absolute/sealed.sqlite3 --project <project>` previews missing Item-owned history. After reviewing it, pass `--apply --sha256 <observed digest>` to restore atomically. Existing Items are never overwritten; repeat imports from the same archive are idempotent, and ID sequences never decrease. Leases, grants and Session control are not imported. Historical nonterminal Runs are reported as such; recovery never resumes their workers. Retain the source archive and a consistent live backup. A source with a WAL must first be backed up through SQLite, not copied as a raw file.
+
+Board rendering refuses loss of any existing Item identity, including a populated board being replaced by a smaller populated board. An unreadable existing board is not treated as empty. `--allow-empty` only acknowledges an explicitly empty replacement.
