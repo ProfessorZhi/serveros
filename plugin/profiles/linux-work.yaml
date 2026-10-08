@@ -1663,7 +1663,58 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   derived-without-declaration", "describe the same document") moved with it.
 #   `tests/` is not a member of this composition, so the nine added tests and the
 #   three mutations that come with this do not move the label.
-cachebuster: srv0005.20261008r
+#
+#   r → s: the declaration layer catches up with two producers that were already
+#   writing and one reader that was already reading. Nothing new is built here;
+#   four sentences that disagreed with the tree they describe stop disagreeing.
+#
+#   runtime/wake.py, runtime/paths.py, fleet/state-root-contract.yaml
+#     `wake` joins `STATE_SERVEROS_RUNTIME` — in the module, and in the contract,
+#     which is two places because `tests/test_state_root.py` asserts they agree.
+#     `<state>/runtime/wake/receipts` has been written every day, and the daily
+#     answer was `WARN/UNDECLARED_ENTRY`. What made it interesting is the reason
+#     written next to the omission: the module's own docstring claimed the name
+#     was deliberately outside the closed set and cited `card_delivery.py` as the
+#     precedent — a module whose `cards` is inside that set. The declaration did
+#     not merely lag the writer; it was justified by a precedent that, read, says
+#     the opposite.
+#
+#   runtime/conformance.py
+#     `AGENTS.md` joins the workspace exceptions as `ENTRY_DOCUMENT`/`KEEP`. The
+#     Codex-facing entry document sits beside `CLAUDE.md`, which was already
+#     `OBSERVE/EXEMPT_ENTRY`, so one convention was being read as two different
+#     verdicts — and the verdict an applier acts on is the WARN. This is not a
+#     vocabulary widening: the name did not enter `WORKSPACE_TOP_LEVEL`, and a
+#     test holds that boundary.
+#
+#   runtime/actuator-contract.yaml
+#     Three `fs_mutation` sites in `context/trust_binding.py#_write` were
+#     undeclared and the guard was green anyway, because the table kept matching
+#     through other sites. The writing half shipped in a round whose subject was
+#     something else, which is the shape this whole file exists to catch.
+#     `os.replace` goes into `atomic-write-commit` — the only site in that list
+#     whose destination is not a caller's path at all but `trust_path()`, the
+#     verifier's own constant. `.unlink()` goes into `atomic-write-temp-cleanup`
+#     with a per-site verb override. `os.chmod` gets a new entry rather than a
+#     fourth site on either: it is the only `chmod` in the table whose reason is
+#     the direction it widens in, since `mkstemp` hands back 0600 and a umask can
+#     only clear bits from it, so nothing in this host's configuration is what
+#     makes the result 0644. A gate that named only the narrowing `chmod`s would
+#     report this one and the socket's as the same act.
+#
+#   The label moves because a node left on `r` answers `WARN/UNDECLARED_ENTRY`
+#   once a day for a directory it is itself writing, and reads the workspace
+#   entry document as undeclared while reading its neighbour as exempt. Measured
+#   on the frozen bytes, against `origin/main`: `serverosctl path conformance`
+#   goes 238 findings / 217 undeclared / 8 exempt → 237 / 215 / 9, which is
+#   attributed by LINE rather than by subtracting totals, because the exempt cell
+#   breathes with the WAL sidecar. The five changed members are
+#   `runtime/paths.py` (+1623 B), `runtime/wake.py` (+1056),
+#   `runtime/conformance.py` (+1679), `fleet/state-root-contract.yaml` (+2938)
+#   and `runtime/actuator-contract.yaml` (+6135), +13431 B in all. `tests/` is
+#   not a member of this composition, so the three tests and the three mutation
+#   sites that come with this do not move the label.
+cachebuster: srv0005.20261008s
 
 skills:
   - name: runtime-management
