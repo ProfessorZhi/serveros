@@ -161,11 +161,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -1026,6 +1030,26 @@ def _source_note(rev_dir: Path | None) -> str:
     return text
 
 
+def source_record(artifact: Path | None) -> dict:
+    """The artifact's own `source.serveros` record, as it wrote it — or `{}`.
+
+    One reader for the three fields that have to agree with each other: the
+    commit, whether the tree was clean when the build ran, and how many changes
+    it had if not. Reading them from one place is what keeps `_source_note`
+    (which prints them) and `source_attribution` (which judges by them) from
+    disagreeing about the same artifact.
+    """
+    if artifact is None:
+        return {}
+    try:
+        doc = json.loads((artifact / ARTIFACT_MANIFEST).read_bytes())
+    except (OSError, ValueError):
+        return {}
+    source = doc.get("source") if isinstance(doc, dict) else None
+    record = (source or {}).get("serveros")
+    return record if isinstance(record, dict) else {}
+
+
 def recorded_source_commit(artifact: Path | None) -> str | None:
     """The commit the artifact ITSELF records as its source, or None.
 
@@ -1035,14 +1059,7 @@ def recorded_source_commit(artifact: Path | None) -> str | None:
     that was never its source. Those two produce identical path diffs and mean
     opposite things.
     """
-    if artifact is None:
-        return None
-    try:
-        doc = json.loads((artifact / ARTIFACT_MANIFEST).read_bytes())
-    except (OSError, ValueError):
-        return None
-    source = doc.get("source") if isinstance(doc, dict) else None
-    commit = ((source or {}).get("serveros") or {}).get("commit")
+    commit = source_record(artifact).get("commit")
     return str(commit) if commit else None
 
 
@@ -1057,10 +1074,32 @@ def source_attribution(artifact: Path | None, canonical_head: str,
     `(False, why)` is returned only when BOTH commit ids are known and differ.
     Then a non-empty path diff says nothing about the artifact, and the caller
     routes it to `SOURCE_STALE` rather than to `SOURCE_RUNTIME_DRIFT`.
+
+    There is a second way for the answer to be no, and it is not about which
+    tree was used: the artifact may record a commit AND record `tree_clean:
+    false` beside it. Then the commit names the checkout the build ran in, not
+    the bytes it produced, and no rebuild — from that tree or any other — can
+    decide whether those bytes drifted. Returning yes there would take a
+    difference the artifact's own record explains away and print it as the
+    artifact's fault, which is the same false accusation below, arriving by a
+    different route. The absent field is NOT read this way: `tree_clean` missing
+    is the absence of a claim, and absence must not become an accusation — the
+    same distinction `recompute_blocker` draws between "no one looked" and
+    "looked and found none".
     """
     recorded = recorded_source_commit(artifact)
     if not recorded or not canonical_head or canonical_head == UNKNOWN:
         return True, ""
+    record = source_record(artifact)
+    if record.get("tree_clean") is False:
+        changes = record.get("worktree_changes")
+        return False, (
+            f"the artifact records {recorded[:12]} and also that it was built with "
+            f"{changes if changes is not None else 'uncommitted'} uncommitted "
+            "change(s), so that commit names the checkout the build ran in rather "
+            "than these bytes — no rebuild can decide whether the artifact drifted, "
+            "because the difference it would find is the one its own record states"
+        )
     # Either side may be abbreviated (the row labels print 12 chars), so the
     # comparison is by prefix in both directions rather than by equality.
     same = (recorded.startswith(canonical_head)
@@ -1074,6 +1113,116 @@ def source_attribution(artifact: Path | None, canonical_head: str,
         "cannot decide whether the artifact drifted. The instrument is the one "
         "that is behind"
     )
+
+
+SOURCE_CACHE_ENV = "SERVEROS_SOURCE_CACHE"
+EXTRACTED_MARKER = ".extracted"
+
+
+def extract_source_tree(repo: Path, commit: str, cache: Path) -> Path | None:
+    """The tree of `commit`, extracted under `cache`, or None if it cannot be made.
+
+    `source_attribution` above can tell that a comparison is against the wrong
+    tree; it cannot supply the right one. This is the half that can, and it is
+    the reason `SOURCE_STALE` need not be the end of the answer.
+
+    Read-only with respect to `repo`: `git archive` writes nothing, and what it
+    prints is extracted into a directory this process named. A commit the object
+    database does not have is NOT fetched — a measurement that reaches the
+    network is measuring the network — so the caller gets None and says which
+    commit it could not find.
+
+    Keyed by commit, and marked done only after the extraction finishes, so
+    repeated rows share one tree and an interrupted run is redone rather than
+    read half-written. The finished tree is renamed into place, which is
+    atomic on the filesystems this runs on.
+
+    The only path this removes is the one it made in this same call: the
+    staging directory comes from `tempfile.mkdtemp` under `cache`, so its name
+    is fresh by construction, and the rename happens whether or not something
+    is already at the destination. An earlier version of this function did
+    `if target.exists(): shutil.rmtree(target)` — the same default action, on a
+    directory whose owner and intent had not been established, that
+    `release.py#stage` was rewritten to stop taking one round earlier. Here it
+    would have removed a finished tree, or another actor's half-written copy of
+    this same commit, on a host whose `$TMPDIR` is shared. The reach is gone
+    rather than declared: a commit somebody else has already finished is used,
+    not replaced, and a commit somebody else is mid-way through yields None
+    rather than a deletion.
+    """
+    if not commit or len(commit) != 40:
+        return None
+    if _git(repo, "cat-file", "-e", f"{commit}^{{commit}}") is None:
+        return None
+    target = cache / commit[:12]
+    if (target / EXTRACTED_MARKER).is_file():
+        return target
+    archive = subprocess.run(
+        ["git", "-C", str(repo), "archive", "--format=tar", commit],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if archive.returncode != 0:
+        return None
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=cache,
+                                        prefix=f".{commit[:12]}.",
+                                        suffix=".part"))
+    except OSError:
+        return None
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(staging, filter="data")
+        (staging / EXTRACTED_MARKER).write_text(commit + "\n", encoding="utf-8")
+        staging.rename(target)
+        return target
+    except (OSError, tarfile.TarError):
+        pass
+    # Either the extraction failed, or the rename did because another process
+    # finished this same commit first. What is removed in both cases is the
+    # directory this call made; a tree that already carries the marker is
+    # somebody else's finished copy of the same commit and is used as it is.
+    shutil.rmtree(staging, ignore_errors=True)
+    return target if (target / EXTRACTED_MARKER).is_file() else None
+
+
+def recompute_source(artifact: Path | None, default_build, args,
+                     checkout_head: str) -> tuple[object, Path, str, str]:
+    """The source to recompute `artifact` from: the commit IT records as its own.
+
+    Returns `(build, root, head, note)`:
+
+      build  the module whose `plan()` defines the expected member set,
+      root   the tree `attribution` should be told the rebuild came from,
+      head   that tree's commit, and
+      note   one sentence for the row, saying which source was used.
+
+    Each artifact on this node records the commit it was built from, and those
+    commits differ — the node payload, each plugin cache and each node revision
+    were built at different points. Rebuilding all of them from one checkout,
+    whose HEAD is on a line most of them never saw, is what produced
+    `SOURCE_STALE` on rows that had a decidable answer: the recorded commit is
+    usually already in the object database, so the comparison could be made and
+    was not.
+
+    The fallback is not silent. When the artifact records no commit, or records
+    one this repository does not have, the checkout is used AND the note says
+    so, because "compared against the checkout" and "compared against the
+    artifact's source" are the two readings this whole function exists to keep
+    apart.
+    """
+    if args.use_checkout_source:
+        return default_build, args.serveros_repo, checkout_head, ""
+    recorded = recorded_source_commit(artifact)
+    if not recorded:
+        return default_build, args.serveros_repo, checkout_head, ""
+    tree = extract_source_tree(args.serveros_repo, recorded, args.source_cache)
+    if tree is None:
+        return default_build, args.serveros_repo, checkout_head, (
+            f"recomputed from {args.serveros_repo} at {checkout_head[:12]}: the "
+            f"artifact records {recorded[:12]} but this repository has no such "
+            "commit, so the comparison is against a tree that is not its source")
+    return _load_build(tree), tree, recorded, (
+        f"recomputed from the artifact's own recorded source {recorded[:12]}")
 
 
 def drift_verdict(drift: list, attribution: tuple[bool, str]) -> str:
@@ -1611,11 +1760,14 @@ def collect(args) -> dict:
     # --- 7. does the installed payload equal what canonical builds? ------
     # The artifact this row asks about is `--output`, so its own record decides
     # whether "stale relative to source" is a sentence about the artifact or
-    # about the checkout doing the rebuilding.
-    attribution = source_attribution(args.output, serveros_head, build.repo_root())
+    # about the checkout doing the rebuilding — and, since that record also
+    # names the commit, it supplies the tree to rebuild from as well.
+    src_build, src_root, src_head, src_note = recompute_source(
+        args.output, build, args, serveros_head)
+    attribution = source_attribution(args.output, src_head, src_root)
     expected = None
     if pinned and args.ability_repo.is_dir():
-        got = expected_artifact(build, args.ability_repo, pinned, args.output,
+        got = expected_artifact(src_build, args.ability_repo, pinned, args.output,
                                 args.marketplace_path)
         if got:
             expected, recomputed_version = got
@@ -1623,13 +1775,14 @@ def collect(args) -> dict:
                 repro_verdict, repro_detail = OK, ""
             elif attribution[0]:
                 repro_verdict = SOURCE_RUNTIME_DRIFT
-                repro_detail = (f"canonical source builds {recomputed_version}, disk "
+                repro_detail = (f"source at {src_head[:12]} builds "
+                                f"{recomputed_version}, disk "
                                 f"has {built_ver} — the artifact is stale relative "
                                 "to source")
             else:
                 repro_verdict, repro_detail = SOURCE_STALE, attribution[1]
             row(f"{subject} (payload reproducibility)", recomputed_version, "",
-                installed_ver, repro_verdict, repro_detail)
+                installed_ver, repro_verdict, repro_detail, note=src_note)
 
     # The two runtimes nest differently and neither is guessable from the other:
     # Claude's install record gives the payload leaf directly, while Codex adds
@@ -1655,7 +1808,7 @@ def collect(args) -> dict:
         root = Path(root)
         if expected is None:
             row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
-                UNKNOWN, "cannot verify: " + recompute_blocker(build, args.output))
+                UNKNOWN, "cannot verify: " + recompute_blocker(src_build, args.output))
             continue
         # `RELEASE.json` is the node-runtime face of the payload, written by
         # `release.py` when a revision is staged; `expected_artifact` recomputes
@@ -1674,19 +1827,19 @@ def collect(args) -> dict:
         # `--output` — the payload whose own declared pin produced `expected` —
         # so that is the record whose source has to be checked before this row
         # is allowed to call a difference the artifact's fault.
-        attribution = source_attribution(args.output, serveros_head, build.repo_root())
+        attribution = source_attribution(args.output, src_head, src_root)
         # Core modules are named separately because they are the specific thing
         # this checkpoint exists to land — but only as a NOTE. Whether the
-        # absence is a defect depends on whether canonical has them at all, and
+        # absence is a defect depends on whether the source has them at all, and
         # that is `drift`'s job. Conflating the two made a matching install read
         # as a failure on the first run of this file.
-        absent = [m for m in build.CORE_MODULES if not (root / m).is_dir()]
-        note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
+        absent = [m for m in src_build.CORE_MODULES if not (root / m).is_dir()]
+        absent_note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
         row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
             drift_verdict(drift, attribution),
             drift_detail(drift, attribution,
                          f"{len(drift)} drifted path(s); e.g. {', '.join(drift[:3])}"),
-            note)
+            "; ".join(n for n in (src_note, absent_note) if n))
 
     # --- every plugin the Agent actually LOADS ----------------------------
     #
@@ -1764,10 +1917,19 @@ def collect(args) -> dict:
         # same way, and its comment says the two rows are asking one question;
         # this is the half that makes that true instead of nearly true.
         plugin_pin = declared_pin(payload)
+        # ...and the same half for the SOURCE: the pin says what this plugin was
+        # read from in ability-management, which leaves untouched the question
+        # of which generation of the product's own composition built it. Each
+        # plugin cache on this node records a different commit — the two live
+        # ones here record commits two days apart — so the tree to rebuild from
+        # is the one THIS artifact names, not the checkout's.
+        p_build, p_root, p_head, p_note = recompute_source(
+            payload, build, args, serveros_head)
         if not plugin_pin or not args.ability_repo.is_dir():
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, payload, plugin_pin))
+                "cannot verify: " + recompute_blocker(p_build, payload, plugin_pin),
+                note=p_note)
             continue
         # Named, not judged: a plugin built at a pin other than the node
         # payload's is a fact about this machine's installed fleet, and this row
@@ -1776,12 +1938,13 @@ def collect(args) -> dict:
         pin_note = "" if (not pinned or plugin_pin == pinned) else (
             f"built at ability pin {plugin_pin[:12]}; the node payload declares "
             f"{pinned[:12]}")
-        got = expected_artifact(build, args.ability_repo, plugin_pin, payload,
+        got = expected_artifact(p_build, args.ability_repo, plugin_pin, payload,
                                 args.marketplace_path, layout_at=args.output)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, payload))
+                "cannot verify: " + recompute_blocker(p_build, payload),
+                note=p_note)
             continue
         expected_plugin, plugin_built = got
         # The node-runtime face of the same payload writes `RELEASE.json`; the
@@ -1795,15 +1958,15 @@ def collect(args) -> dict:
         # The INSTALLED plugin's own record is what says whether this checkout
         # ever was its source — not the payload beside it, which is a different
         # composition's face of the same release.
-        attribution = source_attribution(payload, serveros_head, build.repo_root())
+        attribution = source_attribution(payload, p_head, p_root)
         row(label, "", plugin_built, f"version={installed_version}  sha256="
             f"{tree_hash(payload) or 'NONE'}",
             drift_verdict(drift, attribution),
             drift_detail(drift, attribution,
-                         f"canonical source builds {plugin_built}, and the "
+                         f"source at {p_head[:12]} builds {plugin_built}, and the "
                          f"installed plugin differs in {len(drift)} path(s); "
                          f"e.g. {', '.join(drift[:3])}"),
-            note=pin_note)
+            note="; ".join(n for n in (pin_note, p_note) if n))
 
     # Codex, read the same way and for the same reason. It keeps its switch in
     # config.toml and materializes into <cache>/<marketplace>/<plugin>/<version>/,
@@ -1839,33 +2002,41 @@ def collect(args) -> dict:
         # Same reading as the Claude row above, for the same reason: the pin is
         # the one this payload declares, not the node payload's.
         leaf_pin = declared_pin(leaf)
+        # Same reading as the Claude row above, on both axes: the pin this
+        # payload declares, and the source commit this payload records. Codex's
+        # installed leaf records a commit of its own — on this node the same one
+        # as the revision staged as `previous`, which is exactly why the
+        # checkout was the wrong tree to rebuild it from.
+        c_build, c_root, c_head, c_note = recompute_source(
+            leaf, build, args, serveros_head)
         if not leaf_pin or not args.ability_repo.is_dir():
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, leaf, leaf_pin),
-                note=note)
+                "cannot verify: " + recompute_blocker(c_build, leaf, leaf_pin),
+                note="; ".join(n for n in (note, c_note) if n))
             continue
         pin_note = "" if (not pinned or leaf_pin == pinned) else (
             f"built at ability pin {leaf_pin[:12]}; the node payload declares "
             f"{pinned[:12]}")
-        got = expected_artifact(build, args.ability_repo, leaf_pin, leaf,
+        got = expected_artifact(c_build, args.ability_repo, leaf_pin, leaf,
                                 args.marketplace_path, layout_at=args.output)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, leaf), note=note)
+                "cannot verify: " + recompute_blocker(c_build, leaf),
+                note="; ".join(n for n in (note, c_note) if n))
             continue
         expected_codex, codex_built = got
         drift = tree_drift(expected_codex, leaf, ignore=(Path(TREE_MANIFEST),))
-        attribution = source_attribution(leaf, serveros_head, build.repo_root())
+        attribution = source_attribution(leaf, c_head, c_root)
         row(label, "", codex_built, f"version={installed_version}  sha256="
             f"{tree_hash(leaf) or 'NONE'}",
             drift_verdict(drift, attribution),
             drift_detail(drift, attribution,
-                         f"canonical source builds {codex_built}, and the "
+                         f"source at {c_head[:12]} builds {codex_built}, and the "
                          f"installed plugin differs in {len(drift)} path(s); "
                          f"e.g. {', '.join(drift[:3])}"),
-            note="; ".join(n for n in (note, pin_note) if n))
+            note="; ".join(n for n in (note, pin_note, c_note) if n))
 
     # --- 8. the node: revision, unit, process ----------------------------
     #
@@ -1979,6 +2150,7 @@ def collect(args) -> dict:
     # the plugin, asked of the thing that is actually executing.
     node_verdict, node_detail, node_built = UNKNOWN, node["detail"], ""
     node_expected = None
+    node_note = ""
     if node["state"] != "PROMOTED" or rev_dir is None:
         node_verdict = MISSING if node["state"] == "ABSENT" else UNKNOWN
     elif node["tree_hash_ok"] is False:
@@ -1989,34 +2161,44 @@ def collect(args) -> dict:
         node_detail = ("the staged revision's tree hash does not match its own "
                        "directory — these bytes are not the ones that were promoted")
     else:
+        # On BOTH axes the revision's own record is what the row must be asked
+        # of: which ability revision its composition was read from, and which
+        # commit of this repository built it. The comment below already argued
+        # the second half — the revision records where it was built — and then
+        # left the comparison running off the checkout anyway, so the argument
+        # was made and not used. This is the half that uses it.
+        n_build, n_root, n_head, n_note = recompute_source(
+            rev_dir, build, args, serveros_head)
         pin = declared_pin(rev_dir)
         if not pin or not args.ability_repo.is_dir():
-            node_detail = recompute_blocker(build, rev_dir)
+            node_detail = recompute_blocker(n_build, rev_dir)
+            node_note = n_note
         else:
             # `layout_at=args.output`: the node revision is not a plugin and has
             # no marketplace position, so it borrows the one the plugin rows are
             # already required to have rather than being asked for its own.
-            got = expected_artifact(build, args.ability_repo, pin, rev_dir,
+            got = expected_artifact(n_build, args.ability_repo, pin, rev_dir,
                                     args.marketplace_path, layout_at=args.output)
             if got is None:
-                node_detail = recompute_blocker(build, rev_dir)
+                node_detail = recompute_blocker(n_build, rev_dir)
+                node_note = n_note
             else:
                 node_expected, node_built = got
                 drift = tree_drift(node_expected, rev_dir, ignore=(Path(TREE_MANIFEST),))
                 # The revision records where it was built. When that commit is
-                # not the one this checkout is standing on, the 36 paths below
-                # are this file's own staleness rather than the node's — and the
-                # row already prints the artifact's claim one field to the right,
-                # so the two facts belong in one verdict instead of a drift
-                # blamed on the running revision.
-                attribution = source_attribution(rev_dir, serveros_head,
-                                                 build.repo_root())
+                # not the one this checkout is standing on, the paths below are
+                # this file's own staleness rather than the node's — and the row
+                # already prints the artifact's claim one field to the right, so
+                # the two facts belong in one verdict instead of a drift blamed
+                # on the running revision.
+                attribution = source_attribution(rev_dir, n_head, n_root)
                 node_verdict = drift_verdict(drift, attribution)
                 node_detail = drift_detail(
                     drift, attribution,
-                    f"canonical source builds {node_built}, and the running "
+                    f"source at {n_head[:12]} builds {node_built}, and the running "
                     f"revision differs in {len(drift)} path(s); "
                     f"e.g. {', '.join(drift[:3])}")
+                node_note = n_note
     node_label = (node["manifest"] or {}).get("revision") or node["current"] or ""
     row(f"{args.composition} (node revision)", node_label, node_built,
         f"{node['revision_dir'] or node['root']}"
@@ -2028,7 +2210,9 @@ def collect(args) -> dict:
         # a stated one. Unproven is printed as unproven — `tree_clean` false is
         # "this commit names the checkout, not these bytes", and an absent record
         # is not the same string as a clean one.
-        note=(node["detail"] if node_verdict == OK else "") + _source_note(rev_dir),
+        note="; ".join(n for n in (
+            node["detail"] if node_verdict == OK else "", node_note)
+            if n) + _source_note(rev_dir),
         # A machine with no node runtime for this composition has no running
         # surface to converge, and reporting that as a failure would make this
         # file unusable on every machine that is not this node. The exclusion is
@@ -2348,6 +2532,20 @@ def main() -> int:
                     default=default_root("serveros_repo"),
                     help="canonical bundle-source checkout whose build.py defines "
                          "what the artifact should contain")
+    ap.add_argument("--source-cache", type=Path,
+                    default=Path(os.environ.get(SOURCE_CACHE_ENV)
+                                 or (Path(tempfile.gettempdir())
+                                     / "serveros-runtime-truth-source")),
+                    help="where the tree of a commit recorded by an artifact is "
+                         "extracted so that artifact can be recomputed from its "
+                         "OWN source; default $%s, else the system temp dir. "
+                         "Never written to the source checkout itself"
+                         % SOURCE_CACHE_ENV)
+    ap.add_argument("--use-checkout-source", action="store_true",
+                    help="recompute every artifact from --serveros-repo's working "
+                         "tree, the behaviour before each artifact's own recorded "
+                         "commit was used. Kept so the two readings can be "
+                         "compared on one machine")
     ap.add_argument("--ability-repo", type=Path,
                     default=default_root("ability_repo"))
     ap.add_argument("--ability-rev", default="",
