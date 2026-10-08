@@ -274,7 +274,7 @@ class TreePosition:
 
     def __init__(self, *, root, revision=None, branch=None, upstream_ref=None,
                  upstream_revision=None, ahead=None, behind=None,
-                 state=TREE_UNREAD, why="", git=None):
+                 state=TREE_UNREAD, why="", git=None, merge_base=None):
         self.root = Path(root) if root else None
         self.revision = revision or None
         self.branch = branch or None
@@ -284,9 +284,11 @@ class TreePosition:
         self.behind = behind
         self.state = state
         self.why = why
+        self.merge_base = merge_base or None
         self._git = git
         self._held: dict[str, bool | None] = {}
         self._head: dict[str, bool | None] = {}
+        self._base: dict[str, bool | None] = {}
         self._text: dict[str, str | None] = {}
         self._counts: dict[str, int | None] = {}
 
@@ -350,6 +352,65 @@ class TreePosition:
                 answer = False
         self._head[relpath] = answer
         return answer
+
+    def holds_at_merge_base(self, relpath: str | None) -> bool | None:
+        """Whether the common ancestor of this tree and the ref carried it.
+
+        The third custody question, and the one that separates the two ways a
+        path can be absent from HEAD. A path that was at the merge base and is
+        gone from HEAD was removed here; a path that was at neither was never
+        in this branch's history at all. Only the second is the ref's to
+        answer for, and `holds_at_head` alone cannot tell them apart — for a
+        checkout that is ahead of the ref as well as behind it, the one local
+        commit may have removed the path, or may have nothing to do with it.
+
+        A merge base that was never established answers None, exactly as an
+        unreadable HEAD does: an unestablished question is not a licence to
+        read a document from somewhere else.
+        """
+        if relpath is None or not self.merge_base:
+            return None
+        if relpath in self._base:
+            return self._base[relpath]
+        answer: bool | None = None
+        if self._git is not None and self.root is not None:
+            code, _out = self._git(self.root, "cat-file", "-e",
+                                   f"{self.merge_base}:{relpath}")
+            if code == 0:
+                answer = True
+            elif code == 128:
+                answer = False
+        self._base[relpath] = answer
+        return answer
+
+    def never_carried(self, relpath: str | None) -> bool | None:
+        """Whether this checkout's own history ever held `relpath`.
+
+        True means the absence is a lag fact and not a change made here: no
+        commit of this branch can have removed a path that neither HEAD nor the
+        common ancestor carries. That is the whole test the authority-borrowing
+        below needs, and it is asked of the path rather than of the tree's
+        state.
+
+        The state was the earlier answer and it was too coarse in one direction.
+        `TREE_BEHIND` was the only state that borrowed, which is right for a
+        checkout that has merely not caught up — and wrong for the ordinary
+        shared checkout that is BOTH: one local commit nobody upstream has,
+        nineteen upstream commits it has not taken. That tree is `DIVERGED`, it
+        was refused the borrow, and the document came back `MISSING` with the
+        reader's own evidence to the contrary printed two lines above it. The
+        condition was not too loose, it was too wide: it asked about the tree
+        when the question is about the path.
+        """
+        at_head = self.holds_at_head(relpath)
+        if at_head is None:
+            return None
+        if at_head:
+            return False
+        at_base = self.holds_at_merge_base(relpath)
+        if at_base is None:
+            return None
+        return not at_base
 
     def read_text(self, relpath: str | None) -> str | None:
         """The document's text as the authority holds it, or None.
@@ -470,6 +531,14 @@ def tree_position(records_root: Path, *, git) -> TreePosition:
     _code, out = git(top, "rev-parse", ref)
     upstream_revision = out.strip() or None
 
+    # The common ancestor, asked for the one question that needs a third
+    # surface: whether a path absent from HEAD was removed here or never was
+    # here at all. `git merge-base` exits 1 when the two share no ancestor, and
+    # that is left as None rather than defaulted — a custody question nobody can
+    # answer must not be answered by assuming the friendlier case.
+    _code, out = git(top, "merge-base", "HEAD", ref)
+    merge_base = out.strip() or None if _code == 0 else None
+
     if ahead is None:
         state = TREE_UNREAD
     elif behind and ahead:
@@ -488,7 +557,8 @@ def tree_position(records_root: Path, *, git) -> TreePosition:
                f"branch follows")
     return TreePosition(root=top, revision=revision, branch=branch,
                         upstream_ref=ref, upstream_revision=upstream_revision,
-                        ahead=ahead, behind=behind, state=state, why=why, git=git)
+                        ahead=ahead, behind=behind, state=state, why=why, git=git,
+                        merge_base=merge_base)
 
 
 def _document_spellings(rule: dict) -> list[str]:
@@ -517,11 +587,17 @@ def _resolve_from_ref(item_dir: Path, rule: dict, tree,
     name the rule does not use would be the same misattribution one level down.
     Returns `(the path as the ref spells it, how it resolved, how many)`.
 
-    Called only when this checkout is behind the authority AND never carried
-    the path. A tree level with the ref has nothing the ref has and it lacks;
-    a tree ahead of the ref may have deleted the document on purpose, and
-    answering that from the ref would be answering a question about a
-    different tree.
+    Called only when this checkout never carried the path. A tree level with
+    the ref has nothing the ref has and it lacks; a tree whose own history
+    held the document and lost it made that change here, and answering it from
+    the ref would be answering a question about a different tree.
+
+    This asks only WHERE at the ref the document is; whether the checkout is
+    entitled to it is one question, asked once by the callers of this, of the
+    path they got back. Folding the two together here is not the same test: a
+    `design/` directory is present at the ref and absent from a HEAD that never
+    carried it, and a custody check standing in for the presence check would
+    resolve it as the `exact-file` spelling that comes first in the rule.
     """
     base = tree.relative(item_dir)
     if base is None:
@@ -558,10 +634,14 @@ def _authority_bytes(item_dir: Path, rule: dict, tree,
 
     Three conditions have to hold at once, and each stops a different mistake:
 
-      * the tree is BEHIND the ref. Level with it there is nothing to borrow,
-        and ahead of it the tree is the newer surface;
-      * the tree's own HEAD never carried the path, so a document somebody
-        deleted here is not a document nobody materialized;
+      * the ref holds the document at all — where it holds it, and in which of
+        the rule's spellings, is `_resolve_from_ref`'s question;
+      * this checkout's own history NEVER carried the path. `never_carried` is
+        asked of the path the ref resolved, not of the tree's state: a checkout
+        that is merely BEHIND is not entitled, and a checkout that is BOTH one
+        commit ahead and nineteen behind — the ordinary shared checkout — is
+        the case a state-level test gets wrong in BOTH directions. The state
+        was not too loose, it was too wide;
       * the bytes come back. Presence alone would let a row claim to have been
         read when only its existence was established.
 
@@ -569,17 +649,11 @@ def _authority_bytes(item_dir: Path, rule: dict, tree,
     `text` is None for a `directory` resolution, which holds a SET of documents
     and is not one text to read.
     """
-    if tree.state != TREE_BEHIND:
-        return None
     found = _resolve_from_ref(item_dir, rule, tree)
     if found is None:
         return None
     relpath, how, count = found
-    if tree.holds_at_head(relpath) is not False:
-        # Either this tree's HEAD has it — so it was removed from the working
-        # tree here, and this tree is the party to ask — or nobody established
-        # whether it does. An unestablished question is not a licence to read
-        # from somewhere else, which is this module's whole defect.
+    if tree.never_carried(relpath) is not True:
         return None
     text = None if how == "directory" else tree.read_text(relpath)
     if how != "directory" and text is None:
@@ -648,8 +722,13 @@ def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> 
       * the name exists at the ref but not in a shape the rule accepts — an
         empty `design/` is the case this catches, and there the Item is still
         the right party;
-      * the tree is not behind, or its own HEAD carries the path — a document
+      * this checkout's own history carried the path and lost it — a document
         this checkout removed on purpose is a change here, not a lag there.
+        That is the same `never_carried` question `_authority_bytes` asks, and
+        it is asked of the same path: a sentence may not blame the ref for an
+        absence this branch made. What the sentence does NOT ask is the tree's
+        state, which was too wide a question and shared with the borrowing
+        decision above.
     """
     spellings = _document_spellings(rule)
     held = [tree.holds(tree.relative(item_dir / name)) for name in spellings]
@@ -663,9 +742,9 @@ def _explain_absence_by_tree(answer: dict, item_dir: Path, rule: dict, tree) -> 
     if found is None:
         return
     relpath = found[0]
-    answer["upstream_path"] = relpath
-    if tree.state != TREE_BEHIND or tree.holds_at_head(relpath) is True:
+    if tree.never_carried(relpath) is not True:
         return
+    answer["upstream_path"] = relpath
     answer["why"] = (
         f"`{relpath.rsplit('/', 1)[-1]}` is not in the working tree this reader is bound to "
         f"({tree.root} at {str(tree.revision or '?')[:12]}), and it IS present "
