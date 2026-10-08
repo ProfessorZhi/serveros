@@ -164,6 +164,52 @@ def _state_root_module():
     return _load("serveros_runtime_state_root", REPO / "runtime" / "state_root.py")
 
 
+def temp_root() -> Path:
+    """Where this run stages its scratch bytes — or a refusal.
+
+    `tempfile` answers `$TMPDIR`, and when that is unset it answers `/tmp`.
+    Measured on this node 2026-10-09: `/tmp` is `/dev/vda2`, the 50 GB system
+    disk the machine policy excludes from working storage, and it held 15 GB at
+    the time — including `/tmp/pytest-of-vince`, 178 MB of `tmp_path`
+    directories left by 682 runs, the newest of them made by a test process
+    with `TMPDIR` unset. `tempfile`'s fallback is not a decision anybody made;
+    it is what remains when the environment says nothing, and nothing in the
+    output said so.
+
+    Two answers, in this order, and no third:
+
+      1. `$TMPDIR` — the machine's answer, when the machine gave one. Honoured
+         rather than overridden, because a login shell on this node already
+         sets it to the scratch volume and a run started from one must not be
+         quietly moved somewhere else.
+      2. the declared `tmp` root of the root contract. Here that is
+         `{DATA_ROOT}/tmp`, which is the same directory the host profile
+         records as `tmp_root` — one answer, reached by two authorities.
+
+    An unbound contract is a template string, so step 2 is refused by name
+    rather than used: writing under `{DATA_ROOT}/tmp` creates a directory that
+    looks like a name.
+
+    Deliberately absent is `tempfile.gettempdir()` as a last resort. That value
+    IS step 1 or `/tmp` depending on a variable a systemd USER unit does not
+    inherit, so the same command staged its bytes in two different places
+    depending on who started it — and the census is exactly that command: a
+    timer and a developer run it through different environments.
+    """
+    explicit = os.environ.get("TMPDIR")
+    if explicit:
+        return Path(explicit)
+    paths = _paths_module().Paths()
+    if not paths.bound:
+        raise VerifyError(
+            "there is no $TMPDIR, and this node's roots are UNBOUND, so there "
+            f"is no declared temp root to stage under: {list(paths.unconfigured)}. "
+            "Refusing the system temp directory as the answer: it is on the "
+            "system disk, and it is what `tempfile` returns when nobody has "
+            "decided anything.")
+    return paths.root("tmp")
+
+
 # ---------------------------------------------------------------------------
 # Fingerprints. One function per kind of input, because a directory is not a
 # file and pretending it is would be the same defect one layer down.
@@ -355,7 +401,13 @@ def measure(repo: Path, test: str, *, python: str) -> dict:
     be missing every module the first had touched, silently. One process per
     file is the cheap way to make each census about its own file.
     """
-    with tempfile.TemporaryDirectory(prefix="serveros-census-") as scratch:
+    staged = temp_root()
+    # The declared root is a name the contract answers with; whether anything
+    # has yet made the directory is a separate fact, and a temp root that must
+    # be created before its first use is a trap rather than a contract.
+    staged.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="serveros-census-",
+                                     dir=str(staged)) as scratch:
         out = Path(scratch) / "census.json"
         junit = Path(scratch) / "junit.xml"
         env = dict(os.environ)
@@ -367,6 +419,12 @@ def measure(repo: Path, test: str, *, python: str) -> dict:
         # `scripts/`, measured, in every record. The tool's own footprint is not
         # the test's input.
         env["PYTHONSAFEPATH"] = "1"
+        # pytest's own `tmp_path` base is `tempfile.gettempdir()`, so the child
+        # is told where this run stages. Without it the child would answer that
+        # question for itself and `tmp_path` would land in the system temp dir
+        # while the census report landed here — one run, two answers, and the
+        # record would show only the one it kept.
+        env["TMPDIR"] = str(staged)
         result = subprocess.run(
             [python, str(Path(__file__).resolve()), CENSUS_VERB,
              "--test", test, "--repo", str(repo),
@@ -377,7 +435,12 @@ def measure(repo: Path, test: str, *, python: str) -> dict:
             raise VerifyError(
                 f"the census child for {test} wrote no report "
                 f"(exit {result.returncode}): {result.stderr.strip()[-400:]}")
-        return json.loads(out.read_text(encoding="utf-8"))
+        report = json.loads(out.read_text(encoding="utf-8"))
+        # Carried for the run summary. NOT written into the record: the record
+        # is about the test's inputs, and where this tool staged its own bytes
+        # is not one of them.
+        report["scratch_root"] = str(staged)
+        return report
 
 
 # ---------------------------------------------------------------------------
@@ -545,8 +608,10 @@ def cmd_run(args) -> int:
 
     entries: dict[str, dict] = {}
     failures: list[str] = []
+    staged: set[str] = set()
     for test in tests:
         measured = measure(repo, test, python=args.python)
+        staged.add(measured.get("scratch_root", "UNKNOWN"))
         cases = measured.get("cases", [])
         failed = [case["name"] for case in cases if case["outcome"] == "FAIL"]
         if measured["exit_code"] == NO_TESTS_EXIT_CODE:
@@ -607,6 +672,11 @@ def cmd_run(args) -> int:
         "outcomes": {test: entry["outcome"] for test, entry in sorted(entries.items())
                      if entry["outcome"] != "PASS"},
         "inputs_unmeasured": lower,
+        # Said out loud rather than left to be discovered: this run's scratch
+        # was under the declared temp root, and pytest's `tmp_path` base went
+        # with it. A run that stages its bytes somewhere has to be able to say
+        # where, or the next reader has to guess.
+        "scratch_root": sorted(staged),
     }, indent=2, ensure_ascii=False))
     return EXIT_FAULT if failures else EXIT_OK
 

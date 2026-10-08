@@ -887,10 +887,11 @@ actuators:
     verb: shutil.rmtree
     why: >-
       `scripts/runtime_truth.py#extract_source_tree` writing the tree of a
-      commit into the source cache — `$SERVEROS_SOURCE_CACHE`, else the system
-      temp dir — so that an artifact can be recomputed from the commit THAT
-      ARTIFACT records rather than from whatever commit the canonical checkout
-      happens to stand on. The cache is never the checkout it reads from:
+      commit into the source cache — `$SERVEROS_SOURCE_CACHE`, else this node's
+      declared temp root, never the system temp dir — so that an artifact can be
+      recomputed from the commit THAT ARTIFACT records rather than from whatever
+      commit the canonical checkout happens to stand on. The cache is never the
+      checkout it reads from:
       `git archive` writes nothing, and everything materialized lands under a
       directory this process named.
 
