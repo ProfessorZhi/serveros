@@ -499,13 +499,13 @@ human_console_mod = _load("serveros_runtime_human_console", "human_console.py")
 # the reason `context/resolver.py` states in its own docstring: the CLI and the
 # socket must not read two different worlds.
 _RESOLVER_PATH = _HERE.parent / "context" / "resolver.py"
-if "_serveros_context_resolver" not in sys.modules:
+if "serveros_context_resolver" not in sys.modules:
     _resolver_spec = importlib.util.spec_from_file_location(
-        "_serveros_context_resolver", _RESOLVER_PATH)
+        "serveros_context_resolver", _RESOLVER_PATH)
     _resolver_module = importlib.util.module_from_spec(_resolver_spec)
-    sys.modules["_serveros_context_resolver"] = _resolver_module
+    sys.modules["serveros_context_resolver"] = _resolver_module
     _resolver_spec.loader.exec_module(_resolver_module)
-resolver_mod = sys.modules["_serveros_context_resolver"]
+resolver_mod = sys.modules["serveros_context_resolver"]
 # §4/§2. The tree ALGORITHM, loaded rather than restated. The projection writer
 # and this surface must derive the same tree from the same catalogue, and a
 # second implementation here is two spellings of one idea that agree on the day

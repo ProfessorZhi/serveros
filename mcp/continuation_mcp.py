@@ -141,7 +141,7 @@ def _cli():
     second composition of any of the three would be a second answer to a question
     this repository has already decided once.
     """
-    return _load("cli", _RUNTIME / "cli.py")
+    return _load("serveros_runtime_cli", _RUNTIME / "cli.py")
 
 
 def _completion_reader(cli):
@@ -449,7 +449,7 @@ class ContinuationServer:
         _mod, store = self.cli()._control_store()
         grant = store.grants()[self.envelope["grant_ref"]]
         checkpoint = store.checkpoints()[self.envelope["checkpoint_ref"]]
-        paths = _load("serveros_executor_paths", _RUNTIME / "paths.py").Paths()
+        paths = _load("serveros_runtime_paths", _RUNTIME / "paths.py").Paths()
         if not paths.bound:
             raise ValueError("node path profile is unbound")
         resolved = executor.binding(envelope=self.envelope, checkpoint=checkpoint,

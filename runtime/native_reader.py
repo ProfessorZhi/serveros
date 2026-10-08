@@ -5,14 +5,42 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import sys
 from pathlib import Path
+
+#: The name `runtime/bounded_invocation.py` carries everywhere else in the tree:
+#: `runtime/cli.py:9691`, `runtime/wake.py:215`, `runtime/bounded_executor.py:22`
+#: and `mcp/continuation_mcp.py:124` all load it under this one.
+_BOUNDED_INVOCATION_NAME = "serveros_runtime_bounded_invocation"
+
+
+def _bounded_invocation():
+    """`runtime/bounded_invocation.py`, under the name the rest of the tree uses.
+
+    Loaded by path rather than imported because this file is itself loaded by
+    path (`intake/daily_reading.py`, `runtime/recipes.py`), and `import
+    runtime.bounded_invocation` here would give a second module object.
+
+    This site used to build the private name `serveros_reader_invocation` and
+    never register it, so **every** call to `invoke_once` executed the whole file
+    again. No written reason accompanied that, and none applies: nothing in
+    `bounded_invocation.py` holds module-level state, so the fresh copy bought
+    nothing and cost one execution per invocation. Unlike
+    `runtime/report_delivery.py:189`, which says at length why its copy is
+    deliberately fresh and unregistered, this one is the ordinary guarded shape
+    and is now spelled that way.
+    """
+    if _BOUNDED_INVOCATION_NAME not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            _BOUNDED_INVOCATION_NAME, Path(__file__).with_name("bounded_invocation.py"))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_BOUNDED_INVOCATION_NAME] = module
+        spec.loader.exec_module(module)
+    return sys.modules[_BOUNDED_INVOCATION_NAME]
 
 
 def invoke_once(**kwargs):
-    spec = importlib.util.spec_from_file_location("serveros_reader_invocation", Path(__file__).with_name("bounded_invocation.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.invoke_once(**kwargs)
+    return _bounded_invocation().invoke_once(**kwargs)
 
 TRANSPORT = "native-claude-reader"
 VERSION = "serveros/native-reader.v2"

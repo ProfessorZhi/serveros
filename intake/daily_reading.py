@@ -13,7 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(relative):
-    name = "serveros_daily_" + relative.replace("/", "_").replace(".py", "")
+    # The name is DERIVED from the path, and the prefix is load-bearing.
+    # `intake/understanding_delta.py` becomes `serveros_intake_understanding_delta`
+    # — the name `intake/understanding_brief.py`'s module body and
+    # `runtime/cli.py` already load that file under. The prefix used to be
+    # `serveros_daily_`, and that one infix was the whole disagreement: a
+    # daily-intake process executed `understanding_delta.py` twice, once from
+    # here and once from the brief's own `_sibling("understanding_delta")`, and
+    # two executions of one file are two module objects with two `Refused`
+    # classes of one spelling. The brief translates its copy's refusals into its
+    # own (`understanding_brief.py:381-382`), which is why this was survivable
+    # rather than merely wrong; with one name there is one copy and no
+    # translation to rely on.
+    name = "serveros_" + relative.replace("/", "_").replace(".py", "")
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(name, ROOT / relative)
         module = importlib.util.module_from_spec(spec)

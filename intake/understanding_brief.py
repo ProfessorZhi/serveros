@@ -120,13 +120,22 @@ def _sibling(name: str):
     the same file gets the SAME module: two copies of `understanding_semantic`
     would be two `Refused` classes, and a `except Refused` written against one
     would not catch the other's refusal.
+
+    The guard has to read the SAME key the write takes. It used to test `name`
+    and register `f"serveros_intake_{name}"`, so the test could never be true for
+    the key being written and every call displaced whatever held it — the
+    lookup a caller had already done, undone by this one. It was invisible to
+    `tests/loader_graph.py`, which reads guard *shapes* and never compared the
+    guard's key with the write's; that scan now compares them, and this is the
+    one site in the tree it was hiding.
     """
-    if name in sys.modules:
-        return sys.modules[name]
+    registered = f"serveros_intake_{name}"
+    if registered in sys.modules:
+        return sys.modules[registered]
     path = _HERE / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"serveros_intake_{name}", path)
+    spec = importlib.util.spec_from_file_location(registered, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[f"serveros_intake_{name}"] = module
+    sys.modules[registered] = module
     spec.loader.exec_module(module)
     return module
 
