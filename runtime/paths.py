@@ -809,6 +809,19 @@ class Paths:
         self.unconfigured = tuple(sorted(
             name for name, source in self.provenance.items()
             if source == UNBOUND))
+        # What the AUTHORITY binds by name, kept BESIDE the roots rather than
+        # folded into them, because the two answer different questions. A root
+        # is a place this module can BUILD a path from; a binding is a place the
+        # authority NAMED, which may be somewhere no derivation could reach.
+        # `scratch` on this node is exactly that: `/data/scratch/vince` is on a
+        # different filesystem from HOME, so it is not `{HOME}/scratch` and no
+        # amount of resolving would have found it. A consumer that needs it can
+        # only be told, and until this table existed it could only be told by a
+        # literal written into the consumer. An injected world (`roots=`) has no
+        # authority to read, so it binds nothing -- which is the honest answer
+        # rather than the machine's answer leaking into a test.
+        self.bindings = {} if roots is not None else _profile_roles(
+            fleet_dir, node_file)
 
     @property
     def bound(self) -> bool:
@@ -837,6 +850,34 @@ class Paths:
                 f"unresolved path must not fall back to the working directory."
             )
         return Path(self.roots[name])
+
+    def binding(self, name: str) -> Path:
+        """A place the AUTHORITY binds by that name: read, never derived.
+
+        WHY THIS IS NOT `root()`. The root vocabulary is closed and small, and a
+        name outside it is not a smaller root -- it may be somewhere the roots
+        cannot reach at all. `root()` refuses such a name, and a consumer that
+        needed one had two ways out, both wrong: fold the value into the root
+        table (which widens a closed vocabulary to hold a path no derivation
+        produces) or write the value down in the consumer (which is what
+        `SCRATCH_SURFACES` did, with a `provenance` string standing in for a
+        read). This is the third way, and it is the only one that keeps the
+        value where the authority put it.
+
+        A name the authority does not bind is REFUSED rather than derived. That
+        is the whole point: a derived answer here would be a path that looks
+        right on a machine that never declared it, and a guess that looks right
+        is the failure this module exists to prevent -- not a missing value, but
+        a plausible one.
+        """
+        if name not in self.bindings:
+            raise PathRefused(
+                f"{name!r} is not a name this node's authority binds. Bound: "
+                f"{sorted(self.bindings)}. A binding is read or it is absent; "
+                f"it is not derived, because a derived answer here would be a "
+                f"path that looks right on a machine that never declared it."
+            )
+        return Path(self.bindings[name])
 
     def role(self, name: str) -> dict:
         """A semantic role resolves to wherever its artifact currently is.

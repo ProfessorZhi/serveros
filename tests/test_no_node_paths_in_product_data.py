@@ -41,6 +41,15 @@ silence. A file that stops offending fails this test until its entry is removed;
 a file that starts fails it by name. That is the shape W6 settled on for the
 cross-copy gate, for the reason it settled on it there: an intersection nobody
 declares is a difference nobody can see.
+
+IT IS EMPTY NOW, AND THAT IS THE READING RATHER THAN THE ABSENCE OF ONE. The one
+entry it carried was `runtime/workspace.py`, whose `SCRATCH_SURFACES` held
+`/data/scratch/vince` with a `provenance` string naming where the value came
+from -- a CLAIM about the contract standing in for a read of it. The entry said
+it would go away "when the root does"; what it actually took was an accessor:
+`runtime/paths.py` now serves a name the AUTHORITY binds even when it is in
+neither the root vocabulary nor the semantic roles, and the scratch area is read
+through it. Emptying this table is the consumer's result, not a tidier table.
 """
 import ast
 import pathlib
@@ -60,20 +69,10 @@ SKIP_DIRS = frozenset({"__pycache__", ".git", ".venv", "node_modules"})
 
 #: `path -> (how many, why it is still there)`. Empty is the goal; an entry is a
 #: record that somebody looked and decided, not a place to put a file until the
-#: scanner is quiet.
-KNOWN = {
-    "runtime/workspace.py": (
-        1,
-        "`SCRATCH_SURFACES` names the host's scratch area, and there is no "
-        "declared root to derive it from: `runtime/paths.py` refuses `scratch` "
-        "(`PathRefused`: not a declared root), and the document that binds it is "
-        "the host profile's `node.roots.scratch_root`, which is read by "
-        "`context/resolver.py` -- another layer. The row carries a `provenance` "
-        "naming where its value comes from; that string is a CLAIM. This entry "
-        "is the record that it has not been made a READ, and it goes away when "
-        "the root does.",
-    ),
-}
+#: scanner is quiet. It is empty as of 2026-10-09, and the entry it held is
+#: described in the module docstring rather than deleted quietly: the file that
+#: was in it stopped offending because the value it carried became a read.
+KNOWN: dict[str, tuple[int, str]] = {}
 
 
 class _BareStrings(ast.NodeVisitor):
