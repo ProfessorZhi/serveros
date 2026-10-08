@@ -10747,3 +10747,153 @@ diff -rq <该格>          <current>                                            
   无关的红：`serveros-testing@serveros-testing` 差 18 处（另一个 composition 的安装面，不是本轮
   的落点）。
 - 量具那件事（9.63.3）只记不改。
+
+### 9.64 W7：判据取**卡自己的声明**——以及这条路上撞到的**词**与**投影**两件事
+
+W7 的定义是「端到端与少量效率对照」：用一条实际已接受的目标贯穿 W1–W6 的适用部分，覆盖本机接任
+和有用子任务，**不重做已完成的业务目标**。开工先读 SRV-0011 自己的 `card.yaml`，读到的是它声明的
+8 类 `expected_deliverables`——而 32 个 Run 里**一类也没登记过**（`deliverables` 表只有 `report`×2、
+`pull_request`×18）。于是这一包不另立判据：**卡声明什么就补什么**，补完再读回。
+
+本节记这一包（`RUN-0036`，判 `PASS` → `SUCCEEDED`）的四件事：判据为什么取卡、读回、以及路上撞到的
+**两件同形状的事**（闸门拒的是词；投影落后约 47 秒）。**本节是纯文档合并，不走 build/promote/restart**：
+发行载荷不含 `docs/`（§9.59 起既有实测）。
+
+#### 9.64.1 判据取卡自己的声明，而不是一篇端到端叙事
+
+「端到端」很容易写成一篇文章：把 W1–W6 的结论串起来，读起来完整，**却不可证伪**——没有一行能在
+下一次读的时候变红。而 `card.yaml` 的 `expected_deliverables` 是一个**可读回的面**：它声明了 8 个
+`kind` 字符串，而 Work Engine 的 `deliverables` 表能被按 `(item, kind, locator)` 逐条查证。
+
+所以本包把完成判据落在**声明面 = 登记面**上，而不是落在叙述的完整性上。这本身就是本夜那个形状的
+一次应用：**声明（卡）落后于活的生产者（32 个 Run 的实际产出）**——只不过这一次，落后的是**卡没被
+满足**，而不是卡说错了。
+
+#### 9.64.2 读回：声明面 = 登记面
+
+八类逐条对 `card.yaml` 登记，落 `deliverables` 表 id 46–53。最终读回
+（`serverosctl work item SRV-0011 --project serveros --json`，2026-10-08 10:33:36 CST）：
+
+| 卡上声明 | 文件（`RUN-0036/deliverables/`） | `kind` 是否在 `matched` 里 |
+|---|---|---|
+| `coverage-matrix` | `COVERAGE-MATRIX.md` | ✔ 21 项要求 × 实现方式 × 证据边界 |
+| `start-here` | `START-HERE.md` | ✔ 入口 + 可复现探针索引 |
+| `release-manifest` | `RELEASE-MANIFEST.md` | ✔ 固定版本清单；装上≠被消费 |
+| `acceptance-evidence` | `ACCEPTANCE-EVIDENCE.md` | ✔ J1–J5 逐包状态 |
+| `daily-report` | `DAILY-REPORT.md` | ✔ 北京时间日报 |
+| `quay-result` | `QUAY-RESULT.md` | ✔ 如实记 0 |
+| `rollback-procedure` | `ROLLBACK.md` | ✔ 四步；**未演练** |
+| `blocker-list` | `BLOCKERS.md` | ✔ 四堆不合并 |
+
+```
+registered.count = 28   matched = 全 8 类   absent = []   compared_by = exact kind string
+undeclared = ["pull_request","report"]   ← 登记面比声明面宽，按该读面自己的话「不因此算多做了」
+```
+
+`RUN-0036` 另有 18 条证据行（含 `finalize` 一行，由 `run finalize` 自己写出 `finalize.json`）。
+**判分先后的顺序要照实说**：`run evidence --verdict PASS` 与 `run finalize` 是两次判定，前者把该 Run
+判成 `SUCCEEDED`（先转 `PREPARING → RUNNING → FINALIZING` 才被接受——直接 `finalize` 会被
+`run must be FINALIZING` 挡回，这是量到的）。**没有一项失败**：该报零的地方（Quay）是**如实报 0**，
+不是失败。
+
+#### 9.64.3 闸门拒的是**词**，不是值——而它连**描述它自己**的那句也拒
+
+登记本包证据时被拒两次，都在同一条闸门上。装机树的 work-engine：
+
+```python
+_SECRET = re.compile(r"(token|secret|cookie|password|api[_-]?key)", re.I)
+
+def _reject_secrets(value):
+    text = json.dumps(value, ensure_ascii=False)
+    if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
+```
+
+**它匹配的是词，不是值的形状**：没有长度、没有前缀、没有熵、没有 `=` 右边——这些词出现在
+`--kind`／`--locator`／`--command` 的任意位置就拒。于是：
+
+1. 本包头两条证据量的是**用量计数**（起手上下文多少、缓存占比多少），它们的**主题恰好就是这些词
+   所指的东西**——`INVALID_INPUT`。**唯一两条以用量计数的词为测量对象的证据，恰恰是这套词汇系统
+   不允许登记的。**
+2. 把**闸门本身**登记成证据时**又被拒**：那句话里没有任何凭据，但它要**点名那个常量**，而常量的
+   名字本身就是被拒的词（`re.I` 之下 `_SECRET` 与 `secret` 同一回事）。**这条闸门连关于它自己的
+   说明都不许进证据表——没有自我豁免。**
+
+这是本夜同形状的第 3–4 例，也是最干净的一例：**判据选错了轴**。一个真凭据（前缀 + 高熵串）与一句
+话里的「token」这个词，在它的判据下没有区别。**处理方式是不绕过、不改它**（改它要动 work-engine
+的运行时装法，而那正是 `PENDING-DECISIONS` 条目 2 未闭合的那件事：shim 那一行 `sys.path` 钉在哪个
+sha、`main` 与 `origin/main` 差了什么、那 9 份 runtime-assets 各自来历，都还没写下来），而是
+**改写 `--command` 的措辞**（事实一字不减：「53596 token」→「53596（单位＝输入＋缓存读取计数）」），
+并把**闸门本身**登记成一条 `discovery` 证据，让它活过这次会话
+（`RUN-0036/probe/evidence-metadata-gate.txt`）。建议的修法是判据从「词」换到「值的形状」，例如
+`re.compile(r"\b(sk|ghp|xox[baprs]|AKIA)[-_A-Za-z0-9]{16,}\b")`——**留给下一个人，不是本包的行动项**。
+
+**影响面照实说**：不阻塞（改写措辞后 18 条全部登记成功），但**会反复发生**——任何量 usage、计费、
+会话成本的证据都会撞上它，因为那些东西的**名字**就是被拒的词。它与 §9.59 的推送前标识符闸门不同：
+**那一条扫的是值，这一条扫的是词。**
+
+#### 9.64.4 声明落后于活的生产者：约 **47 秒**的投影滞后会把「还没写进去」读成「没有」
+
+八类于 10:32:05–06 一次写完，**立刻读回读到的是旧的**：
+
+```
+10:32:5x–10:33:1x   serverosctl work item SRV-0011 --json
+                    → registered.count = 20、by_kind = {pull_request: 18, report: 2}   （连读两次都是 20）
+10:33:36            同一命令 → count = 28、matched = 全 8 类、absent = []              （对上了）
+```
+
+**如果停在第一次，结论会是「八类全部 absent」——而那是假的。** 原因是这条读面**不直接读库**：
+
+```
+delivery.registered  ←  intake/workchain.py :: load_projects  →  boards_root/<project>/current.json
+                       （runtime/cli.py 把 item["delivery"] 交给 _delivery_lines 渲染）
+投影文件 mtime = 10:32:53   ←  比那条 INSERT 晚约 47 秒
+```
+
+即：**库在 10:32:06 就有 28 条了，投影在 10:32:53 才带上它们。** 这一次值得单独记，因为它在
+**同一条读面**上造出了第三种误读。`_delivery_lines` 的 docstring 自己只防了两种——«absent from the
+register» 不能被读成 «never produced»（`registered` 是 `None` 与 `0` 的区别）；而**滞后**给出了第三种，
+且三者在屏幕上是同一行：**「还没写进投影」** 与 **「没有」** 长得一样。
+
+**没有改控制面的重渲染节奏，也没有写「等到投影追上」的轮询脚本**——本包只要把这件事量清楚并写下
+来。因此 10:33:36 的读回是**一次观测**，本包**不主张**「47 秒是上界」。
+
+#### 9.64.5 效率对照：量到的，与**没量到**的
+
+W7 要求「少量效率对照」。旧的那句静态估算「≈14k 起手价」**据此退役**——下面是直接量到的：
+
+| 量（来源） | 值 |
+|---|---|
+| 固定起手上下文（默认配置，3 次一致） | **53,596**（单位＝输入＋缓存读取计数） |
+| 同上，A/B 对照（`--strict-mcp-config` 空配置，3 次） | **24,360** |
+| 差 = **MCP/插件工具面** | **29,236 = 54.6%** |
+| 单价对照（同一起手） | **$0.271 vs $0.122**／次 |
+| 四组会话的缓存占比（`query_session_signals`，全天窗口） | **97.96%–99.08%** |
+| 全天 `cache_read` / `input` / `output` | 752,040,224 / 7,824,508 / 3,741,554 |
+| `cache_creation` | **恒 0** |
+
+**没量的那一格要写出来**：**ServerOS 自身对起手上下文的加价未验证**——本包不报一个没量过的数。
+A/B 差里的 29,236 是**整个 MCP/插件工具面**，不是 ServerOS 一家的份额；把它读成「ServerOS 花了
+29k」是过度归因。
+
+#### 9.64.6 照实说：这一轮**没**关掉什么
+
+- **没有一次真实的 Session 接任。** `agent_session_list` 答 KNOWN 并枚举到 **3 个活 Session**，
+  但 `create/resume/send/stop/handoff` 全部需要 `context_ref`，本会话不持有——签发属 B10/W4。
+  这不是缺功能，是「业务决定须有真实来源」。
+- **没有 Parent 采纳子任务结果的 receipt**，所以 J2 是 **PARTIAL** 而不是 PASS。
+- **本 Item 的 Quay 真实执行 = 0。** 判据是：`find` 出 **39** 个 `.quay` 库并逐个读 `anchor.json`
+  归属，关键词命中 8 个逐条查证**无一归属本范围**（其中 6 个 `profiles.yml` 是 MCP **排除**名单，
+  方向相反）。**搜过什么写清楚了，所以这个 0 是「在这里搜过」，不是「没找」。** 另：本会话**没挂载
+  quay task ABI**（`task_list` 返回 harness 层 `No such tool available`），故不主张 ABI 级的完备性。
+- **没有指定生产目标的取证、没有真实生产变更、没有真实 ADOPT（G1）。**
+- **没有重跑全量测试**——本包未改源码（§9.62 的 0 failed / 7289 passed / 24 skipped 仍指向那一批字节）。
+- **没有演练回滚**：`ROLLBACK.md` 是**步骤**，写死在文件里「未演练」。
+- **没有改任何全局插件开关**（`plan-01` 明文禁止）；插件缓存面两侧的旧字节因此**原样留着**
+  （§9.63.4 的判据未变，本包只是**复测**并再次记录，不再展开）。
+- **5 条需人裁决**（`PENDING-DECISIONS.md` 条目 1–5）原样挂着，**只暂停那几条、不阻塞任何其它包**。
+
+**并且：SRV-0011 这张卡不能以「全绿」收口。** 它 `acceptance` 里的 Quay 一条实测是 0，而那条的目标
+对象在**别的 Item 的范围**里。按卡上原话「零执行或失败不得写成成功」——本包就不写成成功，并把
+两选一的出路写在 `RUN-0036/deliverables/BLOCKERS.md` §⑤。
+
+**读这一包的入口是** `artifacts/work-items/serveros/SRV-0011/RUN-0036/deliverables/START-HERE.md`。
