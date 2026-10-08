@@ -244,3 +244,155 @@ def missing_from(root: Path) -> list[Path]:
     """
     return sorted(path for path in production_closure()
                   if not (root / path).is_file())
+
+
+# ---------------------------------------------------------------------------
+# Who consults the cache before overwriting it
+# ---------------------------------------------------------------------------
+#
+# `spec_from_file_location(name, path)` takes a NAME as well as a path, and
+# `sys.modules[name] = module` is what makes that name mean anything afterwards.
+# Because every module in this tree is loaded under a synthetic name, that
+# namespace is shared: two loaders that register one name do not each get a
+# module, the second one gets the name and the first one's readers keep the
+# object they already hold.
+#
+# That is not a cosmetic duplication. Each copy carries its own classes, so a
+# `Refused` raised by one is not the `Refused` an `except` in the other was
+# written against. Measured on this tree at 15ee942, with
+# `tests/test_workchain.py` collected before `tests/test_source_policy.py`:
+#
+#     load#1 serveros_intake_workchain by=test_workchain.py:54      Refused=597570448
+#     load#2 serveros_intake_workchain by=test_source_policy.py:72  Refused=599941616
+#     IDENTITY a is b -> False
+#
+# and the nine-module batch that reads those sentences went from 1 failed to 1
+# passed once each registrant consulted the cache first.
+#
+# THE FORM THIS SCANNER ACCEPTS
+# -----------------------------
+# A scope that writes `sys.modules[...]` must read the cache at an earlier line
+# in the same scope: `K in sys.modules`, `sys.modules.get(K)` or
+# `sys.modules[K]` on the right-hand side. `if name in sys.modules: return
+# sys.modules[name]` and `module = sys.modules.get(name); if module is None:`
+# are both this repository's own guarded shape.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# Ordering is by line within one scope, and the scope is the innermost enclosing
+# function. A guard living in the caller of the writer is not modelled, and
+# neither is an aliased `sys` (`import sys as _s`). Both are absent from this
+# tree; a gate that says "every registrant consults first" would be a stronger
+# claim than this scan can make, so it does not make it.
+#
+# The consult also does not have to name the key being written: any earlier read
+# of `sys.modules` in the scope satisfies the scan, because the property being
+# enforced is structural — a registration is preceded by a look at the cache —
+# rather than "the guard is about this key". A consult in a DIFFERENT scope,
+# which is what a helper's own `if name in sys.modules` is to a registration
+# written beside it, does not count; that distinction is the whole of the
+# §A defect this was written for, where a guarded helper and an unguarded one
+# sat in the same file.
+
+
+def _is_sys_modules(node: ast.AST) -> bool:
+    """`sys.modules`, as an expression."""
+    return (isinstance(node, ast.Attribute) and node.attr == "modules"
+            and isinstance(node.value, ast.Name) and node.value.id == "sys")
+
+
+def _is_consult(node: ast.AST) -> bool:
+    """A read of `sys.modules`: `sys.modules[K]`, `sys.modules.get(K)`, `K in sys.modules`."""
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and _is_sys_modules(node.func.value)):
+        return True
+    if (isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load)
+            and _is_sys_modules(node.value)):
+        return True
+    if isinstance(node, ast.Compare):
+        return any(isinstance(op, (ast.In, ast.NotIn)) and _is_sys_modules(right)
+                   for op, right in zip(node.ops, node.comparators))
+    return False
+
+
+def _registration_writes(tree: ast.AST) -> list[ast.Assign]:
+    """Every `sys.modules[...] = ...` in `tree`."""
+    writes: list[ast.Assign] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (isinstance(target, ast.Subscript) and isinstance(target.ctx, ast.Store)
+                and _is_sys_modules(target.value)):
+            writes.append(node)
+    return writes
+
+
+def _enclosing_function(node: ast.AST, parents: dict[int, ast.AST]):
+    """The innermost function containing `node`, or `None` at module level."""
+    current = parents.get(id(node))
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current
+        current = parents.get(id(current))
+    return None
+
+
+def unguarded_in_source(source: str, label: str) -> list[str]:
+    """Registrations in `source` with no earlier read of the cache to check against.
+
+    "Earlier" and "same scope" are both literal: the consult must be at a lower
+    line number and in the same enclosing function — or, at module level, in the
+    module's own top level. A guard that lives in some other function of the
+    same file, which is what a helper's own `if name in sys.modules` is, does
+    not count for a registration made beside it.
+
+    Takes source rather than a path so the control below can hand it a form this
+    tree no longer contains; `label` is only what a finding is printed as.
+    """
+    tree = ast.parse(source)
+    parents = {id(child): node
+               for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    consults = [(node.lineno, _enclosing_function(node, parents))
+                for node in ast.walk(tree) if _is_consult(node)]
+    found: list[str] = []
+    for write in _registration_writes(tree):
+        own = _enclosing_function(write, parents)
+        if any(line < write.lineno and scope is own for line, scope in consults):
+            continue
+        name = getattr(own, "name", "<module>")
+        found.append(f"{label}:{write.lineno} in {name}")
+    return found
+
+
+def unguarded_registrations(path: Path) -> list[str]:
+    """`unguarded_in_source` for one file of the tree."""
+    return unguarded_in_source(path.read_text(encoding="utf-8"),
+                               str(path.relative_to(REPO)))
+
+
+def registration_sites(root: Path = REPO) -> list[str]:
+    """EVERY registration in the tree, guarded or not.
+
+    The floor under the gate: "no unguarded registration" is worth nothing if
+    the scan has stopped seeing registrations at all, and the two are
+    indistinguishable from the number zero.
+    """
+    found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        found.extend(f"{path.relative_to(REPO)}:{write.lineno}"
+                     for write in _registration_writes(tree))
+    return found
+
+
+def unguarded_registrants(root: Path = REPO) -> list[str]:
+    """Every unguarded registration in the tree, sorted.
+
+    Sorted so a red gate prints the same list twice, and derived from the tree
+    rather than from a list of files somebody remembered to update.
+    """
+    found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        found.extend(unguarded_registrations(path))
+    return found

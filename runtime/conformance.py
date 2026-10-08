@@ -696,11 +696,14 @@ def collect(paths, *, repo_root: Path, home: str | None = None) -> dict:
     try:
         import importlib.util as _ilu
 
-        _spec = _ilu.spec_from_file_location(
-            "serveros_runtime_state_root", Path(__file__).resolve().parent / "state_root.py")
-        _state_root = _ilu.module_from_spec(_spec)
-        sys.modules["serveros_runtime_state_root"] = _state_root
-        _spec.loader.exec_module(_state_root)
+        _state_root = sys.modules.get("serveros_runtime_state_root")
+        if _state_root is None:
+            _spec = _ilu.spec_from_file_location(
+                "serveros_runtime_state_root",
+                Path(__file__).resolve().parent / "state_root.py")
+            _state_root = _ilu.module_from_spec(_spec)
+            sys.modules["serveros_runtime_state_root"] = _state_root
+            _spec.loader.exec_module(_state_root)
         rows.extend(_state_root.authority_conflicts(root=paths.root("state")))
     except Exception as exc:  # noqa: BLE001 - an unreadable contract is a finding
         # NOT swallowed. If the authority check cannot run, that is the fact

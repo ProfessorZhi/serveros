@@ -104,11 +104,18 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "serveros_memory_record", Path(__file__).resolve().parent / "record.py")
-    record_mod = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_memory_record"] = record_mod
-    spec.loader.exec_module(record_mod)
+
+    #: `record.py` defines `RecordRefused`. Loaded under the name the rest of
+    #: the repository uses for it, so a caller that already loaded the file gets
+    #: the same module; two copies would be two `RecordRefused` classes, and an
+    #: `except RecordRefused` written against one would not catch the other's.
+    record_mod = sys.modules.get("serveros_memory_record")
+    if record_mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "serveros_memory_record", Path(__file__).resolve().parent / "record.py")
+        record_mod = importlib.util.module_from_spec(spec)
+        sys.modules["serveros_memory_record"] = record_mod
+        spec.loader.exec_module(record_mod)
 
     records = record_mod.load(args.ledger) if args.ledger else []
     hits = json.loads(args.hits.read_text(encoding="utf-8"))
