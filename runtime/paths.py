@@ -183,6 +183,31 @@ STATE_SERVEROS_RUNTIME = (
     # can be deleted and re-derived. The day store cannot: losing it re-creates
     # the day's card, which is the one thing V28 forbids a second of.
     "cards",
+    # The wake subsystem's receipts: one receipt set per wake attempt, written
+    # by `runtime/wake.py::receipts_root` under the store's own root.
+    #
+    # Declared 2026-10-08, and the ruling is the `cards` entry directly above
+    # rather than a new one: the documents were where they belong and only this
+    # list was behind, so the fix widens the vocabulary instead of moving a
+    # directory. `<state>/runtime/wake/receipts/` had been written since the
+    # wake half shipped and no list named it, so `path conformance` reported it
+    # as an UNDECLARED_ENTRY WARN when that was measured — and could not have
+    # reported anything else while this tuple stayed silent about it.
+    #
+    # What made that finding unactionable is why the disagreement is worth
+    # writing down: `runtime/wake.py::receipts_root` said, in its own docstring,
+    # that it derived the path "rather than add[ing] it to `runtime/paths.py`'s
+    # closed set of state names, which is the same move
+    # `runtime/card_delivery.py` makes for its ledger". That citation is
+    # backwards and it is checkable: `card_delivery.py::ledger_path` returns
+    # `<state>/runtime/cards/delivery.json`, and `cards` IS in this tuple. The
+    # precedent cited for NOT declaring is the precedent that got declared. So
+    # the answer to the warn sat in the module that disagreed with the surface
+    # reporting it, which is how a daily finding survives being looked at.
+    #
+    # `wake.py`'s docstring carries the other half of this: it no longer cites
+    # `card_delivery.py`, and it says what a name in this set is FOR.
+    "wake",
 )
 
 # Artifacts has exactly two canonical namespaces for NEW writes (§34).

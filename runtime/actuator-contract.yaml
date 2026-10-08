@@ -489,6 +489,24 @@ actuators:
       needed and one nobody ever checked are the same two lines of diff, and
       only one of them is fine. The row kept matching through its other sites
       for as long as this was true, which is exactly how it went unnoticed.
+
+      `context/trust_binding.py#_write` is the newest and the last to be declared here, and it is the
+      one this row was extended for on 2026-10-08. The function arrived with `d029d1b` (2026-10-07)
+      and the declaration did not arrive with it: three mutations of one twelve-line function were
+      live for a day while this table still matched through its other sites, which is the same
+      sentence the paragraph above just finished saying. It is the `mkstemp` shape again — the
+      temporary is named by the library in the destination's own directory and this unlink runs only
+      on the arm where the replace did not happen — so the bound is by construction rather than by
+      a naming rule.
+
+      What makes it worth its own paragraph rather than being one more file in the list above is the
+      reader. `bind()` writes the binding and then calls `verdict(target)` on the file it has just
+      written, and refuses if that read does not verify; `disable()` writes and does the same. So a
+      torn binding is not a lost write that the next attempt retries — it is read back by the writer
+      inside the same call, by the verifier's own reader, and the answer it gives is
+      `DELEGATION_PROVIDER_UNBOUND`, which reads as "nothing is bound here" rather than "the write
+      was interrupted". That is the one answer this project never lets a failure manufacture, and it
+      is why the temporary exists at all.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -504,6 +522,12 @@ actuators:
       - {file: runtime/report_delivery.py, symbols: [_write], verb: ".unlink()"}
       - {file: intake/daily_reading.py, symbols: [_write]}
       - {file: intake/alignment_delivery.py, symbols: [_atomic_text]}
+      # The trust binding is the newest participant in this idiom and it was
+      # the only one still undeclared, which is the shape this whole file is
+      # about: the writing half shipped in the round that added `work trust`,
+      # and the declaration waited for a run of the guard that included the
+      # file. See the paragraph in `why`.
+      - {file: context/trust_binding.py, symbols: [_write], verb: ".unlink()"}
 
   - id: atomic-write-commit
     kind: fs_mutation
@@ -595,6 +619,21 @@ actuators:
       `daily_reading`'s under a Run directory it has already required to be
       absolute and real, `alignment_delivery`'s under `out_dir`, refused with
       that sentence in `Refused` — so neither path can arrive from the cwd.
+
+      `context/trust_binding.py#_write` is the ninth and the second late one:
+      the same twelve lines that brought the unlink above into this table
+      brought this replace, and they arrived here for the same reason. Two
+      things make it the narrowest site in this list. The destination is not a
+      path any caller picks: `trust_path()` returns the verifier's own constant
+      (`context/actor.py`'s `DELEGATION_TRUST`), so the writer and the reader
+      cannot disagree about where the binding is — which is a different kind of
+      bound from the "refused unless absolute" rule the two above are held by,
+      and a stronger one, because there is no value a caller could pass that
+      this function would accept as a second location. And the reader is the
+      writer: `bind()` calls `verdict(target)` on the file one statement after
+      this replace lands, so the instant the rename becomes visible is the
+      instant the binding must verify, and a torn file would be read back as an
+      ABSENT binding rather than as an interrupted write.
     sites:
       - {file: relations/project.py, symbols: [write]}
       - {file: runtime/ability_projection.py, symbols: [write_atomic]}
@@ -612,6 +651,10 @@ actuators:
       - {file: runtime/report_delivery.py, symbols: [_write], verb: ".replace()"}
       - {file: intake/daily_reading.py, symbols: [_write]}
       - {file: intake/alignment_delivery.py, symbols: [_atomic_text]}
+      # The trust binding's commit half, and the only site in this list whose
+      # destination is not a caller's path at all — it is `trust_path()`, the
+      # verifier's own constant. See the paragraph in `why`.
+      - {file: context/trust_binding.py, symbols: [_write]}
       # §5 / Layer C: `memory/openviking/backup.py#backup` writes the archive to
       # `<out>.part` and then replaces `<out>` with it, so a reader never sees a
       # half-written archive. The destination is named by the CALLER and the
@@ -1418,3 +1461,45 @@ actuators:
       timer, no MCP verb, no CLI subcommand, no scheduler, and one test.
     sites:
       - {file: runtime/card_shots.py, symbols: [Chrome.shoot]}
+
+  - id: trust-document-mode-is-chosen-not-inherited
+    kind: fs_mutation
+    verb: os.chmod
+    why: >-
+      The third `chmod` in this table, and the only one whose REASON is the
+      direction it widens in — which is why it is a third entry rather than a
+      fourth site on either of the other two. `daemon-socket-permissions` narrows
+      the socket the daemon just bound; `backup-restore-reapplies-the-recorded-mode`
+      re-applies a mode the archive itself carries, so neither the path nor the
+      mode is that function's choice. Here both are: `mkstemp` hands back 0600 —
+      that is the library's creation mode, and a umask can only clear bits from
+      it, never add one — so nothing in this host's configuration is what makes
+      the result 0644, and this line is the only reason it is not 0600.
+      That is the right mode and the module says why in its own docstring: what
+      the document holds is base64-encoded PUBLIC keys, an audience string and a
+      custodian, so there is no secret in it to protect — and the refusal is not
+      only a docstring sentence. `_public_key_bytes`, the only path any key
+      reaches this document by, raises on PEM text (`PRIVATE`/`BEGIN` in the
+      value) and on any value that decodes to something other than 32 bytes,
+      naming the 64-byte case as a libsodium secret key. So a private half cannot
+      be in this file through this writer: it is refused by name, one function
+      before the write. The direction is the fact worth stating:
+      a gate that reported only the chmods that frighten it would stop being a
+      gate, and a gate that could not tell a widen from a narrow would report
+      this one and the socket one as the same act.
+      The bound is the same one the unlink and the replace have, and one thing
+      more. The path is `trust_path()`, the verifier's own constant, so no caller
+      supplies it; the chmod runs on the TEMPORARY, one statement before the
+      replace, so the destination never exists in the 0600 state and there is no
+      instant at which a reader could open it at a mode nobody chose. What this
+      entry does not claim is that the directory is equally open: `_write` creates
+      an absent parent at 0700, so on a node where the parent did not already
+      exist the file is reachable only by this user whatever its own mode says.
+      The mode states what the file is; the directory states who can reach it,
+      and those are two different questions rather than a contradiction.
+      It arrived undeclared with `d029d1b` (2026-10-07) and was declared on
+      2026-10-08 with the other two mutations of the same function — the same
+      one-day lag the two entries above record, in a file whose whole subject is
+      that a declaration layer running behind the code is the pathology.
+    sites:
+      - {file: context/trust_binding.py, symbols: [_write]}

@@ -321,6 +321,51 @@ namespaces:
           records what a TRANSPORT did with a payload, and a DELIVERED row is
           evidence that the service accepted a message, not that a person read
           it.
+      wake:
+        class: authority
+        holds: >-
+          one receipt set per wake attempt this node made — the action key it
+          ran under, whether the attempt started and how it ended, the bounded
+          capability envelope the Parent was handed, and the spawned process's
+          own stdin, stdout and stderr
+        producer: runtime/wake.py
+        required: false
+        absent_means: NO_WAKES_RECORDED
+        # Declared 2026-10-08, and it is the same CONTRACT_GAP §38 names and the
+        # `cards` entry directly above was declared under: the vocabulary was
+        # behind reality, and the fix is a ruling that widens it rather than a
+        # move. `<state>/runtime/wake/receipts/` had been written since the wake
+        # half shipped and no declaration named it, so `path conformance`
+        # reported `runtime/wake` as an UNDECLARED_ENTRY WARN when it was
+        # measured — and could not have reported anything else while the list
+        # said nothing about it. What made
+        # that finding unactionable was not the surface but the producer:
+        # `runtime/wake.py`'s `receipts_root` said in its own docstring that the
+        # derived name was deliberately NOT added to `runtime/paths.py`'s closed
+        # set, and cited `runtime/card_delivery.py` as the precedent for leaving
+        # it out. The citation was backwards — `card_delivery.py::ledger_path`
+        # returns `<state>/runtime/cards/delivery.json` and `cards` IS in that
+        # closed set. The answer to the warning was written down in the module
+        # that disagreed with it, which is why a daily warn survived being
+        # looked at.
+        #
+        # This is not disposable bookkeeping, which is why declaring it beats
+        # relocating it: `plan()` derives `attempt = attempts["terminal"] + 1`
+        # from `attempts_recorded`, which reads the count back out of these
+        # receipt files, and refuses with ATTEMPTS_EXHAUSTED past
+        # `budget.max_attempts`. A lost receipt directory is therefore an
+        # attempt count that resets to zero and an Item woken more times than a
+        # grant allowed. A receipt left reading STARTED is the other load it
+        # carries: `invoke_once` writes that status before it spawns, so it
+        # means either a wake running now or one whose writer did not survive,
+        # and the module's own rule for the second is reconciliation rather
+        # than blind replay — it is the one thing that stops a wake outright.
+        not_a_claim: >
+          not evidence that the work was done. A terminal receipt records that
+          this node started a Parent under a key and how the process it started
+          exited, so it is a fact about the launcher rather than about the work.
+          The Parent's own report is not evidence either: what it produced is,
+          and that is read from the Item's artifacts and not from here.
   fleet:
     class: projection
     holds: fleet-level observed state as seen from this node

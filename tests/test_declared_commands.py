@@ -155,7 +155,50 @@ SCANNED = tuple(
     + sorted(p for p in REPO.glob("skills/**/*.py"))
 )
 
-_REF = re.compile(r"serverosctl\s+([a-z][a-z0-9-]*)(?:\s+([a-z][a-z0-9-]*))?")
+# The word after `serverosctl` must be followed by something that is not a word
+# character and not a slash, because a subcommand is a word and a path is not.
+#
+# This bound was added 2026-10-08, when the gate went red on main naming
+# `serverosctl runtime-assets — cited in docs/CC-EXECUTION-LEDGER.md`. The
+# ledger line is a three-column diagram comparing the node runtime against the
+# two plugin caches, and `serverosctl` there is the NAME of a binary in the
+# first column, next to the path its revision comes from. No reader is being
+# told to run it. The scanner read a noun as a program, and then reported a
+# defect in a document that has none — a fact about the reader printed as a
+# fact about the world, which is the shape this round keeps meeting.
+#
+# The discriminator is measured rather than argued, and three candidates were
+# measured before this one was chosen. Counts are per line over the whole
+# scanned corpus:
+#
+#   * a word immediately followed by `/` — 2 lines, both the same diagram (the
+#     one in the ledger and the one the ledger's own §9.62 quotes back). Taken:
+#     a real subcommand is never immediately followed by a path separator, so
+#     this narrows the least.
+#   * more than one whitespace between the program name and the word — also 2
+#     lines, the same diagram. Rejected even though it describes that diagram
+#     well, because a real citation that a formatter wrapped or padded would be
+#     dropped silently, and losing a real declaration is the bad direction.
+#   * the program name preceded by `X /` (a slash-separated list) — 30 lines.
+#     Rejected, and this is the one that would have done damage: most of those
+#     30 are PATH prefixes (`bin/serverosctl`), and one of them,
+#     `<scratch>/artifact/bin/serverosctl space resolve --request move.json`,
+#     is a real citation. That rule would have swallowed it.
+#
+# The negative lookahead excludes the word characters as well as the slash, and
+# it has to: `[a-z0-9-]*` backtracks, so `(?!/)` alone would match `runtime-assets/`
+# as the verb `runtime-asset` followed by an `s` that is not a slash — a bound
+# that silently holds only for verbs it was not tested against.
+#
+# Narrowing a scanner can hide a real declaration, so the control below asserts
+# both halves at once: the diagram column is not read as a command, and the
+# real citation on the line beside it still is.
+#
+# One consequence for whoever documents this: the ledger's own account of the
+# defect cannot put the two words side by side, because the gap between them is
+# the only thing standing between that sentence and the same false positive. It
+# says so where it says it.
+_REF = re.compile(r"serverosctl\s+([a-z][a-z0-9-]*)(?![a-z0-9/-])(?:\s+([a-z][a-z0-9-]*))?")
 
 # In a `.py` the subcommand is required. See `SCANNED` for the measured false
 # positive that made this a rule rather than an oversight.
@@ -323,6 +366,54 @@ class DeclaredCommandsExist(unittest.TestCase):
                           f"the scanner has gone blind to {name}")
             self.assertNotIn(parts, real,
                              f"{name} resolves after all; the control is stale")
+
+    def test_a_name_in_a_diagram_column_is_not_read_as_a_command(self):
+        """The false positive of 2026-10-08, kept as a regression guard, with
+        its positive control in the same fixture.
+
+        The gate went red naming `serverosctl runtime-assets — cited in
+        docs/CC-EXECUTION-LEDGER.md`. The line it read is a three-column diagram
+        comparing the node runtime against the two plugin caches, and the first
+        column names the BINARIES that surface is read through:
+
+            serverosd / serverosctl   runtime-assets/…/serveros-linux-work/current   AGREEMENT
+
+        `serverosctl` there is a noun. Nothing on that line tells a reader to
+        run anything, and the gate reported a defect in a document that has
+        none — its own reading of a diagram published as a fact about the
+        ledger, which is the shape this round keeps finding in the other
+        direction.
+
+        Both halves are asserted together, because the fix narrows a scanner
+        and a narrowed scanner can hide a real declaration. The fixture carries
+        the diagram column and, two lines below it, a citation that is real;
+        the first must not be recorded and the second must be.
+
+        The corpus measurement behind the narrowing, and the reason the
+        lookahead in `_REF` excludes more than the slash, are in the comment
+        above that pattern. They are not repeated here.
+        """
+        self.assertNotIn(("runtime-assets",), real_commands(),
+                         "the parser has grown a `runtime-assets` verb, so this "
+                         "fixture no longer isolates the defect")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "FABRICATED.md"
+            page.write_text(
+                "```text\n"
+                "serverosd / serverosctl   runtime-assets/…/current → j@7e78673   AGREEMENT\n"
+                "```\n"
+                "\n"
+                "Read back with `serverosctl path conformance --json`.\n",
+                encoding="utf-8")
+            found = declared_commands(paths=[page])
+
+        self.assertNotIn(("runtime-assets",), found,
+                         "the scanner read a binary's name in a diagram column "
+                         "as a command the reader is told to run")
+        self.assertIn(("path", "conformance"), found,
+                      "the narrowing went blind: it no longer sees a real "
+                      "citation standing two lines below the false one")
 
     def test_the_workbench_surface_is_inside_the_scan(self):
         """The structural half of the workbench control.
