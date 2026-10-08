@@ -11168,4 +11168,41 @@ tests/test_runtime_truth.py  merged == local  374b386c1564283c…  IDENTICAL
 PR **#116**，提交 `e8ffcae`，合并提交 **`4615b7a`**，2026-10-08 **11:24:32 CST**。
 本节写作时刻 `origin/main` 合并数 **24**（`#93–#116`）——**这是写作时刻的读数**（见 §9.65.10 的同一条教训）。
 本节自身的 Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0038/`
-（Run `SUCCEEDED`，7 条证据行），入口是 `RUN-0038/deliverables/PLUGIN-ROW-PIN-ATTRIBUTION.md`。
+（Run `SUCCEEDED`，8 条证据行），入口是 `RUN-0038/deliverables/PLUGIN-ROW-PIN-ATTRIBUTION.md`。
+
+#### 9.66.11 附记：§9.66.2 里那个「16 个文件」是**错的**，正确的数是 **14**——而且 14 恰好**逐条对上**
+
+**上面 §9.66.2 写的「多 16 个文件」是我核算前先写下的估计，不是量出来的。** 本节把它改在这里，
+不改上面那行（追加，不改写）。
+
+按 `pin` 逐条量（`git -C …/src/ability-management`）：
+
+| 技能载荷 | `da5f89b1b131` | `c3fa07205bdd` |
+|---|---|---|
+| `automated-testing` | **1** 个（只有 `SKILL.md`，79 行） | **14** 个（`SKILL.md` **252 行** + `profiles.yaml` + `references/*` 9 个 + `schemas/` + `scripts/` 2 个） |
+| `test-management` | **1** 个（`SKILL.md`，59 行） | **2** 个（+ `profiles.yaml`） |
+
+合计新增 **14** 个（15 这个数是 `skills/` 整个目录的净增，含别的技能的测试文件；**不是**这两个技能载荷的数）。
+
+**而真机那 14 条 `missing` 逐条等于这 14 个新增文件**——不是相关，是同一批：
+
+```
+missing skills/automated-testing/profiles.yaml
+missing skills/automated-testing/references/01-verification-plan.md … 08-report-projection.md   (8)
+missing skills/automated-testing/references/worked-example-00-monitoring-v2.md
+missing skills/automated-testing/schemas/testrun.schema.json
+missing skills/automated-testing/scripts/selfcheck_validate_testrun.py
+missing skills/automated-testing/scripts/validate_testrun.py
+missing skills/test-management/profiles.yaml
+```
+
+4 条 `content` 同样对上：两代之间被改写的那两份 `SKILL.md` + `ARTIFACT.json` + `README.md`。
+**所以那 18 条里没有一条是这份安装的缺陷** —— §9.66.2 的结论不变，只是算式从「约 16」变成**逐条对齐的 14**。
+
+**教训与 §9.65.10 同形**：一个**先写下、后核算**的数会留在文里；把它改在附记里，
+并且**这次给出核法**（`git diff --name-status <pinA> <pinB> -- skills/` 后逐条对齐真机差集），
+下一个人可以自己重算。
+
+**同时更正一处措辞**：§9.66.2 说「技能载荷多 16 个文件」；§9.66.8 与 `PENDING-DECISIONS.md` 条目 7
+引用的也是这个数，均已改正为 **14**。交付文件
+`RUN-0038/deliverables/PLUGIN-ROW-PIN-ATTRIBUTION.md` §2 已按 14 重写并附上核对表。
