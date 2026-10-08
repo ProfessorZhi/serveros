@@ -10411,6 +10411,17 @@ OBSERVE——同一条读数换了**类**，这正是 D01「默认入口清楚�
 不是目录收口；而那条读数**有一部分是对的**——那些文件确实不属于 ServerOS，报出来并非误报。
 按 plan 第 3 条第 4 款，这属于「需要人定」的一类，登记进 `PENDING-DECISIONS.md`，不在本包执行。
 
+**追加（2026-10-08 19:0x CST，RUN-0045 之后，不改写上面的判断）**：上面这段的**主语是那 51 条
+dotfile**，那是 (B)，**仍然是人这一格，一条没动**。但同一段里那句对入口文档的判词
+——「那里**没有**入口文档豁免，所以这不是「认了一名漏了孪生」，而是「这个根根本没这一类」」
+（条目 5 里写作「这个根根本没有「入口文档」这一类」）——**它有半句不成立**：这个根不是
+**没有**这一类，而是**这一类没有机会被声明进去**
+（`DATA_ROOT_TOP_LEVEL` 是只装目录的封闭元组），因此它只会一直报 `UNDECLARED_ENTRY`。
+按 `PENDING-DECISIONS` 条目 5 自己的推荐 (A)（「只豁免 `CLAUDE.md`/`AGENTS.md` 这两条，
+其余 dotfile 照报……**可以下一个包直接做**」），RUN-0045 做了 (A)：`DATA_ROOT` 那一格
+**恰好 53 → 51**，`.vscode-server` 那一条读数逐字节不变，其余每一个面逐条不变。
+判据与读数在 `artifacts/work-items/serveros/SRV-0011/RUN-0045/`。
+
 #### 9.61.6 照实说：这一轮**没**关掉什么
 
 - **`ARTIFACTS_ROOT` 的 159 条一条没动**，仍是全部 237 条里最大的一堆。那三条活定时单元
@@ -10675,6 +10686,14 @@ systemctl --user restart serverosd.service  → MainPID 2249975 → 2276905（10
 **一条必须照实说的**：`DATA_ROOT/AGENTS.md` **仍是** `UNDECLARED_ENTRY`。它不是漏改——本轮改的是
 `EXCEPTIONS["workspace"]`，`DATA_ROOT` 是另一个 vocabulary、另一个 class，本包从头到尾没有声称修它。
 它与 `WORKSPACE_ROOT` 那条是同一句话的两个落点，登记在案，不动。
+
+**追加（2026-10-08 19:0x CST，RUN-0045 之后，不改写上面的判断）**：上面那句是**当时**（`s` 那一代
+装机）的读数，为真。**它现在不再是当前读数**：RUN-0045 按 `PENDING-DECISIONS` 条目 5 的推荐 (A)
+把同一份入口文档在 `DATA_ROOT` 的两个名字也认下了，`DATA_ROOT` 那一格 **53 → 51 `UNDECLARED_ENTRY`**
+（`EXEMPT_ENTRY` 1 → 3），`.vscode-server` 与其余每一个面**逐条不变**。
+落点在 `artifacts/work-items/serveros/SRV-0011/RUN-0045/`，闸门是
+`tests/test_path_conformance.py::test_the_same_entry_document_at_the_machine_root_is_the_same_role`。
+**装机 `s` 那一代仍是 53**——本包**没有发版**，节点要等一次发布才看到 51。
 
 #### 9.63.3 先量量具：`runtime_truth` 的「源」是一棵**工作树**，而 canonical 工作树停在 10-06
 

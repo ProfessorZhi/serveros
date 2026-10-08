@@ -90,6 +90,43 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "authority": "not named by any contract in this repository",
             "disposition": "KEEP",
         },
+        # Added 2026-10-08 (RUN-0045; measured while scouting the item RUN-0044
+        # handed off). The `workspace` block below carries the
+        # full reasoning for this pair; what is recorded here is why the same
+        # ruling reaches a second root, since "two roots, one convention" is
+        # exactly the reading a WARN in one and an EXEMPT in the other
+        # contradicts. `DATA_ROOT` is the machine-wide root and these are the
+        # entry documents a runtime opens there — the same role the `workspace`
+        # block recognises, one directory up.
+        #
+        # Measured with `diff`, not inferred from the name: the two differ in
+        # exactly two lines, the title and the line naming the runtime, and are
+        # byte-identical below them. Their sha1s differ (dc6612728c36, 4104dbb0
+        # 9e4b) and that is consistent rather than contradictory — two files
+        # with different digests are two files, which is what the `workspace`
+        # comment already says about its own pair.
+        #
+        # `DATA_ROOT`'s vocabulary is a closed tuple of DIRECTORIES
+        # (`DATA_ROOT_TOP_LEVEL`), so an entry document was never going to be
+        # declared into it and would report as UNDECLARED_ENTRY for as long as
+        # it existed. An exemption is the mechanism this table has for exactly
+        # that, and it is the mechanism the `workspace` block used.
+        "CLAUDE.md": {
+            "class": "ENTRY_DOCUMENT",
+            "reason": "the machine-wide entry point a runtime opens at this "
+                      "root; it deliberately does not restate the directory map",
+            "authority": "the document's own first line, which names the runtime "
+                         "that reads it",
+            "disposition": "KEEP",
+        },
+        "AGENTS.md": {
+            "class": "ENTRY_DOCUMENT",
+            "reason": "the Codex reading of the same entry document: the same "
+                      "body as `CLAUDE.md` above, differing only in its title "
+                      "and the line naming the runtime that opens it",
+            "authority": "as above",
+            "disposition": "KEEP",
+        },
     },
     # No `home` entry, and the absence is a ruling rather than an omission.
     # `~/.serveros/README.md` was briefly classified here as an ENTRY_DOCUMENT.
