@@ -238,6 +238,61 @@ def test_one_entry_document_under_two_runtime_names_is_one_role(world):
     assert entry["README.md"]["authority"] == "as above"
 
 
+def test_the_same_entry_document_at_the_machine_root_is_the_same_role(world):
+    """The ruling above reaches `DATA_ROOT` too, and the two roots must agree.
+
+    `DATA_ROOT` and `WORKSPACE_ROOT` are different closed vocabularies and stay
+    different — that is why they are two surfaces rather than one. What they
+    must not be is two *conventions*: before this test, `AGENTS.md` was
+    OBSERVE/EXEMPT_ENTRY at one root and WARN/UNDECLARED_ENTRY at the other, and
+    a reader comparing the two rows was being told the convention disagrees with
+    itself. It did not; this table did. Same shape as the test above, one
+    directory up, and the same wrong conclusion was available from it.
+
+    The pair at this root is the same document under two runtime names, measured
+    with `diff` rather than inferred: exactly two lines differ — the title and
+    the line naming the runtime — and everything below them is byte-identical.
+    Two files with different digests are two files, which is what the exemption
+    says about them, not a reason to call them different roles.
+
+    `DATA_ROOT_TOP_LEVEL` is a closed tuple of DIRECTORIES, so an entry document
+    could never have been declared into it and would have reported as
+    UNDECLARED_ENTRY for as long as it existed. The assertion below is that this
+    was not fixed by widening that tuple: the class is what the table is for,
+    and the vocabulary is not.
+    """
+    report = world(data=("CLAUDE.md", "AGENTS.md"))
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        assert of(report, "UNDECLARED_ENTRY", name) == [], (
+            f"{name} at DATA_ROOT was not exempt as an entry document")
+        found = of(report, "EXEMPT_ENTRY", name)
+        assert len(found) == 1, f"{name} was not reported as an exempt entry"
+        # The surface label travels in `class` (the row's second positional);
+        # asserted because `DATA_ROOT` and `WORKSPACE_ROOT` now carry the same
+        # exemption, and a test that could not tell which surface answered would
+        # pass on the other root's entry.
+        assert found[0]["class"] == "DATA_ROOT"
+        assert found[0]["status"] == "OBSERVED"
+        assert found[0]["exemption_class"] == "ENTRY_DOCUMENT"
+        assert found[0]["disposition"] == "KEEP"
+        assert name not in paths_mod.DATA_ROOT_TOP_LEVEL, (
+            "the exemption must not have been reached by widening the vocabulary")
+
+    # The load-bearing assertion: not "both are exempt" but "both roots call it
+    # the same thing". Exempting `AGENTS.md` at `DATA_ROOT` as some new class
+    # would have silenced the row while leaving the two roots disagreeing about
+    # the role — the finding this test exists to keep out.
+    data_entry = conformance.EXCEPTIONS["data"]
+    workspace_entry = conformance.EXCEPTIONS["workspace"]
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        assert data_entry[name]["class"] == workspace_entry[name]["class"]
+        assert data_entry[name]["disposition"] == workspace_entry[name]["disposition"]
+    assert data_entry["AGENTS.md"]["authority"] == "as above"
+    # `CLAUDE.md` states the authority in its own words at each root because
+    # each root's first line differs; `AGENTS.md` defers to it in both.
+    assert data_entry["CLAUDE.md"]["authority"] != "as above"
+
+
 # ---------------------------------------------------------------------------
 # the `~/.serveros` declaration conflict
 # ---------------------------------------------------------------------------
