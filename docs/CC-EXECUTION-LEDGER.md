@@ -10629,3 +10629,121 @@ SERVEROS_OPS_REPO=<workspace>/ops  pytest --collect-only -q      # → 7310 test
 第 §9.62 节开头那句 `3 failed, 7285 passed` 是**本工作树**（W6 包已改、3 条新测试当时写了 2 条）的
 一跑，不是提取树的全量；「三条是主线上的」由 9.62.1 单独证：在那棵**未改动**的树里逐条跑那三个
 文件，三条逐字复现。两句合起来才是本节标题那句话的完整证据。
+
+### 9.63 W6 第一包的发布：**装上**了，而「装上」与「被消费」是两件事——两面分别量
+
+§9.61/§9.62 改完之后走的是既有三步链，一步不多：`build --write` → `build --check` →
+`release.py promote` → `systemctl --user restart serverosd`。这一节记的是**读回**，以及只有读回才
+会出现的两件事：一件是**量具自己落后于生产者**，另一件是**两个消费面各自停在不同代的字节上**。
+
+#### 9.63.1 三步链与它的构建树
+
+```
+python scripts/build.py --write --bundle plugin/profiles/linux-work.yaml \
+  --output $MC/.staging-product-tree-20261008s \
+  --marketplace-path $MC/.agents/plugins/marketplace.json \
+  --ability-repo <src/ability-management> --ability-rev c3fa07205bdd714e82c82e3dfc8df358c316e0c8   rc=0
+python scripts/build.py --check  （同一批参数，对着刚 build 出来的那份）                             rc=0
+release.py promote --dry-run  → would promote … tree=9f25b9e3d6482549690d18613be410afeaac1a5e2b1f4952180bfc1c86b3ffd2
+release.py promote --runtime-root $MC --composition serveros-linux-work --kind node-runtime \
+  --artifact $MC/.staging-product-tree-20261008s --revision product-tree-20261008s@2f6d0d3
+  → promoted；previous = product-tree-20261008r@81b6460；daemon-reload done
+systemctl --user restart serverosd.service  → MainPID 2249975 → 2276905（10:01:15 CST）
+```
+
+**构建树是新开的 detached worktree，定在 `2f6d0d3`（合并提交，也就是 `origin/main`），不是复用发布
+分支那棵树。** `ARTIFACT.json.source.serveros.commit` 记的是**跑 build 的那棵树**，而 revision 名后半
+截记的也是它；两者若不是同一个提交，这一包就用自己的记录造出一次「声明与生产者不一致」——今晚全篇
+那个形状。量到的是 `commit 2f6d0d3a9cf8…, ref HEAD, tree_clean true, worktree_changes 0`。
+
+`--check` 那一步是**与新载荷逐字节**比的：无漂移，且凭据形状 0 命中（build 的拒绝发生在写盘之前，
+所以在这里「通过」与「没有写进去」是同一次观察，不是两次）。
+
+**「promote 不重启」本轮又量到一次**，是量出来的不是读文档来的：promote 之后、restart 之前，
+`MainPID` 仍是 2249975、`ExecMainStartTimestamp` 仍是 08:17:14，旧进程照旧服务到 restart 那一刻。
+
+#### 9.63.2 读回：消费者自己读的那两份
+
+| 量（都从装机载荷读，不从工作树读） | r（改前） | s（改后） |
+|---|---|---|
+| `path conformance` findings / undeclared / exempt | 238 / 217 / 8 | **237 / 215 / 9** |
+| `state/serveros/runtime` 下的 `wake` | 一条 `WARN` | **不再出现**（该类剩 4 条 `DECLARED_ENTRY_ABSENT`） |
+| `WORKSPACE_ROOT/AGENTS.md` | `WARN` `UNDECLARED_ENTRY` | `OBSERVE` `EXEMPT_ENTRY`/`ENTRY_DOCUMENT`，status `OBSERVED` |
+| `runtime/actuator-contract.yaml` | 43 条 | **44 条**，新增条目在末位 |
+| `~/.local/bin/serverosctl` | → r 的 revision | → `revisions/product-tree-20261008s@2f6d0d3/bin/serverosctl` |
+
+**一条必须照实说的**：`DATA_ROOT/AGENTS.md` **仍是** `UNDECLARED_ENTRY`。它不是漏改——本轮改的是
+`EXCEPTIONS["workspace"]`，`DATA_ROOT` 是另一个 vocabulary、另一个 class，本包从头到尾没有声称修它。
+它与 `WORKSPACE_ROOT` 那条是同一句话的两个落点，登记在案，不动。
+
+#### 9.63.3 先量量具：`runtime_truth` 的「源」是一棵**工作树**，而 canonical 工作树停在 10-06
+
+同一个安装、同一条命令，只换 `--serveros-repo`，`(node revision)` 一行给出两种判词，而分歧全在
+**量具那一侧**：
+
+| 量具 | `(node revision)` 一行说了什么 | 判词 |
+|---|---|---|
+| 默认 = canonical 工作树 `src/serveros`（HEAD `4bf2c32`，2026-10-06 的 main） | 「canonical source builds `3.1.0+srv0005.20261006n`，装的差 **36** 处」 | `SOURCE_RUNTIME_DRIFT` |
+| 本轮的构建树（`2f6d0d3`） | 「staged tree hash matches the tree on disk · built from `2f6d0d3a9cf8` (clean)」 | **OK** |
+
+第二行才是「装的是不是我们写的那份」的答案；第一行量的是**量具自己落后了十余个 cachebuster**，
+却把差额记在被测物账上。它与 §9.62.7 是同形状的另一半：那条红把**宿主**的事实报成闸门的事实，
+这条把**量具**的事实报成产物的事实。**只记不改**——改它要动「canonical 源」的定义，是另一件事。
+
+#### 9.63.4 两个消费面各自停在不同代的字节上
+
+`revisions/*/RELEASE.json` 全树没有一条 `kind: plugin`（§9.59.3 的既有实测），所以**插件面不是靠
+promote 收口的，是靠刷新两侧缓存格**。两面**分别量**，因为解析规则不同：
+
+**Claude 侧（缓存格 `3.1.0-srv0005.20261007g`）：落后，但不蕴含组合落后。** 三个读数：
+
+```
+lsof +D ~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0005.20261007g  → 0 行（无持有者）
+diff -rq <该格>/skills   <current>/skills                                                                  → 0 行（逐字节相同）
+diff -rq <该格>          <current>                                                                         → 21 行
+   落点：intake 6、runtime 5、context 2、.claude-plugin 2，RELEASE.json／README.md／mcp／fleet／.codex-plugin／ARTIFACT.json 各 1
+```
+
+落后 **21** 处而 `skills/` **0** 处，再加上一条**本轮新量的**：十个活体 Claude 侧 MCP 进程的
+`argv[1]` 全是**穿过 `current` 的绝对路径**（`…/serveros-linux-work/current/mcp/bin/serveros-{node,agent}-mcp`，
+`cwd=$HOME`）。也就是说 `${CLAUDE_PLUGIN_ROOT}` 在这个安装里解析到 **marketplace 源**，不是缓存格。
+两条合起来：**Claude 侧缓存落后既不改变 Skill 组合，也不改变 MCP 跑的代码。** §9.59.3 量过同样的
+两条，本轮是**复测**而不是沿用（数字从 9 涨到 21，判据没变）。
+
+**Codex 侧（缓存格 `3.1.0+srv0005.20261008r`）：真落后，而收口的前提不成立。** `.codex-mcp.json`
+用**相对**路径 `./mcp/bin/…` 加 `cwd: "."`，解析到自装缓存格，所以它跑的就是缓存格里的字节。
+要收口就得跑 `codex plugin add`，而它是**替换式**（旧版本目录当场删）。前提是「该格无持有者」，
+本轮**三次相隔数秒地量**，结论是前提不成立、而且**不稳定**：
+
+```
+逐个读 /proc/<pid>/cwd，落点在该格下的进程      2 个（pid 2102563/2102577，起于 09:56:34）
+数秒后 lsof +D 该格                             4 个（多出 2373762/2373857）
+再数秒后 ps -p 2373762,2373857                  已经不在了
+```
+
+持有者不是一批静止的旧进程，而是**会自己冒出来、又会自己消失的**——所以「等一个干净窗口」这个
+动作本身不可靠。**不动手**，与 §9.59.8 提案 1 同一条，只是它现在停在 `r` 而不是 `07a`。
+
+#### 9.63.5 一条新量到的限度：路径跟着 `current`，进程不重读符号链接
+
+十个活体 Claude MCP 的 `argv[1]` 穿过 `current`，而它们的启动时刻**全部早于这次换链**：
+
+```
+683729/683730  Sep 27 01:53:45     1918765/6  10-08 09:51:22    1922582/3  09:51:30
+1973197/9      10-08 09:52:58      1982751/2  10-08 09:53:08    换链时刻   10:01:12
+```
+
+所以它们跑的是**启动那一刻装进内存的旧字节**；新字节要等**新起的** MCP 才进来。这不改变本包的
+判词（节点面的 `serverosd` 已重启，pid 换了、tick 计数从 0 起，那是量过的），但它是一条**限度**，
+写下来免得下次把「`argv` 指着 `current`」读成「跑的就是最新那份」。**没有杀这些进程**：它们是共享
+主机上多个会话的活体 MCP，不是本轮的落点；「保护活体」优先于「让一次读数好看」。
+
+#### 9.63.6 照实说：这一轮**没**关掉什么
+
+- **插件面一个都没收口**，两侧都还是旧字节，其中 Codex 侧是**真在跑旧码**。原因与判据见 9.63.4，
+  不是遗漏。
+- `RELEASE: RELEASE_INCOMPLETE` 仍在。这是本机的**长期状态**（§9.18 起就是 `runtime_status:
+  RELEASE_INCOMPLETE`）；本轮它的 blocking 是 `CHAIN_CONSISTENT`，而这个检查里还挂着一条与本事
+  无关的红：`serveros-testing@serveros-testing` 差 18 处（另一个 composition 的安装面，不是本轮
+  的落点）。
+- 量具那件事（9.63.3）只记不改。
