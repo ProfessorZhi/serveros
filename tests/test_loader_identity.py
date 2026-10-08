@@ -59,6 +59,20 @@ where the name is still missing**. Three shapes say that — an early return, a
 `sys.modules.get(...)` behind a `None` test, and the `else` of a membership
 test — and the tree uses all three and nothing else, measured: 192 / 18 / 1.
 
+THE OTHER HALF, WHICH NO SCAN OF SOURCE CAN HOLD
+------------------------------------------------
+A guard stops a name from being TAKEN. It does not stop a file from being
+EXECUTED twice: a loader registering a name nobody has used yet satisfies every
+guard and still leaves the process with two module objects and two exception
+classes with one spelling. Three packages of guarding left that shape standing
+in this tree, twice — `context/actor.py` under two names,
+`abilities/provider_instance.py` under three — and neither was visible in source
+as anything but a correct guard. It was found by executing the suite and
+counting executions, so that is where the two classes at the end of this file
+ask it. `OneFileIsOneModuleObject` asks the loaders that exist;
+`NoFileIsExecutedTwiceInOneProcess` runs a real process under
+`tests/load_census.py` and reads what it did.
+
 THE CONTROL IS SYNTHETIC, AND SAYS SO
 -------------------------------------
 After this package, no unguarded registrant remains in the tree, which is the
@@ -70,7 +84,12 @@ tree used to contain, including the exact one that caused the failure above.
 """
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -466,6 +485,164 @@ class EveryRegistrationConsultsTheCacheFirst(unittest.TestCase):
                 shapes.get(shape, 0), floor,
                 f"the scan no longer recognises the `{shape}` guard, which "
                 f"{floor}+ registrations in this tree use: {shapes}")
+
+
+class OneFileIsOneModuleObject(unittest.TestCase):
+    """The other half of the property, which the scan above cannot hold.
+
+    A guarded registration stops a name from being TAKEN. It does not stop a
+    file from being EXECUTED twice, because a loader that writes a name nobody
+    has used yet satisfies every guard above and still leaves this process with
+    two module objects — two sets of classes, and two exception classes with one
+    spelling. `runtime/approval.py` says what that costs: "a second copy would
+    raise its own `Rejected` — caught by name below, and therefore slipping
+    through as its parent. The grammar itself would be identical; the failure
+    would be silent."
+
+    Measured on this tree before this package, in one process:
+
+        context/actor.py                2 names   (approval/delegation/store/trust)
+        abilities/provider_instance.py  3 names   (target/runtime_binding/mcp)
+
+    and, for the first of them, the failure itself:
+
+        delegation raised ForgedContext
+        approval's except names Rejected; caught = False
+
+    The tests below ask the loaders that exist, rather than the source, so a
+    loader that stops agreeing is a failure here instead of a silence.
+    """
+
+    def _load(self, name: str, relative: str):
+        """The tree's own idiom, so the loaded module is the one the tree uses."""
+        if name in sys.modules:
+            return sys.modules[name]
+        spec = importlib.util.spec_from_file_location(name, ROOT / relative)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def _actor_loaders(self) -> dict[str, object]:
+        return {
+            "runtime/approval.py":
+                self._load("serveros_runtime_approval",
+                           "runtime/approval.py")._actor_module(),
+            "context/delegation.py":
+                self._load("serveros_context_delegation",
+                           "context/delegation.py")._actor_module(),
+            "context/trust_binding.py":
+                self._load("serveros_context_trust_binding",
+                           "context/trust_binding.py")._actor_module(),
+            "runtime/agent_control_store.py":
+                self._load("serveros_runtime_agent_control_store",
+                           "runtime/agent_control_store.py")._actor_module(),
+        }
+
+    def test_every_loader_of_the_actor_module_reaches_one_object(self):
+        loaders = self._actor_loaders()
+        distinct = {id(module) for module in loaders.values()}
+        self.assertEqual(
+            len(distinct), 1,
+            "these loaders of `context/actor.py` did not reach the same module "
+            f"object: {sorted(loaders)} -> {len(distinct)} objects. A second "
+            "copy is a second `Rejected`, and an `except` written against one "
+            "copy does not catch the other's refusal.")
+
+    def test_the_actor_modules_refusal_classes_are_one_class(self):
+        loaders = self._actor_loaders()
+        classes = {id(module.Rejected) for module in loaders.values()}
+        self.assertEqual(
+            len(classes), 1,
+            "`Rejected` is a different class object in different copies of "
+            "`context/actor.py`; every `except Rejected` in this tree catches "
+            "only the copy it was written against")
+
+    def test_a_refusal_from_one_loader_is_caught_by_another_loader(self):
+        """The symptom, not the shape: what a reader of `approval.py` sees."""
+        approval = self._load("serveros_runtime_approval", "runtime/approval.py")
+        delegation = self._load("serveros_context_delegation",
+                                "context/delegation.py")
+        with self.assertRaises(approval._actor_module().Rejected):
+            delegation._actor_module().refuse_if_forged({"actor": "human:1"})
+
+    def test_every_loader_of_the_provider_instance_module_reaches_one_object(self):
+        """`ReadinessError` is the class at stake here; nothing catches it yet,
+        which is why this one is a shape rather than a symptom."""
+        target = self._load("serveros_abilities_target", "abilities/target.py")
+        binding = self._load("serveros_abilities_runtime_binding",
+                             "abilities/runtime_binding.py")
+        service = self._load("serveros_agent_session_service",
+                             "mcp/agent_session_service.py")
+        loaders = {
+            "abilities/target.py": target.provider_instance,
+            "abilities/runtime_binding.py": binding._provider_instance,
+            "mcp/agent_session_service.py": service.readiness,
+        }
+        distinct = {id(module) for module in loaders.values()}
+        self.assertEqual(
+            len(distinct), 1,
+            "these loaders of `abilities/provider_instance.py` did not reach "
+            f"the same module object: {sorted(loaders)} -> {len(distinct)}. "
+            "`mcp/agent_mcp.py` composes all three into one process.")
+
+
+class NoFileIsExecutedTwiceInOneProcess(unittest.TestCase):
+    """The census, over a declared set, read rather than trusted.
+
+    The scan above reads source and asks about guards. This runs a real process
+    and asks what was actually executed twice, which is the only question that
+    catches a loader registering a name nobody has used yet — the shape that
+    survived three packages of guarding. `tests/load_census.py` is the
+    instrument, and its header records what it cannot see.
+
+    The set is declared rather than the whole suite because this measures a
+    process and has to start one: `tests/test_approval.py` and
+    `tests/test_wake.py` composed in one process reach both families that used
+    to disagree about `context/actor.py`, and both of the loaders of
+    `abilities/provider_instance.py` that did. Measured on this set, before the
+    two files were given one name each:
+
+        57 executions, 2 executed more than once
+        abilities/provider_instance.py  3
+        context/actor.py                2
+
+    What it does not cover is stated rather than implied: a file loaded twice by
+    a pair of loaders this set does not reach is not measured here.
+    """
+
+    DECLARED_SET = ("tests/test_approval.py", "tests/test_wake.py")
+
+    def test_the_declared_set_executes_no_file_twice(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "census.json"
+            existing = os.environ.get("PYTHONPATH")
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).resolve().parent)
+                              + ((os.pathsep + existing) if existing else ""),
+                "LOAD_CENSUS_OUT": str(out),
+                "LOAD_CENSUS_REPO": str(ROOT),
+            }
+            done = subprocess.run(
+                [sys.executable, "-m", "pytest", *self.DECLARED_SET,
+                 "-p", "load_census", "-q"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=900)
+            self.assertEqual(
+                done.returncode, 0,
+                f"the measured run failed:\n{done.stdout[-3000:]}\n"
+                f"{done.stderr[-3000:]}")
+            census = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(census["instrument_failures"], 0, census)
+            self.assertGreaterEqual(
+                census["repo_files_executed"], 40,
+                "the census saw too few files to be a reading: "
+                f"{census['repo_files_executed']}")
+            self.assertEqual(
+                census["files_executed_more_than_once"], [],
+                "a file was executed more than once in one process, which is "
+                "two module objects and two sets of classes with one spelling: "
+                f"{[row for row in census['rows'] if row['executions'] > 1]}")
 
 
 class TheFormerDefectSitesAreGuarded(unittest.TestCase):
