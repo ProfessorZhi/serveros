@@ -1714,7 +1714,86 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   and `runtime/actuator-contract.yaml` (+6135), +13431 B in all. `tests/` is
 #   not a member of this composition, so the three tests and the three mutation
 #   sites that come with this do not move the label.
-cachebuster: srv0005.20261008s
+#
+#   s → a: twenty-five merges / fifty-one commits accumulated behind one label.
+#   `r → s` was a
+#   declaration layer catching up with producers that were already running; this
+#   one is not that. It is four rounds of one subject — WHERE THIS NODE READS ITS
+#   OWN NAMES FROM — plus the loader-identity fix they had to land on top of, and
+#   two members that did not exist before today.
+#
+#   abilities/, context/, intake/, mcp/, memory/, runtime/native_reader.py,
+#   runtime/recipes.py, runtime/agent_control_store.py, abilities/taxonomy.py
+#     Loader identity: ONE FILE MUST BE ONE MODULE OBJECT. A module name was
+#     registered before its cache was read, so the same file could be loaded
+#     twice under one name and the second load silently won. Twenty-one members
+#     carry the fix and seventeen of them are touched by nothing else; most of
+#     them barely move (+2 B for two of the MCP providers, −2 B for
+#     `abilities/target.py`), and that is the point — the change is that they no
+#     longer load twice, not that they read differently. The other four
+#     (`runtime/cli.py`, `runtime/conformance.py`, `runtime/daemon.py`,
+#     `runtime/workspace.py`) are members this section shares with the next one
+#     and are counted once, under the subject that moved them further.
+#
+#   runtime/paths.py, runtime/workspace.py, runtime/cli.py,
+#   runtime/conformance.py, runtime/view.py, runtime/workbench_sources.py,
+#   context/resolver.py, runtime/actuator-contract.yaml
+#     The directory contract (§3 W6). `Paths.root()` handed back the contract's
+#     TEMPLATE for a root this node does not bind — `{WORKSPACE_ROOT}` — and left
+#     it to every caller to check `bound` first; ONE FILE OF THIRTEEN did. That is
+#     a shape, not a guard: `Path("{WORKSPACE_ROOT}/records").mkdir()` succeeds and
+#     then `is_dir()` is `True`, so on an unidentified node the old behaviour was
+#     to create a directory named after a template and report it as existing
+#     forever after. The refusal now lives at the source, and `resolve()`/`role()`
+#     route through `root()`, so one refusal closes all 147 call sites. The
+#     surfaces whose JOB is to report what a node declared — `cli.py` 3,
+#     `conformance.py` 4, `daemon.py` 2, `workbench_sources.py` 2 — state a reason
+#     and ask for the template explicitly. `context/resolver.py` stops reading the
+#     artifacts root by assembling it and reads the row the document itself
+#     declares, one row above it; `workbench_sources.py` and `workspace.py` derive
+#     their rows from those declared names instead of writing them down.
+#
+#   runtime/serveros-evening-alignment.service (+10325 B, NEW),
+#   runtime/serveros-evening-alignment.timer (+2893 B, NEW),
+#   runtime/fs_hygiene.py, runtime/conformance.py
+#     Two members are NEW: the evening alignment has been running on this node and
+#     was declared NOWHERE. It is the same shape one level down from the loader
+#     bug — a thing that runs and is not named — and it is why the unit and its
+#     timer arrive together with the contract entry that admits them.
+#     `fs_hygiene.py` records which declared vocabularies are deliberately NOT
+#     applied, because "declared" and "applied" had been reading as one cell.
+#
+#   intake/workchain.py (+4231 B)
+#     Custody is decided per PATH, not per tree state: a clean tree is not a
+#     reason to reclaim one worktree that another actor is holding open.
+#
+#   The label moves, and a node left on `s` is not merely behind — it is running
+#   the version of `Paths.root()` that creates directories named after templates.
+#   Measured on the frozen bytes, against `origin/main`: `serverosctl path
+#   conformance` goes 239 findings / 217 undeclared / 9 exempt → 239 / 215 / 11,
+#   attributed by LINE rather than by subtracting totals, because the exempt cell
+#   breathes with the WAL sidecar. Exactly two lines move: `DATA_ROOT/AGENTS.md`
+#   and `DATA_ROOT/CLAUDE.md`, both from `MEDIUM/UNDECLARED_ENTRY` to
+#   `LOW/OBSERVED/EXEMPT_ENTRY` — one entry document, one role, at both roots,
+#   where before the two spellings of one convention were read as two different
+#   verdicts. The thirty changed members are `runtime/paths.py` (+5967 B),
+#   `runtime/workbench_sources.py` (+5775), `runtime/cli.py` (+4893),
+#   `runtime/fs_hygiene.py` (+4631), `runtime/actuator-contract.yaml` (+4439),
+#   `intake/workchain.py` (+4231), `runtime/conformance.py` (+2939),
+#   `context/resolver.py` (+1897), `runtime/workspace.py` (+1884),
+#   `runtime/native_reader.py` (+1401), `runtime/view.py` (+1237),
+#   `intake/daily_reading.py` (+863), `context/delegation.py` (+621),
+#   `intake/understanding_brief.py` (+539), `runtime/recipes.py` (+469),
+#   `abilities/runtime_binding.py` (+455), `runtime/agent_control_store.py`
+#   (+453), `mcp/agent_session_service.py` (+428), `memory/layering.py` (+425),
+#   `abilities/taxonomy.py` (+395), `context/trust_binding.py` (+390),
+#   `memory/scope.py` (+86), `abilities/runtime_parity.py` (+82),
+#   `runtime/daemon.py` (+30), `mcp/continuation_mcp.py` (+16),
+#   `mcp/botmux_provider.py` (+2), `mcp/codex_app_server_provider.py` (+2),
+#   `abilities/target.py` (−2), plus the two NEW members above, +57766 B in all.
+#   `tests/` is not a member of this composition, so the forty-one test files
+#   (+4210 / −94 lines) that come with this do not move the label.
+cachebuster: srv0005.20261009a
 
 skills:
   - name: runtime-management
