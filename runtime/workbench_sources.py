@@ -33,6 +33,64 @@ from pathlib import Path
 # grepped the shipped tree for it.
 ROOT = Path(__file__).resolve().parent.parent
 
+
+# ── UNDER A NODE ROOT ─────────────────────────────────────────────────────────
+#
+# The paragraph above applies to the module's own repository. It applies to the
+# NODE's roots for the same reason, and 13 rows below did not: they wrote
+# `/data/home/vince/...` out as a string literal, so the distribution carried
+# one machine's worktrees and artifacts directories — the exact defect the
+# `serveros` pin was fixed for, in the rows beside it. The rule was already
+# written down here; only one row was ever held to it.
+#
+# WHAT IS DERIVED AND WHAT IS AUTHORED. Only the ROOT is resolved. The position
+# under it — `worktrees/ability-management/SRV-0011` — stays written out in the
+# table, because which clone this release was built from IS this round's
+# decision and no command can answer it. That is the same split as
+# `str(ROOT / "runtime" / "card-scenarios.yaml")`: the root comes from the
+# contract, the position is authored. The claim these rows make is unchanged;
+# only the half that is a fact about the machine now comes from the machine.
+#
+# A NODE WITH NO BOUND ROOT GETS `{WORKSPACE_ROOT}/worktrees/...`, NOT A
+# PLAUSIBLE PATH. `Paths` states this convention of itself: an unbound root
+# reads as its own template. The renderer then prints a row whose repo it cannot
+# read, which is what `_reachable` already renders as `**repo 不可读**` — an
+# unresolved answer, rather than a right-looking path that belongs to somebody
+# else's machine.
+_RESOLVED: dict[str, Path] = {}
+
+
+def _under(root_name: str, *rest: str) -> str:
+    """A path under one of this node's declared ROOTS, plus an authored position.
+
+    Returns a string because that is what every consumer of these tables writes
+    into a cell. Raises `PathRefused` for a name no contract declares, which is
+    the behaviour `Paths.root` already has and the reason this is not a
+    `roots.get(name, "")`.
+    """
+    if root_name not in _RESOLVED:
+        import paths as paths_mod  # noqa: PLC0415 - resolved from the repo, never installed
+        _RESOLVED[root_name] = paths_mod.Paths().root(root_name)
+    return str(_RESOLVED[root_name].joinpath(*rest))
+
+
+def _under_role(role_name: str, *rest: str) -> str:
+    """A path under a declared SEMANTIC ROLE.
+
+    Separate from `_under` because the codebase keeps the two apart on purpose:
+    a root is where something is, a role is what something IS, and a role
+    resolves to wherever its artifact currently is. The runtime distribution is
+    the role case — `runtime.serveros-distribution` resolves to
+    `runtime-assets/hwz-server-os` on a node whose declared path is
+    `runtime-assets/serveros`, which is why the role and not the root is asked.
+    """
+    key = "role:" + role_name
+    if key not in _RESOLVED:
+        import paths as paths_mod  # noqa: PLC0415 - only needed on this path
+        _RESOLVED[key] = Path(paths_mod.Paths().role(role_name)["path"])
+    return str(_RESOLVED[key].joinpath(*rest))
+
+
 # ── STATE_MATRIX ──────────────────────────────────────────────────────────────
 #
 # One row per capability a person would want to know the standing of. `command`
@@ -240,12 +298,14 @@ DEPLOYMENT = [
     dict(
         id="P1", target="把 serverosd 指到新 revision（promote + restart）",
         effect="线上 `current` 指针移动，serverosd 重启；节点观察中断一个 tick 级别的时间",
-        before="`scripts/release.py status --runtime-root /data/home/vince/runtime-assets/hwz-server-os`"
-               " 记下 current 与 tree_hash；`serverosctl status --json` 记下 pid 与 ticks",
+        before="`scripts/release.py status --runtime-root "
+               + _under_role("runtime.serveros-distribution")
+               + "` 记下 current 与 tree_hash；`serverosctl status --json` 记下 pid 与 ticks",
         after="`release.py status` 显示新 revision 且 agreement AGREE；"
               "`serverosctl status` 的 ticks 继续增长、tick_failure_count 未上升",
-        rollback="`scripts/release.py rollback --runtime-root /data/home/vince/runtime-assets/hwz-server-os`"
-                 "（previous 指针已在 promote 时写下），再 restart",
+        rollback="`scripts/release.py rollback --runtime-root "
+                 + _under_role("runtime.serveros-distribution")
+                 + "`（previous 指针已在 promote 时写下），再 restart",
     ),
     dict(
         id="P2", target="覆盖现用的 CC 插件 / Hook",
@@ -287,8 +347,17 @@ DEPLOYMENT = [
 # ── PINS ──────────────────────────────────────────────────────────────────────
 #
 # What this release was built from. `repo` is the clone the reachability check
-# runs in, so it is a fact about THIS node — which is why it is authored here and
-# not derived: there is no rule that says where a clone lives.
+# runs in, so it is a fact about THIS node.
+#
+# THE PARAGRAPH BELOW USED TO END "…and not derived: there is no rule that says
+# where a clone lives", AND THE PREMISE WAS FALSE. There is such a rule, and this
+# node declares it: `node.roots.workspace_worktrees` binds the parent every one of
+# these five clones sits under, and `fleet/profiles.yaml` binds the same fact as
+# the `workspace.worktrees` role. Each row below is that root plus a written-out
+# position — `worktrees/<project>/<item>` — so what is now read is the half that
+# is a fact about the machine, and what is still authored is the half that is a
+# decision about the round. The reason nobody looked is the reason this file
+# keeps: the sentence gave a reason, and a reason is where looking stops.
 #
 # EXCEPT THE FIRST ONE, AND IT WAS WRONG. The `serveros` row named this round's
 # build worktree by absolute path — in a module that SHIPS INSIDE THE ARTIFACT.
@@ -346,13 +415,13 @@ PINS = [
          repo=str(ROOT),
          revision="60da36f3", release_ref="serveros/system-v1-20260920"),
     dict(name="ability-management", kind="ability",
-         repo="/data/home/vince/workspace/worktrees/ability-management/SRV-0011",
+         repo=_under("workspace", "worktrees", "ability-management", "SRV-0011"),
          revision="fbd0b1a7", release_ref="serveros/system-v1-20260920"),
     dict(name="work-engine", kind="code",
-         repo="/data/home/vince/workspace/worktrees/work-engine/SRV-0011",
+         repo=_under("workspace", "worktrees", "work-engine", "SRV-0011"),
          revision="65e9b56c", release_ref="serveros/system-v1-20260920"),
     dict(name="hwz-ops", kind="ops",
-         repo="/data/home/vince/workspace/worktrees/hwz-ops/SRV-0011",
+         repo=_under("workspace", "worktrees", "hwz-ops", "SRV-0011"),
          revision="790bca27", release_ref="serveros/system-v1-20260920"),
     # The adapter is BUILT from `plugin/`, so its revision is a serveros
     # revision — and it is still its own row, because the artifact that lands on
@@ -370,7 +439,7 @@ PINS = [
     # two would let a row that simply forgot to declare a publication point
     # render exactly like a row that decided not to have one.
     dict(name="quay（工作包 E 固定的版本）", kind="toolchain",
-         repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
+         repo=_under("workspace", "worktrees", "quay", "foundation-skeleton"),
          revision="ddc4fb40f", publishes=False),
     # This row used to name `worktrees/quay/foundation-skeleton-develop`, which
     # no longer exists — so the pin printed `**repo 不可读**` forever while the
@@ -379,7 +448,7 @@ PINS = [
     # revisions is the accurate shape, and it is what the reachability check
     # actually needs.
     dict(name="quay（本轮 Goal 闭环用的版本）", kind="toolchain",
-         repo="/data/home/vince/workspace/worktrees/quay/foundation-skeleton",
+         repo=_under("workspace", "worktrees", "quay", "foundation-skeleton"),
          revision="8bb184ef3", publishes=False),
     dict(name="design package（本轮固定版本）", kind="design",
          repo=str(ROOT),
@@ -450,28 +519,62 @@ DOC_KINDS = {
 # THAT offline path passes and not that any connection works, so each row says
 # what it demonstrates.
 SAMPLES = [
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/"
-              "release/hwz-server-os/serveros-linux-work/current",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-f",
+                     "release",
+                     "hwz-server-os",
+                     "serveros-linux-work",
+                     "current"),
          what="隔离安装：一个 runtime root 下不可变的 revision 加 current/previous 指针",
          how="由 `scripts/release.py promote` 落的，不是手工拷的；入口从 `/tmp` 走通"),
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/"
-              "install/build.log",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-f",
+                     "install",
+                     "build.log"),
          what="构建日志：5 个 pack 的 pin 状态与产物落点",
          how="`scripts/build.py --write` 的原始输出"),
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/"
-              "install/check.log",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-f",
+                     "install",
+                     "check.log"),
          what="确定性构建检查：同一输入两次构建逐字节一致",
          how="`scripts/build.py --check`，两次 tree_hash 相同"),
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/"
-              "quay/ws",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-f",
+                     "quay",
+                     "ws"),
          what="Quay Goal/AC/Task 记录与 GateEvent 账本（本轮真实执行）",
          how="`quay goal write` / `quay goal gate` / `quay task` 在隔离 workspace 里跑出来的"),
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-f/"
-              "quay/probe-deeper/a/b/ws2",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-f",
+                     "quay",
+                     "probe-deeper",
+                     "a",
+                     "b",
+                     "ws2"),
          what="负控：同一份 config 放深两级的 workspace",
          how="复现 provider `path` 的深度依赖（`spawn node ENOENT`）"),
-    dict(path="/data/home/vince/artifacts/skills/serveros/RUN-20260920-foundation-skeleton-e/"
-              "negative",
+    dict(path=_under(
+                     "artifacts",
+                     "skills",
+                     "serveros",
+                     "RUN-20260920-foundation-skeleton-e",
+                     "negative"),
          what="工作包 E 的三个负控：陈旧 revision / 子任务缺席 / complete 事件被删",
          how="每个负控单独 exit 1 并给出具名原因；未做手脚的副本 exit 0"),
     dict(path=str(ROOT / "runtime" / "card-scenarios.yaml"),
