@@ -157,11 +157,11 @@ def _load(name: str, path: Path):
 
 
 def _paths_module():
-    return _load("serveros_paths", REPO / "runtime" / "paths.py")
+    return _load("serveros_runtime_paths", REPO / "runtime" / "paths.py")
 
 
 def _state_root_module():
-    return _load("serveros_state_root", REPO / "runtime" / "state_root.py")
+    return _load("serveros_runtime_state_root", REPO / "runtime" / "state_root.py")
 
 
 # ---------------------------------------------------------------------------

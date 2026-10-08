@@ -138,6 +138,46 @@ def _load(name, path):
     return module
 '''
 
+# A guard that reads a DIFFERENT key from the one the write takes. The shape is
+# the accepted early-return, so a scan that reads shapes and never compares keys
+# calls this guarded — and the `if` can never be true for the key being written,
+# so the write displaces every time. `intake/understanding_brief.py`'s
+# `_sibling` was this, in production, until it was found by comparing the keys:
+# it tested `name` and registered `f"serveros_intake_{name}"`.
+GUARD_READS_ANOTHER_KEY = '''\
+import importlib.util
+import sys
+
+
+def _sibling(name, path):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(f"serveros_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"serveros_{name}"] = module
+    spec.loader.exec_module(module)
+    return module
+'''
+
+# The same shape with the two keys agreeing, which IS a guard and must stay
+# quiet. Without this the rule above could be satisfied by flagging every
+# f-string key.
+GUARD_READS_THE_SAME_KEY = '''\
+import importlib.util
+import sys
+
+
+def _sibling(name, path):
+    registered = f"serveros_{name}"
+    if registered in sys.modules:
+        return sys.modules[registered]
+    spec = importlib.util.spec_from_file_location(registered, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[registered] = module
+    spec.loader.exec_module(module)
+    return module
+'''
+
 # A `None` test that is not about the consulted value. `flag` was never read
 # out of the cache, so `if flag is None:` says nothing about whether the name
 # is taken.
@@ -413,6 +453,22 @@ class TheScanCanGoRed(unittest.TestCase):
         bound from `.get` and the write are both at the module's own scope. A
         scan that looked only inside functions would report all three."""
         self.assertEqual(unguarded_in_source(GUARDED_MODULE_LEVEL_GET, LABEL), [])
+
+    def test_it_flags_a_guard_that_reads_a_different_key_from_the_write(self):
+        """The accepted shape, doing nothing.
+
+        `if name in sys.modules` over a write to `sys.modules[f"serveros_{name}"]`
+        satisfies every shape this scan knew, and guards nothing: the test can
+        never be true for the key being written. Found in the tree, in
+        `intake/understanding_brief.py`'s `_sibling`, by comparing the keys.
+        """
+        found = unguarded_in_source(GUARD_READS_ANOTHER_KEY, LABEL)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("in _sibling", found[0])
+
+    def test_it_stays_quiet_when_the_guard_reads_the_key_the_write_takes(self):
+        """The same two-key shape with the keys agreeing, which is the fix."""
+        self.assertEqual(unguarded_in_source(GUARD_READS_THE_SAME_KEY, LABEL), [])
 
     def test_a_guard_in_a_neighbouring_function_does_not_cover_a_registration(self):
         """The §A defect exactly: `test_daemon.py` carried a guarded `_load` and,

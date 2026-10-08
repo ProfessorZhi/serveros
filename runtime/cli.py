@@ -324,7 +324,7 @@ def cmd_report_daily(args) -> int:
     the period's work — which includes names nobody has invented yet.
     """
     mod = _load_module_from(REPO_ROOT / "runtime" / "daily_report.py",
-                            "serveros_daily_report")
+                            "serveros_runtime_daily_report")
     out_dir = Path(args.out_dir)
     try:
         window = mod.period_window({"start": args.start, "end": args.end})
@@ -2283,7 +2283,7 @@ def cmd_pack_inspect(args) -> int:
     one does not answer the other's.
     """
     packs_mod = _load_module_from(REPO_ROOT / "abilities" / "packs.py",
-                                  "serveros_ability_packs")
+                                  "serveros_abilities_packs")
     projection_mod = _load_module_from(REPO_ROOT / "runtime" / "ability_projection.py",
                                        "serveros_ability_projection")
 
@@ -2771,7 +2771,7 @@ def _bindings_for(registry: dict, device_ref: str, observed: dict | None,
     three equally badly.
     """
     binding_mod = _load_module_from(REPO_ROOT / "abilities/runtime_binding.py",
-                                    "serveros_runtime_binding")
+                                    "serveros_abilities_runtime_binding")
     return binding_mod.list_bindings(registry, device_ref, observed=observed,
                                      reference=binding_mod.now_utc(),
                                      unobserved_because=because)
@@ -10719,7 +10719,7 @@ def _workchain_git():
     or on when somebody else last pushed.
     """
     mod = _load_module_from(REPO_ROOT / "runtime" / "daily_report.py",
-                            "serveros_daily_report")
+                            "serveros_runtime_daily_report")
     return mod._git
 
 
@@ -11520,7 +11520,7 @@ def _reading_current(semantic, report: dict, reading: dict, *,
         # The finite reader uses bounded subsets of the same proposed ranges.
         # Regenerate those exact subsets, never accept an arbitrary caller span.
         delta = _load_module_from(REPO_ROOT / "intake" / "understanding_delta.py",
-                                  "serveros_semantic_batch_delta")
+                                  "serveros_intake_understanding_delta")
         bounded = delta.bounded_report(report, Path(report["records_root"]))
         batch_card = next(c for c in bounded["cards"] if c.get("card") == source.get("card"))
         matching = [r for r in batch_card["judged"]["review_ranges"]
