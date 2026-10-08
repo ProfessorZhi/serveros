@@ -9158,7 +9158,163 @@ spec.loader.exec_module(cls.mod)
 被声明过的名字，得到的是一个异常或一个空——而这两种输出，与「那个名字本来就不存在」逐字相同。
 这是 RUN-0053 的整包内容，**不在本 PR 里**。
 
-## 12. 最终报告（计划 §16 要求的那一份）
+## §9.58 一个名字，没有人能问出口 —— 声明、读面、和「看起来对」
+
+上一节的最后一段把这一包许出去了，这里兑现。§9.57 的形状是「一张表里有一行没人读」；本节
+的形状**早一层**：**一个名字没人能问**。而「没人能问」正是那行字面量被写下去的原因。
+
+### 量到的差别
+
+`runtime/paths.py` 的 `_profile_roles` 问 host profile，拿回 **11 个名字**。而 `Paths()` 能把
+它们分成三类，只有一类是**能问的**：
+
+```text
+self.roots        10 个 root 词表里的名字 -> root() 能答
+self.SEMANTIC_ROLES  2 个语义角色         -> role() 能答
+其余的             6 个                   -> 谁都不能答，且没有人报错
+```
+
+「谁都不能答」在代码里不是一个异常，是**一个名字不在任何表里**。这 6 个是
+`data_root`、`downloads`、`knowledge.corporate`、`scratch`、`workspace.src`、
+`workspace.worktrees`。把 `role()` 当成访问器去问它们（本包第一次测量就是这么问的，
+`probe/opening-census.txt` 记了），11 个全 `PathRefused`——**这个输出与「这个节点什么都没声明」
+逐字相同**。这是本夜里这一失败模式的第 4 次出现。
+
+### 前驱就在同一棵树里，而且说得更好
+
+`skills/serveros/scripts/architecture_check.py` 早就遇到同形的问题、并且就地修了，它自己的
+注释是：
+
+```text
+without this the tokens ONLY the profile supplies -- DOWNLOADS_ROOT and
+RUNTIME_ASSETS_ROOT -- are never asked for, so a profile that binds them and
+one that leaves them UNBOUND produce the same report and that half of the
+contract is decorative
+```
+
+**「decorative」**——一个没人能读的声明。§9.55 在一层之下用的是同一个词（那一行没人读）。
+所以本包的判据把问题问成一句不会过期的话：**每一个被 authority 绑定的名字，谁在读它**；
+而读者在另一层的，就把那一层写下来，而不是让它看起来没人读。
+
+### 后果：一个字面量，和一句自证的话
+
+`runtime/workspace.py` 的 `SCRATCH_SURFACES` 需要这个位置，于是它写下了
+`/data/scratch/vince`，并配了一句 `provenance`：
+
+```python
+{"path": "/data/scratch/vince", "class": "scratch",
+ "provenance": "host_profile.bindings.scratch", ...}
+```
+
+`provenance` 这句**是实话，但它是一句断言，不是一次读取**。§9.57 的判据
+（`test_no_node_paths_in_product_data.py`）抓到的就是这个字面量，而它当时**只能把
+`runtime/workspace.py` 记进 `KNOWN` 带一句理由**——因为那个值在那时**确实无处可读**。
+两层缺陷是一个：**表里有一行没人读，是因为这个名字没人能问。**
+
+### 为什么不扩词表
+
+直觉的修法是给 `ROOTS` 加名字。量过了，代价不是零：
+
+```text
+tests/test_path_authority.py:67   把 root 名字表写进了期望消息里
+runtime/ownership_gate.py:488     enumerate paths.names
+runtime/view.py:442               enumerate paths.names
+runtime/daemon.py:2330            enumerate paths.names
+```
+
+而**根词表的语义是「能派生出路径的地方」**，`scratch` 不是：它在 HOME 的**另一个文件系统**
+上，所以它不是 `{HOME}/scratch`，任何 derive 都到不了它。把「声明」塞进「派生」的词表，是
+**用一次词表扩张去掩盖一次缺失的读面**。所以本包加的是**一个新访问器**，爆炸半径为零。
+
+### 落地：读，不派生；问不到就是问不到
+
+```python
+def binding(self, name: str) -> Path:
+    ...
+    if name not in self.bindings:
+        raise PathRefused(
+            f"{name!r} is not a name this node's authority binds. Bound: "
+            f"{sorted(self.bindings)}. A binding is read or it is absent; "
+            f"it is not derived, because a derived answer here would be a "
+            f"path that looks right on a machine that never declared it.")
+    return Path(self.bindings[name])
+```
+
+`self.bindings = {} if roots is not None else _profile_roles(...)`：`roots=` 注入的世界
+**没有 authority 可读**，所以它一个也不绑——这是诚实的答案，而不是让本机的答案渗进测试。
+
+消费者那头，`SCRATCH_SURFACES` 的那一行改成 `{"binding": "scratch", ...}`，
+位置由 `scratch_rows()` 去读；**问不到的行被丢弃，不是被默认**：
+
+```python
+try:
+    resolved = str(paths_mod.Paths().binding(row["binding"]))
+except paths_mod.PathRefused:
+    continue
+```
+
+带着 `path` 的行仍然照写——这是给「调用方自己声明的、没有 authority 绑定的区域」留的口子。
+
+### 判据：写下来的读者，是被打开看过的
+
+`tests/test_authority_bindings_have_readers.py` 的 `READ_BY` 把 6 个非 root 名字**逐个**
+配上读它的那一层：`data_root`→`runtime/paths.py`（`_SEED_ROLE`）、
+`downloads`→`skills/serveros/scripts/architecture_check.py`（`DOWNLOADS_ROOT`）、
+`knowledge.corporate`→`runtime/paths.py`（`WORKSPACE_TOP_LEVEL`）、
+`scratch`→`runtime/workspace.py`（`scratch_rows()`）、
+`workspace.src`/`workspace.worktrees`→`runtime/workspace.py`（`PLACEMENT_CLASSES`）。
+`READ_BY` **是被检查的，不是被信任的**：`TheDeclaredReadersAreRealTests` 把每个被点名的文件
+**打开来**看它是否真的读那个名字——因为「某处有人在读」正是**读者被删掉之后依然为真**的那句话。
+新增一个绑定会让它变红，直到有人说清谁读；一个读者停止了读，也会变红。
+
+`test_authority_bindings_have_readers.py::TheAccessorTests::test_a_root_the_authority_does_not_bind_is_still_refused`
+钉住的是**访问器读的是 AUTHORITY，不是 root 词表**：`caches`/`data`/`logs`/`tmp` 是 root 而
+不是 binding（派生来的，不是声明来的），退回 root 的 `binding()` 会替它们作答，而答案**看起来对**。
+
+### 证伪：四条里有一条最初没红，那是条目缺陷
+
+`probe/falsify.sh` 把判据推红四次：① 声明里多一个不存在的名字；② 声明里少一个真实绑定的名字；
+③ 推**实现**——让 `binding()` 退回派生而不是拒绝；④ 再推实现——让未绑定的行被默认而不是被丢弃。
+**开局的 C **没有**红**：我原来只测了 `binding("scratch_area")`（一个连 root 都不是的名字），
+退回派生的实现照样拒绝它。这是**判据的缺口，不是探针的噪声**，所以补了上面那条测试；
+补齐后 C 红 **5 failed**。D 第一次也白跑，因为我推错了文件（推 `paths.py`，而被测行为在
+`workspace.py` 的 `scratch_rows()` 里）。四条全红、三个文件逐字节还原后判据 **13 passed**。
+
+### 一次我自己犯下的第 6 例
+
+证伪的第一版用 `git checkout -- <路径>` 来「还原」被改的文件。对**有未提交改动的已跟踪文件**，
+它做的不是撤销探针，而是**丢弃本次包的实现**（`paths.py` 整个回退）；对**未跟踪的判据文件**它
+直接报错，于是探针留下的改动**留了下来**。这就是今晚这一失败模式的第 6 次出现，而这次是我犯的：
+**探针的还原步骤不能碰到任何探针没碰过的东西。** 现在的脚本**拷贝到旁边、改、跑、拷回来、
+断言哈希逐字节相同**，全程不用破坏性 git 动词。
+
+### 收敛读数
+
+| 项 | 修前 | 修后 |
+| --- | --- | --- |
+| authority 绑定的名字，能问到的 | 5 / 11 | **11 / 11** |
+| AST 普查 offender（本机路径作为活数据） | `{"runtime/workspace.py": 1}` | **`{}`**（parsed 138） |
+| `KNOWN` 条目 | 1 | **0** |
+
+`KNOWN` 变空**是消费者的结果，不是一张更干净的表**：那个条目自己写着它会在「root 消失时」
+消失，而它实际需要的是一个**访问器**。行为不变已核：`binding('scratch') ==
+`/data/scratch/vince`，与旧字面量逐字符相同。
+
+### 落地
+
+`runtime/paths.py`（+41）、`runtime/workspace.py`（+44/−19 附近）、
+`tests/test_no_node_paths_in_product_data.py`（+27）、
+`tests/test_authority_bindings_have_readers.py`（新增 229 行）。全套见本包 `probe/suite-readings.txt`。
+**未发版**——与 §9.55/§9.56/§9.57 同一个理由：已安装的 `current/context/resolver.py` 仍是
+sha256 `bcbec664…`（Sep 23 00:59），发版动作表仍是十一项。
+
+### 顺带量到、留给后面
+
+`knowledge.corporate` 与 `WORKSPACE_TOP_LEVEL` 里的 `knowledge` **是同一件事的两个来源**，而
+这条判据只能记下它、不能裁决它——这是 `PENDING-DECISIONS.md` **条目 8** 的第二个实测实例。
+`downloads` 的读者在**另一层**（`skills/`），这本身是本包第一次量到的事实：**读面的分布是跨层的，
+所以「读面在不在」不能只看 `runtime/`。**
+
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
 集成**、**真在链路上跑的**和**被人或权限挡住的**分成四类分开说，因为把它们合成一句「做完了」
