@@ -271,28 +271,52 @@ def missing_from(root: Path) -> list[Path]:
 #
 # THE FORM THIS SCANNER ACCEPTS
 # -----------------------------
-# A scope that writes `sys.modules[...]` must read the cache at an earlier line
-# in the same scope: `K in sys.modules`, `sys.modules.get(K)` or
-# `sys.modules[K]` on the right-hand side. `if name in sys.modules: return
-# sys.modules[name]` and `module = sys.modules.get(name); if module is None:`
-# are both this repository's own guarded shape.
+# The write has to happen ONLY on the path where the name is still missing.
+# Three shapes say that, and this tree contains nothing else:
+#
+#   1. early return       `if K in sys.modules: return sys.modules[K]` at the
+#                         top of the scope, the write below it;
+#   2. get + None test    `m = sys.modules.get(K)` then `if m is None:`, the
+#                         write inside that body;
+#   3. present + else     `if K in sys.modules: m = sys.modules[K] else:` the
+#                         write inside the `else` body.
+#
+# WHY "CONSULT FIRST" WAS NOT ENOUGH
+# ----------------------------------
+# The first version of this scan asked only whether some earlier line in the
+# same scope read `sys.modules`, and said so as a deliberate trade: the rule was
+# structural rather than key-resolving, which removed a whole class of mistake.
+# It was too weak, and the weakness is not hypothetical — it was measured
+# against this scan before the rule was replaced:
+#
+#     def _load(name, path):
+#         existing = sys.modules.get(name)     # <- a consult, and it satisfies
+#         spec = spec_from_file_location(...)  #    the old rule
+#         module = module_from_spec(spec)
+#         sys.modules[name] = module           # <- still displaces
+#
+# `unguarded_in_source(<that source>)` returned `[]`. So did the same shape with
+# `if name in sys.modules: print(...)` in place of the `.get`. Both displace the
+# first registrant of the name exactly as the defect above does, and a gate that
+# passes them is standing next to the property rather than holding it.
 #
 # WHAT IT DOES NOT DO
 # -------------------
 # Ordering is by line within one scope, and the scope is the innermost enclosing
 # function. A guard living in the caller of the writer is not modelled, and
-# neither is an aliased `sys` (`import sys as _s`). Both are absent from this
-# tree; a gate that says "every registrant consults first" would be a stronger
-# claim than this scan can make, so it does not make it.
+# neither is an aliased `sys` (`import sys as _s`) or a `try: sys.modules[K]
+# except KeyError:` around the write. All three are absent from this tree; each
+# is a form the scan would report rather than miss, which is the direction a
+# gate should fail in.
 #
-# The consult also does not have to name the key being written: any earlier read
-# of `sys.modules` in the scope satisfies the scan, because the property being
-# enforced is structural — a registration is preceded by a look at the cache —
-# rather than "the guard is about this key". A consult in a DIFFERENT scope,
-# which is what a helper's own `if name in sys.modules` is to a registration
-# written beside it, does not count; that distinction is the whole of the
-# §A defect this was written for, where a guarded helper and an unguarded one
-# sat in the same file.
+# The guard must be about the key: shape 2 recognises a name bound from
+# `sys.modules.get(...)`, and `if m is None:` for any other `m` is not a guard.
+# A consult in a DIFFERENT scope does not count either, which is the whole of
+# the §A defect this was written for — a guarded helper and an unguarded
+# registration beside it, in one file.
+#
+# `_is_consult` is kept: it is the cheaper question, and the named-regression
+# tests read it to say "this site reads the cache before it writes".
 
 
 def _is_sys_modules(node: ast.AST) -> bool:
@@ -338,28 +362,138 @@ def _enclosing_function(node: ast.AST, parents: dict[int, ast.AST]):
     return None
 
 
+def _get_call(node: ast.AST) -> bool:
+    """`sys.modules.get(...)`, as an expression."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and _is_sys_modules(node.func.value))
+
+
+def _bound_from_get(scope, write, parents, tree) -> set[str]:
+    """Names this scope binds from `sys.modules.get(...)` ABOVE the write.
+
+    This is what makes `if m is None:` a guard rather than a test of some
+    unrelated variable: `m` has to be the value that was read out of the cache.
+    """
+    container = scope if scope is not None else tree
+    bound: set[str] = set()
+    for node in ast.walk(container):
+        if not hasattr(node, "lineno") or node.lineno >= write.lineno:
+            continue
+        if scope is not None and _enclosing_function(node, parents) is not scope:
+            continue
+        if (isinstance(node, ast.Assign) and _get_call(node.value)
+                and isinstance(node.targets[0], ast.Name)):
+            bound.add(node.targets[0].id)
+    return bound
+
+
+def _name_is_none_test(node: ast.AST, bound: set[str]) -> bool:
+    """`m is None`, `sys.modules.get(K) is None`, `not m`, `not sys.modules.get(K)`."""
+    if isinstance(node, ast.Compare):
+        if not isinstance(node.ops[0], ast.Is):
+            return False
+        left, right = node.left, node.comparators[0]
+        none_on_right = isinstance(right, ast.Constant) and right.value is None
+        none_on_left = isinstance(left, ast.Constant) and left.value is None
+        other = left if none_on_right else right
+        if not (none_on_right or none_on_left):
+            return False
+        return ((isinstance(other, ast.Name) and other.id in bound)
+                or _get_call(other))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        operand = node.operand
+        return ((isinstance(operand, ast.Name) and operand.id in bound)
+                or _get_call(operand))
+    return False
+
+
+def _absent_test(node: ast.AST, bound: set[str]) -> bool:
+    """True when this test can only pass while the name is still missing.
+
+    `and` narrows and is safe if ANY operand is such a test; `or` widens, so
+    every operand has to be one. `K not in sys.modules or DEBUG` is not a guard,
+    and reading the whole test tree for a `NotIn` would have called it one.
+    """
+    if isinstance(node, ast.Compare):
+        if any(isinstance(op, ast.NotIn) and _is_sys_modules(right)
+               for op, right in zip(node.ops, node.comparators)):
+            return True
+        return _name_is_none_test(node, bound)
+    if _name_is_none_test(node, bound):
+        return True
+    if isinstance(node, ast.BoolOp):
+        tests = (_absent_test(v, bound) for v in node.values)
+        return any(tests) if isinstance(node.op, ast.And) else all(tests)
+    return False
+
+
+def _present_test(node: ast.AST) -> bool:
+    """True when this test can only pass while the name is ALREADY registered.
+
+    Deliberately exact: `if K in sys.modules and ready: return ...` does not
+    make the write below it safe, because the write is still reached when `K` is
+    present and `ready` is false. Only a bare membership test counts.
+    """
+    return (isinstance(node, ast.Compare) and isinstance(node.ops[0], ast.In)
+            and _is_sys_modules(node.comparators[0]))
+
+
+def _contains(block: list[ast.stmt], write: ast.Assign) -> bool:
+    return any(write is stmt or write in ast.walk(stmt) for stmt in block)
+
+
+def _guard_shape(write: ast.Assign, tree: ast.AST,
+                 parents: dict[int, ast.AST]) -> str | None:
+    """Which shape keeps this write on the missing path, or `None`.
+
+    `None` means the write can be reached with the name already taken — the
+    name is displaced, and the first registrant's readers keep an object the
+    name no longer reaches.
+    """
+    scope = _enclosing_function(write, parents)
+    bound = _bound_from_get(scope, write, parents, tree)
+
+    current = parents.get(id(write))
+    while current is not None and current is not scope:
+        if isinstance(current, ast.If):
+            if _contains(current.body, write) and _absent_test(current.test, bound):
+                return "absent-if"
+            if _contains(current.orelse, write) and _present_test(current.test):
+                return "present-if-else"
+        current = parents.get(id(current))
+
+    for stmt in (scope.body if scope is not None else tree.body):
+        if stmt.lineno >= write.lineno:
+            break
+        if (isinstance(stmt, ast.If) and _present_test(stmt.test)
+                and any(isinstance(n, ast.Return) for n in ast.walk(stmt))):
+            return "early-return"
+    return None
+
+
 def unguarded_in_source(source: str, label: str) -> list[str]:
-    """Registrations in `source` with no earlier read of the cache to check against.
+    """Registrations in `source` that can be reached with the name already taken.
 
-    "Earlier" and "same scope" are both literal: the consult must be at a lower
-    line number and in the same enclosing function — or, at module level, in the
-    module's own top level. A guard that lives in some other function of the
-    same file, which is what a helper's own `if name in sys.modules` is, does
-    not count for a registration made beside it.
+    A registration is guarded when it happens only on the path where the name is
+    still missing — an early return, a `sys.modules.get(...)` behind a `None`
+    test, or the `else` of a membership test. "Earlier" and "same scope" are
+    both literal: the guard must be at a lower line number and in the same
+    enclosing function, or, at module level, in the module's own top level. A
+    guard in some other function of the same file, which is what a helper's own
+    `if name in sys.modules` is, does not count for a registration made beside
+    it.
 
-    Takes source rather than a path so the control below can hand it a form this
-    tree no longer contains; `label` is only what a finding is printed as.
+    Takes source rather than a path so the controls can hand it forms this tree
+    no longer contains; `label` is only what a finding is printed as.
     """
     tree = ast.parse(source)
     parents = {id(child): node
                for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-    consults = [(node.lineno, _enclosing_function(node, parents))
-                for node in ast.walk(tree) if _is_consult(node)]
     found: list[str] = []
     for write in _registration_writes(tree):
-        own = _enclosing_function(write, parents)
-        if any(line < write.lineno and scope is own for line, scope in consults):
+        if _guard_shape(write, tree, parents) is not None:
             continue
+        own = _enclosing_function(write, parents)
         name = getattr(own, "name", "<module>")
         found.append(f"{label}:{write.lineno} in {name}")
     return found
@@ -384,6 +518,27 @@ def registration_sites(root: Path = REPO) -> list[str]:
         found.extend(f"{path.relative_to(REPO)}:{write.lineno}"
                      for write in _registration_writes(tree))
     return found
+
+
+def guarded_shapes(root: Path = REPO) -> dict[str, int]:
+    """How many registrations the tree holds, per guard shape.
+
+    The second floor, and the one the first cannot substitute for. A classifier
+    that had stopped recognising guards would report every registration as
+    unguarded and the gate would go red — that direction is safe. A classifier
+    that had stopped recognising REGISTRATIONS would report zero of both and be
+    green for the same reason a broken one is. This counts the accepted shapes
+    one by one so `{"unguarded": 0}` cannot be reached by seeing nothing.
+    """
+    counts: dict[str, int] = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {id(child): node
+                   for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        for write in _registration_writes(tree):
+            shape = _guard_shape(write, tree, parents) or "unguarded"
+            counts[shape] = counts.get(shape, 0) + 1
+    return counts
 
 
 def unguarded_registrants(root: Path = REPO) -> list[str]:
