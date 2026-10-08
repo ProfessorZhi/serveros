@@ -149,7 +149,20 @@ class Roots:
         artifacts_root = Path(
             os.environ.get("SERVEROS_ARTIFACTS_ROOT")
             or os.environ.get("ARTIFACTS_ROOT")
-            or str(_profile_root("artifacts") or data_root / "artifacts")
+            # The document's spelling first, then the older one.
+            # `artifacts_root` is the row this node's profile declares.
+            # `artifacts` is the ROLE name in `fleet/profiles.yaml`'s table,
+            # borrowed here under the wrong document: the row was asked for in
+            # the words of the file next door, so nothing answered, and this
+            # root was COMPUTED from `data_root` rather than READ. On this node
+            # the two coincide, which is what let it survive. `runtime/paths.py`
+            # records the same reading about the same word one table over.
+            #
+            # Both keys are listed for the reason `_data_root` lists
+            # `data_root` and `identity_home`: a profile that spells the row
+            # either way answers, and the one the document uses is asked first.
+            or str(_profile_root("artifacts_root", "artifacts")
+                   or data_root / "artifacts")
         )
         state_dir = os.environ.get("SERVEROS_STATE_DIR")
         state_db = (

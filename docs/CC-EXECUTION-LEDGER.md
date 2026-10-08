@@ -8657,6 +8657,169 @@ A/B 落点（基线让 `/tmp` 的 `pytest-of-*` 从 682 走到 683；改后让�
 **装机面**：`runtime/actuator-contract.yaml` 是 `CORE_MODULES` 成员，所以这包有装机面；
 **没有发版**，理由与前八条逐字相同，登记在 `PENDING-DECISIONS.md` 条目 6 的装机动作表**第九条**。
 
+## §9.55 那一行没有人读：同一个问题的两份被授权的文档
+
+这是「一张表对同一个东西给出两个相反答案」的**第六例**，而形状又是新的。前五例（§9.50 起的
+RUN-0045/0046/0048/0049 四条与 PENDING-DECISIONS 第 3 条）都是**两个值**：两份表、两个部件、
+或者一个函数，对同一个问题各答一个。这一例的答案**只有一个，而且是对的**——错的是**问题**：
+一行被问了**一份文档不用的词**，于是从来没有答案，值是从另一个根**算出来**的。而在这台机器上
+算出来的那个和声明的那一个是**同一个目录**，所以它连错都看不出来。
+
+### 三份实现读一份文档，两份有具名表，第三份没有
+
+`runtime/paths.py` 读 `<repo>/fleet/profiles.yaml`（经 `~/.serveros/node.yaml` →
+`fleet/registry.yaml` 这条授权链）。`context/resolver.py` 读
+`~/.config/serveros/host-profile.yaml`。**这是两份不同的文档**，各自被写成人读的 SSOT——
+`CLAUDE.md` 把 host profile 称为 "the structural SSOT for this node"，而 `fleet/profiles.yaml`
+是同一台机器的另一份声明。
+
+读 host profile 的有**三份**实现：
+
+| 实现 | 形状 | 问 `artifacts_root`？ |
+| --- | --- | --- |
+| `scripts/runtime_truth.py` | `ROOT_SOURCES` 具名表 | 不涉及（表里没有这个根） |
+| `skills/serveros/scripts/architecture_check.py` | `ROOT_SOURCES` 具名表 | 不涉及 |
+| `context/resolver.py` | 内联 `_profile_root(...)` 调用 | **问的是 `artifacts`** |
+
+前两份表里的键**每一个都是真机上存在的行**（`identity_home` / `workspace_src` /
+`workspace_root` / `runtime_assets_root`，逐条核过）。而且 `runtime_truth.py` 的 docstring 自己
+写着：
+
+> This is the second copy of `architecture_check.py`'s resolver; see
+> `test_the_two_copies_of_the_root_resolver_agree`, which is what keeps the two from parting again.
+
+**一条守住两份的判据，而射程之外的那一份就是错的那一份。**
+
+### 错在哪：借了另一份文档的词
+
+两份文档对同一个东西用的**不是同一个词**，实测（`probe/row-read-not-computed-ab.py` 第 0 段）：
+
+```text
+host profile        node.roots.artifacts_root   → 存在，/data/home/vince/artifacts
+host profile        node.roots.artifacts        → 不存在
+fleet/profiles.yaml paths.artifacts             → 存在（role 名）
+fleet/profiles.yaml paths.artifacts_root        → 不存在
+```
+
+`artifacts` 是 **fleet 表里的 role 名**；host profile 把同一件事写作 `artifacts_root`。
+`context/resolver.py:152` 读的是 **host profile**，问的却是 **fleet 的词**。于是：
+
+```python
+# 改前
+or str(_profile_root("artifacts") or data_root / "artifacts")
+#                ^^^^^^^^^^^^ 没有人会答，总是掉到右边
+```
+
+这个根从来不是被**读**出来的，是被**算**出来的。而 `runtime/paths.py` 对它自己的同一个词
+已经记过**一模一样的读数**（第 715–722 行）：
+
+> `artifacts` and `toolchains` — both declared roles — were COMPUTED rather than READ.
+> **On this node the two coincide and only the provenance was wrong, which is what made it survive.**
+
+那份修好了。同一个缺陷、同一个词，`context/resolver.py` 没修。
+
+**这个文件自己 38 行之前就把原则讲清楚了。**`:112` 的注释写着：`identity_home` 也答，
+因为「a node whose home IS its data root says so **in its own Profile, in those words**」——
+按文档的用词问文档。`:114` 照做了（`_profile_root("data_root", "identity_home")`），
+`:152` 没有。**同一份文件里的两条规则不一致，而错的那条因为结果对而沉默。**
+
+### A/B：那一行到底有没有人读
+
+`probe/row-read-not-computed-ab.py`：一份 profile 副本把 `node.roots.artifacts_root` 指到哨兵，
+基线（`git show HEAD:context/resolver.py` 逐字加载）与改后各答一次。
+
+```text
+不动任何一行            基线 /data/home/vince/artifacts      改后 同       ← 这就是它活下来的原因
+artifacts_root → 哨兵   基线 没动 —— 那一行没人读            改后 答哨兵 —— 被读了
+artifacts       → 哨兵   基线 答哨兵                          改后 答哨兵   ← 负控制：探针接得上
+```
+
+第三行是这条 A/B 自己的**负控制**。没有它，「改了没反应」和「这个探针根本没接上去」是同一个
+读数。三行合起来才是判词：**这一行是 READ，不是 COMPUTED。**
+
+### 改法与判据
+
+```python
+# 改后
+or str(_profile_root("artifacts_root", "artifacts")
+       or data_root / "artifacts")
+```
+
+文档的词在前，旧的短拼法在后——**两个键都列**，理由就是 `_data_root` 列
+`data_root`/`identity_home` 的理由：一个根可以被不止一种方式命名，按顺序试。改动 **+14/−1**。
+
+`tests/test_resolver_reads_the_document.py`（新，308 行，**8 条**）。这个文件**不是 hermetic 的**，
+它的 docstring 把这一点说出来而不是留给人去发现：`tests/test_resolver.py` 自称
+「Nothing here reads this machine's real records」，而这里有两个问题**只能**问本机自己的两份
+文档，所以那两个在**没有 host profile 的节点上 skip，而不是 pass**——答不出的问题不是被满足的
+问题。8 条里：
+
+* **4 条是这条缺陷的否证**，在基线沙盒里逐条红过（`4 failed, 4 passed in 0.15s`，
+  基线取自 `git show HEAD:context/resolver.py`，兄弟路径 symlink 指向真实工作树）：
+  文档的拼法必须动答案、两种拼法同时出现时文档的赢、**每一次 ask 至少有一个键是本节点文档
+  声明的行**、以及那条扫描自己的守卫（它红了才说明扫描真的看得见 ask，否则「什么都没找到」
+  会被读成「干净」）。
+* **4 条是保全面，改动前后都该绿**——它们在基线上也绿，所以它们红才说明改坏了：没有行时仍然
+  从 `data_root` 派生、环境仍然优先于两份文档、短拼法仍然答、以及两份文档在本节点上一致。
+
+那条一般的守卫比钉死 `artifacts` 一个词重要：它按 **ask** 检查——「一次调用试的键里，至少有
+一个必须是本节点文档声明的行，否则那条分支永远答不出来」。两种合法形状都过它
+（`("data_root", "identity_home")` 靠第二个键成立，`("artifacts_root", "artifacts")` 靠第一个），
+而**下一个写错行名的调用点会在它自己那一行变红**，不用等有人想起来再写一条判据。
+
+另加一条**跨权威漂移告警**：环境变量全部拿开，`Roots.from_env().artifacts_root` 与
+`Paths().root("artifacts")` 必须相等。差就是两份**被授权的文档**对同一个根说法不同——那是一个
+要人回答的问题（哪一份是 SSOT），所以它的消息把两份文档的路径和两个值一起打出来，并指向
+`PENDING-DECISIONS.md` 里那条待决问题。**它故意是硬断言而不是警告**：警告没有红过，就等于没有。
+
+### 没做的，和为什么
+
+* **没有把 `context/resolver.py` 折进 `Paths`。** 两台实现读两份文档，谁该是 SSOT 是人要回答的
+  问题，不是这一包能定的。写进待决问题（`PENDING-DECISIONS.md` **条目 8**，本包新开的一格）。
+  **顺带量到一条让这一格更硬的读数**：`fleet/profiles.yaml:344` 自己写着，它的角色是
+  **path bindings**，而 host profile 装的是「authored facts about a machine rather than path
+  bindings」，并且 §6 要求那些事实「exist rather than to be **restated in two places**」——
+  **两份文档自己声明的分工，正被它们自己违反**：host profile 那 22 行 `node.roots` 恰恰是 path
+  bindings，与 fleet 表重复的就是它们。所以两份文档分歧的不只是一个**行名**，是**各自以为自己在
+  管什么**。这让 (A) 与 (B) 各自都有文档依据，因此**更**需要人定。
+* **没有改 `tests/test_resolver.py` 那条既有判据的 fixture。** 它在第 253 行写
+  `artifacts: {self.base}/built`——用**短拼法**，也就是**跟着代码的信念而不是文档的事实**写的，
+  所以它一直是绿的。这是别人写下的判据，我不动它，只把这件事记在这里：**一条形状正确、fixture
+  用错词的判据，是这个缺陷活下来的直接原因。**
+* **没有动 `fleet/profiles.yaml`。** 它的 role 名 `artifacts` 对它自己那份文档是对的。
+* **没有发版。** 理由见下。
+
+### 装机面：这一包和前九条不同，它是**活的**
+
+`context/` 是 `CORE_MODULES` 成员，所以这一包**有**行为装机面，而且和 §9.54 的「半个装机面」
+不一样：
+
+```text
+装机载荷    /data/home/vince/runtime-assets/hwz-server-os/current/context/resolver.py
+            srv0003.20260923c（Sep 23 00:59），sha256 bcbec664…
+            第 152 行：or str(_profile_root("artifacts") or data_root / "artifacts")
+```
+
+**装在机上的那一份今天就是错的，而且正在被用**（`Roots.from_env()` 在
+`runtime/cli.py:3234/3299/7886/12453` 与 `runtime/daemon.py:2319` 五处被调用）。所以这一包不是
+「改了没影响」，是「**改了才有影响**」——发版之前，本机跑的还是没修的那一份。
+
+而在**这台**机器上它错得没有后果：算出来的与声明的是同一个目录。后果要在**布局不是默认的
+节点**上才出现，也就是下一个 `DATA_ROOT` 不是 `$HOME` 的节点。这正是它活下来的原因，也是它
+值得修的原因。
+
+**判据**：装机载荷的 `context/resolver.py` 第 152 行是否问 `artifacts_root`。**今天正的不成立**
+（问的是 `artifacts`），**负的成立**。
+
+顺带一条读数陷阱：`grep -c artifacts_root` 在装机那份上给 **9**，看着像「词在那儿」。那 9 次
+是**属性名**（`self.artifacts_root`、`roots.artifacts_root`），不是**行名**。同一个词，两个位置，
+一个 grep 分不出来——这是本夜那个形状的又一次露面，只不过这次它藏在我要用来核对的工具里。
+
+**没有发版**，理由与前九条逐字相同（再推一代会拉大插件缓存与节点的代差，而那条待决问题正在问
+「要不要先把这个不同步变成看得见的判词」），登记进 `PENDING-DECISIONS.md` 条目 6 的装机动作表
+**第十条**。与第九条不同的是：这一条**有一条活着的缺陷在机上**，所以发版的收益第一次不再是
+零——这个区别写在动作表那一行里。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
