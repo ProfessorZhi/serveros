@@ -197,14 +197,48 @@ PLACEMENT_CLASSES: dict[str, dict] = {
 # `external`. Each carries its own provenance, because "we decided this is
 # scratch" and "the host's storage policy says this is scratch" are different
 # claims and only one of them is ours to make.
+#
+# A row's PATH COMES FROM THE AUTHORITY, NOT FROM THIS FILE. That is what the
+# `binding` key says: this module declares WHICH area counts as scratch (a
+# semantic claim, and this module's to make), and the authority declares WHERE
+# it is (a fact about the machine, and not this module's to guess). Those were
+# one field when the path was a literal, and the literal was one machine's —
+# `paths.Paths().binding("scratch")` is the other half, and the reason it exists.
+#
+# A row that carries `path` instead is taken as written, which is how a caller
+# (or a test) declares an area no authority binds.
 SCRATCH_SURFACES = (
-    {"path": "/data/scratch/vince", "class": "scratch",
-     "provenance": "host_profile.scratch_area.this_account_path",
+    {"binding": "scratch", "class": "scratch",
+     "provenance": "host_profile.bindings.scratch",
      "note": "the host's own scratch area. Mode 0700, and DISPOSABLE_REBUILDABLE "
              "per the host profile — it is on a different filesystem from the "
              "home directory, so it is also the right place for large "
              "temporary output that would otherwise fill the quota."},
 )
+
+
+def scratch_rows() -> tuple[dict, ...]:
+    """`SCRATCH_SURFACES` with each `binding` resolved through the root contract.
+
+    A row whose binding THIS NODE does not declare is DROPPED, not defaulted: an
+    area nobody authored must not be classified as scratch, and a plausible path
+    invented here is the failure this module exists to prevent. Dropping it
+    means the path falls through to whatever else claims it — often `external`
+    — which is the true answer on a node with no declared scratch area.
+    """
+    import paths as paths_mod  # noqa: PLC0415 - resolved from the repo, never installed
+    rows = []
+    for row in SCRATCH_SURFACES:
+        if "path" in row:
+            rows.append(dict(row))
+            continue
+        try:
+            resolved = str(paths_mod.Paths().binding(row["binding"]))
+        except paths_mod.PathRefused:
+            continue
+        rows.append({**row, "path": resolved})
+    return tuple(rows)
+
 
 # `caches`, `logs` and `downloads` are neither of the six and are not claimed
 # to be. Named explicitly so `inspect` says "cache, and here is its rule"
@@ -325,7 +359,7 @@ def classify(paths, target: str) -> dict:
     # surface it sits inside, so it wins, and so does it on any future node
     # where the nesting runs the other way.
     claims: list[tuple[int, int, dict]] = []
-    for surface in SCRATCH_SURFACES:
+    for surface in scratch_rows():
         prefix = surface["path"]
         if absolute == prefix or absolute.startswith(prefix + os.sep):
             claims.append((len(prefix), 1, {
@@ -498,7 +532,7 @@ def overview(paths) -> dict:
                 "mutable": spec["mutable"],
                 **measured,
             })
-    for surface in SCRATCH_SURFACES:
+    for surface in scratch_rows():
         measured = _measure(Path(surface["path"]))
         if measured["exists"]:
             areas.append({"class": surface["class"], "path": surface["path"],
@@ -825,7 +859,7 @@ def policy(paths) -> dict:
         "classes": classes,
         "adjacent": [{"root": k, "kind": v[0], "note": v[1]}
                      for k, v in sorted(ADJACENT_SURFACES.items())],
-        "scratch_surfaces": [dict(s) for s in SCRATCH_SURFACES],
+        "scratch_surfaces": [dict(s) for s in scratch_rows()],
         "rules": [
             "Placement is decided before the write, not discovered after it. "
             "`locate` answers where a thing of a known kind goes; if the kind "
