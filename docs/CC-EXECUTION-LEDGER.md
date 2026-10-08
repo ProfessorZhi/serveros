@@ -11303,3 +11303,134 @@ A/B 两次读数同为 `pid=2276905`。
 合并后 `origin/main` 的三个文件与分支头**逐 blob 一致**。Item 侧记录在
 `artifacts/work-items/serveros/SRV-0011/RUN-0039/`（Run `SUCCEEDED`，9 条证据行），
 入口是 `RUN-0039/deliverables/RUNTIME-TRUTH-SOURCE-REBUILD.md`。
+
+---
+
+### 9.68 `work item` 报的 `MISSING` 是**读者自己**的落后 —— 本夜第五个同形问题
+
+`RUN-0040`（PR **#121**）。放在 §9.65–§9.67 之后，因为它是同一个形状的第 5 例，
+而前四例修的都是**量具**；这一例修的是**读者**。
+
+#### 9.68.1 命中的现象：同一屏上，上面那句和下面那句主语不同
+
+真机读数（装机代 `product-tree-20261008s@2f6d0d3`）：
+
+```
+× brief.md     MISSING   an Item in ACTIVE is expected to have it, and it resolves under none of ['exact-file']
+记录树     78984786feb9 · main · 与 origin/main 分叉（领先 1、落后 19）
+```
+
+`记录树` 那行**已经声明**了这是一棵与 `origin/main` 分叉的树；两行之下，同一份文档被报成
+**Item 欠的东西**。到卡片旁边直接量（判据不是 reader 自己说了算）：
+
+| 问题 | 量法 | 答案 |
+|---|---|---|
+| `brief.md` 在本树 HEAD 吗 | `git cat-file -e HEAD:…/brief.md` | 否 |
+| 在共同祖先 `31f5e120cf69` 吗 | 同上 | 否 |
+| 在 `origin/main` 吗 | 同上 | **是**（`4a1357451659`） |
+| 唯一那个本地领先提交 `7898478` 动过它吗 | `git show --stat` | 否（只加了 LIT-0220/0221 四个文件） |
+| `design`/`plan` 在 `origin/main` 吗 | 两种拼法都问 | **否，哪儿都没有** |
+
+⇒ 同一条 `MISSING` 行里混着两件事：`brief.md` 是**读面**缺陷，`design`/`plan` 是**内容**缺口。
+
+#### 9.68.2 错在判据的**宽度**，不在松紧
+
+`intake/workchain.py` 里两处 `tree.state != TREE_BEHIND` 把关：只有**仅仅是落后**的检出
+才允许向上游借文档。本机 records 检出**同时**领先 1、落后 19，状态是 `DIVERGED`，于是被拒 ——
+而这条判据问的是**树的形态**，该问的是**这条路**。
+
+新判据两个问题：这条路在 HEAD 吗（原有）；在**共同祖先**吗（新增，把「本分支删了它」与
+「本分支从没有过它」分开）。`TreePosition.holds_at_merge_base()` / `never_carried()` 新增；
+合并基由 `tree_position()` 里一次 `git merge-base HEAD <ref>` 取得，**退出码 1 留 `None` 不留 `True`** ——
+没答案的问题不许按友好的那一面答。**状态机不再参与这个决定。**
+
+#### 9.68.3 本包自己犯的错：把两个问题合成了一个
+
+第一版我把「上游有没有」与「本树有没有」**合进 `_resolve_from_ref`**（拿 `never_carried` 顶掉
+`holds`）。那不是同一个判据：`design/` 在 ref 上**存在**、在这棵 HEAD 上**从来没有过**，
+而归属判断会把它判成规则里排第一的 `exact-file` 拼法，**目录形态就此丢失** ——
+`test_a_directory_the_authority_holds_is_read_as_a_directory` 当场报 `MISSING != PRESENT`。
+
+改回：该函数只问**上游在哪里**，归属**只问一次**，在 `_authority_bytes` 里对**解出来的那条路径**问。
+理由已写进该函数 docstring。**教训与本夜同形**：一个是关于「东西在不在」的问题，
+一个是关于「谁该为它负责」的问题，合成一个就会在**两个都成立的输入**上给出错的答案。
+
+#### 9.68.4 真机 A/B：31 个 Item，**只有 1 行变**；三个方向都真跑过
+
+同机、同分钟、同命令，只换 `intake/workchain.py` 一个文件：
+
+| 面 | 相同的 | 不同的 |
+|---|---|---|
+| `work item`（31 个 Item） | **30** | **1 —— `serveros/SRV-0011`**（目标本身） |
+| `work board`（4 个项目） | 3 | 1（`serveros`，汇总行 `缺文档 3 → 2`、`自有小节 0 → 1`） |
+
+那一条的差异：
+
+```diff
+-× brief.md     MISSING   …resolves under none of ['exact-file']
++● brief.md     PRESENT    ← exact-file · 读自 origin/main@4a1357451659，未物化进这棵树
++     ↳ 自有小节 5 个：SRV-0011 — 广义 ServerOS 全体系实施、本轮的实质、范围、交付物…（提案小节缺 5 个，非缺陷）
+-形状检查 … 自有小节 0（非缺陷）· 未核对 1 …
++形状检查 … 自有小节 1（非缺陷）· 未核对 1 …
+-  brief.md —— an Item in ACTIVE is expected to have it, …
+```
+
+**`自有小节 0 → 5/1` 是「真读了字节」的判据**：只改文案不可能让标题检查有内容可数。
+JSON 面 `held_by_upstream`：`brief.md` **True**（`read_from: origin/main`）；
+`design`/`plan` **False** —— 上游也没有，所以是 Item 的缺口，本轮原样留着。
+
+**可达性三向对照**（放开一半就会变成「缺失一律去 ref 读」，正是这判据要防的）：
+
+| 输入 | 期望 | 实测 |
+|---|---|---|
+| 本分支从没有过 | BORROW | **BORROW** |
+| **本分支删掉的**（祖先有） | REFUSE | **REFUSE** |
+| 合并不上（`merge-base` 退 1） | REFUSE | **REFUSE** |
+
+**真机上「本分支删掉的」这一类路径数 = 0**（`comm` 逐条比对 merge-base / HEAD / ref 三面），
+所以那一支在真数据上只有**真阴性**，它的正控是**合成的**，本记录如实标明。
+
+#### 9.68.5 装机面：**是**成员，**不发版** —— 节点上仍是旧读数
+
+`intake` 是 `scripts/build.py:131` 的 `CORE_MODULES` 成员，所以本包**有装机面**，
+且与 §9.67.4 的「惰性数据」不同：这次是**行为差异**。
+
+**⇒ 节点上 `serverosctl work item SRV-0011` 仍然报 `brief.md MISSING`。**
+第 9.68.4 的读数全部是**源码树**跑出来的。为什么不顺手发版：与 §9.67.4 同一条，
+且本包让它更硬 —— 再推一代会把**插件缓存与节点的代差**拉得更大，而
+`PENDING-DECISIONS.md` 条目 7 正在问「要不要先把这个不同步变成看得见的判词」。
+**先扩 gap 再问，顺序反了。** 发布动作包已在条目 6 追加段备好。
+
+#### 9.68.6 照实说：没关掉什么
+
+- **没关掉** `design`/`plan` 的真缺口。它从「不知道」变成了「**知道它缺**」（`held_by_upstream: False`），
+  那不是把它补上；补它是**内容**动作。
+- 没关掉任何缓存滞后（`serveros-testing` / Codex 插件缓存），没动任何全局插件开关。
+- 没动那条恒 `UNKNOWN` 的 `workengine (installed)`，没动 `DATA_ROOT/AGENTS.md`，
+  没动长期存在的 `RELEASE_INCOMPLETE`。
+- **没发版**，节点行为未变。
+- `records` 检出仍是领先 1、落后 19 —— 本包改的是**读者的判据**，不是那棵树。
+
+#### 9.68.7 附记：一条量到、没治的既有红
+
+九个 import `workchain` 的测试模块**批量同跑**时，
+`ARefusalIsAReadableSentence::test_a_refusal_becomes_the_sentence_and_a_fault_exit` 会红
+（`Refused` 逃逸）。**与本次改动无关**：在**未改的 HEAD 模块**上跑同一批次，同一条红、
+同一条报错。单跑 `tests/test_workchain.py` 与全量 `tests/` 都不出现。
+证据指向「模块被以两个名字装载」（`runtime/cli.py:7511` 用 `serveros_intake_workchain`
+这个名字 `_load_module_from`），于是**抛出的 `Refused` 与接住的 `Refused` 不是同一个类对象**。
+**只量到，没治** —— 留作独立一条。
+
+#### 9.68.8 验证与落地
+
+**验证**：`pytest tests/test_workchain.py -q` → **112 passed, 6 subtests passed**；
+**全量 `pytest tests/ -q`（本 PR 最终字节，`probe/measured-bytes.sha256` 记了那两个文件的哈希）
+→ 7297 passed, 24 skipped, 4449 subtests passed in 903.48s**（改动前 7295 passed；
++2 即本包新增的两条用例，subtests 数不变）。旧码控制：三条新/改写用例在 HEAD 模块上**全红**，
+另加两个直驱脚本（活形状：旧 `None` / 新借到；三向可达性）与一条真机 A/B。
+
+**落地**：`intake/workchain.py`、`tests/test_workchain.py`，**+186 / −35**，PR **#121**，
+提交 `99482da`，合并提交 **`c9d2a9b`**，2026-10-08 **15:00:10 CST**；合并后 `origin/main`
+的两个文件与分支头**逐 blob 一致**。Item 侧记录在
+`artifacts/work-items/serveros/SRV-0011/RUN-0040/`（Run `SUCCEEDED`），
+入口是 `RUN-0040/deliverables/WORKCHAIN-CUSTODY-IS-PER-PATH.md`。
