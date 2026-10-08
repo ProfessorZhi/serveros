@@ -1732,7 +1732,7 @@ class _OneRoot:
     def __init__(self, state):
         self._state = state
 
-    def root(self, name):
+    def root(self, name, *, unbound_ok=False):
         assert name == "state", name
         return self._state
 

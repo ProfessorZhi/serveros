@@ -3308,9 +3308,9 @@ def cmd_context_current(args) -> int:
         "cwd": str(cwd),
         "inferred_item": item,
         "inference_note": inference_note,
-        "roots": {n: str(paths.root(n)) for n in paths.names},
+        "roots": {n: str(paths.root(n, unbound_ok=True)) for n in paths.names},
         "state_runtime": {
-            name: str(paths.root("state") / "runtime" / name)
+            name: str(paths.root("state", unbound_ok=True) / "runtime" / name)
             for name in paths_mod.STATE_SERVEROS_RUNTIME
         },
     }
@@ -3319,7 +3319,7 @@ def cmd_context_current(args) -> int:
         f"item       {inference_note}",
         "",
         "roots",
-    ] + [f"  {n:<14} {paths.root(n)}" for n in paths.names]
+    ] + [f"  {n:<14} {paths.root(n, unbound_ok=True)}" for n in paths.names]
     emit(payload, as_json=args.json, lines=lines)
     # Unknown context is not a fault; it is a fact that changes where output
     # is allowed to go, and callers must be able to branch on it.

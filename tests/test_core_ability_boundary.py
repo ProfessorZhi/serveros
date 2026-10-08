@@ -626,7 +626,7 @@ class TheCoreStartsWithNothing(unittest.TestCase):
         """
 
         class Paths:
-            def root(self, name):
+            def root(self, name, *, unbound_ok=False):
                 assert name == "state"
                 return state_root
 
