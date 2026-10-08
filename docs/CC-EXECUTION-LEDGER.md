@@ -11037,3 +11037,135 @@ PR **#113**，提交 `82b004f`，合并提交 **`642e5f7`**，2026-10-08 **11:04
 
 **读这一包的入口是** `artifacts/work-items/serveros/SRV-0011/RUN-0037/deliverables/INSTRUMENT-ATTRIBUTION-FIX.md`，
 两个原始读数与逐行差表在 `RUN-0037/probe/`。
+
+---
+
+### 9.66 同一份文件里的第二个「声明落后于活的生产者」——插件行拿**别人的 pin** 量它
+
+§9.65 是**量具自己**落后于装机、被报成**产物**漂移。本节是同一台仪器、**同一份文件**里的
+第二个实例：**节点载荷的 ability pin**，被用来量一个**建在另一代上**的插件。
+一行里印出的 18 条差，是关于**节点**的事实，戴着**这份安装**的名字。
+
+两个实例的形状同一个：**读取方/基准的事实，被当成被读对象的事实报了出去。**
+
+#### 9.66.1 开工判据是前一包自己写死的
+
+`RUN-0036/deliverables/BLOCKERS.md` §②(d) 登记为「长期存在……那条红与本夜改动无关，未重跑」。
+`CHECKPOINT.md` 把下一件工程的判据写死在前：
+
+> 先量它测的是哪一代字节、那字节现在还在不在，再判它是**真断裂**还是**旧声明**……
+> 要么给出它测的对象与那对象今天的真实状态，要么明确说清「这一格量不出来」
+
+**测量的结论是：两者都不是。** 都不是，才是必须量、不能推的那种情形。
+
+#### 9.66.2 决定性测量：只换 `ability_rev` 一个入参
+
+工具 `RUN-0037/probe/attribute-to-own-pin-harness.py`：import 量具、spy `rt.expected_artifact`
+抓下**量具自己那次运行**的入参，然后用**同一个** `expected_artifact` + **同一个** `tree_drift`
+重算——**只换 `ability_rev`**。不是另写一份比较器（§9.53 的既有规矩）。
+
+被测对象 `~/.claude/plugins/cache/serveros-testing/serveros-testing/1.0.0-srvtest0001.20260927b`：
+
+| | rev | n |
+|---|---|---|
+| A 量具实际用的（节点载荷的 pin） | `c3fa07205bdd` | **18** ← 逐条复现真机那一行 |
+| B 该载荷 `README.md` **自报**的 pin | `da5f89b1b131` | **0** |
+| C 它 `ARTIFACT.json` 记的 ability revision | `da5f89b1b131` | **0**（与 B 逐字相同） |
+
+A 复现 = harness 量的确实是那一行（自我校验）；B == C = 该载荷对自己那一代是忠的。
+
+那 18 条 = 4 条 `content` + 14 条 `missing`（`drift-lists-full.txt`）。
+**14 条 `missing` 不是这份安装缺文件**：`c3fa072` 那一代技能载荷比 `da5f89b` 多 16 个文件
+（`SKILL.md` 79 行 → 252 行、`profiles.yaml`、`references/*`、`schemas/`、`scripts/*`），
+而这个插件建在 `da5f89b`、**从没声明过那些文件**。按 `da5f89b` 重算它是 **0**。
+
+#### 9.66.3 锚点在文件自己写的注释里——pin 那半从未回头看过
+
+`plugin/profiles/linux-work.yaml` 的 node-revision 行注释说 `pin = declared_pin(rev_dir)` 是
+「**the same question the payload rows ask of the plugin**, asked of the thing that is actually
+executing」。**插件行当时没有对 pin 这么做。** blame：pin 来自 `af74ee9`（2026-09-11，
+「从产物本身取构建 pin」），插件行来自 `0a0d11e5`（2026-09-23）——**pin 那半从未被回头看**。
+所以这不是设计分歧，是**一处只改了一半的对齐**。
+
+#### 9.66.4 影响面：恰好一行、页脚逐字节不变
+
+同一条命令、同一台机、同一批载荷，只换被执行的量具文件：
+
+- 差集 **恰好 4 行**（2 删 2 增）：`serveros-testing` 那行 `SOURCE_STALE` → `OK`（+ 一条 note）
+- `sha256=7ae195f0ad440e48…`（**被量的字节**）两读相同——**动的是基准，不是产物**
+- **页脚逐字节相同**（`db2f925d02301e067c8e033dbb25b470`），仍 `RELEASE_INCOMPLETE (blocking: CHAIN_CONSISTENT)`
+
+**发布判词没有变化。** 本包没有把一条红刷成绿来收口发布——只是把一条量错基准的行归回它自己的代。
+三个已安装插件载荷都自报 pin，其中两个等于节点，**所以只剩一行变、没有顺带改动任何无关行**。
+
+#### 9.66.5 归不到那一代时的新印法：`None` 与 `""` 不塌成一句
+
+`recompute_blocker(build, output, pin=None)`：`pin` 只由**已经读过该产物自己 pin 的**调用方传入，
+所以 `""` 的意思是「读过了，它自己没有」，与「没人看过」是**两个事实**。
+默认值取 `None` 而非 `""`，正是为了不让两者塌成同一句话。两处循环同样先 guard
+`"" if (not pinned or plugin_pin == pinned) else (…)`，避免 `pinned` 为空时印出半句话。
+
+pin 不一致时写进行的 `note`：「built at ability pin `da5f89b1b131`; the node payload declares
+`c3fa07205bdd`」——读的人不必自己回去找。
+
+#### 9.66.6 新用例确实会咬（旧码控制）
+
+`git archive HEAD` 出的旧码检出上，两个新用例**都失败**，失败形状与真机那 18 条**同形**：
+
+```
+test_a_plugin_is_measured_at_the_pin_it_declares_not_the_nodes
+  → SOURCE_RUNTIME_DRIFT != OK
+    detail: the installed plugin differs in 3 path(s); e.g.
+            missing skills/runtime-management/references/01-later-generation.md,
+            content ARTIFACT.json, content README.md
+```
+
+（`missing` 与 `content` 混在一张表里——同一个形状，也是同一个陷阱。）
+
+#### 9.66.7 照实说：这次翻转**丢**了什么
+
+改动前那行印的是 serveros-commit caveat（「记录 `779191d`、检出在 `4bf2c32`」），改动后不印。
+根因是文件既有实现：`drift_verdict(drift, attribution)` 在 **drift 为空时不看归属**，
+`SOURCE_STALE` 只在**差集非空且归属为假**时出现。
+
+**判断：不为此另加 provenance note。** (a) 文件自己的设计把两个事实合入一个判词
+（node-revision 行注释：「the two facts belong in one verdict」）；(b) `n=0` 是以**测量**解除该 caveat
+——本组合不从 serveros 仓取任何成员。保留的能力：**差集非空 + 来源不符 → `SOURCE_STALE` 照旧触发**
+（9.66.6 的旧码控制跑的正是这条分支）。丢掉的只是「差集为空时仍复述来源不符」这种**印法**，它本来也不改判词。
+
+#### 9.66.8 一条新量到、**没有**判它的缺口
+
+本机**同一台机上三代 pin 并存**（§9.66.2 表）。修完之后，「一个插件跑的比节点载荷老一代」
+这件事**被写进了 `note`，但没有任何一行判它**——即**没有任何一行回答「全机是否齐步」**。
+本包不引入这条轴（那要另一套判据与人的口味），只记录现象并列入 `PENDING-DECISIONS.md`。
+
+#### 9.66.9 为什么不发版——与 §9.65.6 同一结论，本次逐项复验
+
+`runtime_truth.py` **不是发布成员**：节点载荷根 `…/serveros-linux-work/current/` 顶层**无 `scripts/`**；
+全 `runtime-assets/` 下**无 `runtime_truth.py`**（`.claude/plugins`、`.codex` 下也没有）；
+`plugin/profiles/linux-work.yaml` 里它**只出现在注释中**。
+
+→ **不需要 build / promote / restart。** 量具从检出运行，「读回」= 合并 revision 的字节：
+
+```
+origin/main = 4615b7a
+scripts/runtime_truth.py     merged == local  f7534ad2319894ce…  IDENTICAL
+tests/test_runtime_truth.py  merged == local  374b386c1564283c…  IDENTICAL
+```
+
+即产出 AFTER 读数的那份代码，与已合并的 `origin/main` **逐字节相同**。
+
+#### 9.66.10 照实说：这一轮**没**关掉什么
+
+- 没关掉 `RELEASE_INCOMPLETE` 本身（页脚逐字节不变，见 9.66.4）；
+- 没关掉 §9.63.4 的**两面缓存滞后**（**没改任何全局插件开关**，`plan-01` 明文禁止）；
+- 没引入 **fleet-lockstep** 这条轴（9.66.8：现象记下了，没有一行判它）；
+- 没补 `DATA_ROOT/AGENTS.md`、没补 SRV-0011 的 `design`/`plan` 文档、没动 §9.65.5 说的**取源**问题；
+- **没有发版**，因此**装机面与 `serverosd` 与本节之前逐字节相同**；
+- 没重跑全量套件：只动这一个脚本与其单测，`tests/test_runtime_truth.py` → **79 passed, 2 subtests passed**。
+
+**落地**：`scripts/runtime_truth.py`、`tests/test_runtime_truth.py`，**+44 / −12** 与 **+2 用例**，
+PR **#116**，提交 `e8ffcae`，合并提交 **`4615b7a`**，2026-10-08 **11:24:32 CST**。
+本节写作时刻 `origin/main` 合并数 **24**（`#93–#116`）——**这是写作时刻的读数**（见 §9.65.10 的同一条教训）。
+本节自身的 Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0038/`
+（Run `SUCCEEDED`，7 条证据行），入口是 `RUN-0038/deliverables/PLUGIN-ROW-PIN-ATTRIBUTION.md`。
