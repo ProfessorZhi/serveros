@@ -9054,6 +9054,15 @@ Sep 23 00:59   sha256 bcbec66460a30612ba2c16830ab98f90ca2dbb4b63c2ffec9471d177e7
 `runtime-assets` 读作 `{DATA_ROOT}/runtime-assets/serveros`，而工件在 `runtime-assets/hwz-server-os`。
 **只有 role 答得对**，而且这不是猜的——判据里有一条专门把两者比开。
 
+> **追加（2026-10-09 07:0x CST，RUN-0056 之后，**不改写上面的判断**）**
+>
+> 上面这条**诊断是对的、修法当时也是对的**（问 role 而不是 root），但它把 root 留在原处：
+> 这一节之后 root 仍然读作 `{DATA_ROOT}/runtime-assets/serveros`，而**没有生产者写过那个目录**。
+> 于是「只有 role 答得对」这句话**继续成立**，直到 RUN-0056 把 root 本身修好——root 现在绑
+> `{DATA_ROOT}/runtime-assets`，与 role 在父目录上**一致**，下一个 `--runtime-root` 用哪个门都对。
+> 本节与 §9.56 的判据不动；变的只有 `runtime/paths.py` 的一行，以及那句从「只能问 role」变成
+> 「两个门都答对、role 多答一层」的说明。见 **§9.69**。
+
 修的形态是：**根从合同读，位置照写**。`_under("workspace", "worktrees", "ability-management",
 "SRV-0011")`——「哪一个克隆」这一轮的决定写出来，「这台机器的 worktrees 在哪」这一半去问机器。
 这与 `str(ROOT / "runtime" / "card-scenarios.yaml")` 是同一种切法。

@@ -27,6 +27,15 @@ down with that layer's name rather than left to look unread.
 open the reader and look, because "somebody reads this somewhere" is exactly the
 claim that stays true after the reader is deleted. A new binding makes this red
 until somebody says who reads it; a reader that stops reading makes it red too.
+
+ONE DIRECTION IS NOT THE QUESTION. `authority - ROOTS` names what the authority
+binds and no root serves. `ROOTS & authority` -- what BOTH serve -- went
+computed by nothing here for as long as the file existed, and a name the two
+answer differently is invisible to the first set: both tables are internally
+consistent, every assertion passes, and `serverosctl path resolve <name>`
+prints one of the two answers to a person. `runtime-assets` was in the overlap,
+and the root's answer named a directory that has never existed. Both directions
+are compared below now.
 """
 import importlib.util
 import pathlib
@@ -118,6 +127,82 @@ class TheDeclaredDifferenceTests(unittest.TestCase):
         """An empty binding table and a table nobody read are the same output."""
         self.assertGreaterEqual(len(paths_mod.Paths().bindings), 5,
                                 "too few bindings read to mean anything")
+
+
+#: name -> WHY the root vocabulary and the authority are allowed to answer
+#: differently for it. Empty, and an entry is a statement rather than a waiver:
+#: the same two tables disagreeing without one of these is what the test below
+#: exists to catch.
+DECLARED_DISAGREEMENT: dict[str, str] = {}
+
+
+class TheOverlapIsComparedTooTests(unittest.TestCase):
+    """A name BOTH tables answer for must be answered the SAME way by both.
+
+    THE HALF THIS FILE WAS MISSING. `TheDeclaredDifferenceTests` computes
+    `authority - ROOTS`: names the authority binds that no root serves. The
+    other direction -- names BOTH serve -- was never computed, and that is
+    where a disagreement hides without either table looking wrong. Both tables
+    stay internally consistent, every set in the file is non-empty, and the
+    only question that could reveal it is never asked.
+
+    Measured on this node when this class was written: five names are in the
+    overlap, four agreed, and `runtime-assets` did not. The root read
+    `{DATA_ROOT}/runtime-assets/serveros` -- a path whose parent the authority
+    binds, whose suffix no producer has ever written, and which the authority
+    had ALREADY recorded as a disagreement in a note beside its own binding,
+    while the module went on serving it. `serverosctl path resolve
+    runtime-assets` printed it to a person. Set arithmetic over the two tables
+    cannot see this: the defect is not in either set, it is in the relation.
+
+    THE SAME CONSTRUCTION, TWO FILES OVER, WAS FIXED FOR THE OTHER HALF.
+    `test_runtime_truth.py` compares two root-resolver copies with an
+    INTERSECTION (`&`), so a row one table carries and the other does not is
+    not compared, not counted and not named -- 6 rows of the 8 they name
+    between them. RUN-0051 fixed that by declaring those 6 in
+    `ONLY_IN_RUNTIME_TRUTH` / `ONLY_IN_ARCHITECTURE_CHECK`, and the fix never
+    came back to this direction. Two criteria over the same construction, each
+    blind to the half the other one covers; a reader who saw either one green
+    would have concluded the two tables were in agreement.
+
+    A disagreement is DECLARED here with a reason rather than deleted, for the
+    reason §9.61 gives: what a person needs is to tell an intended difference
+    from a drift, and a deleted entry tells them nothing.
+    """
+
+    def test_every_name_in_the_overlap_is_answered_the_same_way(self):
+        authority = paths_mod.Paths().bindings
+        overlap = sorted(set(paths_mod.ROOTS) & set(authority))
+        self.assertGreaterEqual(
+            len(overlap), 4,
+            "too small an overlap for a green result here to mean anything -- "
+            "an empty comparison and a failed one print the same")
+        for name in overlap:
+            with self.subTest(name=name):
+                if name in DECLARED_DISAGREEMENT:
+                    continue
+                self.assertEqual(
+                    str(paths_mod.Paths().root(name)), str(authority[name]),
+                    f"{name!r}: the root vocabulary and the authority both "
+                    f"answer for this name and they disagree. Neither table is "
+                    f"internally wrong, which is why this survives: `serverosctl "
+                    f"path resolve {name}` prints the root's answer to a person. "
+                    f"Make them agree, or declare the difference in "
+                    f"DECLARED_DISAGREEMENT with the reason it is intended.")
+
+    def test_every_declared_disagreement_is_still_a_disagreement(self):
+        """A stale entry would hide a NEW disagreement under an old reason."""
+        authority = paths_mod.Paths().bindings
+        for name, reason in DECLARED_DISAGREEMENT.items():
+            with self.subTest(name=name):
+                self.assertIn(name, set(paths_mod.ROOTS) & set(authority),
+                              "the name is no longer one both tables answer for")
+                self.assertGreater(len(reason.strip()), 80,
+                                   "a declared disagreement needs its reason")
+                self.assertNotEqual(
+                    str(paths_mod.Paths().root(name)), str(authority[name]),
+                    "the two tables agree now, so this entry is stale and is "
+                    "hiding whatever disagreement comes next")
 
 
 class TheAccessorTests(unittest.TestCase):

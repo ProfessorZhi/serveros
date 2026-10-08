@@ -90,9 +90,19 @@ def _under_role(role_name: str, *rest: str) -> str:
     Separate from `_under` because the codebase keeps the two apart on purpose:
     a root is where something is, a role is what something IS, and a role
     resolves to wherever its artifact currently is. The runtime distribution is
-    the role case — `runtime.serveros-distribution` resolves to
-    `runtime-assets/hwz-server-os` on a node whose declared path is
-    `runtime-assets/serveros`, which is why the role and not the root is asked.
+    the role case — the root `runtime-assets` is the directory the authority
+    binds, and `runtime.serveros-distribution` names the DISTRIBUTION inside it
+    (`runtime-assets/hwz-server-os`), which is what the release rows under
+    `DEPLOYMENT` are about. The role is asked because it names a leaf the root
+    does not, and because it survives the physical move the path will not.
+
+    This sentence used to give a different reason: that the root resolved to
+    `runtime-assets/serveros` and the role was the only door that answered
+    correctly. That was true, and asking the role was the right call — but it
+    was a workaround written into a consumer's docstring, and the root went on
+    serving a directory that never existed until RUN-0056 fixed the root
+    instead. A reason a consumer gives for avoiding a defect is a signal that
+    the defect is still there.
     """
     key = "role:" + role_name
     if key not in _RESOLVED:
