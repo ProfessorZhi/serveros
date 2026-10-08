@@ -631,11 +631,13 @@ class WhenItIsWorthAMessage(Fixture):
         that test reads the detectors' own tables, this one reads the one
         helper `decision` uses and asserts it is built from them."""
         import importlib.util as _u
-        spec = _u.spec_from_file_location("serveros_runtime_resource_anomaly",
-                                          ROOT / "runtime" / "resource_anomaly.py")
-        ra = _u.module_from_spec(spec)
-        sys.modules["serveros_runtime_resource_anomaly"] = ra
-        spec.loader.exec_module(ra)
+        ra = sys.modules.get("serveros_runtime_resource_anomaly")
+        if ra is None:
+            spec = _u.spec_from_file_location("serveros_runtime_resource_anomaly",
+                                              ROOT / "runtime" / "resource_anomaly.py")
+            ra = _u.module_from_spec(spec)
+            sys.modules["serveros_runtime_resource_anomaly"] = ra
+            spec.loader.exec_module(ra)
         rows = [{"code": code} for code in ra.CODES]
         self.assertEqual(digest.undecided_codes(rows), [])
 

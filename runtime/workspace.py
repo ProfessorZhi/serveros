@@ -860,11 +860,18 @@ def _load_paths():
     import importlib.util
 
     here = Path(__file__).resolve().parent
-    spec = importlib.util.spec_from_file_location(
-        "serveros_runtime_paths", here / "paths.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_runtime_paths"] = module
-    spec.loader.exec_module(module)
+
+    #: `paths.py` defines `PathRefused`, and this name is the one sixteen other
+    #: loaders register it under. A second copy here would make this file's
+    #: `Paths` a different class from the one `except PathRefused` was written
+    #: against.
+    module = sys.modules.get("serveros_runtime_paths")
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "serveros_runtime_paths", here / "paths.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["serveros_runtime_paths"] = module
+        spec.loader.exec_module(module)
     return module.Paths()
 
 

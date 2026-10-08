@@ -1007,12 +1007,19 @@ def _load_rows(args, *, required: bool) -> list[dict] | None:
     """
     import importlib.util
 
-    here = Path(__file__).resolve().parent
-    spec = importlib.util.spec_from_file_location(
-        "serveros_ability_projection", here.parent / "runtime" / "ability_projection.py")
-    projection = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_ability_projection"] = projection
-    spec.loader.exec_module(projection)
+    #: Registered under the name the rest of the repository uses for this file,
+    #: so a caller that already loaded it gets the same module. Two copies would
+    #: be two sets of classes, and an `except` written against one would not
+    #: recognise the other's.
+    projection = sys.modules.get("serveros_ability_projection")
+    if projection is None:
+        here = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location(
+            "serveros_ability_projection",
+            here.parent / "runtime" / "ability_projection.py")
+        projection = importlib.util.module_from_spec(spec)
+        sys.modules["serveros_ability_projection"] = projection
+        spec.loader.exec_module(projection)
 
     repo = Path(args.repository) if args.repository else _default_ability_repo()
     if repo is None or not (repo / ".git").exists():

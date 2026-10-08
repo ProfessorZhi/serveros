@@ -263,11 +263,13 @@ def _binding():
     if _BINDING_MODULE is None:
         import importlib.util
         path = Path(__file__).resolve().parent / "runtime_binding.py"
-        spec = importlib.util.spec_from_file_location(
-            "serveros_runtime_binding_from_parity", path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        name = "serveros_runtime_binding_from_parity"
+        module = sys.modules.get(name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
         _BINDING_MODULE = module
     return _BINDING_MODULE
 
