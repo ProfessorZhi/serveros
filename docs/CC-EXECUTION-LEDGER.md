@@ -8585,6 +8585,78 @@ rollback → retire`。** 明细与四份哈希清单在
 记 `…/.candidate-074a…-lw`（5.5 MB）在盘上并「不删」，该目录现在已不存在；§7.1 记的三份
 `.staging-*`（`c233946` / `a4758a0` / `978a0f9`）同样已不在盘上。
 
+## §9.54 临时文件的落点：同一个函数对同一个问题给两个答案
+
+「一张表对同一个东西给出两个相反答案」在本夜是**第五例**。前四例（RUN-0045 的读面、RUN-0046
+的 `paths.py`/`fs_hygiene`、PENDING-DECISIONS 第 3 条、RUN-0048 的 `memory status`）都是**两个
+部件**互相矛盾。这一例不同，也就更值得写下来：**是同一个函数**——`tempfile.gettempdir()`——
+对同一个问题给出两个答案，而挑哪一个不取决于产品，取决于**谁启动了这个进程**。
+
+`TMPDIR` 有值，它答机器的；`TMPDIR` 没有值，它答 `/tmp`。本机 `/tmp` 是 `/dev/vda2`，50 GB
+系统盘，机器政策写明**不是工作卷**；而 systemd **user** 单元不继承登录 shell 的 `TMPDIR`
+（`systemctl --user show-environment` 里没有，四个装机单元里只有 intake 自己设了一个）。
+于是同一条命令，timer 起的把字节落在系统盘，人在终端起的落在 scratch 卷，而**两次运行的输出里
+没有一个字**说明它落在了哪。两个答案长得一样：都是绝对路径，都合理，都能用。
+
+**实测（2026-10-09）**：`/tmp` 共 **15 G**（`tsx-1004` 5.6 G、`upstream-litellm.git` 1.7 G，
+都不是本轮的，DEFER）；`/tmp/pytest-of-vince` **178 M / 682 轮**，最新一轮创建于 Oct 8 17:53，
+是 `TMPDIR` 为空的运行留下的。反向的一条同样要量：`/data/home/vince/tmp` **已经存在**（56 K，
+且已有 Oct 6 的 `pytest-of-vince/`）——声明的根不是纸上的。
+
+**处置不是挑一个更好的默认值，是让那个函数不再有机会回答。** 规则一条，两处调用，落在**同一个
+目录**上：
+
+```text
+显式答案（$TMPDIR / $SERVEROS_SOURCE_CACHE）
+  → 本节点声明的临时根（root contract 的 "tmp"；host profile 的 tmp_root）
+  → 拒绝，并按名字说明
+```
+
+* `scripts/verify.py`：新增 `temp_root()`；census 的 `TemporaryDirectory` 补上 `dir=`；
+  **并把 `TMPDIR` 传给 census 子进程**——pytest 自己的 `tmp_path` 基目录就是子进程里的
+  `tempfile.gettempdir()`，不传的话一次运行会把报告和测试的临时文件写到两处，而记录里只看得到
+  其中一个。`verify.py run` 的输出新增 `scratch_root`：一次运行要能说出自己在哪落的。
+* `scripts/runtime_truth.py`：`--source-cache` 的默认值从 `Path(tempfile.gettempdir())/…` 改为
+  `default_source_cache()`（`$SERVEROS_SOURCE_CACHE` → 声明根 → `None` + 具名拒绝），
+  并在 `collect()` **之前**拒绝。
+* `runtime/actuator-contract.yaml`：`source-cache-extraction` 条目里那句
+  「else the system temp dir」跟着改。合约写的是**声明**，声明与行为分家就是下一张「两个答案的
+  表」。
+
+**判据三条，各自钉不同的东西**（读数在 `artifacts/work-items/serveros/SRV-0011/RUN-0049/`）：
+A/B 落点（基线让 `/tmp` 的 `pytest-of-*` 从 682 走到 683；改后让声明根从 2 走到 3
+**而 `/tmp` 停在 683**——第三条是负控制，没有它「换了落点」与「两边各写一遍」分不开）；
+`tests/test_temp_root.py` 8 条（含**两个生产者在本机上给出同一个答案**，那是「规则只写了一遍」
+这个说法唯一的证据）；活体 `verify.py run` 输出 `"scratch_root": ["/data/home/vince/tmp"]`。
+
+**没做的，和为什么**：不给单元文件加 `Environment=TMPDIR=`——那会是同一个问题的**第二个答案**，
+且 D02 的教条是「先修生产者，不靠每日搬运补救」；intake 单元里那份
+`Environment=TMPDIR=<run dir>/tmp` 保持原样（绝对、数据卷、在这个 run 自己的根下，是**有人答过**
+的答案）；第三方工具自己的临时文件**记下来**、不兜底；**没清理任何东西**（`/tmp` 里 15 G 与
+178 M 都不是本包的，且含未知归属，清理在本机是提案制、未知先 DEFER）。
+
+**一条量到的旁证**：`/tmp/serveros-runtime-truth-source` **不存在**，所以换默认值**没有**遗弃
+一份旧缓存。这件事要量，不能假定。
+
+**全量套件第一次跑，红了，红的是本包自己的新文件。** `2 failed, 7357 passed, 24 skipped,
+4465 subtests passed in 1085.11s`，两条失败同出一个根因：`tests/test_temp_root.py` 第 53 行的
+`_load()` **无条件写 `sys.modules`**。它踩的正是 `tests/test_loader_identity.py` 那条 gate 本身
+（`test_no_registration_precedes_a_read_of_the_cache`、以及数「没守卫的注册」那条），而这棵树
+自己的惯用法就写在**同一个文件的第 572 行**：先读缓存，再决定要不要写。
+
+修法是加一句 `if name in sys.modules: return sys.modules[name]`。此后 5 个受冻文件里**只有这一个
+的 sha256 变了**（`171c4ae9…` → `3bdd9b00…`），其余四个与跑套件之前逐字相同——这既是修复有多
+小的读数，也是「跑过的字节就是落地的字节」这句话在换过一次字节之后仍然成立的前提：换完**重跑**。
+
+写在这里的理由不是自责，是这条读数本身：**这条 gate 不只对产品代码有效，对刚刚写完它的人也有效。**
+我在包内曾写下「我的 `_load_paths()` 根本不注册，所以不在这类里」——那句话对 `runtime_truth.py`
+里的那个函数成立（它跟随该文件既有的 `_load_release` 惯用法，也不注册），但**它没有覆盖新测试
+文件里另一个同名的 `_load`**。凡「本包不在这一类里」的说法，只有让别人去数才是读数；这一次是
+套件去数的。
+
+**装机面**：`runtime/actuator-contract.yaml` 是 `CORE_MODULES` 成员，所以这包有装机面；
+**没有发版**，理由与前八条逐字相同，登记在 `PENDING-DECISIONS.md` 条目 6 的装机动作表**第九条**。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
