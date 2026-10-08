@@ -1634,7 +1634,36 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   decide whether a durable route exists. `tests/` is not a member of this
 #   composition, so the six tests and the two mutations that come with this do
 #   not move the label.
-cachebuster: srv0005.20261008q
+#
+#   q → r: a state from another profile is not a section the document has.
+#   `intake/managed_documents.py` printed `derived − declared` as "文档里有而
+#   profile 没声明" — a sentence about the DOCUMENT — when that difference can
+#   only ever prove that two different profiles exist, because `derive_sections`
+#   indexes only the keys the deriving profile declared. On this node that
+#   sentence was live: one on-disk contract for `litellm-work-doc` declares four
+#   sections while the state beside it was derived from a five-section contract,
+#   so a reader was told the document had grown a section and was sent to add one
+#   to the contract in front of them — which is the contract that had already
+#   been superseded.
+#
+#   `read_reach()` now names the third fact instead of leaving it implicit:
+#   `state_from_another_profile` (the difference is non-empty) and
+#   `unresolved_section_keys` (what the deriving pass recorded as undeclared).
+#   `render()` splits three ways — two contracts (say so, name both directions,
+#   and say plainly that which one is current cannot be decided here, then point
+#   at `audit`, which reads the live outline rather than the state), one contract
+#   whose declared set matches what the deriving pass itself recorded, and one
+#   contract whose two readings disagree.
+#
+#   The write gate is unchanged by this and was checked against it: the
+#   four-section contract still answers `blocked — section_not_declared` for a
+#   patch to `completed`, before and after. What moved is what the reader is
+#   told, which is the thing they act on. The two module strings that asserted
+#   the disproven reading ("a heading that was renamed shows up as
+#   derived-without-declaration", "describe the same document") moved with it.
+#   `tests/` is not a member of this composition, so the nine added tests and the
+#   three mutations that come with this do not move the label.
+cachebuster: srv0005.20261008r
 
 skills:
   - name: runtime-management
