@@ -1139,11 +1139,11 @@ class TestTheVerbDecidesAndReports:
 # ---------------------------------------------------------------------------
 
 WAKE_TIMER = RUNTIME / "serveros-continuation-wake.timer"
-_ACTOR_MODULE = "serveros_context_actor"
+_ACTOR_MODULE = "_serveros_context_actor"
 
 
 def actor_module():
-    """`context/actor.py`, under the name `context/delegation.py` loads it as.
+    """`context/actor.py`, under the name every loader of it now agrees on.
 
     The thresholds below are not written down a second time here. They are read
     from the module the receiver itself asks, off the contract file it reads, so

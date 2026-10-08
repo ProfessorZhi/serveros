@@ -93,8 +93,15 @@ CUSTODIAN_FIELDS = {"kind", "name"}
 
 
 def _actor_module():
-    """`context/actor.py`, loaded by path — the same idiom its siblings use."""
-    name = "serveros_context_actor"
+    """`context/actor.py`, under the name the rest of ServerOS loads it as.
+
+    `refuse_if_forged` below catches this module's `Rejected`, and that clause
+    is only as wide as the copy it was written against: a second name for this
+    file is a second `Rejected` class, and the refusal raised by one copy is
+    not the class the other names. See `context/delegation.py` for the reading
+    that shows the two copies coexisting when this file said otherwise.
+    """
+    name = "_serveros_context_actor"
     if name in sys.modules:
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, _HERE / "actor.py")

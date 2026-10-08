@@ -72,8 +72,18 @@ class Refused(RuntimeError):
 
 
 def _actor_module():
-    """`context/actor.py`, loaded by path — the same idiom its siblings use."""
-    name = "serveros_context_actor"
+    """`context/actor.py`, under the name the rest of ServerOS loads it as.
+
+    The name is not this module's to choose. `runtime/approval.py` spells out
+    what a second name costs: actor.py owns the ref grammar and defines
+    `Rejected`, so two names are two module objects and two exception classes
+    with one spelling — an `except Rejected` written against one copy stops
+    matching the other, and the refusal arrives as its parent instead. When
+    this file said `serveros_context_actor` the two copies coexisted in every
+    process that touched both sides: measured, `delegation._actor_module() is
+    approval._actor_module()` was False and `Rejected` was not the same class.
+    """
+    name = "_serveros_context_actor"
     if name in sys.modules:
         return sys.modules[name]
     path = _HERE / "actor.py"

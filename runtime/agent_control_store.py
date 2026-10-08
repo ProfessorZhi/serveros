@@ -373,7 +373,15 @@ class StoreError(RuntimeError):
 
 
 def _actor_module():
-    name = "serveros_context_actor"
+    """`context/actor.py`, under the name the rest of ServerOS loads it as.
+
+    `issue_grant` catches this module's `Rejected` two hundred lines below, and
+    a second name for this file would be a second `Rejected` class: the refusal
+    raised through the other copy would arrive as its parent rather than being
+    caught. Named once, for every loader of this file -- see
+    `context/delegation.py` for the measurement that motivated it.
+    """
+    name = "_serveros_context_actor"
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             name, Path(__file__).resolve().parents[1] / "context/actor.py")

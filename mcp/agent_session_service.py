@@ -28,7 +28,15 @@ def _load_semantics():
 
 
 def _load_readiness():
-    name = "serveros_ability_provider_instance"
+    """`abilities/provider_instance.py`, under the ONE name every loader of it uses.
+
+    This module is composed into the same process as `abilities/target.py` --
+    `mcp/agent_mcp.py` loads both -- and `provider_instance.py` defines
+    `ReadinessError`. A second name for it is a second exception class, and the
+    refusal raised through one copy is not the class an `except` written against
+    the other names.
+    """
+    name = "serveros_abilities_provider_instance"
     if name in sys.modules:
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(
