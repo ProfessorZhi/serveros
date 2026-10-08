@@ -344,10 +344,27 @@ def fill_registry(continuation_module=None, *, unit_dir=None) -> tuple:
 def receipts_root(store_path, receipts=None) -> Path:
     """Where this routine's receipts live, beside the store's own state.
 
-    Derived from the store path rather than added to `runtime/paths.py`'s closed
-    set of state names, which is the same move `runtime/card_delivery.py` makes
-    for its ledger: this directory is one consumer's bookkeeping, and a name in
-    that closed set is a name every surface would have to be told about.
+    Derived from the store path, and the derived name is DECLARED: `wake` is in
+    `runtime/paths.py`'s `STATE_SERVEROS_RUNTIME`, so `resolve` can name this
+    directory and `path conformance` can see that it is claimed.
+
+    This docstring used to say the opposite — that the path was derived "rather
+    than added to `runtime/paths.py`'s closed set of state names, which is the
+    same move `runtime/card_delivery.py` makes for its ledger". That citation
+    was backwards. `card_delivery.py::ledger_path` returns
+    `<state>/runtime/cards/delivery.json` and `cards` is in that closed set; the
+    subsystem held up as the precedent for staying undeclared is the one that
+    got declared. The cost of the wrong answer was not theoretical: every
+    `path conformance` run reported `runtime/wake` as an UNDECLARED_ENTRY WARN,
+    and the reason it could not be acted on was written here, in the module that
+    disagreed with the surface reporting it.
+
+    What a name in that closed set is for, since the old text treated it as the
+    thing to avoid: it is what lets a reader tell "this product writes here on
+    purpose" from "something appeared here". The receipts are not less of one
+    consumer's bookkeeping for being declared — declaring them is how the
+    consumer's claim on the directory becomes visible to anything that is not
+    this module.
     """
     if receipts is not None:
         return Path(receipts)

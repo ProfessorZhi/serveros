@@ -439,12 +439,30 @@ class TheAbilityAuthorityIsNotADaemon(unittest.TestCase):
     # producer's artifact under `state/abilities/` — with dict operations and
     # one `json.dumps` for de-duplication.
     #
+    # `product_tree` was admitted 2026-10-08, and it took the same route as
+    # `resolution_catalogue` the day before: `test_the_daemon_reaches_only_the_pure_half`
+    # went red on main with `unexpected: {'product_tree', …}`. It arrived with
+    # 2a83462 ("expose the full product responsibility tree on demand"),
+    # 50 commits after the round that admitted the name before it and on the
+    # same day — so this is the second widening rather than the first, and the
+    # reason it keeps happening is worth stating: the daemon grows views, a view
+    # is a call into this module, and the set is written by hand. The gate is
+    # the only thing that notices.
+    #
+    # It is admitted on the criterion and not on the arrival. The daemon reads
+    # the producer's artifact first (`declared_catalogue()`, then
+    # `source["entries"]` and `source["product_vocabulary"]`) and hands those
+    # to `product_tree`, which groups them by identity, compares each record's
+    # declared `product_role` against a vocabulary its caller already read, and
+    # sorts the result. Pure functions of materials the caller supplied; the
+    # name that forked git is `refresh`, and it stays in AUTHORITY_NAMES.
+    #
     # The admission is not taken on trust. `test_every_admitted_name_is_pure`
     # requires of every admitted name that its intra-module call closure cannot
     # reach `_git`, with `_git`/`read_manifest`/`refresh` as the control that
     # the predicate does not answer "pure" to everything.
     ALLOWED_NAMES = {"TREE_SCHEMA", "domain_tree", "tree_rows", "ABILITY_FIELDS",
-                     "CATALOGUE_NAME", "resolution_catalogue"}
+                     "CATALOGUE_NAME", "resolution_catalogue", "product_tree"}
 
     # The names that reach the authority. Reaching these from the daemon would
     # make `git show` — in another repository, on another filesystem — part of
