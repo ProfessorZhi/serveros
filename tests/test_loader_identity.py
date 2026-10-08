@@ -37,6 +37,28 @@ So the property is checked where it is actually held — in the source of every
 registration — and `loader_graph.unguarded_registrants()` is the scanner. Its
 own header records what it does not see.
 
+WHAT THE FIRST VERSION OF THIS GATE MISSED
+------------------------------------------
+The gate first asked a weaker question — "did an earlier line in this scope read
+`sys.modules`?" — as a deliberate trade, to avoid resolving names. It was too
+weak, and that was measured rather than suspected: handed
+
+    def _load(name, path):
+        existing = sys.modules.get(name)     # <- a consult, and it satisfied
+        spec = spec_from_file_location(...)  #    the old rule
+        module = module_from_spec(spec)
+        sys.modules[name] = module           # <- still displaces
+
+the old scan returned `[]`. The write is reached whether or not `name` was
+already registered, which is the whole defect, so a gate that passes it is
+standing next to the property instead of holding it. `CONSULT_THEN_WRITE_ANYWAY`
+and `MEMBERSHIP_THEN_WRITE_ANYWAY` below are those two sources, kept as controls.
+
+The rule is now the property itself: **the write must happen only on the path
+where the name is still missing**. Three shapes say that — an early return, a
+`sys.modules.get(...)` behind a `None` test, and the `else` of a membership
+test — and the tree uses all three and nothing else, measured: 192 / 18 / 1.
+
 THE CONTROL IS SYNTHETIC, AND SAYS SO
 -------------------------------------
 After this package, no unguarded registrant remains in the tree, which is the
@@ -56,12 +78,152 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from loader_graph import (  # noqa: E402
+    guarded_shapes,
     registration_sites,
     unguarded_in_source,
     unguarded_registrants,
 )
 
 LABEL = "<synthetic>"
+
+# The consult is there, and the write is unconditional anyway. The first
+# version of this gate accepted both of these; they displace the first
+# registrant exactly as the shape below does, which is why they are controls
+# rather than footnotes.
+CONSULT_THEN_WRITE_ANYWAY = '''\
+import importlib.util
+import sys
+
+
+def _load(name, path):
+    existing = sys.modules.get(name)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+'''
+
+MEMBERSHIP_THEN_WRITE_ANYWAY = '''\
+import importlib.util
+import sys
+
+
+def _load(name, path):
+    if name in sys.modules:
+        print("already loaded")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+'''
+
+# A `None` test that is not about the consulted value. `flag` was never read
+# out of the cache, so `if flag is None:` says nothing about whether the name
+# is taken.
+NONE_TEST_ON_ANOTHER_NAME = '''\
+import importlib.util
+import sys
+
+flag = None
+if flag is None:
+    spec = importlib.util.spec_from_file_location("K", "k.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["K"] = module
+    spec.loader.exec_module(module)
+'''
+
+# `or` widens a guard instead of narrowing it, so the write is reached when the
+# name IS registered. Reading the whole test tree for a `not in` would call
+# this guarded.
+OR_WIDENS_THE_GUARD = '''\
+import importlib.util
+import sys
+
+if "K" not in sys.modules or True:
+    spec = importlib.util.spec_from_file_location("K", "k.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["K"] = module
+    spec.loader.exec_module(module)
+'''
+
+# The `else` of a membership test: `tests/test_declared_commands.py` loads the
+# CLI parser this way, and the write there is on the missing path.
+GUARDED_ELSE_OF_A_PRESENT_TEST = '''\
+import importlib.util
+import sys
+
+if "cli" in sys.modules:
+    cli = sys.modules["cli"]
+else:
+    spec = importlib.util.spec_from_file_location("cli", "cli.py")
+    cli = importlib.util.module_from_spec(spec)
+    sys.modules["cli"] = cli
+    spec.loader.exec_module(cli)
+'''
+
+# `if not sys.modules.get(K):` — the same guard as the `is None` form, written
+# as a truth test.
+GUARDED_NOT_GET_FORM = '''\
+import importlib.util
+import sys
+
+if not sys.modules.get("K"):
+    spec = importlib.util.spec_from_file_location("K", "k.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["K"] = module
+    spec.loader.exec_module(module)
+'''
+
+# `and` narrows, so an extra `and True` keeps the write on the missing path.
+GUARDED_AND_NARROWS = '''\
+import importlib.util
+import sys
+
+if "K" not in sys.modules and True:
+    spec = importlib.util.spec_from_file_location("K", "k.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["K"] = module
+    spec.loader.exec_module(module)
+'''
+
+# The get-and-None shape at MODULE level, which is where
+# `tests/test_bounded_executor.py`, `tests/test_daemon.py` and
+# `runtime/bounded_executor.py` all register. The name bound from `.get` and the
+# write are at the same scope, and the scope is the module.
+GUARDED_MODULE_LEVEL_GET = '''\
+import importlib.util
+import sys
+
+_spec = importlib.util.spec_from_file_location("K", "k.py")
+module = sys.modules.get("K")
+if module is None:
+    module = importlib.util.module_from_spec(_spec)
+    sys.modules["K"] = module
+    _spec.loader.exec_module(module)
+'''
+
+# A `None` test on a name that came from somewhere else, at function scope,
+# where the module-level version above would be checked against the module's
+# own bindings.
+CONSULT_IN_A_NEIGHBOUR = '''\
+import importlib.util
+import sys
+
+
+def _one():
+    return sys.modules.get("K")
+
+
+def _two():
+    kept = None
+    if kept is None:
+        spec = importlib.util.spec_from_file_location("K", "k.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["K"] = module
+        spec.loader.exec_module(module)
+'''
 
 # The shape seven test helpers in this tree used, and the one that displaced
 # `serveros_intake_workchain`: a helper that registers unconditionally.
@@ -192,6 +354,47 @@ class TheScanCanGoRed(unittest.TestCase):
     def test_it_stays_quiet_on_a_module_level_registration_behind_a_membership_test(self):
         self.assertEqual(unguarded_in_source(GUARDED_MODULE_LEVEL, LABEL), [])
 
+    def test_it_flags_a_consult_the_write_does_not_depend_on(self):
+        """The first version of this gate ACCEPTED both of these. A consult that
+        the write is not on the other side of leaves the write reached when the
+        name is already taken, which is the defect."""
+        for label, source in (("sys.modules.get", CONSULT_THEN_WRITE_ANYWAY),
+                              ("`in sys.modules`", MEMBERSHIP_THEN_WRITE_ANYWAY)):
+            found = unguarded_in_source(source, LABEL)
+            self.assertEqual(len(found), 1, f"{label}: {found}")
+            self.assertIn("in _load", found[0])
+
+    def test_it_flags_a_none_test_on_a_name_that_did_not_come_from_the_cache(self):
+        found = unguarded_in_source(NONE_TEST_ON_ANOTHER_NAME, LABEL)
+        self.assertEqual(len(found), 1, found)
+
+    def test_it_flags_a_consult_in_a_neighbouring_function(self):
+        found = unguarded_in_source(CONSULT_IN_A_NEIGHBOUR, LABEL)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("in _two", found[0])
+
+    def test_it_flags_a_guard_that_widens_with_or(self):
+        """`if K not in sys.modules or <anything>:` reaches the write when `K`
+        IS registered. Reading the whole test tree for a `not in` would accept
+        it; the operand has to be the guard."""
+        found = unguarded_in_source(OR_WIDENS_THE_GUARD, LABEL)
+        self.assertEqual(len(found), 1, found)
+
+    def test_it_stays_quiet_on_the_else_of_a_membership_test(self):
+        self.assertEqual(unguarded_in_source(GUARDED_ELSE_OF_A_PRESENT_TEST, LABEL), [])
+
+    def test_it_stays_quiet_on_the_negated_get_form(self):
+        self.assertEqual(unguarded_in_source(GUARDED_NOT_GET_FORM, LABEL), [])
+
+    def test_it_stays_quiet_when_the_guard_narrows_with_and(self):
+        self.assertEqual(unguarded_in_source(GUARDED_AND_NARROWS, LABEL), [])
+
+    def test_it_stays_quiet_on_the_get_form_at_module_level(self):
+        """Three files in this tree register at module level, and the name
+        bound from `.get` and the write are both at the module's own scope. A
+        scan that looked only inside functions would report all three."""
+        self.assertEqual(unguarded_in_source(GUARDED_MODULE_LEVEL_GET, LABEL), [])
+
     def test_a_guard_in_a_neighbouring_function_does_not_cover_a_registration(self):
         """The §A defect exactly: `test_daemon.py` carried a guarded `_load` and,
         forty lines below it, a `serveros_release` registration with no guard of
@@ -242,6 +445,27 @@ class EveryRegistrationConsultsTheCacheFirst(unittest.TestCase):
                 any(site.startswith(known + ":") for site in sites),
                 f"the scan no longer sees a registration in {known}, which has "
                 f"one")
+
+    def test_each_accepted_shape_is_seen_a_nonzero_number_of_times(self):
+        """The floor the count above cannot give.
+
+        A guard classifier that had stopped recognising guards would call every
+        registration unguarded and the gate would go red — that direction is
+        safe. One that had stopped recognising REGISTRATIONS would report zero
+        of both, and `unguarded == []` would be green for the same reason a
+        broken scan is. So the accepted shapes are counted one at a time, and
+        each has to still be seen. The numbers are floors, not the readings:
+        this tree has 192 / 18 / 1.
+        """
+        shapes = guarded_shapes()
+        self.assertEqual(shapes.get("unguarded", 0), 0, shapes)
+        for shape, floor in (("early-return", 150),
+                             ("absent-if", 10),
+                             ("present-if-else", 1)):
+            self.assertGreaterEqual(
+                shapes.get(shape, 0), floor,
+                f"the scan no longer recognises the `{shape}` guard, which "
+                f"{floor}+ registrations in this tree use: {shapes}")
 
 
 class TheFormerDefectSitesAreGuarded(unittest.TestCase):
