@@ -7238,6 +7238,55 @@ rc=0
 - 这一跑跑的是**最终字节**：台账本节（含 `WAKE_UNITS`、actuator 合同的第四条）与
   `runtime/wake.py` 一起，就是 `rc=0` 覆盖的那棵树。
 
+**追加（2026-10-08，RUN-0047 之后）。** 上面第 1 条那句话**第三次成立**，而这一次多出来的两个
+unit 与上两次不是同一种东西，所以值得单独记一笔。
+
+- **同一个断言又红了一次**：`test_the_tree_declares_exactly_these_units` —— 树上多了
+  `runtime/serveros-evening-alignment.{service,timer}`，而 `RESIDENT_UNITS | NON_RESIDENT_UNITS`
+  里没有它们。修法与前两次逐字同：**申报**，不是放宽。新增第五个集合 `EVENING_UNITS`（连同一段
+  说明：前四组一个「发送」、一个「写目录」、一个「启动 Parent」，而这一组做的是**一天里的下半场**），
+  并把它并进 `NON_RESIDENT_UNITS`。并进来之后，那两条自动判据（`.timer` 不许有 `ExecStart=` 且必须
+  写 `Unit=`；`.service` 必须是 `Type=oneshot` 且没有 `Restart=`）**自动开始检查它们**，本包一条新
+  断言都没为此写。
+- **与上两次不同的一点，也是这一笔真正的意思**：§W 的 delivery worker 与 §9.48 的 wake routine，
+  树上多出来的 unit 其**生产者本来就在本仓**，红的是「产品长了东西、登记表落后」。这一次多出来的
+  那一对，此前**整个不在产品里**：它活在 `~/.config/systemd/user/` 上，用本仓模板的**同一套体例**
+  写成（同样的头部、同样量过的理由、同样的「节点事实写成字面量」），而且每个晚上 20:00 真的在跑。
+  **「真的在跑」是量到的**（申报之前读的）：timer 是 `enabled`；当天 20:00 跑过一次；它写下的回执
+  是 `delivered True`，也就是**今晚这份未申报的东西已经把一份简报成功送到人手上**；那一次从
+  `Starting` 到 `Finished` 是 **3 秒**（20:00:00→20:00:03 CST，含投递）。所以这条 freeze 断言这次
+  红的意义不同——不是「登记表落后于产品」，而是「**东西一直在跑，而产品从来没有长过它**」，
+  而且跑出来的东西**发到了人面前**。`scripts/release.py` 里那段理由因此把这三个读数写进去了，
+  写的是读数而不是「一直在跑」这四个字。§W 那句「a posture that no release carries is a posture
+  no test can hold and no other node can inherit」是同一个道理，只是那次说的是一个 launcher，
+  这次说的是**一天里的下半场**。
+- **actuator 合同**：`release-promotes-and-rolls-back-units` 的 `sites` 从四条加到**五条**
+  （`cmd_evening_brief`），`why` 里那句「Four subcommands」改写为 **Five**，并按本行第 2 条写下的
+  那条教训逐句说明。第二次照那句话执行。值得记下来的是**极性**：五条里能 enable timer 的只有两条
+  ——`cmd_alert_worker` 与 `cmd_evening_brief`——理由是同一个：arming 它们就是「把机器上的东西送到
+  人面前」；另外三条都不会，所以它们的缺省是不 arm。`cmd_evening_brief` 因此与 `alert-worker` 同
+  极、与 `daily-task` 反极。
+- **本节的这一笔是在全量跑之后写的**，照实记：跑的是代码与测试的最终字节（sha256 冻在
+  RUN-0047 `probe/frozen-sha256.txt`），台账是**记录**、不是被测对象。上一格那句「台账本节也在
+  `rc=0` 覆盖的那棵树里」这次**不成立**，不为对齐格式而保留它。
+- **冻了三次，前两次都在跑完之前停掉**，每次的原因都是**新 unit 自己的头部里有一句话不是这台
+  节点量出来的**：第一次是那段「搬动要付什么」把刷新游标写进了 run-dir（游标在 `--records-root`
+  下的记录里）；第二次是「一直在跑」与「under a second」两个**估计值**——量出来的分别是
+  `delivered True` 与 **3 秒**。两次都是改完重冻再跑；被停掉的输出留在 `probe/*.superseded.txt`，
+  **没有任何结论从它们得出**。也就是说：本包的全部读数来自下面这一跑，而这一跑之前，它已经因为
+  自己文件里两句自称读数的话被拦下两次——这与下一格那条形状是同一件事，只是这次的作者是本包。
+- 冻结记录里台账那一行的 sha 是**冻结那一刻**的值；跑完之后本节又加了上面这几段（含本句），
+  所以台账的落地字节与冻的那一刻不同。**只有它不同**，且不同的只有本节的文字。
+- **本包自己犯了一次下一格那个形状，在发货前抓住并改掉。** 新 unit 的头部初稿里有一句自称是
+  读数的话：「the intake run directory holds the readings cache **and the refresh cursor**」。
+  前半句真（`ctx.run_dir / "readings" / identity`，`daily_reading.py:216-218`），后半句**不是读数，
+  是我照着前一句推出来的**：`ctx.refresh_cursor` 写的是 `ctx.running["cursor"]`，而那份记录的键在
+  `--records-root` 之下（`recipes.py:1241-1280` 的 `record_path`/`read_record`/`last_success`），
+  也就是说**搬 run-dir 不会丢游标**，只会丢读数缓存与 `alignment.json`。两句话差一个动词，代价差
+  一批模型调用，而这一句正写在「告诉下一个操作者搬动要付什么」的位置上。改法是把它换成分行
+  引用的两处代码，并在文件里写明这个区别是**先写错后纠正的**。下一格那条教训因此有第二个实例，
+  这次的作者是本包自己。
+
 #### 9.48.11 一处订正：一句自称「读数」的注释，其中一行不是读数
 
 本片在做 R2 的现场核对时，回头读了本片自己刚发出去的那个 timer 注释，发现它的相位表里有一行
