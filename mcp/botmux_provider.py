@@ -36,7 +36,7 @@ semantics = _load("serveros_runtime_agent_sessions", _RUNTIME / "agent_sessions.
 # implementation of the `instance:` record `abilities/provider-contract.yaml`
 # declared. Loaded rather than reimplemented: this adapter's job is to produce
 # the observations, not to decide what they add up to.
-instances = _load("serveros_ability_provider_instance",
+instances = _load("serveros_abilities_provider_instance",
                   _ABILITIES / "provider_instance.py")
 agent_ref = semantics.agent_ref
 session_ref = semantics.session_ref

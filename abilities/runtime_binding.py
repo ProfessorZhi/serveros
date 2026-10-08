@@ -117,7 +117,14 @@ def _load(name: str, path: Path):
 
 
 target = _load("serveros_abilities_target", _HERE / "target.py")
-_provider_instance = _load("serveros_provider_instance", _HERE / "provider_instance.py")
+# `provider_instance.py`, under the ONE name every loader of it uses. It defines
+# `ReadinessError`, so two names would be two exception classes with one
+# spelling: a `except ReadinessError` written against one copy would not catch
+# the refusal raised by the other. Loaded two lines above as part of `target`,
+# which is the same name this line asks for -- and the reason it asks for that
+# one rather than a third.
+_provider_instance = _load("serveros_abilities_provider_instance",
+                           _HERE / "provider_instance.py")
 
 
 def contract() -> dict:
