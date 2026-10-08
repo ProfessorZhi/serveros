@@ -11206,3 +11206,100 @@ missing skills/test-management/profiles.yaml
 **同时更正一处措辞**：§9.66.2 说「技能载荷多 16 个文件」；§9.66.8 与 `PENDING-DECISIONS.md` 条目 7
 引用的也是这个数，均已改正为 **14**。交付文件
 `RUN-0038/deliverables/PLUGIN-ROW-PIN-ATTRIBUTION.md` §2 已按 14 重写并附上核对表。
+
+---
+
+### 9.67 取源从「canonical 检出」改为「产物自己记录的 commit」——本夜第四个同形问题
+
+**同形的第四个**：§9.65 是量具把自己的落后记成产物的漂移；§9.66 是插件行拿**别人的 pin** 量它；
+而「§9.65 修好了归属」这句话本身还留着一个没动的前提 —— **比对用的那棵树仍来自 `--serveros-repo`**，
+即一个「上次 `fetch` 停在哪就站在哪」的工作副本（本机 `4bf2c324920b`）。于是判词
+「本文件是从 X 重建的，而产物说自己是 Y」把**量具的落后**与**产物的落后**说成了同一个词，
+6 行被判 `SOURCE_STALE`。
+
+#### 9.67.1 真机 A/B 的行级读数
+
+同命令、同 cwd、只换 `scripts/runtime_truth.py` 一个文件（改动前的**活体**读数与 HEAD 的量具读数
+逐字节相同，`cmp` 无差异 ⇒ 那「一」个变量确实是这一个文件）。13 条 component 行：
+
+| 计数 | 改前 | 改后 |
+|---|---|---|
+| `SOURCE_STALE` | **6** | **0** |
+| `SOURCE_RUNTIME_DRIFT`（行级） | 1 | 2 |
+| `OK` | 5 | 10 |
+| `UNKNOWN` | 1 | 1 |
+
+**6 行离开 `SOURCE_STALE`：5 行 → `OK`，1 行 → `SOURCE_RUNTIME_DRIFT`**（后者是
+`@ Claude plugin cache`，真滞后）。页脚逐字节不变（`sha256(sed -n '35,$p')` =
+`fcbd0a1ebfbc12577035d2268e9cb94b9a863a04d48b0411e1406abde598237d`），总判词仍
+`RELEASE_INCOMPLETE (blocking: CHAIN_CONSISTENT)`。
+
+**一处计数更正**：我在中途把 `UNKNOWN` 报成 **2**。按**判词列**数是 **1 行**——
+`ability-management (build pin)` 行的**列值**里印着 `UNKNOWN`（`c3fa07205bdd c3fa07205bdd
+UNKNOWN`），那是值与值之间的不确定，不是那一行被判 `UNKNOWN`（它的判词是 `OK`）。
+**把一列的值读成另一列的结论**，正是本夜反复出现的那种错误，记在这里免得下次重犯。
+
+#### 9.67.2 §9.65.8 的预测：**仍然成立，而且现在双重成立**
+
+§9.65.8 预见「推进 canonical 检出之后 `SOURCE_STALE` 仍是 `SOURCE_STALE`——产物记的仍是
+`2f6d0d3`，与谁更新无关。免得被读成「推进去就绿了」」。本包没有推翻它：
+
+- 保留的 `--use-checkout-source` 能复现旧读法 ⇒ 那条预测对**它做的那件事**照样为真；
+- 而**默认读法已根本不读 canonical** ⇒ 这些行与 canonical 的世代**已经无关**。
+
+**绿是从另一条路来的**：按每个产物自己记录的 commit 重建（`git archive` 取树，抽到按 commit
+命名的缓存，抽完才 `rename` 就位；对象库里没有该 commit 时**不 `fetch`** —— 一次要联网的测量
+量到的是网络 —— 返回 `None`，由调用方如实说「取不到」并带**可见 note** 回退到检出）。
+`PENDING-DECISIONS.md` 条目 6 的选项 (C)（「改取源语义」而不是推共享检出）由此有了一个
+具体实现；条目 6 的治理问题本身（谁从那个共享检出 `grep`，谁读到旧代）**没被关掉**。
+
+#### 9.67.3 `mutation_guard` 逮到本包**自己**写的「默认删除」
+
+全量套件在**第一版**上红：`test_mutation_guard.py::TheLiveTreeIsCovered::
+test_every_product_call_site_is_declared` 报 5 处未登记调用面，其中两处 `shutil.rmtree`
+—— 一处删本次调用自建的暂存目录，另一处 `if target.exists(): shutil.rmtree(target)`
+删的是**本次调用没有建的那个目录**。后者正是 `release.py#stage` 上一轮专门改掉的
+「对所有权与意图都未确立的目录采取默认动作」；本机 `$TMPDIR` 是**共享**的，
+它会把别人的成品树、或别人正在写的同一 commit 的副本，删得和自己的一样顺手。
+
+**处置是收窄可达性，不是登记它**：暂存目录改由 `tempfile.mkdtemp` 生成；目标处**从不删除**
+（已带 `.extracted` 标记的树直接用别人的，正在进行中的目标返回 `None`）。收窄后可登记的面
+从 5 处降到 3 处，逐条写进 `runtime/actuator-contract.yaml` 新条目 `source-cache-extraction`，
+`read-only-git-queries` 补上 `extract_source_tree`（唯一不走 `_git` 的调用面，因为要的是
+tar 字节；`archive` 只读）。可达性对照（金丝雀）：无标记的目标被**保留**且返回 `None`；
+已有成品树时同一路径、标记 inode 不变。
+
+被否掉的**第一版函数原文**留在 `RUN-0039/probe/n-first-version-of-extract_source_tree.txt`
+（不在 git 里：那是一个未合并的提交，被 amend 而不是留成一个过不了 guard 的首提交）。
+
+#### 9.67.4 装机面：**是**成员，但**不发版**
+
+`runtime/actuator-contract.yaml` **是装机成员**（`current` 的 `ARTIFACT.json` 277 个 members
+里在列），所以本包**有装机面**——这与 §9.65、§9.66 两包的「无装机面」不同。但**不发版**，
+判据是**量出来的而不是推断的**：全仓（`tests/` 之外）**没有任何代码读 actuator 契约**，
+它只在验证期被 `mutation_guard` 按传入的 root 读取 ⇒ 装机那份的差异是**惰性数据**，
+不是行为差异。节点「装得比源旧」这件事仍由 `(bundle identity)` 行回答（它本来就是
+`SOURCE_RUNTIME_DRIFT`）。**未执行 build / promote / restart**；`serverosd` 的 MainPID
+A/B 两次读数同为 `pid=2276905`。
+
+#### 9.67.5 照实说：没关掉什么
+
+- 产物相对 canonical 的「新/旧」不再由这些行回答——这是设计上的**搬移**，不是丢掉
+  （版本列与 `(bundle identity)` 行仍在答）；
+- `(bundle identity)` 那条**真滞后**仍在，且它要收就得有一次真发布（build → promote →
+  restart），会经 `current` 影响本机其它 Agent 的新起进程 ⇒ 属对外可见的写，须先备动作包；
+- 没关掉任何缓存滞后缺口（`serveros-testing` 缓存、Codex 插件缓存），**没动任何全局插件开关**；
+- 没补 `DATA_ROOT/AGENTS.md`、没补 SRV-0011 的 `design`/`plan` 文档、没动长期存在的
+  `RELEASE_INCOMPLETE`。
+
+**验证**：`pytest tests/test_runtime_truth.py tests/test_plugin_composition.py -q` → 96 passed,
+2 subtests passed；`pytest tests/test_mutation_guard.py -q` → 66 passed, 52 subtests passed；
+**全量 `pytest tests/ -q`（本 PR 最终字节）→ 7295 passed, 24 skipped, 4449 subtests passed in
+811.23s，EXIT=0**（改动前同命令为 7294 passed + 1 failed，总数同为 7295 条：那条红即上述 guard，
+已转绿）。旧码控制：4 条新/改写用例在 HEAD 的量具上**全红**。
+
+**落地**：`scripts/runtime_truth.py`、`tests/test_runtime_truth.py`、`runtime/actuator-contract.yaml`，
+**+432 / −75**，PR **#119**，提交 `806a322`，合并提交 **`6da1ef2`**，2026-10-08 **12:40:33 CST**；
+合并后 `origin/main` 的三个文件与分支头**逐 blob 一致**。Item 侧记录在
+`artifacts/work-items/serveros/SRV-0011/RUN-0039/`（Run `SUCCEEDED`，9 条证据行），
+入口是 `RUN-0039/deliverables/RUNTIME-TRUTH-SOURCE-REBUILD.md`。
