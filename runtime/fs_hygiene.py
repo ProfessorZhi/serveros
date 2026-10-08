@@ -72,14 +72,43 @@ target as debris, which is how a rollback target gets deleted.
 
 What is NOT established here, and is said rather than implied
 ------------------------------------------------------------
-`paths.py` declares no top-level vocabulary for HOME. It declares closed sets
-for DATA_ROOT, WORKSPACE_ROOT and `state/serveros`, and for HOME only the
-`~/.serveros` allow-list and a refusal of `~/files`. Where HOME is its own
-directory, its entries are therefore largely unchecked by construction and an
-entry there cannot be MISPLACED against a list that does not exist — this
-module reports that gap rather than inventing a list to close it, because a
-list invented here would be a second statement of HOME's shape authored by the
-module that is supposed to be checking it.
+`paths.py` declares four closed top-level sets over the roots it names —
+DATA_ROOT, WORKSPACE_ROOT, `state/serveros` and ARTIFACTS_ROOT — and for HOME
+only the `~/.serveros` allow-list and a refusal of `~/files`. This module
+applies three of the four. Which three, and why the fourth is not among them, is
+`ROOT_VOCABULARY` and `VOCABULARY_NOT_APPLIED` above: the pair is required to
+account for every name the contract declares both as a root and as a closed set,
+and a test holds them to it, so neither an absence nor an application can arrive
+unremarked.
+
+Where HOME is its own directory its entries are largely unchecked by
+construction, and an entry there cannot be MISPLACED against a list that does
+not exist — this module reports that gap rather than inventing a list to close
+it, because a list invented here would be a second statement of HOME's shape
+authored by the module that is supposed to be checking it.
+
+`ARTIFACTS_ROOT`'s gap is a DIFFERENT one, and the sentence that used to stand
+where this paragraph does said the contract declared no closed set for that
+root. That was not true, and the way it was wrong is worth keeping: the set
+exists (`ARTIFACT_NAMESPACES`, the two canonical namespaces for new writes).
+What does not exist is a ruling on everything ELSE at that root. So the reason
+the vocabulary is not applied is not that there is nothing to apply — it is that
+applying it means scanning the root, and scanning the root means classifying
+those other entries. Measured both ways on this node (2026-10-08): putting the
+name in `ROOT_VOCABULARY` alone changes no row at all, because the report's root
+set is separate from that map; putting the name in and scanning the root turns
+**109** of its entries MISPLACED. MISPLACED is the class with a move behind it,
+this product's cleanup rule is proposal-only, and those entries are the subject
+of an open ruling — `artifacts/serveros/` is where three live timers write, and
+`path conformance` reads **160** `UNDECLARED_ENTRY` there, the largest single
+stack in the product. That combination is exactly what `AWAITING_A_RULING`
+below refuses for two `state/serveros` names, one level down. The absence is
+therefore a DECISION, recorded as one, rather than a gap.
+
+The count matters to how the two readings were once conflated: 160 is
+`conformance`'s number for that root and answers "is this declared?"; 109 is
+this module's number and answers "is this in the wrong place?". One root, two
+instruments, two numbers, and neither is the other's.
 
 Where HOME and DATA_ROOT resolve to ONE directory — this host — the gap
 disappears for the reason the defect did: the directory is the DATA_ROOT, it
@@ -581,15 +610,57 @@ DEFAULT_OVERSIZED_BYTES = 1 << 30  # 1 GiB
 
 # Which root name is governed by which declared vocabulary, where one exists.
 #
-# `home` is deliberately ABSENT. `paths.VOCABULARIES["home"]` is the `~/.serveros`
-# allow-list, NOT the shape of `~/` — using it here would classify `~/.bashrc`
-# as a misplaced entry, which would be wrong and would be wrong loudly enough
-# that somebody would widen the list to shut it up. The absence is the finding;
-# see the module docstring.
+# This is an INDEX into the contract, not a second copy of it: the values are
+# attribute NAMES on `paths.py` and are read there, so a vocabulary that changes
+# changes here without an edit. What an index can still get wrong is which names
+# it has entries FOR — and that failure is invisible, which is why it is the one
+# this pair is shaped around. `ROOT_VOCABULARY` and `VOCABULARY_NOT_APPLIED`
+# below must together account for every name the contract declares BOTH as a
+# root (`paths.ROOTS`) and as a closed top-level set (`paths.VOCABULARIES`), and
+# `test_every_root_the_contract_declares_is_either_applied_or_explained` holds
+# them to it. A root added to `paths.py` therefore cannot arrive here silently
+# unclassified: it gets a vocabulary, or it gets a reason.
 ROOT_VOCABULARY = {
     "data": "DATA_ROOT_TOP_LEVEL",
     "workspace": "WORKSPACE_TOP_LEVEL",
     "state": "STATE_SERVEROS_TOP_LEVEL",
+}
+
+# The declared closed sets this module deliberately does NOT apply, each with
+# the reason. An absence that is a DECISION and an absence nobody got to look
+# identical in a report and are not the same finding — the difference is whether
+# a reader can act on it — so the decision is written where the decision is
+# made, rather than left to be inferred from a key that is not there.
+#
+# The reasoning and the measurements behind each entry are in the module
+# docstring's "What is NOT established here" section. The short forms are here
+# so that a reader who arrives by grep is not sent away empty-handed; they are
+# deliberately NOT a second copy of the docstring's prose, because two copies of
+# one reason is the drift this table is being fixed for.
+VOCABULARY_NOT_APPLIED = {
+    "home": (
+        "`paths.VOCABULARIES['home']` is the `~/.serveros` allow-list, NOT the "
+        "shape of `~/` — applying it here would classify `~/.bashrc` as a "
+        "misplaced entry, which would be wrong and would be wrong loudly enough "
+        "that somebody would widen the list to shut it up. `paths.py` declares "
+        "no top-level vocabulary for HOME at all"
+    ),
+    "artifacts": (
+        "the set EXISTS (`ARTIFACT_NAMESPACES`, the two canonical namespaces "
+        "for new writes) and is not applied, because applying it means also "
+        "SCANNING the root, and this report does not scan it. The report's root "
+        "set is separate from this map, so the name alone would change no row — "
+        "what would change rows is the scan, and the entries it would classify "
+        "are the ones the contract has not ruled on: `artifacts/serveros/` is "
+        "where three live timers write, and the rest is history nobody has "
+        "decided about. MISPLACED is the class with a move behind it and this "
+        "product's cleanup rule is proposal-only, so applying this vocabulary "
+        "would manufacture an actionable class out of somebody else's open "
+        "question — the failure `AWAITING_A_RULING` below already refuses one "
+        "level down. Measured on this node 2026-10-08: the name alone changes "
+        "no row; the name plus the scan turns 109 of the root's entries "
+        "MISPLACED"
+    ),
 }
 
 # The three roots whose top level is declared a closed set. `state` is declared

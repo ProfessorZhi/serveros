@@ -10432,6 +10432,38 @@ dotfile**，那是 (B)，**仍然是人这一格，一条没动**。但同一段
   docstring 仍说 `paths.py` 只声明了这三个根——而 `ARTIFACTS_ROOT` 是 finding 最多的那个根。
   **故意不改**：把 `artifacts` 加进去会**造出** 159 条 `MISPLACED`，而 `misplaced` 是**带动作**的那
   一类，与「清理一律先是提案」冲突。量到、写下理由、不动。
+
+  > **追加（2026-10-08 19:2x CST，RUN-0046 之后，**不改写上面的判断**）**
+  >
+  > 上面这一条的**结论站得住**（实测更强，见下），但**写下的机制不成立**，两处都要更正，
+  > 而更正的理由正是这一段当初为什么要写下来。
+  >
+  > 1. **「加进去会造出 159 条」不是加进去能造成的。** 实测两遍：只把
+  >    `"artifacts": "ARTIFACT_NAMESPACES"` 加进 `ROOT_VOCABULARY`，`fs hygiene --json`
+  >    与改前**逐字段**比较只有 `measured_at` 变（`report()` 的扫描根集是另一处字面量，
+  >    与这张表无关）；**再**把 `artifacts` 加进 `report()` 的根集与 `locations`，才真的
+  >    开始分类，量到 `MISPLACED` **9 → 118**（该根 **+109**）、`DUPLICATE_SEMANTIC_ROOT`
+  >    **0 → 3**、`CANONICAL` 26 → 28、`LEGACY` 1 → 2、`UNKNOWN` 73 → 120。
+  >    所以「带动作」那半成立且更重（109 而非 159），**而「加 `ROOT_VOCABULARY` 会造出」
+  >    这半一句也不成立**。
+  > 2. **159 是另一件量具的数。** 159（今天实读 **160**，这个根每天在被写）是
+  >    `path conformance` 的 `UNDECLARED_ENTRY`，问的是「声明了吗」；109 是 `fs_hygiene`
+  >    的数，问的是「放错地方了吗」。**一个根、两件量具、两个数**，而那句话把两个数
+  >    并成了一个**哪一个量具都读不出来的数**。
+  >
+  > **「故意不改」这个决定不变**，理由换成量到的那个：不是因为没东西可应用（集合一直在
+  > `paths.py` 里），是因为**应用它就得扫这个根**，而扫这个根就得给那些条目定类，
+  > 那些条目正是**合同还没裁决**的（`artifacts/serveros/` 是三条活定时单元在写，其余是
+  > 历史）。`misplaced` 带动作、清理一律先是提案 ⇒ 那等于**替别人的未决问题造出一个可执行
+  > 的类**，正是一层之下 `AWAITING_A_RULING` 已经拒过同一件事。
+  >
+  > **本包做的是把「不应用」从沉默变成一个记录在案的裁决**：`ROOT_VOCABULARY` 旁边新增
+  > `VOCABULARY_NOT_APPLIED`（`home` 与 `artifacts` 各带理由），并加闸门
+  > `tests/test_fs_hygiene.py::test_every_root_the_contract_declares_is_either_applied_or_explained`
+  > —— 两个映射必须**恰好覆盖** `set(paths.ROOTS) & set(paths.VOCABULARIES)`（今天
+  > = `{home, data, workspace, artifacts, state}`），于是往 `paths.py` 里加一个根，
+  > 这里**必然**红，直到有人说清它是哪一类。读数**零变化**（`fs hygiene` 只有 `measured_at`
+  > 变，`path conformance` 逐字段不变）。
 - **D01–D07 的其余各条未逐条扫**，本包只做了依赖最靠前的那一件。
 
 ### 9.62 全量套件在主线上是**红的**：三条读出来是同一个形状
