@@ -10170,3 +10170,165 @@ attempts      0 recorded on 0 live checkpoints
 4. **`litellm-work-doc` 的两份 on-disk 契约对 `relation` 说法不一致**
    （`EXTERNAL_MAINTAINED` vs `OWNED`），且 `SRV-0003/RUN-0013` 的 profile 在
    2026-10-07 14:38 被就地覆盖过。都不是这一轮引入的，登记在案，不动。
+
+---
+
+### 9.60 B9 契约的「实际内容错误」收口：一个缺陷形状，在**同一件事**上出现了五次
+
+计划 `plan-01-native-work-environment.md` 的 W5 第二条要求：「修 B9 profile 的**实际契约/派生
+状态错误**，按既有文档关系和权限做局部更新或内容完整的 patch proposal」。W5 的第一条（读取面
+能不能把「两份契约」印成「文档里有」）已在 §9.59 前后收口；这一条修的是**内容本身**。
+
+两半都闭合了：读取面代码（D1）已合并且**已装机读回**，内容提案（D2）已落盘并**用装机入口读回**。
+
+#### 9.60.1 承重的那一处：读取面把「两份契约」印成「文档里有」
+
+`derive_sections()` 只按**这一份 profile 自己声明的 `key`** 建索引。因此
+
+```
+state.derived.sections ⊆ { 声明它的那份 profile 的 key }
+```
+
+**恒成立**。于是 `derived − declared` 非空这件事，**只可能**证明磁盘上存在两份不同的 profile，
+它**证不出任何关于文档的事**。
+
+而修复前的 `render()` 把它印成：
+
+```
+⚠ 文档里有而 profile 没声明 ['completed']
+```
+
+**这条语句的主语是文档。** 读到它的人会去做的事是「给手上这份契约补一节」——而真相是**这份
+契约已被取代**，补它就是让两份契约继续分叉。
+
+修法：`read_reach()` 新增两个字段 `state_from_another_profile` / `unresolved_section_keys`；
+`render()` 分三支（两份契约 / 一份契约但 declared 与派生时的未解析键一致 / 两处读数不一致），
+分别说「这份 state 不是这份 profile 派生的 —— 两份不是同一份契约」「这份 state 里有些节在
+派生它的那一刻就没解析出来」「这两处读数不一致」。**写闸门一字未动**（`gate(PATCH,'completed')`
+两代都答 `blocked — section_not_declared`，这仍是正确的：旧契约确实没声明这一节）。
+
+**这不是措辞问题，是主语问题。** 同一个差集，说它属于文档就是错的，说它属于两份契约的关系
+才是对的。
+
+#### 9.60.2 量出来的普查：磁盘上是**三**份，不是两份
+
+§9.59.8 提案 4 记的是「两份 on-disk 契约对 `relation` 说法不一致」。实测更具体：
+
+| # | 位置（`ARTIFACTS_ROOT/` 之下） | `relation` | 节 | registry sha1 |
+|---|---|---|---|---|
+| 1 | `skills/serveros/RUN-20260925-p4-stewardship/managed-documents/` | `OWNED` ✗ | **4** | `236b3fd5cdac` |
+| 2 | `work-items/serveros/SRV-0003/RUN-0013/managed-documents/` | `EXTERNAL_MAINTAINED` ✓ | 5 | `15b38a68a031` |
+| 3 | `work-items/serveros/SRV-0011/RUN-0001/verification/R25-JE/repaired/` | `OWNED` ✗ | 5 | `236b3fd5cdac` |
+
+**第 1 与第 3 的 registry 逐字节相同，却配着两份不同的 profile（4 节 vs 5 节）。** 所以不一致
+的不只是 `relation` 一个字段，而是**同一份 registry 文本被配了两份契约**，一份承认文档长出了
+第五节、一份不承认。
+
+而 `OWNED` 是**实测为假**：文档 `owner_id` 不是本账号（是该 space 唯一的 admin），本账号只是该
+节点的 `full_access` 协作者、不在 space 成员表里，`link_share_entity = tenant_readable`。
+
+**读取面发现不了这件事。** `read_delivery` 对账的是 registry 与 profile 彼此是否一致——两者都
+说 `OWNED`，它就是「一致的」。**声明自洽不等于声明为真。** 这个字段只有靠一次真实测量才被证伪。
+
+`skills/.../p4-stewardship/acceptance/managed-documents/` 讲的是另两篇文档（`p4-publish-acceptance`
+/ `p4-publish-mirror`），**不计入**。
+
+#### 9.60.3 同一个形状，在我自己的器具上又出现了两次
+
+写读回器具时，我连着踩了同一件事两次，加上产品那处，是三次：
+
+| # | 谁印的 | 印成什么 | 真相 |
+|---|---|---|---|
+| 1 | 产品 `intake/managed_documents.py` | 「**文档里有**而 profile 没声明」 | 只证明**磁盘上有两份 profile** |
+| 2 | 我的读回器具（v1） | 「✗ 无 registry」 | 我**拼错了根**（skills 证据在 `ARTIFACTS_ROOT/skills/`，我拼在 `work-items/serveros/` 下） |
+| 3 | 我的读回器具（v1） | 「relation=None」 | 那个字段**不在**规范化后的 entry 里（只在 `delivery.declared`） |
+
+第 2、3 条不影响结论，但它们**读起来完全像关于世界的事实**，而它们其实是关于**我的脚本**的事实。
+修法不是「小心一点」，是让器具**在输出里带上自己搜过的那个路径**，并在缺字段时印「旧读取面无此
+字段」而**不是**用 `.get()` 的默认值把它印成 `False`——后者会把「没问过」印成「否」，同一个形状。
+
+D2 的提案内容本身也有两处同形：①`discovery.note` 里「我们不是其成员，只被单独授予若干节点的
+**阅读**权」——那是从**一篇文档**的权限读数反推的，被写成了关于**我们的授权**的事实（实测是该节点
+`full_access`）；②`body_authority` 上方注释「依据：discovery 节实测…」——把一次**反推**写成了
+一次**实测**。两处都在提案里改成了指向真正量过它们的那个来源（`document_ownership` 块）。
+
+**而同一个器具还干了另一件不该干的事，形状是反过来的：读的时候改了世界。** 它 `import` 了
+装机 payload 里的模块，默认 Python 于是在**那棵已发布的树**里写了三个 `__pycache__/`
+（`context/`、`intake/`、`runtime/`）——正是 `bin/serverosctl` shim 自己的头注释写着不能发生的
+那件事（「a single `--help` is enough to make the recorded hash unreachable — measured, 16 files
+from one command」）。修法一行：`sys.dont_write_bytecode = True`。
+
+既存的三个目录**没有删**——清理一律 proposal-only。`promote` 之后 `current` 已指向干净的 `r`，
+那三个目录留在 `q` 那份历史 revision 里，与这条记录一起构成证据。
+
+#### 9.60.4 已合并、已安装、已读回
+
+| 项 | 值 |
+|---|---|
+| 代码 | `intake/managed_documents.py`（`read_reach` 新字段 + `render` 三分支 + 两处被证伪的 docstring 断言） |
+| 测试 | `tests/test_managed_documents.py` 29 → 38（含 5 条断言渲染**不出现**「文档里有」）；另 `test_plugin_composition` + `test_release` + `test_serverosctl` + `test_runtime_truth` **224 passed, 8 subtests passed** |
+| 变异 | `probe/b9-contract/mutation-check.py` 三处全杀（1/4/5 红）；还原后 sha1 与 HEAD 逐字节相同 |
+| 修复合入 | PR **#106** → merge `3229424` |
+| cachebuster | `srv0005.20261008q → r`，PR **#107** → merge `81b6460`（照史例：修一个 PR，bump 另一个） |
+| 已安装 | `product-tree-20261008r@81b6460`，`3.1.0+srv0005.20261008r`，tree `06ffcb6eb7fd0c78be97ff9221d33faa04486ea48d4324bf1ad2608e4f95530d`，previous `product-tree-20261008q@48937d5`，`release.py status` → **AGREE** |
+| 重启 | `serverosd` pid **1237214 → 2249975**（`promote` **不**重启，照 §9.53.4 三步走） |
+
+**payload 差集**（`diff -rq` staging vs 已装的 `q`）逐条读下来是：
+
+| 差 | 是什么 |
+|---|---|
+| `ARTIFACT.json`、`.claude-plugin/marketplace.json`、`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` | 四个带版本串的载体 |
+| `README.md` | **只有第 14 行**：`srv0005.20261008q → r`（`diff` 就一行） |
+| `intake/managed_documents.py` | **这就是这一刀的载荷** |
+| `q/context/`、`q/intake/`、`q/runtime/` 下的 `__pycache__/` | **我的器具写进去的**，见 9.60.3 |
+| `q/RELEASE.json` | 已装 revision 才有的那份记录 |
+
+排掉四个版本串载体与 `RELEASE.json`（那两者本来就不该相同），差**恰好**是 `intake/managed_documents.py`。
+**读不到别的。**
+
+**装机读回**（`serverosctl document stewardship`，读 4 节那份）：
+
+```
+⚠ 这份 state 不是这份 profile 派生的 —— 两份不是同一份契约
+  它含这份契约没声明的 ['completed']；这份契约声明了而它没有的 []
+  state 不记录是哪份 profile 派生的，所以「哪一份是当前的」在这里判不出来
+  文档自己有没有这一节要问 `audit`：它读的是实时大纲，不是 state
+```
+
+最后两句是**这一刀新写进去的**，也是这一刀真正的价值：它不再假装知道，它说出**在哪判不出来**，
+并指出**去哪问**。
+
+#### 9.60.5 交付的提案与它的读回
+
+位置：`ARTIFACTS_ROOT/work-items/serveros/SRV-0011/native-work-env-20261008/proposal/litellm-work-doc-contract/`
+（`registry.yaml` + `profiles/litellm-work-doc.yaml` + `BASIS.md`）。**不接 routine、不复制到
+`records/`**——契约的**长期位置**是要人定的（§11.6，见 9.60.7）。
+
+底座 = `SRV-0003/RUN-0013` 那份（`EXTERNAL_MAINTAINED`，5 节，**那份是对的**），按**最小差异**只改三处：
+①`discovery.note` 的「阅读权」→ 实测；②`body_authority` 上方注释不再冒充实测；③新增
+`document_ownership` 块 + 重写 `owner:` 上方注释（把「本契约的承接人」与「这篇文档的 owner」
+两个**同一个字**的身份拆开——`EXTERNAL_MAINTAINED` 的定义恰好是「不接管 owner」，而 `owner:`
+那一行很容易被读成「我们接管了」）。
+
+读回（装机 `serverosctl`，活体 state revision 1774）：
+`contract=CHECKED`｜`交付=EXTERNAL_MAINTAINED（CONSISTENT）`｜`derived_never_declared=[]`｜
+`declared_never_derived=[]`｜**无 `⚠`**｜`authorize_edit(PATCH,'completed') → preview`。
+
+#### 9.60.6 照实说：这一轮**没**关掉什么
+
+- **没有**让「哪一份是当前的」在机器上可判。state **不记录**自己是哪份 profile 派生出来的，
+  所以这句话在读取面上判不出来——它现在**说的是判不出来**，而不是猜一个。要真判出来需要 state
+  带上派生时那份 profile 的身份，那是另一刀的构造变更。
+- **没有**动那三份 on-disk 契约里的任何一份。两份 `OWNED` 副本仍在原处、仍与实测不符。
+  改它们要先有「哪份是当前的」这个判定，而那正是上一条没关掉的东西。
+- **没有**替人决定契约的长期位置（§11.6 三个候选：能力自己的 canonical／`records` 树／
+  ServerOS 仓 `contracts/`——「选哪条是在分配权力」）。
+- **没有**修 §9.59.8 提案 4 里第二条：`SRV-0003/RUN-0013` 的 profile 在 2026-10-07 14:38
+  被就地覆盖过。这一轮把它当作**底座**读，覆盖前后的差异没有量。
+
+#### 9.60.7 提案（一律未执行）
+
+1. **§9.59.8 提案 4 按本轮更新**：不再只是「两份说法不一致」，而是**三份，其中两份 registry
+   逐字节相同却配着不同 profile**；`OWNED` 实测为假。**登记在案，不动**（理由见 9.60.6）。
+2. **§11.6 常设维护契约位置**：仍是唯一仍需人定的一项。**内容已完整**——位置一旦选定，
+   落地只需把那两个文件复制过去，不需再编辑。
