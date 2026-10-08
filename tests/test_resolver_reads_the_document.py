@@ -182,6 +182,49 @@ class TheRowIsReadNotComputed(unittest.TestCase):
         profile = self._profile(identity_home=self.base)
         self.assertEqual(self._artifacts_root(profile), self.base / "artifacts")
 
+    # -- the same reading, one row over -------------------------------------
+    #
+    # `workspace_root` was the second row with this shape, and it went unnoticed
+    # for the same reason: on this node the declared value and the derived
+    # `{data_root}/workspace` are the same directory. The census below is what
+    # found it, and these are its falsifications. There is no
+    # "other spelling still answers" case here on purpose: `artifacts_root`
+    # carries two keys because two documents spell that root differently, and
+    # this row has exactly one spelling in the document that declares it.
+    # Asserting a second one would be inventing a word rather than reading one.
+
+    def _workspace_root(self, profile: Path, **environment) -> Path:
+        with self._environment(**environment), \
+                mock.patch.dict(os.environ,
+                                {resolver.HOST_PROFILE_ENV: str(profile)}):
+            return resolver.Roots.from_env().workspace_root
+
+    def test_the_workspace_row_answers_when_the_document_declares_it(self):
+        """The reading that came back False before the fix, kept as the control.
+
+        The declared value is deliberately NOT `{data_root}/workspace`: a
+        sentinel that the derived branch cannot produce is the only way to tell
+        "read" from "happened to coincide".
+        """
+        sentinel = self.base / "declared-by-the-document"
+        profile = self._profile(identity_home=self.base, workspace_root=sentinel)
+        self.assertEqual(self._workspace_root(profile), sentinel)
+
+    def test_the_workspace_environment_still_outranks_the_document(self):
+        """The fix added a branch; it did not reorder the precedence."""
+        profile = self._profile(identity_home=self.base,
+                                workspace_root=self.base / "from-the-document")
+        chosen = self.base / "from-the-environment"
+        self.assertEqual(self._workspace_root(profile, WORKSPACE_ROOT=chosen), chosen)
+
+    def test_an_absent_workspace_row_is_still_derived_from_the_data_root(self):
+        """`runtime/paths.py` keeps this derivation in `_SEED_DEFAULT_SUFFIX`
+        and has no `workspace` role to read instead, so a node that declares no
+        row must still resolve — the derivation is the *fallback*, not the rule.
+        """
+        profile = self._profile(identity_home=self.base)
+        self.assertEqual(self._workspace_root(profile), self.base / "workspace")
+
 
 class EveryRowTheTreeAsksFor(unittest.TestCase):
     """The general form, so the next wrong row name goes red where it is written.
@@ -259,43 +302,188 @@ class EveryRowTheTreeAsksFor(unittest.TestCase):
         assertion above would pass by finding nothing to complain about.
         """
         asks = self._rows_asked_for_by_the_resolver()
-        self.assertGreaterEqual(len(asks), 2)
+        self.assertGreaterEqual(len(asks), 3)
         keys = {key for _, asked in asks for key in asked}
         self.assertIn("identity_home", keys)
         self.assertIn("artifacts_root", keys)
+        self.assertIn("workspace_root", keys)
         for _, asked in self._rows_asked_for_by_the_two_copies():
             self.assertTrue(asked, "a ROOT_SOURCES entry names no profile key at all")
+
+
+class BothReadersOfTheDocumentFollowTheSameRow(unittest.TestCase):
+    """The general form of the pair RUN-0050 and RUN-0051 each fixed one of.
+
+    `context/resolver.py` and `skills/serveros/scripts/architecture_check.py`
+    both answer "where is this root" out of THE SAME document — this node's
+    host profile. When one of them reads a row and the other computes the same
+    path from a different root, the disagreement is invisible to any comparison
+    of VALUES on a node where the two coincide, which is how `artifacts_root`
+    and then `workspace_root` each sat unread. So the row is moved to a sentinel
+    and every reader that answers from this document must follow it: a reader
+    that derives its answer instead cannot, and goes red here.
+
+    This is not the third implementation's test. `runtime/paths.py` answers
+    some of the same questions from the FLEET document — a different authority,
+    correctly read from a different file — and is compared where the two
+    documents' answers are compared, in `TheTwoAuthoredDocuments` above.
+    """
+
+    #: (question, the host-profile row that answers it, the argument
+    #: `architecture_check.default_root` takes, the `Roots` attribute)
+    QUESTIONS = (
+        ("data root", "identity_home", "data_root", "data_root"),
+        ("workspace root", "workspace_root", "workspace_root", "workspace_root"),
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _profile(self, **rows) -> Path:
+        path = self.base / "host-profile.yaml"
+        body = "".join(f"    {key}: {value}\n" for key, value in rows.items())
+        path.write_text("schema: serveros/host-profile.v1\nnode:\n  roots:\n" + body,
+                        encoding="utf-8")
+        return path
+
+    def _ask_both(self, profile: Path, argument: str, attribute: str):
+        """Both readers, environment held out of the way, same document."""
+        keep = {key: value for key, value in os.environ.items()
+                if key not in ROOT_ENVIRONMENT
+                + (resolver.HOST_PROFILE_ENV, "DATA_ROOT", "SERVEROS_STATE_DIR")}
+        keep[resolver.HOST_PROFILE_ENV] = str(profile)
+        with mock.patch.dict(os.environ, keep, clear=True):
+            from_the_resolver = getattr(resolver.Roots.from_env(), attribute)
+            # The same name the census above loads it under, so the file is one
+            # module and not two copies with two sets of classes.
+            check = _load("serveros_architecture_check_for_rows", ARCH)
+            from_the_checker = check.default_root(argument)
+        return from_the_resolver, from_the_checker
+
+    def test_the_table_names_rows_something_declares(self):
+        """NEGATIVE CONTROL: a loop over nothing passes for the wrong reason."""
+        self.assertGreaterEqual(len(self.QUESTIONS), 2)
+        self.assertEqual(len({row for _, row, _, _ in self.QUESTIONS}),
+                         len(self.QUESTIONS), "two questions share one row")
+
+    def test_neither_reader_computes_a_row_the_document_declares(self):
+        for question, row, argument, attribute in self.QUESTIONS:
+            sentinel = self.base / f"declared-{row}"
+            # `identity_home` is one of the rows under test, so the sentinel is
+            # assigned rather than passed beside it.
+            rows = {"identity_home": self.base}
+            rows[row] = sentinel
+            profile = self._profile(**rows)
+            try:
+                from_the_resolver, from_the_checker = self._ask_both(
+                    profile, argument, attribute)
+            except Exception as exc:                            # noqa: BLE001
+                self.skipTest(f"{question}: this node cannot run the pair here: {exc!r}")
+
+            self.assertEqual(
+                from_the_resolver, sentinel,
+                f"{question}: `context/resolver.py` did not read `{row}` — it "
+                f"computed {from_the_resolver} instead, so the row went unread.")
+            self.assertEqual(
+                from_the_checker, sentinel,
+                f"{question}: `architecture_check.py` did not read `{row}` — it "
+                f"computed {from_the_checker} instead, so the row went unread.")
+
+    def test_both_readers_answer_the_same_thing_when_no_row_is_declared(self):
+        """The other direction, so the fix cannot be "always return the row".
+
+        A node that declares nothing must leave both readers deriving the same
+        layout rather than one of them inventing a path. `{data_root}/workspace`
+        is that layout, and it is the branch both take here.
+        """
+        profile = self._profile(identity_home=self.base)
+        try:
+            from_the_resolver, from_the_checker = self._ask_both(
+                profile, "workspace_root", "workspace_root")
+        except Exception as exc:                                # noqa: BLE001
+            self.skipTest(f"this node cannot run the pair here: {exc!r}")
+
+        self.assertEqual(from_the_resolver, self.base / "workspace")
+        # `architecture_check` has no derivation for this row and returns None;
+        # that is the honest answer from a document that does not declare it,
+        # and it is recorded here rather than smoothed into a path.
+        self.assertIsNone(from_the_checker)
 
 
 class TheTwoAuthoredDocuments(unittest.TestCase):
     """Both read with the environment held out of the way, so both must be
     answering from their document. A difference is the documents' and not the
-    runner's."""
+    runner's.
+
+    This began as ONE question, `artifacts_root`, and that was the flaw in it:
+    the fix that made the resolver read the host profile's spelling repaired
+    that row and left the next one alone, because a drift alarm over one row
+    is silent about the row beside it. The table below is the whole family
+    the two implementations both answer, and it is asserted to be non-empty
+    and to name rows this node's document actually declares — a table that
+    quietly emptied would pass a loop over nothing.
+    """
+
+    #: (what a person calls it, the row in the host profile, the role in the
+    #: fleet table that `runtime/paths.py` answers it under)
+    QUESTIONS = (
+        ("artifacts", "artifacts_root", "artifacts"),
+        ("workspace", "workspace_root", "workspace"),
+    )
+
+    def test_the_question_table_is_not_empty_and_names_declared_rows(self):
+        """NEGATIVE CONTROL for the loop below.
+
+        An empty or misnamed table makes every assertion in the sibling test
+        pass by asking nothing, which reads exactly like an agreeing node.
+        """
+        self.assertGreaterEqual(len(self.QUESTIONS), 2)
+        declared = _declared_rows()
+        if declared is None:
+            self.skipTest(f"no readable host profile at {DOCUMENT}")
+        for label, row, role in self.QUESTIONS:
+            self.assertIn(row, declared, f"{label}: {row!r} is not a row this node declares")
+            self.assertTrue(role, f"{label}: no role named for the fleet document")
 
     def test_they_agree_on_this_node_or_this_fails_naming_the_question(self):
         if not DOCUMENT.is_file():
             self.skipTest(f"no host profile at {DOCUMENT}; nothing to compare")
 
-        keep = {key: value for key, value in os.environ.items()
-                if key not in ROOT_ENVIRONMENT + (resolver.HOST_PROFILE_ENV,)}
-        with mock.patch.dict(os.environ, keep, clear=True):
-            try:
-                from_the_host_profile = resolver.Roots.from_env().artifacts_root
-            except resolver.RootsUnresolved as exc:
-                self.skipTest(f"the resolver has no answer on this node: {exc}")
-            try:
-                from_the_fleet_table = Path(paths.Paths().root("artifacts"))
-            except Exception as exc:                            # noqa: BLE001
-                self.skipTest(f"the root contract has no answer here: {exc!r}")
+        disagreements = []
+        for label, row, role in self.QUESTIONS:
+            keep = {key: value for key, value in os.environ.items()
+                    if key not in ROOT_ENVIRONMENT + (resolver.HOST_PROFILE_ENV,)}
+            with mock.patch.dict(os.environ, keep, clear=True):
+                try:
+                    # The row name IS the attribute name: both Roots fields are
+                    # spelled the way the document declares them, which is the
+                    # whole point of the fix and is asserted for every row here.
+                    from_the_host_profile = getattr(resolver.Roots.from_env(), row)
+                except resolver.RootsUnresolved as exc:
+                    self.skipTest(f"the resolver has no answer on this node: {exc}")
+                try:
+                    from_the_fleet_table = Path(paths.Paths().root(role))
+                except Exception as exc:                        # noqa: BLE001
+                    self.skipTest(f"the root contract has no answer here: {exc!r}")
 
-        if not from_the_fleet_table.is_absolute():
-            self.skipTest(f"this node's root contract is unbound: {from_the_fleet_table}")
+            if not from_the_fleet_table.is_absolute():
+                self.skipTest(
+                    f"this node's root contract is unbound for {role}: {from_the_fleet_table}")
+
+            if from_the_host_profile != from_the_fleet_table:
+                disagreements.append(
+                    f"  {label}:\n"
+                    f"    {DOCUMENT}  node.roots.{row}  -> {from_the_host_profile}\n"
+                    f"    {FLEET_PROFILES}  paths.{role}  -> {from_the_fleet_table}")
 
         self.assertEqual(
-            from_the_host_profile, from_the_fleet_table,
+            disagreements, [],
             "Two authored documents answer one question and now disagree:\n"
-            f"  {DOCUMENT}  node.roots.artifacts_root  -> {from_the_host_profile}\n"
-            f"  {FLEET_PROFILES}  paths.artifacts      -> {from_the_fleet_table}\n"
+            + "\n".join(disagreements) + "\n"
             "Neither is derived from the other, so this is a finding and not a "
             "defect this test can fix: one document was changed and the other "
             "was not, or this node means to override its profile and has not "

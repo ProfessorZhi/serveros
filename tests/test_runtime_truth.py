@@ -132,6 +132,23 @@ def chain_rows(report: dict) -> list[dict]:
             if r["component"] not in HOST_ROWS and r.get("applies", True)]
 
 
+# The rows each of the two root-resolver copies names WITHOUT the other naming
+# it, declared rather than left to be discovered.
+#
+# `test_the_two_copies_of_the_root_resolver_agree` compares
+# `set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES)`, an INTERSECTION: a row
+# one table carries and the other does not is not compared there, not counted,
+# and not named. Measured 2026-10-09, that is 6 rows of the 8 the two tables
+# name between them — the gate covers 2. The two tables do different jobs
+# (a runtime gauge's inputs and a conformance checker's), so differing is
+# legitimate; the reason each individual row sits on one side only is recorded
+# nowhere, and this declaration does not invent one. What it does is make a
+# row that moves from one side to the other, or a new row added to either
+# table, fail where it is written instead of drifting.
+ONLY_IN_RUNTIME_TRUTH = ("engine_repo", "marketplace_path", "runtime_root")
+ONLY_IN_ARCHITECTURE_CHECK = ("data_root", "ops_repo", "workspace_root")
+
+
 class RuntimeTruthTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -2181,6 +2198,67 @@ class RuntimeTruthTests(unittest.TestCase):
                 self.assertEqual(
                     check.default_root(argument), checkout,
                     f"architecture_check doubled the environment's value for {argument}")
+
+    def test_the_two_copies_declare_where_they_differ(self):
+        """The half an intersection comparison cannot see, and the census that
+        found `workspace_root` unread went through this hole.
+
+        The docstring above says of the two copies that "a copy that is free to
+        differ is a copy that will", and that the comparison is what "makes the
+        difference a failure rather than a discovery". Of the difference the two
+        tables actually have — 6 rows of 8 — it is a discovery: `shared` is an
+        intersection, so a row only one table names is invisible to it.
+
+        Differing is not the defect. Differing without saying so is what this
+        pins: the difference is declared by name above, and a row added to
+        either table fails here until the declaration says so.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "serveros_architecture_check_for_differences",
+            ROOT / "skills" / "serveros" / "scripts" / "architecture_check.py")
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+
+        only_in_truth = tuple(sorted(set(truth.ROOT_SOURCES) - set(check.ROOT_SOURCES)))
+        only_in_check = tuple(sorted(set(check.ROOT_SOURCES) - set(truth.ROOT_SOURCES)))
+
+        self.assertEqual(
+            only_in_truth, ONLY_IN_RUNTIME_TRUTH,
+            "the rows `runtime_truth.py` names alone have changed. Either the "
+            "table gained or lost a row, or the other copy did. Update the "
+            "declaration above — deliberately, and with the reason checked.")
+        self.assertEqual(
+            only_in_check, ONLY_IN_ARCHITECTURE_CHECK,
+            "the rows `architecture_check.py` names alone have changed. "
+            "`workspace_root` is one of them, and it is the row the two "
+            "implementations of the host-profile read disagreed about — one "
+            "read it and one computed it, and no comparison of the two TABLES "
+            "could see it, because this table names it and the other does not. "
+            "Update the declaration above deliberately.")
+
+    def test_the_declaration_is_not_vacuous(self):
+        """NEGATIVE CONTROL for the test above.
+
+        Two tables that shared every row would make both declarations empty and
+        the assertions above trivially true. They are not, and the number of
+        rows each copy answers alone is the whole point of declaring them.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "serveros_architecture_check_for_vacuity",
+            ROOT / "skills" / "serveros" / "scripts" / "architecture_check.py")
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+
+        self.assertTrue(truth.ROOT_SOURCES, "runtime_truth's table is empty")
+        self.assertTrue(check.ROOT_SOURCES, "architecture_check's table is empty")
+        self.assertEqual(len(ONLY_IN_RUNTIME_TRUTH), 3)
+        self.assertEqual(len(ONLY_IN_ARCHITECTURE_CHECK), 3)
+        shared = set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES)
+        self.assertEqual(len(shared), 2,
+                         "the two tables now share a different number of rows; "
+                         "the census in `test_runtime_truth.py` and the one in "
+                         "`tests/test_resolver_reads_the_document.py` both "
+                         "assume this count")
 
     def test_the_profile_branch_appends_the_layout_to_both_copies(self):
         """The other half of the rule, so the fix cannot be "delete the suffix".

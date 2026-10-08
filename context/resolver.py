@@ -145,7 +145,22 @@ class Roots:
     @classmethod
     def from_env(cls) -> "Roots":
         data_root = _data_root()
-        workspace_root = Path(os.environ.get("WORKSPACE_ROOT", str(data_root / "workspace")))
+        workspace_root = Path(
+            os.environ.get("WORKSPACE_ROOT")
+            # The same reading as `artifacts_root` below, one row over. This
+            # node's profile declares `workspace_root`, and it was COMPUTED from
+            # `data_root` rather than READ. `architecture_check.py` reads that
+            # row; `runtime/paths.py` derives `{data_root}/workspace` because the
+            # FLEET document has no `workspace` role -- it binds `workspace.src`
+            # and `workspace.worktrees`, and `_SEED_ROLE` is deliberately without
+            # this seed for that reason. That exclusion is right about the fleet
+            # document and says nothing about the host profile, which binds the
+            # parent as a row of its own. An implementation that already asks the
+            # host profile for `data_root` and `artifacts_root` should ask it for
+            # this too. On this node the declared and the derived value coincide,
+            # which is what let the omission survive.
+            or str(_profile_root("workspace_root") or data_root / "workspace")
+        )
         artifacts_root = Path(
             os.environ.get("SERVEROS_ARTIFACTS_ROOT")
             or os.environ.get("ARTIFACTS_ROOT")
