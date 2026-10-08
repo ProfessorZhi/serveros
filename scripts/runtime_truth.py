@@ -720,12 +720,18 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     return payload, version
 
 
-def recompute_blocker(build, output: Path) -> str:
+def recompute_blocker(build, output: Path, pin: str | None = None) -> str:
     """Why the artifact could not be recomputed, named rather than generalized.
 
     "Cannot verify" is true but not actionable. Every reason this function can
     name is a specific missing or unreadable declaration, so the report says
     which one instead of leaving the reader to guess.
+
+    `pin` is passed only by the callers that have already READ the artifact's own
+    pin, so an empty string means "the artifact was read and declares none of its
+    own" — a different fact from "nobody looked". The default is `None` rather
+    than `""` so that the two do not collapse into one message, and the callers
+    that never read a pin keep their present wording.
     """
     if not (output / "README.md").is_file():
         return "missing README.md (it carries the composition declaration)"
@@ -734,6 +740,9 @@ def recompute_blocker(build, output: Path) -> str:
         return "README.md declares no composition"
     if composition not in composition_files(build):
         return f"no composition file declares `{composition}`"
+    if pin == "":
+        return ("README.md declares no ability pin, so this artifact names no "
+                "source of its own to be recomputed from")
     return "artifact not recomputable"
 
 
@@ -1744,15 +1753,30 @@ def collect(args) -> dict:
                 f"not present: {payload}")
             continue
         installed_version = str(entry.get("version") or "")
-        if not pinned or not args.ability_repo.is_dir():
+        # The pin comes from the INSTALLED payload's own README, which is where
+        # `expected_artifact` already takes the composition from. It used to be
+        # the report-wide pin — the one `--output` declared — and that made this row
+        # answer a question nobody had asked it: a plugin installed from an older
+        # pin was measured against a revision it never claimed. On this node that
+        # read as 18 named differences against the `serveros-testing` cache,
+        # while recomputing the same bytes from the pin the payload itself
+        # declares found none. The node-revision row below takes its pin this
+        # same way, and its comment says the two rows are asking one question;
+        # this is the half that makes that true instead of nearly true.
+        plugin_pin = declared_pin(payload)
+        if not plugin_pin or not args.ability_repo.is_dir():
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, payload))
+                "cannot verify: " + recompute_blocker(build, payload, plugin_pin))
             continue
-        # The composition is read from the INSTALLED payload's own README, so a
-        # plugin is recomputed against what it declares rather than against the
-        # distribution that happens to sit beside it.
-        got = expected_artifact(build, args.ability_repo, pinned, payload,
+        # Named, not judged: a plugin built at a pin other than the node
+        # payload's is a fact about this machine's installed fleet, and this row
+        # is not where that is ruled on. It is said here so that a green row is
+        # not read as "the two generations are the same one".
+        pin_note = "" if (not pinned or plugin_pin == pinned) else (
+            f"built at ability pin {plugin_pin[:12]}; the node payload declares "
+            f"{pinned[:12]}")
+        got = expected_artifact(build, args.ability_repo, plugin_pin, payload,
                                 args.marketplace_path, layout_at=args.output)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
@@ -1778,7 +1802,8 @@ def collect(args) -> dict:
             drift_detail(drift, attribution,
                          f"canonical source builds {plugin_built}, and the "
                          f"installed plugin differs in {len(drift)} path(s); "
-                         f"e.g. {', '.join(drift[:3])}"))
+                         f"e.g. {', '.join(drift[:3])}"),
+            note=pin_note)
 
     # Codex, read the same way and for the same reason. It keeps its switch in
     # config.toml and materializes into <cache>/<marketplace>/<plugin>/<version>/,
@@ -1811,12 +1836,19 @@ def collect(args) -> dict:
             "Codex is single-slot")
         leaf = versions[-1]
         installed_version = leaf.name
-        if not pinned or not args.ability_repo.is_dir():
+        # Same reading as the Claude row above, for the same reason: the pin is
+        # the one this payload declares, not the node payload's.
+        leaf_pin = declared_pin(leaf)
+        if not leaf_pin or not args.ability_repo.is_dir():
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(build, leaf), note=note)
+                "cannot verify: " + recompute_blocker(build, leaf, leaf_pin),
+                note=note)
             continue
-        got = expected_artifact(build, args.ability_repo, pinned, leaf,
+        pin_note = "" if (not pinned or leaf_pin == pinned) else (
+            f"built at ability pin {leaf_pin[:12]}; the node payload declares "
+            f"{pinned[:12]}")
+        got = expected_artifact(build, args.ability_repo, leaf_pin, leaf,
                                 args.marketplace_path, layout_at=args.output)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
@@ -1833,7 +1865,7 @@ def collect(args) -> dict:
                          f"canonical source builds {codex_built}, and the "
                          f"installed plugin differs in {len(drift)} path(s); "
                          f"e.g. {', '.join(drift[:3])}"),
-            note=note)
+            note="; ".join(n for n in (note, pin_note) if n))
 
     # --- 8. the node: revision, unit, process ----------------------------
     #

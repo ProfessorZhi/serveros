@@ -1190,6 +1190,77 @@ class RuntimeTruthTests(unittest.TestCase):
         self.assertEqual(row["verdict"], truth.MISSING)
         self.assertIn("absent from the install record", row["detail"])
 
+    def test_a_plugin_is_measured_at_the_pin_it_declares_not_the_nodes(self):
+        """The row's own question, which is not "the same generation as the node".
+
+        Measured on this node 2026-10-08: the installed `serveros-testing` cache
+        declares ability pin `da5f89b`, the node payload declares `c3fa072`, and
+        between those two commits ability-management's skill payloads gained
+        sixteen files. Recomputing the plugin from the NODE's pin named all
+        sixteen as drift — plus `ARTIFACT.json` and `README.md`, which print the
+        pin they were built from — and recomputing the same bytes from the pin
+        the payload itself declares reproduced every one of them. Those sixteen
+        were never missing from the plugin; they are the other generation's
+        files, and a reader shown them as `missing` is being told a fact about
+        the node's pin as though it were a fact about this payload.
+
+        The two pins are still worth naming, because a plugin a generation behind
+        the node payload IS how this machine differs from a released fleet — so
+        that is said in the row's note rather than folded into the path list.
+        """
+        stale_root = self.base / "dist-stale"
+        stale = stale_root / "current"
+        stale_marketplace = stale_root / ".agents/plugins/marketplace.json"
+        rc = self.build.build(self.serveros / "plugin/bundle.yaml", self.ability,
+                              self.rev, stale, stale_marketplace, write=True,
+                              pack_contract_path=self.contract)
+        self.assertEqual(rc, 0)
+        stale_version = json.loads(
+            (stale / ".claude-plugin/plugin.json").read_text())["version"]
+
+        # A later revision whose skill payload carries one file this one has not.
+        later = self.ability / "skills/runtime-management/payload/references"
+        later.mkdir(parents=True)
+        added = later / "01-later-generation.md"
+        added.write_text("a file the installed plugin has never had\n")
+        git(self.ability, "add", str(added))
+        git(self.ability, "commit", "--quiet", "-m", "a later ability generation")
+        newer = git(self.ability, "rev-parse", "HEAD")
+
+        # The NODE payload moves to the later pin. The plugin does not.
+        rc = self.build.build(self.serveros / "plugin/bundle.yaml", self.ability,
+                              newer, self.out, self.marketplace, write=True,
+                              pack_contract_path=self.contract_at(newer))
+        self.assertEqual(rc, 0)
+        self.install_claude(stale_version, stale, rev=self.rev)
+
+        # No `ability_rev`: the report-wide pin comes from `--output`, which is
+        # what makes this the case where the two pins disagree.
+        report = truth.collect(self.args(ability_rev=""))
+        row = rows_by(report)[f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        self.assertEqual(row["verdict"], truth.OK, row["detail"])
+        self.assertNotIn("01-later-generation.md", row["detail"])
+        self.assertIn(self.rev[:12], row["note"])
+        self.assertIn(newer[:12], row["note"])
+
+    def test_a_payload_that_declares_no_pin_is_not_measured_against_the_nodes(self):
+        """The other half of the same rule: with no pin of its own, there is no
+        source of its own to be checked against, and borrowing the node's would
+        re-create exactly the substitution the row above removes."""
+        version = self.build_and_install()
+        payload = self.out
+        readme = payload / "README.md"
+        kept = [line for line in readme.read_text().splitlines(keepends=True)
+                if not truth.PIN_PATTERN.search(line)]
+        readme.write_text("".join(kept))
+
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
+        self.assertEqual(version, json.loads(
+            (payload / ".claude-plugin/plugin.json").read_text())["version"])
+        self.assertEqual(row["verdict"], truth.UNKNOWN)
+        self.assertIn("declares no ability pin", row["detail"])
+
     def test_the_marketplace_name_mirrors_the_builders_own_rule(self):
         """`<name>-local` is `build.codex_marketplace()`'s rule, restated here.
 
