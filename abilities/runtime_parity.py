@@ -263,7 +263,7 @@ def _binding():
     if _BINDING_MODULE is None:
         import importlib.util
         path = Path(__file__).resolve().parent / "runtime_binding.py"
-        name = "serveros_runtime_binding_from_parity"
+        name = "serveros_abilities_runtime_binding"
         module = sys.modules.get(name)
         if module is None:
             spec = importlib.util.spec_from_file_location(name, path)

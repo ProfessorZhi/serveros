@@ -98,7 +98,7 @@ def _load(name: str, path: Path):
     return module
 
 
-resolver = _load("serveros_abilities_resolver", _HERE / "resolver.py")
+resolver = _load("serveros_ability_resolver", _HERE / "resolver.py")
 provider_instance = _load("serveros_abilities_provider_instance",
                           _HERE / "provider_instance.py")
 sessions = _load("serveros_runtime_agent_sessions", _RUNTIME / "agent_sessions.py")

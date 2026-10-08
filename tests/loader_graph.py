@@ -368,14 +368,24 @@ def _get_call(node: ast.AST) -> bool:
             and node.func.attr == "get" and _is_sys_modules(node.func.value))
 
 
-def _bound_from_get(scope, write, parents, tree) -> set[str]:
+def _get_key(call: ast.AST) -> ast.AST | None:
+    """The key `sys.modules.get(K)` reads, or None when it reads none."""
+    if _get_call(call) and call.args:
+        return call.args[0]
+    return None
+
+
+def _bound_from_get(scope, write, parents, tree) -> dict[str, ast.AST]:
     """Names this scope binds from `sys.modules.get(...)` ABOVE the write.
 
     This is what makes `if m is None:` a guard rather than a test of some
     unrelated variable: `m` has to be the value that was read out of the cache.
+
+    The value is the key the `get` read, not just the name, because the key is
+    what the guard has to agree with the write about — see `_guard_keys`.
     """
     container = scope if scope is not None else tree
-    bound: set[str] = set()
+    bound: dict[str, ast.AST] = {}
     for node in ast.walk(container):
         if not hasattr(node, "lineno") or node.lineno >= write.lineno:
             continue
@@ -383,8 +393,67 @@ def _bound_from_get(scope, write, parents, tree) -> set[str]:
             continue
         if (isinstance(node, ast.Assign) and _get_call(node.value)
                 and isinstance(node.targets[0], ast.Name)):
-            bound.add(node.targets[0].id)
+            key = _get_key(node.value)
+            if key is not None:
+                bound[node.targets[0].id] = key
     return bound
+
+
+def _guard_keys(node: ast.AST, bound: dict[str, ast.AST]) -> list[ast.AST]:
+    """Every key this test reads out of `sys.modules`, as expressions.
+
+    A test can read more than one (`K not in sys.modules and m is None`), and an
+    `and` narrows, so all of them are collected rather than the first.
+    """
+    keys: list[ast.AST] = []
+    if isinstance(node, ast.Compare):
+        for op, right in zip(node.ops, node.comparators):
+            if isinstance(op, (ast.In, ast.NotIn)) and _is_sys_modules(right):
+                keys.append(node.left)
+        if isinstance(node.ops[0], ast.Is):
+            left, right = node.left, node.comparators[0]
+            none_on_right = isinstance(right, ast.Constant) and right.value is None
+            none_on_left = isinstance(left, ast.Constant) and left.value is None
+            if none_on_right or none_on_left:
+                other = left if none_on_right else right
+                if isinstance(other, ast.Name) and other.id in bound:
+                    keys.append(bound[other.id])
+                elif _get_call(other):
+                    key = _get_key(other)
+                    if key is not None:
+                        keys.append(key)
+    elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        if isinstance(node.operand, ast.Name) and node.operand.id in bound:
+            keys.append(bound[node.operand.id])
+        elif _get_call(node.operand):
+            key = _get_key(node.operand)
+            if key is not None:
+                keys.append(key)
+    elif isinstance(node, ast.BoolOp):
+        for value in node.values:
+            keys.extend(_guard_keys(value, bound))
+    return keys
+
+
+def _same_key(guard_key: ast.AST, write: ast.Assign) -> bool:
+    """Does this guard read the key the write takes?
+
+    A guard read for some other key cannot keep the write off the path where ITS
+    name is already present, which is the whole of what a guard is for here. Not
+    comparing the two is how `intake/understanding_brief.py`'s `_sibling` passed
+    this scan while unconditionally displacing the key it registered:
+
+        if name in sys.modules:                        # tests `name`
+            return sys.modules[name]
+        sys.modules[f"serveros_intake_{name}"] = module  # takes another key
+
+    Read against the write's own key, that `if` is not a guard at all.
+    """
+    target = write.targets[0]
+    if not isinstance(target, ast.Subscript):
+        return False
+    return (ast.dump(guard_key, annotate_fields=False)
+            == ast.dump(target.slice, annotate_fields=False))
 
 
 def _name_is_none_test(node: ast.AST, bound: set[str]) -> bool:
@@ -453,12 +522,17 @@ def _guard_shape(write: ast.Assign, tree: ast.AST,
     scope = _enclosing_function(write, parents)
     bound = _bound_from_get(scope, write, parents, tree)
 
+    def covers(test: ast.AST) -> bool:
+        return any(_same_key(key, write) for key in _guard_keys(test, bound))
+
     current = parents.get(id(write))
     while current is not None and current is not scope:
         if isinstance(current, ast.If):
-            if _contains(current.body, write) and _absent_test(current.test, bound):
+            if (_contains(current.body, write) and _absent_test(current.test, bound)
+                    and covers(current.test)):
                 return "absent-if"
-            if _contains(current.orelse, write) and _present_test(current.test):
+            if (_contains(current.orelse, write) and _present_test(current.test)
+                    and covers(current.test)):
                 return "present-if-else"
         current = parents.get(id(current))
 
@@ -466,7 +540,8 @@ def _guard_shape(write: ast.Assign, tree: ast.AST,
         if stmt.lineno >= write.lineno:
             break
         if (isinstance(stmt, ast.If) and _present_test(stmt.test)
-                and any(isinstance(n, ast.Return) for n in ast.walk(stmt))):
+                and any(isinstance(n, ast.Return) for n in ast.walk(stmt))
+                and covers(stmt.test)):
             return "early-return"
     return None
 

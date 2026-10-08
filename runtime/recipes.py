@@ -624,7 +624,13 @@ def perception(ctx: Context) -> None:
     if any(entry.get("kind") == "understanding" for entry in entries):
         if any(entry.get("kind") != "understanding" for entry in entries):
             ctx.unbound("SOURCE_UNAVAILABLE", "use separate scopes for git observation and semantic reading")
-        return _load("serveros_daily_reading", ROOT / "intake" / "daily_reading.py").run(ctx, entries)
+        # Named for its path, like every other loader here. It used to be
+        # `serveros_daily_reading`, the last survivor of the `serveros_daily_`
+        # prefix `intake/daily_reading.py` derived its own names from — the
+        # prefix that made one file two module objects for the whole intake
+        # family. No reader referenced the old name, so this changes no
+        # measured disagreement; it removes the spelling that caused them.
+        return _load("serveros_intake_daily_reading", ROOT / "intake" / "daily_reading.py").run(ctx, entries)
 
     observed, unanswered = {}, []
     for entry in entries:
@@ -1540,7 +1546,7 @@ def default_model_invoker(transport, ask, ctx):
     """Only the registered native reader; it cannot perform engineering work."""
     if transport == "native-claude-reader" and ask.get("kind") == "understanding":
         binding = yaml.safe_load((ctx.state_root / "model-binding.yaml").read_text())
-        reader = _load("serveros_native_reader", ROOT / "runtime" / "native_reader.py")
+        reader = _load("serveros_runtime_native_reader", ROOT / "runtime" / "native_reader.py")
         return reader.invoke(ask["brief"], directory=Path(ask["directory"]),
                              timeout=binding.get("wall_seconds", 120),
                              max_cost_usd=binding.get("max_cost_usd", 1.0))
