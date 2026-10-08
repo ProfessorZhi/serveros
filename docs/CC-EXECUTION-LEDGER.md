@@ -8990,6 +8990,174 @@ Sep 23 00:59   sha256 bcbec66460a30612ba2c16830ab98f90ca2dbb4b63c2ffec9471d177e7
 实测实例**写进 `PENDING-DECISIONS.md` **条目 8**：本包修的只是**问 host profile 的那一份实现
 漏问了一行**，两份文档谁说了算仍然是人的问题。
 
+## §9.57 那条禁止它的判据，把它自己排除了 —— 射程与理由，是两件事
+
+这是「一张表对同一个东西给出两个相反答案」的**第十例**，也是到目前为止最硬的一例，
+因为**给出相反答案的两个东西在同一份文件里**：一段说明，和紧挨着它的数据。
+
+### 一个模块，两句话
+
+`runtime/workbench_sources.py` 的文件头自己写着：
+
+> a distribution must not carry the path of the working copy it happened to be built in
+
+而它自己还记着这个缺陷**已经被逮到过一次**：`PINS` 里 `serveros` 那一行原先写了本轮构建工作树的
+绝对路径，被发版判据逮住，改成了 `str(ROOT)`，注释里留着「EXCEPT THE FIRST ONE, AND IT WAS WRONG」。
+
+**同一个文件、同一个理由、同一类缺陷——改了一行。** 紧挨着它的 13 行没有改。它们不是注释，不是
+考古，是**活的表**：`PINS`、`SAMPLES`、`DEPLOYMENT` 三个表由渲染器读，`repo=` 那一格进的是
+可达性检查实际要用的目录。
+
+### 那条判据为什么没红：它的射程，和它给的**理由**
+
+`tests/test_no_node_absolute_paths.py` 禁止的正是这件事，而它把 `runtime/*.py` **排除在外**，
+理由写在它自己的 docstring 里：那些文件装的是 **archaeology**——注释里引着过去某个版本做错了
+什么——「rewriting it would delete the evidence」。
+
+**这个理由对注释成立，对数据不成立。** `PINS` 里那 13 行不是考古，是这一轮选定的工作树和证据
+目录；它们和「过去做错了什么」无关，它们就是**现在**。判据排除的是一整个**目录**，而缺陷住在
+这个目录里、**不在它排除的那个类别里**。判据没有错，判据的理由也没有错——**理由是照着射程写的，
+而射程是照着理由划的**，两者互为前提，于是谁也没有再去看一眼：这个目录里，除了考古还有什么。
+
+### 为什么换一具量具也不行：比值看不见它
+
+一个自然的反应是「那就比渲染结果」。**量过了：不行。** 把 13 处字面量换成从声明根派生出来的
+值，在这台机器上读出来是**同一个字符串**——三个表 23 行，**零差异**。所以「值没变」既是一次
+正确修复的输出，也是**什么都没做**的输出。任何比值的判据，对此**在构造上就是盲的**。
+
+（同一个道理本节的邻居 §9.55/§9.56 从另一个方向撞到过：一条比值的判据看不见「一行是被算出来的
+而不是读来的」，因为两者恰好同值。）
+
+### 量具是 AST，而这正是它成立的全部理由
+
+`ast.Constant` 节点**是值**；注释根本不在树里；模块 docstring、函数 docstring、裸字符串语句
+——它们都是 `ast.Expr` 包着一个 `Constant`，由一个 visitor 排除掉。于是这具量具
+**不需要**考古豁免、**不需要** `node-path-ok` 标记、**不需要**目录白名单：散文对它天然不可见，
+而不是靠一张需要人维护的路径表把它排除。
+
+**统计出来的射程**（`probe/` 里的普查）：全树去注释、去 docstring 之后，仍把本机绝对路径**当作值**
+携带的，是 **2 个文件、14 处**。第一版量具把 docstring 也数进去了，报出 9 个文件 23 处——修好
+`_BareStrings` 之后掉到 2 个文件。**量具自己出过一次错，方向仍然是「数多了」，而且它只是把数字
+改小了一半，没有让任何人看出来。**
+
+### 14 处的去向：13 有根，1 没有
+
+13 处的**父路径，一一都是一行已被声明的根**：
+
+| 面孔 | 声明的根 |
+| --- | --- |
+| `PINS` 5 个 `repo=` | `node.roots.workspace_worktrees`（`<root>/worktrees/<project>/<item>`） |
+| `SAMPLES` 6 条 `path=` | `node.roots.artifacts_root` |
+| `DEPLOYMENT` 2 条 `--runtime-root` | `runtime.serveros-distribution` 这个 **role** |
+
+`DEPLOYMENT` 那两条问的是 **role 而不是 root**，两者在这台机器上**不是同一个目录**：root
+`runtime-assets` 读作 `{DATA_ROOT}/runtime-assets/serveros`，而工件在 `runtime-assets/hwz-server-os`。
+**只有 role 答得对**，而且这不是猜的——判据里有一条专门把两者比开。
+
+修的形态是：**根从合同读，位置照写**。`_under("workspace", "worktrees", "ability-management",
+"SRV-0011")`——「哪一个克隆」这一轮的决定写出来，「这台机器的 worktrees 在哪」这一半去问机器。
+这与 `str(ROOT / "runtime" / "card-scenarios.yaml")` 是同一种切法。
+
+**第 14 处没有根可问。** `runtime/workspace.py` 的 `SCRATCH_SURFACES` 指本机 scratch 区，而
+`runtime/paths.py` 拒绝 `scratch`（实测：`PathRefused: 'scratch' is not a declared root`），
+绑定它的那一行在 host profile 的 `node.roots.scratch_root`，读它的是**另一层**。所以它**不修**，
+登记进 `KNOWN`，条目里写明「这是它还没被变成一个读的**记录**」，root 落地之日它才消失。
+
+### PINS 那条注释的前提，是**可测地**错的
+
+`PINS` 的段落原先以这句话收尾，并**用这句话解释了为什么不派生**：
+
+> …and not derived: there is no rule that says where a clone lives.
+
+**这台机器上有一条这样的规则，而且它自己声明了。** `node.roots.workspace_worktrees` 绑定这五个
+克隆共同的父目录；fleet 文档把同一个事实绑成 `workspace.worktrees` 这个 role。于是本包把那句话
+从注释里**删掉并写明它错在哪**，收尾改成：
+
+> the sentence gave a reason, and a reason is where looking stops.
+
+**这是本夜反复出现的形状的最清楚一次**：一个理由不会被复核，因为它是理由。前面九例里，
+相反的两个答案分别在两张表、两份文档、两个函数里；**这一例的两句话只隔了一个段落**。
+
+### 判据：具名声明，不是沉默
+
+`tests/test_no_node_paths_in_product_data.py`。它比的是 `offenders == declared`，其中 `declared`
+就是 `KNOWN`——**一个文件停手了，它的条目必须被删掉，否则判据红；一个新文件开始了，它必须被具名
+登记并给出理由，否则判据红。** 这是 §9.56 定下的形状（「没人声明的交集，是没人看得见的差异」），
+理由相同。
+
+**它红过，两次，而且两次都推在它声称看得见的那一面**（`probe/gate-goes-red.txt`）：
+
+```text
+A  往 runtime/ 放一个携带本机路径的新文件
+   → {'runtime/_gate_probe_literal.py': 1, 'runtime/workspace.py': 1} != {'runtime/workspace.py': 1}
+B  把 KNOWN["runtime/workspace.py"] 的计数从 1 改成 2
+   → {'runtime/workspace.py': 1} != {'runtime/workspace.py': 2}
+还原后逐字节相同，随后 10 passed, 5 subtests passed
+```
+
+A 说明它看得见**新出现的值**；B 说明它看得见**已登记项被改动**。少任何一条，另一条的绿都可以是
+假绿：只比 offenders 的版本对 B 无反应，只比 declared 的版本根本不必扫树。
+
+### 否证：证明「值没变」本身是没用的
+
+`probe/rows-follow-the-declared-roots.py` 把声明的根**搬到哨兵**，看行跟不跟着走。跟着走的是派生，
+不走的是字面量。同一个搬动也施加在**修复前**的模块上（从 `git show HEAD:` 逐字取出、**放回原位**，
+因为 `ROOT = Path(__file__).resolve().parent.parent` 换目录就会变），它**必须不跟**——否则这具量具
+就不是在量它声称的东西。
+
+```text
+FIXED     pins/sample/deploy  FOLLOWS True
+PRE-FIX   pins/sample/deploy  FOLLOWS False
+VERDICT: the fixed rows follow the declared roots, and the pre-fix rows do not
+```
+
+**这一步是必须的，因为前面那条「零差异」单独一点说服力都没有。** 一个正确的派生和一次什么都没做
+产生同一个字符串；只有「搬动根，行跟着动」把两者分开。
+
+（第一次做这个 A/B 出了 6 条假差异：基线模块放在沙盒目录里，`ROOT` 因此解析到沙盒的父目录，
+每个基于 `str(ROOT)` 的行都变了。改成放回 `runtime/` 再删掉，差异归零。**又一次「量具自己在测量
+之外引入了变化」。**）
+
+### 本包新建的判据文件，被这棵树自己的一条既有判据逮住了
+
+第一次跑全量套件：**2 failed**。两条都在 `tests/test_loader_identity.py`，指着**本包新增的
+`tests/test_no_node_paths_in_product_data.py:223 in setUpClass`**：
+
+```text
+these registrations put a module under a name without first looking at what
+that name already means: ['tests/test_no_node_paths_in_product_data.py:223 in setUpClass']
+```
+
+本包的文件要按路径加载 `runtime/workbench_sources.py`，写的是：
+
+```python
+cls.mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = cls.mod          # 先写
+spec.loader.exec_module(cls.mod)
+```
+
+而这棵树自己的规矩是**先读 `sys.modules`，再在 `if module is None:` 里写**——那条判据的报错正文
+自己写着「Both are already this tree's own shape, **185 times**」。**判据是对的，本包的文件是错的。**
+改成树的写法后 `test_no_node_paths_in_product_data.py` + `test_loader_identity.py` **36 passed**。
+
+记这一笔，是因为它同时说明了三件事：① 一条既有的判据在一个**新文件**上仍然有效（射程没写死）；
+② 一条判据的**射程靠的是「这棵树怎么做事」，不是「这棵树有哪些文件」**；③ 本包的量具（AST 普查）
+和这条判据量的是**完全不同的东西**，所以本包的绿不能替代它的红——**两条判据互不覆盖，各红各的**。
+
+### 落地
+
+`runtime/workbench_sources.py`（**+127 / −23**）、
+`tests/test_no_node_paths_in_product_data.py`（新增）。全套 `pytest tests/ -q` 见本包
+`probe/suite-full.txt`。**未发版**——与 §9.55/§9.56 同一个理由。
+
+### 顺带量到、留给下一个包
+
+`runtime/paths.py` 的 `_profile_roles` 返回 **11** 个角色，`Paths()` 服务 **5** 个、**静默丢弃 6 个**：
+`downloads`、`knowledge.corporate`、`scratch`、`workspace.src`、`workspace.worktrees`，以及
+`data_root`（它只以 `data` 这个名字被服务）。**「静默丢弃」是一个可普查的形状**：调用方问一个
+被声明过的名字，得到的是一个异常或一个空——而这两种输出，与「那个名字本来就不存在」逐字相同。
+这是 RUN-0053 的整包内容，**不在本 PR 里**。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
