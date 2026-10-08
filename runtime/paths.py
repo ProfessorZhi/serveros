@@ -222,7 +222,7 @@ ROOTS = {
     "toolchains": "{TOOLCHAINS_ROOT}",
     "state": "{DATA_ROOT}/state/serveros",
     "logs": "{DATA_ROOT}/logs/serveros",
-    "runtime-assets": "{DATA_ROOT}/runtime-assets/serveros",
+    "runtime-assets": "{DATA_ROOT}/runtime-assets",
     "tmp": "{DATA_ROOT}/tmp",
     "caches": "{DATA_ROOT}/caches",
 }
@@ -231,17 +231,34 @@ ROOTS = {
 # are declared apart because the two come apart — and when they do, the role is
 # the stable one and the path is the fact that moves (§25).
 #
-# `runtime-assets/serveros` above is the role's DECLARED path, and nothing on
-# this node has ever been there. The distribution that actually exists is
-# `runtime-assets/hwz-server-os`, it has live consumers (the plugin cache and
-# `workengine/context.py` both name it), and it must not be relocated while
-# they do. So the role resolves to where the artifact IS, and the day the
-# physical move happens this table changes and no consumer does.
+# The distribution that actually exists is `runtime-assets/hwz-server-os`, it
+# has live consumers (the plugin cache and `workengine/context.py` both name
+# it), and it must not be relocated while they do. So the role resolves to
+# where the artifact IS, and the day the physical move happens this table
+# changes and no consumer does.
 #
-# The alternative — leaving `runtime-assets` pointing at a directory that does
-# not exist — is the standing defect of this codebase: a declared path with no
-# producer, which reports as "nothing here" and is indistinguishable from an
-# empty directory.
+# This comment used to say that the root above was "the role's DECLARED path"
+# and then call `runtime-assets` pointing at a directory that does not exist
+# "the standing defect of this codebase". Both halves were true and the move
+# made from them was wrong: it added the correct answer BESIDE the wrong one
+# and taught consumers to ask for the new one, which left the wrong one in
+# place. `serverosctl path resolve runtime-assets` went on printing
+# `{DATA_ROOT}/runtime-assets/serveros` to a person — a directory that has
+# never existed — while the fix was being praised in this comment.
+#
+# The authority had already answered, in three places and with the same value:
+# `node.roots.runtime_assets_root` in the host profile, `paths.runtime-assets`
+# in BOTH fleet profiles, and `DATA_ROOT_TOP_LEVEL`, which names the top-level
+# area `runtime-assets` — one level up. The `/serveros` suffix was a template
+# inventing a second level under a name the contract had already placed, and no
+# producer anywhere has ever written it. So the root binds the parent the
+# authority binds, and `resolve("runtime-assets/hwz-server-os")` now answers
+# with exactly what the role answers.
+#
+# The two doors agreeing is the point, not a coincidence: `tests/
+# test_authority_bindings_have_readers.py` compares every name this table and
+# the authority BOTH answer for, and until this change it compared only the
+# names one of them answered and the other did not.
 SEMANTIC_ROLES = {
     # The ServerOS distribution root: what `build.py` publishes and what a
     # runtime installs from.
