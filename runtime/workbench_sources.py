@@ -52,11 +52,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # only the half that is a fact about the machine now comes from the machine.
 #
 # A NODE WITH NO BOUND ROOT GETS `{WORKSPACE_ROOT}/worktrees/...`, NOT A
-# PLAUSIBLE PATH. `Paths` states this convention of itself: an unbound root
-# reads as its own template. The renderer then prints a row whose repo it cannot
-# read, which is what `_reachable` already renders as `**repo 不可读**` — an
-# unresolved answer, rather than a right-looking path that belongs to somebody
-# else's machine.
+# PLAUSIBLE PATH. That convention now has to be ASKED for: `Paths.root` refuses
+# an unbound root unless the caller passes `unbound_ok=True` (RUN-0054), so the
+# two helpers below pass it and say why. The renderer then prints a row whose
+# repo it cannot read, which is what `_reachable` already renders as
+# `**repo 不可读**` — an unresolved answer, rather than a right-looking path that
+# belongs to somebody else's machine.
 _RESOLVED: dict[str, Path] = {}
 
 
@@ -70,7 +71,16 @@ def _under(root_name: str, *rest: str) -> str:
     """
     if root_name not in _RESOLVED:
         import paths as paths_mod  # noqa: PLC0415 - resolved from the repo, never installed
-        _RESOLVED[root_name] = paths_mod.Paths().root(root_name)
+        # `unbound_ok=True` BECAUSE THIS IS A DOCUMENT'S TEXT, NOT A COMPUTATION.
+        # The paragraph above says an unbound node here gets `{WORKSPACE_ROOT}/…`
+        # and that `_reachable` renders it `**repo 不可读**` — that is a READER,
+        # and it exists. RUN-0054 moved the convention: `Paths.root` now REFUSES
+        # an unbound root by default, so a surface that wants the template has to
+        # say so. Adding the flag here is what keeps this file importing on a node
+        # with no profile — which is the shipped case, and which
+        # `test_artifact_install_smoke` measures by installing the artifact under
+        # a scratch HOME and importing every module in it.
+        _RESOLVED[root_name] = paths_mod.Paths().root(root_name, unbound_ok=True)
     return str(_RESOLVED[root_name].joinpath(*rest))
 
 
@@ -87,7 +97,13 @@ def _under_role(role_name: str, *rest: str) -> str:
     key = "role:" + role_name
     if key not in _RESOLVED:
         import paths as paths_mod  # noqa: PLC0415 - only needed on this path
-        _RESOLVED[key] = Path(paths_mod.Paths().role(role_name)["path"])
+        # `unbound_ok=True` for the same reason `_under` gives, and this is the
+        # call that made the reason measurable: both of its sites are in
+        # `DEPLOYMENT`, whose rows are the text a person reads before running a
+        # release command. A template there is an unresolved answer, which is
+        # what this file's own comment says an unidentified node should get.
+        _RESOLVED[key] = Path(
+            paths_mod.Paths().role(role_name, unbound_ok=True)["path"])
     return str(_RESOLVED[key].joinpath(*rest))
 
 

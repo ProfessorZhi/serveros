@@ -9315,6 +9315,296 @@ sha256 `bcbec664…`（Sep 23 00:59），发版动作表仍是十一项。
 `downloads` 的读者在**另一层**（`skills/`），这本身是本包第一次量到的事实：**读面的分布是跨层的，
 所以「读面在不在」不能只看 `runtime/`。**
 
+## §9.59 形状不是守卫 —— 一个被塑形成绊线的值，和一条只被一个文件遵守的规则
+
+这是本夜这一形状的**第十二例**，也是**我自己造成了两处**的一例。
+
+**先说一件编号上的事，免得读者以为本包在制造重号。** 本文件有**两套并行编号**：`## §9.NN`
+（本系列，本节所属）与 `### 9.NN`（另一系列，带 `#### 9.NN.x` 小节）。两套从 9.37 到 9.68
+**每一个号都重**——`9.59` 因此在本文件里已经有一节（`### 9.59 四条接缝的第三次收口…`）。
+本包只是取了**本系列的下一个号**。**这个重号是全文性的、先于本包存在**，修它是全文的事，
+不在本包范围内；但它本身正是本夜那个形状——**一个编号指着两节**——所以写在这里，
+而不是让它继续无声地重下去。
+
+### 那个值是照着「不会被误读」塑形的
+
+`runtime/paths.py` 的 `_unbound(placeholder)` 返回 `"{" + placeholder + "}"`，它的 docstring
+把结论写了下来：
+
+```text
+Not `""`, which formats into `/workspace` and reads as an absolute path,
+and not a plausible default, which reads as a correct answer to a caller
+that never asked whether the node was identified. `{DATA_ROOT}/state` can
+be mistaken for neither, so the mistake this module exists to prevent is
+not available to make.
+```
+
+**最后一句话是错的，而且是可测地错。** 在 ARTIFACTS_ROOT 的临时目录里实测（`probe/opening-census.txt`）：
+
+```text
+Path("{WORKSPACE_ROOT}/records").mkdir(parents=True)   # 成功
+Path("{WORKSPACE_ROOT}/records").is_dir()              # True
+```
+
+**一个以模板命名的目录出现在进程的工作目录里，此后每一次检查都通过，因为它确实存在。**
+把值塑形成「读者不会误读」，对一个**从不读的进程**什么也没做。**形状是给读的人的；守则是给
+程序的。这一句用一个当成了另一个。**
+
+### 那条规则一直写在别处，而且只有十三个文件里的一个遵守
+
+真正的问题是 `Paths.bound`（这个节点被识别过吗）。修前实测：
+
+```text
+root()     41 个调用点 / 13 个文件        只有 paths.py 自己提到 .bound
+resolve()  106 个调用点（runtime/）       —— 同一个模板的第二道门，更宽
+```
+
+**13 个文件里的 1 个在守的规则，不是规则，是一个习惯。** 而代码实际用的是两个**代理**：
+`is_absolute()`（`cli.py:917/1337/1445/1549/7488/7624…`）和一个把值**塑形成不是路径的样子**
+（`"{" in value`）。两个代理都问对了结果、问错了问题——**「绝对」不是「本机」，「带花括号」
+不是「未绑定」**。
+
+### 落点：把默认反过来，一处关闭 147 道门
+
+不在每个调用点加检查，而是让**源头的读拒绝**：
+
+```python
+def root(self, name: str, *, unbound_ok: bool = False) -> Path:
+    ...
+    if not unbound_ok and self.provenance.get(name) == UNBOUND:
+        raise PathRefused(...)   # 消息里说明：模板不是可写之处
+```
+
+`resolve()` 与 `role()` 内部就是调 `self.root(head)`，所以**一处拒绝同时关上两道门**；
+`unbound_ok` 一路透传。**147 个消费者调用点里只有一类需要改动**——**以报告为职责**的那几个面。
+
+**「零消费者改动」是我先写下的，全量套件把它推翻了。** 见下面那一小节：有一个消费者**故意
+依赖模板**，而它把这件事**写在自己的注释里**。这句话之所以错，是因为我把爆炸半径量成了
+「哪些调用点会检查 `bound`」，而**从来没问过哪些调用点想要模板**。
+
+### 报告面：人读的报模板，计算的面什么都得不到
+
+`REPORTING` 表把 4 个文件 11 处调用点逐个声明：
+
+| 文件 | 处 | 为什么它可以报模板 |
+| --- | --- | --- |
+| `runtime/cli.py` | 3 | `context.current` 的 payload 与打印行——这条命令存在的意义就是回答「本节点声明了什么」 |
+| `runtime/conformance.py` | 4 | `surfaces()` 把每个封闭词表与它治理的目录配对；模板进入比较、比较发现没有这个目录、报出来 |
+| `runtime/daemon.py` | 2 | 同一个答案经控制面而不是终端到达；**同一个答案的两种写法不允许对「能不能报模板」有分歧** |
+| `runtime/workbench_sources.py` | 2 | `_under` / `_under_role` 填的是**渲染文档的输入**，而且**未解析那一档已有渲染**（`_reachable` → `**repo 不可读**`）。见下 |
+
+### 本包自己制造的一例：那两条红不是探针噪声，是我量错了爆炸半径
+
+**全量套件第一次跑：`2 failed, 7422 passed`。** 红的是
+`tests/test_artifact_install_smoke.py::InstalledArtifactTests::test_every_shipped_module_imports_from_the_install`，
+两个 subTest：`runtime/workbench.py` 与 `runtime/workbench_sources.py`。
+
+那条判据做的事正是它名字说的：把产物装进一个 scratch HOME 下，**逐个导入它带的每个模块**。
+而 `runtime/workbench_sources.py` 在**模块级**调 `role("runtime.serveros-distribution")`——
+**导入这个模块就等于断言本节点被识别过**。拒绝一进 `root()`，这个模块在**没有 profile 的节点上
+根本导不进来**，而那不是边角情况：**那就是发出去的产物被装到新节点上的情形。**
+
+**决定性的是这个文件自己的注释**（`workbench_sources.py:54`，**改前原文**——本包把它改掉了，
+所以下面这段引文如今在树里已经找不到，改后的版本接着说「这条约定现在必须**主动要**」）：
+
+```text
+A NODE WITH NO BOUND ROOT GETS `{WORKSPACE_ROOT}/worktrees/...`, NOT A
+PLAUSIBLE PATH. `Paths` states this convention of itself: an unbound root
+reads as its own template. The renderer then prints a row whose repo it cannot
+read, which is what `_reachable` already renders as `**repo 不可读**`
+```
+
+（**引一段已经不存在的原文，和本夜那些「引用一个没有名字的小节」是同一件事**，只差一个层级：
+这里至少把「改前」两个字写在了引文上面。改后的注释与引文都逐字可查。）
+**它是对的**，而且读面真的存在（`runtime/workbench.py:1094`）。所以这个文件是**报告面**，
+按本包自己的规则（人读的报模板）它本来就该显式声明——**两处**（`_under` 与 `_under_role`），
+判据的 `REPORTING` 补进第 4 行，注释改写成指向那个旗标。
+
+**这就是本夜那一形状的第十三例，而制造者是本包的量法**：我拿「有没有人检查 `bound`」当爆炸半径，
+于是**一个把「我要模板」写在注释里的消费者，从头到尾没进过我的样本**。147 这个数是**真的**，
+但它数的是**调用点**，不是**想要什么**。**没被任何判据走过的零，和测出来的零，读起来一样。**
+
+顺带量到一处**同一个问题两种写法**：`view._declared_roots()` 与 `ownership_gate._roots()`
+做同一件事。**先写下的是「一个交回模板、一个交回 `{}`」，实测把这句话否掉了**——
+两者旧代码是**同一个表达式**（`{name: str(paths.root(name)) for name in paths.names}`），
+`Paths.__init__` 里没有任何 `raise`，所以 gate 那个 `try/except` 从来不触发，两处**一直返回同一样东西**。
+真正不一样的是**谁被写成扛得住一个答不出的问题**：`_roots()` 是，`view` 的不是。
+把拒绝加进 `root()`，**才会**把两者劈开——别处都拒绝、`view` 却抛异常。所以 `view` 的
+`except: return {}` 不是顺手加的便利，是**拒绝落到第二处所付的价**。而同一条规则的两个拼写，
+就是这样一次无人看守的编辑分岔的。
+
+### 树的替身把签名变化显了出来
+
+`tests/` 里有 **17 个 `def root(self, name)` 替身和 4 个 `def resolve(self, ref)` 替身**
+（另有 3 个同名的 `resolve` 是别的接口，签名不同），全部按旧签名写。修完实测这份改动的可见度：
+把 9 个文件里签名的旗标去掉再跑，**3 failed, 518 passed, 87 subtests passed**，
+红的**全是 `test_daemon.py` 的三条 `context.current`**。
+
+**21 处签名里只有 3 处被套件真正走过；其余 18 处没有被任何测试调用到。**照实说，那 18 处不是
+量到的需要，是**跟着接口改的**：替身代表真东西，真东西的接口多了一个关键字，替身就该有它。
+代价也照实说——它们因此**不会再对「有人传了旗标」报 `TypeError`**。这里选择留下它们，
+理由是忠实于接口；但这个选择**没有被测试支持**，写在这里而不是让它看着像被支持的。
+
+### 判据
+
+`tests/test_unbound_roots_are_not_usable_as_paths.py`（新增 15 test）。核心断言**不是
+「函数抛异常」，而是「文件系统没有被动过」**——抛异常只是达成它的手段：
+
+```python
+try:
+    records = pathlib.Path(self.unbound.root("workspace")) / "records"
+    records.mkdir(parents=True, exist_ok=True)
+except paths_mod.PathRefused:
+    pass
+self.assertEqual(created, [])   # 没有任何以模板命名的目录
+```
+
+量具仍是 **AST**：`unbound_ok=True` 这个 token 在我自己的 docstring、本 ledger、以及引用它们
+的注释里都出现，**文本扫描会把散文当声明**，所以普查数的是**调用的关键字实参**。
+
+### 证伪八条，全红
+
+`probe/falsify.sh`（读数见 `probe/gate-goes-red.txt`）：A 给未声明文件加一处 → 1 failed；
+B 从声明过的文件去掉一处（计数不符）→ 1 failed；C 让 `root()` 无条件交回模板 → **16 failed**；
+D 让 `resolve()` 绕过 `root()` 自己拿路径（**更宽的那道门**）→ 2 failed；E 把 `unbound_ok=False`
+也当成声明 → 1 failed；F 再删一次 ledger 的 `## 12.` 标题 → 2 failed；G 去掉
+`workbench_sources.py` 的一处旗标（计数不符）→ 1 failed；H 同一条改动跑**行为面**
+（产物装到无 profile 的节点该导不进来）→ 2 failed，红的是
+`test_artifact_install_smoke`，报的就是那句 `PathRefused`。**七个被改文件与 ledger 全部逐字节
+还原**，末尾判据 15 passed / 16 subtests。
+
+### 探针 F 自己先失败过一次：一个**不可能红**的探针
+
+第一次跑完，A–E、G、H 全红，**F 报的是「7 passed」**——我当时写的是「全红」，于是回去读那行
+输出，而不是相信自己记得的结论。查到的是：F 的锚点断言写的是 `assert t.count(a) == 1`，而
+`## 12. 最终报告（计划 §16 要求的那一份）`这行字**在本文件里出现两次**——一次是**真标题**，
+一次是本文件下面「第 7 例」那一小节里对它的**引用**，而那句引用就躺在一个 ```text 围栏里——
+它落在真标题**上方 39 行**。断言因此触发，
+`p.write_text` 从未执行，**整条探针静默变成空操作**，而它照旧打印一行绿字。
+
+这和本包的主题是同一件事的另一面：**上一包把「引用」当成了「值」，这一包把「引用」当成了「标题」。**
+判据这边已经修好了（`unfenced()`，并且专门有一条控制测试拿「围栏里引用的标题」当输入）；
+探针这边现在按围栏状态取围栏外的第一处并打印删掉的行号。
+**「全红」是读出来的，不是记住的**——一个永远红的探针和一个永远绿的探针，靠相信自己是分不开的。
+
+### 同一天的第二例，制造者是本节的作者
+
+写完上面这些之后，我拿一行 shell 检查「六个 W6 分支哪些已经合入」：
+
+```text
+git merge-base --is-ancestor "$b" origin/main && echo 已合入 || echo 未合入
+```
+
+它对本包自己的分支回了一个**「已合入」**——而那个分支当时有 **19 个未提交文件**。原因是本包的
+分支就建在 `origin/main` 上、**还没有自己的提交**（实测 `rev-list --count origin/main..分支` = **0**），
+于是「是祖先」这件事**恒真**。我那句检查**回答的是它没问的那个问题**：它测的是「这个 ref 是不是
+在历史里」，我读成了「这份工作是不是进去了」。198 行以外、同一个文件里刚写完的 §9.55–§9.58
+讲的就是这件事。
+
+正确的问法是两个：`origin/main..<branch>` 的提交数，**加上**该 worktree 的 `status --porcelain`。
+六条一起量出来的读数是：另外五条**各 0 处未提交、且确有独立提交**（真已合入），只有本包这条是
+0 提交 + 19 处未提交。**一个数字不够，两个数字才把「没做」和「做完了」分开。**
+
+### 我自己犯下的第 7 例：一个标题，和五处再也指不到的引用
+
+上一包（§9.58）往本文件插入条目时，Edit 拿
+
+```text
+## 12. 最终报告（计划 §16 要求的那一份）
+```
+
+当**唯一锚点**，且**没有把它再写回去**。标题被删、正文留下、并随 #135 合并。
+**没有任何东西反对**，因为标题不是一个判据会读的值——它是一个**引用**，而本文件在自己的正文里
+引用 `§12` **五处**（只数裸的 `§12`，即后面不接小节号；把 `§12.5`/`§12.7`/`§12.10` 这类小节引用
+一并数进去是 **45 处**——标题没了，它们同样指不到。本包这段文字又添两处，裸的现共七处），
+包括告诉读者终报在哪里的那一句：
+
+```text
+兑现它的那一节是 §12（终报）
+```
+
+**一份文档继续指向一个已经没有名字的小节**，而 `grep '^## 12\.'` 再也找不到它。
+这与 §9.58 同形、只隔一份文件：**一个再也问不出口的名字**。修法是补回标题；
+`tests/test_ledger_sections_are_present.py`（新增）是让**下一次删掉标题成为失败而不是发现**。
+它的第一条判据第一次写时也有缺陷：正则 `^## (\d+)\.` 会把 `## 12.5` 也算成第 12 节——
+**是它自己的对照测试抓到的**，收紧成「点后必须是空白或行尾」。
+
+### 效率对照：这一处新增的开销是多少，以及它没量到什么
+
+量法用**同一份代码里的两条分支**，不用两版文件：`root(name)` 走
+`if not unbound_ok and self.provenance.get(name) == UNBOUND`；`root(name, unbound_ok=True)`
+第一项即为假、短路、不做 dict 查询。两条分支的差**恰好就是新加的那一次查询**
+（本机已绑定，`provenance.get(name)` 永远不等于 `UNBOUND`，比较不会成立）。
+读数见本包 `probe/efficiency-ab.txt`，脚本 `probe/004-efficiency-ab.py`：
+
+```text
+root()     两轮差 = +27.4, +26.3 ns / 次   —— 同号，可读
+resolve()  两轮差 = +54.2,  −5.3 ns / 次   —— 反号，这就是噪声
+```
+
+同一个比较跑两轮、**符号一致才算读到方向**——这一段现在由脚本**算**出来，不是我写的。
+（先前我把「resolve 两轮反号」当成结论**写死**在脚本里；写下的那一刻它还是真的，下一次跑
+就不再是。**写死的结论与算出来的结论，读起来一模一样**——本夜那个形状，又一次，
+制造者是本节的作者，间隔不到一小时。）
+
+**147 个调用点的上限**是 `26.9 ns × 147 ≈ 4 µs`，相对一次守护进程往返（ms 量级）可忽略。
+这是**常数开销**，不是复杂度变化。
+
+**顺带量到一件本包之外的事，而它落在这个洞上。** `resolve()` 每次调用 ~7.4 µs，比 `root()`
+大一个数量级——量出来是 `runtime/paths.py:991` 的 `"exists": target.exists()`：**每次都做一次
+stat**。它比本包新加的那次 dict 查询**大三个数量级**。而在**被人照着模板 `mkdir` 过的节点**上，
+这一次 stat 对 `{WORKSPACE_ROOT}/records` 会回 **True** ——「这个路径存在」，因为有人建过它。
+所以拒绝挡下的不只是写入，也挡下了这个**读**：一个从不该存在的路径被报成存在。
+
+**没量到的，照实列**：全是**热缓存微基准**——没有冷进程、没有 I/O 排队、没有并发争用；
+共享主机上另有一棵树的 `pytest` 同时在跑，所以绝对值是噪声里的中位数，**可比的是数量级**；
+**失败路径没量**（走异常那一支要构造消息，其中一项是 `list(self.unconfigured)`，只在未识别
+节点上发生，本机量不到）；`resolve()` 的头部切分没单独量。
+
+### 收敛读数
+
+| 项 | 修前 | 修后 |
+| --- | --- | --- |
+| 未绑定 root 可被当成路径的调用点 | **147**（`root()` 41 + `resolve()` 106） | **0**；只有 **11** 处、**4 个文件**的**已声明**报告面显式读模板 |
+| 提到 `.bound` 的文件 | 13 个 `.root()` 调用者里 1 个 | 规则移到源头，不再需要调用方遵守 |
+| `view` 与 `ownership_gate` 对同一问题的写法 | 同一表达式，但只有 gate 扛得住答不出的问题 | 两者同形；拒绝落进 `root()` 后仍一致（`{}`） |
+| 本文件 `## 12.` 标题 | 已丢失；裸 `§12` 引用 5 处、含小节引用 45 处**全部悬空** | 存在，且有判据 |
+
+行为在本机**不变**（本节点已绑定，`root()` 照旧返回 `/data/home/vince/...`）；变化只在
+**未识别节点**上，而在那里旧行为是「建出一个以模板命名的目录」。
+
+### 落地
+
+`runtime/paths.py`、`runtime/cli.py`、`runtime/conformance.py`、`runtime/daemon.py`、
+`runtime/view.py`、`runtime/workbench_sources.py`（那两条红修在这里）；
+`tests/test_path_authority.py` 与 9 个测试文件的替身签名（21 处，见上）；
+`tests/test_unbound_roots_are_not_usable_as_paths.py`、`tests/test_ledger_sections_are_present.py`
+（新增）；`docs/CC-EXECUTION-LEDGER.md`（本节 + 补回 `## 12.` 标题）。
+量具与读数：`probe/falsify.sh` +`gate-goes-red.txt`（八条探针）、`probe/004-efficiency-ab.py`
++`efficiency-ab.txt`（效率对照）、`probe/frozen.txt`（冻结哈希）、`probe/opening-census.txt`、
+`probe/suite-full.txt`（第一次那条红的）、`probe/suite-readings.txt`（冻结树上的最终读数）。
+全套见本包 `probe/suite-readings.txt`（同一棵树的哈希冻结在 `probe/frozen.txt`）：
+**`7422 passed, 24 skipped, 4507 subtests passed`，0 failed，823 s**（收集 **7446** 条）。
+
+**两次读数的差额已对上，不是含糊过去的。** 第一次（`probe/suite-full.txt`）是
+`2 failed, 7422 passed, 24 skipped, 4504 subtests passed`，看起来比这次多 2 条。原因是
+**一条 subTest 失败会被另计进 `failed`，而它的父测试仍计进 `passed`**——单独重现过：
+把 `workbench_sources.py` 那一行改回去，`test_artifact_install_smoke.py` 这一个文件（真的
+**7 条**测试）报出的就是 `2 failed, 7 passed`，**9 条**。所以旧那次 `2+7422+24 = 7448`
+是从同样的 **7446 条**收集里数出来的。subtests 的 `4504 → 4507` 也对得上：
+**+2** 是那两条 subTest 转绿，**+1** 是 `REPORTING` 多了一行、`test_every_declaration_gives_a_reason`
+按行 `subTest` 多跑一条。
+**未发版**——但**理由那一段要更正**，而更正本身是本夜那一形状的又一例（同名两物）。
+§9.55–§9.58 连带本节都写着「已安装的 `current/context/resolver.py` 仍是 `bcbec664…`（Sep 23 00:59）」，
+那是 `runtime-assets/hwz-server-os/current`——**一个遗留的真实目录**，CC marketplace 的 source。
+**发布面是另一个**：`runtime-assets/hwz-server-os/serveros-linux-work/current`，符号链接，
+指向 `revisions/product-tree-20261008s@2f6d0d3`，resolver 是 `b44d076bf05e9f0b…`。
+**结论不变**（本夜四包一个都不在里面，差 49 个提交），但**报出来的那个 sha 是另一个东西的**。
+完整读数见本包 `release-action-table.md`（十一项，逐项读 `release.py`/`build.py` 量出来的，
+不是回想出来的——那张表本来就是为「一句话指着一张不存在的表」这件事补的）。
+
+## 12. 最终报告（计划 §16 要求的那一份）
+
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
 集成**、**真在链路上跑的**和**被人或权限挡住的**分成四类分开说，因为把它们合成一句「做完了」

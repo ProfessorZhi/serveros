@@ -1419,7 +1419,7 @@ def test_the_record_path_comes_from_the_root_contract(monkeypatch, tmp_path):
         bound = False
         unconfigured = ("DATA_ROOT",)
 
-        def resolve(self, ref):
+        def resolve(self, ref, *, unbound_ok=False):
             raise AssertionError("an unbound node resolved a path anyway")
 
     monkeypatch.setattr(paths, "Paths", Unbound)
@@ -1431,7 +1431,7 @@ def test_the_record_path_comes_from_the_root_contract(monkeypatch, tmp_path):
         bound = True
         unconfigured = ()
 
-        def resolve(self, ref):
+        def resolve(self, ref, *, unbound_ok=False):
             assert ref == human_control.INGRESS_RECORD_REF
             return {"ref": ref, "path": str(tmp_path / "ingress.jsonl")}
 
