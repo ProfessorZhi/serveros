@@ -184,6 +184,23 @@ SOURCE_RUNTIME_DRIFT = "SOURCE_RUNTIME_DRIFT"
 MISSING = "MISSING"
 UNKNOWN = "UNKNOWN"
 
+# A verdict about THIS FILE, not about the artifact.
+#
+# `SOURCE_RUNTIME_DRIFT` says "these bytes are not what source builds". That is
+# a statement about the artifact, and it is only earned when the source in
+# question is the artifact's OWN source. When the checkout this file rebuilds
+# from stops at a commit the artifact does not name — which is what a canonical
+# worktree does once the release train has moved past it — the same path diff
+# is produced by an instrument reading a tree that was never implicated.
+#
+# Reporting that as drift puts the instrument's staleness on the artifact's
+# account, and it is indistinguishable on screen from the real thing. So the
+# two get different words. `SOURCE_STALE` still blocks: it is `cannot decide
+# here`, not `verified`. What it does NOT do is change which source is used —
+# that stays the canonical checkout, as before; only the attribution of the
+# resulting verdict moves.
+SOURCE_STALE = "SOURCE_STALE"
+
 # The node's own surface, and the three states it can be in. Each names a
 # different repair, which is the whole reason there are three of them:
 #
@@ -1000,6 +1017,79 @@ def _source_note(rev_dir: Path | None) -> str:
     return text
 
 
+def recorded_source_commit(artifact: Path | None) -> str | None:
+    """The commit the artifact ITSELF records as its source, or None.
+
+    Read, never recomputed — the same limit `_source_note` states, and for the
+    same reason. What it buys here is attribution: whether a rebuild from this
+    checkout compares the artifact against its own source, or against a tree
+    that was never its source. Those two produce identical path diffs and mean
+    opposite things.
+    """
+    if artifact is None:
+        return None
+    try:
+        doc = json.loads((artifact / ARTIFACT_MANIFEST).read_bytes())
+    except (OSError, ValueError):
+        return None
+    source = doc.get("source") if isinstance(doc, dict) else None
+    commit = ((source or {}).get("serveros") or {}).get("commit")
+    return str(commit) if commit else None
+
+
+def source_attribution(artifact: Path | None, canonical_head: str,
+                       canonical_root: Path) -> tuple[bool, str]:
+    """Does the checkout this file rebuilt from name the artifact's source?
+
+    `(True, "")` is the honest answer whenever either side is unknown: silence
+    is not a claim, and turning "no record" into "wrong source" would make
+    every artifact that predates the record read as misattributed.
+
+    `(False, why)` is returned only when BOTH commit ids are known and differ.
+    Then a non-empty path diff says nothing about the artifact, and the caller
+    routes it to `SOURCE_STALE` rather than to `SOURCE_RUNTIME_DRIFT`.
+    """
+    recorded = recorded_source_commit(artifact)
+    if not recorded or not canonical_head or canonical_head == UNKNOWN:
+        return True, ""
+    # Either side may be abbreviated (the row labels print 12 chars), so the
+    # comparison is by prefix in both directions rather than by equality.
+    same = (recorded.startswith(canonical_head)
+            or canonical_head.startswith(recorded))
+    if same:
+        return True, ""
+    return False, (
+        f"this file rebuilt from {canonical_root} at {canonical_head[:12]}, but the "
+        f"artifact records {recorded[:12]} as the commit it was built from — the "
+        "comparison is against a tree that is not this artifact's source, so it "
+        "cannot decide whether the artifact drifted. The instrument is the one "
+        "that is behind"
+    )
+
+
+def drift_verdict(drift: list, attribution: tuple[bool, str]) -> str:
+    """The verdict for a row that compared artifact bytes against a rebuild.
+
+    One place decides it, so the rows that recompute cannot disagree about
+    what an unattributable comparison means.
+    """
+    if not drift:
+        return OK
+    return SOURCE_RUNTIME_DRIFT if attribution[0] else SOURCE_STALE
+
+
+def drift_detail(drift: list, attribution: tuple[bool, str], message: str) -> str:
+    """The detail that goes beside `drift_verdict`, in the same three cases.
+
+    `message` is the row's own wording for a real drift; it is used only then,
+    so a row cannot report the verdict «instrument» and the detail «artifact»
+    — the one way this pair could be read as contradicting itself.
+    """
+    if not drift:
+        return ""
+    return message if attribution[0] else attribution[1]
+
+
 def node_revision(runtime_root: Path, composition: str, release) -> dict:
     """What the node would start, read as data rather than asked of anything.
 
@@ -1510,17 +1600,27 @@ def collect(args) -> dict:
         f"payload says {installed_ver}")
 
     # --- 7. does the installed payload equal what canonical builds? ------
+    # The artifact this row asks about is `--output`, so its own record decides
+    # whether "stale relative to source" is a sentence about the artifact or
+    # about the checkout doing the rebuilding.
+    attribution = source_attribution(args.output, serveros_head, build.repo_root())
     expected = None
     if pinned and args.ability_repo.is_dir():
         got = expected_artifact(build, args.ability_repo, pinned, args.output,
                                 args.marketplace_path)
         if got:
             expected, recomputed_version = got
+            if recomputed_version == built_ver:
+                repro_verdict, repro_detail = OK, ""
+            elif attribution[0]:
+                repro_verdict = SOURCE_RUNTIME_DRIFT
+                repro_detail = (f"canonical source builds {recomputed_version}, disk "
+                                f"has {built_ver} — the artifact is stale relative "
+                                "to source")
+            else:
+                repro_verdict, repro_detail = SOURCE_STALE, attribution[1]
             row(f"{subject} (payload reproducibility)", recomputed_version, "",
-                installed_ver, OK if recomputed_version == built_ver else SOURCE_RUNTIME_DRIFT,
-                "" if recomputed_version == built_ver else
-                f"canonical source builds {recomputed_version}, disk has {built_ver} "
-                "— the artifact is stale relative to source")
+                installed_ver, repro_verdict, repro_detail)
 
     # The two runtimes nest differently and neither is guessable from the other:
     # Claude's install record gives the payload leaf directly, while Codex adds
@@ -1561,6 +1661,11 @@ def collect(args) -> dict:
         # the honest reading is the one above: a staged revision is not thereby
         # different content.
         drift = tree_drift(expected, root, ignore=(Path(TREE_MANIFEST),))
+        # The artifact these bytes are compared against a rebuild of is
+        # `--output` — the payload whose own declared pin produced `expected` —
+        # so that is the record whose source has to be checked before this row
+        # is allowed to call a difference the artifact's fault.
+        attribution = source_attribution(args.output, serveros_head, build.repo_root())
         # Core modules are named separately because they are the specific thing
         # this checkpoint exists to land — but only as a NOTE. Whether the
         # absence is a defect depends on whether canonical has them at all, and
@@ -1568,10 +1673,11 @@ def collect(args) -> dict:
         # as a failure on the first run of this file.
         absent = [m for m in build.CORE_MODULES if not (root / m).is_dir()]
         note = f"core module(s) absent: {', '.join(absent)}" if absent else ""
-        verdict = OK if not drift else SOURCE_RUNTIME_DRIFT
-        detail = f"{len(drift)} drifted path(s); e.g. {', '.join(drift[:3])}" if drift else ""
         row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
-            verdict, detail, note)
+            drift_verdict(drift, attribution),
+            drift_detail(drift, attribution,
+                         f"{len(drift)} drifted path(s); e.g. {', '.join(drift[:3])}"),
+            note)
 
     # --- every plugin the Agent actually LOADS ----------------------------
     #
@@ -1662,12 +1768,17 @@ def collect(args) -> dict:
         # row below already excludes it for the same reason; this is that
         # decision applied to the same bytes at the other end of the same chain.
         drift = tree_drift(expected_plugin, payload, ignore=(Path(TREE_MANIFEST),))
+        # The INSTALLED plugin's own record is what says whether this checkout
+        # ever was its source — not the payload beside it, which is a different
+        # composition's face of the same release.
+        attribution = source_attribution(payload, serveros_head, build.repo_root())
         row(label, "", plugin_built, f"version={installed_version}  sha256="
             f"{tree_hash(payload) or 'NONE'}",
-            OK if not drift else SOURCE_RUNTIME_DRIFT,
-            "" if not drift else
-            f"canonical source builds {plugin_built}, and the installed plugin "
-            f"differs in {len(drift)} path(s); e.g. {', '.join(drift[:3])}")
+            drift_verdict(drift, attribution),
+            drift_detail(drift, attribution,
+                         f"canonical source builds {plugin_built}, and the "
+                         f"installed plugin differs in {len(drift)} path(s); "
+                         f"e.g. {', '.join(drift[:3])}"))
 
     # Codex, read the same way and for the same reason. It keeps its switch in
     # config.toml and materializes into <cache>/<marketplace>/<plugin>/<version>/,
@@ -1714,12 +1825,14 @@ def collect(args) -> dict:
             continue
         expected_codex, codex_built = got
         drift = tree_drift(expected_codex, leaf, ignore=(Path(TREE_MANIFEST),))
+        attribution = source_attribution(leaf, serveros_head, build.repo_root())
         row(label, "", codex_built, f"version={installed_version}  sha256="
             f"{tree_hash(leaf) or 'NONE'}",
-            OK if not drift else SOURCE_RUNTIME_DRIFT,
-            ("" if not drift else
-             f"canonical source builds {codex_built}, and the installed plugin "
-             f"differs in {len(drift)} path(s); e.g. {', '.join(drift[:3])}"),
+            drift_verdict(drift, attribution),
+            drift_detail(drift, attribution,
+                         f"canonical source builds {codex_built}, and the "
+                         f"installed plugin differs in {len(drift)} path(s); "
+                         f"e.g. {', '.join(drift[:3])}"),
             note=note)
 
     # --- 8. the node: revision, unit, process ----------------------------
@@ -1858,11 +1971,20 @@ def collect(args) -> dict:
             else:
                 node_expected, node_built = got
                 drift = tree_drift(node_expected, rev_dir, ignore=(Path(TREE_MANIFEST),))
-                node_verdict = OK if not drift else SOURCE_RUNTIME_DRIFT
-                node_detail = ("" if not drift else
-                               f"canonical source builds {node_built}, and the running "
-                               f"revision differs in {len(drift)} path(s); "
-                               f"e.g. {', '.join(drift[:3])}")
+                # The revision records where it was built. When that commit is
+                # not the one this checkout is standing on, the 36 paths below
+                # are this file's own staleness rather than the node's — and the
+                # row already prints the artifact's claim one field to the right,
+                # so the two facts belong in one verdict instead of a drift
+                # blamed on the running revision.
+                attribution = source_attribution(rev_dir, serveros_head,
+                                                 build.repo_root())
+                node_verdict = drift_verdict(drift, attribution)
+                node_detail = drift_detail(
+                    drift, attribution,
+                    f"canonical source builds {node_built}, and the running "
+                    f"revision differs in {len(drift)} path(s); "
+                    f"e.g. {', '.join(drift[:3])}")
     node_label = (node["manifest"] or {}).get("revision") or node["current"] or ""
     row(f"{args.composition} (node revision)", node_label, node_built,
         f"{node['revision_dir'] or node['root']}"
@@ -1892,6 +2014,12 @@ def collect(args) -> dict:
                       if r["axis"] != AXIS_PROVENANCE and r.get("applies", True)}
     if SOURCE_RUNTIME_DRIFT in chain_verdicts:
         overall = SOURCE_RUNTIME_DRIFT
+    elif SOURCE_STALE in chain_verdicts:
+        # An unattributable comparison is still a chain this file cannot clear,
+        # so it blocks — but the top line names the instrument as the reason
+        # rather than reporting it as an unknown, which would read as though the
+        # measurements themselves had failed.
+        overall = SOURCE_STALE
     elif chain_verdicts <= {OK}:
         overall = OK
     elif MISSING in chain_verdicts:
