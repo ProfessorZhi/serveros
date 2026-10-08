@@ -82,7 +82,7 @@ class _FakePaths:
         self.unconfigured = unconfigured
         self.asked: list[str] = []
 
-    def root(self, name: str) -> Path:
+    def root(self, name: str, *, unbound_ok: bool = False) -> Path:
         self.asked.append(name)
         assert name == "tmp", name
         assert self._tmp is not None

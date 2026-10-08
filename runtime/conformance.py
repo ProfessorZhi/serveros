@@ -511,16 +511,25 @@ def surfaces(paths, home: str) -> list[dict]:
     written here. A checker that carried its own copy of the vocabulary would
     report on the copy, and the copy would drift from the contract exactly the
     way the `~/.serveros` allow-list drifted from its authority.
+
+    `unbound_ok=True` HERE, AND ONLY HERE IN THIS FILE. This function's product
+    is a REPORT: it is asked what this node DECLARES, and on an unidentified
+    node the honest answer is the template — the checker then compares it to a
+    directory that does not exist and says so, which is the reading a person
+    wants. Every other `root()` call in this module is a computation over a real
+    path and gets the refusal, because a comparison against a directory named
+    after a template is not a finding, it is a fabrication.
     """
-    state = paths.root("state")
+    state = paths.root("state", unbound_ok=True)
     return [
-        _surface("DATA_ROOT", "data", paths.root("data"), paths.vocabulary("data")),
-        _surface("WORKSPACE_ROOT", "workspace", paths.root("workspace"),
+        _surface("DATA_ROOT", "data", paths.root("data", unbound_ok=True),
+                 paths.vocabulary("data")),
+        _surface("WORKSPACE_ROOT", "workspace", paths.root("workspace", unbound_ok=True),
                  paths.vocabulary("workspace")),
         _surface("state/serveros", "state", state, paths.vocabulary("state")),
         _surface("state/serveros/runtime", "state", state / "runtime",
                  paths.vocabulary("runtime")),
-        _surface("ARTIFACTS_ROOT", "artifacts", paths.root("artifacts"),
+        _surface("ARTIFACTS_ROOT", "artifacts", paths.root("artifacts", unbound_ok=True),
                  paths.vocabulary("artifacts")),
         _surface("~/.serveros", "home", Path(home) / ".serveros",
                  paths.vocabulary("home")),

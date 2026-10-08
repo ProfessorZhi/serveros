@@ -150,7 +150,7 @@ class StubRegistry:
     def all(self):
         return list(self._devices)
 
-    def resolve(self, ref):
+    def resolve(self, ref, *, unbound_ok=False):
         for device in self._devices:
             if device.device_ref.ref == str(ref):
                 return device

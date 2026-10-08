@@ -73,7 +73,7 @@ def test_missing_vocabulary_does_not_erase_an_older_manifest(authority, tmp_path
 def test_daemon_reads_full_catalogue_product_view_with_provenance(daemon_factory, tmp_path, monkeypatch):
     state = tmp_path / 'product-state'
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == 'state'
             return state
     monkeypatch.setattr(daemon_mod.paths_mod, 'Paths', Paths)

@@ -196,22 +196,42 @@ def test_a_node_with_no_authority_is_unbound(supplied_nothing):
 
 
 def test_an_unbound_root_is_a_template_and_not_a_path(supplied_nothing):
-    """The failure mode this replaces: a plausible path.
+    """What the contract HOLDS for an unbound root, asked for explicitly.
 
-    `""` would format into `/workspace`, which reads as an absolute path, and a
-    caller that never asked whether the node was identified would write there.
-    A root that reads as `{DATA_ROOT}/state/serveros` cannot be mistaken for an
-    answer, which is the whole reason the value is shaped that way.
+    THIS TEST USED TO CLAIM MORE THAN THE VALUE DOES. It said a root reading
+    `{DATA_ROOT}/state/serveros` "cannot be mistaken for an answer, which is the
+    whole reason the value is shaped that way". Measured (RUN-0054): the shape
+    stops a reader who reads, and does nothing about a program that never does —
+    `Path("{WORKSPACE_ROOT}/records").mkdir(parents=True)` succeeds and creates
+    a directory named after a template, after which `is_dir()` is True. The
+    template is what the contract holds and what a REPORT must be able to name;
+    it is no longer what an ordinary read returns, because `root()` refuses it
+    unless the caller says this is a report.
     """
     for name in supplied_nothing.unconfigured:
-        value = str(supplied_nothing.root(name))
+        value = str(supplied_nothing.root(name, unbound_ok=True))
         assert "{" in value and "}" in value, (
             f"unbound root {name} resolved to something path-shaped: {value}")
 
 
+def test_an_unbound_root_is_refused_by_an_ordinary_read(supplied_nothing):
+    """The guard the shape was standing in for, stated as behaviour.
+
+    Before RUN-0054 this read returned the template, and every one of the tree's
+    41 `root()` call sites was expected to check `Paths.bound` first. Only
+    `paths.py` itself ever did. The refusal is what makes the check unnecessary
+    rather than merely unperformed.
+    """
+    for name in supplied_nothing.unconfigured:
+        with pytest.raises(paths_mod.PathRefused):
+            supplied_nothing.root(name)
+        with pytest.raises(paths_mod.PathRefused):
+            supplied_nothing.resolve(name)
+
+
 def test_no_unbound_root_falls_back_to_a_beijing_path(supplied_nothing):
     for name in supplied_nothing.provenance:
-        value = str(supplied_nothing.root(name))
+        value = str(supplied_nothing.root(name, unbound_ok=True))
         for literal in BEIJING_LITERALS:
             assert not value.startswith(literal), f"{name} = {value}"
 
