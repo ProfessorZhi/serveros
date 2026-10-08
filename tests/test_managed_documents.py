@@ -13,6 +13,12 @@
 3. **交付形态是声明的，也是要对的。** `FOLLOW_MIRROR` 配 `standing: CANONICAL`
    是文档词表点名过的那一种错读；`UNDECLARED` 与 `INCONSISTENT` 是两件事。
 4. **一份对象两份物化要合起来报。** 两行指同一个 locator 不是一个对象两次。
+5. **关于读取方的差异不得报成关于文档的事实。** 这一条是本模块自己犯过的错，而且
+   在活体真契约上真犯过：`derived − declared` 被印成「文档里有而 profile 没声明」，
+   而 `derive_sections` 只可能吐出派生它的那份 profile 声明过的 key —— 所以这条差异
+   证明的是**有两份契约**。读到那一行的人会去给 profile 补一节，而真相是手上这份
+   已经被取代。第 5 组同时钉住前提（真能力的 `derive_sections`）、两条读数与 `render`
+   的逐字措辞。
 """
 from __future__ import annotations
 
@@ -313,13 +319,107 @@ class TestTheWritePolicyAndTheReach:
         assert reach["derived_never_declared"] == []
 
     def test_a_derived_section_the_profile_never_declared_is_named(self, tmp_path):
-        # 活体那一份真实契约上就是这一条：文档有「五、已完成」，profile 没有。
+        # 活体那一份真实契约上就是这一条：一份**别的** profile 派生的 state 里有
+        # `completed`，而手上这份没声明它。**不是**「文档有「五、已完成」」——
+        # `derive_sections` 只可能吐出派生它的那份 profile 声明过的 key，
+        # 所以这条差异证明的是「有两份契约」，关于文档一个字都没说。
         state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
                  "derived": {"sections": {"one": {"block_id": "b1"},
                                           "completed": {"block_id": "b9"}}},
                  "unresolved_section_keys": []}
         reach = read(tmp_path, state=state)["documents"][0]["reach"]
         assert reach["derived_never_declared"] == ["completed"]
+        assert reach["state_from_another_profile"] is True
+
+    def test_a_derived_set_inside_the_declared_one_does_not_claim_a_second_contract(
+            self, tmp_path):
+        # 反方向：`derived ⊆ declared` 只是**没有被证伪**，不是「同一份」。所以这一支
+        # 只能说 set 的差，不能说两份契约，也不能说文档。
+        state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
+                 "derived": {"sections": {"one": {"block_id": "b1"}}},
+                 "unresolved_section_keys": ["two"]}
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}},
+                                      {"key": "two", "match": {"heading": "二"}}])
+        reach = read(tmp_path, profile=profile, state=state)["documents"][0]["reach"]
+        assert reach["derived_never_declared"] == []
+        assert reach["state_from_another_profile"] is False
+
+    def test_the_state_says_which_profile_derived_it_and_it_says_nothing(self, tmp_path):
+        # 这一条是上面那两个方向的**不对称**的来处：state 里没有任何字段指向
+        # 产出它的 profile（能力写 state 时只写 doc_id / revision / derived /
+        # relations / unresolved_section_keys）。所以「哪一份是当前的」在这里不可判，
+        # 报告必须把这件事说出来，而不是留给读者去猜。
+        state = {"revision": 5, "derived": {"sections": {"one": {}}},
+                 "unresolved_section_keys": []}
+        reach = read(tmp_path, state=state)["documents"][0]["reach"]
+        assert reach["state_provenance"] == "unrecorded"
+        assert not any(key.endswith("_profile") and key != "state_from_another_profile"
+                       for key in reach)
+
+
+class TestTheReadingNeverNamesTheDocument:
+    """`render` 上那两行的判据：**关于读取方的差异，不得报成关于文档的事实。**
+
+    这是本模块此前自己犯的那个错，而且它在活体真契约上真的犯过：一份 state（由
+    2026-09-27 那份 5 节契约产出）配上一份 4 节契约，那一行印的是「文档里有而
+    profile 没声明 ['completed']」—— 读到它的人会去给 profile **补**一节，而真相是
+    手上这份契约已经被取代，权威那份早就声明了 `completed`。
+    """
+
+    def _lines(self, tmp_path, **kwargs):
+        return managed.render(read(tmp_path, **kwargs))
+
+    def test_a_second_contract_is_never_reported_as_something_the_document_has(
+            self, tmp_path):
+        state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
+                 "derived": {"sections": {"one": {"block_id": "b1"},
+                                          "completed": {"block_id": "b9"}}},
+                 "unresolved_section_keys": []}
+        lines = self._lines(tmp_path, state=state)
+        joined = "\n".join(lines)
+        assert "文档里有" not in joined
+        assert "不是这份 profile 派生的" in joined
+        assert "['completed']" in joined
+        # 它必须把「哪一份是当前的」这件事指出来**没判**，并指向真正读大纲的那个动词。
+        assert "判不出来" in joined
+        assert "`audit`" in joined
+
+    def test_the_second_contract_line_names_both_directions(self, tmp_path):
+        state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
+                 "derived": {"sections": {"one": {"block_id": "b1"},
+                                          "completed": {"block_id": "b9"}}},
+                 "unresolved_section_keys": []}
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}},
+                                      {"key": "two", "match": {"heading": "二"}}])
+        joined = "\n".join(self._lines(tmp_path, profile=profile, state=state))
+        assert "['completed']" in joined and "['two']" in joined
+
+    def test_a_deriver_that_reported_the_same_gap_is_quoted_not_paraphrased(self, tmp_path):
+        state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
+                 "derived": {"sections": {"one": {"block_id": "b1"}}},
+                 "unresolved_section_keys": ["two"]}
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}},
+                                      {"key": "two", "match": {"heading": "二"}}])
+        joined = "\n".join(self._lines(tmp_path, profile=profile, state=state))
+        assert "声明了但没定位到 ['two']" in joined
+        assert "派生它的那次也是这么记的" in joined
+        assert "不是这份 profile 派生的" not in joined
+
+    def test_a_gap_that_does_not_match_the_derivers_own_list_says_so(self, tmp_path):
+        # 第三处两契约的痕迹：派生它的那次根本没声明过 `two`，所以它自己那份
+        # 「没定位到」清单里不会有 `two` —— 两处对不上，必须印成对不上。
+        state = {"revision": 5, "last_observed_at": "2026-09-14T00:00:00+00:00",
+                 "derived": {"sections": {"one": {"block_id": "b1"}}},
+                 "unresolved_section_keys": []}
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}},
+                                      {"key": "two", "match": {"heading": "二"}}])
+        joined = "\n".join(self._lines(tmp_path, profile=profile, state=state))
+        assert "两处不是同一次读数" in joined
+
+    def test_a_state_that_was_never_observed_says_neither(self, tmp_path):
+        joined = "\n".join(self._lines(tmp_path))
+        assert "从未（没有 state）" in joined
+        assert "profile 派生" not in joined
 
 
 class TestOneObjectHoweverManyMaterializations:
@@ -380,6 +480,31 @@ class TestAgainstTheInstalledAbility:
         with pytest.raises(KeyError):
             ability.derive_sections(profile, [(1, "b1", "一")])
         assert managed.contract_health(profile, ability)[0] == "SECTION_WITHOUT_KEY"
+
+    def test_the_deriver_emits_keys_of_the_declaring_profile_only(self):
+        # **这一条是 `read_reach` 全部结论的前提，所以在真能力上钉它。**
+        # `derive_sections` 遍历的是 profile 声明过的节，key 取 `section["key"]`，
+        # 所以派生集恒是**派生它的那份 profile** 声明集的子集 —— 于是
+        # 「derived 里有而手上这份没声明的 key」只可能证明还有第二份契约。
+        # 若这条前提在某个版本上不成立，`read_reach` 的那句话就变成假的，
+        # 而这个测试会先红。
+        ability = managed.load_ability(INSTALLED_ABILITY)
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}}])
+        headings = [(1, "b1", "一"), (1, "b5", "五、已完成"), (2, "b9", "四、客服咨询")]
+        derived = ability.derive_sections(profile, headings)
+        assert set(derived) == {"one"}
+        assert set(derived) - {s["key"] for s in profile["sections"]} == set()
+
+    def test_the_deriver_records_its_own_unresolved_list_as_declared_minus_derived(self):
+        # `read_reach` 的第三支要比的那两处，必须来自同一个量：能力写进 state 的
+        # `unresolved_section_keys` 就是**它自己那份 profile** 的 `declared - derived`。
+        # 不是同一份 profile 时这两处对不上，这正是那一支要印出来的东西。
+        ability = managed.load_ability(INSTALLED_ABILITY)
+        profile = a_profile(sections=[{"key": "one", "match": {"heading": "一"}},
+                                      {"key": "two", "match": {"heading": "二"}}])
+        derived = ability.derive_sections(profile, [(1, "b1", "一")])
+        missing = [s["key"] for s in profile["sections"] if s["key"] not in derived]
+        assert missing == sorted(set(s["key"] for s in profile["sections"]) - set(derived))
 
     def test_the_gate_decision_vocabulary_is_the_four_this_module_reports(self):
         ability = managed.load_ability(INSTALLED_ABILITY)
