@@ -249,9 +249,15 @@ class TheDerivationFollowsTheRootTests(unittest.TestCase):
             self.mod._under("worktress", "quay")
 
     def test_the_runtime_root_is_asked_as_a_role_not_a_root(self):
-        """`runtime-assets` as a ROOT is `{DATA_ROOT}/runtime-assets/serveros`,
-        which nothing on this node has ever been; the artifact is at
-        `runtime-assets/hwz-server-os` and only the role answers that."""
+        """`runtime-assets` is the ROOT, and the artifact the release rows name
+        is a DISTRIBUTION inside it — `runtime-assets/hwz-server-os`, which is
+        what the role resolves to. The two doors now agree about the parent and
+        differ one level down, which is the difference this test asserts.
+
+        It used to read differently: the root resolved to
+        `{DATA_ROOT}/runtime-assets/serveros`, which nothing on this node has
+        ever been, so the role was the only door that answered correctly.
+        Asking the role was right; leaving the root wrong was RUN-0056's fix."""
         from pathlib import Path
         import paths as paths_mod
         got = Path(self.mod._under_role("runtime.serveros-distribution"))
