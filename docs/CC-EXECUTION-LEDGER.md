@@ -8820,6 +8820,176 @@ or str(_profile_root("artifacts_root", "artifacts")
 **第十条**。与第九条不同的是：这一条**有一条活着的缺陷在机上**，所以发版的收益第一次不再是
 零——这个区别写在动作表那一行里。
 
+## §9.56 同一份被授权的文档、三份实现，一条只比交集的判据
+
+这是「一张表对同一个东西给出两个相反答案」的**第七例**。它与 §9.55（RUN-0050）是**同一个缺陷、
+同一份文档、隔一行**：`context/resolver.py` 问 host profile 要 `data_root`、要 `artifacts_root`，
+**漏了 `workspace_root`**——而那份文档把它声明为一行。
+
+§9.55 结尾留下一条可复用的读数：**「三份实现读同一份文档，其中一份没被那条跨份判据罩住」是一个
+可普查的形状**。本包就是去数它的。开工第一步是量，第二步才是改；两步都不需要人裁决。
+
+### 第一步：量那条判据的射程
+
+`tests/test_runtime_truth.py::test_the_two_copies_of_the_root_resolver_agree` 的 docstring 自己写着：
+
+> A copy that is free to differ is a copy that will; this is the comparison that makes the difference a failure rather than a discovery.
+
+而它的主体是这一行：
+
+```python
+shared = sorted(set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES))
+```
+
+**交集。** 两张表今天各自具名的行：
+
+| `scripts/runtime_truth.py` | `skills/serveros/scripts/architecture_check.py` |
+| --- | --- |
+| `serveros_repo` | `serveros_repo` |
+| `ability_repo` | `ability_repo` |
+| `engine_repo` | `ops_repo` |
+| `marketplace_path` | `data_root` |
+| `runtime_root` | `workspace_root` |
+
+**8 行里比 2 行**（`serveros_repo`、`ability_repo`，而且这两行**逐字相同**，因为它们是抄来的）。
+只在一份表里出现的 6 行——判据看不见、不计数、也不具名。一条判据没法看见它自己那句承诺所覆盖的
+**全部**差异，而它承诺的正是「the difference」而不是「the shared difference」。
+
+### 第二步：量「读还是算」——一行一行，三份实现
+
+把 host profile 的 **22 行**逐行推到哨兵，问三份实现各自的问题（**各问各的词**），看谁跟着动
+（`probe/which-declared-rows-are-read.py`）：
+
+```text
+host-profile 行     谁跟着动        说明
+identity_home       arch_check, resolver
+workspace_root      arch_check        ← 只有它读；resolver/paths 算
+workspace_src       arch_check
+artifacts_root      resolver          ← §9.55 修的那一行
+其余 18 行          没人动            paths 读的是另一份文档（fleet），不读 host profile
+```
+
+三份实现在 `workspace_root` 上分道：
+
+| 实现 | 读哪份文档 | 对 `workspace_root` |
+| --- | --- | --- |
+| `architecture_check.py` | host profile | **读**（`("WORKSPACE_ROOT", ("workspace_root",), ())`） |
+| `context/resolver.py` | host profile | **算**（`data_root / "workspace"`） |
+| `runtime/paths.py` | fleet/profiles.yaml | **算**（`_SEED_DEFAULT_SUFFIX`） |
+
+**双向 A/B**（`probe/workspace-row-read-vs-computed-ab.py`）：一份 profile 副本把
+`node.roots.workspace_root` 指到哨兵，基线（`git show HEAD` 逐字加载，源码树一个字节不写）与改后
+各答一次：
+
+```text
+scenario                     paths        resolver     arch_check
+profile 未动                  /data/home/vince/workspace  同          同
+workspace_root → 哨兵          没动 ← 算     没动 ← 算    **哨兵 ← 读**
+workspace_src  → 哨兵          没动（负控制） 没动（负控制） 没动（负控制）
+```
+
+第三行是这条 A/B 自己的负控制：没有它，「改了没反应」和「探针根本没接上」是同一个读数。
+
+### 为什么这不是 paths.py 的错
+
+`runtime/paths.py` 把 `workspace_root` 排除在 `_SEED_ROLE` 之外，并且**写明了理由**：它的 role 名
+来自 **fleet 文档**，而 fleet 文档里**没有 `workspace` 这个 role**——只有 `workspace.src` 与
+`workspace.worktrees`。实测确认（`fleet/profiles.yaml` 的 `paths` 表逐条列出）。**那条排除对它
+自己那份文档是对的。**
+
+它说的只是 fleet 文档，**没有说 host profile 不得声明这一行**。而 host profile 声明了。所以分歧
+不在 paths，在**问 host profile 的实现漏问了这一行**：`resolver` 已经向这份文档问 `data_root` 和
+`artifacts_root`，没有理由不问 `workspace_root`。
+
+### 修法与它的否证
+
+`context/resolver.py:148`，与 `artifacts_root` 同一读法——**文档的行在前，派生在后**：
+
+```diff
+-        workspace_root = Path(os.environ.get("WORKSPACE_ROOT", str(data_root / "workspace")))
++        workspace_root = Path(
++            os.environ.get("WORKSPACE_ROOT")
++            ...
++            or str(_profile_root("workspace_root") or data_root / "workspace")
++        )
+```
+
+与 §9.55 不同的是：这一次**没有第二种拼法**。`artifacts_root` 列两个键，是因为两份文档对那个根
+用两个词；`workspace_root` 在声明它的那份文档里只有一个拼法。**给这一行编一个第二拼法，是发明
+一个词而不是读一个词**，所以判据里也**故意没有**「另一种拼法仍答」那条。
+
+否证按 §9.55 的办法做（基线 `git show HEAD:context/resolver.py` + 兄弟路径 symlink）：
+
+```text
+基线沙盒：3 failed, 12 passed in 0.25s     改后：15 passed in 0.27s
+```
+
+红的**三条**指着缺陷本身：那一行没人读、**普查的守卫看得见这个 ask 才能红**、以及
+`resolver` 算了它。**绿的 12 条里有那条跨文档漂移告警**——它在本节点两侧同值，所以**看不见**这件事。
+**比值的判据看不见它，比方法的判据才看得见**：这就是为什么新判据推哨兵而不是比值。
+
+### 两条新判据
+
+1. **`BothReadersOfTheDocumentFollowTheSameRow`**（`tests/test_resolver_reads_the_document.py`）：
+   `resolver` 与 `architecture_check` 都从**同一份** host profile 回答同一个根。把那一行推到哨兵，
+   **读它的实现必须跟着走**；算的实现跟不了，在那里红。这是 §9.55 与 §9.56 各自修了一条的
+   **一般形式**——下一个「一行没人读」会在它自己那一行红，不用等有人想起来再写判据。另加一条反向
+   判据（不声明该行的节点，两份实现都不许凭空造路径），使「修法不能是永远返回那一行」。
+
+2. **`test_the_two_copies_declare_where_they_differ`**（`tests/test_runtime_truth.py`）：把那份**交集
+   看不见的 6 行**变成**具名声明**（`ONLY_IN_RUNTIME_TRUTH` / `ONLY_IN_ARCHITECTURE_CHECK`）。
+   两份表做的是**不同的事**，所以「不同」不是缺陷；**不说就不同**才是。任一表增删一行而声明没跟上，
+   就在那里红。它**红过**（把声明少写一个键，`Tuples differ: ('data_root','ops_repo','workspace_root') != ('data_root','ops_repo')`），
+   还原后逐字节相同且绿。
+
+### 仪器本身出过两次错，两次都朝「什么都没发生」
+
+这条普查的第一版**假设缩进是 2 格**，而 profile 的行在 `node.roots` 下是 4 格——**一行都没改写**，
+于是它报「22 行里 0 行被任何人读」。那个读数**与一个真的空结果逐字相同**。第二版按缩进匹配了，却在
+`scratch_root` 上撞见**同名行**（`scratch_area` 里也有），改写了两处。
+
+两次都是**静默的**，都朝「nothing happens」的方向；两次都是**让改写函数返回命中数并断言为 1** 才
+暴露的——第二次是断言在 `scratch_root` 上直接叫停。这与本夜那些缺陷是**同一个形状**：一个看起来
+对的答案，比一个明确的拒绝更难发现。普查因此还带一条**负控制**：推一个**本来就该动**的行
+（`workspace_src`），必须至少有一个答案跟着动，否则「探针没接上」会被读成「没人读」。
+
+由此定型成一句可以套在**任何**「问一句、拿一个集合」的仪器上：
+
+> **空答案必须先证明它问到了东西。** 「问了 22 行，22 行都没被读」与「问了 22 行，实际只改写了 0 行」
+> 在输出上逐字相同，而在结论上相反。仪器要能把这两者分开——断言**命中数**，而不是断言**结果集**。
+
+### 装机面：与 §9.55 是同一个未发版的文件
+
+`context/` 是 `CORE_MODULES` 成员，所以本包同样有行为装机面：
+
+```text
+/data/home/vince/runtime-assets/hwz-server-os/current/context/resolver.py
+Sep 23 00:59   sha256 bcbec66460a30612ba2c16830ab98f90ca2dbb4b63c2ffec9471d177e7e1f8d4
+第 148 行：workspace_root = Path(os.environ.get("WORKSPACE_ROOT", str(data_root / "workspace")))
+第 152 行：or str(_profile_root("artifacts") or data_root / "artifacts")
+```
+
+**这个 sha256 与 §9.55 量到的逐字相同** —— 也就是 RUN-0050 的修复也没有装上（未发版）。于是：
+
+- 装机那份**同时带着两个缺陷**：`artifacts`（§9.55）与 `workspace_root`（本包），**同一个文件的
+  相邻两行**；
+- **一次发版修掉两件**。装机动作表里 §9.55 是第十条，本包是**第十一条**，两者共享同一个载荷。
+
+**发布后判据**：装机那份第 148 行是否问 `workspace_root`、第 152 行是否问 `artifacts_root`。
+**今天两条正的不成立**。
+
+**没有发版**，理由与前十条逐字相同。但装机动作表的**收益列**从此不再只有一条非零——这两条一起
+构成同一个载荷的收益。
+
+### 与条目 8 的关系
+
+普查还量到一件比行名更硬的事：**host profile 那 22 行里，18 行没有任何一份这三份实现去读**，
+因为回答那些问题的实现读的是**另一份文档**（fleet）。两份文档对「`workspace_root` 是不是一个
+可声明的行」给出**结构性**相反的回答——fleet 文档说「没有这个 role，它是派生的」，host profile
+说「这是一行」。这不是**词**的分歧（§9.55 那种），是**「派生 vs 声明」**的分歧。它作为**第一例
+实测实例**写进 `PENDING-DECISIONS.md` **条目 8**：本包修的只是**问 host profile 的那一份实现
+漏问了一行**，两份文档谁说了算仍然是人的问题。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 **读它之前先读这一句**：这一节不是「全系统 READY 证明」。它把**已完成的实现**、**已量到的
