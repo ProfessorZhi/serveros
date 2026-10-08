@@ -204,6 +204,44 @@ def test_the_declared_namespaces_agree_and_the_shape_is_pinned():
     assert "agent-control" in paths_mod.STATE_SERVEROS_RUNTIME
 
 
+def test_a_derived_private_directory_is_still_a_declared_name():
+    """The half the vocabulary test above cannot see.
+
+    `test_the_declared_namespaces_agree_and_the_shape_is_pinned` pins the tuple
+    against the contract, which catches a tuple that was widened without a
+    contract entry — but not a producer that derives a directory nobody
+    declared. `runtime/wake.py` did exactly that: `receipts_root` composed
+    `<state>/runtime/wake/receipts` from the store path and its docstring said
+    the name was deliberately kept OUT of the closed set, so the directory was
+    written on purpose and reported as UNDECLARED_ENTRY on every conformance
+    run. Both halves passed every test, because each was internally consistent.
+
+    So this asserts the rule from the producer's side: whatever directory the
+    producer derives, its name is one the vocabulary declares. That is what
+    lets a reader tell "this product writes here on purpose" from "something
+    appeared here", and it is the only form of the check that fails when a new
+    consumer invents a private name — which is how this defect arrives.
+    """
+    wake = _load("serveros_runtime_wake", "wake.py")
+    # The live composition, not an invented one: `cli._agent_control_store_path`
+    # returns `<state_root>/runtime/agent-control/store.json` and this is the
+    # path that function's own docstring calls the one answer to "where is this
+    # node's control-plane state".
+    store = Path(paths_mod.Paths().root("state")) / "runtime" / "agent-control" / "store.json"
+    derived = wake.receipts_root(store)
+    assert derived.parent.name == "wake", (
+        f"`receipts_root` derived {derived}, whose namespace is "
+        f"{derived.parent.name!r}; this test's fixture assumes `wake` and would "
+        f"be asserting nothing about the live path if that changed")
+    assert derived.parent.name in paths_mod.STATE_SERVEROS_RUNTIME
+    assert derived.parent.parent.name == "runtime"
+    # And it is declared in both places, which is the property the round is
+    # about: the tuple and the contract are one declaration in two files.
+    children = state_root.load_contract()["namespaces"]["runtime"]["children"]
+    assert "wake" in children
+    assert children["wake"]["producer"] == "runtime/wake.py"
+
+
 def test_a_namespace_with_no_producer_is_absent_not_missing(tmp_path):
     """EXPECTED_ABSENT and MISSING_REQUIRED are different facts.
 

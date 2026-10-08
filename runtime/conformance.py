@@ -118,6 +118,32 @@ EXCEPTIONS: dict[str, dict[str, dict]] = {
             "authority": "as above",
             "disposition": "KEEP",
         },
+        # Added 2026-10-08. The rule above is about the entry documents beside a
+        # shape, and the document it was written for answers to two names —
+        # `CLAUDE.md` and `AGENTS.md` — of which only the first was exempt.
+        # (`README.md` above is a different document; it is the directory's own
+        # readme, not a runtime's entry adapter.) The pair differs by exactly two
+        # lines: the title, and the one line saying which runtime opens it.
+        # Everything below those is byte-identical — measured with `diff`, not
+        # assumed from the name, because "same file under another name" is a
+        # claim about content and two files with different sha1s are two files
+        # (`CLAUDE.md` e5db4cdfd1cc, `AGENTS.md` 0e75efcd25a6).
+        #
+        # So this is not a third kind of file being waved through: it is one
+        # role that the table recognised under one name only. The shape of the
+        # defect is worth naming because the fix looks like an exemption and is
+        # not one — a reader comparing `CLAUDE.md` (OBSERVE/EXEMPT_ENTRY) with
+        # `AGENTS.md` (WARN/UNDECLARED_ENTRY) was being told that two halves of
+        # one convention disagree, which was a fact about this table rather than
+        # about the directory.
+        "AGENTS.md": {
+            "class": "ENTRY_DOCUMENT",
+            "reason": "the Codex reading of this workspace's entry document: "
+                      "the same body as `CLAUDE.md` above, differing only in "
+                      "its title and the line naming the runtime that opens it",
+            "authority": "as above",
+            "disposition": "KEEP",
+        },
         "lit0104-build-evidence": {
             "class": "PROTECTED",
             "reason": "build evidence for a protected parallel lane",

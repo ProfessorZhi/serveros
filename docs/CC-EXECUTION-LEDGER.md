@@ -10332,3 +10332,300 @@ from one command」）。修法一行：`sys.dont_write_bytecode = True`。
    逐字节相同却配着不同 profile**；`OWNED` 实测为假。**登记在案，不动**（理由见 9.60.6）。
 2. **§11.6 常设维护契约位置**：仍是唯一仍需人定的一项。**内容已完整**——位置一旦选定，
    落地只需把那两个文件复制过去，不需再编辑。
+
+
+### 9.61 W6 第一包：让**声明**追上**活的生产者**（`wake` 与 `AGENTS.md`）
+
+W6 是目录合同 D01–D07。照 §3「顺序按实际依赖选择」，第一件不是从 D01 顺号扫，而是本轮**已经量到**
+的那两条**声明落后于生产者**的读数——它们在 `path conformance` 里**稳定地**出现（没有声明，就不会有
+别的读数），且**都不需要人裁决**。
+
+#### 9.61.1 承重的那一处：生产者**论证了自己不要被声明**，而它引的先例恰好被声明了
+
+`runtime/wake.py::receipts_root` 从 store 路径推导出 `<state>/runtime/wake/receipts`，
+并且它的 docstring **明说**这个名字是**故意**不加进 `runtime/paths.py` 的封闭集合的：
+
+> derived from the store path rather than added to `runtime/paths.py`'s closed set of state names,
+> which is the same move `runtime/card_delivery.py` makes for its ledger
+
+这段话**引错了先例，而且可查**：`card_delivery.py::ledger_path` 返回的是
+`<state>/runtime/cards/delivery.json`，而 `cards` **就在**那个元组里——它是 §11/§29 按「文档本来就
+在正确的位置，落后的是清单」这条裁决加进去的。**被拿来当「不要声明」的先例的那个模块，正是那个
+已经被声明了的。** 于是那条 WARN 的答案被写在**与报告它的读面意见相反的模块里**，这就是一条日报
+为什么能一直活着。
+
+按 `cards` 的同一条裁决处理，而不是新造一条：`wake` 进 `STATE_SERVEROS_RUNTIME`，并**同时**进
+`fleet/state-root-contract.yaml`。后者不是可选的——`tests/test_state_root.py` 有一条断言把
+`contract["namespaces"]["runtime"]["children"]` 与那个元组**判等**，所以只改 Python 那一半会直接
+红。**这条测试是盟友**：它当场指出我的三行改动是不完整的。
+
+#### 9.61.2 同一形状的第二处：一个入口文档被两条读线报成互相矛盾
+
+`WORKSPACE_ROOT` 的 `CLAUDE.md` 是 `OBSERVE/EXEMPT_ENTRY`，同一个入口的 Codex 读法 `AGENTS.md`
+是 `WARN/UNDECLARED_ENTRY`——读者被告知**同一条约定的两半分岔了**，而那是**这张表**的事实，
+不是那个目录的事实。两者我**量了**（不是照名字推的）：`diff` 只差两行（标题行，与那句写「哪个
+runtime 打开它」的行），其余逐字节相同；sha1 `e5db4cdfd1cc`（`CLAUDE.md`）与 `0e75efcd25a6`
+（`AGENTS.md`）。**落笔时我写的是「same file」，那是错的**——内容相同的两份文件是两个文件，这句话
+当场改成「同一正文、只差它自己的标题和那一行」。
+
+`AGENTS.md` **没有**进 `WORKSPACE_TOP_LEVEL`，也不该进：它是入口文档这一类，不是 §32 那张目录图的
+成员。豁免的是**类**，不是把词汇表放宽——测试里有一条断言把这个边界钉住。
+
+#### 9.61.3 量出来的前后（同一个节点，两次读取相隔数秒）
+
+| | findings | undeclared | exempt | absent | `state/serveros/runtime` | `WORKSPACE_ROOT` | `ARTIFACTS_ROOT` | `DATA_ROOT` |
+|---|---|---|---|---|---|---|---|---|
+| 装机 `serverosctl`（改前） | 238 | 217 | 8 | 13 | **5** | 4 | 159 | 54 |
+| 工作树 CLI（改后） | 237 | **215** | **9** | 13 | **4** | 4 | 159 | 54 |
+
+算术：改后 215 + 9 + 13 = 237，改前 217 + 8 + 13 = 238。`−2 undeclared` = `wake` +
+`AGENTS.md@WORKSPACE`；`+1 exempt` = `AGENTS.md@WORKSPACE`（我按行读出来的，不是推断的）。
+`WORKSPACE_ROOT` 那一格**不变**是对的：那个名字仍然是一条 finding，只是从 WARN 变成了
+OBSERVE——同一条读数换了**类**，这正是 D01「默认入口清楚」要的形态。
+**注意一侧的浮动**：`exempt` 这个计数**会随 WAL 侧车呼吸**——本机量到过一次 `EXEMPT` 在 54 分钟内
+从 7 变成 5（记在会话记忆里，**不在**本台账；所以这里不引节号）。正因为那一格会动，上表里的
+「8→9」我按**行**归因（那个名字确实从 `UNDECLARED_ENTRY` 变到了 `EXEMPT_ENTRY`），而不是按总数
+相减归因——总数相减会把浮动算进我的改动里。
+
+#### 9.61.4 变异检查（两条都杀了）
+
+- 把 `"wake",` 从 `STATE_SERVEROS_RUNTIME` 拿掉 → 红**两条**：新写的
+  `test_a_derived_private_directory_is_still_a_declared_name` 与既有的
+  `test_the_declared_namespaces_agree_and_the_shape_is_pinned`。前者的失败输出里**带它读过的
+  绝对路径**（`/data/home/vince/state/serveros/runtime/wake/receipts`），符合
+  §9.60.3 那条我自己犯过的形状。
+- 把 `EXCEPTIONS["workspace"]["AGENTS.md"]` 的键改名 → 红，且失败信息**逐字复现**改前那条
+  finding（`UNDECLARED_ENTRY` / `WORKSPACE_ROOT` / `'AGENTS.md' exists and no declaration claims
+  it`）。
+
+两条都改回、`grep` 确认无残留（`MUTANT` / `AGENTS-X` 零命中）。
+
+#### 9.61.5 量到了但**不动**：`DATA_ROOT` 的 54 条，其中 51 条是本人的 dotfile
+
+同一份读数里还有一件本轮**不碰**的事，写在这里是因为它**长得像** 9.61.2 而**不是**：
+`DATA_ROOT`（= `HOME`）下 `AGENTS.md` 与 `CLAUDE.md` **两条都是** `UNDECLARED_ENTRY` WARN——
+那里**没有**入口文档豁免，所以这不是「认了一名漏了孪生」，而是「这个根根本没这一类」。
+而且 54 条里 **51 条**是本人的 dotfile（`.bashrc`、`.ssh`、`.gnupg`、`.secrets`、`.config`…）。
+
+**不动的原因**：给一个**同时是 `HOME`** 的根做 dotfile 级别的整体豁免，是**根合同的政策裁决**，
+不是目录收口；而那条读数**有一部分是对的**——那些文件确实不属于 ServerOS，报出来并非误报。
+按 plan 第 3 条第 4 款，这属于「需要人定」的一类，登记进 `PENDING-DECISIONS.md`，不在本包执行。
+
+#### 9.61.6 照实说：这一轮**没**关掉什么
+
+- **`ARTIFACTS_ROOT` 的 159 条一条没动**，仍是全部 237 条里最大的一堆。那三条活定时单元
+  （`workbench` / `daily-intake` / `evening-alignment`）往哪里写，是**改路径**——别的动词按名字读它
+  （`report evening --run-dir`），且「放宽 `ARTIFACT_NAMESPACES`」与「搬进 `skills/`」是两条不同
+  的权力分配，所以按第 3 条第 4 款备成 `PENDING-DECISIONS.md` 条目，**不执行**。
+- **`fs_hygiene` 的读面缺口没补**：它的 `ROOT_VOCABULARY` 只有 `{data, workspace, state}`，
+  docstring 仍说 `paths.py` 只声明了这三个根——而 `ARTIFACTS_ROOT` 是 finding 最多的那个根。
+  **故意不改**：把 `artifacts` 加进去会**造出** 159 条 `MISPLACED`，而 `misplaced` 是**带动作**的那
+  一类，与「清理一律先是提案」冲突。量到、写下理由、不动。
+- **D01–D07 的其余各条未逐条扫**，本包只做了依赖最靠前的那一件。
+
+### 9.62 全量套件在主线上是**红的**：三条读出来是同一个形状
+
+这一节的起点不是设计，是一次**按流程该跑的**全量套件。§9.61 的包改完之后按惯例跑全量，
+拿到的不是绿灯：
+
+```text
+3 failed, 7285 passed, 24 skipped, 4449 subtests passed in 782.25s (0:13:02)
+```
+
+三条红分别是 `tests/test_declared_commands.py`、`tests/test_mutation_guard.py`、
+`tests/test_core_freeze.py`。
+
+#### 9.62.1 先证明它们**不是**本轮改出来的（不然后面每一步都建在错的前提上）
+
+我没有先看代码，先量了基线：`git archive origin/main | tar -x -C …/probe/w6-decl/baseline-origin-main`
+把**未改动的 `origin/main`** 摊到一棵干净的树上，在那棵树里跑同样三条测试——**三条逐字复现**。
+所以它们在我动手之前就存在于主线，本轮的改动既没造出它们、也没掩盖它们。
+
+顺带把「套件读的是不是要发的那份字节」也钉住：跑之前对 7 个文件算 sha256，跑后
+`sha256sum -c` 全 OK。这一步是 §9.60 那条「读面必须能被复述」的实操。
+
+这条规矩当场**咬了我一次**，所以写下来：修完三条红之后我起了一次全量套件，跑到 21% 时我**又去
+改了两处文案**（本节的台账文字与 `actuator-contract.yaml` 里那条 `why`）。改的是散文，结构键
+逐字节没动，所以结论大概不会变——**但「大概」不是判据**：那一次跑的字节已经不是我准备发布的
+字节，于是**杀掉重跑**（半截输出删掉，不留在证据目录里，因为一次没有跑完的 run 的输出会**看起来
+像一份证据**）。规矩是：**跑的字节必须是冻结的字节**，冻结之后再开跑。
+
+三条是不是该进本包，判据是**形状**而不是数量：三条全部是**声明落后于实际**（写者比声明多、
+读者比白名单多、扫描器的读法比文档多），与本包的主题是同一句话。于是**不新开一轮**，
+一次修完、一次提交、一次发布。
+
+#### 9.62.2 第一条：扫描器把**名词**读成了**命令**（读方的事实报成了世界的事实）
+
+红的原文把 `runtime-assets` 报成了一个命令词。**本节不把程序名和它并排写出来**——那两个词之间
+在台账里只隔一个空格，而「中间有几个空格」正是这条误报的关键，并排写出来，这段说明**自己就会
+重新造出同一条误报**。（这不是排版洁癖，是这条判据的诚实边界，下面会量到。）它读的是那一行：
+
+```text
+serverosd / serverosctl   runtime-assets/…/serveros-linux-work/current → j@7e78673   AGREEMENT
+```
+
+这是一张三列图（读数来自哪、结论），第一列列的是**读那个面的两个二进制名**。程序名在这里是
+个**名词**，那一行没有让任何人去跑什么——扫描器把一个名词读成了程序名，然后**把自己的读法
+当成对台账的判决报出去**。这正是本轮反复遇到的那个形状，只是方向相反：前面几次是「把世界的
+事实当成读方的事实」，这次是「把读方的事实当成世界的事实」。
+
+**不修改台账那行。** 按台账自己 §717 那条「修一个字符串治不了第二次」的裁决，改的是**判据**：
+一个子命令是一个**词**，而一个路径分量不是。落成 `_REF` 里的一条负向先行断言。
+
+三条候选判据我都**量了**（全语料，逐行扫）：
+
+| 判据 | 命中 | 结论 |
+|---|---|---|
+| 词后紧跟 `/` | **2 行**，都是同一张图（原图 1 行 + 本节引的 1 行） | **采用**：真实子命令后面不会紧跟 `/`，收窄的代价最小 |
+| 程序名与词之间**多于一个空白** | 同样 **2 行**，同一张图 | 不用：它确实是这张图的形状，但一个被排版折行/对齐全角空格的**真实**引用会被静默丢掉——丢真声明是坏的那个方向 |
+| 程序名前面是 `X /`（斜杠列表） | **30 行** | **不用，而且这条最危险**：30 行里绝大多数是 `bin/serverosctl` 这种**路径**前缀，其中 `docs/CC-EXECUTION-LEDGER.md` 那条 `<scratch>/artifact/bin/serverosctl space resolve --request move.json` 是**真引用**——用这条判据会把真引用一起吞掉 |
+
+所以采用第一条：全语料「词后紧跟 `/`」只有 2 处，都是那张图；树里每一条真实引用后面跟的是
+空白、反引号、`|` 或行尾。
+
+一个细节值得写下来，因为它是**量出来的而不是想出来的**：断言必须**连词字符一起排除**，
+不能只排除 `/`。`[a-z0-9-]*` 会**回溯**，所以单写 `(?!/)` 会把 `runtime-assets/` 匹配成
+「动词 `runtime-asset` + 一个不是斜杠的 `s`」——那样这条边界只对「没测过的动词」成立。实测：
+
+```text
+OLD: [('runtime-assets', None), ('path', 'conformance')]
+NEW: [('path', 'conformance')]
+(?!/) alone on 'runtime-assets/': runtime-asset
+```
+
+收窄扫描器可能**藏起**真声明，所以控件在一个 fixture 里**同时**断言两半：图上那一列**不**被
+读成命令，而它下面两行的真实引用仍然被读到。控件因此既证明收窄生效，也证明没有收窄成瞎子。
+
+#### 9.62.3 第二条：一个写者，三条变异，一条声明都没有
+
+红的原文（三条）：
+
+```text
+context/trust_binding.py:531 fs_mutation os.chmod _write
+context/trust_binding.py:532 fs_mutation os.replace _write
+context/trust_binding.py:534 fs_mutation .unlink() _write
+```
+
+`context/trust_binding.py::_write` 是那个**同一套原子写**：`mkstemp` 造临时文件、写、`chmod`、
+`os.replace` 落到目标、失败时把那一个临时文件 `unlink`。它于 `d029d1b`（2026-10-07）落地，
+**声明没跟上来**——而这张表在那一天照旧绿，因为它**通过别的 site 继续匹配**，
+这正是 `runtime/actuator-contract.yaml` 自己在 `atomic-write-temp-cleanup` 的 `why` 里已经写过的那句话。
+
+按表的**既有形状**归类，不新造一套：
+
+- `os.replace` → 进既有的 `atomic-write-commit`（该条 verb 就是 `os.replace`）；
+- `.unlink()` → 进既有的 `atomic-write-temp-cleanup`，**按 site 覆盖 verb**（表本来就支持
+  per-site 的 `verb`——该条里 `document_publish.py#write_receipt` 与 `report_delivery.py#_write`
+  两个 site 用的就是这个写法，因为那两处的拼法是 `Path.unlink()` 而不是 `os.unlink`）；
+- `os.chmod` → **新开一条**，理由与表里 `backup-restore-reapplies-the-recorded-mode` 那条自己写的
+  原因相同：**名字描述别的东西的条目**，正是这张表一直在找的形状。这条是全表**唯一一个把模式放宽**的
+  `chmod`——`mkstemp` 交回 0600（那是库的创建模式，umask 只能从它上面清位、加不出位来），
+  所以 0644 是**这一行的决定**，不是宿主的决定；
+  而它放宽是对的，因为文档里装的是 base64 过的**公钥**、audience 和 custodian，没有秘密。
+  **一条只报它害怕的变异的闸门会停止成为闸门；一条分不清放宽与收窄的闸门会把这一条和
+  socket 那条报成同一个动作。**
+
+表规模：`actuators` 43 → **44** 条，`atomic-write-temp-cleanup` 12 → 13 个 site，
+`atomic-write-commit` 18 → 19 个 site。
+
+#### 9.62.4 第三条：daemon 多读了投影的**第四个**名字
+
+红的原文：`unexpected: {'product_tree', …}`——`ability_projection_mod.product_tree` 从 daemon
+调到，而 `ALLOWED_NAMES` 没它。这是**同一条故事的第二遍**：`resolution_catalogue` 于 2026-10-07
+因同样的红被准入（`243fa60`），**同一天的 `2a83462`**（`rev-list --count 243fa60..2a83462` = **50**
+个 commit 之后）就加了 `product_tree`——**而集合没有跟着动**。
+两次都是「daemon 长了一个视图，视图是对这个模块的一次调用，而那个集合是手写的」。
+
+准入的判据不是「它已经在用了」，而是它与集合里其余名字**同一条判据**：daemon 先读生产者的
+artifact（`declared_catalogue()` → `source["entries"]` 与 `source["product_vocabulary"]`），
+把材料交给 `product_tree`，它只做分组、比对、排序。**真的叉 git 的是 `refresh`，它留在
+`AUTHORITY_NAMES` 里。** 而且准入**不是凭信**：同文件有一条 `test_every_admitted_name_is_pure`，
+要求每个被准入的名字的模块内调用闭包**到不了 `_git`**，并以 `_git`/`read_manifest`/`refresh`
+作「谓词不会对什么都答 pure」的控件——本次准入与它一起跑了，是绿的。
+
+#### 9.62.5 修完之后量的
+
+| 量 | 改前 | 改后 |
+|---|---|---|
+| 上述三个文件单独跑 | 3 failed, 104 passed | **0 failed**, 108 passed |
+| 加读同一批面的 3 个文件（`path_conformance` / `state_root` / `architecture_check`）共 6 个 | — | **199 passed, 64 subtests passed** |
+| `actuator-contract.yaml` 条目 | 43 | 44 |
+| 全量套件（冻结字节，第一跑） | 3 failed, 7285 passed | **1 failed**, 7289 passed —— 那 1 条见 9.62.7：**不是本包改出来的**，是共享宿主的一次 Docker 打嗝，但已在本包里修掉 |
+| 全量套件（冻结字节，第二跑，含 9.62.7 的修） | 同上 | 见 9.62.8 |
+
+#### 9.62.6 照实说
+
+- 这三条**不是本轮引入的**，也不是本轮范围外的杂音：它们与 §9.61 同一形状，所以并进同一个
+  提交与同一次发布。但**它们是主线上的红**，也就是说在修之前，任何人跑全量都会看到这三条；
+  本台账之前没有一节记过它们——**这是记账的缺口，不是新发现**。
+- 第三条我**改的是白名单**，不是 daemon 的调用。选这条的理由写在 9.62.4：判据（纯不纯）
+  由旁边那条测试机械地判，而删掉 daemon 的视图是**改产品行为**，不在本包。
+- 第二条**新开了一条**条目而不是塞进两个既有条目，代价是表变长；收益是 `os.chmod` 这条
+  放宽**不会被读成** socket 那条收窄。名字承载判断，所以名字不能借。
+
+#### 9.62.7 第四条：一条断言把**共享宿主**的事实当成闸门的事实（冻结之后才跑出来）
+
+冻结字节上跑全量：`1 failed, 7289 passed, 24 skipped, 4448 subtests passed in 808.52s`。
+三条基线红转绿（+3），新增的 3 条测试通过（+3），另有一条**本来绿的转红**：
+
+```text
+SUBFAILED(shape='with context') tests/test_ownership_gate.py::TheVerbRefuses::test_a_destructive_action_with_no_tier_is_never_admitted
+E   AssertionError: 2 != 10                     (tests/test_ownership_gate.py:884)
+```
+
+**它不是本轮改出来的**，两次隔离立刻分开（同一台机、同一条命令，只换一个环境变量）：
+
+| 条件 | `origin/main` 的原版 | 本包改后 |
+|---|---|---|
+| Docker 正常 | pass | pass |
+| `DOCKER_HOST` 指向死 socket | **`2 != 10`，同一行号、同一句话** | pass |
+
+机制量到底而不是猜：`resolve` → `containers.inspect_all` → `docker ps -a`（**这条调用没有超时**），
+失败即 `DockerUnavailable`，被 `ownership_gate.py::_cmd_check` 的
+`except (Rejected, containers.DockerUnavailable)` 接住，返回 `EXIT_UNASKABLE` = **2**；而这条测试要的是
+**10**（`OWNER_UNKNOWN`）。它的 docstring 自己写着理由：「with a context — the subject does not
+resolve **on this host**」——**一句关于宿主的事实，被当成关于闸门的事实断言出去**，于是这台共享宿主的
+一次 Docker 打嗝就能让项目闸门变红。（另一条候选机制「宿主上恰好有个叫 `x` 的容器」也会走到 `resolve`，
+所以下面对 `resolve` 打桩对**两种**机制都成立。）
+
+同一个类里两条隔壁测试（`6534e64`，2026-10-06）**早就学会了这件事**，用的就是
+`mock.patch.object(gate, "resolve", ...)`；这一条被漏在外面，因为它在 Docker 正常时**永远绿**。
+
+改法：第二条形状也打桩（`found: False`，即宿主被成功问到时给出的那个答案），并把**调用计数**一并
+断言——第一条形状 **0 次**、第二条 **1 次**。计数是**新增**的断言：对着真宿主数不出「没问」，而
+「一个不点名的问法不该碰宿主」正是隔壁那条测试的判据，这里顺手钉住。**没有放宽、也没有删掉任何
+断言**：`code == 10` 与 `assertIn` 原样保留，只把宿主的答案钉死，并把捕获到的 `text` 作为断言消息
+——下一次变红会自己说出是哪条规则答的，而不是只报 `2 != 10`。
+
+这条红的**价值**恰在于它出现在冻结之后：冻结 + `sha256sum -c` 让「这一跑跑的是哪些字节」是确定的，
+于是这条红只能来自**字节之外**的东西；换成没有冻结的那两跑，它会和「我改了脚本文本」混在一起分不开。
+
+#### 9.62.8 冻结字节上的第二跑：绿
+
+```text
+7289 passed, 24 skipped, 1 warning, 4449 subtests passed in 791.25s (0:13:11)
+EXIT=0
+```
+
+11 个文件的 sha256 在跑**之前**算、跑**之后**用 `sha256sum -c` 逐个校验，**11/11 OK**：这一跑
+读的就是要发的那份字节。收集数对得上：`7289 passed + 24 skipped = 7313`，与 `--collect-only`
+的 `7313 tests collected` 一致。
+
+**「这三条是基线」这句话现在是可复算的**，而这一步需要两个环境变量，所以写下来：把
+`git archive origin/main` 摊到 `probe/w6-decl/baseline-origin-main/` 之后，在那棵树里直接跑会被
+`tests/test_architecture_check.py` 的收集期断言挡住——那个 fixture 按**祖先目录**找 workspace
+（`src/` 与 `worktrees/` 并存），提取树在 `artifacts/` 下面，找不到；它还会要一份本机的 ops 检出。
+补齐两个变量后收集数是 **7310**：
+
+```bash
+SERVEROS_COMPOSITION_EVALUATOR=<src/ability-management>/skills/ability-management/payload/composition.py \
+SERVEROS_OPS_REPO=<workspace>/ops  pytest --collect-only -q      # → 7310 tests collected
+```
+
+7310 + 3 = 7313，**差额恰好是 §9.61/§9.62 新增的那 3 条测试**，是量出来的不是推出来的。
+（这个 fixture 的缺席方式本身也是本节的形状：它**拒绝**静默跳过并 raise，注释里写着为什么——
+所以它挡路时是**报错**，不是少收几条、安静变绿。）
+
+第 §9.62 节开头那句 `3 failed, 7285 passed` 是**本工作树**（W6 包已改、3 条新测试当时写了 2 条）的
+一跑，不是提取树的全量；「三条是主线上的」由 9.62.1 单独证：在那棵**未改动**的树里逐条跑那三个
+文件，三条逐字复现。两句合起来才是本节标题那句话的完整证据。

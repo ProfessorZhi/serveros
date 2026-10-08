@@ -870,19 +870,53 @@ class TheVerbRefuses(unittest.TestCase):
         `TheTierFold` holds the case where the tier rule is the one that
         answers: a MANAGED subject, which raises `Rejected` and reaches the
         verb as exit 2.
+
+        The host is stubbed in the second shape, and the reason is a red this
+        test produced once in a full-suite run on 2026-10-08: `resolve` reaches
+        `containers.inspect_all` and therefore `docker ps -a`, whose failure is
+        `DockerUnavailable` and reaches the verb as 2, `EXIT_UNASKABLE` — while
+        this test demanded 10. "The subject does not resolve on this host" is a
+        fact about a shared host, and it was being asserted as a fact about the
+        gate, so the gate went red with the daemon rather than with its own
+        behaviour. The stub answers `found: False`, which is what the host
+        answers on a day it is successfully asked.
+
+        The call is now COUNTED, which it could not be against the real host:
+        one call in the second shape, and none in the first — a question that
+        names nobody to ask about must not reach the host at all. Without that
+        count the stub would only be pinning the answer, not the ordering.
         """
+        from unittest import mock
+
         context = self.tmp / "ctx.json"
         context.write_text(json.dumps({"context_ref": "ctx:c2",
                                        "actor_ref": "actor:c2"}), encoding="utf-8")
         base = ["check", "--kind", "container", "--name", "x",
                 "--action", "destructive", "--registry", str(self.registry)]
-        for label, argv, answering in (
-                ("no context", base, "NO_TRUSTED_CONTEXT"),
-                ("with context", base + ["--context", str(context)], "OWNER_UNKNOWN")):
-            with self.subTest(shape=label):
-                code, text = self._run(argv)
-                self.assertEqual(code, 10)
-                self.assertIn(answering, text)
+        asked = []
+
+        def the_host_answers_that_nothing_by_that_name_is_there(**kwargs):
+            asked.append(kwargs)
+            return {"found": False, "why": "fixture: nothing by that name",
+                    "owner": {"class": "UNKNOWN", "confidence": "unknown",
+                              "because": "fixture", "decided_by": None},
+                    "protection": None, "classification": None}
+
+        shapes = (
+            ("no context", base, "NO_TRUSTED_CONTEXT", 0),
+            ("with context", base + ["--context", str(context)],
+             "OWNER_UNKNOWN", 1),
+        )
+        with mock.patch.object(
+                gate, "resolve",
+                the_host_answers_that_nothing_by_that_name_is_there):
+            for label, argv, answering, calls in shapes:
+                with self.subTest(shape=label):
+                    del asked[:]
+                    code, text = self._run(argv)
+                    self.assertEqual(code, 10, text)
+                    self.assertIn(answering, text)
+                    self.assertEqual(len(asked), calls, text)
 
     def test_a_refusal_that_names_nobody_is_reached_without_asking_a_host(self):
         """The ordering, and the ordering is the whole of this test.

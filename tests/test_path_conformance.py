@@ -201,6 +201,43 @@ def test_the_exception_table_is_read_as_cited_not_as_silence(world):
     assert "§3" in found[0]["authority"]
 
 
+def test_one_entry_document_under_two_runtime_names_is_one_role(world):
+    """`CLAUDE.md` and `AGENTS.md` at `WORKSPACE_ROOT` are one entry, and both
+    are exempt — the pair is asserted so it cannot drift apart again.
+
+    Until 2026-10-08 the table recognised the role under one name only: the same
+    document at the same root was OBSERVE/EXEMPT_ENTRY as `CLAUDE.md` and
+    WARN/UNDECLARED_ENTRY as `AGENTS.md`. A reader comparing the two rows was
+    being told two halves of one convention disagree, and that was a fact about
+    this table rather than about the directory — the shape §9.60 names.
+
+    The exemption is not a widening of the vocabulary: `AGENTS.md` is not a
+    declared entry of `WORKSPACE_ROOT` and must not become one (a runtime's
+    entry document is not a member of the directory map §32 describes). It is
+    the same entry-document class `CLAUDE.md` is exempt under, and the class is
+    what the table is for.
+    """
+    report = world(workspace=("CLAUDE.md", "AGENTS.md"))
+    assert of(report, "UNDECLARED_ENTRY", "AGENTS.md") == []
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        found = of(report, "EXEMPT_ENTRY", name)
+        assert len(found) == 1, f"{name} was not reported as an exempt entry"
+        assert found[0]["status"] == "OBSERVED"
+        assert found[0]["exemption_class"] == "ENTRY_DOCUMENT"
+        assert found[0]["disposition"] == "KEEP"
+    assert "AGENTS.md" not in paths_mod.WORKSPACE_TOP_LEVEL, (
+        "the exemption must not have been reached by widening the vocabulary")
+    # The table's own way of saying "the authority is the entry above me": the
+    # literal string `as above`, which is what `README.md` in this block already
+    # carries. Asserted rather than left implicit because a copy of `CLAUDE.md`'s
+    # sentence would be a second statement of one authority, and the two are one
+    # document under two runtime names — so `as above` is the one that stays
+    # true if the sentence above it is ever reworded.
+    entry = conformance.EXCEPTIONS["workspace"]
+    assert entry["AGENTS.md"]["authority"] == "as above"
+    assert entry["README.md"]["authority"] == "as above"
+
+
 # ---------------------------------------------------------------------------
 # the `~/.serveros` declaration conflict
 # ---------------------------------------------------------------------------
