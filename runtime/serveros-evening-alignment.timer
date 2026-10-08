@@ -1,0 +1,55 @@
+# serveros-evening-alignment.timer — the arm that makes the evening brief happen.
+#
+# SHIPPED FROM 2026-10-08, and until then it lived only on this node. Its two
+# siblings that need no node fact — `serveros-alert-sync.timer` and
+# `serveros-daily.timer` — had been in `runtime/` from the start; this one had
+# not, so the argument below was durable as a file on one machine and invisible
+# to every test, build and check this product runs. The template carries no
+# placeholder: an hour and a zone are facts about the reader, and both are named
+# here rather than supplied at install time.
+#
+# WHY 20:00 AND WHY THE GAP IS FORTY MINUTES
+# ------------------------------------------
+# 20:00 Asia/Shanghai, forty minutes after `serveros-intake.timer` fires at 19:20.
+# The gap is not decoration: the intake run may take up to 900 s (that unit's own
+# `TimeoutStartSec`), and `alignment.json` is put in place by `os.replace`
+# (`intake/alignment_delivery.py:216`), so there is no half-written file to
+# compose from. What firing too early produces is the PREVIOUS day's file, and
+# `report evening` refuses it rather than composing: it compares the file's own
+# mtime day against the brief's Beijing day and names both
+# (`intake/alignment_delivery.py:612-620`, which states the reason — the recipient
+# would get a card as calm as usual describing yesterday). So the failure mode of
+# firing too early is a failed composition, not a wrong card.
+#
+# `serveros-intake.timer` is NOT part of this product and this repository does
+# not carry it: two of its three ExecStart lines run scripts that live under
+# `runtime-assets/` and belong to whatever owns them, and its third names one
+# person's Feishu chat and one document URL. The 19:20 it fires at is therefore a
+# fact this file states and cannot check. What it CAN do is refuse to be wrong
+# about its own half, which the comment above is.
+#
+# WHY THE ZONE IS NAMED RATHER THAN INHERITED
+# -------------------------------------------
+# This host's system timezone is not the reader's, and a timer that fires at
+# 20:00 UTC would be a card at 04:00.
+#
+# WHY Persistent=true HERE AND false ON THE WORK-BOARD TIMER
+# ---------------------------------------------------------
+# Catch up if the host was down at 20:00. The sibling `serveros-daily.timer`
+# states the same reasoning at length: a missed composition is a day's brief that
+# was never produced, so a catch-up produces it LATE rather than producing a
+# burst of anything. `serveros-alert-sync` reaches the opposite answer because
+# its queue is a register, and that difference is why this is stated rather than
+# copied.
+
+[Unit]
+Description=每晚 20:00：把 19:20 的准备结果变成一份送得出去的当晚对齐
+
+[Timer]
+OnCalendar=*-*-* 20:00:00 Asia/Shanghai
+AccuracySec=1min
+Persistent=true
+Unit=serveros-evening-alignment.service
+
+[Install]
+WantedBy=timers.target

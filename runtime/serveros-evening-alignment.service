@@ -1,0 +1,167 @@
+# serveros-evening-alignment — user unit, oneshot. 19:20 的准备，20:00 送到人手上。
+#
+# WHY IT EXISTS
+# -------------
+# `serveros-intake.timer` fires at 19:20, the run it starts writes
+# `alignment.json`, and nothing is sent. A pending decision nobody is told about
+# looks identical on disk to one that was never prepared, so the same evening has
+# to turn it into a brief that leaves the machine. This unit is that second half.
+#
+# WHY IT WAS NOT IN THIS PRODUCT UNTIL 2026-10-08
+# -----------------------------------------------
+# It ran, every evening, for as long as it had existed, while this file did not
+# exist — and "ran" is measured, not assumed. On 2026-10-08, while this template
+# still did not exist: the timer was `enabled`, it had fired at 20:00 that same
+# day, and the receipt it wrote said `delivered True`. So this is not a dormant
+# or aspirational unit being promoted into the tree; it is a live, person-facing
+# path that this revision could not have rebuilt. That is also why changing its
+# destination is not a cleanup but a change to something that works daily, and
+# why the joint change below is held for a person rather than taken here.
+#
+# The unit lived only in `~/.config/systemd/user/` on the one node that
+# had got around to writing it, in this template's own idiom — the same header
+# shape, the same measured reasons, the same placeholders' worth of node facts
+# spelled out as literals. So the reasoning below was durable as a file on a
+# machine and not as a fact the product carries: no test could hold it, no
+# `build.py` shipped it, no `release.py check` rendered it, and a node rebuilt
+# from this revision could not produce the unit that does the second half of the
+# day's work. That is the same defect, in a different posture, as the one recorded
+# in the comment above `WAKE_PARENT_TEMPLATE` in `scripts/release.py` — named
+# rather than numbered, because this file's own edit moved the number: there it
+# was a hand-written launcher under `~/.local/bin`, here it is a hand-written unit
+# file under `~/.config/systemd/user/`, and in both cases «a posture that no
+# release carries is a posture no test can hold and no other node can inherit».
+#
+# WHAT THE OPERATOR MUST SUPPLY, AND WHY NEITHER HAS A DEFAULT
+# ------------------------------------------------------------
+# `@SERVEROS_INTAKE_RUN_DIR@` must be the run directory `serveros-intake.service`
+# runs with — the unit whose own `--run-dir` this repeats. Two units on one
+# chain, one directory, named twice, and nothing in systemd relates them: a
+# `--run-dir` here that does not equal the intake's is a composition from a
+# directory nothing wrote. It fails loudly rather than silently — `report
+# evening` refuses an `alignment.json` that is not from today — but it fails at
+# 20:00 with the brief already not sent, which is the wrong hour to learn it.
+#
+# `@SERVEROS_EVENING_OUT_ROOT@` is where tonight's brief lands, one directory per
+# Beijing day beneath it (`report evening` composes `--out-root` + the day). It
+# has no honest default for the reason `--out` on `release.py daily-task` and
+# `--conversation` on `serverosctl alert sync` have none: a destination this file
+# chose
+# would be a directory nobody picked, written to every evening, reported as
+# success. The contract does have an answer for where a node-level run with no
+# business Item belongs — `artifacts/skills/<skill>/<run>`, which
+# `serverosctl path admit` classifies `CANONICAL_SKILL_RUN` — and a value under
+# `artifacts/serveros/…` is classified `ADMITTED_NON_CANONICAL` by the same
+# call. Both are admitted; only one is where new work goes. Measured on this node
+# on 2026-10-08 (RUN-0047, `probe/path-admit.txt`):
+#
+#     /data/home/vince/artifacts/serveros/evening-alignment
+#       → ADMITTED_NON_CANONICAL
+#     /data/home/vince/artifacts/skills/serveros/evening-alignment
+#       → CANONICAL_SKILL_RUN
+#
+# This file states the ruling rather than applying it, because applying it means
+# moving this unit's destination AND the intake run directory it composes from
+# AND `serveros-intake.service --run-dir`, which is one joint change and not
+# this file's to make. NOT because systemd relates those two directories — it
+# does not, and the section below says so — but because the ruling is about a
+# ROOT, and intake writes into that root as well: moving this file's destination
+# alone would leave `artifacts/serveros/` lived-in anyway while splitting one
+# chain across two roots. See PENDING-DECISIONS entry 4.
+#
+# What that joint change costs is measured rather than assumed, and it is NOT
+# what a first reading of the intake code suggests. `ctx.run_dir` holds two
+# things that would be left behind — the per-source reading cache, written at
+# `directory = ctx.run_dir / "readings" / identity` and reused at
+# `cached = reading_path.is_file()` (`intake/daily_reading.py:216-218`), and the
+# `alignment.json` this unit exists to compose from
+# (`ctx.running["outcomes"]["alignment"] = alignment(ctx.run_dir, …)`, same file
+# line 273). Re-pointing intake at an empty directory therefore re-spends one
+# model call per source range the budget allows, and a budget that runs out
+# records those rows `UNREAD_BUDGET`.
+#
+# The **refresh cursor is not in the run directory** and survives the move. It is
+# `ctx.running["cursor"]`, and the record that carries it is keyed on the recipe
+# and scope under `--records-root` — `record_path(self.state_root, …)` read back
+# by `read_record`, with `last_success(self.state_root, …)` as the fallback
+# (`runtime/recipes.py:1241-1280`). That distinction was written down wrongly
+# here first and corrected before the file was shipped; it is stated because the
+# two answers differ, not because either is obvious.
+#
+# WHY ONE EXECSTART AND NOT THREE
+# -------------------------------
+# `report alignment`, `report request` and `report deliver` are three verbs, and
+# chaining them here would need today's date (in Beijing), tonight's perception
+# run record, and the directory this evening lands in — computed in shell, where
+# nothing tests them and where the two that can go wrong go wrong silently. A run
+# record selected by file mtime instead of by its own `finished_at` fills the
+# 理解缺口 section with another day's pass; a brief filed under yesterday's date is
+# delivered as tonight's. `report evening` computes all three in code that has
+# tests, and this unit calls it once.
+#
+# WHAT IT DOES WHEN NOBODY IS CONFIGURED
+# --------------------------------------
+# It writes the brief and exits 2 — "nothing was attempted" (`runtime/cli.py:623`
+# says so in the verb's own help). That is deliberate and it is the reason this
+# unit is worth having before a recipient exists: the brief is left at a path a
+# person can open, and the node does NOT report a delivery that did not happen.
+# The exit status clears itself the moment `SERVEROS_REPORT_CONVERSATION` is
+# written into the environment file below.
+#
+# This node is NOT in that state, and that is measured rather than read off the
+# code: the environment file exists and tonight's run reported `delivered True`
+# (2026-10-08 20:00 CST). The paragraph above therefore describes the state a
+# freshly built node starts in, not this one's — a distinction that matters
+# because the first reading of a `Type=oneshot` unit that "exits 2 when nobody is
+# configured" is that nobody is configured.
+#
+# The recipient is never guessed. An alignment brief is the owner's own reading
+# of their own day, and an open_id picked out of an archive would send it to
+# whoever was easiest to find.
+#
+# WHY THERE IS NO After=serveros-intake.service
+# ---------------------------------------------
+# It would not do anything. `After=` orders units inside one transaction, and this
+# unit is started by its own timer, so naming intake there would read as an
+# ordering guarantee while providing none. What actually protects this run is in
+# the code: `alignment.json` is put in place by `os.replace`
+# (`intake/alignment_delivery.py:216`), so there is no half-written file, and a
+# preparation that is not from today is refused rather than composed (same file,
+# lines 612-620).
+#
+# WHY IT WRITES NOTHING OF ITS OWN
+# --------------------------------
+# No `RuntimeDirectory=` (systemd removes one when the unit stops, and the
+# sibling unit's header records what that does to `%t/serveros`), no state of its
+# own beyond the receipt `report deliver` writes, and no second copy of the
+# delivery discipline: idempotency, receipts, and "an interrupted attempt is
+# reconciled rather than resent" all come from `runtime/report_delivery.py`.
+
+[Unit]
+Description=ServerOS 20:00 evening alignment — tonight's brief from the 19:20 preparation, and one delivery attempt
+Documentation=file:@SERVEROS_INTAKE_RUN_DIR@
+After=serverosd.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+Environment=SERVEROS_STATE_DIR=@SERVEROS_STATE_DIR@
+# Optional, hence the `-`: absent is a supported state (the brief is still
+# written and the exit code still says nothing was sent). What it may contain:
+#   SERVEROS_REPORT_CONVERSATION=user:<open_id>   or   chat:<chat_id>
+EnvironmentFile=-%h/.config/serveros/evening-alignment.env
+# The double quotes around `--why` are systemd's, not a shell's: ExecStart splits
+# on whitespace, so an unquoted Chinese sentence arrives as one argument per
+# space-separated run and argparse refuses the tail. Measured, on this node.
+ExecStart=@SERVEROS_RUNTIME@/bin/serverosctl report evening --run-dir @SERVEROS_INTAKE_RUN_DIR@ --record-dir @SERVEROS_STATE_DIR@/recipes/perception/node --out-root @SERVEROS_EVENING_OUT_ROOT@ --requested-by serveros-evening-alignment.timer "--why" "每晚的日常阅读对齐：19:20 的准备结果里有哪几条在等人点头"
+# Bounded, and two orders of magnitude above the measured cost of one composition
+# — measured, not estimated: this node's 2026-10-08 run took three seconds from
+# `Starting` to `Finished` (20:00:00 → 20:00:03 CST), and that includes the
+# delivery attempt. A composition that hangs must be visible as a failed run
+# rather than as a timer that never completes.
+TimeoutStartSec=300
+NoNewPrivileges=yes
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-evening-alignment

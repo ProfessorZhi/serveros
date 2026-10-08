@@ -928,8 +928,9 @@ actuators:
     kind: exec
     verb: systemctl
     why: >-
-      Four subcommands a person types, and the only places in the shipped
-      surface that change what systemd is running. `cmd_promote` and
+      Five subcommands a person types — five of the six places in the shipped
+      surface that change what systemd is running, the sixth being
+      `cmd_daily_task`, declared in its own entry below. `cmd_promote` and
       `cmd_rollback` point the node's unit at a revision and reload.
       `cmd_alert_worker` reloads, then ENABLES A TIMER — added in §W, and it is
       the one that needed saying out loud: enabling `serveros-alert-sync.timer`
@@ -944,11 +945,25 @@ actuators:
       and are simply not seen by the manager yet. Arming stays a separate
       command a person types, the same polarity `cmd_daily_task` chose — a
       receiver that starts waking Parents before anybody has chosen a Parent is
-      the failure mode, not the goal. None of the four is reachable from the
-      daemon, the MCP layer or any observation path; `--enable-reconcile` does
-      not reach them and no Run can invoke them.
+      the failure mode, not the goal. `cmd_evening_brief` — added 2026-10-08 —
+      writes the evening brief's two units. It is the SECOND of the five that can
+      enable a timer, and its REASON is `cmd_alert_worker`'s while its POLARITY is
+      `cmd_daily_task`'s. The reason is the one stated above: arming
+      `serveros-evening-alignment.timer` is the act that makes this machine's own
+      preparation reach a person every evening. The polarity is opt-IN —
+      `--enable` is absent by default, and its absence is what leaves the timer
+      unarmed. That is `cmd_daily_task`'s shape and the opposite of
+      `cmd_alert_worker`'s, which arms by default and whose `--no-enable` opts
+      out. Both being true is why the two are named separately: neither follows
+      from the other, and a reader who took the polarity from the reason would
+      install this one armed. It also
+      refuses an install whose `--intake-run-dir` disagrees with the installed
+      `serveros-intake.service`, because the two units are related by that one
+      directory and by nothing systemd knows about. None of the five is
+      reachable from the daemon, the MCP layer or any observation path;
+      `--enable-reconcile` does not reach them and no Run can invoke them.
     sites:
-      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker, cmd_continuation_wake]}
+      - {file: scripts/release.py, symbols: [cmd_promote, cmd_rollback, cmd_alert_worker, cmd_continuation_wake, cmd_evening_brief]}
 
   # ---------------------------------------------------------------------
   # The card source. The card is a consumer, and a consumer that imports
@@ -1150,8 +1165,9 @@ actuators:
     verb: systemctl
     why: >-
       `subprocess.run(["systemctl", "--user", *args])` in `scripts/release.py`'s
-      `cmd_daily_task` — the fourth and newest of the systemd actions this
-      repository will take, and the only one whose DEFAULT IS OFF. Installing
+      `cmd_daily_task` — the FIRST of the two systemd actions whose timer can be
+      armed and is NOT armed by default; the second is `cmd_evening_brief`, added
+      2026-10-08 and declared in its own entry above. Installing
       the unit and arming the timer are two separate invocations, and the
       default polarity is deliberately the opposite of `cmd_alert_worker`'s
       `--no-enable`: a delivery worker that sends nothing is a worker nobody
@@ -1159,9 +1175,9 @@ actuators:
       chosen where it writes is a job that reports success into a directory
       nobody opens. So `daily-task` refuses to install without an explicit
       `--out`, and prints the two commands that arm it rather than arming it.
-      Like the other three it is reachable only by a person running the release
-      CLI: not from the daemon, not from the MCP layer, not from an observation
-      path, and not from any Run.
+      Like the rest of the five it is reachable only by a person running the
+      release CLI: not from the daemon, not from the MCP layer, not from an
+      observation path, and not from any Run.
     sites:
       - {file: scripts/release.py, symbols: [cmd_daily_task]}
 
