@@ -1349,7 +1349,8 @@ class WhatIsRefused(unittest.TestCase):
 def _fake_git(*, toplevel, head="headsha000000", branch="main",
               upstream_error=True, ref_exists=True, counts="0\t0",
               has_files=(), rev_of_ref="refsha000000", head_files=None,
-              texts=None, dirs=None):
+              texts=None, dirs=None, merge_base_files=None,
+              merge_base_sha="basesha000000", merge_base_error=False):
     """A git that answers exactly the questions `tree_position` asks.
 
     Not a repository. `tree_position` takes its git callable injected so that
@@ -1357,17 +1358,29 @@ def _fake_git(*, toplevel, head="headsha000000", branch="main",
     building one, and so that a fixture cannot accidentally start depending on
     a working copy of somebody's records.
 
-    `has_files` is what the UPSTREAM REF holds and `head_files` is what this
-    checkout's own HEAD holds. They are two questions because the reader has to
-    tell two situations apart: a document this tree never had, and one somebody
-    removed from it. `head_files=None` means "the same as the ref", which is the
-    ordinary shape of a checkout that is merely behind — it has not lost
-    anything, it just has not caught up. Pass `head_files=()` to model a tree
-    that never carried the document at all, which is the case that was
-    misreported as an Item owing a brief nobody wrote.
+    `has_files` is what the UPSTREAM REF holds, `head_files` is what this
+    checkout's own HEAD holds, and `merge_base_files` is what their common
+    ancestor held. They are three questions because the reader has to tell
+    three situations apart: a document this tree never had, one somebody
+    removed from it, and one it is merely behind on.
+
+    `head_files=None` means "the same as the ref", which is the ordinary shape
+    of a checkout that is merely behind — it has not lost anything, it just has
+    not caught up. Pass `head_files=()` to model a tree that never carried the
+    document at all, which is the case that was misreported as an Item owing a
+    brief nobody wrote.
+
+    `merge_base_files` defaults to `at_head` because that is what the common
+    ancestor IS when the tree is only behind: the divergence is zero-length and
+    the merge base is HEAD. A test that models a DIVERGED tree passes it
+    explicitly, and the interesting pair is `head_files=()` with
+    `merge_base_files=()` — a checkout that has local commits and yet never
+    carried the path — as against `head_files=()` with `merge_base_files=files`,
+    which is a document this branch deleted and must not be handed back.
     """
     files = set(has_files)
     at_head = files if head_files is None else set(head_files)
+    at_base = at_head if merge_base_files is None else set(merge_base_files)
     blobs = dict(texts or {})
     trees = dict(dirs or {})
 
@@ -1387,11 +1400,20 @@ def _fake_git(*, toplevel, head="headsha000000", branch="main",
             return (0, "") if ref_exists else (1, "")
         if args[:2] == ("rev-list", "--left-right"):
             return 0, f"{counts}\n"
+        if args[:1] == ("merge-base",):
+            if merge_base_error:
+                return 1, ""
+            return 0, f"{merge_base_sha}\n"
         if args[:1] == ("rev-parse",):
             return 0, f"{rev_of_ref}\n"
         if args[:2] == ("cat-file", "-e"):
             ref, _, rel = args[2].partition(":")
-            known = at_head if ref == "HEAD" else files
+            if ref == "HEAD":
+                known = at_head
+            elif ref == merge_base_sha:
+                known = at_base
+            else:
+                known = files
             return (0, "") if rel in known else (128, "")
         if args[:2] == ("cat-file", "blob"):
             _ref, _, rel = args[2].partition(":")
@@ -1556,7 +1578,8 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
 
     def _documents(self, tmp, *, held, spellings=None, state="ACTIVE",
                    head=(), texts=None, dirs=None, tree_state=None,
-                   skeletons=None, name=None):
+                   skeletons=None, name=None, merge_base_files=None,
+                   merge_base_error=False):
         rule = dict(self.RULE)
         if name is not None:
             rule["name"] = name
@@ -1566,8 +1589,11 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
             root=tmp, revision="a" * 40, branch="main", upstream_ref="origin/main",
             upstream_revision="refsha000000",
             ahead=0, behind=13, state=tree_state or chain.TREE_BEHIND,
+            merge_base=None if merge_base_error else "basesha000000",
             git=_fake_git(toplevel=str(tmp), counts="0\t13", has_files=held,
-                          head_files=head, texts=texts, dirs=dirs))
+                          head_files=head, texts=texts, dirs=dirs,
+                          merge_base_files=merge_base_files,
+                          merge_base_error=merge_base_error))
         return chain._documents(Path(tmp) / "projects/p/items/I", state, [rule],
                                 skeletons, position)[0]
 
@@ -1634,20 +1660,65 @@ class AnAbsenceTheTreeExplainsIsNotAnAbsenceTheItemOwes(unittest.TestCase):
         self.assertNotIn("not missing from the Item", answer["why"])
         self.assertIn("resolves under none of", answer["why"])
 
-    def test_a_tree_that_is_not_behind_borrows_nothing(self):
+    def test_a_branch_that_deleted_the_document_is_not_given_it_back(self):
         """Level with the ref it has nothing to borrow; ahead of it, it is newer.
 
         A branch that committed a deletion still has the document at the ref,
         and answering from there would be answering about a different tree.
+        The three states reach that refusal by one question now — whether this
+        branch's own history ever carried the path — and here it did, which is
+        what makes all three the party to ask.
         """
         with tempfile.TemporaryDirectory() as tmp:
             for tree_state in (chain.TREE_FOLLOWING, chain.TREE_AHEAD,
                                chain.TREE_DIVERGED):
                 answer = self._documents(
                     tmp, held=("projects/p/items/I/brief.md",), head=(),
-                    tree_state=tree_state)
+                    tree_state=tree_state,
+                    merge_base_files=("projects/p/items/I/brief.md",))
                 self.assertEqual(answer["state"], "MISSING", tree_state)
                 self.assertNotIn("not missing from the Item", answer["why"])
+
+    def test_a_diverged_tree_does_not_owe_a_brief_it_never_carried(self):
+        """The live case: one local commit, nineteen upstream ones it has not taken.
+
+        `/data/home/vince/workspace/records` on 2026-10-08 was EXACTLY this —
+        `ahead 1, behind 19`. It never carried `SRV-0011/brief.md` (absent at
+        HEAD and at `merge-base`, and no local commit ever touched the path),
+        and `origin/main` has it. The earlier condition borrowed only when the
+        tree was `TREE_BEHIND`, so this tree was refused, and the row came back
+        `MISSING` with the reader's own evidence to the contrary printed two
+        lines above it. Asking about the path instead of the tree's state is the
+        whole change: being ahead is a reason to check custody, not a reason to
+        stop reading.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                tree_state=chain.TREE_DIVERGED, merge_base_files=(),
+                texts={"projects/p/items/I/brief.md": "# Brief\n\nbody\n"})
+        self.assertEqual(answer["state"], "PRESENT")
+        self.assertEqual(answer["read_from"], "origin/main")
+        self.assertEqual(answer["upstream_path"], "projects/p/items/I/brief.md")
+        self.assertIs(True, answer["held_by_upstream"])
+        self.assertIn("nothing was written into that checkout", answer["why"])
+
+    def test_an_unestablished_common_ancestor_is_not_a_licence_to_borrow(self):
+        """`git merge-base` exits 1 when the two share no ancestor.
+
+        Which of the two ways a path left HEAD — deleted here, or never here —
+        is then unknown, and the unknown case is answered by refusing rather
+        than by assuming the friendlier one. This is the negative control for
+        the custody question: without it, `never_carried` could return True on
+        no evidence and every absence would start reading from the ref.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            answer = self._documents(
+                tmp, held=("projects/p/items/I/brief.md",), head=(),
+                tree_state=chain.TREE_DIVERGED, merge_base_error=True,
+                texts={"projects/p/items/I/brief.md": "# Brief\n\nbody\n"})
+        self.assertEqual(answer["state"], "MISSING")
+        self.assertNotIn("not missing from the Item", answer["why"])
 
     def test_an_empty_directory_at_the_ref_is_not_a_design(self):
         """`mkdir` must not close the gap on this surface either."""
@@ -1775,6 +1846,7 @@ class TheCardAndTheLineBeneathItAnswerAboutOneSurface(unittest.TestCase):
             root=root / "records", revision="a" * 40, branch="main",
             upstream_ref="origin/main", upstream_revision="refsha000000",
             ahead=0, behind=13, state=chain.TREE_BEHIND,
+            merge_base="basesha000000",
             git=_fake_git(toplevel=str(root / "records"),
                           has_files=held, head_files=head, texts=texts))
         return chain.compose_item(
