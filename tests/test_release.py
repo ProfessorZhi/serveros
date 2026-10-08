@@ -11,9 +11,12 @@ somewhere that works. So the assertion that matters is not "promote returned 0";
 it is that afterwards the unit and the shim name the same revision, and that a
 rollback returns both.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1181,6 +1184,220 @@ class TheTwoScriptsNameOneManifest(unittest.TestCase):
                 self.assertTrue(kinds, f"{path} declares no artifacts:")
                 for kind in kinds:
                     self.assertIn(kind, release.ARTIFACT_KINDS)
+
+
+class _Args:
+    """A command namespace, built by hand so the command is testable alone."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def evening_fixture(base: Path, *, intake_run_dir: str | None):
+    """A promoted revision carrying the evening pair, and a unit directory.
+
+    Hermetic, like the rest of this file: everything is under `base`.
+    """
+    dist = base / "dist"
+    rev = dist / "revisions" / "rev-1"
+    (rev / "runtime").mkdir(parents=True)
+    for name in (release.EVENING_SERVICE_NAME, release.EVENING_TIMER_NAME):
+        (rev / "runtime" / name).write_bytes((ROOT / "runtime" / name).read_bytes())
+    (dist / "current").symlink_to(rev)
+    units = base / "units"
+    units.mkdir()
+    if intake_run_dir is not None:
+        # The real intake unit has three ExecStart lines and only one of them
+        # names a run directory. Copied here in that shape, because a parser
+        # that took the first line would pass on a one-line fixture and fail on
+        # the unit it is actually pointed at.
+        (units / "serveros-intake.service").write_text(
+            "[Service]\n"
+            "ExecStart=/usr/bin/python3 /x/expand.py --raw-root /x/raw\n"
+            "ExecStart=/usr/bin/python3 /x/sync.py --max-pages 20\n"
+            "ExecStart=/x/bin/serverosctl recipe run --recipe perception "
+            f"--run-dir {intake_run_dir} --json\n")
+    return _Args(runtime_root=dist, composition="", state_dir=base / "state",
+                 unit_dir=units, out_root=base / "briefs",
+                 intake_run_dir=Path("/runs/ours"),
+                 dry_run=True, no_reload=True, enable=False)
+
+
+class UnitTemplateInventoryTest(unittest.TestCase):
+    """Every unit this product installs is declared, renderable and node-free.
+
+    The defect these exist for is specific and was found on 2026-10-08: the unit
+    that does the second half of a day's work — turn the 19:20 preparation into a
+    brief that leaves the machine at 20:00 — ran every evening and appeared in no
+    template, no build, no check and no test in this product. It lived in
+    `~/.config/systemd/user/` on one node, written in this repository's own
+    template idiom, and that made its reasoning durable as a file on a machine
+    and invisible as a fact the product carries.
+    """
+
+    TEMPLATES = sorted(list((ROOT / "runtime").glob("*.service")) +
+                       list((ROOT / "runtime").glob("*.timer")))
+
+    def test_every_unit_template_is_named_by_the_installer(self):
+        named = {
+            release.UNIT_NAME, release.ALERT_SERVICE_NAME, release.ALERT_TIMER_NAME,
+            release.DAILY_SERVICE_NAME, release.DAILY_TIMER_NAME,
+            release.WAKE_SERVICE_NAME, release.WAKE_TIMER_NAME,
+            release.EVENING_SERVICE_NAME, release.EVENING_TIMER_NAME,
+        }
+        shipped = {path.name for path in self.TEMPLATES}
+        self.assertEqual(
+            shipped, named,
+            "these two sets are the same set: a template nothing installs is a "
+            "unit that ships and cannot be installed, and a name with no "
+            "template is a command that refuses on every node")
+
+    def test_no_shipped_unit_names_this_node(self):
+        """A directive carrying a literal node path is what made the evening
+        unit unshippable in the first place. Comments are not directives, so a
+        measured example of a real path may be quoted in a header — that is
+        documentation, and `runtime/serveros-alert-sync.service` does it."""
+        for path in self.TEMPLATES:
+            with self.subTest(unit=path.name):
+                body = "\n".join(line for line in path.read_text().splitlines()
+                                 if not line.lstrip().startswith("#"))
+                self.assertNotIn("/data/home/", body)
+
+    def test_the_evening_unit_refuses_to_render_without_either_path(self):
+        template = (ROOT / "runtime" / release.EVENING_SERVICE_NAME).read_text()
+        for supplied, named in (
+                ({}, release.INTAKE_RUN_DIR_PLACEHOLDER),
+                ({"evening_out_root": "/briefs"}, release.INTAKE_RUN_DIR_PLACEHOLDER),
+                ({"intake_run_dir": "/runs"}, release.EVENING_OUT_ROOT_PLACEHOLDER)):
+            with self.subTest(supplied=sorted(supplied)):
+                with self.assertRaises(ValueError) as caught:
+                    release.render_unit(template, Path("/rev"), Path("/state"),
+                                        **supplied)
+                self.assertIn(named, str(caught.exception))
+
+    def test_the_evening_unit_composes_from_the_directory_it_was_given(self):
+        template = (ROOT / "runtime" / release.EVENING_SERVICE_NAME).read_text()
+        rendered = release.render_unit(template, Path("/rev"), Path("/state"),
+                                       intake_run_dir="/runs/intake",
+                                       evening_out_root="/briefs")
+        exec_line = [line for line in rendered.splitlines()
+                     if line.startswith("ExecStart=")]
+        self.assertEqual(len(exec_line), 1)
+        self.assertIn("--run-dir /runs/intake", exec_line[0])
+        self.assertIn("--out-root /briefs", exec_line[0])
+        self.assertIn("/rev/bin/serverosctl", exec_line[0])
+        # The same directory is what the unit points a reader at, so the two
+        # cannot drift apart without this failing.
+        self.assertIn("Documentation=file:/runs/intake", rendered)
+
+    def test_the_evening_timer_arms_the_service_this_product_ships(self):
+        timer = (ROOT / "runtime" / release.EVENING_TIMER_NAME).read_text()
+        self.assertIn(f"Unit={release.EVENING_SERVICE_NAME}", timer)
+        self.assertIn("Asia/Shanghai", timer)
+        service = (ROOT / "runtime" / release.EVENING_SERVICE_NAME).read_text()
+        self.assertIn("SyslogIdentifier=serveros-evening-alignment", service)
+
+
+class IntakeRunDirTest(unittest.TestCase):
+    """`intake_run_dir_of` answers about a FILE, and "cannot be established" is
+    one answer rather than two."""
+
+    def _unit(self, text: str) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = directory / "serveros-intake.service"
+        path.write_text(text)
+        return path
+
+    def test_both_spellings_argparse_accepts(self):
+        self.assertEqual(
+            release.intake_run_dir_of(self._unit(
+                "[Service]\nExecStart=/x/bin/serverosctl recipe run --run-dir /runs/a\n")),
+            "/runs/a")
+        self.assertEqual(
+            release.intake_run_dir_of(self._unit(
+                "[Service]\nExecStart=/x/bin/serverosctl recipe run --run-dir=/runs/b\n")),
+            "/runs/b")
+
+    def test_the_directory_is_read_out_of_the_command_not_out_of_a_comment(self):
+        self.assertEqual(
+            release.intake_run_dir_of(self._unit(
+                "[Service]\n"
+                "# --run-dir /runs/in-a-comment\n"
+                "ExecStart=/x/bin/serverosctl recipe run --run-dir /runs/real\n")),
+            "/runs/real")
+
+    def test_absent_and_ambiguous_are_the_same_answer(self):
+        self.assertIsNone(release.intake_run_dir_of(self._unit(
+            "[Service]\nExecStart=/x/bin/serverosctl recipe run --json\n")))
+        self.assertIsNone(release.intake_run_dir_of(self._unit(
+            "[Service]\n"
+            "ExecStart=/x/bin/a --run-dir /runs/one\n"
+            "ExecStart=/x/bin/b --run-dir /runs/two\n")))
+        self.assertIsNone(release.intake_run_dir_of(Path("/nonexistent/unit.service")))
+
+
+class EveningBriefInstallTest(unittest.TestCase):
+    """The coupling, which no single unit file can check about itself."""
+
+    def _run(self, args) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release.cmd_evening_brief(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_it_refuses_when_the_installed_intake_names_a_different_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = evening_fixture(Path(tmp), intake_run_dir="/runs/theirs")
+            code, _, err = self._run(args)
+            self.assertEqual(code, 1)
+            self.assertIn("/runs/theirs", err)      # what the unit says
+            self.assertIn("/runs/ours", err)        # what it was given
+            self.assertFalse((args.unit_dir / release.EVENING_SERVICE_NAME).exists())
+
+    def test_it_refuses_rather_than_guess_when_the_intake_names_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = evening_fixture(Path(tmp), intake_run_dir=None)
+            (args.unit_dir / "serveros-intake.service").write_text(
+                "[Service]\nExecStart=/x/bin/serverosctl recipe run --json\n")
+            code, _, err = self._run(args)
+            self.assertEqual(code, 1)
+            self.assertIn("--run-dir", err)
+            self.assertFalse((args.unit_dir / release.EVENING_SERVICE_NAME).exists())
+
+    def test_a_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = evening_fixture(Path(tmp), intake_run_dir="/runs/ours")
+            code, out, err = self._run(args)
+            self.assertEqual(code, 0, err)
+            self.assertIn("would install", out)
+            self.assertIn("NOT enabled", out)
+            self.assertFalse((args.unit_dir / release.EVENING_SERVICE_NAME).exists())
+            self.assertFalse(args.out_root.exists())
+
+    def test_it_installs_when_they_agree_and_writes_nothing_without_enable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = evening_fixture(Path(tmp), intake_run_dir="/runs/ours")
+            args.dry_run = False          # no_reload=True, so no systemctl runs
+            code, out, err = self._run(args)
+            self.assertEqual(code, 0, err)
+            self.assertIn("not enabled", out)
+            rendered = (args.unit_dir / release.EVENING_SERVICE_NAME).read_text()
+            self.assertIn("--run-dir /runs/ours", rendered)
+            self.assertIn(f"--out-root {args.out_root}", rendered)
+            self.assertNotIn("@SERVEROS_", rendered)
+            self.assertTrue((args.unit_dir / release.EVENING_TIMER_NAME).is_file())
+
+    def test_a_node_with_no_intake_has_no_chain_to_break(self):
+        """`serveros-intake.service` is not part of this product, so it is
+        checked WHEN PRESENT — the same footing the alert template is checked
+        on. A node that never runs an intake can still install the evening."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args = evening_fixture(Path(tmp), intake_run_dir=None)
+            args.dry_run = False
+            code, _, err = self._run(args)
+            self.assertEqual(code, 0, err)
+            self.assertTrue((args.unit_dir / release.EVENING_SERVICE_NAME).exists())
 
 
 if __name__ == "__main__":
