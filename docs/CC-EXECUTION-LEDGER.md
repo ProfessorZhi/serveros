@@ -10897,3 +10897,128 @@ A/B 差里的 29,236 是**整个 MCP/插件工具面**，不是 ServerOS 一家�
 两选一的出路写在 `RUN-0036/deliverables/BLOCKERS.md` §⑤。
 
 **读这一包的入口是** `artifacts/work-items/serveros/SRV-0011/RUN-0036/deliverables/START-HERE.md`。
+
+---
+
+### 9.65 量具把自己的落后记成了产物的漂移——换量具前后各一个读数
+
+§9.63.3 量到过这条，当时写「**只记不改**——改它要动『canonical 源』的定义，是另一件事」。
+那句话**仍然成立**：本节**没有**动 canonical 源的定义。本节做的是**另一件更小、当时就可做**的事——
+**让量具说得出「落后的是我」**。这两句不矛盾，是同一处的一分为二，下面说清分在哪。
+
+#### 9.65.1 那句话欠的条件：判词只在「源就是产物自己的源」时才挣得
+
+`scripts/runtime_truth.py` 回答一个问题：daemon 跑的到底是不是我们写的代码。
+它的判词 `SOURCE_RUNTIME_DRIFT` 字面是「这些字节不是源构建出来的」——**那是对产物的判断**。
+它欠一个前提：用来重建的那棵树，**得是这个产物自己的源**。
+
+`build.repo_root()` 指的是一个 **canonical 检出**，而 canonical 检出是「上次 fetch 停在哪就站在哪」
+的工作副本 —— 首发之后它必然站在产物**不认识的**提交上。于是同一份路径差，
+由一台**读着从未被牵连的树**的量具产生出来。**判词本身没错，是归属错。**
+
+#### 9.65.2 换量具前后各一个读数
+
+只换**被执行的量具文件**，输入、工作目录、`SERVEROS_REPO`（= canonical 检出）全同：
+
+| | |
+|---|---|
+| BEFORE | pristine `runtime_truth.py` 的原样输出，35 行 |
+| AFTER | 定稿代码的原样输出，35 行 |
+| 差集 | 由文本比对取得，**恰好 7 行**由 `SOURCE_RUNTIME_DRIFT` → **`SOURCE_STALE`** |
+
+改判的 7 行：`(payload reproducibility)`、`@ runtime-assets (built)`、`@ Claude plugin cache`、
+`@hwz-server-os-linux-work (Claude plugin, enabled)`、`serveros-testing@… (Claude plugin, enabled)`、
+`@hwz-server-os-linux-work-local (Codex plugin, enabled)`、`(node revision)`。
+新详情**点名两个提交**：
+
+```
+this file rebuilt from /data/home/vince/workspace/src/serveros at 4bf2c324920b,
+but the artifact records 2f6d0d3a9cf8 as the commit it was built from — …
+The instrument is the one that is behind
+```
+
+**没变**：其余各行**逐字节相同**，**页脚整段逐字节相同**
+（`VERDICT: SOURCE_RUNTIME_DRIFT`、`RELEASE: RELEASE_INCOMPLETE (blocking: CHAIN_CONSISTENT)`）。
+
+#### 9.65.3 BEFORE 的**同一行里**，量具手里已经有两个提交号
+
+这是本例区别于「算错」的地方：`(node revision)` 一行**同时**印着
+
+```
+product-tree-20261008s@2f6d0d3 …
+--  · built from 2f6d0d3a9cf8 (clean)      ← 产物**自己**记的源
+```
+
+而 canonical 那一行印的是 `4bf2c324920b`。**两个号都在手**，量具仍把 36 条路径算在**在跑的 revision** 头上。
+所以修法不必新增测量，只需**读那个本来就在手上的字段**（`ARTIFACT.json` → `source.serveros.commit`），
+再决定判词归谁。**只读，绝不重算** —— 与既有 `_source_note` 同一条限。
+
+#### 9.65.4 没有静默变绿（这一条的判据，两半都要给）
+
+1. **页脚逐字节等于改前**。原因**实测**：`(bundle identity)` 那一行**没被改**，报的是另一件事且**是真的**——
+   `current` 已是 `3.1.0+srv0005.20261008s`，而 Claude 侧对同一 payload 的**安装记录**还写着
+   `3.1.0+srv0005.20261007g`。**那是消费方真的落后于装机，不是量具的锅**，继续红、继续顶着链判决。
+   **没有顺手把它洗掉。**
+2. **新判词仍然拦**。链判决的分支顺序是**先真漂移、再 STALE**：有真漂移报漂移（优先级未变），
+   没有真漂移、只有「判不了」时才报 STALE，两者**都不是 OK**。`release.verdict` 由「任一轴非 PASS」
+   推出，`SOURCE_STALE` 落在 `AXIS_CHAIN` 的非 PASS 侧 → 仍是 `RELEASE_INCOMPLETE`。
+
+**第 2 条在真机上没被触发**（第 1 条先顶住了），**由单测触发并断言**
+（`verdict == SOURCE_STALE` 且 `release.verdict == RELEASE_INCOMPLETE` 且 `blocking == [AXIS_CHAIN]`）。
+**真机读数与单测各证一半，不要只引其中一半。**
+
+#### 9.65.5 闭合到哪一步、**没**闭合哪一步（从「报错」到「报不会」，不是从「错」到「对」）
+
+- **闭合了**：「量具把自己的落后报成产物的漂移」。
+- **没有闭合**：「量具报的真值落后于装机」本身。本节**只改归属，不改取源**——取源仍是 canonical 检出。
+  「该拿产物自记的提交去比、还是拿本机 canonical 的新 HEAD 去比」是 §9.63.3 说的**另一件事，且要人定**。
+
+所以修好之后，这台量具**仍不会**回答「装机漂没漂」，它会**照实说「我比不动，落后的是我」**。
+把它读成「修好了就是绿了」是**过度归因**；它只把**一个说不出口的错**变成了**一个说得出口的不会**。
+
+#### 9.65.6 为什么不发版——而且这一次是**量过才这么说的**
+
+前几包「纯文档不发布」靠的是「发行载荷不含 `docs/`」。本包改的是 `scripts/`，**那条理由不成立**，
+于是重新量「这个文件到底进不进载荷」：`current/` 下**没有 `scripts/`**（顶层只有
+`abilities bin context documents fleet intake mcp memory README.md relations RELEASE.json runtime skills space`）；
+`find` 过 `runtime-assets`、`.claude/plugins`、`.codex` —— **全机没有该脚本的任何安装副本**；
+`RELEASE.json` 顶层**没有该成员**。
+
+**结论**：载荷**不是仓库目录的子集**，而是**由成员编成的组合**。没有副本可旧，
+build/promote/restart 会**改掉装机面却不改变任何被消费的字节**。**不做。**
+
+#### 9.65.7 两条顺带量到的、会被读到的事实
+
+- **本仓没有 GitHub 侧 workflow**（`.github/workflows/` 不存在，实测 `ls` 报 No such file）。
+  因此 `gh pr checks` 的 **「no checks reported」不是「检查都过了」，是「没有检查」**。
+  本包唯一的闸门是本地那条脱敏命令。**先写下来，免得被读成绿。**
+- **`attempt` 字段是「次序」不是「重试」**：`store.py:1064` 把它算作
+  「同一 `(item, activity)` 下第几个 Run」。本 Run 报 `attempt: 2`（该 activity 下第 2 个），
+  **没有失败过一次**。字段名说的与字段值说的不是一件事——**这一次错的是读法，写者是对的，只记不改。**
+
+#### 9.65.8 本包**没有**动、需要人定的一条
+
+**要不要把 canonical 检出 `src/serveros` 推进到 `origin/main`。**
+它是**共享**检出，此刻可能有别的 Agent 正在 `grep` 它；推它会**在别人任务中途改变他读到的答案**——
+而「读到的答案是哪一代」正是本夜反复出问题的那件事。**改一台共享量具的读数面，得由人点头。**
+动作、范围、回退、预算与「批了之后的读数预期」写进了 `PENDING-DECISIONS.md` 条目 6；
+**其中一条预期要先说清：推进去之后 `SOURCE_STALE` 仍是 `SOURCE_STALE`**——产物记的仍是 `2f6d0d3`，
+与谁更新无关。**免得被读成「推进去就绿了」。**
+
+#### 9.65.9 照实说：这一轮**没**关掉什么
+
+- 没关掉 §9.63.4 的两面缓存滞后（**没改任何全局插件开关**，`plan-01` 明文禁止）；
+- 没关掉 `(bundle identity)` 那条真滞后；
+- 没关掉 §9.63.3 的**取源**问题（本节的边界，见 9.65.5）；
+- 没补 `DATA_ROOT/AGENTS.md`、没补 SRV-0011 的 `design`/`plan` 文档、没动长期存在的
+  `RELEASE_INCOMPLETE` 与那条无关的 `serveros-testing` 红；
+- **没有发版**，因此**装机面与 `serverosd` 与本节之前逐字节相同**；
+- 没重跑全量套件：只动这一个脚本与其单测，`tests/test_runtime_truth.py` +
+  `tests/test_plugin_composition.py` → **92 passed, 2 subtests passed**。
+
+**落地**：`scripts/runtime_truth.py`、`tests/test_runtime_truth.py`，**+203 / −21**，
+PR **#113**，提交 `82b004f`，合并提交 **`642e5f7`**，2026-10-08 **11:04:39 CST**。
+本夜 `origin/main` 合并数 **21**（`#93–#113`）。
+
+**读这一包的入口是** `artifacts/work-items/serveros/SRV-0011/RUN-0037/deliverables/INSTRUMENT-ATTRIBUTION-FIX.md`，
+两个原始读数与逐行差表在 `RUN-0037/probe/`。
