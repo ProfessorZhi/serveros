@@ -4700,6 +4700,21 @@ def cmd_memory_audit(args) -> int:
 
 def cmd_memory_project(args) -> int:
     """Build the Layer A projection. The write side `projections/` never had."""
+    # A named output path must be absolute, for the reason the two boards give:
+    # what lands in the caller's cwd is a second projection nobody knows about,
+    # and `memory status` — the verb that exists to say whether a projection is
+    # current — would be handed a different path from the one the writer wrote.
+    # This sits above the ledger read on purpose. A refusal that has already
+    # read the ledger, audited it and built the document is a refusal that has
+    # done the work and then declined to say where it went.
+    if args.out and not Path(args.out).is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --out must be absolute, got {args.out}. A projection "
+            f"written into the caller's cwd is a second projection nobody knows "
+            f"about, and `memory status --projection-dir {args.out}` — the verb "
+            f"that exists to say whether a projection is current — would be "
+            f"reading a different one from the path it was handed.\n")
+        return EXIT_FAULT
     record_mod, projection_mod = _memory_modules()
     directory = _ledger_dir(args)
     files = sorted(p for p in directory.glob("*")
@@ -4748,6 +4763,28 @@ def cmd_memory_status(args) -> int:
     revision = _ledger_revision(directory)
     out = Path(args.projection_dir) if args.projection_dir else Path(
         paths_mod.Paths().memory_projection()["path"])
+    # "The directory you named is not there" and "there is a directory with no
+    # projection in it" used to come back as the same sentence, and that
+    # sentence is a statement about the NODE — so a reader who named a path the
+    # writer never wrote to was told the node has no projection, which is false
+    # and unfalsifiable from where they are standing. The module's sentence is
+    # about the projection and stays; the CLI answers for the path it was given.
+    if not out.is_dir():
+        payload = {"directory": str(out), "status": "MISSING",
+                   "because": (f"{out} is not a directory, so nothing was read "
+                               f"and nothing is claimed about the projection: a "
+                               f"node with no projection has not lost memory, "
+                               f"it has to read the ledger. "
+                               f"`serverosctl memory project --out {out}` "
+                               f"writes one there."),
+                   "ledger": revision, "ledger_dir": str(directory),
+                   "records": None}
+        emit(payload, as_json=args.json,
+             lines=[f"projection  {out}",
+                    f"ledger      {revision['revision']}",
+                    f"status      MISSING",
+                    f"            {payload['because']}"])
+        return EXIT_FAULT
     result = projection_mod.status(out, ledger_revision=revision["revision"])
     payload = {**result, "ledger": revision, "ledger_dir": str(directory),
                "records": None}
@@ -6784,6 +6821,21 @@ def _read_launch_records(path: str | None) -> dict:
 
 def cmd_registration_discover(args) -> int:
     """§B — what is observed and unregistered, as questions or as notes."""
+    # This document's whole point is that another verb reads it back:
+    # `registration plan --candidates`. A relative path writes it wherever the
+    # caller happened to be standing, and the reader — run from anywhere else —
+    # then reads a different path than the writer wrote. Checked before the
+    # host is walked: what is on this machine is a moving thing, and there is
+    # no reason to take a reading of it to answer a question about where to
+    # put the answer.
+    if args.out and not Path(args.out).is_absolute():
+        sys.stderr.write(
+            f"serverosctl: --out must be absolute, got {args.out}. This is "
+            f"the document `registration plan --candidates` reads back, and "
+            f"a relative path puts it in whatever directory the caller was "
+            f"standing in — a second set of candidates nobody knows "
+            f"about.\n")
+        return EXIT_FAULT
     registration = _registration_module()
     reg = load_registry(args.registry)
     observed = _observed_without_a_registration(reg)
@@ -6882,7 +6934,32 @@ def _candidate_from_document(document: dict, evidence_key: str):
 def cmd_registration_plan(args) -> int:
     """§B — a person's scope, turned into a validated registration. Not written."""
     registration = _registration_module()
-    document = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
+    # The named document is what `registration discover --out` wrote. Read it
+    # the way this product reads every other named file: by naming it, and
+    # saying so when it is not there. It used to arrive as a traceback from
+    # `read_text`, which names a Python call and says nothing about the path
+    # that was looked at or what would put a document there — and a caller who
+    # had written the candidates into their own cwd was told nothing at all.
+    candidates = Path(args.candidates)
+    if not candidates.is_file():
+        emit({"schema": "serveros/registration-error.v1",
+              "code": "CANDIDATES_NOT_READABLE",
+              "detail": (f"{candidates} is not a file, so nothing was read and "
+                         f"nothing is claimed about what was observed. Write "
+                         f"one with `serverosctl registration discover --out "
+                         f"{candidates}`.")}, as_json=True)
+        return EXIT_FAULT
+    try:
+        document = json.loads(candidates.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        emit({"schema": "serveros/registration-error.v1",
+              "code": "CANDIDATES_NOT_READABLE",
+              "detail": (f"{candidates} is not readable JSON ({exc}), so "
+                         f"nothing was read and nothing is claimed about what "
+                         f"was observed. Rewrite it with `serverosctl "
+                         f"registration discover --out {candidates}`.")},
+             as_json=True)
+        return EXIT_FAULT
     at = args.at or _now_text()
     try:
         candidate = _candidate_from_document(document, args.evidence_key)
