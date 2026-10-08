@@ -9603,6 +9603,85 @@ stat**。它比本包新加的那次 dict 查询**大三个数量级**。而在*
 完整读数见本包 `release-action-table.md`（十一项，逐项读 `release.py`/`build.py` 量出来的，
 不是回想出来的——那张表本来就是为「一句话指着一张不存在的表」这件事补的）。
 
+## §9.60 发版：把「装上」变成「被消费」——以及我按自己写的表做事，表本身错了
+
+§9.55–§9.59 都写着「未发版」。这一节不是第 5 次写这三个字，是把它结束掉。
+
+W6 的完成条件里有一条是**「本包必须产出实际变更与 reader 使用结果，不只输出 findings」**。
+前四包产出了变更；**「被消费」一直没有**——`current` 还指着 `product-tree-20261008s@2f6d0d3`，
+本夜四包一个都不在里面。所以这一包是发版，读数留在
+`SRV-0011/RUN-0055/release/RECEIPT.md`。
+
+### 做了什么
+
+`srv0005.20261008s` → `srv0005.20261009a`，PR **#137**，合并 `db86f34`
+（2026-10-09 06:21:53 北京时间）。`current` → `product-tree-20261009a@db86f34`，
+`previous` → `product-tree-20261008s@2f6d0d3`。记录 tree_hash `6498b4fe…`，
+**在 artifact 目录上重算一次，逐字节相同**。
+
+**载体核验不是「构建成功」而是「blob 相同」**：在**已安装的字节**上算 `git hash-object`，
+与本夜四个包的十二个文件逐个比，全部 `SAME`；两个**新**成员
+（`runtime/serveros-evening-alignment.service`/`.timer`）也在；`tests/` 不是成员，符合预期。
+
+**消费面两份读数。** 一份是项目自己的门：`test_artifact_install_smoke.py`
+—— **7 passed, 143 subtests passed**。一份是在已安装字节上跑的：把 `current` 解析后的真身
+复制到暂存目录，**空环境**（`PYTHONPATH=""`、`HOME` 指向空 scratch）逐个导入 115 个
+ship 出来的 module —— **108 成功，0 个从 payload 之外加载**。
+
+余下 7 个**是探针自己的局限，不是这一版的**，而说明这件事的办法不是解释，是**再跑一次**：
+同一份探针跑 `previous`，得到**逐行相同的读数**——同样 108/115、同样 7 个文件、同样两条错误。
+**一份探针在两个版本上给出同一个答案，那个答案就不是版本之间的差。**
+
+### 我自己把共享面写坏了：一个参数，两层后果
+
+动作表（§9.59 那张，为「一句话指着一张不存在的表」补的）第 4 项写着
+`--bundle plugin/bundle.yaml`。**我照着做了**，而那份文件是 **`serveros-core`**；
+本 composition 是 `plugin/profiles/linux-work.yaml`。后果有两层：
+
+1. 建出来的是 `serveros-core` / version `3.1.0+srv0003.20260923c` —— **三周前**的 cachebuster。
+   这一层只脏了我自己的目录。
+2. `--write` **同时改写了共享的 Codex marketplace 描述符**，把它从
+   `hwz-server-os-linux-work` / `./serveros-linux-work/current` 改成
+   `hwz-server-os` / `./serveros-core/current`。**这一层不在我的目录里。**
+
+已还原：`md5 227fafa489872c5fcc9a8f3c3e72b36c`，与本包开始前记录的
+`marketplace-before.txt` **相同**，发版结束后再测仍是这个值。还原用的副本取自
+`.staging-board-note-20261007a`，**不是**我照记忆写回去的——「照记忆写回去」和「从副本还原」
+读起来一样，只有一个能验。
+
+**这一条是本夜那个形状的第 N 例，而作者是我，且工具是我自己造的。** 那张表存在的**唯一理由**
+就是「一句话指着一个没被量过的东西」；它的第 4 项，我写的时候引的是**上一次发版的命令行**，
+**没有核对上一次发版用的是不是 core bundle**（不是）。「表里写着」和「我量到的」在读者眼里
+一模一样——这一次读者是我。
+
+### 第二次：我在活的 revision 里写出了字节码
+
+promote 之后我在**活目录**里 `cd current/runtime && python -c "import paths"`，
+写出 `runtime/__pycache__/paths.cpython-312.pyc`。这正是 `bin/serverosctl` 自己的注释
+警告过的事（「一条 `--help` 就足以让记录的 hash 不可达」）——shim 在代码里设了
+`dont_write_bytecode`，**我绕开了 shim**。
+
+已删（删前确认该目录下只有这一个文件、mtime 与那条命令一致）。要说清的是：
+`release.fingerprint` 本来就跳过字节码（`BYTECODE_DIRS`），**记录的 hash 从未受影响**；
+删它不是为了救读数，是为了让目录回到 promote 留下的样子。**「没有后果」不等于「没有发生」。**
+
+### 没做的，和为什么是人的
+
+- **重启 `serverosd.service`**：进程自 **2026-10-08 10:01:15 CST** 起运行，argv 是
+  `…/current/bin/serverosd` —— 而它在启动那一刻把模块读进了内存。**`current` 已经指到新
+  revision，进程还在跑旧代码。** `release.py status` 自己写着
+  `scope: installed files; loaded units/processes not checked` —— **这句话就是「装上」与
+  「被消费」之间那道缝，而这个工具没有假装它合上了**。重启会打断共享机上别人在跑的东西
+  （本机同时跑着 `marketops-*`、`laya-shared`、`openviking`、`tailscaled` 与另外几个用户的
+  quay anchor，见 `snapshot/pre-promote.txt`），等一个安全窗口。
+- **CC marketplace / MCP 面**：`hwz-server-os/current` 声明的是**另一个 plugin 名**，
+  指过去等于给已装 plugin 改名，用户可见。
+
+回退线：`release.py rollback --runtime-root … --composition serveros-linux-work`。
+`previous` 已是 `product-tree-20261008s@2f6d0d3` 由 promote 第 6 步写下。
+**回退同样不重启 daemon** —— 回退到的是「文件回到 `s`、进程继续跑它内存里那一版」，
+与前进时是**同一条缝**。
+
 ## 12. 最终报告（计划 §16 要求的那一份）
 
 
