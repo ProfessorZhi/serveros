@@ -373,6 +373,13 @@ class RuntimeTruthTests(unittest.TestCase):
             composition=NODE_COMPOSITION,
             unit_dir=self.unit_dir,
             proc_root=self.proc_dir,
+            # Where the tree of a commit an artifact records is extracted so the
+            # artifact can be recomputed from its OWN source. It is under the
+            # fixture's temp dir for the same reason every other fixture path
+            # is: a run that wrote into the shared scratch root would leave the
+            # suite's state behind on the machine for the next run to read.
+            source_cache=self.base / "source-cache",
+            use_checkout_source=False,
         )
         base.update(over)
         return argparse.Namespace(**base)
@@ -1845,13 +1852,16 @@ class RuntimeTruthTests(unittest.TestCase):
                          ["verdict"], truth.UNKNOWN)
         self.assertEqual(set(report["release"]["blocking"]), {truth.AXIS_CHAIN})
 
-    def test_a_node_behind_source_is_named_with_the_version_it_would_get(self):
-        """The convergence finding, in the shape it actually takes: the running
-        revision is internally perfect and is not what source builds today.
+    def test_a_revision_is_rebuilt_from_the_source_it_records(self):
+        """The revision is judged by the tree it names, not by the worktree.
 
-        This is the CONTROL for the two tests below: same content difference,
-        same row, and the checkout is still standing on the commit the artifact
-        records. Only that last fact changes there, and it changes the verdict.
+        A staged revision records the commit it was built from. Rebuilding it
+        from the checkout's WORKING TREE asks a different question: the moment
+        anyone edits a profile in that checkout, the working tree builds a
+        version the revision never claimed to be, and the difference is printed
+        as the running node's drift. The one variable here is
+        `--use-checkout-source`, which restores exactly that reading, so the
+        two answers stand side by side on one fixture.
         """
         self.faithful_runtime()
         self.install_node()
@@ -1859,38 +1869,138 @@ class RuntimeTruthTests(unittest.TestCase):
         self.run_process(["python3", str(self.runtime_root / NODE_COMPOSITION
                                           / "current" / "bin/serverosd")],
                          started_at=2_000_000.0)
-        report = truth.collect(self.args())
-        row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
-        self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
-        self.assertIn("canonical source builds 3.1.0+fixture.2", row["detail"])
+        row = rows_by(truth.collect(self.args()))[
+            f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(row["verdict"], truth.OK)
+        self.assertIn("recomputed from the artifact's own recorded source",
+                      row["note"])
 
-    def test_a_checkout_that_has_moved_on_is_stale_not_the_nodes_drift(self):
-        """The instrument's own staleness, said in its own name.
+        # ...and the old reading, which answered from the working tree: that
+        # tree has been edited since, so it builds a different version and the
+        # revision is reported as drifting from a source it never had.
+        old = rows_by(truth.collect(self.args(use_checkout_source=True)))[
+            f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(old["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("builds 3.1.0+fixture.2", old["detail"])
+        self.assertNotIn("recomputed from the artifact's own recorded source",
+                         old["note"])
 
-        A canonical checkout is a working copy that stops where its last fetch
-        left it, so on any node past the first release it stands on a commit
-        the running revision does not name. The path diff against that tree is
-        the same diff a genuinely stale artifact produces — this fixture makes
-        one, by the same cachebuster the control above uses — and the two are
-        distinguishable only by the record the artifact carries.
+    def test_a_checkout_that_has_moved_on_is_not_the_nodes_drift(self):
+        """The commit the checkout moved ON to does not enter this question.
 
-        Blaming the artifact for it is how a checker reports its own lag as the
-        node's, so the verdict names the instrument instead. It still blocks:
-        `SOURCE_STALE` is «cannot decide here», not «verified».
+        A working copy stops where its last fetch left it, so on any node past
+        the first release it stands on a commit the running revision does not
+        name. While the comparison ran off that working tree, the path diff it
+        produced was indistinguishable from a genuinely stale artifact's, and
+        the verdict could only say «cannot decide». With the revision rebuilt
+        from the commit it records, the diff is the artifact's own and the
+        answer is yes or no.
+
+        The fallback is the other half, and it is tested below: when the
+        recorded commit cannot be produced at all, «cannot decide» is still the
+        honest answer.
         """
         self.faithful_runtime()
         self.install_node()
+        # The one variable: source moves on by COMMIT, not by an uncommitted
+        # edit, so the new commit is a real tree the checkout now stands on.
         self.build_node_artifact(cachebuster="fixture.2")
-        # The one variable: the checkout moves past the staged revision.
         git(self.serveros, "commit", "--quiet", "-a", "-m", "release train moved on")
         report = truth.collect(self.args())
         row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(row["verdict"], truth.OK)
+        self.assertIn("recomputed from the artifact's own recorded source",
+                      row["note"])
+        # And the old reading of the same fixture, where the moved-on checkout
+        # IS the comparison's basis. That is the reading this file used to
+        # print always, and it named the instrument instead of the artifact.
+        old = rows_by(truth.collect(self.args(use_checkout_source=True)))[
+            f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(old["verdict"], truth.SOURCE_STALE)
+        self.assertIn("The instrument is the one that is behind", old["detail"])
+        self.assertNotIn("differs in", old["detail"])
+
+    def test_a_recorded_commit_this_repository_does_not_have_says_so(self):
+        """When the tree cannot be produced, the row says which one it wanted.
+
+        A rebuild from the checkout is not a rebuild from the artifact's
+        source, and the difference between the two has to survive on the row —
+        otherwise a reader sees the fallback's path diff and cannot tell it
+        from a comparison that was made correctly.
+        """
+        self.faithful_runtime()
+        version = self.build_artifact()
+        # A payload of its own, so that rewriting its record does not also
+        # rewrite the `--output` artifact the fixture is measuring.
+        payload = self.base / "claude-cache" / CORE_PLUGIN_KEY / version
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.out, payload)
+        self.install_claude(version, payload)
+        absent = "b" * 40
+        # A difference in CONTENT as well as in the record: `tree_drift`
+        # compares ARTIFACT.json in a normal form that drops the source block,
+        # so on an empty difference the row is OK and attribution is never
+        # consulted — the standing behaviour, and not what this test is about.
+        # What it is about is a row that HAS a difference and a rebuild that
+        # cannot be attributed, so it must have both.
+        (payload / "skills/runtime-management/SKILL.md").write_text("elsewhere\n")
+        manifest = json.loads((payload / truth.ARTIFACT_MANIFEST).read_text())
+        manifest["source"]["serveros"]["commit"] = absent
+        (payload / truth.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+
+        row = rows_by(truth.collect(self.args()))[
+            f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"]
         self.assertEqual(row["verdict"], truth.SOURCE_STALE)
-        self.assertIn("The instrument is the one that is behind", row["detail"])
-        self.assertNotIn("differs in", row["detail"])
-        self.assertEqual(report["verdict"], truth.SOURCE_STALE)
-        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
-        self.assertEqual(report["release"]["blocking"], [truth.AXIS_CHAIN])
+        self.assertIn(f"records {absent[:12]}", row["note"])
+        self.assertIn("has no such commit", row["note"])
+
+    def test_a_worktree_build_is_not_accused_of_the_changes_it_records(self):
+        """`tree_clean: false` means no rebuild can decide, and it is read.
+
+        The commit an artifact records names the checkout its build ran in. If
+        the record ALSO says that checkout had uncommitted changes, then the
+        rebuilt tree is close to the artifact's source without being it, and
+        every path the difference contains is one the artifact's own record
+        already explains. Rebuilding from that tree and calling the result the
+        artifact's fault is the same false accusation as measuring a plugin at
+        the node's pin, arriving from the other side.
+
+        The control is the same fixture with the one field flipped: clean, and
+        the row decides again.
+        """
+        self.faithful_runtime()
+        version = self.build_artifact()
+        payload = self.base / "claude-cache" / CORE_PLUGIN_KEY / version
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.out, payload)
+        self.install_claude(version, payload)
+        # A real content difference, not an edit to the source record: that
+        # record is compared in a normal form that drops the fields describing
+        # the build, precisely because a rebuild cannot reproduce them. What a
+        # worktree build leaves behind is content, so that is what this makes.
+        (payload / "skills/runtime-management/SKILL.md").write_text("from the worktree\n")
+        manifest = payload / truth.ARTIFACT_MANIFEST
+        record = json.loads(manifest.read_text())
+        record["source"]["serveros"].update(
+            {"tree_clean": False, "worktree_changes": 3})
+        manifest.write_text(json.dumps(record))
+
+        label = f"{CORE_PLUGIN_KEY} (Claude plugin, enabled)"
+        dirty = rows_by(truth.collect(self.args()))[label]
+        self.assertEqual(dirty["verdict"], truth.SOURCE_STALE)
+        self.assertIn("3 uncommitted change(s)", dirty["detail"])
+        self.assertIn("names the checkout", dirty["detail"])
+
+        # The control differs in the one field the test is about: the same
+        # payload, the same difference, and a record that says the tree it was
+        # built from WAS these bytes. Now the difference is the artifact's.
+        record["source"]["serveros"].update(
+            {"tree_clean": True, "worktree_changes": 0})
+        manifest.write_text(json.dumps(record))
+        clean = rows_by(truth.collect(self.args()))[label]
+        self.assertEqual(clean["verdict"], truth.SOURCE_RUNTIME_DRIFT)
+        self.assertIn("differs in 1 path(s)", clean["detail"])
+        self.assertIn("skills/runtime-management/SKILL.md", clean["detail"])
 
     def test_an_artifact_with_no_recorded_source_is_not_called_misattributed(self):
         """Silence is not a claim.

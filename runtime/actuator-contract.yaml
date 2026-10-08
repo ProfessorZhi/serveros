@@ -151,7 +151,18 @@ actuators:
       # into somebody else's checkout; it sets the same flag, for the same
       # reason, and the reason is stated at the call site too.
       - {file: runtime/card_shots.py, symbols: [_revision.git]}
-      - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance]}
+      # `extract_source_tree` is the one call site here that does not go
+      # through `_git`: it needs the tar bytes, not the text `_git` decodes, so
+      # it runs `git archive` itself and captures stdout. `archive` reads a
+      # commit and writes nothing anywhere — not the index, not the worktree,
+      # not the object database — so it cannot refresh what `status` would, and
+      # it is the reason the tree a row is recomputed from can be the artifact's
+      # own commit rather than whatever the canonical checkout stands on. What
+      # it produces is written under the cache directory, which the
+      # `source-cache-extraction` entry below declares. A commit this
+      # repository does not have yields None rather than a fetch: a measurement
+      # that reaches the network is measuring the network.
+      - {file: scripts/runtime_truth.py, symbols: [_git, _git_object_at, _ability_payload_root, pin_superseded, canonical_provenance, extract_source_tree]}
       - {file: skills/serveros/scripts/architecture_check.py, symbols: [_git]}
       - {file: skills/serveros/scripts/map_projection.py, symbols: [_git]}
 
@@ -870,6 +881,44 @@ actuators:
       exist.
     sites:
       - {file: scripts/release.py, symbols: [stage]}
+
+  - id: source-cache-extraction
+    kind: fs_mutation
+    verb: shutil.rmtree
+    why: >-
+      `scripts/runtime_truth.py#extract_source_tree` writing the tree of a
+      commit into the source cache — `$SERVEROS_SOURCE_CACHE`, else the system
+      temp dir — so that an artifact can be recomputed from the commit THAT
+      ARTIFACT records rather than from whatever commit the canonical checkout
+      happens to stand on. The cache is never the checkout it reads from:
+      `git archive` writes nothing, and everything materialized lands under a
+      directory this process named.
+
+      The one deletion is the staging directory `tempfile.mkdtemp` made under
+      the cache in this same call, on the path where the extraction or the
+      rename failed. Its name is fresh by construction, so it cannot be
+      another actor's directory, and the reach is one directory deep.
+
+      An earlier version of this function also ran
+      `if target.exists(): shutil.rmtree(target)` before the rename — the same
+      default action, on a directory whose owner and intent had not been
+      established, that `release.py#stage` was rewritten to stop taking one
+      round before (`release-staging-and-symlink-swap` above). On this host
+      `$TMPDIR` is shared, so that line would have removed a finished tree, or
+      another actor's half-written copy of the same commit, as readily as this
+      process's own leftover. The reach was REMOVED rather than declared: a
+      commit somebody else has already finished is used as it stands, and one
+      somebody else is mid-way through yields None — a row that says it could
+      not rebuild — rather than a deletion. `mutation_guard` is what found it,
+      which is the direction this table exists for.
+    sites:
+      - {file: scripts/runtime_truth.py, symbols: [extract_source_tree]}
+      # The commit half of the same idiom. A directory rename within one
+      # filesystem, so the tree either exists complete or does not exist, and it
+      # is also what settles a race between two rows asking about the same
+      # commit: the loser's rename fails, and it then reads the tree the winner
+      # left rather than writing over it.
+      - {file: scripts/runtime_truth.py, symbols: [extract_source_tree], verb: ".rename()"}
 
   # ---------------------------------------------------------------------
   # The systemd actions this repository will take, and only through a person
