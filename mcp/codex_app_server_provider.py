@@ -80,7 +80,7 @@ def _load(name: str, path: Path):
 
 
 semantics = _load("serveros_runtime_agent_sessions", _RUNTIME / "agent_sessions.py")
-instances = _load("serveros_ability_provider_instance", _ABILITIES / "provider_instance.py")
+instances = _load("serveros_abilities_provider_instance", _ABILITIES / "provider_instance.py")
 agent_ref = semantics.agent_ref
 session_ref = semantics.session_ref
 support = semantics.support

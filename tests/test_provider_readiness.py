@@ -36,7 +36,7 @@ def _load(name: str, path: Path):
     return module
 
 
-instances = _load("serveros_ability_provider_instance", ABILITIES / "provider_instance.py")
+instances = _load("serveros_abilities_provider_instance", ABILITIES / "provider_instance.py")
 service_mod = _load("serveros_agent_session_service", MCP / "agent_session_service.py")
 botmux_mod = _load("serveros_botmux_provider", MCP / "botmux_provider.py")
 semantics = _load("serveros_runtime_agent_sessions", RUNTIME / "agent_sessions.py")
