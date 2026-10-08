@@ -52,7 +52,13 @@ def _load(name: str, path: Path):
 
 
 target = _load("serveros_abilities_target", ABILITIES / "target.py")
-resolver = _load("serveros_abilities_resolver", ABILITIES / "resolver.py")
+#: The name `abilities/target.py` and `runtime/cli.py` load this file under, and
+#: the one `runtime/daemon.py`'s `_ABILITY_RESOLVER_NAME` documents as
+#: load-bearing ("the CLI and the socket must not read two different worlds").
+#: The assertion two hundred lines down compares this module with the one
+#: `target` reaches, so it has to be the tree's name: under any other, the two
+#: sides are two copies and the assertion is about nothing.
+resolver = _load("serveros_ability_resolver", ABILITIES / "resolver.py")
 provider_instance = _load("serveros_abilities_provider_instance",
                           ABILITIES / "provider_instance.py")
 agent_sessions = _load("serveros_runtime_agent_sessions", RUNTIME / "agent_sessions.py")
