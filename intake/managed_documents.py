@@ -65,8 +65,18 @@ decided this" the same reading.
 It does not read a clock, send anything, or write anything. Drift in the sense
 of "the document moved since the last observation" needs a fetch and belongs to
 the ability; what this module reports about state is only what the state file
-already says, and whether the profile's sections and the state's derived
-sections describe the same document.
+already says, and whether the state could have been derived by **this** profile.
+
+That last comparison is between two contracts and not between two views of one
+document, which is a distinction the first version of this module got wrong in
+its own output. The ability's `derive_sections` walks the profile's declared
+sections and emits a key only for one it located, so the derived set of a state
+is always a subset of the **deriving** profile's keys. A derived key this profile
+does not declare therefore proves a second profile exists; it says nothing about
+the document, and it is not what `audit`'s `UNKNOWN_SECTION` reports — that one
+reads the live outline. A report that named the difference after the document
+sent its reader to edit the contract to match a section the contract may well
+already declare.
 """
 from __future__ import annotations
 
@@ -361,14 +371,31 @@ def read_write_policy(profile: dict) -> dict:
 
 
 def read_reach(profile: dict, state: dict | None) -> dict:
-    """Whether the profile's sections and the state's derived ones agree.
+    """Whether this state can have been derived by **this** profile.
 
-    Two facts about one document, and they are allowed to disagree: a section
-    can be added to the profile before the next fetch, and a heading that was
-    renamed shows up as derived-without-declaration. What is not allowed is for
-    the disagreement to be invisible, because `unresolved_section_keys` is the
-    field that says which declared sections the deriver could not locate — and
-    that field is only meaningful against the declared set.
+    Not "two facts about one document". The ability's `derive_sections` walks the
+    profile's declared sections and emits a key only for one whose heading it
+    located, so every key in a state's derived set is a key of the profile that
+    produced it. A derived key this profile does not declare therefore proves
+    that state and this contract are not the same contract — and it can never be
+    a statement about the document, because it was not derived from a reading of
+    the document. (What the document itself has and the profile does not declare
+    is `audit`'s `UNKNOWN_SECTION`, which reads the live outline. Neither rule is
+    restated here: a second implementation of one rule is the way the two come to
+    disagree, and a module that names the ability as the authority on its own
+    contract does not get to keep a private copy of the interesting half.)
+
+    The state records no reference to the profile that produced it, so the two
+    directions are not symmetric, and only one of them proves anything:
+
+    * `derived_never_declared` non-empty **is proof** of a second profile.
+    * `declared_never_derived` non-empty means one of two things — the deriver
+      did not locate that heading, or the deriving profile never declared that
+      key — and which one is not recoverable from this state. The deriver's own
+      account of the first is `unresolved_section_keys`, which the ability writes
+      as exactly `declared - derived` **of the deriving profile**; equal to
+      `declared_never_derived` it is the same reading, different from it is a
+      third sighting of two contracts.
     """
     declared = [section.get("key") for section in profile.get("sections") or []
                 if isinstance(section, dict) and section.get("key")]
@@ -381,14 +408,21 @@ def read_reach(profile: dict, state: dict | None) -> dict:
         unresolved = list(state.get("unresolved_section_keys") or [])
         revision = state.get("revision")
         observed_at = state.get("last_observed_at")
+    outside = sorted(set(derived) - set(declared))
     return {
         "state_present": state is not None,
         "state_revision": revision,
         "state_last_observed_at": observed_at,
+        # The state schema carries the document id, the revision, the derived
+        # sections and the relations — and no reference to the profile that
+        # produced them. Reported rather than left implicit, because it is the
+        # reason the direction above cannot be resolved from here.
+        "state_provenance": "unrecorded",
         "declared": sorted(declared),
         "derived": derived,
         "declared_never_derived": sorted(set(declared) - set(derived)),
-        "derived_never_declared": sorted(set(derived) - set(declared)),
+        "derived_never_declared": outside,
+        "state_from_another_profile": bool(outside),
         "unresolved_section_keys": unresolved,
     }
 
@@ -559,11 +593,30 @@ def render(report: dict) -> list[str]:
         else:
             lines.append(f"    观测        revision {reach['state_revision']}"
                          f"  {reach['state_last_observed_at']}")
-            if reach["declared_never_derived"]:
-                lines.append(f"    ⚠ 声明了但没定位到 {reach['declared_never_derived']}")
-            if reach["derived_never_declared"]:
-                lines.append(f"    ⚠ 文档里有而 profile 没声明 "
-                             f"{reach['derived_never_declared']}")
+            if reach["state_from_another_profile"]:
+                # Never "文档里有而 profile 没声明": a derived key can only be one
+                # the deriving profile declared, so this is proof of two contracts
+                # and says nothing about the document. Naming the document here is
+                # what sent the first reader of this line to edit a contract that
+                # was not the one in front of them.
+                lines.append("    ⚠ 这份 state 不是这份 profile 派生的 —— 两份不是同一份契约")
+                lines.append(f"      它含这份契约没声明的 {reach['derived_never_declared']}"
+                             f"；这份契约声明了而它没有的 {reach['declared_never_derived']}")
+                lines.append("      state 不记录是哪份 profile 派生的，所以「哪一份是当前的」"
+                             "在这里判不出来")
+                lines.append("      文档自己有没有这一节要问 `audit`：它读的是实时大纲，"
+                             "不是 state")
+            elif reach["declared_never_derived"]:
+                same = sorted(reach["declared_never_derived"]) == \
+                    sorted(set(reach["unresolved_section_keys"]))
+                if same:
+                    lines.append(f"    ⚠ 声明了但没定位到 {reach['declared_never_derived']}"
+                                 f" —— 派生它的那次也是这么记的")
+                else:
+                    lines.append(f"    ⚠ 这份契约声明了而 state 里没有 "
+                                 f"{reach['declared_never_derived']}；派生它的那次记的是"
+                                 f"没定位到 {reach['unresolved_section_keys']}"
+                                 f" —— 两处不是同一次读数")
         lines.append("")
     for obj in report["objects"]:
         if obj["materializations"] > 1:
