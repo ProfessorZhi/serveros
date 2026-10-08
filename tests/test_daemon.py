@@ -73,9 +73,11 @@ digest_cli = _load("serveros_runtime_cli_digest_tests", "cli.py")
 # implementation of the substitution in this file.
 _release_spec = importlib.util.spec_from_file_location(
     "serveros_release", REPO / "scripts" / "release.py")
-release = importlib.util.module_from_spec(_release_spec)
-sys.modules["serveros_release"] = release
-_release_spec.loader.exec_module(release)
+release = sys.modules.get("serveros_release")
+if release is None:
+    release = importlib.util.module_from_spec(_release_spec)
+    sys.modules["serveros_release"] = release
+    _release_spec.loader.exec_module(release)
 
 Registry = registry_mod.Registry
 Daemon = daemon_mod.Daemon

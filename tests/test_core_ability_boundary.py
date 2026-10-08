@@ -752,6 +752,8 @@ class _NullInventory:
 
 
 def _load_for_test(filename: str, name: str):
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, RUNTIME / filename)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

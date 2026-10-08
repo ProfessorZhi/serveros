@@ -10,10 +10,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("serveros_bounded_executor", ROOT / "runtime/bounded_executor.py")
-executor = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = executor
-spec.loader.exec_module(executor)
+_spec = importlib.util.spec_from_file_location(
+    "serveros_bounded_executor", ROOT / "runtime" / "bounded_executor.py")
+# `mcp/continuation_mcp.py` registers this file under this same name, so the
+# copy already in the cache is the one a caller holding that name means. A
+# second object here would be a second set of this module's classes.
+executor = sys.modules.get(_spec.name)
+if executor is None:
+    executor = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = executor
+    _spec.loader.exec_module(executor)
 IMAGE = os.environ.get("SERVEROS_TEST_DOCKER_IMAGE", "sha256:" + "1" * 64)
 
 

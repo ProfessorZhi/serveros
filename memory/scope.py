@@ -435,11 +435,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     name = "serveros_memory_record"
-    spec = importlib.util.spec_from_file_location(
-        name, Path(__file__).resolve().parent / "record.py")
-    record_mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = record_mod
-    spec.loader.exec_module(record_mod)
+    record_mod = sys.modules.get(name)
+    if record_mod is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parent / "record.py")
+        record_mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = record_mod
+        spec.loader.exec_module(record_mod)
 
     try:
         reader = parse_reader(args.reader)
