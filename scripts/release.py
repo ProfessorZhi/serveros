@@ -77,6 +77,17 @@ CONVERSATION_PLACEHOLDER = "@SERVEROS_ALERT_CONVERSATION@"
 # hash-verified directory the next update replaces. `render_unit` raises when the
 # template names it and no value is supplied.
 WORKBENCH_OUT_PLACEHOLDER = "@SERVEROS_WORKBENCH_OUT@"
+# The evening brief's two. `@SERVEROS_EVENING_OUT_ROOT@` is the same kind of
+# fact as the workbench destination — where a night's product lands — and is
+# REQUIRED for the same reason. `@SERVEROS_INTAKE_RUN_DIR@` is different in kind
+# and is the more dangerous of the two: it is not a destination at all but a
+# directory ANOTHER UNIT owns, named here because this unit composes from it.
+# Nothing in systemd relates the two, so a value that disagrees with
+# `serveros-intake.service --run-dir` produces a brief composed from a directory
+# nobody wrote. Also REQUIRED — a default would be this file inventing a
+# directory another unit might not be using.
+INTAKE_RUN_DIR_PLACEHOLDER = "@SERVEROS_INTAKE_RUN_DIR@"
+EVENING_OUT_ROOT_PLACEHOLDER = "@SERVEROS_EVENING_OUT_ROOT@"
 # The wake routine's three, and all three are REQUIRED for the same reason the
 # conversation is: each has a plausible unrendered form. A unit that woke no
 # Parent would run, exit 0, and report nothing to wake — indistinguishable from
@@ -108,6 +119,26 @@ DAILY_TIMER_NAME = "serveros-daily.timer"
 # an act somebody approves, not a side effect of a promotion.
 WAKE_SERVICE_NAME = "serveros-continuation-wake.service"
 WAKE_TIMER_NAME = "serveros-continuation-wake.timer"
+# The second half of the day's work, and the one that was missing from this list
+# until 2026-10-08. `serveros-intake.timer` prepares at 19:20 and sends nothing;
+# this pair turns that preparation into a brief that leaves the machine at 20:00,
+# and it ran on this node for as long as it had existed while appearing in no
+# template, no check, no build and no test in this product. Measured on the day
+# it was added, while it was still missing: the timer was `enabled`, it had fired
+# at 20:00 that same day, and the receipt it wrote said `delivered True` — so
+# what was undeclared was a live, person-facing path, not a dormant one.
+#
+# THE RULE THAT DECIDES WHAT JOINS THIS LIST, because it is not "every unit this
+# node runs". A unit belongs here when its whole ExecStart chain is this
+# product's to own. `serveros-evening-alignment`'s is one `serverosctl` verb, so
+# it does. `serveros-intake`'s is three lines of which two run scripts under
+# `runtime-assets/` that this repository does not build, and `serveros-work-board`
+# runs one such script entirely — templating those would mean shipping one
+# person's chat ids and one node's private scripts as if they were a build fact.
+# They are recorded as live producers this product does not declare, which is a
+# different and honest answer from declaring them wrongly.
+EVENING_SERVICE_NAME = "serveros-evening-alignment.service"
+EVENING_TIMER_NAME = "serveros-evening-alignment.timer"
 TREE_MANIFEST = "RELEASE.json"
 
 # The Parent launcher, and why it is shipped rather than supplied.
@@ -313,6 +344,8 @@ def _symlink_swap(link: Path, target: Path) -> None:
 def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
                 conversation: str | None = None,
                 workbench_out: str | None = None,
+                intake_run_dir: str | None = None,
+                evening_out_root: str | None = None,
                 wake_parent: str | None = None,
                 wake_budget: str | None = None,
                 wake_timeout: str | None = None) -> str:
@@ -350,6 +383,19 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
             )
         rendered = rendered.replace(WORKBENCH_OUT_PLACEHOLDER, workbench_out)
     for placeholder, value, why in (
+            (INTAKE_RUN_DIR_PLACEHOLDER, intake_run_dir,
+             "the unit would compose tonight's brief from a directory nobody "
+             "named, which is either a composition that refuses at 20:00 or one "
+             "from another evening's file"),
+            (EVENING_OUT_ROOT_PLACEHOLDER, evening_out_root,
+             "the night's brief would be written to a directory nobody chose "
+             "and reported as sent")):
+        if placeholder in template:
+            if not value:
+                raise ValueError(f"unit names {placeholder} and none was "
+                                 f"supplied; {why}")
+            rendered = rendered.replace(placeholder, str(value))
+    for placeholder, value, why in (
             (WAKE_PARENT_PLACEHOLDER, wake_parent,
              "a wake routine with no Parent to start would fire on its timer, "
              "wake nothing and exit 0, which is a success report for a node "
@@ -367,13 +413,14 @@ def render_unit(template: str, runtime_dir: Path, state_dir: Path, *,
             rendered = rendered.replace(placeholder, str(value))
     left = [p for p in (RUNTIME_PLACEHOLDER, STATE_PLACEHOLDER,
                         CONVERSATION_PLACEHOLDER, WORKBENCH_OUT_PLACEHOLDER,
+                        INTAKE_RUN_DIR_PLACEHOLDER, EVENING_OUT_ROOT_PLACEHOLDER,
                         WAKE_PARENT_PLACEHOLDER, WAKE_BUDGET_PLACEHOLDER,
                         WAKE_TIMEOUT_PLACEHOLDER)
             if p in rendered]
     if left:
         raise ValueError(f"unit still carries an unrendered placeholder: {left}")
-    # And any OTHER placeholder, because the list above is a list of the three
-    # this file knows how to fill, and a fourth was added to a unit and not
+    # And any OTHER placeholder, because the list above is only the placeholders
+    # this file knows how to fill — a NEW one can be added to a unit and not
     # here. The symptom is quiet in exactly the way this project keeps paying
     # for: systemd treats `@...@` as text, so a unit carrying a placeholder
     # nobody registered installs cleanly and runs with the literal in it. The
@@ -788,6 +835,23 @@ except Exception as exc:
         except ValueError as exc:
             problems.append(f"runtime/{WAKE_SERVICE_NAME}: {exc}")
 
+    # The evening brief's pair, checked the same way. It is the fourth unit to
+    # carry a placeholder with no honest default and the only one whose
+    # placeholder names a directory ANOTHER unit owns — so the failure this
+    # catches is not "a destination nobody chose" but "a chain whose two halves
+    # name different directories", which no single file can notice on its own.
+    # Both sentinels below are questions about the TEMPLATE and never reach a
+    # file: the values that become the real directory and the real destination
+    # are supplied by a person at install time.
+    evening_template = rev_dir / "runtime" / EVENING_SERVICE_NAME
+    if evening_template.is_file():
+        try:
+            render_unit(evening_template.read_text(), rev_dir, state_dir,
+                        intake_run_dir="/template-check",
+                        evening_out_root="/template-check")
+        except ValueError as exc:
+            problems.append(f"runtime/{EVENING_SERVICE_NAME}: {exc}")
+
     # The entry point must resolve the runtime it ships with. `bin/` and
     # `runtime/` find each other by relative path, so a revision carrying one
     # without the other is a shim that cannot import what it names — a file that
@@ -827,11 +891,20 @@ def current_revision(composition_root: Path) -> str | None:
     return Path(os.readlink(link)).name
 
 
-def installed_exec_start(unit: Path) -> list[str]:
-    """Read the installed service command, never a path mentioned in a comment.
+def exec_start_commands(unit: Path) -> list[list[str]]:
+    """Every ExecStart this unit declares, in order, each split into arguments.
 
-    This inspects the files we install, not systemd's loaded state or drop-ins.
-    Multiple commands or syntax outside our generated units are not agreement.
+    The reading half, extracted so that the two questions asked of a unit file
+    are asked of ONE reader. A second parser would be a second answer to "what
+    does this unit run", and it would fail quietly: the two agree on every unit
+    until the one they don't, and the check that was supposed to catch a
+    disagreement would be the check that missed it.
+
+    Continuations are joined and comments are never read — the two ways a value
+    can appear in a unit file without being the command. A blank `ExecStart=`
+    CLEARS the list, which is systemd's own semantics: that is how a drop-in
+    removes the command a base unit set, so a reader ignoring it would report a
+    command the unit no longer runs.
     """
     if not unit.is_file():
         return []
@@ -842,16 +915,28 @@ def installed_exec_start(unit: Path) -> list[str]:
             section = line
         elif section == "[Service]" and line.startswith("ExecStart="):
             value = line.split("=", 1)[1].strip()
-            if value:
-                commands.append(value)
-            else:
+            if not value:
                 commands.clear()
+                continue
+            try:
+                commands.append(shlex.split(value))
+            except ValueError:
+                return []
+    return commands
+
+
+def installed_exec_start(unit: Path) -> list[str]:
+    """Read the installed service command, never a path mentioned in a comment.
+
+    This inspects the files we install, not systemd's loaded state or drop-ins.
+    Multiple commands or syntax outside our generated units are not agreement —
+    so this is the "exactly one" view of `exec_start_commands`, which is the
+    same reader and answers the same way about every unit that has one command.
+    """
+    commands = exec_start_commands(unit)
     if len(commands) != 1:
         return []
-    try:
-        return shlex.split(commands[0])
-    except ValueError:
-        return []
+    return commands[0]
 
 
 def wake_installation_problems(args) -> list[str]:
@@ -1308,6 +1393,192 @@ def cmd_daily_task(args) -> int:
     return 0
 
 
+def intake_run_dir_of(unit: Path) -> str | None:
+    """The `--run-dir` an installed `serveros-intake.service` runs with, or None.
+
+    Read out of the installed FILE rather than asked of systemd, because the
+    question is what the unit says and `systemctl show` answers with what systemd
+    parsed — correct, but only on a node where the unit is loaded, and this has
+    to answer about the file sitting beside the one being installed.
+
+    THE COMMANDS COME FROM `exec_start_commands`, the reader this file already
+    uses. It follows a continued ExecStart and never reads a path out of a
+    comment — the two ways a unit file can name something without running it —
+    so this question and the "is this exactly the command we install" question
+    cannot answer differently about one unit.
+
+    It asks about EVERY command and not about the first, because the unit this
+    is pointed at has three: `serveros-intake.service` refreshes a document,
+    syncs a chat, and THEN runs the recipe. A check that read only the first
+    line would pass on a fixture and be wrong about the unit it exists for.
+
+    None means "cannot be established", undivided between absent and ambiguous.
+    A unit with no `--run-dir` and a unit whose `--run-dir` is two different
+    directories are both units this command must refuse to compare against, and
+    naming which of the two it is changes nothing about what the caller does.
+    """
+    found = []
+    for tokens in exec_start_commands(unit):
+        for index, token in enumerate(tokens):
+            if token == "--run-dir" and index + 1 < len(tokens):
+                found.append(tokens[index + 1])
+            elif token.startswith("--run-dir="):
+                found.append(token[len("--run-dir="):])
+    if len(set(found)) != 1:
+        return None
+    return found[0]
+
+
+def cmd_evening_brief(args) -> int:
+    """§8's second half — install the evening alignment, and leave it DISABLED.
+
+    `serveros-intake.timer` prepares at 19:20 and sends nothing; this pair turns
+    that preparation into a brief that leaves the machine at 20:00. It ran on
+    this node already and the product did not carry it, so this command's first
+    job is to make it possible for a node that is not this one to have one at
+    all.
+
+    THE INSTALL IS INERT, like `daily-task` and unlike `alert-worker`: an
+    enabled timer here sends a person a card every evening, which is an act
+    somebody approves rather than a side effect of an install. `--enable` arms
+    it and its absence is the default.
+
+    TWO REQUIRED ARGUMENTS, AND THE SECOND IS THE INTERESTING ONE.
+    `--out-root` is where the night's brief lands and has no honest default for
+    the same reason `--out` on `daily-task` has none. `--intake-run-dir` is not a
+    destination at all: it is the run directory `serveros-intake.service` writes,
+    named again here because this unit composes tonight's brief out of it. The
+    two units are related by that string and by nothing systemd knows about, so
+    when the intake unit is installed beside this one this command READS it and
+    refuses if the two disagree. That is the one check a single unit file cannot
+    make about itself, and it is the reason this is a command rather than two
+    files an operator copies.
+    """
+    root = args.runtime_root / args.composition
+    current = current_revision(root)
+    if not current:
+        print(f"REFUSED nothing is promoted: {root / 'current'} is not a symlink.",
+              file=sys.stderr)
+        print("        The brief is composed by the revision's own "
+              "`bin/serverosctl`; install one first.", file=sys.stderr)
+        return 1
+    rev_dir = root / "revisions" / current
+
+    service_template = rev_dir / "runtime" / EVENING_SERVICE_NAME
+    timer_template = rev_dir / "runtime" / EVENING_TIMER_NAME
+    for path in (service_template, timer_template):
+        if not path.is_file():
+            print(f"REFUSED {path} is missing from revision {current}.", file=sys.stderr)
+            print("        An artifact built before the evening template existed "
+                  "cannot install one.", file=sys.stderr)
+            return 1
+
+    # The coupling, checked against the unit that is actually installed rather
+    # than asserted in a comment. `serveros-intake.service` is NOT part of this
+    # product and is not required to be installed — a node that never runs an
+    # intake has no chain here to break — so this is a check WHEN PRESENT, on the
+    # same footing as the alert template above.
+    intake_unit = args.unit_dir / "serveros-intake.service"
+    if intake_unit.is_file():
+        theirs = intake_run_dir_of(intake_unit)
+        if theirs is None:
+            print(f"REFUSED {intake_unit} is installed and this command cannot "
+                  f"find a --run-dir in it.", file=sys.stderr)
+            print("        The two units are related by that directory and by "
+                  "nothing systemd knows about, so an install that cannot "
+                  "compare them cannot say the chain is intact. Read the unit, "
+                  "or move its ExecStart onto one line.", file=sys.stderr)
+            return 1
+        if theirs != str(args.intake_run_dir):
+            print(f"REFUSED --intake-run-dir {args.intake_run_dir} is not the "
+                  f"directory {intake_unit.name} runs with.", file=sys.stderr)
+            print(f"        That unit says: {theirs}", file=sys.stderr)
+            print("        Nothing in systemd relates the two, so this would "
+                  "install a unit composing from a directory nothing writes: at "
+                  "20:00 it refuses an alignment.json that is not from today and "
+                  "the night's brief is never sent.", file=sys.stderr)
+            return 1
+
+    try:
+        service_text = render_unit(service_template.read_text(), root / "current",
+                                   args.state_dir,
+                                   intake_run_dir=str(args.intake_run_dir),
+                                   evening_out_root=str(args.out_root))
+    except ValueError as exc:
+        print(f"REFUSED {exc}", file=sys.stderr)
+        return 1
+    timer_text = render_unit(timer_template.read_text(), root / "current", args.state_dir)
+
+    # The template's own claim, checked against the destination: the brief is
+    # composed out of the revision's entry point, and a destination inside the
+    # revision would be replaced wholesale by the next update.
+    resolved_out = args.out_root.resolve()
+    if resolved_out == rev_dir.resolve() or rev_dir.resolve() in resolved_out.parents:
+        print(f"REFUSED --out-root {args.out_root} is inside the revision {rev_dir}.",
+              file=sys.stderr)
+        print("        A hash-verified revision is replaced on the next update, "
+              "so every back number of the brief would go with it.", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print(f"would install  {args.unit_dir / EVENING_SERVICE_NAME}")
+        print(f"would install  {args.unit_dir / EVENING_TIMER_NAME}")
+        print(f"  revision     {current}")
+        print(f"  composes from {args.intake_run_dir}")
+        print(f"  destination  {args.out_root}")
+        print(f"  destination class, asked of the contract rather than decided "
+              f"here:")
+        print(f"    serverosctl path admit {args.out_root}")
+        exec_line = next((l for l in service_text.splitlines()
+                          if l.startswith("ExecStart=")), "")
+        print(f"  {exec_line}")
+        if not args.enable:
+            print("  NOT enabled  (--enable arms it)")
+            print("  nothing is sent until the environment file names a "
+                  "recipient:")
+            print(f"    {args.unit_dir / 'evening-alignment.env'}")
+        return 0
+
+    args.unit_dir.mkdir(parents=True, exist_ok=True)
+    args.out_root.mkdir(parents=True, exist_ok=True)
+    (args.unit_dir / EVENING_SERVICE_NAME).write_text(service_text)
+    (args.unit_dir / EVENING_TIMER_NAME).write_text(timer_text)
+    print(f"installed      {args.unit_dir / EVENING_SERVICE_NAME}")
+    print(f"installed      {args.unit_dir / EVENING_TIMER_NAME}")
+    print(f"  revision     {current}")
+    print(f"  composes from {args.intake_run_dir}")
+    print(f"  destination  {args.out_root}")
+
+    if args.no_reload:
+        print("  not enabled. The brief is composed and sent once a day when "
+              "the timer is armed:")
+        print(f"    systemctl --user enable --now {EVENING_TIMER_NAME}")
+        print(f"  or compose one now, without arming anything and without "
+              f"sending (no recipient configured ⇒ it writes the brief and "
+              f"exits 2):")
+        print(f"    systemctl --user start {EVENING_SERVICE_NAME}")
+        return 0
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    if not args.enable:
+        print("  installed and NOT enabled. Enabling this timer sends a person a "
+              "card every evening, so it is an act somebody approves rather than "
+              "a side effect of an install:")
+        print(f"    systemctl --user enable --now {EVENING_TIMER_NAME}")
+        print("  compose one now, without arming and without sending:")
+        print(f"    systemctl --user start {EVENING_SERVICE_NAME}")
+        return 0
+    done = subprocess.run(["systemctl", "--user", "enable", "--now", EVENING_TIMER_NAME],
+                          check=False)
+    print(f"  enabled      {EVENING_TIMER_NAME} "
+          f"({'ok' if done.returncode == 0 else f'exit {done.returncode}'})")
+    if done.returncode != 0:
+        print("  The unit and the timer are installed and the timer is NOT "
+              "running. Nothing is composed on a schedule; `systemctl --user "
+              "status " + EVENING_TIMER_NAME + "` says why.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_continuation_wake(args) -> int:
     """§17.4 · install the wake routine: a oneshot and its timer, DISABLED.
 
@@ -1590,6 +1861,32 @@ def main() -> int:
                         "because §8 puts a daily task on the approved list and "
                         "putting it on the list is the whole reason it exists")
     p.set_defaults(func=cmd_daily_task)
+
+    p = sub.add_parser(
+        "evening-brief",
+        help="§8's second half · install the 20:00 evening alignment (a oneshot "
+             "and its timer), DISABLED. Separate from promote because it needs "
+             "two paths a person chooses, and off by default because arming it "
+             "sends a person a card every evening")
+    common(p)
+    p.add_argument("--out-root", type=Path, required=True,
+                   help="where the night's brief lands, one directory per "
+                        "Beijing day beneath it. Required and not defaulted: a "
+                        "destination this command chose would be a directory "
+                        "nobody picked, written to every evening, reported as "
+                        "sent. `serverosctl path admit <path>` says which class "
+                        "the contract reads a candidate as")
+    p.add_argument("--intake-run-dir", type=Path, required=True,
+                   help="the run directory `serveros-intake.service` writes. NOT "
+                        "a destination — a directory another unit owns, named "
+                        "here because this unit composes out of it. Refused if "
+                        "it disagrees with the installed intake unit, because "
+                        "nothing in systemd relates the two")
+    p.add_argument("--enable", action="store_true",
+                   help="ALSO enable and start the timer. Absent by default: "
+                        "this timer sends a card, so arming it is an approved "
+                        "act and not a side effect of installing the files")
+    p.set_defaults(func=cmd_evening_brief)
 
     p = sub.add_parser(
         "continuation-wake",

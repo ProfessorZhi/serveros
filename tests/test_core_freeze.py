@@ -112,15 +112,18 @@ SCHEDULED_UNITS = {
     "runtime/serveros-daily.timer",
 }
 
-# §9.48's continuation wake routine: a fourth set rather than four more entries
+# §9.48's continuation wake routine: a set of its own rather than more entries
 # above, because the claim is different in kind. The delivery worker sends
 # something and the daily render writes a directory a person opens; this pair
-# STARTS A PARENT, and it is the only one of the three that spends authority
-# when it fires — which is why what it must not carry is worth its own line
-# here rather than a footnote on somebody else's.
+# STARTS A PARENT, and of the two sets above it is the only one that spends
+# authority when it fires — which is why what it must not carry is worth its own
+# line here rather than a footnote on somebody else's. ("Of the two above" rather
+# than a count of every set in this file: the evening pair below was added after
+# this comment, and a count written here would have had to be edited to stay
+# true, which is the kind of sentence that is not edited and stops being true.)
 #
-# It is listed rather than left implicit so that a fifth unit is still a diff,
-# and it is asserted NOT resident for the same reason as the other two: a
+# It is listed rather than left implicit so that another unit file is still a
+# diff, and it is asserted NOT resident for the same reason as the other two: a
 # resident unit is a process with a lifetime the node did not choose, while
 # these two are a oneshot a timer fires and a timer that fires it.
 WAKE_UNITS = {
@@ -128,9 +131,27 @@ WAKE_UNITS = {
     "runtime/serveros-continuation-wake.timer",
 }
 
+# The evening brief: a FIFTH set, added 2026-10-08, and the reason it is a set of
+# its own is that the claim it carries is unlike the other four. The delivery
+# worker talks to a provider and sends an alert; the daily render writes a
+# directory a person opens; the wake routine starts a Parent. This one does the
+# second half of the day's work — it composes tonight's brief out of the 19:20
+# preparation and sends it to one person — and until this pair was listed here it
+# did all of that from a file under `~/.config/systemd/user/` that no build
+# shipped, no check rendered and no test could see. Listing it is what makes the
+# live producer and the declared producer the same thing.
+#
+# It is asserted NOT resident for the same reason as the other three: a oneshot a
+# timer fires is a command somebody asked for, while the resident daemon is a
+# process with a lifetime the node did not choose.
+EVENING_UNITS = {
+    "runtime/serveros-evening-alignment.service",
+    "runtime/serveros-evening-alignment.timer",
+}
+
 # Every unit that is not the resident daemon. Named once so the sub-tests below
 # cannot cover a set somebody added and forgot to wire in.
-NON_RESIDENT_UNITS = DELIVERY_UNITS | SCHEDULED_UNITS | WAKE_UNITS
+NON_RESIDENT_UNITS = (DELIVERY_UNITS | SCHEDULED_UNITS | WAKE_UNITS | EVENING_UNITS)
 
 # The daemon may not open a network socket (§W: "serverosd 不做网络调用"). It
 # is checked as an AST property of the daemon's own loader closure rather than
@@ -263,7 +284,10 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # right assertion while it was true and the wrong one the moment it was
         # not: §W adds a delivery runtime, and a gate that can only be satisfied
         # by deleting the new unit would be a gate arguing against the feature.
-        # It now names ALL THREE sets, so adding a fourth unit is still a diff.
+        # It now names every non-resident set, so another unit file is still a
+        # diff. It has been that diff three times: §W's delivery pair, §9.48's
+        # wake pair, and 2026-10-08's `serveros-evening-alignment.{service,timer}`
+        # — each one met by declaring the pair, never by widening the assertion.
         self.assertEqual(_unit_files(), RESIDENT_UNITS | NON_RESIDENT_UNITS)
 
     def test_every_other_unit_is_provably_not_resident(self):
