@@ -397,6 +397,68 @@ def test_a_root_that_is_not_there_is_reported_rather_than_omitted(tmp_path):
     assert coverage["data"]["why"]
 
 
+def test_every_root_the_contract_declares_is_either_applied_or_explained():
+    """The index over the contract must be complete, and completeness is the
+    half a reader cannot check by looking.
+
+    `ROOT_VOCABULARY` says which declared closed set applies to which root;
+    `VOCABULARY_NOT_APPLIED` says which ones deliberately do not. Together they
+    have to account for every name that is BOTH a root (`paths.ROOTS`) and a
+    declared closed set (`paths.VOCABULARIES`).
+
+    The failure this exists for is not a WRONG entry but a MISSING one.
+    `ARTIFACTS_ROOT`'s vocabulary has been in `paths.py` all along and was
+    absent here, and this module's docstring said the contract declared no such
+    set — so the module whose whole subject is where things ARE could not answer
+    for the root with the most findings in the product, and the sentence it
+    answered with was false. A missing entry is invisible in a report; a name in
+    `VOCABULARY_NOT_APPLIED` with a reason is not.
+
+    The set is DERIVED from both contract tables, so adding a root to `paths.py`
+    fails here until somebody says which of the two it is.
+    """
+    both = set(paths.ROOTS) & set(paths.VOCABULARIES)
+    accounted = set(fh.ROOT_VOCABULARY) | set(fh.VOCABULARY_NOT_APPLIED)
+    assert both == accounted, (
+        f"declared a root and a closed set but not accounted for here: "
+        f"{sorted(both - accounted)}; named here but not a declared root that "
+        f"also has a declared closed set: {sorted(accounted - both)}")
+
+    # A reason, not a placeholder: an entry that says nothing is the missing
+    # entry one line later, and a map of reasons is worth only what its reasons
+    # are.
+    for name, reason in fh.VOCABULARY_NOT_APPLIED.items():
+        assert len(reason.strip()) > 40, f"{name}'s absence is not explained"
+        assert name not in fh.ROOT_VOCABULARY, (
+            f"{name} is listed as both applied and not applied, so which one is "
+            f"true would depend on the order the two maps are read in")
+
+    # `artifacts` is the case the pair was separated for: a vocabulary that
+    # EXISTS and is deliberately not applied. Asserted in both maps because
+    # applying it changes what this report can call MISPLACED — it turns 109
+    # entries at that root into the class with a move behind it — and that has
+    # to be a decision somebody makes, not a consequence of a root name joining
+    # a scan.
+    assert "artifacts" not in fh.ROOT_VOCABULARY
+    assert "artifacts" in fh.VOCABULARY_NOT_APPLIED
+
+
+def test_nothing_this_module_scans_is_a_root_the_contract_does_not_name(tmp_path):
+    """The report's root NAMES are the contract's, not the module's.
+
+    `report()` has its own list of which roots to scan, and a name in it that
+    `paths.ROOTS` does not declare would be this module inventing a root — the
+    same shape as inventing a vocabulary for HOME, one level up. The four it
+    scans today are asserted as a subset of the contract's ten, which is the
+    claim that survives a fifth being added deliberately and fails the moment
+    one is added by typing."""
+    home, data = make_roots(tmp_path)
+    scanned = set(fh.report(home=home, data=data)["coverage"])
+    assert scanned <= set(paths.ROOTS), (
+        f"scanned but not a declared root: {sorted(scanned - set(paths.ROOTS))}")
+    assert scanned, "a report that scans nothing is not a passing subset"
+
+
 # ---------------------------------------------------------------------------
 # Duplicates, sizes, and what is left open
 # ---------------------------------------------------------------------------
