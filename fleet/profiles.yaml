@@ -413,11 +413,14 @@ profiles:
         note: >-
           Binds the PARENT, as `linux-server` does, so the two profiles stay
           shaped alike. The distribution inside it is `hwz-server-os`, not
-          `serveros`: `runtime/paths.py` declares `runtime-assets/serveros` and
-          its own comment states that nothing has ever been there, while
-          `SEMANTIC_ROLES["runtime.serveros-distribution"]` names the real
-          tree. Recorded, not "fixed" -- the role is the stable name and this
-          field says where the role resolves today.
+          `serveros`, and `SEMANTIC_ROLES["runtime.serveros-distribution"]`
+          names it. This note used to record a disagreement: `runtime/paths.py`
+          declared `runtime-assets/serveros`, nothing had ever been there, and
+          `serverosctl path resolve runtime-assets` printed it to a person.
+          RUN-0056 fixed the root rather than the reader, so `paths.py` now
+          binds this same parent and the two doors agree; the note is kept
+          because what it recorded is why the fix was written, and a deleted
+          note is indistinguishable from a disagreement nobody noticed.
       downloads:
         path: /data/home/vince/downloads
         state: BOUND

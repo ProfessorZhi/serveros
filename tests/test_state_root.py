@@ -687,6 +687,41 @@ def test_the_distribution_role_resolves_to_the_live_physical_path():
     )
 
 
+def test_the_root_and_the_role_answer_the_same_thing():
+    """§25 finished: the role was added in one package, the root was fixed in a
+    later one, and only together are they correct.
+
+    The root read `{DATA_ROOT}/runtime-assets/serveros` until this package --
+    a path the authority never bound (it binds `{DATA_ROOT}/runtime-assets`),
+    that `DATA_ROOT_TOP_LEVEL` does not name (`runtime-assets` is the top-level
+    area, one level up), that no producer has ever written, and whose absence
+    the test above asserts. The comment above `SEMANTIC_ROLES` called that
+    "the standing defect of this codebase" and then left it there, while
+    `serverosctl path resolve runtime-assets` printed it to a person.
+
+    A role that answers correctly beside a root that answers wrong is not two
+    answers to one question; it is one answer and one defect, and consumers
+    were taught to avoid the defect rather than be rid of it.
+    """
+    import os
+
+    data_root = Path(os.environ.get("DATA_ROOT") or paths_mod.Paths().root("data"))
+    resolved = paths_mod.Paths().resolve("runtime-assets/hwz-server-os")
+    role = paths_mod.Paths().role("runtime.serveros-distribution")
+    assert resolved["path"] == role["path"], (
+        "the root door and the role door name the same artifact and now "
+        "disagree again -- which door a consumer happened to use decided its "
+        "answer, and only one of them was right")
+    assert resolved["exists"], "the file is gone, not the disagreement fixed"
+    assert str(paths_mod.Paths().root("runtime-assets")) == str(
+        data_root / "runtime-assets"), (
+        "the root must name the level the authority binds and the closed "
+        "top-level vocabulary places, not a second level under it")
+    assert not (data_root / "runtime-assets/serveros").exists(), (
+        "the invented level came back. It is not the root's value any more, "
+        "and nothing should be created at it either.")
+
+
 def test_the_browsers_root_was_not_relocated():
     """§25: classify, do not move. 1.7 GB of browser distributions moved out
     from under an undeclared consumer set is how a test environment stops
