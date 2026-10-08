@@ -1116,6 +1116,10 @@ def source_attribution(artifact: Path | None, canonical_head: str,
 
 
 SOURCE_CACHE_ENV = "SERVEROS_SOURCE_CACHE"
+#: The leaf this tool claims under whatever temp root it was given. A literal,
+#: because it is a name on disk that an operator reads after the fact and that
+#: a cleanup has to recognise — not a derived default.
+SOURCE_CACHE_NAME = "serveros-runtime-truth-source"
 EXTRACTED_MARKER = ".extracted"
 
 
@@ -2524,6 +2528,72 @@ def default_root(argument: str):
     return base.joinpath(*suffix) if suffix else base
 
 
+def _load_paths():
+    """`runtime/paths.py` from THIS file's tree, or None.
+
+    Imported rather than restated, for the reason `_load_release` gives about
+    `release.fingerprint`: a second implementation of one lookup produces two
+    answers that are each defensible and cannot be compared. The declared temp
+    root is exactly such a lookup — it is a row in the root contract's table,
+    and the day that row moves, a copy of the string here keeps answering with
+    the old directory without anything going red.
+
+    Not loaded from `--serveros-repo`, unlike `_load_build`: which temp root
+    this node uses is a fact about the NODE and not about a commit, and
+    `--serveros-repo` has no derived default and may be unset.
+    """
+    path = Path(__file__).resolve().parents[1] / "runtime" / "paths.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("serveros_runtime_paths", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def declared_temp_root():
+    """This node's declared temp root, or None. Never the system temp dir.
+
+    None means the node could not answer — an unbound contract resolves to its
+    own template string, and a caller must not write under a name. `/tmp` is
+    deliberately not a third branch: it is what `tempfile` returns when nobody
+    decided anything, and on this node it is the 50 GB system disk.
+    """
+    module = _load_paths()
+    if module is None:
+        return None
+    paths = module.Paths()
+    if not paths.bound:
+        return None
+    return paths.root("tmp")
+
+
+def default_source_cache():
+    """Where an artifact's source tree is extracted — or None, with a reason.
+
+    `$SERVEROS_SOURCE_CACHE` first, because that name asks this exact question
+    and nothing else does. Then the node's declared temp root, under this
+    tool's own name so that two tools sharing a temp root do not share a
+    directory.
+
+    The third branch used to be `tempfile.gettempdir()`, which answers `/tmp`
+    whenever `TMPDIR` is unset. Measured 2026-10-09: `TMPDIR` is unset in every
+    systemd USER unit on this node (`systemctl --user show-environment` carries
+    none), so a timer-run extraction landed on the system disk while the same
+    command run from a login shell landed on the scratch volume — one flag, two
+    landing spots, decided by who started the process and visible nowhere.
+    """
+    raw = os.environ.get(SOURCE_CACHE_ENV)
+    if raw:
+        return Path(raw)
+    root = declared_temp_root()
+    if root is None:
+        return None
+    return root / SOURCE_CACHE_NAME
+
+
 def main() -> int:
     home = Path(os.path.expanduser("~"))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -2532,15 +2602,15 @@ def main() -> int:
                     default=default_root("serveros_repo"),
                     help="canonical bundle-source checkout whose build.py defines "
                          "what the artifact should contain")
-    ap.add_argument("--source-cache", type=Path,
-                    default=Path(os.environ.get(SOURCE_CACHE_ENV)
-                                 or (Path(tempfile.gettempdir())
-                                     / "serveros-runtime-truth-source")),
+    ap.add_argument("--source-cache", type=Path, default=None,
                     help="where the tree of a commit recorded by an artifact is "
                          "extracted so that artifact can be recomputed from its "
-                         "OWN source; default $%s, else the system temp dir. "
-                         "Never written to the source checkout itself"
-                         % SOURCE_CACHE_ENV)
+                         "OWN source; default $%s, else this node's declared "
+                         "temp root. The system temp dir is NOT a fallback: it "
+                         "is the 50 GB system disk here, and it is what "
+                         "`tempfile` answers when `TMPDIR` is unset — which is "
+                         "every systemd user unit. Never written to the source "
+                         "checkout itself" % SOURCE_CACHE_ENV)
     ap.add_argument("--use-checkout-source", action="store_true",
                     help="recompute every artifact from --serveros-repo's working "
                          "tree, the behaviour before each artifact's own recorded "
@@ -2646,6 +2716,27 @@ def main() -> int:
     # not exist.
     if args.output is None and args.runtime_root is not None:
         args.output = args.runtime_root / args.composition / "current"
+
+    # Same shape as `--output` above, for the same reason: the flag's real
+    # default is a fact about this NODE rather than a constant, so it cannot be
+    # an argparse default. Resolved and refused here, before `collect()`,
+    # because an extraction with no decided landing spot is not something to
+    # discover halfway through recomputing an artifact.
+    if args.source_cache is None:
+        args.source_cache = default_source_cache()
+        if args.source_cache is None:
+            sys.stderr.write(
+                "runtime_truth: no --source-cache and no " + SOURCE_CACHE_ENV
+                + ", and this node's root contract is unbound, so there is no "
+                "declared temp root to extract under.\n"
+                "  The system temp directory is not a fallback. It is the "
+                "system disk on this node, and reaching for it silently is what "
+                "put the same extraction in two different places depending on "
+                "whether a unit or a login shell started the process.\n"
+                "  Pass --source-cache, set " + SOURCE_CACHE_ENV + ", or point "
+                + HOST_PROFILE_ENV + " at a host profile whose `node.roots` "
+                "declares one.\n")
+            return 2
 
     # Refused, not guessed — and refused before `collect()`, so an unanswerable
     # root can never be reported as a RELEASE_* verdict about a directory that
