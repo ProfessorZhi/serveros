@@ -1776,7 +1776,12 @@ class RuntimeTruthTests(unittest.TestCase):
 
     def test_a_node_behind_source_is_named_with_the_version_it_would_get(self):
         """The convergence finding, in the shape it actually takes: the running
-        revision is internally perfect and is not what source builds today."""
+        revision is internally perfect and is not what source builds today.
+
+        This is the CONTROL for the two tests below: same content difference,
+        same row, and the checkout is still standing on the commit the artifact
+        records. Only that last fact changes there, and it changes the verdict.
+        """
         self.faithful_runtime()
         self.install_node()
         self.build_node_artifact(cachebuster="fixture.2")
@@ -1787,6 +1792,55 @@ class RuntimeTruthTests(unittest.TestCase):
         row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
         self.assertEqual(row["verdict"], truth.SOURCE_RUNTIME_DRIFT)
         self.assertIn("canonical source builds 3.1.0+fixture.2", row["detail"])
+
+    def test_a_checkout_that_has_moved_on_is_stale_not_the_nodes_drift(self):
+        """The instrument's own staleness, said in its own name.
+
+        A canonical checkout is a working copy that stops where its last fetch
+        left it, so on any node past the first release it stands on a commit
+        the running revision does not name. The path diff against that tree is
+        the same diff a genuinely stale artifact produces — this fixture makes
+        one, by the same cachebuster the control above uses — and the two are
+        distinguishable only by the record the artifact carries.
+
+        Blaming the artifact for it is how a checker reports its own lag as the
+        node's, so the verdict names the instrument instead. It still blocks:
+        `SOURCE_STALE` is «cannot decide here», not «verified».
+        """
+        self.faithful_runtime()
+        self.install_node()
+        self.build_node_artifact(cachebuster="fixture.2")
+        # The one variable: the checkout moves past the staged revision.
+        git(self.serveros, "commit", "--quiet", "-a", "-m", "release train moved on")
+        report = truth.collect(self.args())
+        row = rows_by(report)[f"{NODE_COMPOSITION} (node revision)"]
+        self.assertEqual(row["verdict"], truth.SOURCE_STALE)
+        self.assertIn("The instrument is the one that is behind", row["detail"])
+        self.assertNotIn("differs in", row["detail"])
+        self.assertEqual(report["verdict"], truth.SOURCE_STALE)
+        self.assertEqual(report["release"]["verdict"], truth.RELEASE_INCOMPLETE)
+        self.assertEqual(report["release"]["blocking"], [truth.AXIS_CHAIN])
+
+    def test_an_artifact_with_no_recorded_source_is_not_called_misattributed(self):
+        """Silence is not a claim.
+
+        An artifact that predates the source record, or one whose manifest is
+        unreadable, would otherwise read as «built from a different checkout»
+        — and a verdict that fires on every old machine is a verdict nobody
+        reads on a new one. Unknown on either side answers «same».
+        """
+        empty = self.base / "no-record"
+        empty.mkdir()
+        head = "a" * 40
+        self.assertEqual(truth.source_attribution(empty, head, self.serveros),
+                         (True, ""))
+        self.assertEqual(truth.source_attribution(None, head, self.serveros),
+                         (True, ""))
+        # And the comparison is by prefix, because the row labels print twelve.
+        rev = self.install_node()
+        recorded = truth.recorded_source_commit(rev)
+        self.assertTrue(truth.source_attribution(rev, recorded, self.serveros)[0])
+        self.assertFalse(truth.source_attribution(rev, "f" * 40, self.serveros)[0])
 
     def test_the_node_revision_is_hashed_without_its_own_manifest(self):
         """`RELEASE.json` records the tree hash and therefore cannot be inside
