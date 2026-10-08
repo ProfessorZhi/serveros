@@ -55,10 +55,13 @@ STORE_MODULE = REPO_ROOT / "runtime" / "agent_control_store.py"
 
 
 def _load(name: str, relative: str):
+    registered = "serveros_intake_" + name
+    if registered in sys.modules:
+        return sys.modules[registered]
     spec = importlib.util.spec_from_file_location(
-        "serveros_intake_" + name, REPO_ROOT / "intake" / relative)
+        registered, REPO_ROOT / "intake" / relative)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_intake_" + name] = module
+    sys.modules[registered] = module
     spec.loader.exec_module(module)
     return module
 
@@ -74,6 +77,8 @@ capture = _load("capture_coverage", "capture_coverage.py")
 
 
 def _load_path(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

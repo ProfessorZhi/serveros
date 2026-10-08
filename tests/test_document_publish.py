@@ -23,10 +23,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(name: str, relative: str):
+    registered = "serveros_intake_" + name
+    if registered in sys.modules:
+        return sys.modules[registered]
     spec = importlib.util.spec_from_file_location(
-        "serveros_intake_" + name, REPO_ROOT / "intake" / relative)
+        registered, REPO_ROOT / "intake" / relative)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_intake_" + name] = module
+    sys.modules[registered] = module
     spec.loader.exec_module(module)
     return module
 
