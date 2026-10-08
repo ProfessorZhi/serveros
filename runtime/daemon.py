@@ -2327,9 +2327,9 @@ class Daemon:
             "cwd": str(cwd) if cwd else None,
             "inferred_item": inferred_item,
             "inference_note": note,
-            "roots": {n: str(paths.root(n)) for n in paths.names},
+            "roots": {n: str(paths.root(n, unbound_ok=True)) for n in paths.names},
             "state_runtime": {
-                name: str(paths.root("state") / "runtime" / name)
+                name: str(paths.root("state", unbound_ok=True) / "runtime" / name)
                 for name in paths_mod.STATE_SERVEROS_RUNTIME
             },
             "note": (

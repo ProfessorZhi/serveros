@@ -438,8 +438,30 @@ def process_trace(pid: int, *, host=None, answered_by: str = DEFAULT_MEASURER) -
 
 
 def _declared_roots() -> dict:
-    paths = paths_mod.Paths()
-    return {name: str(paths.root(name)) for name in paths.names}
+    """The roots a path may be attributed to, or none.
+
+    THE SAME SHAPE AS `ownership_gate._roots()`, WHICH ASKS THE SAME QUESTION.
+    Both answer "which declared roots could own this path", and on a node whose
+    roots are unbound the true answer is NONE of them: a container under
+    `{DATA_ROOT}/...` is a container under no root of this machine, and a
+    template is not somewhere a path can live.
+
+    Measured before the fix: the two bodies were the SAME EXPRESSION, so they
+    returned the same thing — and the gate's docstring nonetheless claimed its
+    spelling was `view._declared_roots`'s, an assertion of agreement that
+    nothing checked. What they did NOT share is the part that matters here:
+    `_roots()` was written to survive a question it cannot answer and this was
+    not. Adding the refusal to `root()` (RUN-0054) is what would have created
+    the disagreement — every other caller would refuse and this one would
+    raise — so the catch below is not a convenience, it is the cost of the
+    refusal landing in a second place. Two spellings of one question drift one
+    unwatched edit at a time; this is the edit.
+    """
+    try:
+        paths = paths_mod.Paths()
+        return {name: str(paths.root(name)) for name in paths.names}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def attribution_index(registry, *, registry_path=None) -> dict:

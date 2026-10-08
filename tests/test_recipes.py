@@ -1644,7 +1644,7 @@ class TheRecipeCommandLineTest(RecipeCase):
         workspace = self.workspace
 
         class _Declared:
-            def root(self, name):
+            def root(self, name, *, unbound_ok=False):
                 assert name == "workspace", (
                     f"`recipe run` asked the root contract for {name!r}; the "
                     f"declared root this path may take is `workspace`")

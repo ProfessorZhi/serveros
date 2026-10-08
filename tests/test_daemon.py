@@ -1318,7 +1318,7 @@ def test_ability_questions_are_answered_but_never_on_the_authoritys_behalf(
     empty.mkdir()
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return empty
 
@@ -1359,7 +1359,7 @@ def test_an_absent_projection_is_not_reported_as_no_abilities_installed(
     empty.mkdir()
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return empty
 
@@ -1378,7 +1378,7 @@ def test_a_fresh_projection_is_reported_as_fresh_and_a_stale_one_as_stale(
     abilities.mkdir(parents=True)
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return tmp_path / "state"
 
@@ -1411,7 +1411,7 @@ def test_an_undated_projection_is_not_treated_as_fresh(daemon_factory, tmp_path,
     (abilities / "effective.json").write_text('{"abilities": []}')
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             return tmp_path / "state"
 
     monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
@@ -1427,7 +1427,7 @@ def test_a_corrupt_projection_is_unreadable_not_empty(daemon_factory, tmp_path,
     (abilities / "effective.json").write_text("{ this is not json")
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             return tmp_path / "state"
 
     monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
@@ -1464,7 +1464,7 @@ def test_the_daemon_reads_the_projection_the_writer_actually_writes(
     })
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return state
 
@@ -1508,7 +1508,7 @@ def _state_root(tmp_path, monkeypatch, materials):
     })
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return state
 
@@ -1603,7 +1603,7 @@ def test_the_tree_is_null_and_not_empty_when_nothing_was_materialized(
     empty.mkdir()
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return empty
 
@@ -1795,7 +1795,7 @@ def test_a_search_with_no_projection_is_null_and_not_an_empty_catalogue(
     empty.mkdir()
 
     class Paths:
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             assert name == "state"
             return empty
 
@@ -2282,7 +2282,7 @@ def test_context_current_will_not_infer_the_item_from_its_own_directory(
     class Paths:
         names = ("state", "workspace")
 
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             return empty if name == "state" else tmp_path / "workspace"
 
     monkeypatch.setattr(daemon_mod.paths_mod, "Paths", Paths)
@@ -2318,7 +2318,7 @@ def test_context_current_infers_the_item_from_the_cwd_the_caller_stated(
     class Paths:
         names = ("state",)
 
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             return tmp_path / "state"
 
     class Roots:
@@ -2374,7 +2374,7 @@ def test_context_current_reports_an_inference_failure_instead_of_raising(
     class Paths:
         names = ("state",)
 
-        def root(self, name):
+        def root(self, name, *, unbound_ok=False):
             return tmp_path / "state"
 
     class Boom(Exception):

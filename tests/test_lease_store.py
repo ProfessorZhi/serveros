@@ -95,7 +95,7 @@ class TestNamespaceResolution:
             bound = False
             unconfigured = ("data_root",)
 
-            def resolve(self, ref):
+            def resolve(self, ref, *, unbound_ok=False):
                 raise AssertionError("must not be reached")
 
         monkeypatch.setattr(lease_store.paths_mod, "Paths", Unbound)

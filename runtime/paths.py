@@ -649,9 +649,19 @@ def _unbound(placeholder: str) -> str:
 
     Not `""`, which formats into `/workspace` and reads as an absolute path,
     and not a plausible default, which reads as a correct answer to a caller
-    that never asked whether the node was identified. `{DATA_ROOT}/state` can
-    be mistaken for neither, so the mistake this module exists to prevent is
-    not available to make.
+    that never asked whether the node was identified.
+
+    WHAT THIS FUNCTION'S DOCSTRING USED TO CLAIM, AND WHY IT WAS WRONG. It said
+    the template "can be mistaken for neither, so the mistake this module exists
+    to prevent is not available to make". The mistake was available. Measured
+    (RUN-0054): `Path("{WORKSPACE_ROOT}/records").mkdir(parents=True)` succeeds
+    and creates a directory named after a template, after which
+    `records.is_dir()` is True and every later check passes — the value was
+    shaped to stop a READER who reads, and it says nothing to a program that
+    never does. Shaping a value is not a guard. The guard is `Paths.root`,
+    which now REFUSES to serve this string unless the caller declares its job is
+    to report it, and that refusal is what makes the sentence above true rather
+    than aspirational.
     """
     return "{" + placeholder + "}"
 
@@ -842,12 +852,45 @@ class Paths:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.roots))
 
-    def root(self, name: str) -> Path:
+    def root(self, name: str, *, unbound_ok: bool = False) -> Path:
+        """A declared root, as a path a caller may USE.
+
+        AN UNBOUND ROOT IS REFUSED, AND THAT IS THE POINT. This method used to
+        hand back the template (`{WORKSPACE_ROOT}`) and leave the caller to
+        check `Paths.bound` first. Measured on this tree: `root()` has 41 call
+        sites in 13 files and only `paths.py` itself ever mentions `bound`, so
+        the check was a rule nobody was keeping. The template was described as
+        "shaped so the mistake is not available to make", and the shape is not a
+        guard: `Path("{WORKSPACE_ROOT}/records").mkdir(parents=True)` SUCCEEDS,
+        creating a directory named after a template, after which
+        `records.is_dir()` is True and every later check passes. Shaping a value
+        so a human cannot misread it does nothing about a program that never
+        reads it.
+
+        `unbound_ok=True` is for a surface whose JOB is to report that this node
+        was never identified: it must be able to NAME the placeholder. It is not
+        a convenience flag — a consumer that sets it is declaring that it will
+        accept `{WORKSPACE_ROOT}/records` as a place to write, and the gate
+        `tests/test_unbound_roots_are_not_usable_as_paths.py` makes each such
+        site a declaration with a reason rather than a habit.
+        """
         if name not in self.roots:
             raise PathRefused(
                 f"{name!r} is not a declared root. Known roots: "
                 f"{list(self.names)}. There is no default root, and an "
                 f"unresolved path must not fall back to the working directory."
+            )
+        if not unbound_ok and self.provenance.get(name) == UNBOUND:
+            raise PathRefused(
+                f"{name!r} is a declared root that THIS NODE does not bind — "
+                f"nobody supplied it and nothing was invented, so there is no "
+                f"path to hand back. The value the contract holds is the "
+                f"template {self.roots[name]!r}, and what it is NOT is a place "
+                f"to write: `mkdir` accepts it and creates a directory named "
+                f"after a template. If the caller's job is to REPORT that this "
+                f"node is unidentified, it can ask for the template explicitly "
+                f"with `unbound_ok=True`. Unbound roots here: "
+                f"{list(self.unconfigured)}."
             )
         return Path(self.roots[name])
 
@@ -879,7 +922,7 @@ class Paths:
             )
         return Path(self.bindings[name])
 
-    def role(self, name: str) -> dict:
+    def role(self, name: str, *, unbound_ok: bool = False) -> dict:
         """A semantic role resolves to wherever its artifact currently is.
 
         Same shape as `resolve`, plus `role` and `is_role`, so a caller can
@@ -893,7 +936,7 @@ class Paths:
                 f"is where it is, and asking for a role this node does not "
                 f"declare must not fall back to a path."
             )
-        resolved = self.resolve(name)
+        resolved = self.resolve(name, unbound_ok=unbound_ok)
         return {
             **resolved,
             "role": name,
@@ -906,7 +949,7 @@ class Paths:
             ),
         }
 
-    def resolve(self, ref: str) -> dict:
+    def resolve(self, ref: str, *, unbound_ok: bool = False) -> dict:
         """A NAMED reference becomes an absolute path.
 
         `ref` is `<root>` or `<root>/<suffix>`. The first segment must name a
@@ -914,6 +957,14 @@ class Paths:
         consults the cwd, expands `~`, or infers a root from a pattern — the
         same input always produces the same output because there is nothing
         else for it to depend on.
+
+        IT REFUSES AN UNBOUND ROOT THROUGH `root()`, WHICH IS THE ONLY DOOR.
+        `resolve` is the WIDER of the two — 106 call sites in this tree against
+        `root()`'s 41 — and it served the same template, so closing `root()`
+        alone would have left the defect reachable by the more common spelling.
+        Both are closed by the one refusal because this method holds no second
+        opinion about what a root is worth; `unbound_ok` is passed through, and
+        a caller that sets it is making the declaration `root()` describes.
         """
         if not ref or not isinstance(ref, str):
             raise PathError("a path reference is required")
@@ -931,11 +982,13 @@ class Paths:
             )
         if ".." in Path(suffix).parts:
             raise PathRefused(f"{ref!r}: `..` is not part of a resolved path.")
+        base = self.root(head, unbound_ok=unbound_ok)
+        target = base / suffix if suffix else base
         return {
             "ref": ref,
             "root": head,
-            "path": str(self.root(head) / suffix) if suffix else str(self.root(head)),
-            "exists": (self.root(head) / suffix).exists() if suffix else self.root(head).exists(),
+            "path": str(target),
+            "exists": target.exists(),
         }
 
     # -- the leaf contract -------------------------------------------------
