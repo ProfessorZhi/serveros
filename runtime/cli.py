@@ -7230,6 +7230,24 @@ def cmd_fs_hygiene(args) -> int:
         lines.append("duplicate semantic roots — REPORTED, never reunited:")
         for name, paths in sorted(payload["duplicate_semantic_roots"].items()):
             lines.append(f"    {name}: {paths}")
+    # D07: the roots a person opens, and whether landing in one tells them
+    # anything. Printed even when every document is present, because a reading
+    # that only appears when something is wrong cannot be told apart from a
+    # reading that stopped running.
+    entry_docs = payload.get("entry_documents") or {}
+    rows = entry_docs.get("rows") or {}
+    declared = [n for n, r in sorted(rows.items()) if r.get("required")]
+    if declared:
+        lines.append("")
+        lines.append("D07 entry documents — a major entry says what it is for:")
+        for name in declared:
+            row = rows[name]
+            state = ("present" if row.get("present") is True
+                     else "MISSING" if row.get("present") is False else "unknown")
+            lines.append(f"    {name:<16} {state:<8} "
+                         f"{row.get('document') or '—':<10} {row.get('path') or '—'}")
+        not_required = [n for n, r in sorted(rows.items()) if not r.get("required")]
+        lines.append(f"    no document by decision: {', '.join(not_required)}")
     lines.append("")
     lines.append(payload["note"])
     emit(payload, as_json=args.json, lines=lines)
