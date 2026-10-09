@@ -663,6 +663,141 @@ VOCABULARY_NOT_APPLIED = {
     ),
 }
 
+# ---------------------------------------------------------------------------
+# D07 · the entry document a person reads at a root, and the roots that
+# deliberately have none
+# ---------------------------------------------------------------------------
+# §13 of the directory contract asks that every MAJOR entry say, briefly, what
+# it is for, who owns it, what the current entry is and where to read more.
+# That sentence had no reader in this product: nothing could answer "does the
+# root a person just landed in have such a note?", so a root could be declared,
+# scanned, classified and reported on for as long as it existed while the one
+# question a stranger asks first went unasked.
+#
+# This pair is the same shape as `ROOT_VOCABULARY` / `VOCABULARY_NOT_APPLIED`
+# above, and for the same reason: the failure it exists for is not a WRONG
+# answer but a MISSING one, and a missing entry is invisible in a report in a
+# way a named one is not. The set it covers is `paths.ROOTS` — the roots the
+# contract itself calls the entry points — rather than a list authored here, so
+# a root added to `paths.py` cannot arrive both undocumented and unclassified:
+# it gets a document, or it gets a reason.
+#
+# `data` is answered by `CLAUDE.md` rather than by a new `README.md`. That root
+# is also HOME, and the machine policy a runtime opens there is already a short
+# statement of purpose, owner and current entry; requiring a second document at
+# that root would be requiring a second statement of one thing in the root whose
+# whole position is that it has one.
+ENTRY_DOCUMENT_ROOTS = {
+    "data": "CLAUDE.md",
+    "workspace": "README.md",
+    "state": "README.md",
+    "artifacts": "README.md",
+    "runtime-assets": "README.md",
+    "toolchains": "README.md",
+}
+
+# The declared roots that deliberately carry no entry document, each with the
+# reason. Absences are DECISIONS here, recorded where the decision is made — the
+# same discipline `VOCABULARY_NOT_APPLIED` above states for vocabularies. An
+# absence that is a decision and an absence nobody got to look identical in a
+# report and are not the same finding.
+#
+# Two groups, and they are not the same argument:
+#
+#   * `logs`, `tmp` and `caches` are machine sinks. A producer writes them and
+#     the owner of that producer reads them; no human navigation flow opens
+#     them, so a note there would have no reader. §65 of the contract says the
+#     same thing from the other side — a short entry is for the major nodes, not
+#     for every directory that exists.
+#   * `home` is not a second place. On this host `HOME == DATA_ROOT` and the
+#     contract groups the two names as one physical root
+#     (`paths.CO_BINDING_ROOT_GROUPS`), so `home`'s entry document IS `data`'s.
+#     Two documents for one directory would be §9.61.2's defect one level down:
+#     two names for one role reported as two roles.
+ENTRY_DOCUMENT_NOT_REQUIRED = {
+    "home": (
+        "HOME and DATA_ROOT resolve to one directory on this host and the "
+        "contract groups the two names as one physical root, so `home`'s entry "
+        "document is `data`'s. A second document here would be a second name "
+        "for one role — the same defect as reporting one entry document as two"
+    ),
+    "logs": (
+        "a machine sink: producers append to it and the owners of those "
+        "producers read it, and no human navigation flow opens this root, so a "
+        "note here would have no reader"
+    ),
+    "tmp": (
+        "scratch by definition — `{DATA_ROOT}/tmp`. Its contents are "
+        "regenerable and its readers are the processes that wrote them"
+    ),
+    "caches": (
+        "rebuildable by definition — `{DATA_ROOT}/caches`. A cache that needs a "
+        "document to be understood is a cache that has stopped being one"
+    ),
+}
+
+
+def entry_documents(*, roots: dict | None = None) -> dict:
+    """Does each declared root carry the entry document D07 asks it to?
+
+    An EXISTENCE check — one `Path.exists()` per root — and not a scan, because
+    this module deliberately does not scan `artifacts` (`VOCABULARY_NOT_APPLIED`
+    above records why), and a question about one file at a root must not become
+    a reason to classify that root's other entries.
+
+    `roots` maps a root name to its directory and defaults to this node's
+    resolved roots. It is a parameter for the same reason `home` and `data` are
+    parameters of `report()`: a caller testing this reading against a throwaway
+    tree must not have it reach for the real one.
+
+    A root that is not there reports `present: None`, never `False`. "This root
+    has no entry document" and "there is no such root on this node" are different
+    findings, and a reading that merged them would report a document missing from
+    a directory that was never created — the same distinction `report()` draws
+    when it reports an absent root rather than omitting it.
+    """
+    resolved = roots if roots is not None else paths.Paths().roots
+    rows = {}
+    for name in paths.ROOTS:
+        directory = resolved.get(name)
+        if name not in ENTRY_DOCUMENT_ROOTS:
+            rows[name] = {"path": directory, "required": False, "document": None,
+                          "present": None, "why": ENTRY_DOCUMENT_NOT_REQUIRED[name]}
+            continue
+        document = ENTRY_DOCUMENT_ROOTS[name]
+        if not directory:
+            rows[name] = {
+                "path": None, "required": True, "document": document,
+                "present": None,
+                "why": ("this node declares the root but resolves no directory "
+                        "for it, so whether the document is there is unknown "
+                        "rather than absent")}
+            continue
+        if not Path(directory).is_dir():
+            rows[name] = {
+                "path": str(directory), "required": True, "document": document,
+                "present": None, "why": "this node has no such root; nothing here"}
+            continue
+        target = Path(directory) / document
+        rows[name] = {
+            "path": str(directory), "required": True, "document": document,
+            "present": target.is_file(),
+            "why": (f"`{document}` states this root's purpose, owner and current "
+                    f"entry" if target.is_file() else
+                    f"this root is a major entry and carries no `{document}`: a "
+                    f"person landing here is told what it is for by nothing")}
+    missing = sorted(name for name, row in rows.items()
+                     if row["required"] and row["present"] is False)
+    return {
+        "rows": rows,
+        "missing": missing,
+        "note": ("D07 of the directory contract: a major entry says briefly what "
+                 "it is for, who owns it, what the current entry is and where to "
+                 "read more. This reading is one `exists()` per declared root and "
+                 "moves, creates and renames nothing — a missing document is "
+                 "reported for a person to write, and is not written here."),
+    }
+
 # The three roots whose top level is declared a closed set. `state` is declared
 # closed in policy but `paths.admit` does not enforce it the way it enforces
 # `data` and `workspace`; the report says which of the two it is, because "a
@@ -1090,7 +1225,8 @@ def placement(path, *, paths_registry=None) -> dict:
     }
 
 
-def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
+def report(*, home=None, data=None, sizes=None, oversized_bytes=None,
+           roots=None) -> dict:
     """Classify both roots, change nothing, and say which question is open.
 
     `sizes` maps an absolute path to bytes, produced by whoever already
@@ -1100,6 +1236,10 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
     A root that is not there is reported as `absent` with its reason rather
     than omitted: a report over one root that reads as a report over two is
     how a check stops covering half of what it claims.
+
+    `roots` maps a root name to its directory and is forwarded to
+    `entry_documents`, which is the one part of this document that answers for
+    every declared root rather than for the four that are scanned.
 
     The four root NAMES are resolved to their directories and then grouped by
     the directory they resolve to, and each group is scanned and classified
@@ -1243,6 +1383,12 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None) -> dict:
                for role in summary["roles"]}
     return {
         "schema": "serveros/fs-hygiene-report.v1",
+        # D07's reading, over ALL declared roots rather than over the four this
+        # report scans. It is one `exists()` per root, so it adds no entry to
+        # `entries` and changes no row above: a root that this report does not
+        # scan can still be asked whether a person landing in it is told
+        # anything.
+        "entry_documents": entry_documents(roots=roots),
         "roots": {
             role: {
                 "path": locations[role],
