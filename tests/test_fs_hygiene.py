@@ -443,6 +443,114 @@ def test_every_root_the_contract_declares_is_either_applied_or_explained():
     assert "artifacts" in fh.VOCABULARY_NOT_APPLIED
 
 
+def test_every_declared_root_is_either_given_an_entry_document_or_explained():
+    """D07 needs a reader, and completeness is the half a reader cannot check.
+
+    §13 of the directory contract asks that every major entry say briefly what
+    it is for, who owns it and where to read more. Nothing in this product
+    answered for that sentence, so a root could be declared, scanned and
+    reported on for as long as it existed while the first question a person
+    landing in it asks went unasked.
+
+    `ENTRY_DOCUMENT_ROOTS` names the roots that carry one and which document
+    answers for each; `ENTRY_DOCUMENT_NOT_REQUIRED` names the ones that
+    deliberately do not, with the reason. Together they must account for every
+    name in `paths.ROOTS` — the contract's own list of entry points, not a list
+    authored here — so a root added to `paths.py` fails this until somebody says
+    which of the two it is.
+
+    The failure this exists for is a MISSING entry, not a wrong one: a root that
+    is in neither map reads exactly like a root nobody has thought about, and
+    those are not the same finding.
+    """
+    both = set(paths.ROOTS)
+    accounted = set(fh.ENTRY_DOCUMENT_ROOTS) | set(fh.ENTRY_DOCUMENT_NOT_REQUIRED)
+    assert both == accounted, (
+        f"declared a root but not accounted for here: {sorted(both - accounted)}; "
+        f"named here but not a declared root: {sorted(accounted - both)}")
+
+    for name, reason in fh.ENTRY_DOCUMENT_NOT_REQUIRED.items():
+        assert len(reason.strip()) > 40, f"{name}'s absence is not explained"
+        assert name not in fh.ENTRY_DOCUMENT_ROOTS, (
+            f"{name} is listed as both carrying an entry document and not "
+            f"needing one, so which is true would depend on the order the two "
+            f"maps are read in")
+
+    for name, document in fh.ENTRY_DOCUMENT_ROOTS.items():
+        assert document and not document.startswith("."), (
+            f"{name} names {document!r} as its entry document; an entry "
+            f"document is a file a person opens, not a hidden state file")
+        assert "/" not in document, (
+            f"{name}'s entry document {document!r} is expected at that root's "
+            f"top level, which is where a person lands")
+
+    # `data` is the case the pair exists for: the root that is also HOME, whose
+    # entry document is the machine policy a runtime opens there rather than a
+    # second `README.md` stating the same thing one directory below it.
+    assert fh.ENTRY_DOCUMENT_ROOTS["data"] == "CLAUDE.md"
+    assert "home" in fh.ENTRY_DOCUMENT_NOT_REQUIRED
+
+
+def test_a_root_declared_to_carry_an_entry_document_is_reported_when_it_has_none(tmp_path):
+    """The reading has to be able to FAIL, and to tell three states apart.
+
+    Hermetic: the roots are passed in, so this never reads this machine's
+    directories. What is asserted is that the reading distinguishes a document
+    that is there, one that is missing from a root that exists, and a root that
+    does not exist at all — because "no document at this root" and "no such
+    root" are different findings, and a reading that merged them would report a
+    document missing from a directory that was never created.
+    """
+    world = tmp_path / "world"
+    (world / "artifacts").mkdir(parents=True)
+    (world / "toolchains").mkdir()
+    (world / "toolchains" / "README.md").write_text("what this root is for\n")
+    # `data`'s entry document is `CLAUDE.md`, not a second `README.md` — the
+    # root that is also HOME is answered by the machine policy a runtime opens.
+    (world / "CLAUDE.md").write_text("the machine entry\n")
+    roots = {"data": str(world), "artifacts": str(world / "artifacts"),
+             "toolchains": str(world / "toolchains"),
+             "tmp": str(world / "tmp")}
+
+    reading = fh.entry_documents(roots=roots)
+    rows = reading["rows"]
+
+    # A required root with its document: present, and not a complaint.
+    assert rows["toolchains"]["present"] is True
+    assert "states this root's purpose" in rows["toolchains"]["why"]
+
+    # `data` is answered by `CLAUDE.md`, and the check looks for THAT name.
+    assert rows["data"]["required"] is True
+    assert rows["data"]["document"] == "CLAUDE.md"
+    assert rows["data"]["present"] is True
+
+    # A required root without it: absent, named, with the path it looked in.
+    assert rows["artifacts"]["present"] is False
+    assert rows["artifacts"]["document"] == "README.md"
+    assert rows["artifacts"]["path"] == str(world / "artifacts")
+    assert "no `README.md`" in rows["artifacts"]["why"]
+
+    # A required root that is NOT THERE: unknown, never `False`.
+    rows2 = fh.entry_documents(roots={**roots, "state": str(world / "nowhere")})["rows"]
+    assert rows2["state"]["present"] is None
+    assert "no such root" in rows2["state"]["why"]
+
+    # A required root the node resolves no directory for at all: also unknown.
+    assert rows["workspace"]["present"] is None
+    assert "resolves no directory" in rows["workspace"]["why"]
+
+    # A root declared not to need one is a DECISION, reported with its reason
+    # rather than omitted.
+    assert rows["tmp"]["required"] is False
+    assert rows["tmp"]["present"] is None
+    assert "scratch by definition" in rows["tmp"]["why"]
+
+    # The complaint list names exactly the required roots whose document is
+    # missing — not the ones that are merely unknown, and not `data`, whose
+    # document is there under the other name.
+    assert reading["missing"] == ["artifacts"]
+
+
 def test_nothing_this_module_scans_is_a_root_the_contract_does_not_name(tmp_path):
     """The report's root NAMES are the contract's, not the module's.
 

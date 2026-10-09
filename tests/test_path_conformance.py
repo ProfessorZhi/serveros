@@ -293,6 +293,47 @@ def test_the_same_entry_document_at_the_machine_root_is_the_same_role(world):
     assert data_entry["CLAUDE.md"]["authority"] != "as above"
 
 
+def test_the_entry_document_role_is_the_same_at_a_third_root(world):
+    """A role is recognised wherever it appears, or the table reports its own
+    inconsistency as a finding about the directory.
+
+    `WORKSPACE_ROOT/README.md` and `state/serveros/README.md` are exempt entry
+    documents. `ARTIFACTS_ROOT` is a third root whose top level is a closed set
+    of DIRECTORIES, so a `README.md` there could never have been declared into it
+    either — the same situation `DATA_ROOT` is in, one root over. Leaving it as
+    `UNDECLARED_ENTRY` while the other two read `EXEMPT_ENTRY` would tell a
+    reader that one convention holds at two roots and not at the third, which is
+    the shape the two tests above exist to keep out.
+
+    What the exemption does NOT do is widen `ARTIFACT_NAMESPACES`: the assertion
+    below is that `README.md` is not in it. The undeclared rows at that root are
+    untouched by this and remain the reason its top-level vocabulary is still
+    unapplied (`fs_hygiene.VOCABULARY_NOT_APPLIED`).
+    """
+    report = world(artifacts=("README.md",))
+    assert of(report, "UNDECLARED_ENTRY", "README.md") == [], (
+        "README.md at ARTIFACTS_ROOT was not exempt as an entry document")
+    found = of(report, "EXEMPT_ENTRY", "README.md")
+    assert len(found) == 1, "README.md was not reported as an exempt entry"
+    # The surface label travels in `class`; asserted because three roots now
+    # carry the same exemption and a test that could not tell which surface
+    # answered would pass on another root's entry.
+    assert found[0]["class"] == "ARTIFACTS_ROOT"
+    assert found[0]["status"] == "OBSERVED"
+    assert found[0]["exemption_class"] == "ENTRY_DOCUMENT"
+    assert found[0]["disposition"] == "KEEP"
+    assert "README.md" not in paths_mod.ARTIFACT_NAMESPACES, (
+        "the exemption must not have been reached by widening the vocabulary")
+
+    # The load-bearing half: not "it is exempt" but "it is the SAME role" as the
+    # two roots that already recognised it.
+    artifacts_entry = conformance.EXCEPTIONS["artifacts"]["README.md"]
+    for other in (conformance.EXCEPTIONS["workspace"]["README.md"],
+                  conformance.EXCEPTIONS["state"]["README.md"]):
+        assert artifacts_entry["class"] == other["class"] == "ENTRY_DOCUMENT"
+        assert artifacts_entry["disposition"] == other["disposition"] == "KEEP"
+
+
 # ---------------------------------------------------------------------------
 # the `~/.serveros` declaration conflict
 # ---------------------------------------------------------------------------
