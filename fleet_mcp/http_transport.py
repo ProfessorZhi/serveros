@@ -62,6 +62,7 @@ from .server import McpServer
 from .tools import ToolContext
 from .version import (
     AUTHORIZATION_SERVER_PATH,
+    HEALTH_PATH,
     PROTECTED_RESOURCE_PATH,
     SERVER_NAME,
     SERVER_VERSION,
@@ -133,7 +134,7 @@ class HttpSurface:
         route = urlparse(path).path.rstrip("/") or "/"
 
         try:
-            if route == "/health":
+            if route == HEALTH_PATH:
                 return self._health()
             if route == PROTECTED_RESOURCE_PATH or route.startswith(PROTECTED_RESOURCE_PATH + "/"):
                 return self._protected_resource()
@@ -371,7 +372,7 @@ class HttpSurface:
             "protocol": "MCP Streamable HTTP (JSON-RPC 2.0)",
             "endpoints": {
                 self.mcp_path: "POST JSON-RPC. Requires `Authorization: Bearer <token>`.",
-                "/health": "Unauthenticated liveness. No fleet information.",
+                HEALTH_PATH: "Unauthenticated liveness. No fleet information.",
                 PROTECTED_RESOURCE_PATH: "RFC 9728 protected-resource metadata.",
                 AUTHORIZATION_SERVER_PATH: "RFC 8414 authorization-server metadata.",
                 "/oauth/register": "RFC 7591 dynamic client registration (public clients, PKCE).",

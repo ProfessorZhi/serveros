@@ -377,6 +377,53 @@ node_transport:
   boundary_reconciliation: controller-contract.yaml#boundary.forbidden#silent_transport_substitution
 
 # ---------------------------------------------------------------------------
+# Where this runs, and how it is taken back off
+# ---------------------------------------------------------------------------
+#
+# Two other readers exist, which is why this is a declaration and not prose: the
+# installer waits on `health` to decide whether the revision it just placed is
+# running, and an operator needs one file that says what is installed where.
+# `tests/test_fleet_mcp_contract.py` asserts each name below against the code
+# that computes it, so the two cannot drift apart by one edit.
+
+deployment:
+  installer: fleet_mcp/deploy/install.py
+  unit_template: fleet_mcp/deploy/serveros-fleet-mcp.service
+  unit: serveros-fleet-mcp.service
+  service_name: serveros-fleet-mcp
+  type: user systemd unit (systemctl --user)
+  health: /health
+  artifact:
+    schema: serveros/fleet-mcp-artifact/v1
+    entry: fleet_mcp/bin/serveros-fleet-mcp
+    payload: [fleet_mcp, fleet]
+    layout: <runtime-root>/<composition>/revisions/<label>@<shortrev>
+    current: <runtime-root>/<composition>/current
+    previous: <runtime-root>/<composition>/previous
+    inventory: ARTIFACT.json records the revision, the label, the source path and
+      a sha256 per file plus one tree hash, so "which bytes are running" is
+      answerable from the artifact rather than from the shell history
+  default_runtime_root: ~/runtime-assets/serveros-fleet-mcp
+  rollback: >-
+    `install.py rollback` points `current` at `previous` and restarts. The
+    artifact carries its own unit template, so the revision that comes back
+    renders the unit it was released with rather than the one that replaced it.
+  why_not_release_py: >-
+    `scripts/release.py` carries `UNIT_NAME = "serverosd.service"`, whatever its
+    flags suggest. Promoting this artifact through it would point the NODE
+    RUNTIME's unit at a web surface and stop the node. This surface has its own
+    installer with the same layout and the same rollback rather than a second
+    caller of a single-caller path.
+  in_the_core_composition: false
+  why_not_in_the_core_composition: >-
+    `plugin/bundle.yaml` declares the `serveros-core` composition, whose members
+    are shipped to every node and whose changes go through build -> promote ->
+    restart of `serverosd`. This surface is one host's ingress; adding it would
+    make every node carry a listener most of them do not expose, and would make
+    this round's change a node-runtime release. Left out on purpose, and stated
+    here so the omission is a decision rather than an oversight.
+
+# ---------------------------------------------------------------------------
 # What this round does not build
 # ---------------------------------------------------------------------------
 #

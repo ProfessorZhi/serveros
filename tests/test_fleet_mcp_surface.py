@@ -209,6 +209,83 @@ class ToolSurface(unittest.TestCase):
         self.assertIn("fleet_list_devices", result["structuredContent"]["detail"])
 
 
+class ArgumentClosure(unittest.TestCase):
+    """An argument that is ignored does not fail — it widens. Each test is a
+    different spelling of the same mistake."""
+
+    def _call(self, harness: Harness, name: str, arguments: dict):
+        return fleet_tools.call_tool(
+            fleet_tools.ToolContext(service=harness.service, principal=harness.principal()),
+            name,
+            arguments,
+        )
+
+    def test_a_misspelled_filter_is_refused_rather_than_ignored(self):
+        """`device_ref` for `device` used to return the whole fleet.
+
+        That is the failure this class exists for: the caller asked about one
+        device and was handed every device's sessions, with a successful-looking
+        answer. Found on the live surface, 2026-10-10, by calling it that way.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            result = self._call(harness, "fleet_list_sessions", {"device_ref": WINDOWS})
+        self.assertTrue(result["isError"])
+        detail = result["structuredContent"]["detail"]
+        self.assertEqual(result["structuredContent"]["code"], "BAD_REQUEST")
+        self.assertIn("'device_ref'", detail)
+        self.assertIn("'device'", detail)
+        self.assertNotIn("sessions", result["structuredContent"])
+
+    def test_a_tool_that_takes_nothing_refuses_a_stray_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            result = self._call(harness, "fleet_status", {"device": WINDOWS})
+        self.assertTrue(result["isError"])
+        self.assertIn("'device'", result["structuredContent"]["detail"])
+
+    def test_a_declared_argument_still_reaches_the_tool(self):
+        """The closure must not refuse the arguments the tools do declare — and
+        the one it was written for must still narrow. Both devices answer with
+        a session, so a `device` that reached nothing would show up here as the
+        second device's row rather than as an empty list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.windows._sessions = [_summary(WINDOWS, "w1")]
+            harness.tokyo._sessions = [_summary(TOKYO, "t1")]
+            result = self._call(harness, "fleet_list_sessions", {"device": WINDOWS})
+        self.assertFalse(result["isError"])
+        rows = result["structuredContent"]["sessions"]
+        self.assertTrue(rows)
+        self.assertEqual({row["device_ref"] for row in rows}, {WINDOWS})
+
+    def test_every_tool_declares_the_closure_it_is_held_to(self):
+        """The rule is only enforced where it was declared, so it has to be declared."""
+        for tool in fleet_tools.TOOLS:
+            self.assertIs(tool.input_schema.get("additionalProperties"), False, tool.name)
+
+    def test_a_tool_with_an_open_schema_does_not_inherit_the_rule(self):
+        open_tool = fleet_tools.Tool(
+            name="a_future_tool", title="t", description="d" * 90,
+            input_schema={"type": "object", "properties": {}},
+            annotations={"readOnlyHint": True, "destructiveHint": False,
+                         "idempotentHint": True, "openWorldHint": False},
+            handler=lambda ctx, args: {},
+        )
+        self.assertIsNone(
+            fleet_tools.unknown_argument_refusal(open_tool, {"anything": 1}))
+        closed_tool = fleet_tools.Tool(
+            name="a_closed_tool", title="t", description="d" * 90,
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            annotations={"readOnlyHint": True, "destructiveHint": False,
+                         "idempotentHint": True, "openWorldHint": False},
+            handler=lambda ctx, args: {},
+        )
+        refusal = fleet_tools.unknown_argument_refusal(closed_tool, {"anything": 1})
+        self.assertIsNotNone(refusal)
+        self.assertIn("does not take", refusal.detail)
+
+
 class DeviceListing(unittest.TestCase):
     """Enrolment and reachability are two answers, reported side by side."""
 
