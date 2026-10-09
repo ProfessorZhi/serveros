@@ -427,6 +427,41 @@ def tool_names() -> list[str]:
     return [tool.name for tool in TOOLS]
 
 
+def unknown_argument_refusal(tool: Tool, args: dict[str, Any]) -> FleetRefusal | None:
+    """Refuse an argument this tool does not declare.
+
+    Every tool's schema in this module says `additionalProperties: false`, and
+    this is the code that makes that true rather than aspirational.
+
+    It is not pedantry, it is the failure mode of a *filter*. An argument that
+    is ignored does not fail — it widens. A caller who spells the device filter
+    `device_ref` instead of `device` would be handed every device's sessions
+    while believing they asked about one, which is the cross-device confusion
+    this surface separates `device_ref + provider + native id` to prevent. The
+    same misspelling on `fleet_send_to_session`'s session argument would be
+    refused further down for a different reason and would say nothing about the
+    real mistake.
+
+    Enforced only where the schema declares the closure: a future tool with an
+    open schema keeps its behaviour instead of inheriting a rule nobody asked it
+    to adopt.
+    """
+    if tool.input_schema.get("additionalProperties") is not False:
+        return None
+    declared = set(tool.input_schema.get("properties") or {})
+    unknown = sorted(set(args) - declared)
+    if not unknown:
+        return None
+    accepted = sorted(declared) or ["none"]
+    return refuse(
+        BAD_REQUEST,
+        f"{tool.name} does not take {', '.join(repr(name) for name in unknown)}. "
+        f"It takes {', '.join(repr(name) for name in accepted)}. An argument this "
+        f"surface does not know is refused rather than ignored, because ignoring "
+        f"a filter answers a wider question than the one that was asked.",
+    )
+
+
 def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     """Dispatch one tool call and shape the MCP result.
 
@@ -444,6 +479,9 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     args = arguments or {}
     if not isinstance(args, dict):
         return _error(principal=ctx.principal, exc=refuse(BAD_REQUEST, "arguments must be an object"))
+    unknown = unknown_argument_refusal(tool, args)
+    if unknown is not None:
+        return _error(principal=ctx.principal, exc=unknown, tool=tool.name)
     try:
         payload = tool.handler(ctx, args)
     except FleetRefusal as exc:

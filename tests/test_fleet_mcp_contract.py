@@ -10,6 +10,7 @@ round reopens it by adding a declaration rather than by making a decision.
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from pathlib import Path
 
@@ -232,17 +233,37 @@ class WhereThisSurfaceKeepsItsFiles(unittest.TestCase):
         declared = contract()["local_roots"]
         self.assertEqual(declared["implementation"], "fleet_mcp/local_roots.py")
         self.assertTrue((REPO / declared["implementation"]).exists())
+
         # Asserted against the module rather than restated as a string, so a
         # change to the platform default cannot leave this file describing a
-        # directory nothing uses — and so the "not in ~/.serveros" claim is a
-        # fact about the code rather than about the prose above it.
+        # directory nothing uses. Only the trailing segment is compared
+        # literally: the leading ones are expanded from the environment
+        # (`%LOCALAPPDATA%`, `$XDG_CONFIG_HOME`) and differ per host, while the
+        # last segment is the one that names this surface.
+        platform_key = "windows" if sys.platform == "win32" else "posix"
+        computed = {"binding": lr.binding_root(), "state": lr.state_root()}
+        for name, root in computed.items():
+            with self.subTest(root=name):
+                declared_name = Path(declared[name][platform_key].replace("\\", "/")).name
+                self.assertEqual(root.name, declared_name, f"{name} root is {root}")
+
+        # Two roots, because a binding is not state. Neither may contain the
+        # other, or the re-derivable layer would sit inside the one that
+        # accumulates runtime state — which is what makes a binding
+        # re-derivable in the first place.
+        binding, state = computed["binding"].resolve(), computed["state"].resolve()
+        self.assertNotEqual(binding, state)
+        self.assertNotIn(binding, state.parents)
+        self.assertNotIn(state, binding.parents)
+
+        # And neither is the root the repository closes, for either platform —
+        # a host is one platform, so the claim is checked against the one that
+        # is running.
         closed = Path(lr.CLOSED_ROOT).expanduser().resolve()
-        for name, root in (("binding", lr.binding_root()), ("state", lr.state_root())):
+        for name, root in computed.items():
             with self.subTest(root=name):
                 self.assertFalse(str(root.resolve()).startswith(str(closed) + os.sep))
                 self.assertNotEqual(root.resolve(), closed)
-        self.assertIn("bindings", str(lr.binding_root()))
-        self.assertIn("state", str(lr.state_root()))
         self.assertIs(declared["credentials_in_either_root"], False)
 
     def test_the_contract_says_why_it_is_not_the_serveros_root(self):
@@ -331,6 +352,72 @@ class WhatIsNotBuilt(unittest.TestCase):
             properties = set(tool.input_schema.get("properties") or {})
             with self.subTest(tool=tool.name):
                 self.assertFalse(properties & {"command", "shell", "exec", "argv", "script"})
+
+
+class Deployment(unittest.TestCase):
+    """Where this runs is a claim about two other files, so it is checked."""
+
+    def test_the_declared_installer_and_unit_template_are_there(self):
+        declared = contract()["deployment"]
+        for key in ("installer", "unit_template"):
+            with self.subTest(key=key):
+                path = REPO / declared[key]
+                self.assertTrue(path.exists(), declared[key])
+                self.assertIn("fleet_mcp/", declared[key])
+
+    def test_the_declared_names_are_the_installers_own(self):
+        from fleet_mcp.deploy import install as deploy
+
+        declared = contract()["deployment"]
+        self.assertEqual(declared["unit"], deploy.UNIT_NAME)
+        self.assertEqual(declared["service_name"], deploy.SERVICE_NAME)
+        self.assertEqual(declared["artifact"]["schema"], deploy.ARTIFACT_SCHEMA)
+        self.assertEqual(declared["artifact"]["entry"], deploy.ENTRY)
+        self.assertEqual(tuple(declared["artifact"]["payload"]), tuple(deploy.PAYLOAD))
+        self.assertEqual(declared["installer"], f"fleet_mcp/deploy/{Path(deploy.__file__).name}")
+
+    def test_the_declared_health_path_is_the_served_one(self):
+        self.assertEqual(contract()["deployment"]["health"], version_module.HEALTH_PATH)
+
+    def test_the_unit_template_names_both_placeholders_it_is_rendered_with(self):
+        from fleet_mcp.deploy import install as deploy
+
+        template = (REPO / contract()["deployment"]["unit_template"]).read_text(encoding="utf-8")
+        for placeholder in (deploy.RUNTIME_PLACEHOLDER, deploy.CONFIG_PLACEHOLDER):
+            self.assertIn(placeholder, template, placeholder)
+        # And it starts the entry point the artifact declares, at the path the
+        # template is rendered against — not at a checkout.
+        self.assertIn(f"{deploy.RUNTIME_PLACEHOLDER}/{deploy.ENTRY}", template)
+
+    def test_the_launchers_are_executable_as_committed(self):
+        """The recorded modes, not the working tree's.
+
+        Which mode each file needs is a fact about how it is started, and the
+        repository already answers it two ways: `bin/serverosctl` and
+        `mcp/bin/*` are 100755 because a unit or a PATH entry names them, while
+        `scripts/release.py` is 100644 because it is run as `python3
+        scripts/release.py`. This artifact has one of each, so it is held to
+        both — and Windows has no exec bit to lose, so a mistake here is one
+        only the index can catch.
+        """
+        import subprocess
+
+        declared = contract()["deployment"]
+        modes = {}
+        for relative in (declared["installer"], declared["artifact"]["entry"],
+                         "scripts/release.py"):
+            result = subprocess.run(["git", "ls-files", "-s", "--", relative],
+                                    cwd=REPO, capture_output=True, text=True)
+            if result.returncode != 0 or not result.stdout.strip():
+                self.skipTest(f"{REPO} is not a git checkout of {relative}")
+            modes[relative] = result.stdout.split()[0]
+
+        self.assertEqual(modes[declared["artifact"]["entry"]], "100755",
+                         f"{declared['artifact']['entry']} is started by a unit, "
+                         f"so the unit execs it directly")
+        self.assertEqual(modes[declared["installer"]], modes["scripts/release.py"],
+                         "this installer is operator-run, like scripts/release.py; "
+                         "the two are the same kind of program and carry the same mode")
 
 
 if __name__ == "__main__":

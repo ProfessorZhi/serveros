@@ -13,3 +13,11 @@ TOOL_SURFACE_REVISION = "fleet-mcp-1"
 # configured with it, and served by the HTTP transport at this path.
 PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
 AUTHORIZATION_SERVER_PATH = "/.well-known/oauth-authorization-server"
+
+# Unauthenticated liveness. It says that this process is up and that everything
+# else needs a credential — never anything about the fleet. It is named here
+# because a second reader exists: the installer waits on this exact path to
+# decide whether the service it just started is running, and
+# `fleet/fleet-mcp-contract.yaml` declares it under `deployment`. A path written
+# out in three places is three answers to one question.
+HEALTH_PATH = "/health"
