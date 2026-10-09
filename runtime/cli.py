@@ -7248,6 +7248,44 @@ def cmd_fs_hygiene(args) -> int:
                          f"{row.get('document') or '—':<10} {row.get('path') or '—'}")
         not_required = [n for n, r in sorted(rows.items()) if not r.get("required")]
         lines.append(f"    no document by decision: {', '.join(not_required)}")
+    shape = payload.get("navigation_shape") or {}
+    shape_rows = shape.get("rows") or {}
+    if shape_rows:
+        lines.append("")
+        lines.append("D03 navigation shape — an entry meets its shape or has a reason:")
+        for name in sorted(shape_rows):
+            row = shape_rows[name]
+            if row.get("state") != "read":
+                lines.append(f"    {name:<34} unresolved this node")
+                continue
+            lines.append(
+                f"    {name:<34} {row['shape']:<30} "
+                f"target-depth {row['target_depth']:<2} "
+                f"counted {row['counted_directories']:<7} "
+                f"conforming {len(row['conforming']):<4} "
+                f"excepted {len(row['excepted']):<3} "
+                f"not-counted {len(row['not_counted']):<3} "
+                f"not-judged {len(row['not_judged']):<3} "
+                f"unclassified {len(row['unclassified'])}")
+            if row["by_depth"]:
+                # the levels are string keys — the document's own form — so each
+                # has to be read back as a number before it can be compared.
+                depth = " ".join(
+                    "%s:%d" % (f"{level}+" if int(level) >= 6 else level, count)
+                    for level, count in sorted(row["by_depth"].items(),
+                                               key=lambda kv: int(kv[0])))
+                lines.append(f"        depth {depth}")
+            for entry in row["not_counted"]:
+                lines.append(f"        not counted  {entry['path']}")
+        lines.append("    depth counts directories to 6 levels; `6+` is a floor, "
+                     "not a total, and §3's tool subtrees are already excluded")
+        unclassified = shape.get("unclassified") or []
+        if unclassified:
+            lines.append("    UNCLASSIFIED — a new arrival, and a person names it:")
+            for path in unclassified:
+                lines.append(f"        {path}")
+        else:
+            lines.append("    every occupant classified; nothing unclassified")
     lines.append("")
     lines.append(payload["note"])
     emit(payload, as_json=args.json, lines=lines)
