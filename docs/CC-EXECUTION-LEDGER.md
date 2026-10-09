@@ -13045,3 +13045,270 @@ main 上**：main 的 `runtime/conformance.py` 里 `DATA_ROOT` 的 `CLAUDE.md` /
 其注释文字与那次提交**逐字一致**（`Added 2026-10-08 (RUN-0045; measured while scouting the item
 RUN-0044 handed off)`）。也就是说它已被**别的刀**用另一条分支重新落上了主线，那个 worktree 是**被
 取代的陈旧分支**，不是未交付的工作。按纪律这属**提案**（退役/清理要显式批准），本包只记不动作。
+
+### 9.71 W6 第三包：D03 —— 一张九行的表、一份**八行**的读数，和一个问不出红灯的形式
+
+§9.70.1 把 D03 具名留下（「**无判据**」），9.70.8 又写了一遍「**没**关掉 D03」。这一节关掉它。
+
+#### 9.71.1 条件原话，以及它可判的那一半
+
+`docs/architecture/DIRECTORY-CONVERGENCE.md` §8 的第二条完成判据，原话：
+
+> 深度统计排除有理由的 native/tool/vendor/release 子树；被治理入口符合目标或有具名保留理由。
+
+两个分句，机器可判性差得很远：
+
+- 「排除…子树」—— 这是一张**集合**，可判，而且**已经**有读者（`TOOL_OWNED_DOTDIRS` 与
+  `DEPTH_NOT_COUNTED`，本包复用，没有第二份）。
+- 「符合目标或有具名保留理由」—— 「目标」是 §3 那张表（九个语义根、默认形状、目标深度），
+  「具名保留理由」是一张登记表。两者都在合同里，而**两者都只有散文**。
+
+本包做的就是把第二个分句变成读数：把 §3 的表逐行搬成一个读面，量出每个被治理入口今天什么样，
+让「符合 / 有具名理由 / 不是这两者」成为**三**种可分辨的答案，而最后一种红灯。
+
+#### 9.71.2 先量这张表有多大 —— 目标是**入口**深度，不是整棵树的证书
+
+把「目标深度」读成「整棵子树不许深过 N」会立刻产出两千个理由。实测 2026-10-09：
+
+| 行 | 目标深度 | 该深度上的目录数 |
+|---|---|---|
+| `artifacts/work-items` | 4 | **656** |
+| `artifacts/skills` | 3 | **1209** |
+
+为这近两千个目录各写一条理由，与一条都不写是同一件事。§3 自己那句话就是防这个的：
+「超过目标要有真实身份或工具格式理由，**不是自动移动/删除命令**」。
+
+所以读面只查**每行一层**：§3 管的那层入口。行内更深的目录只被**数出来**，不被判词——
+每个行都打印一条深度直方图，而**它不参与判定**。这是收窄，收窄处写在 9.71.8。
+
+#### 9.71.3 §3 有九行，第一版读数只有六行 —— 这是本包真正的缺陷，而且它出在我自己那张表里
+
+第一版 `NAVIGATION_SHAPE` 搬了 §3 的**六**行，注释里写着「§3 的各行」。漏掉的是
+「`records` 当前认识」（`information/understanding/<kind>/`）与「`records` 新来源入口」
+（`information/raw/<provider>/<source-key>/`）——两行都在 `records` 下，而 `records` 的表在这份合同里
+是**三行**，按根数数会数成一行。
+
+第九行「人类飞书导航」的默认形状是「区域 → 项目 → 用途/具体文档」，目标那一列自己写着
+「此处是**导航步数**，不是文件系统层数」——它**不该**被搬成一行目录读数。
+
+修法两步，而且第二是关键的：
+
+1. 两行补进来（都是 `_DIRECTORY` 形式，与 `test-envs` 的处境一致，理由见 9.71.4）；
+   第九行具名放进 `SHAPE_ROWS_NOT_CARRIED`，带理由。
+2. 加一条**外层判等**：`SECTION_3_ROWS` 对比 `carried | declined`，**两个方向都打印**。
+   所以往后往 §3 里加一行，这里**必然**红，直到有人说清它属于哪一类。
+
+这就是 §9.61 / §9.68 / §9.69 / §9.70 那个形状的第**五**次出现——「一条判据的射程窄于它的主张」。
+不同之处在于：前四次我在别人的表或别人的读数上抓到它，这一次它出在**同一节里我刚写下的表**上，
+而且是被一条判等抓出来的，不是被读出来的。
+
+一条必须写下来的**推导极限**：§9.61 的覆盖集是 `set(paths.ROOTS)`——合同自己的入口清单，
+有机器形态。§3 这张表是 **Markdown**，**没有**机器读者可以拿来做覆盖集。所以 `SECTION_3_ROWS`
+是一份**带日期的抄录**（2026-10-09），闸门比的是「抄录 vs 已搬 + 已声明不搬」。
+这不是等价物，是有损的那一半；它比没有强，因为它能把**新增**挡住，但合同改了字而没人改抄录时它不响。
+
+#### 9.71.4 形式有三个，其中一个**问不出红灯** —— 而这一点必须写下来
+
+| 形式 | 判什么 | 怎么红 |
+|---|---|---|
+| `_ITEM_ID` | 名字形如 `<PREFIX>-<digits>` | 名字不合形式 |
+| `_GIT_WORKING_DIRECTORY` | 该目录持 `.git`（规范检出，或 `.git` 是文件的链接工作树） | 目录没有 `.git` |
+| `_DIRECTORY` | 是个目录 | **红不了** |
+
+`_DIRECTORY` 红不了，理由在两条已经写死的规则里：§3 说深度「**不计文件名**」，所以
+`_occupants_at` 只返回目录；而 `_form_holds` 对目录返回 `True`。两者一合，这个形式
+**结构上不可能失败**。
+
+它仍然是**诚实的抄录**：§3 对 `test-envs`、`records` 当前认识、`records` 新来源入口 这三行
+**只说了「是个目录」**，没有给命名规则。给它们编一个名字形式，就是 §3 那句话禁止的事。
+
+代价要说清楚：这三行的 `conforming` 意思是「**这是个目录，而 §3 说这里该是个目录**」，
+**不是**「这是对的目录」。它比 `not_judged` 强一点（形式是声明了的），比另外四行弱很多。
+`test_the_rows_whose_form_cannot_fail_are_named_as_such` 把这**三行枚举出来**，
+所以第四行不会悄悄加入——真要加，就得改那条断言，也就是**当着人的面加**。
+同一个测试把**能红的那四行**（`artifacts/work-items`、`records/projects`、`src`、`worktrees`）
+也枚举了：「有 check」和「check 能变红」这两件事不能各说各话。
+
+顺带：`_CHECKOUT` 与 `_WORKTREE` 原本是**两个名字、一个谓词**（都是 `.git` 存在）。
+本节合并成一个 `_GIT_WORKING_DIRECTORY`。选的是**弱**的那个判法（`.git` 存在）而不是
+`.git` 是文件：实测 258 个第二层条目里有 2 个（`marketops/repository-convergence`、
+`marketops/v1-serper-discovery`）的 `.git` 是**目录**，§3 声明的是**工作树**，不是它的管道。
+收紧成 `.git` 必须是文件会报出 2 条 finding 并自称一条规则——又是 9.71.2 那个陷阱。
+
+#### 9.71.5 那几处**不判**的层级，是声明的，不是漏掉的
+
+`SHAPE_CHECKS_NOT_MADE` 三条，每条 >40 字：
+
+- **`artifacts/work-items/<RUN>`** —— `RUN-<digits>` 作为候选**量过并丢掉**：该层 288 个占位里
+  **110** 个不合严格形式（`build`、`_recon`、`pre-tokyo-dump`，以及带后缀的 Run id
+  `RUN-0004-original`、`RUN-0005-deepseek`）。有 110 条例外的判据等于没有判据。
+- **`artifacts/skills`** —— skill 和 run 都**没有** id 语法，写一个就是发明的形式。
+  34 个 skill 占位里有 2 个以日期结尾；那是 skill 还是被提了一层的操作，是它们 owner 的问题。
+- **`records/projects/items`** —— 该行唯一的一个**字面段**。模式是 `<project>/items/<ITEM>`，
+  而 `items` 旁边还有 `architecture`、`board`、`context`、`memory`、`reports` 兄弟，
+  各自在别处有声明（`paths.py` 把 `records/projects/<project>/memory` 解析成 Layer B 台账）。
+  实测：该深度共 **41** 个目录，其中 **31** 个在 `items/` 下，另外 **10** 个在兄弟目录下，
+  本行对它们**保持沉默**。声明的沉默，与没报告的缺口，是两种读数。
+
+同一件事的第三个例子在 `records/information/raw`：它的 provider 层实测是
+`feishu`、`web`，**以及 intake 工具自己的 `tests/` 和一堆 `.py`**——那个根把来源树和取件工具
+放在一起。§3 说这一层的新布局是「**待实施的有版本布局 profile**」，不是要求现在搬家。
+所以这一行的 `<provider>` 层**不按名字判**（`tests/` 与 `feishu` 平级），
+判的是 `<source-key>` 层的**形式**——而那个形式是 `_DIRECTORY`，见 9.71.4。
+
+#### 9.71.6 五态读数，不是两态
+
+`navigation_shape()` 对每个占位给五**种**状态之一，而不是「合格/不合格」：
+
+- `conforming` —— 它就是这行声明的那个东西；
+- `not_counted` —— §3 把它的名字排除出深度统计（声明在 `TOOL_OWNED_DOTDIRS` 里，**具名打印**：
+  读者看不见的排除，与一次提前停下的遍历分不出来）；
+- `not_judged` —— 这行**没有**声明形式，所以没有东西可以让它符合。不是失败，也不是通过；
+- `excepted` —— 它在 `SHAPE_EXCEPTIONS` 里，且带**具名理由**；
+- `unclassified` —— 都不是。**只有这一种红灯**。
+
+`not_judged` 存在的理由要写清楚：`artifacts/skills` 的 **173** 个占位，算成 `unclassified`
+就是从本模块**自己的沉默**里造出一个 finding，算成 `conforming` 就是主张一个合同从没写过的形式。
+两个方向都是谎，第三种答案才是真的。
+
+`excepted` 那一条有一个由测试**抓出来的真实缺陷**：`_exception_reason` 原来写的是
+`return reason if reason else None`，于是一条**只有空白**的理由（`"   "`）会被当成登记通过。
+理由**就是**登记——`SHAPE_EXCEPTIONS` 是「已登记」与「新来的」之间全部的差别，
+一个什么都不说的名字就是「为了让 finding 消失而放进去的名字」。已改成
+`return reason if reason and reason.strip() else None`。
+
+#### 9.71.7 量出来的前后（同一节点，冻结字节）
+
+**改前：没有读数。** §9.70.1 已经量过：`grep -rn depth tests/*.py` 与 `runtime/*.py` 里没有任何一行
+在量 §3 那张表。所以「前」不是一组更差的数字，是**没有数字**。
+
+**改后**（`serverosctl fs hygiene`，八行，`unclassified` 全 0）：
+
+| 行 | 形状 | 目标 | counted | conforming | excepted | not-counted | not-judged | unclassified |
+|---|---|---|---|---|---|---|---|---|
+| `artifacts/skills` | `<skill>/<run>/` | 3 | 464508 | 0 | 0 | 0 | **173** | **0** |
+| `artifacts/work-items` | `<project>/<ITEM>/<RUN>/` | 4 | 3969 | 32 | **29** | 0 | 0 | **0** |
+| `records/information/raw` | `<provider>/<source-key>/` | 4 | 122 | 2 | 0 | **5** | 0 | **0** |
+| `records/information/understanding` | `<kind>/` | 3 | 4 | 4 | 0 | 0 | 0 | **0** |
+| `records/projects` | `<project>/items/<ITEM>/` | 4 | 86 | 31 | 0 | 0 | 0 | **0** |
+| `src` | `<repo>/` | 1 | 7351 | 23 | 0 | 0 | 0 | **0** |
+| `test-envs` | `<repo>/<profile>/` | 2 | 41 | 24 | 0 | **1** | 0 | **0** |
+| `worktrees` | `<repo-or-group>/<work-name>/` | 2 | 37301 | 258 | 0 | **1** | 0 | **0** |
+
+行尾那行字是读数的一部分，不是装饰：`depth counts directories to 6 levels; \`6+\` is a floor,
+not a total, and §3's tool subtrees are already excluded`。遍历在第 6 层停下，最后一个桶
+**是下限不是总数**（`worktrees` 的 `6+:15312`），把最后那个桶当成总数读，正是这一整节要避免的错。
+
+三处排除**具名**打印：`test-envs/.git`、`worktrees/.pytest_cache`、
+`records/information/raw` 下的 `.pytest_cache` / `__pycache__` / `tests/.pytest_cache` /
+`tests/__pycache__` / `web/__pycache__`。
+
+`excepted 29` 是 §9.71.8 说的那件事的正面：`artifacts/work-items` 的 29 个条目在
+`SHAPE_EXCEPTIONS` 里，四个族各带理由（`<name>-<YYYYMMDD>`、`TARGET-CONVERGENCE-<slice>`、
+以合同节号命名的目录、`slice-<YYYY-MM-DD>`）。
+
+#### 9.71.8 照实说：这一轮**没**关掉什么
+
+- **没**判整棵子树的深度。656 / 1209 那两个数就是为什么。判的是**入口那层**，
+  更深的只被数出来。
+- **三行用的是一个问不出红灯的形式**（9.71.4）。它们今天的 `conforming` 不是一个通过，
+  是一个**形状声明**。要关掉它，得由这三行的 owner 给出一个命名规则（如果他们想给的话），
+  而不是由本模块发明一个。
+- **三个层级声明不判**（9.71.5）。这是本轮**记录在案的裁决**，不是遗漏。
+- **没**动任何目录。这是一次**读取**：没有任何东西被移动、改名、链接、chmod 或删除，
+  路径准入那一整套结论在这里同样成立——「按一个分类做的移动，就是按一个名字做的移动」。
+- **装机在跑的节点读数不变**：`runtime/` 是 `CORE_MODULES` 成员，改动在源码里，释放后才改机器。
+  这是交给发布动作包的第 **8** 件（§9.67.4 / §9.68.5 / §9.69.7 / §9.70.8 已各记一件）。
+  本包**没有**发布新一代。
+- **没**关掉 D01 / D02 / D04 / D05 / D06。它们各自的强度记在 9.70.1 那张表里；本包只认领 D03。
+- §8 完成判据最后一行「给人一份短 current map 和 before/after 变更范围」**仍未做**。
+  本节的表格是 before/after 的**变更范围**那一半的一部分，而「short current map」是另一件东西。
+- 一条**本包自己身上的**边，跟 9.70.8 记的那条同一个形状：`records/information/raw` 的目标深度 4
+  是「**建议**」（§3 原文「source 入口**建议** 4」），而代码把它当**目标**判。
+  在「建议」与「目标」不是一回事的读法下，这一行会比它该有的样子更硬。
+  代码里那行的 `why` 抄了原文，判据没有区分。选择记下来而不是顺手加一层「软目标」——
+  那会让闸门多一个从没被用过的旋钮。
+
+#### 9.71.9 验证与落地
+
+针对性：`tests/test_fs_hygiene.py`、`tests/test_path_conformance.py`、`tests/test_state_root.py`、
+`tests/test_serverosctl.py` 共 **262 passed, 1 skipped**（100.13s）。那 1 个 skip 是既有的
+（`test_fs_hygiene.py:171`，§16A 的两个文件不在本机），不是本包的。
+
+全量套件（冻结字节），**第一次**读数：**7436 passed, 25 skipped, 4512 subtests, exit 0**，1105.88s
+（`evidence/fullsuite-after.txt`）。第二次读数见下表，**两次不是同一个数**。
+基线 `3cf265f` 读 **7428 / 24 / 4512**。这个基线**查过**，不是搬来的：`3cf265f` 是
+`1b17e26`（§9.70 实测 7428/24/4512 的那次）再加**一个** docs 提交 `c87374f`（只动
+`docs/CC-EXECUTION-LEDGER.md`，+179），没有碰任何 test 或 runtime——所以两次读数必然相同。
+
+**+8 passed / +1 skipped** —— 而本包新增的是 **9** 个测试函数，且这 9 个单独跑
+**9 passed in 5.11s、零 skip**。两个数都对，差额来自**别处**。
+
+为把「别处」指出来，**同一份冻结字节**又跑了一次全量、这次带 `-rs`：
+
+| 跑次 | 字节 | passed | skipped | subtests |
+|---|---|---|---|---|
+| 1（`fullsuite-after.txt`） | 584c124d… / 5d75cf55… | 7436 | 25 | 4512 |
+| 2（`fullsuite-skips.txt`） | **同一份** | **7435** | **26** | 4512 |
+
+**同一份字节、相隔约二十分钟，两次读数差 1 个 passed 和 1 个 skipped。**
+所以「相对基线 +9」这个数**本来就取不到整数**：基线的 24 和本包的 25/26 之间的差，
+有一部分是**环境自己的抖动**，不是本包的测试。可以确证的是：
+9 个新函数单独跑全过、**subtests 三次读数都是 4512（本包一条 `subTest` 都没加）**。
+
+第二次跑列出 **26** 个 skip 点（逐条在 `fullsuite-skips.txt`），其中至少六个是以**环境存在性**为条件的
+（`no live registry on this host` ×2、`no live registry at /opt/applications/data/home-hwz/...` ×3、
+`the ability-management checkout is not beside this repo` ×7、`this node has no registry` ×3、
+`requires an explicitly selected existing local image` ×4、`claude CLI is not on PATH`）。
+其中一条以**活体进程可见性**为条件——`tests/test_serverosctl.py:855: no runtime group is visible
+to this uid`——而进程在一分钟内就会变。**该条就是最可能的那个翻转者，但本包不给它定名**：
+第一次跑不带 `-rs`，没有留下它的 skip 名单，指认它需要一次我没有做的对照。
+写下来的是**测到的**：这个总数在字节不变时会动 ±1。
+
+这不是「套件不可靠」，是「**把 7436 当成一个可以钉住的数**」这件事不成立——与 9.71.10 同源，
+只是那次说的是树的计数，这次说的是套件的计数。
+
+新增 **9** 个测试（`test_fs_hygiene.py` 7 个、`test_serverosctl.py` 2 个，`git diff -U0` 数的）：
+
+    test_every_shape_row_is_either_checked_or_named_as_a_check_not_made
+    test_every_shape_exception_family_has_members_and_a_reason
+    test_the_shape_forms_are_form_predicates_and_not_identity_predicates
+    test_the_rows_whose_form_cannot_fail_are_named_as_such
+    test_navigation_shape_classifies_every_occupant_into_exactly_one_of_five_states
+    test_a_family_with_no_reason_does_not_excuse_its_member
+    test_the_live_governed_entries_are_every_one_of_them_classified
+    test_the_navigation_shape_renderer_prints_the_numbers_the_document_holds
+    test_the_navigation_shape_renderer_says_so_when_nothing_is_unclassified
+
+其中两条**不用** `subTest`（九行表那条与枚举那条都是直接判等）；活体那条**故意不钉计数**
+（理由见 9.71.10）。
+
+变异检查 **5 条，全部杀死，零残留**（每条改回后 sha256 与改前逐字节相同）：
+
+| | 变异 | 杀它的是 |
+|---|---|---|
+| A | 一行既不被查、也不声明不查 | 外层判等，失败信息**具名** `['src']` |
+| B | 一个异常族没有成员 | 陈旧声明守卫 |
+| C | 空白理由被当成登记 | 静默登记测试（`assert [{'path': 'proj/an-undocumented-arrival', 'why': '   '}] == []`） |
+| D | 层数按文档里的**字符串**比较 | 渲染器测试（`TypeError: '>=' not supported between 'str' and 'int'`） |
+| E | 一行的形式被悄悄换成红不了的那个 | 那个枚举断言，失败信息列出多出来的行 |
+
+落地：`runtime/fs_hygiene.py`、`runtime/cli.py`、`tests/test_fs_hygiene.py`、`tests/test_serverosctl.py`
+（**+1138 / −1**），PR **#143**，提交 `5df9dce`，合并提交 **`e433d12`**，2026-10-09 **09:24:20 CST**。
+Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0058/`（`probe/` 四个脚本、
+`evidence/` 里的冻结 sha256、读取、变异与全量套件读数）。
+
+冻结哈希（`evidence/frozen-hashes.txt`）：
+`fs_hygiene.py 584c124d…f995`、`cli.py 5d75cf55…a79b`、`test_fs_hygiene.py fb5cf44f…9b7d`、
+`test_serverosctl.py 7779f53e…c4b5`。变异探针改回后逐字节比对的就是这四个值。
+
+#### 9.71.10 顺带量到、本包**不**动的一件事 —— 活体计数会**漂移**，结构不会
+
+`worktrees` 第二层的计数，在证据捕获时是 **257**，几分钟后再读是 **258**：因为**我自己**在那两次读之间
+创建了 `docs-ledger-971-20261009` 这个工作树。同一节点、同一代码、相隔几分钟，一个数就变了。
+
+这条是活体测试那条纪律的**实测依据**，不是推理：`test_the_live_governed_entries_are_every_one_of_them_classified`
+钉的是**结构**——每一行都 `read`、`unclassified == []`、每一条未计数项都在 `depth_not_counted()` 里
+有声明且理由 >40 字——**没有钉任何一个数**。钉住那 258 的测试会在下一个工作树出现时变红，
+而它变红的原因与本包的主张毫无关系。`test_the_live_retained_artifacts_are_reachable_and_untouched`
+早就是这么写的，本节只是把同一条纪律用在了新读面上。
