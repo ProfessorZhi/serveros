@@ -1522,6 +1522,77 @@ def test_the_five_renderers_read_the_shapes_the_daemon_actually_answers(
     assert "the answer depends on the spelling" in out
 
 
+NAV_SHAPE_PAYLOAD = {
+    "roots": {}, "coverage": {}, "counts": {}, "open_questions": [],
+    "role_locations": {}, "symlinks_into_data_root": {},
+    "duplicate_semantic_roots": {}, "note": "advisory",
+    "navigation_shape": {
+        "rows": {
+            "closed": {"state": "unresolved", "shape": "<x>/", "target_depth": 2,
+                       "counted_directories": 0, "by_depth": {}, "conforming": [],
+                       "excepted": [], "not_counted": [], "not_judged": [],
+                       "unclassified": []},
+            "src": {"state": "read", "shape": "<repo>/", "target_depth": 1,
+                    "counted_directories": 2, "by_depth": {"1": 2, "6": 7},
+                    "conforming": ["a", "b"], "excepted": [],
+                    "not_counted": [{"path": ".git", "why": "declared, with a reason"}],
+                    "not_judged": [], "unclassified": []},
+        },
+        "unclassified": ["src/newarrival"],
+        "note": "counted, never moved",
+    },
+}
+
+
+def test_the_navigation_shape_renderer_prints_the_numbers_the_document_holds(
+        monkeypatch, capsys):
+    """The D03 block, driven with the real field names.
+
+    The block is guarded by `if shape_rows:`, so a payload without the key skips it
+    silently — and a renderer that reads a key that does not exist raises while one
+    that reads the WRONG existing key prints a blank column and exits 0. Both are
+    invisible to a test that only checks the exit code, which is why this asserts
+    the values.
+
+    Three things here are the block's whole point rather than decoration: the level
+    count is printed as `6+` where the walk stopped, so a reader cannot take the
+    last bucket for a total; an entry excluded from the statistic is printed by
+    NAME, because an exclusion a reader cannot see is indistinguishable from a walk
+    that stopped early; and an unclassified entry is listed under a heading that
+    says a person names it.
+    """
+    monkeypatch.setattr(cli_mod.view_mod, "fs_hygiene",
+                        lambda **k: NAV_SHAPE_PAYLOAD)
+    assert cli_mod.cmd_fs_hygiene(_Args()) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+
+    assert "D03 navigation shape" in out
+    assert "target-depth 1" in out and "counted 2" in out
+    # the levels are string keys in the document, and the last one is a FLOOR
+    assert "depth 1:2 6+:7" in out
+    assert "not counted  .git" in out
+    assert "is a floor, not a total" in out
+    # a row this node resolves no directory for is reported, not omitted
+    assert "closed" in out and "unresolved this node" in out
+    assert "UNCLASSIFIED" in out and "src/newarrival" in out
+
+
+def test_the_navigation_shape_renderer_says_so_when_nothing_is_unclassified(
+        monkeypatch, capsys):
+    """The other branch, and the reason both are asserted.
+
+    A reading that only speaks when something is wrong cannot be told apart from
+    one that stopped running, so the clear result is printed too.
+    """
+    payload = json.loads(json.dumps(NAV_SHAPE_PAYLOAD))
+    payload["navigation_shape"]["unclassified"] = []
+    monkeypatch.setattr(cli_mod.view_mod, "fs_hygiene", lambda **k: payload)
+    assert cli_mod.cmd_fs_hygiene(_Args()) == cli_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert "every occupant classified; nothing unclassified" in out
+    assert "UNCLASSIFIED" not in out
+
+
 DOCKER_PAYLOAD = {
     "summary": {"Containers": 3, "ContainersRunning": 1, "ContainersStopped": 2,
                 "Images": 5, "DockerRootDir": "/var/lib/docker", "Driver": "overlay2"},
