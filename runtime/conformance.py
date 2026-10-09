@@ -77,11 +77,45 @@ NODE_ROOT_CONTRACT = "fleet/node-root-contract.yaml"
 # ---------------------------------------------------------------------------
 
 EXCEPTIONS: dict[str, dict[str, dict]] = {
-    # No `artifacts` entry. It used to exempt four pre-two-namespace buckets
+    # `artifacts` used to exempt four pre-two-namespace buckets
     # (builds/exports/packages/e2e) as CONTRACT_GAP. All four were retired on
     # 2026-09-13 — three were measurably empty, and `e2e/` moved byte-identical
     # into the Items that own it — so an exemption with nothing left to exempt
-    # would be a declaration that outlives its subject.
+    # would be a declaration that outlives its subject, and the block was
+    # removed. The rule that removal states is "an exemption must have a
+    # subject", not "this root may not be exempted".
+    #
+    # Added 2026-10-09 (the D07 entry-document package). The root has a subject
+    # again, and it is a different kind: not a bucket that was retired but a
+    # document that was written. §13 of the directory contract asks that a major
+    # entry say briefly what it is for, who owns it and what the current entry
+    # is, and `artifacts` is where every Run's evidence lives — a person opens it
+    # constantly.
+    #
+    # Exempting it is not this table being generous. `WORKSPACE_ROOT/README.md`
+    # and `state/serveros/README.md` are both `EXEMPT_ENTRY` in this same table,
+    # and leaving the same object unexempted at a third root would tell a reader
+    # that one convention holds at two roots and not at the third — the exact
+    # shape §9.61.2 fixed for the entry documents a runtime opens. A role is
+    # recognised wherever it appears, or the table is reporting its own
+    # inconsistency as a finding about the directory.
+    #
+    # What this does NOT decide is what else may live at that root: the
+    # `UNDECLARED_ENTRY` rows there are untouched and are why the root's
+    # top-level vocabulary is still not applied (`fs_hygiene.VOCABULARY_NOT_APPLIED`).
+    # The ruling is that this root HAS an entry document, not that it has been
+    # ruled on.
+    "artifacts": {
+        "README.md": {
+            "class": "ENTRY_DOCUMENT",
+            "reason": "the short entry point for this root: what it is for, the "
+                      "two namespaces new writes go to, and what it deliberately "
+                      "does not decide",
+            "authority": "§13 of docs/architecture/DIRECTORY-CONVERGENCE.md, "
+                         "which asks a major entry to state its purpose and owner",
+            "disposition": "KEEP",
+        },
+    },
     "data": {
         ".vscode-server": {
             "class": "FOREIGN_TOOL",
