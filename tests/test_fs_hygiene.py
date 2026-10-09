@@ -1238,3 +1238,362 @@ def test_a_host_whose_home_is_not_its_persistent_root_still_reports_no_vocabular
     row = next(r for r in report["entries"] if r["name"] == "Documents")
     assert row["class"] == fh.UNKNOWN
     assert report["duplicate_semantic_roots"] == {}
+
+
+# ---------------------------------------------------------------------------
+# D03 · the navigation shape: an entry meets its shape or has a named reason
+# ---------------------------------------------------------------------------
+
+
+def test_every_shape_row_is_either_checked_or_named_as_a_check_not_made():
+    """D03 needs a criterion, and completeness is the half a reading cannot see.
+
+    §3 of the directory contract is a table: a governed entry, the shape it is
+    declared to have, and the depth it is declared to reach. Nothing in this
+    product read that table, so any row of it could be violated for as long as the
+    tree existed and no reading would differ. §8 makes it a completion criterion
+    of the round in as many words — 「深度统计排除有理由的 native/tool/vendor/
+    release 子树；被治理入口符合目标或有具名保留理由」.
+
+    `NAVIGATION_SHAPE` is the table carried into code; `SHAPE_CHECKS_NOT_MADE`
+    names the slots this reading deliberately does NOT judge, each with the
+    measurement that decided it. Together they must account for every row, so a
+    seventh row fails this until somebody says which of the two it is.
+
+    The failure this exists for is an UNJUDGED row, not a wrong one: a row that is
+    in neither map reads exactly like a row nobody has looked at, and those are
+    not the same finding. It is the same shape as
+    `test_every_declared_root_is_either_given_an_entry_document_or_explained`
+    above, and deliberately so — this module now carries three such pairs, and the
+    gate for the third is written the same way as for the first two.
+
+    There is a second, outer equality here that the two gates above do not need
+    and this one cannot do without. §3's table is MARKDOWN, so nothing derives it:
+    `SECTION_3_ROWS` is a dated transcription in the runtime module, and the
+    equality is between THAT and the rows carried plus the rows declined. Without
+    it, a reading carrying six rows of a nine-row table would report exactly like
+    one carrying all nine — which is this ledger's own recurring finding, and the
+    reason the first half of this package was rewritten once already.
+    """
+    rows = set(fh.NAVIGATION_SHAPE)
+
+    def names_a_row(key: str) -> bool:
+        return any(key == name or key.startswith(name + "/") for name in rows)
+
+    for key in fh.SHAPE_CHECKS_NOT_MADE:
+        assert names_a_row(key), (
+            f"{key!r} names no row of the shape table, so it explains a silence "
+            f"about nothing")
+    judged = {name for name, row in fh.NAVIGATION_SHAPE.items()
+              if row["check"] is not None}
+    named = {name for name in rows
+             if any(key == name or key.startswith(name + "/")
+                    for key in fh.SHAPE_CHECKS_NOT_MADE)}
+    accounted = judged | named
+    assert rows == accounted, (
+        f"declared a row but neither checked nor accounted for here: "
+        f"{sorted(rows - accounted)}; accounted for here but not a declared row: "
+        f"{sorted(accounted - rows)}")
+
+    # the outer equality: §3's own table, row by row
+    carried = [row["section_3_row"] for row in fh.NAVIGATION_SHAPE.values()]
+    assert len(carried) == len(set(carried)), (
+        f"two rows carry one §3 row: "
+        f"{sorted({c for c in carried if carried.count(c) > 1})}")
+    everything = set(fh.SECTION_3_ROWS)
+    here = set(carried) | set(fh.SHAPE_ROWS_NOT_CARRIED)
+    assert everything == here, (
+        f"§3 declares a row this reading neither carries nor declines: "
+        f"{sorted(everything - here)}; this reading names a §3 row the table does "
+        f"not declare: {sorted(here - everything)}")
+    assert not (set(carried) & set(fh.SHAPE_ROWS_NOT_CARRIED)), (
+        "a row is both carried and declined, so which is true would depend on the "
+        "order the two maps are read in")
+    for label, reason in fh.SHAPE_ROWS_NOT_CARRIED.items():
+        assert len(reason.strip()) > 40, (
+            f"§3's row {label!r} is declined without a reason")
+
+    for name, row in fh.NAVIGATION_SHAPE.items():
+        assert row["pattern"], f"{name} declares a shape with no levels"
+        assert row["target_depth"] >= len(row["pattern"]), (
+            f"{name} declares a target depth of {row['target_depth']} for a "
+            f"shape {len(row['pattern'])} levels long; the entry cannot sit "
+            f"above the shape that describes it")
+        assert row["shape"], f"{name} carries no shape for a person to read"
+        assert row["why"], f"{name} is declared with no reason"
+        if row["check"] is None:
+            assert row["form"] is None, (
+                f"{name} declares no check, so a form for it would be a rule "
+                f"nothing applies")
+            continue
+        assert 0 <= row["check"] < len(row["pattern"]), (
+            f"{name} checks level {row['check']} of a "
+            f"{len(row['pattern'])}-level shape")
+        assert row["form"], (
+            f"{name} checks a level and declares no form for it, so nothing "
+            f"could ever fail it")
+        assert row["form"] in (fh._GIT_WORKING_DIRECTORY, fh._DIRECTORY,
+                               fh._ITEM_ID), (
+            f"{name} declares a form this module has no predicate for")
+
+    for key, reason in fh.SHAPE_CHECKS_NOT_MADE.items():
+        assert len(reason.strip()) > 40, (
+            f"{key}'s silence is not explained; a silent entry IS the next "
+            f"unjudged row")
+
+
+def test_every_shape_exception_family_has_members_and_a_reason():
+    """The declared exceptions, and the two ways such a declaration goes stale.
+
+    An entry that occupies a governed slot without being the thing the row
+    declares is either named in `SHAPE_EXCEPTIONS` with the reason it was admitted,
+    or it is a finding for a person. That makes the list the whole difference
+    between "registered" and "new", so the list itself has to be sound:
+
+      * a family with NO members is a declaration covering nothing — the same
+        staleness shape §9.69 recorded for a declared list that reads as a rule
+        and is in fact a rule over the empty set;
+      * a member claimed by two families would take its reason from whichever
+        family the loop reached first, so the reason would depend on iteration
+        order rather than on the declaration;
+      * a member that climbs out of its root would make the list a way to name
+        something outside the tree it governs.
+
+    Read the reasons as REGISTRATIONS, not as rulings: §3 gives identity to
+    owners, and whether `marketops/§2` should have been an Item is a question
+    about that programme, which this module does not answer.
+    """
+    rows = set(fh.NAVIGATION_SHAPE)
+    for row, families in fh.SHAPE_EXCEPTIONS.items():
+        assert row in rows, f"{row} is not a row of the shape table"
+        for family in families:
+            assert family["family"], f"a family under {row} has no name"
+            assert family["members"], (
+                f"the family {family['family']!r} under {row} names no members, "
+                f"so it is a declaration covering nothing")
+            assert len(family["reason"].strip()) > 40, (
+                f"the family {family['family']!r} under {row} is not explained, "
+                f"so its members would be excepted without a reason")
+            for member in family["members"]:
+                assert member and member.strip() == member
+                assert not member.startswith("/"), member
+                assert ".." not in member.split("/"), (
+                    f"{member!r} climbs out of the row it is declared under")
+
+    declared = fh._declared_exceptions()
+    twice = sorted({d for d in declared if declared.count(d) > 1})
+    assert not twice, (
+        f"a member is claimed by two families: {twice} — its reason would then "
+        f"depend on which family was read first")
+
+
+def test_the_shape_forms_are_form_predicates_and_not_identity_predicates():
+    """Which slots may be checked at all, and why the third one is `<ITEM>`.
+
+    §3's own warning is that a depth past its target needs a real identity or a
+    tool-format reason, not an automatic move. The same line decides this: "is
+    spelled like an Item id" is answerable from a name, and "is a legitimate
+    entry" is not. So the predicates are FORM predicates, and the slot that could
+    not be checked by form is recorded instead of guessed at.
+
+    Measured 2026-10-09, `<RUN>` as `RUN-<digits>` was DROPPED — 110 entries in
+    that slot fail it (`build`, `_recon`, `pre-tokyo-dump`, `RUN-0004-original`,
+    `RUN-0005-deepseek`) — because a criterion with 110 exceptions is the same as
+    no criterion, at the cost of 110 rows nobody will read. This test pins both
+    halves: the predicate accepts what the tree holds, and it refuses the shapes
+    that would have turned it into a naming contest.
+    """
+    for an_id in ("SRV-0011", "LIT-0103", "LIT-0104", "MUC-0007", "HWZ-0042"):
+        assert fh._ITEM_ID_RE.match(an_id), an_id
+    for not_an_id in ("marketops", "TARGET-CONVERGENCE-B01B02", "slice-2026-09-17",
+                      "CCN-20260930", "serveros", "build", "_recon",
+                      "RUN-0004-original", "SRV-11", "SRV0011"):
+        assert not fh._ITEM_ID_RE.match(not_an_id), (
+            f"{not_an_id!r} is not an Item id and must not be accepted as one")
+
+    # No row checks a Run slot, and the reason is recorded rather than encoded.
+    assert "artifacts/work-items/<RUN>" in fh.SHAPE_CHECKS_NOT_MADE
+    for name, row in fh.NAVIGATION_SHAPE.items():
+        if row["check"] is not None:
+            assert row["pattern"][row["check"]] != "<RUN>", name
+
+
+def test_the_rows_whose_form_cannot_fail_are_named_as_such():
+    """A row may declare a form that cannot fail. If it does, say so.
+
+    `_DIRECTORY` is a form predicate and an honest transcription of §3, which for
+    three of its rows names a directory and gives no naming rule. It is also the
+    one form here that a directory occupant cannot miss: `_occupants_at` returns
+    directories only, because §3 counts depth 「不计文件名」. So a row carrying it
+    reads every occupant as `conforming`, contributes its depth, and can never
+    contribute a finding.
+
+    That is a weaker thing than a check, and the difference matters: `conforming`
+    on such a row means "this is a directory and §3 says a directory belongs
+    here", never "this is the right directory". This test enumerates the rows in
+    that condition, so the set is a declaration a reader can see and a new row
+    cannot join it by accident.
+
+    A fourth row here is not a defect in itself — it is a decision to be made
+    deliberately, which is exactly what this assertion forces.
+    """
+    cannot_fail = sorted(name for name, row in fh.NAVIGATION_SHAPE.items()
+                         if row["form"] == fh._DIRECTORY)
+    assert cannot_fail == [
+        "records/information/raw",
+        "records/information/understanding",
+        "test-envs",
+    ], (f"these rows declare a form no directory occupant can miss and must be "
+        f"named here on purpose: {cannot_fail}")
+
+    # The other two forms CAN fail — one on a name, one on `.git` — so on these
+    # four rows `conforming` is a reading rather than a restatement. Enumerated
+    # for the same reason: this is the set where a red result is possible.
+    checkable = sorted(name for name, row in fh.NAVIGATION_SHAPE.items()
+                       if row["form"] in (fh._ITEM_ID, fh._GIT_WORKING_DIRECTORY))
+    assert checkable == ["artifacts/work-items", "records/projects",
+                         "src", "worktrees"]
+
+
+def test_navigation_shape_classifies_every_occupant_into_exactly_one_of_five_states(tmp_path):
+    """Hermetic, and the reason this reading is worth having.
+
+    The roots are passed in, so this never reads this machine's directories. What
+    is asserted is that the reading tells five states apart and merges none of
+    them: an occupant that IS the thing the row declares, one the contract
+    excludes from the depth statistic, one the row declares NO form for, one named
+    in the exception list, and one that is none of those — which is the only state
+    that is a finding.
+    """
+    world = tmp_path / "world"
+    work_items = world / "work-items"
+    for name in ("SRV-0001", "CCN-20260930", "newarrival"):
+        (work_items / "marketops" / name).mkdir(parents=True)
+    (work_items / ".pytest_cache").mkdir()
+    (world / "skills" / "alpha" / "run1").mkdir(parents=True)
+    (world / "skills" / "beta" / "run2").mkdir(parents=True)
+    (world / "repos" / "no-git-here").mkdir(parents=True)
+    (world / "repos" / "some-repo" / ".git").mkdir(parents=True)
+
+    reading = fh.navigation_shape(roots={
+        "artifacts/work-items": str(work_items),
+        "artifacts/skills": str(world / "skills"),
+        "src": str(world / "repos"),
+        "test-envs": str(world / "nowhere"),
+    })
+    rows = reading["rows"]
+    assert set(rows) == set(fh.NAVIGATION_SHAPE), (
+        "every row of the table is reported, including the ones this node "
+        "cannot resolve: a row that disappears is not the same as a row that "
+        "passed")
+
+    # 1. it IS the thing the row declares — and the form is a real predicate, so
+    #    `no-git-here` beside it is NOT a pass (see the src row below).
+    work = rows["artifacts/work-items"]
+    assert work["state"] == "read"
+    assert work["conforming"] == ["marketops/SRV-0001"]
+    # 2. it is a REGISTERED exception, and it carries the reason it was admitted
+    #    under rather than a bare acknowledgement.
+    assert [e["path"] for e in work["excepted"]] == ["marketops/CCN-20260930"]
+    assert "the date is the identity" in work["excepted"][0]["why"]
+    # 3. the contract excludes its name from the depth statistic, and it is
+    #    REPORTED rather than dropped — an exclusion a reader cannot see is
+    #    indistinguishable from a walk that stopped early.
+    assert [e["path"] for e in work["not_counted"]] == [".pytest_cache"]
+    assert len(work["not_counted"][0]["why"]) > 40
+    # 5. none of the above. The only state that fails the gate.
+    assert [e["path"] for e in work["unclassified"]] == ["marketops/newarrival"]
+    assert "NEW arrival" in work["unclassified"][0]["why"]
+    assert work["not_judged"] == []
+
+    # 4. this row declares NO form, so there is nothing for its occupants to
+    #    conform to. Not a failure, and not a pass: counting them either way
+    #    would be a claim the contract never made.
+    skills = rows["artifacts/skills"]
+    assert skills["form"] is None
+    assert skills["not_judged"] == ["alpha/run1", "beta/run2"]
+    assert skills["conforming"] == [] and skills["excepted"] == []
+    assert skills["unclassified"] == []
+
+    # the same row shape on a root where the declared form is a checkout
+    src = rows["src"]
+    assert src["conforming"] == ["some-repo"]
+    assert [e["path"] for e in src["unclassified"]] == ["no-git-here"]
+    assert fh._GIT_WORKING_DIRECTORY in src["unclassified"][0]["why"]
+    # §3's exclusion applies to the depth statistic itself and not only to the
+    # slot reading: `some-repo/.git` is a tool subtree, so level 2 is empty.
+    assert src["by_depth"] == {"1": 2}
+    assert src["counted_directories"] == 2
+
+    # A root with no directory is UNRESOLVED, never an empty pass — and a row
+    # absent from `roots` altogether is the same reading. "Nothing here conforms"
+    # and "nothing here was read" are different findings.
+    for name in ("test-envs", "worktrees"):
+        assert rows[name]["state"] == "unresolved", name
+        assert rows[name]["conforming"] == [] and rows[name]["not_judged"] == []
+        assert rows[name]["by_depth"] == {}
+
+    assert reading["unclassified"] == ["artifacts/work-items/marketops/newarrival",
+                                       "src/no-git-here"]
+    assert "moves, renames and deletes nothing" in reading["note"]
+
+
+def test_a_family_with_no_reason_does_not_excuse_its_member(tmp_path, monkeypatch):
+    """A declared member with an empty reason must not read as a pass.
+
+    `SHAPE_EXCEPTIONS` is what separates "registered" from "new", so the reason IS
+    the registration. If an empty one were accepted, a member could be listed
+    without being explained and the reading would report it as excepted — the same
+    gateway `ENTRY_DOCUMENT_NOT_REQUIRED` and `VOCABULARY_NOT_APPLIED` each carry
+    against a silent entry, and here it is what stops the exception list decaying
+    into a place a name is put to make a finding go away.
+    """
+    work_items = tmp_path / "work-items"
+    (work_items / "proj" / "an-undocumented-arrival").mkdir(parents=True)
+    monkeypatch.setattr(fh, "SHAPE_EXCEPTIONS", {
+        "artifacts/work-items": [{"family": "a family said nothing about",
+                                  "members": ["proj/an-undocumented-arrival"],
+                                  "reason": "   "}],
+    })
+
+    row = fh.navigation_shape(
+        roots={"artifacts/work-items": str(work_items)})["rows"]["artifacts/work-items"]
+    assert row["conforming"] == []
+    assert row["excepted"] == []
+    assert [e["path"] for e in row["unclassified"]] == \
+        ["proj/an-undocumented-arrival"]
+
+
+def test_the_live_governed_entries_are_every_one_of_them_classified():
+    """The criterion, read on this node: nothing is left unclassified.
+
+    §8 states the round's completion condition as 「被治理入口符合目标或有具名保留
+    理由」 — a governed entry either meets its target or carries a named retention
+    reason. This is that sentence evaluated against the real tree, which is also
+    the reading that must go red when a new arrival lands unregistered: that is
+    what the exception list is for.
+
+    It does not pin WHICH entries are exceptions or exclusions, because those are
+    this machine's material and another participant may legitimately retire one —
+    a gate that failed on somebody else's cleanup would be a gate about them
+    rather than about the contract. What it pins is the structural claim: every
+    row resolves, nothing is unclassified, and every entry that is excluded from
+    the depth statistic is excluded by a declared name with a reason a person can
+    read.
+    """
+    reading = fh.navigation_shape()
+    for name, row in reading["rows"].items():
+        assert row["state"] == "read", f"{name} did not resolve on this node"
+        assert row["by_depth"], f"{name} counted no directories at all"
+    assert reading["unclassified"] == [], (
+        "a governed entry is neither the declared shape nor a named exception: "
+        f"{reading['unclassified']}")
+
+    declared = fh.depth_not_counted()
+    for name, row in reading["rows"].items():
+        for entry in row["not_counted"]:
+            leaf = entry["path"].rsplit("/", 1)[-1]
+            assert leaf in declared, (
+                f"{name}/{entry['path']} is excluded from the depth statistic "
+                f"without a declaration anyone can read")
+            assert len(entry["why"].strip()) > 40, f"{name}/{entry['path']}"

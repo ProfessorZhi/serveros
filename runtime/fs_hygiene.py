@@ -798,6 +798,663 @@ def entry_documents(*, roots: dict | None = None) -> dict:
                  "reported for a person to write, and is not written here."),
     }
 
+# ---------------------------------------------------------------------------
+# D03 · the shape a governed root declares, and the entries that occupy its
+# slot without being one
+# ---------------------------------------------------------------------------
+# §3 of the directory contract is a nine-row table: semantic root, the default
+# shape, and a target depth — "导航浅，身份层级保留；不叠加等义目录". Like D07
+# before it, that table had no reader, and §8 makes it a completion criterion in
+# its own words: the depth statistic excludes reasoned tool subtrees, and the
+# GOVERNED ENTRIES either meet the target or carry a named retention reason.
+#
+# The trap is visible in the numbers, and it is the reason this is not a
+# "anything deeper than N needs a reason" check. Measured on this node
+# 2026-10-09: `artifacts/work-items` holds 656 directories at the table's own
+# target depth of 4, and `artifacts/skills` holds 1209 at its own target of 3. A
+# criterion demanding a reason for each would emit two thousand reasons, which is
+# the same as emitting none — and §3 warns against exactly that ("超过目标要有
+# 真实身份或工具格式理由，不是自动移动/删除命令"). What is checkable, and what §8
+# actually asks for, is the shape of the ENTRY at each row: one level per row, a
+# few hundred occupants in all, each of which is either the shape the row declares
+# or a name somebody can answer for.
+#
+# This pair is the third of its shape in this module — after
+# `ROOT_VOCABULARY`/`VOCABULARY_NOT_APPLIED` (§9.61) and
+# `ENTRY_DOCUMENT_ROOTS`/`ENTRY_DOCUMENT_NOT_REQUIRED` (§9.70) — and it is the
+# same shape for the same reason: what it exists to make visible is not a WRONG
+# answer but an UNNAMED one.
+
+# §3's table, transcribed. Nothing derives this: the contract states it as a
+# MARKDOWN table, which has no machine reader, so this is the only form the gate
+# can compare against — and it is a TRANSCRIPTION, dated and attributed, not a
+# list authored here. `docs/architecture/DIRECTORY-CONVERGENCE.md` §3, read
+# 2026-10-09: nine rows, of which the first column reads as below.
+#
+# Every row below is either CARRIED by `NAVIGATION_SHAPE` (the row names it in
+# `section_3_row`) or named in `SHAPE_ROWS_NOT_CARRIED` with the reason. A row of
+# the table that is in neither is the failure this pair exists for: it would be a
+# §3 row with no reader and no record of having been considered, which reads
+# exactly like a row nobody looked at.
+SECTION_3_ROWS = (
+    "src",
+    "worktrees",
+    "test-envs",
+    "records 项目工作",
+    "records 当前认识",
+    "records 新来源入口",
+    "artifacts Item 产物",
+    "artifacts 非 Item 产物",
+    "人类飞书导航",
+)
+
+# The one §3 row this reading does not carry, and it is the row the table itself
+# says is not a directory depth.
+SHAPE_ROWS_NOT_CARRIED = {
+    "人类飞书导航": (
+        "§3 states this row's unit in its own cell: 「此处是导航步数，不是文件系统"
+        "层数」 — navigation STEPS, not filesystem levels. There is no directory to "
+        "walk and no depth to count, so a reading built on `iterdir` cannot answer "
+        "for it, and carrying it with a made-up path would be this module inventing "
+        "the thing §3 explicitly says is something else"
+    ),
+}
+
+# How an occupant of a slot is recognised. These are STRUCTURAL or FORM
+# predicates, never identity predicates: whether `marketops-b-mutation` is a
+# skill is a question for its owner, and a criterion that answered it would be
+# this module inventing an authority it does not have. "Contains `.git`" and
+# "is spelled like an Item id" are answerable here; "is a legitimate entry" is
+# not.
+#
+# `src` and `worktrees` share ONE predicate rather than carrying a name each.
+# They are two names for one test — a directory holding `.git` — and the plumbing
+# differs only in the usual case (a canonical checkout's `.git` is a directory, a
+# linked worktree's is a file), which is NOT what §3 declares. Two constants for
+# one predicate would read as two criteria, and the second would look like it
+# enforced something the first did not.
+_GIT_WORKING_DIRECTORY = (
+    "a directory holding `.git` — a canonical checkout, or a linked worktree "
+    "whose `.git` is a file")
+_DIRECTORY = (
+    "a directory, and no more — the weakest form here, declared where §3 names a "
+    "directory and gives no naming rule. On a directory occupant it cannot fail, "
+    "so a row carrying it declares a SHAPE rather than a falsifiable check: what "
+    "such a row contributes is its depth, and what it cannot contribute is a "
+    "finding. `test_the_rows_whose_form_cannot_fail_are_named_as_such` lists them, "
+    "so a fourth cannot arrive silently")
+
+_ITEM_ID = "an owner-assigned Item id, `<PREFIX>-<digits>`"
+_ITEM_ID_RE = re.compile(r"^[A-Z]{2,6}-\d{3,4}$")
+
+# §3's rows. `ref` is resolved through `paths` and never composed here:
+# `("workspace", "src")` means `<WORKSPACE_ROOT>/src`, and a root this node
+# cannot resolve reports `unresolved` rather than a made-up directory.
+#
+# `pattern` spells the shape the table declares, one element per level, with
+# `<...>` for a slot and a literal for a fixed segment. `check` names the ONE
+# level the criterion applies to, because the table's target depth is the level
+# of the ENTRY, not of every level above it.
+NAVIGATION_SHAPE = {
+    "src": {
+        "section_3_row": "src",
+        "ref": ("workspace", "src"),
+        "shape": "<repo>/",
+        "pattern": ("<repo>",),
+        "check": 0,
+        "form": _GIT_WORKING_DIRECTORY,
+        "target_depth": 1,
+        "why": "the canonical checkouts; the entry is a repository",
+    },
+    "worktrees": {
+        "section_3_row": "worktrees",
+        "ref": ("workspace", "worktrees"),
+        "shape": "<repo-or-group>/<work-name>/",
+        "pattern": ("<repo-or-group>", "<work-name>"),
+        "check": 1,
+        "form": _GIT_WORKING_DIRECTORY,
+        "target_depth": 2,
+        "why": ("the implementation entries. The level above a work tree groups "
+                "it, and §3's naming rule allows a project or tool name there, "
+                "not only a repository name — measured 2026-10-09: level 1 holds "
+                "14 groupings, of which 11 are `src/` repositories and 3 are "
+                "project groups (`hwz-ops`, `ops`, `records`) whose members are "
+                "real worktrees. The grouping is therefore NOT checked; the work "
+                "tree is. The form is `.git` EXISTS, not `.git` is a FILE: §3 "
+                "declares a working tree here, not its plumbing, and 2 of the 258 "
+                "entries at the checked level hold `.git` as a directory "
+                "(`marketops/repository-convergence`, "
+                "`marketops/v1-serper-discovery`) — nested checkouts rather than "
+                "linked worktrees. Whether they belong here is a question for "
+                "their owner, and a predicate demanding a `.git` FILE would "
+                "report those two as findings and call the stricter form a rule"),
+    },
+    "test-envs": {
+        "section_3_row": "test-envs",
+        "ref": ("workspace", "test-envs"),
+        "shape": "<repo>/<profile>/",
+        "pattern": ("<repo>", "<profile>"),
+        "check": 1,
+        "form": _DIRECTORY,
+        "target_depth": 2,
+        "why": "the definition entries; a profile is a directory",
+    },
+    "records/projects": {
+        "section_3_row": "records 项目工作",
+        "ref": ("workspace", "records", "projects"),
+        "shape": "<project>/items/<ITEM>/",
+        "pattern": ("<project>", "items", "<ITEM>"),
+        "check": 2,
+        "form": _ITEM_ID,
+        "target_depth": 4,
+        "why": "an Item's evidence under its project",
+    },
+    "records/information/understanding": {
+        "section_3_row": "records 当前认识",
+        "ref": ("workspace", "records", "information", "understanding"),
+        "shape": "<kind>/",
+        "pattern": ("<kind>",),
+        "check": 0,
+        "form": _DIRECTORY,
+        "target_depth": 3,
+        "why": ("the kinds this node files its current understanding under. §3's "
+                "row is three levels below `records`, and what it declares at "
+                "that depth is a directory — the entity under it is usually a "
+                "single document, which is a file and therefore not a level"),
+    },
+    "records/information/raw": {
+        "section_3_row": "records 新来源入口",
+        "ref": ("workspace", "records", "information", "raw"),
+        "shape": "<provider>/<source-key>/",
+        "pattern": ("<provider>", "<source-key>"),
+        "check": 1,
+        "form": _DIRECTORY,
+        "target_depth": 4,
+        "why": ("a source entry four levels below `records`. Measured 2026-10-09: "
+                "§3 also says the new raw layout is 「待实施的有版本布局 profile」, "
+                "not yet implemented, so this row measures the layout that is "
+                "THERE — `feishu` and `web` at the provider level, beside the "
+                "intake tooling's own `tests/` and its `.py` files, which is why "
+                "the level ABOVE the entry is not judged by name: §3 declares the "
+                "ENTRY's depth (4, from `records`), and the level above it is what "
+                "the check would have to invent a vocabulary for"),
+    },
+    "artifacts/work-items": {
+        "section_3_row": "artifacts Item 产物",
+        "ref": ("artifacts", "work-items"),
+        "shape": "<project>/<ITEM>/<RUN>/",
+        "pattern": ("<project>", "<ITEM>", "<RUN>"),
+        "check": 1,
+        "form": _ITEM_ID,
+        "target_depth": 4,
+        "why": "a Run's evidence under its Item",
+    },
+    "artifacts/skills": {
+        "section_3_row": "artifacts 非 Item 产物",
+        "ref": ("artifacts", "skills"),
+        "shape": "<skill>/<run>/",
+        "pattern": ("<skill>", "<run>"),
+        "check": None,
+        "form": None,
+        "target_depth": 3,
+        "why": ("no form is declared for either slot, and NONE IS INVENTED. §3 "
+                "gives a skill no id grammar, so any predicate here would be this "
+                "module asserting a convention the contract never wrote. The row "
+                "is listed because the table lists it, and its depth is counted; "
+                "its occupants are not judged"),
+    },
+}
+
+# §3: "第三方源码、node_modules、venv、浏览器/客户端缓存、不可变 release 和原始
+# trace 包按工具格式保留，按 scope 排除出导航深度统计". This product already
+# declares 25 tool-owned dotdirs, each with owner, provider, evidence and reason,
+# in `TOOL_OWNED_DOTDIRS` above. That declaration is REUSED rather than restated
+# — two lists of one thing drift, and the copy that drifts is the one nobody
+# reads — so the effective exclusion set is the union below. What is added is the
+# part §3 names and that declaration does not yet carry.
+_DEPTH_NOT_COUNTED_ADDED = {
+    ".git": (
+        "the version control system's own directory. §3 excludes tool-format "
+        "subtrees by scope. Measured 2026-10-09: the only one outside a "
+        "checkout is `{WORKSPACE_ROOT}/test-envs/.git`, at a slot of the "
+        "`test-envs` row — a repository root where §3's shape declares a "
+        "repository NAME. Recorded as not-counted rather than moved: it is a "
+        "repository and possibly unique history, and cleanup is proposal-only"
+    ),
+    ".pytest_cache": (
+        "pytest's own cache, written into whichever directory the tool was run "
+        "in. Measured 2026-10-09: `worktrees` holds 15 directories at its "
+        "grouping level — 14 groupings and this one — while every one of the 258 "
+        "directories at the CHECKED level is a work tree, so this is the only "
+        "entry at the level above that is neither a grouping nor a work tree. It "
+        "sits beside `serveros/` and `hwz-ops/` rather than inside one of them. "
+        "Reported as not-counted rather than dropped, because an exclusion a "
+        "reader cannot see is indistinguishable from a walk that stopped early. "
+        "Regenerable by definition; deleting it is a separate, proposal-only act "
+        "this reading does not take"
+    ),
+    "node_modules": "an installed dependency tree — third-party source kept in the tool's own format (§3)",
+    "venv": "a virtual environment — tool-format subtree (§3)",
+    ".venv": "a virtual environment, under its second conventional name (§3)",
+    "__pycache__": "the interpreter's own compiled-bytecode cache (§3)",
+    ".mypy_cache": "a type checker's own cache (§3)",
+    ".ruff_cache": "a linter's own cache (§3)",
+}
+
+
+def depth_not_counted() -> dict:
+    """§3's scope exclusion as one mapping: name -> reason it is not counted.
+
+    `TOOL_OWNED_DOTDIRS`'s own `why` is carried through unchanged where the name
+    comes from there, so the two cannot disagree about a name they both name.
+    """
+    out = {name: row["why"] for name, row in TOOL_OWNED_DOTDIRS.items()}
+    out.update(_DEPTH_NOT_COUNTED_ADDED)
+    return out
+
+
+# The entries that occupy a shape's checked slot WITHOUT being one, measured on
+# this node and named here so that a 30th cannot arrive silently.
+#
+# Read the reasons as REGISTRATIONS, not as rulings. §3 gives identity to owners
+# ("repo/project/工具名沿既有稳定身份"), and these are Items-named-directories
+# that are not Items. This module can measure that the slot holds them; it cannot
+# say they should not be there, and it does not try. What it can do — and what
+# makes the reading worth having — is fail when a NEW one appears, so the next
+# one is a decision instead of an accumulation.
+#
+# Retained rather than corrected, on three grounds that hold for every family
+# below: they are historical evidence for work this product did, §3's own
+# sentence makes an over-target depth a reason to write a reason down rather
+# than to move anything, and cleanup here is proposal-only until approved. A
+# family with no members is a stale declaration and the gate fails on it.
+SHAPE_EXCEPTIONS = {
+    "artifacts/work-items": [
+        {
+            "family": "<name>-<YYYYMMDD>",
+            "members": [
+                "marketops/CCN-20260930",
+                "marketops/CCN2-20261005",
+                "marketops/G5-MAIN-20260929",
+                "marketops/IMPL-20260923",
+                "marketops/ORCH-20260930",
+                "marketops/R1R2-20260926",
+                "marketops/SHARED-GRAPH-E2E-20261004",
+                "marketops/SHARED-GRAPH-E2E-20261005",
+                "marketops/WATCH-SCENE-ID-20261005",
+                "marketops/bruce-automation-r1-r2-20260926",
+                "marketops/bruce-automation-r1-r2-20260927",
+                "marketops/cc-native-20260930-eligibility",
+                "marketops/eligibility-3c-20261005",
+                "serveros/project-testing-contract-20260929",
+            ],
+            "reason": (
+                "a dated work package or evidence directory: the date is the "
+                "identity, and no owner assigned an Item id to it. §3 says a date "
+                "belongs to a version, a cycle or evidence, and these are the "
+                "third — so the form is not a mistake about the form, it is this "
+                "slot holding evidence where the row declares an Item. Neither "
+                "renaming nor renumbering: §3 forbids renumbering an owner's id "
+                "and this module did not assign one"
+            ),
+        },
+        {
+            "family": "TARGET-CONVERGENCE-<slice>",
+            "members": [
+                "marketops/TARGET-CONVERGENCE-B01B02",
+                "marketops/TARGET-CONVERGENCE-B15B",
+                "marketops/TARGET-CONVERGENCE-B15C",
+                "marketops/TARGET-CONVERGENCE-B15D",
+                "marketops/TARGET-CONVERGENCE-B15E",
+                "marketops/TARGET-CONVERGENCE-B15F",
+                "marketops/TARGET-CONVERGENCE-B15G",
+                "marketops/TARGET-CONVERGENCE-B15H",
+                "marketops/TARGET-CONVERGENCE-B16",
+                "marketops/TARGET-CONVERGENCE-B17",
+                "marketops/TARGET-CONVERGENCE-C00",
+            ],
+            "reason": (
+                "one programme's slices, named by work package rather than by "
+                "Item. Eleven members sharing one prefix and one naming habit, so "
+                "one reason covers them; a 12th would be caught by this list "
+                "rather than absorbed by the prefix. Whether a slice should have "
+                "been an Item is a question about that programme's shape, which "
+                "its owner answers and this reading does not"
+            ),
+        },
+        {
+            "family": "§<n> — a contract section used as a directory name",
+            "members": ["marketops/§2", "marketops/§15", "marketops/§16"],
+            "reason": (
+                "the strongest instance of the slot's problem and the one worth a "
+                "person's attention: `marketops/§2`, `§15` and `§16` are named "
+                "after SECTIONS OF THE CONTRACT, so a directory here is named for "
+                "where the work was DESCRIBED rather than for what the work was. "
+                "Recorded as an exception rather than a finding to act on because "
+                "the contents decide the reading, and nothing here has read them"
+            ),
+        },
+        {
+            "family": "slice-<YYYY-MM-DD>",
+            "members": ["serveros/slice-2026-09-17"],
+            "reason": (
+                "a dated slice under a second date spelling. Kept separate from "
+                "the first family rather than folded into it: that family's "
+                "members spell the date `YYYYMMDD` and this one spells it "
+                "`YYYY-MM-DD`, and merging them here would hide a spelling "
+                "difference §3's naming rule is about"
+            ),
+        },
+    ],
+}
+
+# NOT declared, and the measurement is the reason — recorded because a criterion
+# that was CONSIDERED and dropped is worth more written down than left to be
+# re-invented, and because this is the trap §3 itself warns about:
+#
+#   * `<RUN>` as `RUN-<digits>`. The natural third check is a Run slot holding
+#     `RUN-\d{4}`. Measured 2026-10-09: **110** entries in that slot fail it —
+#     `build`, `_recon`, `pre-tokyo-dump`, and `RUN-0004-original`,
+#     `RUN-0005-deepseek`, `RUN-0002-container0` (a Run id with a suffix). So the
+#     form in use is `RUN-<digits>` plus an optional note, and the strict form is
+#     a convention this tree never kept. A criterion whose exception list is 110
+#     long is not a criterion; it is the same as none, at the cost of 110 rows
+#     nobody will read. Deciding which suffixes are legitimate is an identity
+#     question for the owner of those Runs.
+#   * a form for `<skill>` or `<run>`. No grammar is declared anywhere, so any
+#     predicate would be invented here. Measured: 34 skill-slot occupants, of
+#     which 2 end in a date (`monitoring-notice-livecheck-20260930`,
+#     `monitoring-v2-statuscard-20260930`). Whether those are skills or
+#     operations promoted a level is a question about their contents, and §3
+#     gives it to their owner. Recorded in the ledger, not encoded here.
+SHAPE_CHECKS_NOT_MADE = {
+    "artifacts/work-items/<RUN>": (
+        "`RUN-<digits>` was measured as a candidate and DROPPED: 110 entries in "
+        "the slot fail the strict form — `build`, `_recon`, `pre-tokyo-dump`, and "
+        "Run ids carrying a suffix (`RUN-0004-original`, `RUN-0005-deepseek`). A "
+        "criterion with 110 exceptions is the same as no criterion"
+    ),
+    "artifacts/skills": (
+        "no id grammar is declared for a skill or a run anywhere, so a predicate "
+        "here would be invented. 2 of the 34 skill-slot occupants end in a date; "
+        "whether they are skills or operations promoted a level is a question for "
+        "their owner"
+    ),
+    "records/projects/items": (
+        "the row's one LITERAL segment. The pattern is `<project>/items/<ITEM>` "
+        "and `items` is what this row is about; the directory beside it is not "
+        "empty of siblings — measured 2026-10-09, a project carries "
+        "`architecture`, `board`, `context`, `memory` and `reports` as well, each "
+        "declared elsewhere (paths.py resolves `records/projects/<project>/memory` "
+        "as the Layer B ledger). So 41 directories sit at the `<ITEM>` depth and "
+        "31 of them are under `items/`; the other 10 are under a sibling and this "
+        "row stays silent about them. Declared silence, which is a different "
+        "reading from an unreported gap"
+    ),
+}
+
+
+def _form_holds(path: Path, form: str | None) -> bool | None:
+    """Does this occupant satisfy the row's form? `None` when no form is declared.
+
+    `None` is not `True`. "This occupant conforms" and "this row declares no form
+    to conform to" are different readings, and the same distinction `report()`
+    draws for an absent root and `entry_documents()` for an uncountable one.
+    """
+    if form is None:
+        return None
+    if form == _ITEM_ID:
+        return bool(_ITEM_ID_RE.match(path.name))
+    if not path.is_dir():
+        return False
+    if form == _DIRECTORY:
+        return True
+    return (path / ".git").exists()  # _GIT_WORKING_DIRECTORY
+
+
+def _exception_reason(row: str, relative: str) -> str | None:
+    """The declared reason this entry occupies the slot, or `None` if undeclared.
+
+    A member listed with a blank reason is reported as `None` — undeclared —
+    rather than as an exception whose reason happens to be empty. The reason IS
+    the registration: `SHAPE_EXCEPTIONS` is the whole difference between
+    "registered" and "a new arrival", so a name put in it with nothing said about
+    it is a name put there to make a finding go away, and the reading sends it back
+    as the finding it is. The same gateway `ENTRY_DOCUMENT_NOT_REQUIRED` carries
+    against a silent entry, and the reason `test_a_family_with_no_reason_does_not_
+    excuse_its_member` exists.
+    """
+    for family in SHAPE_EXCEPTIONS.get(row, ()):
+        if relative in family["members"]:
+            reason = family["reason"]
+            return reason if reason and reason.strip() else None
+    return None
+
+
+def _declared_exceptions() -> list[str]:
+    """Every `row/entry` pair named in `SHAPE_EXCEPTIONS`, sorted."""
+    return sorted(f"{row}/{member}" for row, families in SHAPE_EXCEPTIONS.items()
+                  for family in families for member in family["members"])
+
+
+def navigation_shape(*, roots: dict | None = None) -> dict:
+    """§3's rows, read: what occupies each governed slot, and which of it is not
+    the thing the row declares.
+
+    `roots` maps a ROW NAME to its directory and defaults to this node's resolved
+    roots, the same parameter `entry_documents()` takes and for the same reason:
+    a caller testing this reading against a throwaway tree must not have it reach
+    for the real one.
+
+    One level of each row is checked — the level §3 calls the entry — and the
+    reading reports five states for its occupants, never two:
+
+      * `conforming`   — it is the thing the shape declares;
+      * `not_counted`  — §3 excludes its name from the navigation depth statistic;
+      * `not_judged`   — this row declares NO form, so there is nothing for the
+                         occupant to conform to. Not a failure and not a pass;
+      * `excepted`     — it is in `SHAPE_EXCEPTIONS`, named with its reason;
+      * `unclassified` — none of the above. This is the one that fails the gate.
+
+    `not_judged` exists because the alternative is a lie in one direction or the
+    other: counting the 173 `artifacts/skills` entries as unclassified findings
+    would manufacture a problem out of this module's own silence about skills, and
+    counting them as conforming would claim a form the contract never wrote.
+
+    A row whose form is `_DIRECTORY` is the third case: a form IS declared, so its
+    occupants read as `conforming` rather than `not_judged`, but the form cannot
+    fail on a directory occupant. Such a row contributes its depth and can never
+    contribute a finding; `test_the_rows_whose_form_cannot_fail_are_named_as_such`
+    enumerates them so that a row added this way is added on purpose.
+    """
+    resolved = roots if roots is not None else _resolved_shape_roots()
+    excluded = depth_not_counted()
+    rows = {}
+    for name, row in NAVIGATION_SHAPE.items():
+        root = resolved.get(name)
+        entry = {"ref": "/".join(row["ref"]), "shape": row["shape"],
+                 "form": row["form"], "target_depth": row["target_depth"],
+                 "path": root, "why": row["why"], "conforming": [],
+                 "not_counted": [], "not_judged": [], "excepted": [],
+                 "unclassified": [],
+                 "counted_directories": 0, "by_depth": {}}
+        if not root or not Path(root).is_dir():
+            entry["state"] = "unresolved"
+            rows[name] = entry
+            continue
+        entry["state"] = "read"
+        entry["by_depth"] = _depth_histogram(Path(root), excluded)
+        entry["counted_directories"] = sum(entry["by_depth"].values())
+        occupants, skipped = _occupants_at(Path(root), row["pattern"], row["check"], excluded)
+        for path in skipped:
+            entry["not_counted"].append({
+                "path": path.relative_to(root).as_posix(), "why": excluded[path.name]})
+        for occupant in occupants:
+            rel = occupant.relative_to(root).as_posix()
+            holds = _form_holds(occupant, row["form"])
+            if holds is True:
+                entry["conforming"].append(rel)
+                continue
+            if holds is None:
+                # No form is declared for this row, so there is nothing for the
+                # occupant to conform TO. Counting it as unclassified would
+                # manufacture a finding out of this module's own silence.
+                entry["not_judged"].append(rel)
+                continue
+            named = _exception_reason(name, rel)
+            if named:
+                entry["excepted"].append({"path": rel, "why": named})
+            else:
+                entry["unclassified"].append({
+                    "path": rel,
+                    "why": (f"this slot declares {row['form']} and this entry is "
+                            f"not one. It is not in SHAPE_EXCEPTIONS either, so "
+                            f"it is a NEW arrival rather than a registered one")})
+        # `conforming` and `not_judged` carry paths; `not_counted`, `excepted`
+        # and `unclassified` carry {path, why}: an occupant that IS the thing
+        # needs no reason, and one that is not is worth nothing without the
+        # reason it was admitted under.
+        entry["conforming"] = sorted(entry["conforming"])
+        entry["not_judged"] = sorted(entry["not_judged"])
+        for key in ("not_counted", "excepted", "unclassified"):
+            entry[key] = sorted(entry[key], key=lambda r: r["path"])
+        rows[name] = entry
+    unclassified = sorted(f"{row}/{r['path']}" for row, entry in rows.items()
+                          for r in entry["unclassified"])
+    return {
+        "rows": rows,
+        "unclassified": unclassified,
+        "note": ("D03 of the directory contract: navigation stays shallow and an "
+                 "entry either meets its shape or carries a named retention "
+                 "reason. This reading classifies and counts; it moves, renames "
+                 "and deletes nothing, and an entry it reports as unclassified is "
+                 "one for a person to name — naming it here would be this module "
+                 "ruling on an identity §3 gives to an owner."),
+    }
+
+
+def _resolved_shape_roots() -> dict:
+    """§3's carried rows as this node resolves them, through `paths`, never by string.
+
+    A root this node cannot resolve is left OUT rather than guessed, and
+    `navigation_shape()` reports the row `unresolved` — the same choice
+    `entry_documents()` makes for a root with no directory, and for the same
+    reason: a directory composed here would be a directory invented here.
+    """
+    out = {}
+    try:
+        p = paths.Paths()
+        base = {}
+        for root_name in {ref[0] for ref in (r["ref"] for r in NAVIGATION_SHAPE.values())}:
+            try:
+                base[root_name] = p.root(root_name)
+            except Exception:  # pragma: no cover - an unresolvable root is data
+                base[root_name] = None
+        for name, row in NAVIGATION_SHAPE.items():
+            head, *rest = row["ref"]
+            directory = base.get(head)
+            for part in rest:
+                directory = (directory / part) if directory else None
+            if directory:
+                out[name] = str(directory)
+    except Exception:  # pragma: no cover - a node with no contract reads as unresolved
+        return {}
+    return out
+
+
+def _depth_histogram(root: Path, excluded: dict) -> dict:
+    """Directory count per level below `root`, skipping excluded tool subtrees.
+
+    The keys are STRINGS, because this mapping's canonical form is the JSON
+    document and a JSON object's keys are strings. Returning ints here would give
+    the same reading two types depending on whether it was read from the function
+    or from the CLI — the kind of two-spellings-of-one-thing this module's other
+    gates exist to catch.
+
+    §3's scope exclusion applies to the walk, not only to the top level: a
+    `node_modules` four levels down is the same tool subtree as one at the top,
+    and counting it would make the statistic report the size of the tools rather
+    than the shape of the tree.
+
+    The walk stops at 6. §3's deepest declared target is 4, so level 6 is already
+    a small margin past it, and what is below that stops describing navigation
+    and starts measuring whatever happens to be installed. The CLI prints the
+    level as `6+` for that reason: the last bucket is a FLOOR, not a total.
+    """
+    out: dict[int, int] = {}
+
+    def walk(directory: Path, level: int) -> None:
+        if level:
+            out[level] = out.get(level, 0) + 1
+        if level >= 6:
+            return
+        try:
+            children = [p for p in directory.iterdir() if p.is_dir()]
+        except (PermissionError, OSError):
+            return
+        for child in children:
+            if child.name in excluded:
+                continue
+            walk(child, level + 1)
+
+    walk(root, 0)
+    return {str(level): out[level] for level in sorted(out)}
+
+
+def _occupants_at(root: Path, pattern: tuple, check: int,
+                  excluded: dict) -> tuple[list[Path], list[Path]]:
+    """`(occupants at check, paths SKIPPED by §3's exclusion on the way there)`.
+
+    A literal segment in `pattern` must match that name; a `<...>` slot matches
+    anything. Where the pattern is shorter than `check`, nothing is reached and
+    the list is empty — the row has no entries rather than a failed read.
+
+    Two exclusions, each with a reason and neither cosmetic:
+
+      * §3 excludes a tool subtree BY SCOPE, and that applies to the levels
+        ABOVE the checked one too. Walking into `{WORKSPACE_ROOT}/test-envs/.git`
+        and reading its 13 children as profiles is the same mistake as counting
+        them, one step earlier: it would report a repository's internals as
+        `test-envs` entries.
+      * only directories. §3 defines depth as "目录层数，不计文件名" — file names
+        are not counted — so a file sitting at a slot is not part of the shape at
+        all. `{WORKSPACE_ROOT}/src/README.md` is an entry document, which §65 asks
+        a major node for and D07 above reads; reporting it here as an occupant
+        that is not a repository would be this check charging a node for doing
+        what the contract next to it requires.
+
+    The skipped paths are RETURNED rather than dropped. An exclusion nobody can
+    see is indistinguishable from a walk that stopped early, and the measured
+    instances — `worktrees/.pytest_cache`, `test-envs/.git`, and the five
+    `__pycache__`/`.pytest_cache` directories under `records/information/raw` —
+    are entries a reader would otherwise wonder about and this reading would be
+    silent on.
+    """
+    level, skipped = [root], []
+    for index, segment in enumerate(pattern):
+        nxt = []
+        for directory in level:
+            if not directory.is_dir():
+                continue
+            if not (segment.startswith("<") and segment.endswith(">")):
+                literal = directory / segment
+                if literal.is_dir():
+                    nxt.append(literal)
+                continue
+            try:
+                children = sorted(p for p in directory.iterdir())
+            except (PermissionError, OSError):
+                continue
+            for child in children:
+                if child.name in excluded:
+                    skipped.append(child)
+                    continue
+                nxt.append(child)
+        if index == check:
+            return [p for p in nxt if p.is_dir()], skipped
+        level = nxt
+    return [p for p in level if p.is_dir()], skipped
+
 # The three roots whose top level is declared a closed set. `state` is declared
 # closed in policy but `paths.admit` does not enforce it the way it enforces
 # `data` and `workspace`; the report says which of the two it is, because "a
@@ -1226,7 +1883,7 @@ def placement(path, *, paths_registry=None) -> dict:
 
 
 def report(*, home=None, data=None, sizes=None, oversized_bytes=None,
-           roots=None) -> dict:
+           roots=None, shape_roots=None) -> dict:
     """Classify both roots, change nothing, and say which question is open.
 
     `sizes` maps an absolute path to bytes, produced by whoever already
@@ -1240,6 +1897,12 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None,
     `roots` maps a root name to its directory and is forwarded to
     `entry_documents`, which is the one part of this document that answers for
     every declared root rather than for the four that are scanned.
+
+    `shape_roots` is a SECOND mapping and not the same one: §3's rows are
+    sub-roots (`workspace/src`, `artifacts/work-items`) rather than the ten
+    declared roots, so the two do not share keys and forwarding one where the
+    other belongs would silently resolve nothing. It is forwarded to
+    `navigation_shape`, which reports an unresolved row instead of guessing.
 
     The four root NAMES are resolved to their directories and then grouped by
     the directory they resolve to, and each group is scanned and classified
@@ -1389,6 +2052,12 @@ def report(*, home=None, data=None, sizes=None, oversized_bytes=None,
         # scan can still be asked whether a person landing in it is told
         # anything.
         "entry_documents": entry_documents(roots=roots),
+        # D03's reading, over §3's six rows rather than over the four roots this
+        # report scans. It counts directories per level and classifies the
+        # occupants of each row's governed slot; it adds no entry to `entries`
+        # and changes no row above, because a navigation SHAPE is a statement
+        # about where entries sit, not about what any one of them is.
+        "navigation_shape": navigation_shape(roots=shape_roots),
         "roots": {
             role: {
                 "path": locations[role],
