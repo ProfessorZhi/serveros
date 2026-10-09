@@ -12846,8 +12846,19 @@ assert both == accounted, (
 **对照基线必须另算，不能直接减。** §9.68.8 的 `7297 passed` 量在**另一个提交**（PR #121 的
 `c9d2a9b`）上；本包基线是 `0986f42`，两者之间 main 已经走了若干代。所以
 `7425 − 7297 = +128` **不是本包的贡献**。为了有一个可比的对照，本包在**基线提交 `0986f42`**
-上另跑了一次同样的全量套件（`evidence/fullsuite-base-control.txt`）：见下。本包自身新增
-**3 条用例 / +5 subtests**（`TheOverlapIsComparedTooTests` 两条 + `test_the_root_and_the_role_answer_the_same_thing` 一条）。
+上（worktree `w6-base-control-20261009`，`evidence/fullsuite-base-control.txt`）另跑了一次同样的全量套件：
+
+| 跑法 | 读数 |
+|---|---|
+| 基线 `0986f42`（对照） | **7422 passed, 24 skipped, 4507 subtests passed in 1761.99s**（EXIT 0） |
+| 改动字节 `c223fa4` | **7425 passed, 24 skipped, 4512 subtests passed in 1159.25s**（EXIT 0） |
+| 差 | **+3 passed / +5 subtests** |
+
+**+3 / +5 与本包新增的用例数精确吻合**（`TheOverlapIsComparedTooTests` 两条 —— 第二条当前
+`DECLARED_DISAGREEMENT` 为空、不产出 subtest；`test_the_root_and_the_role_answer_the_same_thing` 一条）。
+**两条都是绿的**，且差值可归因 —— 这与「减出来的 +128」是两回事。
+（warning 数 4 vs 1 的差异来自资源/时序，未归因，照实记。
+对照跑用 1761.99s、本跑用 1159.25s：同一台共享主机上的负载差，不是产物差。）
 
 **落地**：`runtime/paths.py`、`runtime/workbench_sources.py`、`fleet/profiles.yaml`、
 `tests/test_authority_bindings_have_readers.py`、`tests/test_no_node_paths_in_product_data.py`、
