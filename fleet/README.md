@@ -36,6 +36,9 @@ transport-contract.yaml   identity rules, transport kinds, capability levels,
                           per-capability availability, the availability table,
                           provenance sources
 mcp-contract.yaml         what each MCP surface owns, and what it must not
+fleet-mcp-contract.yaml   the off-host MCP ingress (OAuth 2.1) and the outbound
+                          node transport, and why neither is a fifth owner of
+                          fleet or session facts
 controller-contract.yaml  where the fleet controller actually is, the boundary
                           ServerOS keeps to it, and the connector shape if one
                           is ever wanted

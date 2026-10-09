@@ -1,0 +1,440 @@
+# ServerOS Fleet MCP — the off-host ingress, and the outbound node transport.
+#
+# What this file decides, and what it refuses to decide
+# -----------------------------------------------------
+# This is NOT a fifth owner of fleet or session facts, and it must never be
+# read as one. Every fact this surface returns is answered by something that
+# already owns it, and the mapping is written out below so that the duplication
+# is visible on the page rather than discovered later in a disagreement between
+# two answers.
+#
+# It exists because of one gap that nothing in this tree filled: every MCP
+# surface here speaks **stdio to a process on the same host**. An external
+# client — ChatGPT, or any MCP client that is not a local child process — has
+# no way in at all. The work of this surface is therefore an *ingress*: a
+# streamable-HTTP MCP endpoint with a real OAuth 2.1 authorization server in
+# front of it, and an addressability rule that makes a session on one device
+# nameable without colliding with the same id on another.
+#
+# Why this is not the `serveros-fleet-mcp` that was withdrawn
+# -----------------------------------------------------------
+# `fleet/mcp-contract.yaml` records that a surface by this name was declared
+# for two revisions with no `implementation:` key, no adapter file, and seven
+# tool names that resolved to no code. It was withdrawn, and the reason given
+# was that building it "would have meant a fourth server answering
+# `device.list` alongside this one".
+#
+# That objection has not been repealed, and this file does not pretend
+# otherwise. What has changed is narrower and checkable:
+#
+#   * the code exists (fleet_mcp/), with the surface's tool list asserted
+#     against `tools.tool_names()`;
+#   * `fleet_list_devices` does not read the registry itself — it calls
+#     `fleet/transport.py`'s DeviceRegistry, which is the identity authority,
+#     and merges live, per-call provider probes over it. It cannot disagree
+#     with `device.list` about what a device *is*, because it does not hold an
+#     opinion about that;
+#   * the session verbs are delegations to the same provider adapters, not a
+#     second reading of session truth.
+#
+# What remains genuinely in tension is recorded under `overlap_with` below,
+# with the alternative that was not taken. A future round that resolves it
+# should resolve it by moving the ingress onto `serveros-agent-mcp`, not by
+# widening this file.
+schema: serveros/fleet-mcp.v1
+
+implementation: fleet_mcp/
+implementation_entry: fleet_mcp.runtime:main
+server_name: serveros-fleet-mcp
+tool_surface_revision: fleet-mcp-1
+
+# ---------------------------------------------------------------------------
+# Ownership
+# ---------------------------------------------------------------------------
+#
+# Stated as a difference from what is already owned, because that is the only
+# form in which the claim is checkable.
+
+owns:
+  - the off-host MCP ingress — streamable HTTP, one endpoint, no local child
+    process required
+  - the OAuth 2.1 authorization server that gates that ingress (RFC 8414
+    metadata, RFC 9728 protected-resource metadata, RFC 7591 dynamic client
+    registration, authorization code + PKCE S256, refresh rotation)
+  - the per-credential, per-device, per-session admission decision for a
+    control call arriving from outside the trust boundary
+  - the outbound node transport — a signed, closed-route connector that lets a
+    device behind a network it does not control be reachable without its
+    provider credential leaving that device
+
+does_not_own:
+  - device identity — fleet/registry.yaml, read through fleet/transport.py
+  - the fleet read model's disclosure levels — fleet/view.py
+  - Agent Runtime definitions, provider readiness, or the router's admission
+    verdict — mcp/agent_mcp.py and the §7 router
+  - provider-native session truth — CloudCLI owns it on the device
+  - "agent-session lifecycle semantics — `resume`, `stop` and `handoff` are not
+    reachable here at all, by omission rather than by refusal"
+  - any credential's contents. Every credential this surface needs is named by
+    an anchor (a path) and read at the point of use; no value is stored in the
+    binding, written to a log, or returned in a result
+
+# Where this surface answers a question an existing owner already answers.
+# Written down rather than left to be noticed, because the failure mode is a
+# consumer that keys on whichever of the two it happened to see first.
+overlap_with:
+  - surface: serveros-agent-mcp
+    shares:
+      - "session listing: `fleet_list_sessions` beside `agent.session.list`"
+      - "session detail: `fleet_get_session` beside `agent.session.inspect`"
+      - "transcript reads: `fleet_read_session` beside `agent.session.result`"
+      - "message delivery: `fleet_send_to_session` beside `agent.session.send`"
+    not_shared:
+      - "the router: this surface calls a provider adapter directly. It does
+         not resolve, admit or route, and it therefore does not carry the
+         §7 guarantees an `agent.session.*` call carries. A caller inside the
+         trust boundary should keep using that surface."
+      - "admission: `agent.session.*` refuses with the router's verdict. This
+         surface refuses with its own, and says which — APPROVAL_REQUIRED and
+         WRITE_NOT_GRANTED are this surface's words, not the router's."
+    the_alternative_not_taken: >-
+      Add the ingress to mcp/agent_mcp.py and serve ChatGPT from the surface
+      that already owns these facts. Not taken this round: that module owns the
+      §7 router, admission, the console and seventeen tools, and the round's
+      scope was an explicitly minimal MVP that must not rebuild the Agent
+      control brain. This is the correct shape for the next round, and the
+      reason it is written here is so that the next round starts from the
+      tension rather than rediscovering it.
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+#
+# Seven, and each one names the owner that answers it. The names are prefixed
+# so that a tool list pasted into an external client cannot be confused with
+# the local surfaces' names — a collision here would be a reader's problem
+# that no schema would catch.
+
+tools:
+  fleet_list_devices:
+    verb: read
+    answers: enrolled devices this surface has a route to, with the availability
+      each route was measured to have on this call
+    answered_by: fleet/transport.py (identity) + a live per-call provider probe
+    not_the_same_as: "`device.list` — that reports the registry; this reports
+      the registry *joined to what this runtime could actually reach*, and says
+      which of the two is missing when a device has no route"
+
+  fleet_list_sessions:
+    verb: read
+    answers: sessions on one device (or all of them), each classified
+    answered_by: the device's provider adapter
+    rule: >-
+      A session known about is not a session that is running. The four
+      classifications — RUNNING_AGENT, RESIDENT_HOST, MANAGED_IDLE, ARCHIVED —
+      are carried separately and each row carries the provider fields the
+      verdict was read from. A transcript on disk is MANAGED_IDLE, never
+      RUNNING_AGENT.
+
+  fleet_get_session:
+    verb: read
+    answers: one session, addressed by device_ref + provider + native id
+    answered_by: the device's provider adapter
+
+  fleet_read_session:
+    verb: read
+    answers: a page of the transcript
+    answered_by: the device's provider adapter
+    rule: >-
+      The result is labelled `untrusted_content: true`. Text inside a
+      transcript is data a model wrote, and a surface that hands it back
+      without saying so is inviting it to be read as instruction.
+
+  fleet_send_to_session:
+    verb: write
+    answers: the run id a delivered message produced
+    answered_by: the device's provider adapter
+    admission: >-
+      Two gates, on two machines, and both must open. This surface admits the
+      call through the per-credential scope, the device's `allow_send`, and the
+      per-session `policy.send_allow`; the node connector on the device then
+      applies its own local `allow_send_to`, which defaults to empty and is not
+      writable from here. Delivery is not authority: a message reaching a
+      session grants nothing over whatever that session can itself do.
+    idempotency: >-
+      A caller-supplied `idempotency_key` is recorded with the run it produced.
+      A replay returns the recorded run under IDEMPOTENT_REPLAY rather than
+      sending a second message. The key is not forwarded to the provider, which
+      has no such concept — passing it on would imply a guarantee this hop
+      cannot make.
+
+  fleet_get_run:
+    verb: read
+    answers: the state of one run, optionally after waiting
+    answered_by: the device's provider adapter
+
+  fleet_status:
+    verb: read
+    answers: this surface's own health — which providers answered, which
+      devices have no route, the policy in force, and the audit tail
+    answered_by: this surface, about itself
+
+# ---------------------------------------------------------------------------
+# Addressability
+# ---------------------------------------------------------------------------
+#
+# The defect this prevents: two CloudCLI installations each mint their own
+# session ids. Today both are UUIDv4 and a collision is unlikely, which is the
+# kind of fact that holds until it does not — and then presents as one machine's
+# conversation appearing under another machine's name.
+
+session_ref:
+  form: 'device:<id>|<provider>|<native session id>'
+  separator: '|'
+  rule: >-
+    A session is never addressed by its provider-local id at any point in this
+    surface, and a bare id is refused with BAD_SESSION_REF rather than resolved.
+    `device_ref` is authored in fleet/registry.yaml and is never derived from a
+    hostname: a hostname is a route, and a route is not an identity.
+  run_ref: 'device:<id>|<provider>|<native id>|run:<run id>'
+
+# ---------------------------------------------------------------------------
+# Where this surface keeps its own files
+# ---------------------------------------------------------------------------
+#
+# Not in `~/.serveros`. That root is closed to five named files by
+# `fleet/node-root-contract.yaml`, and `runtime/paths.py#admit` enforces it —
+# so a default binding path there would be a path this product refuses, which is
+# the failure that contract records happening once already ("a printed remedy
+# that the product refuses is worse than a missing file"). Its own remedy is
+# "move it rather than widen this list". Moved.
+#
+# Two roots rather than one, because `.serveros/README.md` is explicit that a
+# binding and mutable runtime state do not mix: a binding is meant to stay
+# re-derivable, and a file that accumulates state stops being either.
+
+local_roots:
+  implementation: fleet_mcp/local_roots.py
+  binding:
+    windows: '%LOCALAPPDATA%\ServerOS\bindings'
+    posix: '$XDG_CONFIG_HOME/serveros-fleet-mcp'
+    holds: which devices this runtime reaches, and the node connector's own
+      binding on the device
+    never_in_a_repository: true
+    working_directory_not_searched: true
+  state:
+    windows: '%LOCALAPPDATA%\ServerOS\state\fleet-mcp'
+    posix: '$XDG_STATE_HOME/serveros-fleet-mcp'
+    holds: the audit trail, the OAuth issuer's signing key and token state
+  override: FLEET_MCP_HOME relocates both, for a test or a second deployment on
+    one host
+  credentials_in_either_root: false
+  rule: >-
+    A credential is named by an anchor and read at the point of use. Neither
+    root is a secret store, and neither is a place device identity is decided.
+
+# ---------------------------------------------------------------------------
+# The ingress
+# ---------------------------------------------------------------------------
+#
+# What a client off-host has to do, and what this surface does not accept.
+
+ingress:
+  transport: streamable-http
+  default_bind: '127.0.0.1:3401'
+  mcp_path: /mcp
+  protocol_versions: ['2025-06-18', '2025-03-26', '2024-11-05']
+
+  auth:
+    scheme: oauth2
+    flow: authorization_code
+    pkce: S256
+    bearer_in_header: true
+    discovery: /.well-known/oauth-protected-resource
+    authorization_server: /.well-known/oauth-authorization-server
+    dynamic_client_registration: /oauth/register
+    standards: [rfc8414, rfc9728, rfc7591, rfc7636, rfc8707]
+    scopes:
+      fleet:read: the four read tools
+      fleet:send: fleet_send_to_session, and nothing else
+    # The consent step has a human in it, and the human proves they are the
+    # owner with the owner token — not with a claim the client made. ServerOS
+    # cannot and does not self-authorize: with no owner token present there is
+    # no issuer, and this surface refuses to serve rather than issuing to
+    # whoever asks.
+    consent_requires_owner_token: true
+    requires_human_consent: true
+
+  # No part of the request body may become a URL, a host or a path this
+  # surface will fetch. There is no proxy route, no fetch route and no
+  # arbitrary-URL tool, and a test asserts that no tool schema accepts a
+  # parameter named url, host, endpoint, command, shell, path, callback or
+  # webhook. SSRF is answered by having nowhere to put the target.
+  request_shaped_fetch: false
+
+  # Loopback is a binding, not an access control. Reaching this from off-host
+  # requires a real hostname, real TLS and an operator's decision to expose it;
+  # "it opens in my browser on this machine" is not that decision.
+  off_host_requires:
+    - a resolvable hostname and a certificate the client will accept
+    - the operator's explicit decision to expose the endpoint
+    - a client registered through the consent page by the owner
+
+# ---------------------------------------------------------------------------
+# The outbound node transport
+# ---------------------------------------------------------------------------
+#
+# For a device that cannot accept an inbound connection and should not have to:
+# an enterprise workstation behind a network its owner does not control.
+#
+# The rejected shape and why
+# --------------------------
+# Forward the device's CloudCLI port and point a CloudCliProvider at it. This
+# was rejected because it puts the device's CloudCLI personal access token on
+# the Fleet host. That token is a credential for everything CloudCLI can do on
+# a corporate workstation.
+#
+# So the token stays on the workstation, and what crosses the tunnel is a
+# signed, allow-listed set of seven session operations served by a connector
+# that machine runs.
+
+node_transport:
+  kind: fleet-node
+  protocol: serveros/fleet-node/v1
+  implementation_client: fleet_mcp/providers/fleet_node.py
+  implementation_connector: fleet_mcp/node/connector.py
+  shared_wire_module: fleet_mcp/node_protocol.py
+
+  authentication:
+    scheme: hmac-sha256 per device
+    base: 'METHOD \n PATH \n sha256hex(body) \n device_ref \n timestamp \n nonce'
+    replay_window_seconds: 120
+    # The query string is outside the signature on purpose: it is a filter, and
+    # signing it would refuse a request whose parameters were reordered — a
+    # difference that changes nothing about what was authorized.
+    query_signed: false
+    ordering: >-
+      protocol, then device, then clock, then nonce, then signature. Checking
+      the signature first would make a replay read as a bad secret; checking
+      the device last would let a misdirected request consume a nonce.
+
+  routes:
+    - 'GET /v1/health'
+    - 'GET /v1/self'
+    - 'GET /v1/sessions'
+    - 'GET /v1/sessions/{id}'
+    - 'POST /v1/sessions/{id}/read'
+    - 'POST /v1/sessions/{id}/send'
+    - 'GET /v1/runs/{run_id}'
+  route_set: closed
+  declared_in: fleet_mcp/node_protocol.py#ROUTES
+  rule: >-
+    A request for any other route is refused by name before dispatch. There is
+    no exec, no shell, no path parameter and no generic provider passthrough —
+    a route that took one would make the connector a general-purpose proxy to a
+    corporate workstation, which is the single thing it must not become.
+
+  control_floor:
+    field: allow_send_to
+    default: []
+    default_means: every send refused, including from the Fleet owner
+    lives_on: the device
+    rule: >-
+      The Fleet surface decides whether a caller may drive the device; the
+      connector decides whether anything may drive the sessions on it. They are
+      different questions asked by different parties on different machines, and
+      a connector that trusted the far end's answer would be one configuration
+      file away from being someone else's.
+
+  credential_direction: device-to-fleet answers only; the Fleet host holds a
+    secret that can ask seven named questions and nothing else
+
+  # Reconciling this with an existing prohibition, rather than stepping around
+  # it. controller-contract.yaml#boundary.forbidden rejects
+  # `silent_transport_substitution`: reaching a device over SSH, WinRM, SMB or
+  # RDP *because the controller is not exposed*. That prohibition stands and
+  # applies to this surface as much as to any other.
+  #
+  # This is not that, on three counts, and each is checkable:
+  #
+  #   1. No command is executed on the device over SSH. The tunnel carries a
+  #      signed application envelope to a process the device itself chose to
+  #      run, listening on the device's own loopback. The SSH credential buys a
+  #      tunnel and nothing else — it cannot name an operation.
+  #   2. What is reachable is decided by the device (a closed seven-route table,
+  #      enforced before dispatch, plus a local send allow list), not by the
+  #      control plane's credentials. A stolen Fleet secret yields seven named
+  #      questions and no way to widen them.
+  #   3. The link is established outbound by the device, under its owner's
+  #      account, and drops without leaving anything listening. It is not a
+  #      controller substitute; the controller role in
+  #      controller-contract.yaml remains NOT_IMPLEMENTED and this file does not
+  #      change that.
+  #
+  # If a future round wants the DesktopCommander controller instead, the
+  # prohibition still governs: this transport is not a reason to stop looking
+  # for it.
+  boundary_reconciliation: controller-contract.yaml#boundary.forbidden#silent_transport_substitution
+
+# ---------------------------------------------------------------------------
+# What this round does not build
+# ---------------------------------------------------------------------------
+#
+# Named so the gap is a checked statement rather than an absence nobody noticed.
+# Each is a capability that would be *easy* to add and is left out for a reason
+# that is not effort.
+
+not_implemented:
+  - id: session_create
+    why: >-
+      Creating a session on someone's workstation is a different question from
+      messaging one that exists, and this round had no authorized test target
+      for it. The provider adapter behind it is already written, so this is a
+      decision outstanding rather than code outstanding.
+  - id: session_start
+    why: >-
+      Same. Starting a session is the verb that turns "I read a transcript"
+      into "I made a machine work", and it needs its own admission question.
+  - id: arbitrary_shell_or_exec
+    why: >-
+      Not a roadmap item. Absent from the route table, absent from the provider
+      interface, and asserted absent by test.
+  - id: session_delete_or_force_stop
+    why: >-
+      Destructive and not reversible from this surface. There is no tool, and
+      the honest shape for one has not been designed.
+  - id: controller_connector
+    why: >-
+      controller-contract.yaml declares `connector.status: NOT_IMPLEMENTED`,
+      blocked on human OAuth consent to an MCP client. This file does not
+      change that status and this surface is not that connector.
+  - id: second_authority_for_device_identity
+    why: >-
+      This runtime must not become a second place that decides which devices
+      exist or what they are. It reads fleet/registry.yaml through
+      fleet/transport.py and holds no copy.
+
+blocked_on:
+  - id: public_exposure_decision
+    owner: the human operator
+    question: >-
+      Whether to expose this ingress off-host at all, and over which name and
+      certificate. Nothing in this repository may decide that on the operator's
+      behalf, and no tunnel id, hostname or certificate is fabricated here.
+  - id: chatgpt_oauth_consent
+    owner: the human operator
+    question: >-
+      Authorizing a ChatGPT connector against this surface. The consent step
+      requires the owner token; it cannot be completed by an agent, and it must
+      not be simulated in a report.
+
+rules:
+  - "Nothing here decides what a device is. Identity is read from the registry,
+     never derived from a name, address or provider id."
+  - "A credential is named by an anchor and read at the point of use. No value
+     is written to a binding, a log, a prompt or a message."
+  - "The tool surface is seven names, asserted against the implementation, and
+     a route set that is closed by construction rather than by convention."
+  - "Loopback is where this listens by default, not what protects it. Reaching
+     it from off-host is an operator's decision and is reported as outstanding
+     until it is made."
