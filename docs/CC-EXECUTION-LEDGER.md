@@ -12866,3 +12866,182 @@ assert both == accounted, (
 **+187 / −22**，PR **#139**，提交 `c223fa4`，合并提交 **`5ce0067`**，
 2026-10-09 **07:28:20 CST**；合并后 `origin/main` 的六个文件与分支头**逐 blob 一致**。
 Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0056/`。
+
+### 9.70 W6 第二包：D07 —— 一条**只有散文、没有读者**的目录条件
+
+§9.61 结尾自己记下「**D01–D07 的其余各条未逐条扫**，本包只做了依赖最靠前的那一件」。
+这一节先补那次扫描，再关掉扫出来的那一条。
+
+#### 9.70.1 扫描的结论：七条条件里，**一条判据都没有**
+
+`grep -rn "D0[1-7]" tests/*.py` 在**改动前零命中**；`runtime/*.py` 里也只有本节的改动才会提到
+D07。也就是说 `DIRECTORY-CONVERGENCE.md` 的七条**没有一条**有一个以它命名的机器读者。
+这不是说七条都没人管，而是说**它们各自被管的程度差别很大，而报告里看不出来**：
+
+| 条件 | 今天有什么在管它 | 强度 |
+|---|---|---|
+| D01 唯一默认入口 | `paths.DATA_ROOT_TOP_LEVEL` / `WORKSPACE_TOP_LEVEL` + `admit()` 拒绝 + `path conformance` 的四个面 | 有判据 |
+| D02 先修生产者 | §9.61（`wake` 与 `AGENTS.md` 追平）；`ENFORCED_BY_ADMIT` | 有判据 |
+| D03 深度可解释 | **无** | **无判据** |
+| D04 实际消费闭合 | 多个 reader（`conformance` 读盘、§9.69 的 authority binding reader） | 分散，非单条 |
+| D05 当前开发连续 | 快照纪律（流程），不是代码 | 非代码 |
+| D06 历史有去向 | `conformance` 的 `disposition`（KEEP/FROZEN/CONTRACT_GAP/OWNER_CHECK/UNKNOWN_OWNER）+ `RETENTION_REQUIRED` | 有判据 |
+| D07 人读入口整洁 | **无** | **无判据** |
+
+D03 是**量出来的**没有，不是推断的：`grep -rn depth tests/*.py` 的命中全是无关项
+（`list_directory(..., depth=2)`、卡片文本「at any depth」、`graph` 的深度），没有任何一条在量
+`DIRECTORY-CONVERGENCE.md` §3 那张深度预算表。它**具名留给后续包**，本节不动它。
+
+#### 9.70.2 本包要关的那半：D07 的入口文档，改前实测
+
+D07 的原话是「每个主要入口用短说明说明用途、owner、当前入口和相关链接」。这句话没有读者，
+于是**一个根可以被声明、被扫描、被分类、被报告，只要它存在**，而一个人落地到它里面时问的第一个
+问题从没被问过。
+
+`paths.ROOTS` 恰好 10 个名字，`entry_documents()`（本节新增）对每个根做**一次 `exists()`**：
+
+| 根 | 解析到的目录 | 需要文档 | 改前 | 改后 |
+|---|---|---|---|---|
+| `data` | `/data/home/vince` | `CLAUDE.md` | present | present |
+| `workspace` | `…/workspace` | `README.md` | present | present |
+| `state` | `…/state/serveros` | `README.md` | present | present |
+| `artifacts` | `…/artifacts` | `README.md` | **MISSING** | present |
+| `runtime-assets` | `…/runtime-assets` | `README.md` | **MISSING** | present |
+| `toolchains` | `…/toolchains` | `README.md` | **MISSING** | present |
+| `home` / `logs` / `tmp` / `caches` | — | 按裁决**不需要** | — | — |
+
+改前 `MISSING: ['artifacts', 'runtime-assets', 'toolchains']`，改后 `MISSING: []`。
+
+`data` 的文档是 `CLAUDE.md` 而**不是**新写一份 `README.md`：那个根同时是 `HOME`，一个 runtime
+在那里打开的机器政策**本来就是**用途/owner/当前入口的短陈述；要求它再写一份，等于在「这个根只有
+一个答案」的根里要求第二个答案。
+
+#### 9.70.3 形式是照搬的，不是发明的
+
+`ENTRY_DOCUMENT_ROOTS` / `ENTRY_DOCUMENT_NOT_REQUIRED` 与 §9.61 的
+`ROOT_VOCABULARY` / `VOCABULARY_NOT_APPLIED` **同一形状、同一模块**，闸门也是同一条
+判等（两个方向都打印）：
+
+    both = set(paths.ROOTS)
+    accounted = set(fh.ENTRY_DOCUMENT_ROOTS) | set(fh.ENTRY_DOCUMENT_NOT_REQUIRED)
+    assert both == accounted
+
+覆盖集是 `paths.ROOTS` —— **合同自己那张入口点清单**，不是这里写的列表。所以往 `paths.py` 里加一个根，
+这里**必然**红，直到有人说清它是哪一类。理由串要求 >40 字：一条什么都不说的条目，就是下一行那条
+「缺失的条目」。
+
+#### 9.70.4 与 §9.61.2 同形，这次出现在**第三个**根
+
+`WORKSPACE_ROOT/README.md` 与 `state/serveros/README.md` 在这张表里都是 `EXEMPT_ENTRY`。
+`ARTIFACTS_ROOT` 是第三个顶层的封闭集合（`ARTIFACT_NAMESPACES`），所以一份 `README.md` 在那里
+**本来也不可能被声明进去**——与 `DATA_ROOT` 的处境一模一样，只差一个根。**不豁免它**，读者就会
+被告知「一条约定在两个根成立、在第三个不成立」，也就是 §9.61.2 修掉的那个形状，而这次是三份读数。
+
+这与「`artifacts` 块被删」**不冲突**。那次删的理由写得很清楚：那四个桶（builds/exports/packages/e2e）
+在 2026-09-13 全部退役，**「没有对象可豁免的豁免会活得比它的对象久」**。那条规则说的是
+「豁免必须有对象」，不是「这个根不许被豁免」。这次的对象是一份**新写的文档**，而且是活的。
+并且豁免**没有**放宽 `ARTIFACT_NAMESPACES`——测试里有一条断言把这个边界钉住。
+
+#### 9.70.5 量出来的前后（同一节点，两次读取相隔数秒）
+
+`path conformance`，冻结字节：
+
+| | findings | undeclared | exempt | absent | blocking |
+|---|---|---|---|---|---|
+| 基线 `bb02391`（§9.69 记的） | 239 | 215 | 11 | 13 | 0 |
+| 写完三个文档、未加豁免 | 240 | **216** | 11 | 13 | 0 |
+| 加上 `EXCEPTIONS["artifacts"]["README.md"]` | 240 | **215** | **12** | 13 | 0 |
+
+算术：`240 = 215 + 12 + 13`。**+1 finding、+1 exempt、undeclared 不变**——那一行从
+`UNDECLARED_ENTRY` 换到了 `EXEMPT_ENTRY`，而且**它是出生即豁免的**（豁免与文档在同一个提交里）。
+三份文档现在读起来完全一致，三行都是 `[LOW] OBSERVED EXEMPT_ENTRY`。
+
+`fs hygiene` 新块（读者可见，且**每个根都打印**——只在出错时才出现的读数，与一个停止运行的读数
+分不出来）：
+
+    D07 entry documents — a major entry says what it is for:
+        artifacts        present  README.md  /data/home/vince/artifacts
+        data             present  CLAUDE.md  /data/home/vince
+        ...
+        no document by decision: caches, home, logs, tmp
+
+#### 9.70.6 读的答案本身要能**分别**三种状态
+
+`entry_documents()` 是一次 `exists()` / 根，**不扫描**（`artifacts` 本模块刻意不扫——见
+`VOCABULARY_NOT_APPLIED`），因为「问某根里某个文件在不在」不该变成「分类那个根的其他条目」。
+三种状态**不合并**：
+
+- `present: True` / `False` —— 根在，文档在 / 不在；
+- `present: None` —— **根不在**，或节点根本解析不出它的目录。
+
+「这个根没有入口文档」与「这个节点没有这个根」是两个 finding；把两者合并，就会报出「一个从未创建过的
+目录里少了一份文档」。这与 `report()` 报 `absent` 而不省略同一个纪律。
+
+#### 9.70.7 变异检查（三条都杀了，失败信息是**改前的真实读数**）
+
+- **A** 把 `"toolchains"` 从 `ENTRY_DOCUMENT_ROOTS` 拿掉 → `test_every_declared_root_is_either_given_an_entry_document_or_explained`
+  红，且失败信息**具名** `toolchains`。
+- **B** 让「根不在」那一支返回 `present: False` 而不是 `None` → 行为测试红
+  （`assert False is None`）——正是 9.70.6 那条。
+- **C** 撤掉 `EXCEPTIONS["artifacts"]["README.md"]` → 新 conformance 测试红，并**逐字复现**改前那条行：
+  `{'id': 'UNDECLARED_ENTRY', 'class': 'ARTIFACTS_ROOT', 'desired': "a child of ARTIFACTS_ROOT that
+  is one of ['skills', 'work-items']", 'observed': "'README.md' exists and no declaration claims it"}`。
+
+三条都改回，`git status --porcelain` 只剩本包那 5 个文件，无 `MUTANT` 残留
+（`test_alerting.py:1824` 的 `_MUTANT_INDEX` 是既有物，§9.69.7 已记过它不属于本包）。
+
+#### 9.70.8 照实说：这一轮**没**关掉什么
+
+- **没**为 `logs` / `tmp` / `caches` 写文档，而且这是**记录在案的裁决**，不是遗漏：`ENTRY_DOCUMENT_NOT_REQUIRED`
+  里三条各带 ≥40 字理由（机器写入的汇、scratch、可重建缓存；§65 说的同一件事的另一面）。`home` 也在里面，
+  理由是它与 `data` 在合同里是**一个物理根**。
+  这一句是**对 §9.69 预期的收窄**：上一包的 `left_for_later` 写的是「10 个根里有 **6** 个没有入口文档
+  （artifacts、toolchains、logs、runtime-assets、tmp、caches）」，即它预期 6 份。本包量下来是 **3 份文档
+  + 3 条裁决**。收窄不是省略：§65 那句话本身就把「主要节点」和「空目录」分开了，而 6 与 3 的差额正好
+  落在 §65 说的那条界线上——不在清单里的那个 `home` 同理（它与 `data` 是同一个物理根）。前任的清单是
+  按**缺文件**数的，本包是按**该不该有**数的，两个数不同，两个数都写下来。
+- **没**动 `artifacts` 根下那些 `UNDECLARED_ENTRY`，那个根的顶层词汇表**仍然没有应用**。本节的裁决是
+  「这个根**有**入口文档」，不是「这个根已经被裁定」。
+- **没**碰 `artifacts/serveros/`（PENDING-DECISIONS 条目 4 的主语）。条目 4 决定的是那个第三命名空间的
+  产物往哪写；本节写的文档只说这个根**是做什么的**，并明确写出它**不**替那些条目裁定归属。
+- **没**推进规范检出（另一个参与者的 WIP 仍在，`.git` 里 9 个文件），**没**发布新一代（条目 7 未决）——
+  与 §9.67.4 / §9.68.5 / §9.69.7 同一条理由。
+- **装机节点的读数不变**：`runtime/` 是 `CORE_MODULES` 成员，改动在源码里，释放后才改机器；
+  这是交给发布动作包的第 **7** 件。**但三份入口文档本身是立即生效的**——它们是磁盘上的文件，不是
+  释放产物。
+- **没**关掉 D03（深度预算没有判据），它具名留在 9.70.1 的表里。
+- **本包自己身上也有一条同形状的边**，记在这里而不是等别人发现：`home` 的裁决**以一条本机事实为条件**
+  ——「HOME 与 DATA_ROOT 在这台机器上是同一个目录」——而 `ENTRY_DOCUMENT_NOT_REQUIRED` 是一张**静态**
+  映射。在两者不同的主机上，`home` 会既没有入口文档、闸门**也仍然绿**：那正是「判据的触及范围窄于它的
+  主张」，本台账昨夜在 §9.61 / §9.68 / §9.69 各抓到一次的那种。理由串里写了这个条件，代码**没有测**它。
+  本机是对的（`paths.py` 里两个名字解析到同一目录，`data` 那行读的就是这个事实），所以这不是一个错误，
+  是一个**条件未判**。真要判它，得让 `home` 那一支去问 `paths` 两个名字是否同根，而不是照搬这张表；
+  本包选择照实记下，不顺手加一条测不出差别的断言。
+
+#### 9.70.9 验证与落地
+
+针对性：`tests/test_fs_hygiene.py`、`tests/test_path_conformance.py`、`tests/test_state_root.py`
+共 **174 passed, 1 skipped**。
+
+全量套件（改动后的字节）：**7428 passed, 24 skipped, 4512 subtests, exit 0**，1076.44s。
+基线是本包分叉点 `bb02391`，读数 **7425 / 4512**。这个基线是**查过的**，不是搬来的：
+`git diff c223fa4 bb02391` **只动一个文件**（`docs/CC-EXECUTION-LEDGER.md`，+190），
+没有碰任何 test 或 runtime——所以 `bb02391` 的套件读数与 `c223fa4` 那次实测（§9.69.9 的
+7425/4512）必然相同，这条链是可以复核的。**增量 +3 passed / +0 subtests**，正好是本包的
+三个新测试函数，且都不用 `subTest`。
+
+落地：`runtime/fs_hygiene.py`、`runtime/conformance.py`、`runtime/cli.py`、
+`tests/test_fs_hygiene.py`、`tests/test_path_conformance.py`（**+350 / −3**），
+PR **#141**，提交 `1b17e26`，合并提交 **`fb17cba`**，2026-10-09 **08:33:56 CST**。
+三份入口文档落 `ARTIFACTS_ROOT/README.md`、`TOOLCHAINS_ROOT/README.md`、
+`RUNTIME_ASSETS_ROOT/README.md`——**在数据盘上，不在 Git 里**，因为它们描述的是**这台机器的根**，
+不是源码；PR 正文里写明了路径，内容是这份台账的一个附件而不是它的替代。
+Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0057/`。
+
+#### 9.70.10 顺带量到、本包**不**动的一件事
+
+`data-root-entry-docs-20261008`（`da06eae`）这个 worktree **未并入 main**，但它的**内容已经在
+main 上**：main 的 `runtime/conformance.py` 里 `DATA_ROOT` 的 `CLAUDE.md` / `AGENTS.md` 豁免块，
+其注释文字与那次提交**逐字一致**（`Added 2026-10-08 (RUN-0045; measured while scouting the item
+RUN-0044 handed off)`）。也就是说它已被**别的刀**用另一条分支重新落上了主线，那个 worktree 是**被
+取代的陈旧分支**，不是未交付的工作。按纪律这属**提案**（退役/清理要显式批准），本包只记不动作。
