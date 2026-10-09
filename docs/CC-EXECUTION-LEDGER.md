@@ -12676,3 +12676,193 @@ JSON 面 `held_by_upstream`：`brief.md` **True**（`read_from: origin/main`）�
 的两个文件与分支头**逐 blob 一致**。Item 侧记录在
 `artifacts/work-items/serveros/SRV-0011/RUN-0040/`（Run `SUCCEEDED`），
 入口是 `RUN-0040/deliverables/WORKCHAIN-CUSTODY-IS-PER-PATH.md`。
+
+---
+
+### 9.69 一个名字两张表给出两个答案——以及「一条判据的射程比它承诺的窄」为什么在**文件内部**看不见
+
+#### 9.69.1 缺陷：不是「一张表错了」，是**两张表都对同一个名字有答案，而答案不同**
+
+`runtime-assets` 在这个节点上有两处权威声明：
+
+| 来源 | 值 |
+|---|---|
+| `~/.config/serveros/host-profile.yaml:74`（`runtime_assets_root`） | `/data/home/vince/runtime-assets` |
+| `fleet/profiles.yaml:409-421`（`linux-shared-multiuser` 的绑定） | `/data/home/vince/runtime-assets` |
+
+两处都绑定**父目录**，并且 `fleet/profiles.yaml` 自己带一条说明：分布是 `hwz-server-os`，
+不是 `serveros`，而且 **`SEMANTIC_ROLES["runtime.serveros-distribution"]` 已经把它命名了**。
+
+但 `runtime/paths.py` 把这个根声明成 `{DATA_ROOT}/runtime-assets/serveros` —— 一个
+**从未存在过**的目录。于是 `serverosctl path resolve runtime-assets` 会把一个不存在的路径
+**打印给人看**。这不是没人用的死配置：它是唯一的面向用户的读取界面。
+
+**修复**（`c223fa4`）：把根改成 `{DATA_ROOT}/runtime-assets`，与三处权威声明、与
+`DATA_ROOT_TOP_LEVEL` 对齐。§25 关于「不要移动物理树」的冻结判据**仍然成立** ——
+本改动是**完成**那条判据，不是推翻它（`tests/test_state_root.py` 里 §25 的既有断言在改动后照旧通过）。
+
+#### 9.69.2 为什么它活得下来：判据算的是**差集**，缺陷藏在**交集**里
+
+`tests/test_authority_bindings_have_readers.py::test_the_names_outside_the_root_vocabulary_are_exactly_the_declared_ones`
+的整个射程是：
+
+```python
+outside = authority - set(paths_mod.ROOTS)   # 差集
+```
+
+它回答的是「权威绑定了、而没有任何根服务的东西是什么」。**这是一个正确的问题**，
+它的答案也是对的。但 `runtime-assets` 在**交集**里 —— 两张表**都**为它提供答案 ——
+所以它对这条判据**完全不可见**。结果是：两张表各自内部自洽、每个集合都非空、
+每条断言都绿，而唯一能暴露分歧的那个问题**从来没被问过**。
+
+量到的交集（本包实测）：**5 个名字** `['artifacts', 'home', 'runtime-assets', 'state', 'toolchains']`，
+其中 **4 个一致，1 个不一致**。
+
+**这不是「集合写错了」，是「关系没被计算」。** 缺陷不落在任何一个集合里，落在两个集合的关系上，
+所以从任何一个集合出发的判据都看不到它。
+
+#### 9.69.3 同一个构造在**另一个方向**被修过一次，而那次修复没有回头；而树里已经有做对了的先例
+
+`tests/test_runtime_truth.py::test_the_two_copies_of_the_root_resolver_agree` 比较两份
+root-resolver 副本时用的是**交集**：
+
+```python
+shared = sorted(set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES))   # 交集
+```
+
+它覆盖 8 行里的 **2 行**；漏掉的 6 行由 RUN-0051 用
+`ONLY_IN_RUNTIME_TRUTH` / `ONLY_IN_ARCHITECTURE_CHECK` 两份声明补齐 —— 修的是**差集**那半边，
+而且**没有回头**处理本文件这个方向。
+
+于是这个构造上坐着两条判据，**各罩一半，各自对另一半是盲的**。一个读者看到任一条是绿的，
+都会得出「两张表一致」的结论。这是本夜反复出现的「同一条判据的射程比它自己承诺的窄、
+而两种射程分散在两个文件里彼此不引用」的第六次。
+
+**树里已经有做对了的先例，所以这个形式不是我发明的。**
+`tests/test_fs_hygiene.py:420-424`（§9.61.6 的产物）拿 `paths.ROOTS` 与 `paths.VOCABULARIES`
+相比时用的是**一次等式断言**，而且失败消息**同时**印出两个方向：
+
+```python
+assert both == accounted, (
+    f"... {sorted(both - accounted)}; ... {sorted(accounted - both)}")
+```
+
+**一个等式就是两个方向。** 本包采用的正是这个形式：`assertEqual` 落在交集上，
+外加一对 `DECLARED_DISAGREEMENT` 声明 —— 而不是另发明一种写法。
+
+**修复**：在**同一个文件、与差集并列**处新增交集判据
+`TheOverlapIsComparedTooTests::test_every_name_in_the_overlap_is_answered_the_same_way`，
+对两张表**都**给出答案的每个名字比较答案；并加 `DECLARED_DISAGREEMENT`（当前为空）
+与配套的防陈旧判据 `test_every_declared_disagreement_is_still_a_disagreement`
+（一条陈旧的分歧声明会把**下一个**分歧藏在旧理由下面 —— 这是 §9.61 的规矩）。
+
+判据本身还带一条防「空比较」的断言：`assertGreaterEqual(len(overlap), 4)` ——
+**空比较与失败比较印出来是一样的**，所以要先证明比较发生了。
+
+#### 9.69.4 实测读数
+
+面向读者的真实界面（`serverosctl path resolve`）：
+
+| 读取 | 修复前 | 修复后 |
+|---|---|---|
+| `path resolve runtime-assets` | `/data/home/vince/runtime-assets/serveros`（**不存在**） | `/data/home/vince/runtime-assets` ✓（存在） |
+| `path resolve runtime-assets/hwz-server-os` | `…/runtime-assets/serveros/hwz-server-os`（不存在） | `…/runtime-assets/hwz-server-os` ✓（**与 role 一致**） |
+| `role runtime.serveros-distribution` | `…/runtime-assets/hwz-server-os`（存在） | 未变 |
+
+影响面（逐个量过，不是推断）：`runtime-assets` 的 22 处出现**全是注释**，代码调用点**零**；
+没有任何 placement 类使用该根，所以 `classify()` / `_class_roots` 不受影响；
+`_check_top_level` 对 `runtime-assets` 不做特殊处理；`_classify` 对旧值和新值都返回 `"ADMITTED"`。
+唯一的变化是 `admit()` 现在对该根下的路径报 `root: "runtime-assets"` 而不是 `root: "data"` —— 更准了。
+
+符合性读数（`path conformance`，冻结字节）：**239 条发现（215 未声明 / 11 豁免 / 13 缺失），阻塞 0**。
+`undeclared` 与 `absent` 与改动前一致；`exempt` 从 9 浮动到 11 —— 这正是 §9.61.3 自己警告过的浮动，
+**不可归因于本改动**，照实记下。
+
+#### 9.69.5 变异测试（以 §9.61.4 为范本）
+
+- **变异 A**：把 `/serveros` 后缀放回 `ROOTS` → **同时**杀死两条新断言
+  （对 `runtime-assets` 的 SUBFAILED + FAILED，并印出确切分歧）。
+- **变异 B**：写入一条陈旧的 `DECLARED_DISAGREEMENT["artifacts"]` → 杀死防陈旧判据。
+- 两个变异均**完全回滚**，`git status --porcelain` 干净、残留 0。
+  一次「MUTANT 残留：1」的计数经查是 `tests/test_alerting.py:1824` 里**既有的** `_MUTANT_INDEX`，
+  与我的变异无关 —— 照实记，不当作自己的功劳也不当作残留。
+
+#### 9.69.6 普查：这是「一类」还是「一行」
+
+§9.56 修同一个构造时留了一句可复用的读法：
+
+> 「三份实现读同一份文档，其中一份没被那条跨份判据罩住」是一个可普查的形状
+
+**探针自己的错误，先记下来。** `two-tables-census.py` 第一版把「操作数」放宽到任何裸名字，
+既而报出 **8470 条比较、其中 8255 条是 `-`** —— 那是**散文**：
+`ability - management` 在句子里与集合差**写法完全一样**。这个数字荒谬到看一眼就知道不能信，
+**这才是它没被采信的唯一原因**。第二版要求至少一侧是 `set(`，得到 **57** 条 —— 一个经得起读的计数。
+这是本夜第二次「先发现的是**工具的缺陷**，不是树的缺陷」。
+
+**范围**：`tests/*.py`。`tests/` 下有两个子目录，都不含 `.py`，所以该 glob 覆盖全部测试模块。
+
+**结果**：57 条双表比较，按运算 `19 & / 32 - / 6 | / 0 ^`。
+
+- **全部**与 `paths.ROOTS` 相比的判据都在**同一个文件**里 —— 即本包修的那个文件。
+  所以对这一对而言，缺失的方向只缺在**一处**，而它现在已经补上。
+- `test_fs_hygiene.py:420` 拿 `ROOTS` 与 `VOCABULARIES`（**另一张**表）相比，
+  用的是**一次等式**（两个方向都在），问的不是同一个问题。
+- 其余单向判据逐条读过（`test_alert_authorization.py:156`、`test_card_day.py:329`、
+  `test_ability_resolver.py:980` 等）：**各自的主张就是它计算的那个方向**，不是同一个缺陷。
+  单向是**正常惯用法**：`test_alert_authorization.py:156` 钉的是两个词表的**碰撞**，
+  一个不碰撞的新词表项本来就不在它的主张里。
+
+**留给后人的区分**（这是普查真正的产出）：
+
+> **主张**与**方向**一致的单向判据是**正确的**。
+> **主张比方向宽**、而覆盖另一半的判据**在另一个文件里、且彼此不引用**的，才是缺陷 ——
+> 并且它从**任何一个文件内部**都看不见，因为每条单独看都是绿的。
+
+这就是为什么修复把交集加在**与差集同一个文件**里，而不是再开第三个文件。
+
+#### 9.69.7 照实说：没关掉什么 —— 以及**装机载荷未变**
+
+- **正在运行的节点不变。** 装机载荷
+  `/data/home/vince/runtime-assets/hwz-server-os/current/runtime/paths.py:170` 实测**仍是**
+  `"{DATA_ROOT}/runtime-assets/serveros"`。本包修的是**源码**；机器给人的答案要等**下一代发布**才变。
+  上面 9.69.4 的「修复后」读数来自 **worktree 的读取器**，不是装机现场 —— 这一点必须写在读数旁边，
+  否则读者会以为机器已经改了。
+- **没发版**，理由与 §9.67.4 / §9.68.5 同一条且更硬：再推一代会把**插件缓存与节点的代差**拉得更大，
+  而 `PENDING-DECISIONS.md` 条目 7 正在问「要不要先把这个不同步变成看得见的判词」。
+  **先扩 gap 再问，顺序反了。** 条目 7 至今**未决**（无 追加 记录，推荐 (C)）。
+- 没动 `artifacts/serveros/` 第三命名空间（`PENDING-DECISIONS.md` 条目 4，三个选项三个活计时器，
+  本条**没有替这一格做任何选择**），没动 dotfile 豁免（条目 5），没动 canonical 检出（条目 6）。
+- **D07 的另一半仍未做**：10 个已声明根里有 6 个没有入口文档
+  （`artifacts`、`toolchains`、`logs`、`runtime-assets`、`tmp`、`caches`）——
+  属自有非破坏性新物化，留作独立一条。
+
+#### 9.69.8 验证与落地
+
+**验证**：定向测试 **205 passed**；更广文件集 **388 passed**；
+**全量 `pytest tests/ -q` 在冻结字节上（`evidence/measured-bytes.sha256` 记了 6 个文件的哈希、
+`evidence/measured-commit.txt` 记了 `c223fa4`）→ 7425 passed, 24 skipped, 1 warning,
+4512 subtests passed in 1159.25s**（`PYTEST EXIT: 0`）。
+
+**对照基线必须另算，不能直接减。** §9.68.8 的 `7297 passed` 量在**另一个提交**（PR #121 的
+`c9d2a9b`）上；本包基线是 `0986f42`，两者之间 main 已经走了若干代。所以
+`7425 − 7297 = +128` **不是本包的贡献**。为了有一个可比的对照，本包在**基线提交 `0986f42`**
+上（worktree `w6-base-control-20261009`，`evidence/fullsuite-base-control.txt`）另跑了一次同样的全量套件：
+
+| 跑法 | 读数 |
+|---|---|
+| 基线 `0986f42`（对照） | **7422 passed, 24 skipped, 4507 subtests passed in 1761.99s**（EXIT 0） |
+| 改动字节 `c223fa4` | **7425 passed, 24 skipped, 4512 subtests passed in 1159.25s**（EXIT 0） |
+| 差 | **+3 passed / +5 subtests** |
+
+**+3 / +5 与本包新增的用例数精确吻合**（`TheOverlapIsComparedTooTests` 两条 —— 第二条当前
+`DECLARED_DISAGREEMENT` 为空、不产出 subtest；`test_the_root_and_the_role_answer_the_same_thing` 一条）。
+**两条都是绿的**，且差值可归因 —— 这与「减出来的 +128」是两回事。
+（warning 数 4 vs 1 的差异来自资源/时序，未归因，照实记。
+对照跑用 1761.99s、本跑用 1159.25s：同一台共享主机上的负载差，不是产物差。）
+
+**落地**：`runtime/paths.py`、`runtime/workbench_sources.py`、`fleet/profiles.yaml`、
+`tests/test_authority_bindings_have_readers.py`、`tests/test_no_node_paths_in_product_data.py`、
+`tests/test_state_root.py`、`docs/CC-EXECUTION-LEDGER.md`（一条指向本节的 追加 注），
+**+187 / −22**，PR **#139**，提交 `c223fa4`，合并提交 **`5ce0067`**，
+2026-10-09 **07:28:20 CST**；合并后 `origin/main` 的六个文件与分支头**逐 blob 一致**。
+Item 侧记录在 `artifacts/work-items/serveros/SRV-0011/RUN-0056/`。
