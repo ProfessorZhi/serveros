@@ -7,8 +7,12 @@ redirect anywhere", "a read token can still send" — and each one is kept false
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import inspect
+import io
 import json
+import re
 import socket
 import sys
 import tempfile
@@ -32,9 +36,17 @@ from fleet_mcp.config import (  # noqa: E402
     PolicyBinding,
     ServerBinding,
 )
+from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.fleet import FleetService  # noqa: E402
-from fleet_mcp.http_transport import HttpSurface, build_oauth, serve  # noqa: E402
+from fleet_mcp.http_transport import (  # noqa: E402
+    HttpSurface,
+    _Handler,
+    _without_query,
+    build_oauth,
+    serve,
+)
 from fleet_mcp.oauth import OAuthError, TokenStore, _b64, _validate_redirect_uri  # noqa: E402
+from fleet_mcp.runtime import clients_command  # noqa: E402
 
 WINDOWS = "device:work-fj"
 TOKYO = "device:tokyo-shared-dev-01"
@@ -711,6 +723,347 @@ class OAuthFlow(_HttpHarness):
         })
         self.assertEqual(status, 400)
         self.assertIn("another client", json.loads(body)["error_description"])
+
+    # -- what the operator ticked is what is granted -----------------------
+    #
+    # The regression these cover: the consent form used to round-trip the
+    # client's requested scope as a hidden field named `scope`, the same name the
+    # checkboxes use. Unticking a box therefore changed nothing — the hidden
+    # field re-supplied the scope and it was granted. Every test below is that
+    # sentence, kept false.
+
+    def _form_as_a_browser_sends_it(self, *, ticked: list[str], scope: str = "fleet:read fleet:send"):
+        """Exactly the fields consent_page renders for a given set of ticks."""
+        status, _, body = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(self._params(scope))
+        )
+        self.assertEqual(status, 200, body)
+        markup = body.decode()
+        hidden = {
+            name: value for name, value in re.findall(
+                r'<input type="hidden" name="([^"]+)" value="([^"]*)"', markup
+            )
+        }
+        self.assertIn("requested_scope", hidden,
+                      "the requested scope must travel in its own field, not as `scope`")
+        return {**hidden, "owner_token": self.OWNER_TOKEN, "scope": list(ticked)}
+
+    def _redeem(self, form: dict):
+        status, headers, body = self.client.request("POST", "/oauth/authorize", form=form)
+        if status != 302 or "code=" not in headers.get("Location", ""):
+            return status, headers, None
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(headers["Location"]).query)["code"][0]
+        status, _, token_body = self._token_for(code)
+        return status, headers, (json.loads(token_body) if status == 200 else token_body)
+
+    def test_the_requested_scope_is_not_the_field_the_boxes_use(self):
+        """One hidden field per request parameter — and `scope` is not one of them."""
+        status, _, body = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(self._params())
+        )
+        markup = body.decode()
+        hidden = re.findall(r'<input type="hidden" name="([^"]+)"', markup)
+        self.assertNotIn("scope", hidden)
+        self.assertEqual(hidden.count("requested_scope"), 1)
+        self.assertEqual(
+            re.findall(r'name="scope" value="([^"]+)"', markup),
+            ["fleet:read", "fleet:send"],
+            "the only things named `scope` are the checkboxes",
+        )
+
+    def test_unticking_a_scope_does_not_grant_it(self):
+        """The whole defect: `fleet:send` requested, not ticked, must not be issued."""
+        form = self._form_as_a_browser_sends_it(ticked=["fleet:read"])
+        self.assertIn("fleet:send", form["requested_scope"])
+        status, _, payload = self._redeem(form)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["scope"], "fleet:read")
+
+    def test_ticking_nothing_issues_no_code_at_all(self):
+        form = self._form_as_a_browser_sends_it(ticked=[])
+        status, headers, _ = self.client.request("POST", "/oauth/authorize", form=form)
+        self.assertEqual(status, 302)
+        location = headers["Location"]
+        self.assertNotIn("code=", location)
+        self.assertIn("access_denied", location)
+
+    # -- revocation: the declared semantics, enforced ----------------------
+
+    def _grant_for(self, client_id: str, *, scope: str = "fleet:read fleet:send",
+                   granted: list[str] | None = None) -> dict:
+        """A grant for a client this test owns, so revoking it touches nothing else."""
+        params = self._params(scope)
+        params["client_id"] = client_id
+        form = {**params, "owner_token": self.OWNER_TOKEN,
+                "scope": granted if granted is not None else scope.split()}
+        status, headers, _ = self.client.request("POST", "/oauth/authorize", form=form)
+        self.assertEqual(status, 302, headers)
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(headers["Location"]).query)["code"][0]
+        status, _, body = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": CHATGPT_REDIRECT, "code_verifier": self.VERIFIER,
+        })
+        self.assertEqual(status, 200, body)
+        return json.loads(body)
+
+    def _revoke(self, token: str, client_id: str | None = None):
+        form = {"token": token}
+        if client_id:
+            form["client_id"] = client_id
+        return self.client.request("POST", "/oauth/revoke", form=form)
+
+    def test_revoking_a_client_kills_its_access_token_immediately(self):
+        """Not at expiry — the next call. That is what `revoke` has to mean."""
+        client_id = self.register_client(CHATGPT_REDIRECT, name="revocable")
+        payload = self._grant_for(client_id)
+        access, refresh = payload["access_token"], payload["refresh_token"]
+        status, _, _ = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                       token=access)
+        self.assertEqual(status, 200, "the token should work before revocation")
+
+        status, _, body = self._revoke(refresh, client_id)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body, b"", "RFC 7009 fixes this response body as empty")
+
+        status, _, _ = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                       token=access)
+        self.assertEqual(status, 401, "the access token outlived the revocation")
+
+        status, _, body = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id,
+        })
+        self.assertEqual(status, 400, body)
+
+    def test_a_revoked_client_cannot_start_a_new_authorization(self):
+        client_id = self.register_client(CHATGPT_REDIRECT, name="revoked then re-authorizing")
+        self._grant_for(client_id)
+        self.oauth.store.revoke_client(client_id)
+        params = self._params()
+        params["client_id"] = client_id
+        status, headers, body = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(params)
+        )
+        self.assertEqual(status, 401)
+        self.assertNotIn("Location", headers)
+        self.assertIn("revoked", body.decode())
+
+    def test_revoking_one_access_token_leaves_its_client_alone(self):
+        client_id = self.register_client(CHATGPT_REDIRECT, name="one token revoked")
+        payload = self._grant_for(client_id)
+        access = payload["access_token"]
+        status, _, body = self._revoke(access, client_id)
+        self.assertEqual(status, 200, body)
+        status, _, _ = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                       token=access)
+        self.assertEqual(status, 401)
+        # The refresh chain is untouched, so the client can still renew.
+        status, _, body = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "refresh_token", "refresh_token": payload["refresh_token"],
+            "client_id": client_id,
+        })
+        self.assertEqual(status, 200, body)
+
+    def test_revocation_does_not_answer_whether_a_token_exists(self):
+        """Same 200, same empty body, token or not. An oracle is a bug here."""
+        _, _, unknown = self._revoke("frt-" + "z" * 40)
+        status, _, body = self._revoke("frt-" + "z" * 40)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
+        status, _, body = self._revoke("not-a-token-at-all")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
+        status, _, body = self.client.request("POST", "/oauth/revoke", form={})
+        self.assertEqual(status, 400, "a request with no token is the one real error")
+
+    def test_the_issuer_publishes_where_to_revoke(self):
+        _, _, body = self.client.request("GET", "/.well-known/oauth-authorization-server")
+        metadata = json.loads(body)
+        self.assertEqual(metadata["revocation_endpoint"], f"{self.base}/oauth/revoke")
+
+    # -- resource identity: `resource`, `iss`, `aud` ------------------------
+
+    def test_the_published_resource_is_the_address_the_tokens_are_for(self):
+        _, _, body = self.client.request("GET", "/.well-known/oauth-protected-resource")
+        self.assertEqual(json.loads(body)["resource"], f"{self.base}/mcp")
+
+    def test_the_access_token_separates_issuer_from_resource(self):
+        """`iss` is the authorization server; `aud` is the resource. Not one URL twice."""
+        token = self._grant()["access_token"]
+        claims = self.oauth.store.signed_claims(token)
+        self.assertEqual(claims["iss"], self.base)
+        self.assertEqual(claims["aud"], f"{self.base}/mcp")
+
+    def test_a_resource_this_server_does_not_serve_is_refused(self):
+        params = dict(self._params(), resource="https://somewhere-else.example/mcp")
+        status, _, body = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(params)
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("invalid_target", body.decode())
+
+    def test_the_client_may_ask_for_the_real_resource(self):
+        params = dict(self._params(), resource=f"{self.base}/mcp")
+        status, _, _ = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(params)
+        )
+        self.assertEqual(status, 200)
+
+    def test_a_token_for_another_resource_cannot_call_the_endpoint(self):
+        foreign, _ = self.oauth.store.mint_access_token(
+            client_id="c", subject="operator", scopes=("fleet:read",),
+            audience="https://other.example/mcp", issuer=self.base,
+        )
+        status, headers, _ = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                             token=foreign)
+        self.assertEqual(status, 401)
+        self.assertIn("resource_metadata", headers.get("WWW-Authenticate", ""))
+
+
+class UrlShapes(unittest.TestCase):
+    """What gets advertised, and where it routes. No socket; routing only."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _surface(self, *, public_base_url, mcp_path="/mcp"):
+        pat = self.tmp / "owner-pat"
+        pat.write_text(self.OWNER_TOKEN, encoding="utf-8")
+        config = FleetConfig(
+            source=None, local_device_ref=TOKYO, providers={},
+            auth=AuthBinding(pat_anchor=pat),
+            server=ServerBinding(bind="127.0.0.1", port=3401, public_base_url=public_base_url,
+                                 mcp_path=mcp_path),
+            policy=PolicyBinding(),
+            audit=AuditBinding(path=self.tmp / "audit.jsonl", rate_limit_per_minute=10_000),
+        )
+        service = FleetService(config, providers={})
+        surface = HttpSurface(service=service, config=config, oauth=None, audit=service.audit)
+        return config, surface
+
+    OWNER_TOKEN = "owner-pat-value"
+
+    def test_a_non_https_public_url_is_refused_at_build_time(self):
+        """It becomes the issuer identity and the token audience, so http is not ok."""
+        config, _ = self._surface(public_base_url="http://fleet.example")
+        with self.assertRaises(FleetRefusal) as caught:
+            build_oauth(config, base_url="http://fleet.example", store_root=self.tmp / "o")
+        self.assertIn("public_base_url", caught.exception.detail)
+
+    def test_http_on_loopback_is_still_allowed(self):
+        """The local case: no certificate, and the credential never leaves the host."""
+        config, _ = self._surface(public_base_url="http://127.0.0.1:3401")
+        oauth = build_oauth(config, base_url="http://127.0.0.1:3401", store_root=self.tmp / "o")
+        self.assertEqual(oauth.resource_url, "http://127.0.0.1:3401/mcp")
+
+    def test_a_path_in_the_public_url_routes_both_ways(self):
+        """A prefix does not break loopback probes, and does not need stripping."""
+        _, surface = self._surface(public_base_url="https://fleet.example/fleet-mcp")
+        for path in ("/health", "/fleet-mcp/health"):
+            status, _, body = surface.handle("GET", path, "", {}, b"")
+            self.assertEqual(status, 200, f"{path} -> {body!r}")
+            self.assertEqual(json.loads(body)["status"], "ok")
+        # The MCP endpoint itself, under the prefix and without it.
+        for path in ("/mcp", "/fleet-mcp/mcp"):
+            status, _, _ = surface.handle("POST", path, "", {}, b"{}")
+            self.assertEqual(status, 401, f"{path} should be an authentication failure")
+
+    def test_the_prefix_does_not_leak_into_the_route_table(self):
+        _, surface = self._surface(public_base_url="https://fleet.example/fleet-mcp")
+        status, _, body = surface.handle("GET", "/fleet-mcp/nope", "", {}, b"")
+        self.assertEqual(status, 404)
+
+
+class OperatorClientCommands(unittest.TestCase):
+    """`--list-clients` / `--revoke-client`.
+
+    The operator's way to stop a client entirely offline: no HTTP endpoint whose
+    safety would depend on it being authenticated, and no dependency on the
+    server that issued the client still being up.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        pat = self.tmp / "owner-pat"
+        pat.write_text("owner-pat-value", encoding="utf-8")
+        self.config = FleetConfig(
+            source=None, local_device_ref=TOKYO, providers={},
+            auth=AuthBinding(pat_anchor=pat),
+            server=ServerBinding(bind="127.0.0.1", port=3401),
+            policy=PolicyBinding(),
+            audit=AuditBinding(path=self.tmp / "audit.jsonl", rate_limit_per_minute=10_000),
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stdout(self, **kwargs) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = clients_command(self.config, **kwargs)
+        return code, buffer.getvalue()
+
+    def test_there_is_nothing_to_show_before_anything_is_registered(self):
+        code, _ = self._stdout(revoke=None, as_json=False)
+        self.assertEqual(code, 4, "no state file is not the same as no clients")
+
+    def test_a_client_can_be_listed_then_revoked_without_a_server(self):
+        store = TokenStore(self.tmp / "fleet-mcp-oauth", access_ttl=3600, refresh_ttl=3600)
+        client = store.register_client(client_name="ChatGPT", redirect_uris=[CHATGPT_REDIRECT])
+        access, _ = store.mint_access_token(
+            client_id=client.client_id, subject="operator", scopes=("fleet:read",),
+            audience="https://fleet.example/mcp", issuer="https://fleet.example",
+        )
+        code, text = self._stdout(revoke=None, as_json=True)
+        self.assertEqual(code, 0)
+        listed = json.loads(text)["clients"]
+        self.assertEqual([row["client_id"] for row in listed], [client.client_id])
+        self.assertFalse(listed[0]["revoked"])
+
+        code, text = self._stdout(revoke=client.client_id, as_json=False)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(json.loads(text)["client_id"], client.client_id)
+
+        with self.assertRaises(OAuthError) as caught:
+            store.verify_access_token(access, audience="https://fleet.example/mcp")
+        self.assertIn("revoked", str(caught.exception))
+
+        code, text = self._stdout(revoke=None, as_json=True)
+        self.assertTrue(json.loads(text)["clients"][0]["revoked"])
+
+    def test_revoking_an_unknown_client_refuses_rather_than_guessing(self):
+        store = TokenStore(self.tmp / "fleet-mcp-oauth", access_ttl=3600, refresh_ttl=3600)
+        store.register_client(client_name="ChatGPT", redirect_uris=[CHATGPT_REDIRECT])
+        code, _ = self._stdout(revoke="fleet-nope", as_json=False)
+        self.assertEqual(code, 5)
+
+
+class RequestLinesDoNotCarryQueries(unittest.TestCase):
+    """D5: the access log must not become a copy of a code or a verifier."""
+
+    def test_a_query_string_never_reaches_the_log_line(self):
+        line = ('"GET /oauth/authorize?response_type=code&state=state-xyz'
+                '&code_challenge=abc123&resource=https%3A%2F%2Ffleet.example%2Fmcp HTTP/1.1" 400 -')
+        written = _without_query(line)
+        for secret in ("state-xyz", "abc123", "fleet.example"):
+            self.assertNotIn(secret, written)
+        self.assertIn("[redacted]", written)
+        # The parts an operator reads keep their shape.
+        self.assertIn("GET /oauth/authorize?", written)
+        self.assertIn("HTTP/1.1", written)
+        self.assertTrue(written.endswith('400 -'))
+
+    def test_a_line_with_no_query_is_unchanged(self):
+        line = '"POST /mcp HTTP/1.1" 200 -'
+        self.assertEqual(_without_query(line), line)
+
+    def test_the_handler_uses_it(self):
+        self.assertIsNotNone(getattr(_Handler, "log_message", None))
+        self.assertIn("_without_query", inspect.getsource(_Handler.log_message))
 
 
 if __name__ == "__main__":

@@ -63,6 +63,10 @@ from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_
 DEFAULT_ACCESS_TTL = 3600
 AUTH_CODE_TTL = 120
 ALLOWED_SCOPES = ("fleet:read", "fleet:send")
+# Refresh tokens are opaque and carry this prefix, which is how the revocation
+# endpoint tells the two token kinds apart without a lookup that would make it
+# answer differently for a token it never issued.
+REFRESH_PREFIX = "frt-"
 
 
 def _b64(raw: bytes) -> str:
@@ -97,6 +101,10 @@ class RefreshRecord:
     subject: str
     scopes: tuple[str, ...]
     expires_at: float
+    # The protected resource this grant was approved for. Carried across the
+    # chain so a refreshed access token keeps the audience the human consented
+    # to, rather than quietly acquiring one from wherever the refresh happened.
+    resource: str | None = None
     # Set when this token has been rotated. A second use of a rotated token is
     # the signature of a stolen one, and is treated as a breach of the whole
     # chain rather than of one token.
@@ -115,6 +123,31 @@ class OAuthError(Exception):
         return {"error": self.error, "error_description": self.description}
 
 
+def _revocations_from(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """The revocation lists, in the two buckets they mean different things in.
+
+    `clients` — the operator revoked a client outright. No new authorization, no
+    refresh, and none of its access tokens work again until somebody removes the
+    entry by hand.
+
+    `grants`  — the tokens minted under one approval were retired: an operator
+    revoked that refresh token, or a rotated refresh token was replayed, which is
+    the signature of a stolen chain. Every token already issued dies, and the
+    client is free to authorize again — which is the recovery the reuse-detection
+    path is supposed to leave open, and which folding the two buckets together
+    would close.
+    """
+    stored = raw.get("revocations") or {}
+    out: dict[str, dict[str, float]] = {"clients": {}, "grants": {}, "tokens": {}}
+    for bucket in ("clients", "grants", "tokens"):
+        for key, value in (stored.get(bucket) or {}).items():
+            try:
+                out[bucket][str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 class TokenStore:
     """Signing key, clients and refresh chains. Lives at 0600, outside git."""
 
@@ -127,7 +160,8 @@ class TokenStore:
         self._key_path = root / "signing.key"
         self._state_path = root / "state.json"
         self._key = self._load_or_create_key()
-        self._clients, self._refresh = self._load_state()
+        self._clients, self._refresh, self._revocations = self._load_state()
+        self._revocation_stamp: tuple[int, int] | None = None
 
     # -- persistence -------------------------------------------------------
 
@@ -162,11 +196,12 @@ class TokenStore:
         except OSError:
             pass
 
-    def _load_state(self) -> tuple[dict[str, RegisteredClient], dict[str, RefreshRecord]]:
+    def _load_state(self) -> tuple[dict[str, RegisteredClient], dict[str, RefreshRecord],
+                                   dict[str, dict[str, float]]]:
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return {}, {}
+            return {}, {}, _revocations_from({})
         clients = {
             row["client_id"]: RegisteredClient(
                 client_id=row["client_id"],
@@ -184,15 +219,23 @@ class TokenStore:
                 subject=row.get("subject", "operator"),
                 scopes=tuple(row.get("scopes") or ()),
                 expires_at=row.get("expires_at", 0.0),
+                resource=row.get("resource"),
                 rotated_to=row.get("rotated_to"),
                 revoked=bool(row.get("revoked")),
             )
             for token, row in (raw.get("refresh") or {}).items()
             if isinstance(row, dict)
         }
-        return clients, refresh
+        return clients, refresh, _revocations_from(raw)
 
     def _save_state(self) -> None:
+        # Revoked-token entries are dropped once the token's own `exp` has
+        # passed: past expiry the signature check rejects it anyway, and keeping
+        # the list forever turns a revocation list into a slowly growing file.
+        now = time.time()
+        self._revocations["tokens"] = {
+            jti: exp for jti, exp in self._revocations["tokens"].items() if exp > now
+        }
         payload = {
             "clients": [c.as_dict() for c in self._clients.values()],
             "refresh": {
@@ -201,13 +244,49 @@ class TokenStore:
                     "subject": rec.subject,
                     "scopes": list(rec.scopes),
                     "expires_at": rec.expires_at,
+                    "resource": rec.resource,
                     "rotated_to": rec.rotated_to,
                     "revoked": rec.revoked,
                 }
                 for token, rec in self._refresh.items()
             },
+            "revocations": self._revocations,
         }
-        self._write_private(self._state_path, json.dumps(payload, indent=2).encode("utf-8"))
+        raw = json.dumps(payload, indent=2).encode("utf-8")
+        # Written beside and renamed over: two processes touch this file — the
+        # running surface, and `--revoke-client` run by an operator — and a
+        # reader that catches a half-written file would silently fall back to
+        # "nothing has been revoked", which is the one wrong answer.
+        temporary = self._state_path.with_name(self._state_path.name + ".tmp")
+        self._write_private(temporary, raw)
+        os.replace(temporary, self._state_path)
+        self._revocation_stamp = None
+
+    def _reload_revocations_if_changed(self) -> None:
+        """Pick up a revocation made by another process.
+
+        The access token is a signed blob with no server-side row, so the only
+        thing that can retire it is a check against this list — and the list is
+        also written by `serveros-fleet-mcp --revoke-client`, which is a
+        different process from the one serving requests. Re-reading on a change
+        of (mtime, size) costs one stat per call and is what makes an operator's
+        revocation take effect on the running surface without a restart.
+        """
+        try:
+            stat = self._state_path.stat()
+        except OSError:
+            return
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if stamp == self._revocation_stamp:
+            return
+        try:
+            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            # Mid-rename, or not written yet. Keep what we have and try again on
+            # the next call rather than treating an unreadable file as amnesty.
+            return
+        self._revocations = _revocations_from(raw)
+        self._revocation_stamp = stamp
 
     # -- clients -----------------------------------------------------------
 
@@ -227,18 +306,52 @@ class TokenStore:
         return client
 
     def client(self, client_id: str) -> RegisteredClient:
+        self._reload_revocations_if_changed()
         client = self._clients.get(client_id)
         if client is None:
             raise OAuthError("invalid_client", "unknown client_id", status=401)
+        if client_id in self._revocations["clients"]:
+            # A revoked client may not start a new authorization. Saying so here,
+            # at the first endpoint that names it, is what makes revocation mean
+            # "this client is done" rather than "its old tokens are done".
+            raise OAuthError("invalid_client", "this client has been revoked", status=401)
         return client
+
+    def clients(self) -> list[dict[str, Any]]:
+        """Every registered client, with its revocation state. Operator-facing."""
+        self._reload_revocations_if_changed()
+        now = time.time()
+        rows = []
+        for client in sorted(self._clients.values(), key=lambda c: c.created_at):
+            revoked_at = self._revocations["clients"].get(client.client_id)
+            live_refresh = sum(
+                1 for rec in self._refresh.values()
+                if rec.client_id == client.client_id and not rec.revoked and rec.expires_at > now
+            )
+            rows.append({
+                **client.as_dict(),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(client.created_at)),
+                "revoked": revoked_at is not None,
+                "revoked_at": (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(revoked_at))
+                    if revoked_at is not None else None
+                ),
+                "live_refresh_tokens": live_refresh,
+            })
+        return rows
 
     # -- access tokens -----------------------------------------------------
 
     def mint_access_token(self, *, client_id: str, subject: str, scopes: tuple[str, ...],
-                          audience: str) -> tuple[str, int]:
+                          audience: str, issuer: str | None = None) -> tuple[str, int]:
         now = int(time.time())
         payload = {
-            "iss": audience,
+            # `iss` is the authorization server and `aud` is the protected
+            # resource. They are different URLs whenever the resource is mounted
+            # below the issuer's root, and collapsing them — which the earlier
+            # revision did by passing one value to both — is what stopped a
+            # client from proving which resource it was handed the token for.
+            "iss": issuer or audience,
             "sub": subject,
             "aud": audience,
             "cid": client_id,
@@ -256,23 +369,36 @@ class TokenStore:
         signature = hmac.new(self._key, signing_input.encode("ascii"), hashlib.sha256).digest()
         return f"{signing_input}.{_b64(signature)}", self.access_ttl
 
-    def verify_access_token(self, token: str, *, audience: str) -> dict[str, Any]:
+    def signed_claims(self, token: str) -> dict[str, Any] | None:
+        """The payload of a token whose signature verifies, or None.
+
+        Deliberately says nothing about `aud`, `exp` or revocation: it exists for
+        the one caller that has to read a token's `jti` in order to revoke it
+        (RFC 7009 accepts a token that has already expired), and for that caller
+        the only question is whether this server minted the blob.
+        """
         parts = token.split(".")
         if len(parts) != 3:
-            raise OAuthError("invalid_token", "malformed token", status=401)
+            return None
         signing_input = f"{parts[0]}.{parts[1]}"
         expected = hmac.new(self._key, signing_input.encode("ascii"), hashlib.sha256).digest()
         try:
             presented = _unb64(parts[2])
         except Exception:
-            raise OAuthError("invalid_token", "malformed signature", status=401) from None
+            return None
         # Constant-time, so a caller cannot learn the signature byte by byte.
         if not hmac.compare_digest(expected, presented):
-            raise OAuthError("invalid_token", "signature does not verify", status=401)
+            return None
         try:
             payload = json.loads(_unb64(parts[1]))
         except Exception:
-            raise OAuthError("invalid_token", "malformed payload", status=401) from None
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def verify_access_token(self, token: str, *, audience: str) -> dict[str, Any]:
+        payload = self.signed_claims(token)
+        if payload is None:
+            raise OAuthError("invalid_token", "signature does not verify", status=401)
         if payload.get("aud") != audience:
             raise OAuthError(
                 "invalid_token",
@@ -281,25 +407,126 @@ class TokenStore:
             )
         if int(payload.get("exp", 0)) <= int(time.time()):
             raise OAuthError("invalid_token", "token expired", status=401)
+        self._reload_revocations_if_changed()
+        self._refuse_if_revoked(payload)
         return payload
+
+    def _refuse_if_revoked(self, payload: dict[str, Any]) -> None:
+        """The declared revocation semantics: a revoked client's tokens die now.
+
+        Three things can be revoked, and every one is checked on each call rather
+        than being folded into the token at mint time — an access token is a
+        signed blob with no server-side row, so a token that carried its own
+        revocation state would stay valid until it expired, which is exactly the
+        behaviour the earlier revision had and the defect is.
+
+        *   **A client**: every access token it holds stops working. Compared on
+            `iat <= revoked_at`, so a token issued in the same second as the
+            revocation is treated as revoked — erring towards refusing.
+        *   **A grant** (one approval, all the tokens minted under it): every
+            access token from that approval dies, which is what revoking a
+            refresh token has to mean for a stateless access token.
+        *   **One access token, by `jti`**: the single blob is dead.
+        """
+        client_id = str(payload.get("cid"))
+        issued_at = int(payload.get("iat", 0))
+        for bucket, message in (
+            ("clients", "this client was revoked; its tokens no longer work"),
+            ("grants", "this client's tokens were revoked; authorize again"),
+        ):
+            revoked_at = self._revocations[bucket].get(client_id)
+            if revoked_at is not None and issued_at <= int(revoked_at):
+                raise OAuthError("invalid_token", message, status=401)
+        jti = payload.get("jti")
+        if jti and str(jti) in self._revocations["tokens"]:
+            raise OAuthError("invalid_token", "this token was revoked", status=401)
+
+    # -- revocation (RFC 7009) ---------------------------------------------
+
+    def revoke_client(self, client_id: str) -> dict[str, Any]:
+        """Revoke a client: its tokens die and its refresh chains die with it."""
+        with self._lock:
+            client = self._clients.get(client_id)
+            if client is None:
+                raise OAuthError("invalid_client", "unknown client_id", status=404)
+            now = time.time()
+            self._revocations["clients"][client_id] = now
+            killed = 0
+            for record in self._refresh.values():
+                if record.client_id == client_id and not record.revoked:
+                    record.revoked = True
+                    killed += 1
+            self._save_state()
+        return {
+            "client_id": client_id,
+            "client_name": client.client_name,
+            "revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "refresh_tokens_revoked": killed,
+            "access_tokens": "every token issued to this client before the revocation is refused from now on",
+        }
+
+    def revoke_presented_token(self, token: str, *, client_id: str | None = None) -> dict[str, Any]:
+        """Revoke whatever this token is, based on what the server can verify.
+
+        The response is the same for a token that was revoked and one this server
+        never issued. That is RFC 7009's instruction and it is also the only way
+        to keep the endpoint from answering "did this client ever get a token",
+        which is a question an unauthenticated caller has no business asking.
+        """
+        token = token.strip()
+        if not token:
+            raise OAuthError("invalid_request", "token is required")
+        if token.startswith(REFRESH_PREFIX):
+            self._reload_revocations_if_changed()
+            record = self._refresh.get(token)
+            if record is not None and (client_id is None or record.client_id == client_id):
+                with self._lock:
+                    self._revoke_chain_locked(token)
+                    # The chain is only half of it. Every access token already
+                    # minted from this grant is a signed blob this server will
+                    # honour until it expires, so revoking the grant has to say
+                    # so somewhere the validator looks — that is this timestamp.
+                    self._revocations["grants"][record.client_id] = time.time()
+                    self._save_state()
+                return {"revoked": "refresh_token", "client_id": record.client_id}
+            return {"revoked": "none"}
+        claims = self.signed_claims(token)
+        if claims is None:
+            return {"revoked": "none"}
+        jti = claims.get("jti")
+        exp = float(claims.get("exp", 0))
+        if not jti or exp <= time.time():
+            return {"revoked": "none"}
+        with self._lock:
+            self._revocations["tokens"][str(jti)] = exp
+            self._save_state()
+        return {"revoked": "access_token", "client_id": claims.get("cid")}
 
     # -- refresh -----------------------------------------------------------
 
     def mint_refresh_token(self, *, client_id: str, subject: str,
-                           scopes: tuple[str, ...]) -> str:
-        token = "frt-" + secrets.token_urlsafe(32)
+                           scopes: tuple[str, ...], resource: str | None = None) -> str:
+        token = REFRESH_PREFIX + secrets.token_urlsafe(32)
         with self._lock:
             self._refresh[token] = RefreshRecord(
                 client_id=client_id,
                 subject=subject,
                 scopes=scopes,
                 expires_at=time.time() + self.refresh_ttl,
+                resource=resource,
             )
             self._save_state()
         return token
 
     def consume_refresh_token(self, token: str, *, client_id: str) -> RefreshRecord:
+        self._reload_revocations_if_changed()
         with self._lock:
+            if client_id in self._revocations["clients"]:
+                raise OAuthError(
+                    "invalid_grant",
+                    "this client was revoked and may not refresh; authorize again",
+                    status=400,
+                )
             record = self._refresh.get(token)
             if record is None:
                 raise OAuthError("invalid_grant", "unknown refresh token", status=400)
@@ -314,6 +541,13 @@ class TokenStore:
                 # chain is compromised, so the whole chain dies — the caller has
                 # to re-authorize, which is the correct cost.
                 self._revoke_chain_locked(token)
+                # Deliberately not extended to this client's outstanding access
+                # tokens. A replayed rotated token has one benign cause — a
+                # client with two refreshes in flight — and retiring every live
+                # access token on that signal would make a race look like a
+                # breach. The chain dies, which is the recovery this path was
+                # built for; an operator who reads the replay as a real leak has
+                # `--revoke-client`, which does reach the access tokens.
                 self._save_state()
                 raise OAuthError(
                     "invalid_grant",
@@ -324,7 +558,7 @@ class TokenStore:
             return record
 
     def rotate_refresh_token(self, old_token: str, record: RefreshRecord) -> str:
-        new_token = "frt-" + secrets.token_urlsafe(32)
+        new_token = REFRESH_PREFIX + secrets.token_urlsafe(32)
         with self._lock:
             current = self._refresh.get(old_token)
             if current is not None:
@@ -334,6 +568,7 @@ class TokenStore:
                 subject=record.subject,
                 scopes=record.scopes,
                 expires_at=time.time() + self.refresh_ttl,
+                resource=record.resource,
             )
             self._save_state()
         return new_token
@@ -376,12 +611,21 @@ def _validate_redirect_uri(uri: str) -> None:
 
 
 def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str | None = None,
-                 authorize_path: str = "/oauth/authorize") -> str:
-    """The form the operator completes. Plain HTML, no script, no external refs."""
+                 authorize_path: str = "/oauth/authorize",
+                 granted: list[str] | None = None) -> str:
+    """The form the operator completes. Plain HTML, no script, no external refs.
+
+    `granted` names the boxes to render ticked. It is None on the first render,
+    when the client's own request is what to pre-check, and it is the operator's
+    actual ticks when the form is re-shown after a failed submit — because a
+    re-render that silently re-ticked a box the operator had cleared would ask
+    for consent to something it had just been told not to do.
+    """
     rows = []
     for scope in ALLOWED_SCOPES:
         requested = scope in (params.get("scope") or "").split()
-        checked = "checked" if requested else ""
+        ticked = scope in granted if granted is not None else requested
+        checked = "checked" if ticked else ""
         disabled = "" if requested else "disabled"
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
@@ -391,11 +635,24 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
             f'{checked} {disabled}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span></label>'
         )
+    # The requested scope is carried in its own field, `requested_scope`, and
+    # never under the name `scope`. That separation is the whole of the fix for
+    # the obvious bug in the earlier revision: the checkboxes are `name="scope"`
+    # and arrive once per scope the operator actually ticked, so if the request
+    # also round-tripped as a hidden field named `scope`, a client could ask for
+    # `fleet:send`, the operator could leave the box unticked, and the POST would
+    # still carry the scope the user never granted. Two fields, two meanings:
+    # `requested_scope` is what the client asked for, `scope` is what the human
+    # approved.
     hidden = "".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
         for k, v in params.items()
         if k in ("response_type", "client_id", "redirect_uri", "state", "code_challenge",
-                 "code_challenge_method", "resource", "scope")
+                 "code_challenge_method", "resource")
+    )
+    hidden += (
+        f'<input type="hidden" name="requested_scope" '
+        f'value="{html.escape(params.get("scope") or "")}">'
     )
     requested_note = params.get("scope") or "(no scope requested)"
     error_html = (
@@ -417,8 +674,11 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
 <h1>Authorize <b>{html.escape(client.client_name)}</b> to use {html.escape(SERVER_NAME)}</h1>
 {error_html}
 <p class="muted">This client is asking for access to the Claude Code / Codex sessions
-enrolled in this ServerOS fleet. Approving issues tokens to <b>this client</b>;
-you can revoke them by removing <code>state.json</code> and restarting.</p>
+enrolled in this ServerOS fleet. Approving issues tokens to <b>this client</b>.
+Only the boxes you tick below are granted. You can revoke this client later at any
+time: <code>serveros-fleet-mcp --list-clients</code> then
+<code>--revoke-client &lt;id&gt;</code>, or POST a token to <code>/oauth/revoke</code>.
+Revoking makes the client's existing access tokens stop working immediately.</p>
 <dl>
  <dt>Requested</dt><dd>{html.escape(requested_note)}</dd>
  <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
@@ -444,19 +704,34 @@ you can revoke them by removing <code>state.json</code> and restarting.</p>
 
 class AuthorizationServer:
     def __init__(self, *, store: TokenStore, auth: AuthBinding, base_url: str,
-                 pat_reader) -> None:
+                 pat_reader, mcp_path: str = "/mcp") -> None:
         self.store = store
         self.auth = auth
         self.base_url = base_url.rstrip("/")
+        self.mcp_path = mcp_path if mcp_path.startswith("/") else "/" + mcp_path
         self._pat_reader = pat_reader  # () -> str | None
         self._codes: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     # -- discovery ---------------------------------------------------------
 
-    def protected_resource_metadata(self, mcp_path: str) -> dict[str, Any]:
+    @property
+    def resource_url(self) -> str:
+        """The one protected resource this issuer speaks for.
+
+        RFC 8707 calls it the resource indicator, RFC 9728 publishes it as
+        `resource`, and it is the token's `aud`. It is derived from the base URL
+        that is actually advertised — so when `server.public_base_url` names a
+        public HTTPS address, discovery, the token audience and the audience the
+        validator demands all move together instead of the validator keeping a
+        private opinion about a loopback address.
+        """
+        return f"{self.base_url}{self.mcp_path}"
+
+    def protected_resource_metadata(self, mcp_path: str | None = None) -> dict[str, Any]:
+        resource = f"{self.base_url}{mcp_path}" if mcp_path else self.resource_url
         return {
-            "resource": f"{self.base_url}{mcp_path}",
+            "resource": resource,
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": list(ALLOWED_SCOPES),
@@ -469,11 +744,13 @@ class AuthorizationServer:
             "authorization_endpoint": f"{self.base_url}/oauth/authorize",
             "token_endpoint": f"{self.base_url}/oauth/token",
             "registration_endpoint": f"{self.base_url}/oauth/register",
+            "revocation_endpoint": f"{self.base_url}/oauth/revoke",
             "scopes_supported": list(ALLOWED_SCOPES),
             "response_types_supported": ["code"],
             "response_modes_supported": ["query"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["none"],
+            "revocation_endpoint_auth_methods_supported": ["none"],
             "code_challenge_methods_supported": ["S256"],
             "service_documentation": f"{self.base_url}/docs",
         }
@@ -536,7 +813,33 @@ class AuthorizationServer:
                 "invalid_scope",
                 f"this deployment does not grant {sorted(ungrantable)}",
             )
+        # RFC 8707: a client may name the resource it wants a token for, and the
+        # authorization server must refuse a resource it does not serve rather
+        # than quietly issuing a token for something else. Absent or equal is
+        # fine; anything else is `invalid_target`.
+        resource = (params.get("resource") or "").strip()
+        if resource and resource.rstrip("/") != self.resource_url.rstrip("/"):
+            raise OAuthError(
+                "invalid_target",
+                f"this authorization server issues tokens for {self.resource_url!r} only, "
+                f"not {resource!r}",
+            )
         return client
+
+    def revoke(self, form: dict[str, str]) -> dict[str, Any]:
+        """RFC 7009. Always answers the same way for a token it does not know."""
+        token = (form.get("token") or "").strip()
+        client_id = (form.get("client_id") or "").strip() or None
+        if not token:
+            raise OAuthError("invalid_request", "token is required")
+        if not self.store.signed_claims(token) and not token.startswith(REFRESH_PREFIX):
+            # Not a token this server could have issued. RFC 7009 says this is
+            # not an error, and the reason is worth writing down: a 4xx here
+            # would turn an unauthenticated endpoint into an oracle that answers
+            # "is this string one of your tokens".
+            return {"revoked": "none"}
+        result = self.store.revoke_presented_token(token, client_id=client_id)
+        return result
 
     def approve(self, *, params: dict[str, str], owner_token: str,
                 granted: list[str]) -> tuple[str, RegisteredClient]:
@@ -597,12 +900,14 @@ class AuthorizationServer:
             raise OAuthError("invalid_grant", "redirect_uri does not match the authorization request")
         if not _pkce_matches(verifier, record["code_challenge"]):
             raise OAuthError("invalid_grant", "PKCE verification failed")
-        issued = self._issue(client_id=client_id, scopes=record["scopes"], subject="operator")
+        issued = self._issue(client_id=client_id, scopes=record["scopes"], subject="operator",
+                             resource=record.get("resource"))
         # A code exchange issues a refresh chain, which is what makes the short
         # access-token lifetime workable: the caller renews without a second
         # trip through the consent form.
         issued["refresh_token"] = self.store.mint_refresh_token(
-            client_id=client_id, subject="operator", scopes=record["scopes"]
+            client_id=client_id, subject="operator", scopes=record["scopes"],
+            resource=record.get("resource"),
         )
         issued["refresh_token_expires_in"] = self.store.refresh_ttl
         return issued
@@ -624,14 +929,22 @@ class AuthorizationServer:
                 )
             scopes = tuple(sorted(requested))
         new_refresh = self.store.rotate_refresh_token(token, record)
-        issued = self._issue(client_id=client_id, scopes=scopes, subject=record.subject)
+        issued = self._issue(client_id=client_id, scopes=scopes, subject=record.subject,
+                             resource=record.resource)
         issued["refresh_token"] = new_refresh
         issued["refresh_token_expires_in"] = self.store.refresh_ttl
         return issued
 
-    def _issue(self, *, client_id: str, scopes: tuple[str, ...], subject: str) -> dict[str, Any]:
+    def _issue(self, *, client_id: str, scopes: tuple[str, ...], subject: str,
+               resource: str | None = None) -> dict[str, Any]:
+        # The audience is always this issuer's one protected resource, never a
+        # value the caller supplied. `resource` only carries forward what the
+        # approved grant was for; validate_authorize has already refused anything
+        # that is not this resource, so the two cannot disagree.
+        audience = resource or self.resource_url
         access, ttl = self.store.mint_access_token(
-            client_id=client_id, subject=subject, scopes=scopes, audience=self.base_url
+            client_id=client_id, subject=subject, scopes=scopes,
+            audience=audience, issuer=self.base_url,
         )
         return {
             "access_token": access,
@@ -684,6 +997,7 @@ __all__ = [
     "DEFAULT_ACCESS_TTL",
     "OAuthError",
     "PROTECTED_RESOURCE_PATH",
+    "REFRESH_PREFIX",
     "TokenStore",
     "consent_page",
     "metadata_paths",

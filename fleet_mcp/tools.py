@@ -36,6 +36,7 @@ from typing import Any, Callable
 from .errors import BAD_REQUEST, FleetRefusal, refuse
 from .fleet import Principal
 from .identity import SessionKey
+from .privacy import redact_payload
 
 SESSION_REF_DOC = (
     "The session's full reference, `device:<id>|<provider>|<native session id>`, "
@@ -472,23 +473,67 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     """
     tool = TOOLS_BY_NAME.get(name)
     if tool is None:
-        return _error(principal=ctx.principal, exc=refuse(
+        return _disclose(ctx, _error(principal=ctx.principal, exc=refuse(
             BAD_REQUEST,
             f"unknown tool {name!r}. This surface exposes: {tool_names()}",
-        ))
+        )))
     args = arguments or {}
     if not isinstance(args, dict):
-        return _error(principal=ctx.principal, exc=refuse(BAD_REQUEST, "arguments must be an object"))
+        return _disclose(ctx, _error(principal=ctx.principal,
+                                     exc=refuse(BAD_REQUEST, "arguments must be an object")))
     unknown = unknown_argument_refusal(tool, args)
     if unknown is not None:
-        return _error(principal=ctx.principal, exc=unknown, tool=tool.name)
+        return _disclose(ctx, _error(principal=ctx.principal, exc=unknown, tool=tool.name))
     try:
         payload = tool.handler(ctx, args)
     except FleetRefusal as exc:
-        return _error(principal=ctx.principal, exc=exc, tool=tool.name)
+        return _disclose(ctx, _error(principal=ctx.principal, exc=exc, tool=tool.name))
     except ValueError as exc:
-        return _error(principal=ctx.principal, exc=refuse(BAD_REQUEST, str(exc)), tool=tool.name)
-    return _ok(payload)
+        return _disclose(ctx, _error(principal=ctx.principal,
+                                     exc=refuse(BAD_REQUEST, str(exc)), tool=tool.name))
+    return _disclose(ctx, _ok(payload))
+
+
+def _disclose(ctx: ToolContext, result: dict[str, Any]) -> dict[str, Any]:
+    """The one point every payload passes on its way out. Results and errors alike.
+
+    Redaction used to live inside `fleet_read_session` alone, which made "session
+    content is masked" a property of the tool that happened to implement it
+    rather than of the surface. Everything else — a session title in a listing, a
+    run result, and most importantly a provider's error body, which is remote
+    text this surface did not write — went out as it arrived. Moving the pass
+    here makes the rule hold for every tool that exists and for every tool added
+    later, without any of them having to remember.
+
+    Two things it deliberately leaves alone:
+
+    *   The handler's own report. `fleet_read_session` already redacted and
+        already counted its hits in `redactions`; a second pass over
+        already-masked text finds nothing, so that count keeps meaning what it
+        says instead of being doubled by this one.
+    *   Provenance and the untrusted marking. Redaction rewrites values, never
+        removes the field that says where a value came from or the notice that
+        says its content is data and not instruction.
+    """
+    policy = getattr(getattr(ctx.service, "config", None), "policy", None)
+    if policy is None or not getattr(policy, "read_redact", True):
+        return result
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        return result
+    cleaned, hits = redact_payload(payload)
+    if not hits:
+        return result
+    import json
+
+    result["structuredContent"] = cleaned
+    result["content"] = [{"type": "text", "text": json.dumps(cleaned, ensure_ascii=False, indent=2)}]
+    audit = getattr(ctx.service, "audit", None)
+    if audit is not None:
+        # Counted, not quoted: what was masked is a credential, and a record of
+        # it would be a second copy of the thing this pass exists to remove.
+        audit.record("mcp.output_redacted", principal=ctx.principal.name, redactions=hits)
+    return result
 
 
 def _ok(payload: dict[str, Any]) -> dict[str, Any]:
