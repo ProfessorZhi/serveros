@@ -158,8 +158,38 @@ Logs are appended to `%LOCALAPPDATA%\ServerOS\logs\`:
 * `fleet-node-tunnel.log` — tunnel opens, exits and retries
 
 A tunnel that exits within five seconds of opening is treated as a
-configuration problem (wrong host, refused key, port already bound) and backs
-off to a longer retry, so the log stays readable.
+configuration problem (wrong host, refused key) and backs off to a longer
+retry, so the log stays readable.
+
+`port already bound` is deliberately not in that list, because it is not a
+configuration problem and it does not clear itself. It is what a tunnel that
+died without a clean teardown leaves behind on the Fleet host: the sshd
+session belonging to a client that no longer exists keeps the remote port
+bound, so every later attempt fails at the bind. On 2026-10-10 that state
+lasted fifteen hours and the log said nothing but `retrying`. The supervisor
+now reports it as `INCIDENT remote-port-stuck`, once and then every half hour,
+together with the command that clears it.
+
+The listener belongs to the **root monitor** of that sshd session, which is
+why the Fleet host cannot clear it from the account the tunnel logs in as, and
+why the session has to end:
+
+```bash
+# on the Fleet host, as the account the tunnel logs in as
+ssh <host> "ps -u <user> -o pid,etimes,cmd | grep 'sshd: <user>$'"   # find the -N login
+ssh <host> "pkill -f '^sshd: <user>\s*$'"
+```
+
+`sshd: <user>` with no `@notty`, no `@pts` and no command is a session-less
+`ssh -N` login, which is what every tunnel here is. The `pkill` therefore ends
+*all* of them, including any other tunnel that account is running — such as a
+forward to the production query broker — which reopens on its own schedule.
+Kill the pid from the first command instead if that matters more than the
+convenience. Killing the unprivileged session is enough; the root monitor
+follows it.
+
+After the stale session ends, the retry loop below binds the port on its next
+attempt without being restarted or touched.
 
 The connector logs method and path only. Query strings are not logged: they
 carry session filters, and a log is a place data accumulates without anyone

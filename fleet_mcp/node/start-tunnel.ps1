@@ -21,6 +21,25 @@
     capability" failure this project has already been bitten by once. With it,
     a port already bound is an exit, and the exit is what the retry loop sees.
 
+    A bound port is not always a configuration mistake, and calling it one cost
+    fifteen hours. On 2026-10-10 the client process here went away without a
+    clean TCP teardown, the Fleet host's sshd kept 127.0.0.1:3402 bound to the
+    dead connection, and every retry from then on exited in two seconds on
+    "remote port forwarding failed for listen port 3402". The loop below backed
+    off and said "retrying", which is true and useless: the condition cannot
+    clear itself, because the listener belongs to the root monitor of an sshd
+    session whose client no longer exists, and the host cannot tell that
+    session apart from a live one. Nothing here can fix it. What this file can
+    do is name it, so the log says what is wrong and what to run -- see
+    INCIDENT remote-port-stuck below, and the same page in README.md.
+
+    The host stays the public address on purpose. Moving this tunnel to the
+    tailnet name was measured rather than assumed: ten sequential connections
+    over each path both succeeded ten for ten, at a mean of 2856 ms over the
+    public address against 4462 ms over the tailnet, and the tailnet produced
+    both of the worst single attempts (15.0 s and 7.5 s). The path is not what
+    broke the tunnel, so it is not changed on the strength of a feeling.
+
     The pid file is not bookkeeping, it is the safety property. "Kill the ssh
     processes that look like this one" is a heuristic, and this machine already
     runs other tunnels: one forwarding a CloudCLI port, and one forwarding a
@@ -71,6 +90,7 @@ $forward = "127.0.0.1:{0}:127.0.0.1:{1}" -f $RemotePort, $LocalPort
 $options = @(
     '-N'
     '-o', 'ExitOnForwardFailure=yes'
+    '-o', 'ConnectTimeout=15'
     '-o', 'ServerAliveInterval=30'
     '-o', 'ServerAliveCountMax=3'
     '-o', 'TCPKeepAlive=yes'
@@ -80,6 +100,10 @@ $options = @(
 )
 
 Write-Log ("tunnel supervisor starting: {0} -> {1} (retry {2}s)" -f $forward, $SshHost, $RetrySeconds)
+
+# Consecutive attempts that failed because the remote port is held. Reset by any
+# other outcome, so the count means what it says.
+$stuckStreak = 0
 
 while ($true) {
     $started = Get-Date
@@ -115,6 +139,26 @@ while ($true) {
         foreach ($line in ($reason -split "`r?`n")) {
             if ($line.Trim()) { Write-Log ("ssh: {0}" -f $line.Trim()) }
         }
+    }
+
+    # The one short-lived exit that is not a configuration problem and does not
+    # clear itself. Retrying is still correct -- the port frees the moment
+    # someone ends the stale session -- but a reader of this log has to be told
+    # that waiting is not the fix. Reported once and then every half hour,
+    # rather than every retry, so that a fifteen-hour outage is three loud
+    # lines instead of nine hundred quiet ones.
+    if ($reason -match ('remote port forwarding failed for listen port ' + [regex]::Escape([string]$RemotePort))) {
+        $stuckStreak++
+        if ($stuckStreak -eq 1 -or ($stuckStreak % 30) -eq 0) {
+            Write-Log ("INCIDENT remote-port-stuck: {0} on {1} is held by the sshd session of a tunnel that is gone -- consecutive failed attempts: {2}. Waiting does not fix this." -f $RemotePort, $SshHost, $stuckStreak)
+            Write-Log '  clear it on the Fleet host, as the account this tunnel logs in as:'
+            Write-Log '    ssh <host> "ps -u <user> -o pid,etimes,cmd | grep ''sshd: <user>$''"'
+            Write-Log '    ssh <host> "pkill -f ''^sshd: <user>\s*$''"'
+            Write-Log '  that ends every session-less ssh -N login for that user, including any other tunnel, which reopens on its own schedule.'
+            Write-Log '  the listener belongs to the root monitor of that session, so it cannot be cleared from the account itself -- the session has to end.'
+        }
+    } else {
+        $stuckStreak = 0
     }
 
     # A tunnel that never stayed up for longer than the retry interval is a
