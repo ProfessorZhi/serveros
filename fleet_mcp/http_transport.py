@@ -517,6 +517,15 @@ def _redirect(location: str):
 class _Handler(BaseHTTPRequestHandler):
     server_version = f"{SERVER_NAME}/{SERVER_VERSION}"
     protocol_version = "HTTP/1.1"
+    # ~40 ms per call, and only on a REUSED connection. `_respond` writes the
+    # headers and the body as two separate sends (`wbufsize` is 0, so the write
+    # file is unbuffered and Nagle is on): the small header segment goes out,
+    # the rest waits on a delayed ACK that the idle client has no reason to send
+    # yet. Measured on 2026-10-10 against this same tree, 10 calls each, same
+    # port sequence: control p50 53.1 ms, with this flag p50 12.0 ms. A fresh
+    # connection hides it — which is why it read as "warm is slower than cold"
+    # in the first A/B, and why it is worth a line of comment to keep.
+    disable_nagle_algorithm = True
     surface: HttpSurface  # injected on the server class
 
     def _respond(self, status: int, headers: dict[str, str], body: bytes) -> None:

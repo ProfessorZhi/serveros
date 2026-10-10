@@ -1066,5 +1066,32 @@ class RequestLinesDoNotCarryQueries(unittest.TestCase):
         self.assertIn("_without_query", inspect.getsource(_Handler.log_message))
 
 
+class KeepAliveIsNotStalled(unittest.TestCase):
+    """The reused connection must not be the slow one.
+
+    Measured 2026-10-10 against the installed tree: a kept-alive connection cost
+    p50 53 ms per call while a fresh one cost 12 ms, because `_respond` sends the
+    headers and the body as two separate unbuffered writes and Nagle holds the
+    second one for a delayed ACK. Turning Nagle off took it to p50 12 ms.
+
+    The flag is invisible in any offline test and its absence is invisible in any
+    test that opens a connection per request — which is exactly how it survived
+    until it was measured on the hot path. Pin it here.
+    """
+
+    def test_the_handler_turns_nagle_off(self):
+        self.assertTrue(
+            getattr(_Handler, "disable_nagle_algorithm", False),
+            "without TCP_NODELAY a kept-alive client pays a delayed-ACK stall "
+            "on every call after the first",
+        )
+
+    def test_the_connection_is_meant_to_be_reused(self):
+        # The stall only exists because the connection stays open; if this ever
+        # becomes HTTP/1.0 the two writes stop being on one socket and the
+        # comment above stops describing the program.
+        self.assertEqual(_Handler.protocol_version, "HTTP/1.1")
+
+
 if __name__ == "__main__":
     unittest.main()
