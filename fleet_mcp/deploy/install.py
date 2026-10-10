@@ -275,7 +275,19 @@ def install(args: argparse.Namespace) -> int:
                          indent=2))
         return 0
 
-    systemctl("enable", "--now", UNIT_NAME)
+    # `enable --now` is a START, and a start on a unit that is ALREADY running is
+    # a no-op: the first install needs it, every later one is a lie. Installing a
+    # revision over a live service therefore left the PREVIOUS process serving,
+    # and this function still reported `started: true` — because `health` was
+    # answered by that same old process. A deploy that silently keeps running the
+    # code it just replaced is precisely the failure this installer exists to
+    # make visible, so an install over an active unit is restarted.
+    live = systemctl("is-active", UNIT_NAME, check=False).stdout.strip() == "active"
+    if live:
+        systemctl("enable", UNIT_NAME)
+        systemctl("restart", UNIT_NAME)
+    else:
+        systemctl("enable", "--now", UNIT_NAME)
     health = wait_for_health(info["probe"], args.health_timeout)
     started = health is not None
     if not started:
