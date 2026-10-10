@@ -1718,3 +1718,20 @@ actuators:
       host rather than about this line.
     sites:
       - {file: fleet_mcp/oauth.py, symbols: [TokenStore._write_private]}
+
+  - id: fleet-mcp-oauth-state-replace
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      The OAuth state file is written beside itself and renamed over, so a
+      reader never sees a half-written one. Two processes touch it — the
+      running surface, and `--revoke-client` run by an operator — and a reader
+      that caught a truncate-in-progress would fall back to "nothing has been
+      revoked", which is the one wrong answer this file can give. The path is
+      the store`s own anchor, derived from the binding and reachable by no
+      request; the target is a fixed sibling name, not a caller`s string. It
+      also strengthens the mode story: the temporary file is created 0600 by
+      the same `_write_private` that owns the mode question, so the rename
+      publishes a file that was never world-readable even for an instant.
+    sites:
+      - {file: fleet_mcp/oauth.py, symbols: [TokenStore._save_state]}

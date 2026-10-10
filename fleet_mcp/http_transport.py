@@ -37,6 +37,7 @@ Two things this transport deliberately does not do
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sys
 import threading
@@ -89,6 +90,13 @@ class HttpSurface:
         self.audit = audit
         self.max_body_bytes = int(getattr(config.server, "max_body_bytes", MAX_BODY_BYTES_DEFAULT))
         self.mcp_path = getattr(config.server, "mcp_path", "/mcp")
+        # When the advertised base URL carries a path — the shape a deployment
+        # gets when it is mounted below a host's root, e.g. behind a proxy that
+        # does not strip the prefix — every endpoint is reachable under it as
+        # well as without it. Both forms route to the same handler, so a
+        # loopback probe keeps working while the public URL also resolves.
+        advertised = urlparse(str(getattr(config.server, "public_base_url", "") or "")).path
+        self.path_prefix = advertised.rstrip("/") if advertised.rstrip("/") != "/" else ""
         self._authenticate = authorize or self._default_authenticate
 
     # -- authentication ----------------------------------------------------
@@ -115,7 +123,13 @@ class HttpSurface:
             )
         if self.oauth is not None:
             try:
-                claims = self.oauth.store.verify_access_token(token, audience=self.oauth.base_url)
+                # Verified against the protected resource, not the issuer. A
+                # token minted for another audience — or one minted before this
+                # deployment moved its public URL — is refused here rather than
+                # being accepted because it happens to be signed by this key.
+                claims = self.oauth.store.verify_access_token(
+                    token, audience=self.oauth.resource_url
+                )
             except OAuthError as exc:
                 raise HttpAuthError(exc.description) from None
             scopes = frozenset((claims.get("scope") or "").split())
@@ -131,7 +145,11 @@ class HttpSurface:
     def handle(self, method: str, path: str, query: str, headers: dict[str, str],
                body: bytes) -> tuple[int, dict[str, str], bytes]:
         """Return (status, headers, body). Never raises for a client-caused error."""
-        route = urlparse(path).path.rstrip("/") or "/"
+        route = urlparse(path).path
+        prefix = self.path_prefix
+        if prefix and (route == prefix or route.startswith(prefix + "/")):
+            route = route[len(prefix):]
+        route = route.rstrip("/") or "/"
 
         try:
             if route == HEALTH_PATH:
@@ -146,6 +164,8 @@ class HttpSurface:
                 return self._oauth_authorize(method, query, body)
             if route == "/oauth/token":
                 return self._oauth_token(method, body)
+            if route == "/oauth/revoke":
+                return self._oauth_revoke(method, body)
             if route == self.mcp_path:
                 return self._mcp(method, headers, body)
             if route in ("/", "/docs"):
@@ -240,13 +260,27 @@ class HttpSurface:
             return _json(405, {"error": "invalid_request",
                                "error_description": "authorization requires GET or POST"})
 
-        # `scope` arrives repeated, once per checkbox the operator ticked. It is
-        # folded back into one space-separated string for the parameter checks
-        # and kept as a list for the grant — reading only the first occurrence
-        # would silently drop every scope after the first.
+        # Two fields, two meanings, and the separation is the point:
+        #
+        #   `requested_scope`  what the client asked for — rendered into the form
+        #                      by consent_page as a hidden field.
+        #   `scope`            what the operator ticked, arriving once per box.
+        #
+        # The earlier revision round-tripped the requested scope under the name
+        # `scope` as well, so unticking a box changed nothing: the hidden field
+        # re-supplied it and it was granted. Reading the request from its own
+        # field is what stops a grant the human did not make.
         parsed = parse_qs(body.decode("utf-8", "replace"))
-        form = {k: (" ".join(v) if k == "scope" else v[0]) for k, v in parsed.items()}
-        granted = parsed.get("scope") or []
+        requested = " ".join(parsed.get("requested_scope") or [])
+        if not requested:
+            # A client that posts the authorization request directly — the test
+            # harness does, and so would any non-browser caller — has only one
+            # place to put it. Treat its `scope` as the request, which is what it
+            # always was for a caller that is not this page.
+            requested = " ".join(parsed.get("scope") or [])
+        form = {k: v[0] for k, v in parsed.items()}
+        form["scope"] = requested
+        granted = [s.strip() for s in parsed.get("scope") or [] if s.strip()]
 
         # Stage one again: the redirect_uri must be proven sound before any
         # error is allowed to travel through it.
@@ -257,6 +291,7 @@ class HttpSurface:
                 client=_placeholder_client(form), params=form,
                 error=f"{exc.error}: {exc.description}",
                 authorize_path=authorize_path or "/oauth/authorize",
+                granted=granted,
             ))
 
         try:
@@ -271,6 +306,7 @@ class HttpSurface:
                     client=_placeholder_client(form), params=form,
                     error=f"{exc.error}: {exc.description}",
                     authorize_path=authorize_path or "/oauth/authorize",
+                    granted=granted,
                 ))
             # Any other failure is the client's to hear about, and the
             # redirect_uri is now known good.
@@ -294,6 +330,23 @@ class HttpSurface:
             self.audit.record("oauth.token", grant_type=form.get("grant_type"),
                               client_id=form.get("client_id"), scope=issued.get("scope"))
         return _json(200, issued)
+
+    def _oauth_revoke(self, method: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
+        if self.oauth is None:
+            return _json(404, {"error": "not_found",
+                               "error_description": "this deployment does not run an OAuth issuer"})
+        if method != "POST":
+            return _json(405, {"error": "invalid_request", "error_description": "revocation requires POST"})
+        form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
+        result = self.oauth.revoke(form)
+        if self.audit:
+            # The token itself is never recorded — only that something of a
+            # given kind was revoked, which is what an operator needs to see.
+            self.audit.record("oauth.revoke", revoked=result.get("revoked"),
+                              client_id=result.get("client_id") or form.get("client_id"))
+        # RFC 7009 fixes this response: 200 with an empty body, whether or not
+        # the token existed. Any richer answer would be an oracle.
+        return 200, {"Cache-Control": "no-store"}, b""
 
     def _mcp(self, method: str, headers: dict[str, str], body: bytes) -> tuple[int, dict[str, str], bytes]:
         if method == "GET":
@@ -378,6 +431,8 @@ class HttpSurface:
                 "/oauth/register": "RFC 7591 dynamic client registration (public clients, PKCE).",
                 "/oauth/authorize": "Authorization endpoint. Requires the owner token to approve.",
                 "/oauth/token": "Token endpoint. authorization_code and refresh_token.",
+                "/oauth/revoke": "RFC 7009 revocation. A revoked client's access tokens "
+                                 "are refused immediately, not at their next expiry.",
             },
         }
         return _json(200, body)
@@ -385,6 +440,23 @@ class HttpSurface:
 
 class HttpAuthError(Exception):
     """The presented credential is missing, malformed or not accepted."""
+
+
+# A request target followed by a query string, inside a log line. Matches up to
+# the first space or closing quote so the HTTP version and status fields of a
+# standard request line survive intact.
+_QUERY_IN_LOG = re.compile(r'(\S+?\?)[^\s"]*')
+
+
+def _without_query(line: str) -> str:
+    """Replace every query string in a log line with `[redacted]`.
+
+    A path-only replacement would be enough for today's routes and wrong
+    tomorrow: this collapses *any* query in the line, including one in a query
+    parameter of a nested URL, without needing to know which endpoints carry
+    secrets.
+    """
+    return _QUERY_IN_LOG.sub(r"\1[redacted]", line)
 
 
 def _json_body(body: bytes) -> dict[str, Any]:
@@ -500,10 +572,16 @@ class _Handler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_DELETE = do_HEAD = _dispatch
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # Access logging goes to stderr without the query string: an
-        # authorization code and a `state` travel in a query, and a log line is
-        # a copy of a credential that outlives it.
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        # Access logging goes to stderr with every query string removed. The
+        # default handler logs `self.requestline`, and on this surface that line
+        # carries an authorization code, a `state`, a PKCE `code_challenge` and
+        # a `resource` — `/oauth/authorize?...` and `/oauth/token?...` are the
+        # two most sensitive URLs a request can name. A log line is a copy of a
+        # credential that outlives the credential, in a file with a different
+        # lifetime and a different audience than the one the credential was
+        # scoped to, so the value is stripped at the point of writing rather
+        # than being filtered by whoever reads the journal later.
+        sys.stderr.write("%s - %s\n" % (self.address_string(), _without_query(fmt % args)))
 
 
 class _BodyTooLarge(Exception):
@@ -523,13 +601,31 @@ def serve(surface: HttpSurface, *, bind: str, port: int) -> ThreadingHTTPServer:
     return server
 
 
-def build_oauth(config, *, base_url: str, store_root) -> AuthorizationServer:
+def build_oauth(config, *, base_url: str, store_root,
+                mcp_path: str | None = None) -> AuthorizationServer:
     """Wire the OAuth issuer. Refuses when there is no owner credential.
 
     An authorization server that cannot authenticate the human approving a
     client is a public token dispenser, so this raises rather than degrading to
     an unauthenticated consent form.
     """
+    advertised = str(getattr(config.server, "public_base_url", "") or "")
+    if advertised:
+        # What is advertised becomes the token audience and the endpoint in
+        # every discovery document, so an http one would mean codes and tokens
+        # travelling in clear to a URL ChatGPT then trusts. Loopback http is the
+        # exception, for the same reason it is one for redirect_uri: that is how
+        # a local client reaches a server with no certificate.
+        parsed = urlparse(advertised)
+        loopback_http = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "::1", "localhost")
+        if not ((parsed.scheme == "https" and parsed.netloc) or loopback_http):
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                f"server.public_base_url is {advertised!r}. It is published as this "
+                f"issuer's identity and as the audience of every token it issues, so "
+                f"it has to be an https URL (or http on loopback for a local test); "
+                f"leaving it unset advertises the bind address instead.",
+            )
     if not config.auth.oauth_enabled:
         raise FleetRefusal(
             "BAD_REQUEST",
@@ -554,7 +650,10 @@ def build_oauth(config, *, base_url: str, store_root) -> AuthorizationServer:
 
     store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
                        refresh_ttl=config.auth.refresh_token_ttl)
-    return AuthorizationServer(store=store, auth=config.auth, base_url=base_url, pat_reader=read_pat)
+    return AuthorizationServer(
+        store=store, auth=config.auth, base_url=base_url, pat_reader=read_pat,
+        mcp_path=mcp_path or str(getattr(config.server, "mcp_path", "/mcp")),
+    )
 
 
 def local_base_url(*, bind: str, port: int, public_base_url: str | None) -> str:

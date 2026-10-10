@@ -26,7 +26,7 @@ from .errors import INTERNAL, FleetRefusal, refuse
 from .fleet import FleetService, Principal, SCOPE_READ, SCOPE_SEND
 from .http_transport import HttpSurface, build_oauth, local_base_url, serve
 from .local_roots import binding_root, state_root
-from .oauth import store_root_for
+from .oauth import TokenStore, store_root_for
 from .server import SUPPORTED_PROTOCOL_VERSIONS, McpServer, dumps, loads
 from .tools import ToolContext
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION
@@ -136,10 +136,64 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
     return 0
 
 
+def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -> int:
+    """`--list-clients` / `--revoke-client`. Operator-only, on this host.
+
+    It reads the same state file the running surface reads, so revoking here
+    takes effect on the next request the surface serves without a restart —
+    and without an HTTP endpoint that would have to be authenticated to be safe
+    to expose.
+
+    The refusal when there is no OAuth state is a statement about the binding,
+    not a crash: a deployment that never ran an issuer has no clients to show,
+    and saying "none" would read as "nobody has access".
+    """
+    store_root = default_store_root(config)
+    state = store_root / "state.json"
+    if not state.exists():
+        sys.stderr.write(
+            f"{SERVER_NAME}: no OAuth state at {state}. Either this binding runs "
+            f"no issuer (auth.oauth_enabled) or nothing has been registered yet.\n"
+        )
+        return 4
+    store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
+                       refresh_ttl=config.auth.refresh_token_ttl)
+    if revoke is None:
+        rows = store.clients()
+        if as_json:
+            sys.stdout.write(json.dumps({"store": str(state), "clients": rows}, indent=2) + "\n")
+            return 0
+        if not rows:
+            sys.stdout.write(f"no clients registered in {state}\n")
+            return 0
+        sys.stdout.write(f"{len(rows)} client(s) in {state}\n")
+        for row in rows:
+            state_text = f"REVOKED {row['revoked_at']}" if row["revoked"] else "active"
+            sys.stdout.write(
+                f"  {row['client_id']}\n"
+                f"    name           {row['client_name']}\n"
+                f"    state          {state_text}\n"
+                f"    registered     {row['created_at']}\n"
+                f"    redirects      {', '.join(row['redirect_uris']) or '(none)'}\n"
+                f"    live refresh   {row['live_refresh_tokens']}\n"
+            )
+        return 0
+    try:
+        result = store.revoke_client(revoke)
+    except Exception as exc:  # noqa: BLE001 — an unknown id is an operator typo
+        sys.stderr.write(f"{SERVER_NAME}: cannot revoke {revoke!r}: {exc}\n")
+        return 5
+    sys.stdout.write(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = "stdio"
     config_path: str | None = None
+    list_clients = False
+    revoke_client: str | None = None
+    as_json = False
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -153,6 +207,16 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.write("fleet-mcp: --config needs a path\n")
                 return 2
             config_path = argv[index]
+        elif arg == "--list-clients":
+            list_clients = True
+        elif arg == "--revoke-client":
+            index += 1
+            if index >= len(argv):
+                sys.stderr.write("fleet-mcp: --revoke-client needs a client_id\n")
+                return 2
+            revoke_client = argv[index]
+        elif arg == "--json":
+            as_json = True
         elif arg in ("--version", "-V"):
             sys.stdout.write(f"{SERVER_NAME} {SERVER_VERSION}\n")
             return 0
@@ -172,6 +236,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"{SERVER_NAME}: {exc.code}: {exc.detail}\n")
         return 3
 
+    if list_clients or revoke_client is not None:
+        # These act on state, not on a socket, so they are answered before any
+        # listener is created: revoking a client must not depend on the server
+        # that issued it still being up.
+        return clients_command(config, revoke=revoke_client, as_json=as_json)
+
     sys.stderr.write(f"{SERVER_NAME} {SERVER_VERSION}: binding from {config.source}\n")
     if mode == "http":
         return run_http(config)
@@ -184,6 +254,10 @@ _HELP = f"""\
 Usage:
   serveros-fleet-mcp [--stdio] [-c PATH]     speak MCP on stdin/stdout (default)
   serveros-fleet-mcp --http  [-c PATH]       serve MCP Streamable HTTP
+  serveros-fleet-mcp --list-clients  [-c PATH] [--json]
+                                             who has been given OAuth access here
+  serveros-fleet-mcp --revoke-client ID [-c PATH]
+                                             stop a client: its tokens die now
   serveros-fleet-mcp --version | --help
 
 Environment:

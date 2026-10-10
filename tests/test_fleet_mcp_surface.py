@@ -729,5 +729,82 @@ class AuditTrail(unittest.TestCase):
         self.assertNotIn("hello", lines[-1])
 
 
+class OutputBoundary(unittest.TestCase):
+    """One disclosure boundary for every result and every error.
+
+    The regression: redaction lived inside `fleet_read_session`, so "session
+    content is masked" was true of exactly one tool. Everything else — a session
+    title, a run result, and above all a provider's error body, which is remote
+    text this surface did not write — went out as it arrived.
+    """
+
+    SECRET = "sk-ant-api03-AAAABBBBCCCCDDDDEEEE"
+
+    def _call(self, harness: Harness, name: str, args: dict):
+        return fleet_tools.call_tool(
+            fleet_tools.ToolContext(service=harness.service, principal=harness.principal()),
+            name, args,
+        )
+
+    def _ref(self, device: str, native: str) -> str:
+        return SessionKey.compose(device, "claude", native).ref
+
+    def test_a_credential_in_a_session_title_is_masked_like_a_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.tokyo._sessions = [
+                _summary(TOKYO, "abc", title=f"debugging {self.SECRET}")
+            ]
+            result = self._call(harness, "fleet_list_sessions", {})
+        self.assertFalse(result["isError"])
+        rolled = str(result["structuredContent"])
+        self.assertNotIn("AAAABBBBCCCCDDDDEEEE", rolled)
+        self.assertIn("redacted:fleet-mcp", rolled)
+
+    def test_the_boundary_follows_the_policy_rather_than_masking_unconditionally(self):
+        """A mask that ignores `read_redact` is a mask an operator cannot turn off."""
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp), redact=False)
+            harness.tokyo._sessions = [
+                _summary(TOKYO, "abc", title=f"debugging {self.SECRET}")
+            ]
+            result = self._call(harness, "fleet_list_sessions", {})
+        self.assertIn("AAAABBBBCCCCDDDDEEEE", str(result["structuredContent"]))
+
+    def test_a_providers_error_body_is_masked_on_the_way_out(self):
+        """The device's own words, echoed back — the text this surface least controls."""
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.tokyo._sessions = [_summary(TOKYO, "abc")]
+
+            def explode(key):
+                raise FleetRefusal(
+                    "UPSTREAM_REFUSED",
+                    "the device answered: Authorization: Bearer zzzzyyyyxxxxwwwwvvvvuuuu",
+                )
+
+            harness.tokyo.get_session = explode
+            result = self._call(harness, "fleet_get_session",
+                                {"session_ref": self._ref(TOKYO, "abc")})
+        self.assertTrue(result["isError"])
+        detail = str(result["structuredContent"])
+        self.assertNotIn("zzzzyyyyxxxxwwwwvvvvuuuu", detail)
+        self.assertIn("redacted:fleet-mcp", detail)
+        # The code survives: a caller still branches on it rather than on prose.
+        self.assertEqual(result["structuredContent"]["code"], "UPSTREAM_REFUSED")
+
+    def test_masking_keeps_the_provenance_and_the_untrusted_marking(self):
+        """Redaction rewrites values. It does not delete where a value came from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.tokyo._sessions = [_summary(TOKYO, "abc")]
+            result = self._call(harness, "fleet_read_session",
+                                {"session_ref": self._ref(TOKYO, "abc")})
+        payload = result["structuredContent"]
+        self.assertEqual(payload["device_ref"], TOKYO)
+        self.assertIn("UNTRUSTED", str(payload))
+        self.assertGreaterEqual(payload["redactions"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
