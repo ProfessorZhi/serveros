@@ -25,9 +25,13 @@ authenticate the human approving a client is a public token dispenser.
 
 What is granted
 ---------------
-The scopes are `fleet:read` and `fleet:send`, and they are granted one at a
-time by the operator on the consent form. `fleet:send` is only ever issued for
-sessions already allow-listed in the local binding: the token's scope is
+The scopes are `fleet:read`, `fleet:send` and `fleet:create`, and they are
+granted one at a time by the operator on the consent form. Neither write scope
+is a superset of the other: a credential issued to message sessions is not
+thereby one that may mint them, and the form asks for the two separately for
+exactly that reason. Both are only ever issued against a local binding that
+already authorizes the act — `fleet:send` for sessions in `send_allow`,
+`fleet:create` for devices with `allow_create` — so the token's scope is
 necessary and never sufficient.
 
 Token format
@@ -62,7 +66,7 @@ from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_
 # smaller problem than one that dies in a month.
 DEFAULT_ACCESS_TTL = 3600
 AUTH_CODE_TTL = 120
-ALLOWED_SCOPES = ("fleet:read", "fleet:send")
+ALLOWED_SCOPES = ("fleet:read", "fleet:send", "fleet:create")
 # Refresh tokens are opaque and carry this prefix, which is how the revocation
 # endpoint tells the two token kinds apart without a lookup that would make it
 # answer differently for a token it never issued.
@@ -630,6 +634,7 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
             "fleet:send": "Send messages to sessions the operator has already authorized",
+            "fleet:create": "Create new sessions on devices the operator has authorized for creation",
         }.get(scope, scope)
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '

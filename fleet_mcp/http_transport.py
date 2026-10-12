@@ -49,7 +49,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .audit import AuditLog
 from .errors import FleetRefusal
-from .fleet import Principal, SCOPE_READ, SCOPE_SEND
+from .fleet import Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 from .oauth import (
     ALLOWED_SCOPES,
     AuthorizationServer,
@@ -116,9 +116,14 @@ class HttpSurface:
         pat = self.config.auth.pat_anchor.read_text(encoding="utf-8").strip() \
             if self.config.auth.pat_anchor and self.config.auth.pat_anchor.exists() else None
         if pat and hmac.compare_digest(pat, token):
+            # The owner's own token carries all three scopes. `fleet:create` is
+            # not a widening of what this credential can reach: creation is
+            # still gated per device by `allow_create`, which defaults to
+            # refusal, so the operator holds the scope for the devices they
+            # authorized and nothing more.
             return Principal(
                 name="owner-pat",
-                scopes=frozenset((SCOPE_READ, SCOPE_SEND)),
+                scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
                 credential_kind="pat",
             )
         if self.oauth is not None:

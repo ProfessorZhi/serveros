@@ -22,6 +22,13 @@ including from the Fleet owner. Turning it on is a deliberate edit to a file on
 this machine, naming the sessions it applies to — and it can be withdrawn here,
 by the person at this keyboard, without touching the other end.
 
+Creation is a third grant, not a consequence of the second. `allow_create` is
+`false` by default and independent of `allow_send_to`, because "you may talk to
+a session I already have" and "you may make me a new one" are answers an
+operator gives separately — and an operator who has not been asked the second
+question has not answered it. There is no per-session form of this grant to
+write down, because the session it would name does not exist yet.
+
 What is not here
 ----------------
 No `exec`. No shell. No path parameter. No generic "call any CloudCLI tool"
@@ -82,6 +89,12 @@ class NodeConfig:
     # Native session ids or full `device:<id>|<provider>|<id>` refs. Empty is
     # the default and means "no session on this machine may be sent to".
     allow_send_to: tuple[str, ...] = ()
+    # A second, separate grant on this machine: may a caller *mint* a session
+    # here? Off by default, and off independently of `allow_send_to` — an
+    # operator who authorized messaging has not thereby authorized creation.
+    # There is no per-session form of this grant to write down, because the
+    # session it would name does not exist yet.
+    allow_create: bool = False
     max_body_bytes: int = 1_000_000
     notes: str = ""
 
@@ -147,6 +160,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         connect_timeout=float(raw.get("connect_timeout", 5.0)),
         read_timeout=float(raw.get("read_timeout", 45.0)),
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
+        allow_create=bool(raw.get("allow_create", False)),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
     )
@@ -171,6 +185,7 @@ class Connector:
                 # connector whose allow list is empty would be a document that
                 # disagrees with the machine it describes.
                 allow_send=bool(config.allow_send_to),
+                allow_create=bool(config.allow_create),
             )
         )
 
@@ -283,6 +298,8 @@ class Connector:
         if parts == ["v1", "self"]:
             return 200, self._self(device_ref)
         if parts == ["v1", "sessions"]:
+            if method.upper() == "POST":
+                return 200, self._create(payload)
             return 200, self._sessions(args)
         if len(parts) == 3 and parts[:2] == ["v1", "sessions"]:
             return 200, self.provider.get_session(self._key(parts[2]))
@@ -334,6 +351,11 @@ class Connector:
                     "refused" if not self.config.allow_send_to
                     else "only the sessions named in allow_send_to"
                 ),
+                # Separate from the sends above, and reported separately: the
+                # two grants answer different questions, and an operator
+                # reading one must not have to infer the other.
+                "create_allowed": bool(self.config.allow_create),
+                "create_default": "allowed" if self.config.allow_create else "refused",
             },
             "upstream_endpoint": self.config.cloudcli_endpoint,
             "credential_stays_here": True,
@@ -356,6 +378,36 @@ class Connector:
             before=payload.get("before"),
             after=payload.get("after"),
             cursor=payload.get("cursor"),
+        )
+
+    def _create(self, payload: dict[str, Any]):
+        """Mint a session here, if this machine has said that may happen.
+
+        The create floor is checked before the provider is touched, and it is a
+        different flag from `allow_send_to`: the two grants answer different
+        questions, and an operator who has answered one has not answered the
+        other. A missing project is refused before the floor is consulted, so
+        the two refusals stay distinguishable — one is about the request, the
+        other about this machine.
+        """
+        project = payload.get("project")
+        if not isinstance(project, str) or not project.strip():
+            raise FleetRefusal("BAD_REQUEST", "`project` is required and must be a non-empty string")
+        if not self.config.allow_create:
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this connector is not authorized to create sessions. Session "
+                f"creation is granted by `allow_create` in this machine's own "
+                f"binding, and that file lives on this machine, not on the "
+                f"caller's. It is {self.config.allow_create!r} here.",
+            )
+        return self.provider.create(
+            project=project,
+            message=payload.get("message"),
+            provider=str(payload.get("provider") or "claude"),
+            model=payload.get("model"),
+            lifecycle_mode=payload.get("lifecycleMode"),
+            permission_mode=payload.get("permissionMode"),
         )
 
     def _send(self, native: str, payload: dict[str, Any]):
@@ -471,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         f"connector: upstream CloudCLI {config.cloudcli_endpoint}\n"
         f"connector: send allow list "
         f"{list(config.allow_send_to) or 'empty — every send is refused here'}\n"
+        f"connector: create "
+        f"{'allowed' if config.allow_create else 'refused — allow_create is false'}\n"
     )
     try:
         server.serve_forever()

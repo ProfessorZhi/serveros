@@ -206,6 +206,25 @@ class DeviceProvider(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def create(
+        self,
+        *,
+        project: str,
+        message: str | None = None,
+        provider: str = "claude",
+        model: str | None = None,
+        lifecycle_mode: str | None = None,
+        permission_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Mint a session on this device and return the provider's own ids.
+
+        Takes no `SessionKey`: there is no session yet, and the device is the
+        provider itself. The answer carries the provider's `sessionId` and, only
+        when a first message was sent, the `runId` that first send produced —
+        the same two-field shape CloudCLI's `session_create` returns, so neither
+        adapter has to invent one.
+        """
+
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:

@@ -44,7 +44,7 @@ it.
 
 | File | Runs where | What it does |
 |---|---|---|
-| `connector.py` | this machine | serves the seven routes on `127.0.0.1:3402` (unchanged, platform-neutral) |
+| `connector.py` | this machine | serves the eight routes on `127.0.0.1:3402` (unchanged, platform-neutral) |
 | `lib_paths.sh` | sourced | the one place the paths are derived; checked against `local_roots.py` by the test suite |
 | `install.sh` | this machine | writes the binding + secret, optionally writes unit files |
 | `start-connector.sh` | this machine | starts the connector; does not return until it exits |
@@ -253,7 +253,7 @@ broker — which is what `uninstall.ps1`'s comment records nearly happening once
 ## Where this does not fully align with the Windows node
 
 * **The connector and the wire protocol do not differ at all.** `connector.py`,
-  `node_protocol.py` and the seven routes are the same code on both platforms.
+  `node_protocol.py` and the eight routes are the same code on both platforms.
   The difference is entirely in the four launcher scripts and the paths.
 * **Paths.** Windows keeps everything under `%LOCALAPPDATA%\ServerOS\`:
   `bindings\`, `state\fleet-node\` and a flat `logs\`. POSIX has no single

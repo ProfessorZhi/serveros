@@ -24,7 +24,7 @@ credential for everything CloudCLI can do here, and forwarding the port puts
 that credential on the Fleet host. The token does not leave this machine.
 
 What leaves this machine instead is a **reverse tunnel this machine opens
-outward**, carrying signed requests to a connector that serves seven named
+outward**, carrying signed requests to a connector that serves eight named
 questions and nothing else.
 
 ```
@@ -51,7 +51,7 @@ ends. The tunnel is the only path between them, and this machine owns it.
 
 | File | Runs where | What it does |
 |---|---|---|
-| `connector.py` | this machine | serves the seven routes on `127.0.0.1:3402` |
+| `connector.py` | this machine | serves the eight routes on `127.0.0.1:3402` |
 | `start-connector.ps1` | this machine | starts the connector; does not return until it exits |
 | `start-tunnel.ps1` | this machine | keeps the reverse tunnel open, with backoff |
 | `install.ps1` | this machine | writes the binding + secret, registers two tasks |
@@ -152,7 +152,7 @@ is up.
 * No route executes a command. There is no shell route, no exec route, and no
   route that takes a path. That is a property of the route table, not of the
   documentation, and a test asserts it.
-* No route forwards to the CloudCLI gateway generically. Each of the seven
+* No route forwards to the CloudCLI gateway generically. Each of the eight
   routes maps to one named operation.
 * No response carries the CloudCLI credential, and no request can ask for it.
 * The connector does not decide which devices exist. That is

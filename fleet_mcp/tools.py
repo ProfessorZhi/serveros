@@ -1,4 +1,4 @@
-"""The seven tools ChatGPT sees, and nothing else.
+"""The eight tools ChatGPT sees, and nothing else.
 
 Naming
 ------
@@ -13,11 +13,11 @@ Annotations
 -----------
 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` are
 declared, not inferred from the description text. A connector UI that gates
-writes on the annotation has to be able to trust it: exactly one tool here is
-not read-only (`fleet_send_to_session`), it is non-destructive in the sense
-that it deletes nothing, and it declares `idempotentHint: false` because
-CloudCLI has no idempotency of its own and this surface only approximates it
-with a caller-supplied key.
+writes on the annotation has to be able to trust it: exactly two tools here are
+not read-only (`fleet_send_to_session` and `fleet_create_session`), neither is
+destructive in the sense that it deletes anything, and both declare
+`idempotentHint: false` because CloudCLI has no idempotency of its own and this
+surface only approximates it with a caller-supplied key.
 
 Conventions
 -----------
@@ -183,6 +183,23 @@ def _get_run(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
 def _status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.status(ctx.principal)
+
+
+def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    project = args.get("project")
+    if not isinstance(project, str) or not project.strip():
+        raise refuse(BAD_REQUEST, "`project` is required and must be a non-empty string")
+    return ctx.service.create_session(
+        ctx.principal,
+        device=args.get("device"),
+        project=project,
+        message=args.get("message"),
+        provider=args.get("provider") or "claude",
+        model=args.get("model"),
+        lifecycle_mode=args.get("lifecycle_mode"),
+        permission_mode=args.get("permission_mode"),
+        idempotency_key=args.get("idempotency_key"),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -418,6 +435,87 @@ TOOLS: tuple[Tool, ...] = (
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         annotations=_read_only(),
         handler=_status,
+    ),
+    Tool(
+        name="fleet_create_session",
+        title="Create a session on a device",
+        description=(
+            "Start a new Claude Code / Codex session on one device and return its "
+            "full `session_ref`. This is the only tool here that makes something "
+            "that did not exist; every other one addresses what is already there."
+            "\n\n"
+            "Two independent authorizations are required, and neither is implied "
+            "by the other. Your credential must carry the `fleet:create` scope — "
+            "a credential that may message sessions is not thereby one that may "
+            "make them. And the target device must have granted creation in its "
+            "own local binding (`allow_create`), which is a file on that machine "
+            "that its operator writes; the default is refusal for every device, "
+            "including devices authorized for control.\n\n"
+            "The arguments are CloudCLI's own `session_create` schema, carried "
+            "unchanged: `project` is required and must already be a project id "
+            "(a display name is not resolved here), and `provider` defaults to "
+            "`claude`. Omit a field rather than sending an empty one — an omitted "
+            "field is filled from the device owner's own remembered defaults.\n\n"
+            "`run_id` is present only when you supplied a first `message`: "
+            "creating a session and starting a run in it are two different "
+            "things, and a create that started nothing reports no run. Creating a "
+            "session grants no authority over anything that session may then "
+            "operate on.\n\n"
+            "Pass an `idempotency_key` (any stable unique string) when you may "
+            "need to retry an attempt whose outcome you did not observe. A repeat "
+            "with the same key returns the session already created and mints no "
+            "second one — reported as code IDEMPOTENT_REPLAY."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(
+                    f"The device to create the session on. {DEVICE_REF_DOC} "
+                    f"Creation is single-device: there is no 'create on every "
+                    f"device'."
+                ),
+                "project": _string(
+                    "The provider project id the session is filed under. Required, "
+                    "already an id — this surface does not resolve a project name."
+                ),
+                "message": _string(
+                    "Optional first message. Supplying one starts a run immediately "
+                    "and the returned result carries its `run_id`; omitting it "
+                    "creates the session with nothing running."
+                ),
+                "provider": _string("Session provider family: `claude` (default) or `codex`."),
+                "model": _string(
+                    "Model id for the session. Omit to let the device use its own "
+                    "default for the chosen provider."
+                ),
+                "lifecycle_mode": _string(
+                    "Provider-native lifecycle mode. Omit to use the owner's own "
+                    "remembered default."
+                ),
+                "permission_mode": _string(
+                    "Provider-native permission mode for the session. Omit to use "
+                    "the owner's own remembered default."
+                ),
+                "idempotency_key": _string(
+                    "Stable unique key for this create. Reuse it when retrying an "
+                    "attempt whose outcome you did not observe; the second call "
+                    "returns the first session instead of minting another."
+                ),
+            },
+            "required": ["device", "project"],
+            "additionalProperties": False,
+        },
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            # CloudCLI has no idempotency of its own: a second `session_create`
+            # is a second session. This surface approximates it with a
+            # caller-supplied key, which only holds when the caller supplies
+            # one — so this is honestly not idempotent.
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+        handler=_create_session,
     ),
 )
 

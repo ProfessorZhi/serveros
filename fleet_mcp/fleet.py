@@ -36,6 +36,7 @@ from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
     IDEMPOTENT_REPLAY,
+    INTERNAL,
     RATE_LIMITED,
     SCOPE_DENIED,
     UNKNOWN_DEVICE,
@@ -54,6 +55,11 @@ from .registry import (
 
 SCOPE_READ = "fleet:read"
 SCOPE_SEND = "fleet:send"
+# Creating a session is a third question, and a third scope. It is not implied
+# by `fleet:send`: a credential trusted to message sessions an operator already
+# authorized is not thereby trusted to mint new ones, and folding the two would
+# make the narrower grant unachievable.
+SCOPE_CREATE = "fleet:create"
 
 # How long a recorded idempotency key is honoured. Long enough to cover a
 # caller's retry after a timeout, short enough that the table is bounded by the
@@ -153,6 +159,25 @@ class FleetService:
                 f"authorized for control and this session is not.",
                 session_ref=key.ref,
                 allowed=sorted(allow),
+            )
+
+    def _may_create(self, device_ref: str) -> None:
+        """Creation is granted per device, and by an operator, in the binding.
+
+        There is no per-session half to this check — the session does not exist
+        yet, and naming one is not a thing this call can do. What replaces it is
+        that the grant is a *different flag* from `allow_send`: a device
+        authorized for control is not thereby a device authorized to be minted
+        on, so an operator who wants one and not the other can say so.
+        """
+        binding = self.config.provider_for(device_ref)
+        if binding is None or not binding.allow_create:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{device_ref} is not authorized for session creation from this "
+                f"runtime. Creation is granted per device in the local binding "
+                f"(`allow_create: true`) and is refused by default — never by "
+                f"the caller naming a device id.",
             )
 
     # -- devices -----------------------------------------------------------
@@ -460,6 +485,133 @@ class FleetService:
             "run": record,
             "note": "session_send is message delivery. It grants no authority "
                     "over anything the receiving session may then operate on.",
+        }
+
+    def create_session(
+        self,
+        principal: Principal,
+        *,
+        device: str,
+        project: str,
+        message: str | None = None,
+        provider: str = "claude",
+        model: str | None = None,
+        lifecycle_mode: str | None = None,
+        permission_mode: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Mint a session on one device, and start its first run only if asked.
+
+        The verb is single-device by construction: unlike a listing, there is no
+        useful "create on every device", and a fan-out here would be a way to
+        make three machines work with one call. So the device is required and
+        named, and there is no partial-completion state to report.
+
+        Everything the caller supplies travels to the provider under the
+        provider's own names (`project`, `message`, `provider`, `model`,
+        `lifecycleMode`, `permissionMode`) — the surface translates once, in the
+        adapter, and invents no second spelling. Two things it deliberately does
+        not do: it does not forward the idempotency key (CloudCLI has no such
+        concept, and the guard below is this surface's own), and it does not
+        fabricate a run id for a create that started no run — "created" and
+        "started" stay different words.
+        """
+        principal.require(SCOPE_CREATE)
+        self.admit(principal)
+        if not isinstance(project, str) or not project.strip():
+            raise refuse(BAD_REQUEST, "`project` is required and must name a provider project id")
+        if message is not None:
+            if not isinstance(message, str):
+                raise refuse(BAD_REQUEST, "`message` must be a string when supplied")
+            if len(message) > self.config.policy.max_message_chars:
+                raise refuse(
+                    WRITE_NOT_GRANTED,
+                    f"the first message is {len(message)} characters; the policy "
+                    f"maximum is {self.config.policy.max_message_chars}. Refused "
+                    f"rather than truncated: a silently shortened instruction is "
+                    f"executed as if it were the whole one.",
+                )
+        if not isinstance(device, str) or not device.strip():
+            # Refused as BAD_REQUEST and not UNKNOWN_DEVICE, and the difference
+            # is the whole reason this check is here at all: an *absent* device
+            # is an argument the caller did not supply, and "no such device"
+            # would send them to `fleet_list_devices` to look for a device they
+            # never named.
+            raise refuse(
+                BAD_REQUEST,
+                "`device` is required and must be an enrolled `device:<id>` ref "
+                "as reported by `fleet_list_devices`",
+            )
+        resolved = resolve_or_refuse(self.registry, device)
+        device_ref = resolved.device_ref.ref
+        self._may_create(device_ref)
+
+        if idempotency_key:
+            replayed = self._lookup_idempotent(principal, idempotency_key)
+            if replayed is not None:
+                self.audit.record(
+                    "fleet.create_session.replay",
+                    principal=principal.name,
+                    device_ref=device_ref,
+                    idempotency_key=idempotency_key,
+                )
+                return {
+                    **replayed.get("session", {}),
+                    "idempotent_replay": True,
+                    "code": IDEMPOTENT_REPLAY,
+                    "detail": "this idempotency_key already created this session; "
+                              "no second session was created",
+                    "run_id": replayed.get("run_id"),
+                    "created": replayed,
+                }
+
+        adapter = self._require_provider(device_ref)
+        payload = adapter.create(
+            project=project,
+            message=message,
+            provider=provider,
+            model=model,
+            lifecycle_mode=lifecycle_mode,
+            permission_mode=permission_mode,
+        )
+        session_id = payload.get("sessionId") or payload.get("session_id")
+        if not session_id:
+            # A create that reports success must name what it created. There is
+            # nothing sensible to return without it, and returning the bare
+            # payload would hand the caller a shape this surface never promised.
+            raise refuse(
+                INTERNAL,
+                f"{device_ref} answered session_create without a session id; "
+                f"the session may exist and this surface cannot name it. Keys "
+                f"answered: {sorted(payload)}",
+            )
+        key = SessionKey.compose(device_ref, provider, str(session_id))
+        run_id = payload.get("runId") or payload.get("run_id")
+        record = {
+            "session": key.as_dict(),
+            "run_id": run_id,
+            "raw": payload,
+        }
+        if idempotency_key:
+            self._remember_idempotent(principal, idempotency_key, record)
+        # The first message is not logged: the audit is a control-plane record,
+        # and a record that accumulates what was said is a second copy of it.
+        self.audit.record(
+            "fleet.create_session",
+            principal=principal.name,
+            session_ref=key.ref,
+            run_id=run_id,
+            project=project,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            **key.as_dict(),
+            "idempotent_replay": False,
+            "run_id": run_id,
+            "created": record,
+            "note": "session_create mints a session and, when a first message was "
+                    "given, starts its run. It grants no authority over anything "
+                    "that session may then operate on.",
         }
 
     def get_run(

@@ -183,5 +183,11 @@ _INSTRUCTIONS = (
     "`fleet_send_to_session` works only on sessions the operator explicitly "
     "authorized; everything else is refused with APPROVAL_REQUIRED. Sending a "
     "message is delivery, not authority over whatever the receiving session "
-    "then touches."
+    "then touches.\n\n"
+    "`fleet_create_session` is the only tool here that makes something new, and "
+    "it needs its own authorization on both sides — the `fleet:create` scope on "
+    "your credential AND the target device's own `allow_create`. Neither is "
+    "implied by being allowed to send: a device authorized for control is not "
+    "thereby one you may mint a session on, and every device refuses creation "
+    "until its operator says otherwise."
 )

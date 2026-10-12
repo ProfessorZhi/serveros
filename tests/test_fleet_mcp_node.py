@@ -60,6 +60,7 @@ class FakeProvider:
     def __init__(self, *, fail: FleetRefusal | None = None) -> None:
         self.calls: list[tuple] = []
         self.sent: list[tuple[str, str]] = []
+        self.created: list[dict] = []
         self.fail = fail
 
     def _maybe_fail(self):
@@ -107,9 +108,21 @@ class FakeProvider:
         self._maybe_fail()
         return {"run_id": run_id, "status": "succeeded"}
 
+    def create(self, *, project, message=None, provider="claude", model=None,
+               lifecycle_mode=None, permission_mode=None):
+        self.calls.append(("create", project, message))
+        self._maybe_fail()
+        self.created.append({
+            "project": project, "message": message, "provider": provider,
+            "model": model, "lifecycle_mode": lifecycle_mode,
+            "permission_mode": permission_mode,
+        })
+        return {"sessionId": "created-1", "runId": "run-7" if message else None}
+
 
 class _Base(unittest.TestCase):
     allow_send_to: tuple[str, ...] = ()
+    allow_create: bool = False
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -124,6 +137,7 @@ class _Base(unittest.TestCase):
             cloudcli_credential_anchor=root / "cloudcli.token",
             port=0,
             allow_send_to=tuple(cls.allow_send_to),
+            allow_create=cls.allow_create,
         )
         cls.connector = Connector(cls.config)
         cls.provider = FakeProvider()
@@ -196,6 +210,9 @@ class RouteClosure(_Base):
     # One allow-listed session, so that "is this route reachable" is answered
     # without the send floor confounding it — that floor has its own class.
     allow_send_to = (ALLOWED,)
+    # Creation is a separate grant and is on for this class so that the route
+    # table's completeness is checked without the create floor confounding it.
+    allow_create = True
 
     def test_every_declared_route_is_actually_reachable(self):
         """The route table is a promise; this checks the promise is kept."""
@@ -207,6 +224,7 @@ class RouteClosure(_Base):
             ("POST", f"/v1/sessions/{ALLOWED}/read", {"mode": "latest"}),
             ("POST", f"/v1/sessions/{ALLOWED}/send", {"message": "hello"}),
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
+            ("POST", "/v1/sessions", {"project": "p-1"}),
         ]
         self.assertEqual(len(cases), len(np.ROUTES))
         for method, path, body in cases:
@@ -221,7 +239,7 @@ class RouteClosure(_Base):
             ("GET", "/v1/files"),
             ("GET", "/v1/sessions/x/shell"),
             ("GET", "/v1/sessions/x/read"),          # read is a POST
-            ("POST", "/v1/sessions"),
+            ("POST", "/v1/sessions/x/start"),        # start is not built
             ("GET", "/v1/sessions/x/read/extra"),
             ("GET", "/v1/runs"),
             ("GET", "/health"),
@@ -439,6 +457,86 @@ class SendWithAnAllowList(_Base):
 
 
 # ---------------------------------------------------------------------------
+# This machine's own creation decision
+# ---------------------------------------------------------------------------
+
+
+class CreateFloorIsOnTheDevice(_Base):
+    """Creation is a second, separate grant, and the default is refusal.
+
+    Sending to a session and minting one are different acts, so a machine that
+    authorized the first is not thereby a machine that authorized the second.
+    The refusal names the file it lives in, exactly as the send floor does, for
+    the same reason: the decision belongs to the machine whose sessions would be
+    created.
+    """
+
+    allow_create = False
+
+    def test_every_create_is_refused_and_nothing_reaches_cloudcli(self):
+        status, payload = self.request("POST", "/v1/sessions", {"project": "p-1"})
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+        self.assertEqual(self.provider.created, [])
+        self.assertEqual([c for c in self.provider.calls if c[0] == "create"], [])
+
+    def test_the_refusal_says_where_the_decision_lives(self):
+        _, payload = self.request("POST", "/v1/sessions", {"project": "p-1"})
+        detail = payload["error"]["detail"]
+        self.assertIn("allow_create", detail)
+        self.assertIn("this machine", detail)
+
+    def test_a_missing_project_is_refused_before_the_floor_is_consulted(self):
+        status, payload = self.request("POST", "/v1/sessions", {})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "BAD_REQUEST")
+
+    def test_the_floor_is_reported_rather_than_left_blank(self):
+        status, payload = self.request("GET", "/v1/self")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["control"]["create_default"], "refused")
+        self.assertIs(payload["control"]["create_allowed"], False)
+
+    def test_reads_are_unaffected_by_the_create_floor(self):
+        status, payload = self.request("GET", "/v1/sessions")
+        self.assertEqual(status, 200)
+
+
+class CreateWithTheGrant(_Base):
+    allow_create = True
+
+    def test_a_create_is_forwarded_and_returns_the_session_it_minted(self):
+        status, payload = self.request("POST", "/v1/sessions",
+                                       {"project": "p-1", "message": "go"})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["sessionId"], "created-1")
+        self.assertEqual(payload["runId"], "run-7")
+        self.assertEqual(self.provider.created[-1]["project"], "p-1")
+        self.assertEqual(self.provider.created[-1]["message"], "go")
+
+    def test_the_providers_own_field_names_travel_unchanged(self):
+        self.request("POST", "/v1/sessions", {
+            "project": "p-1", "provider": "codex", "model": "m",
+            "lifecycleMode": "resident", "permissionMode": "bypassPermissions",
+        })
+        sent = self.provider.created[-1]
+        self.assertEqual(sent["provider"], "codex")
+        self.assertEqual(sent["model"], "m")
+        self.assertEqual(sent["lifecycle_mode"], "resident")
+        self.assertEqual(sent["permission_mode"], "bypassPermissions")
+
+    def test_an_empty_message_is_not_a_message(self):
+        self.request("POST", "/v1/sessions", {"project": "p-1", "message": "   "})
+        self.assertEqual(self.provider.created[-1]["message"], "   ")
+
+    def test_the_self_report_names_the_grant(self):
+        status, payload = self.request("GET", "/v1/self")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["control"]["create_default"], "allowed")
+        self.assertIs(payload["control"]["create_allowed"], True)
+
+
+# ---------------------------------------------------------------------------
 # Identity handling on the wire
 # ---------------------------------------------------------------------------
 
@@ -623,6 +721,9 @@ class BindingFile(unittest.TestCase):
         self.assertEqual(config.bind, "127.0.0.1")
         self.assertEqual(config.port, 3402)
         self.assertEqual(config.allow_send_to, ())
+        # Creation is a separate grant and its default is refusal, so a binding
+        # that says nothing about it does not authorize it.
+        self.assertIs(config.allow_create, False)
         self.assertEqual(config.cloudcli_endpoint, "http://127.0.0.1:3001/mcp")
 
     def test_a_hostname_is_not_an_identity(self):
@@ -646,6 +747,11 @@ class BindingFile(unittest.TestCase):
         self.assertEqual(config.allow_send_to, (ALLOWED,))
         self.assertTrue(config.permits_send(SessionKey.compose(DEVICE, "claude", ALLOWED)))
         self.assertFalse(config.permits_send(SessionKey.compose(DEVICE, "claude", OTHER)))
+
+    def test_a_create_grant_survives_the_round_trip(self):
+        config = load_node_config(self._write(self._valid() + "allow_create: true\n"))
+        self.assertIs(config.allow_create, True)
+        self.assertIs(load_node_config(self._write(self._valid())).allow_create, False)
 
 
 if __name__ == "__main__":

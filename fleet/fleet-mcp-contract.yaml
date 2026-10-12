@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-1
+tool_surface_revision: fleet-mcp-2
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -110,7 +110,7 @@ overlap_with:
 # Tools
 # ---------------------------------------------------------------------------
 #
-# Seven, and each one names the owner that answers it. The names are prefixed
+# Eight, and each one names the owner that answers it. The names are prefixed
 # so that a tool list pasted into an external client cannot be confused with
 # the local surfaces' names — a collision here would be a reader's problem
 # that no schema would catch.
@@ -178,6 +178,43 @@ tools:
     answers: this surface's own health — which providers answered, which
       devices have no route, the policy in force, and the audit tail
     answered_by: this surface, about itself
+
+  fleet_create_session:
+    verb: write
+    answers: the session a device minted, and the run its first message started
+    answered_by: the device's provider adapter (CloudCLI `session_create`)
+    schema: >-
+      The arguments are CloudCLI 1.39's own `session_create` input schema,
+      carried unchanged rather than renamed: `project` (required, already a
+      project id — this surface resolves no project name), and the optional
+      `message`, `provider`, `model`, `lifecycleMode`, `permissionMode`. A
+      field the caller omits is absent on the wire rather than null, so the
+      device's own remembered session defaults still apply.
+    admission: >-
+      Two gates, on two machines, and both must open — and neither is implied
+      by the device's `allow_send`. This surface requires the independent
+      `fleet:create` scope (a credential that may message sessions is not
+      thereby one that may make them) and the device's `allow_create`, which
+      defaults to false for every device including ones authorized for control.
+      The connector on the device then applies its own local `allow_create`,
+      which is a second file on a second machine. An unauthorized device is
+      refused before any provider is asked: a check that runs after the session
+      exists is a report, not a gate.
+    partial_success: >-
+      There is none to report. Creation is single-device by construction, so
+      there is no fan-out and no state in which some devices created and others
+      did not.
+    returns: >-
+      `run_id` is present only when a first `message` was supplied. Creating a
+      session and starting a run in it are two different things, and a surface
+      that manufactured a run id for the second case would make "created" and
+      "started" the same word.
+    idempotency: >-
+      A caller-supplied `idempotency_key` is recorded with the session it
+      minted. A replay returns that session under IDEMPOTENT_REPLAY and creates
+      nothing — which matters here more than on a send, because the second call
+      would otherwise be a second session. The key is not forwarded to the
+      provider, which has no such concept.
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -255,8 +292,12 @@ ingress:
     dynamic_client_registration: /oauth/register
     standards: [rfc8414, rfc9728, rfc7591, rfc7636, rfc8707]
     scopes:
-      fleet:read: the four read tools
+      fleet:read: the six read tools
       fleet:send: fleet_send_to_session, and nothing else
+      fleet:create: >-
+        fleet_create_session, and nothing else. Independent of fleet:send on
+        purpose — a credential issued to message sessions is not thereby one
+        that may mint them.
     # The consent step has a human in it, and the human proves they are the
     # owner with the owner token — not with a claim the client made. ServerOS
     # cannot and does not self-authorize: with no owner token present there is
@@ -295,7 +336,7 @@ ingress:
 # a corporate workstation.
 #
 # So the token stays on the workstation, and what crosses the tunnel is a
-# signed, allow-listed set of seven session operations served by a connector
+# signed, allow-listed set of eight session operations served by a connector
 # that machine runs.
 
 node_transport:
@@ -322,6 +363,7 @@ node_transport:
     - 'GET /v1/health'
     - 'GET /v1/self'
     - 'GET /v1/sessions'
+    - 'POST /v1/sessions'
     - 'GET /v1/sessions/{id}'
     - 'POST /v1/sessions/{id}/read'
     - 'POST /v1/sessions/{id}/send'
@@ -338,6 +380,14 @@ node_transport:
     field: allow_send_to
     default: []
     default_means: every send refused, including from the Fleet owner
+    # Creation is a second floor on the same machine and is not a consequence
+    # of the first. Named separately because "you may talk to a session I have"
+    # and "you may make me a new one" are answers an operator gives one at a
+    # time — and an operator who has not been asked the second question has not
+    # answered it.
+    create_field: allow_create
+    create_default: false
+    create_default_means: every create refused, including from the Fleet owner
     lives_on: the device
     rule: >-
       The Fleet surface decides whether a caller may drive the device; the
@@ -347,7 +397,7 @@ node_transport:
       file away from being someone else's.
 
   credential_direction: device-to-fleet answers only; the Fleet host holds a
-    secret that can ask seven named questions and nothing else
+    secret that can ask eight named questions and nothing else
 
   # Reconciling this with an existing prohibition, rather than stepping around
   # it. controller-contract.yaml#boundary.forbidden rejects
@@ -361,10 +411,10 @@ node_transport:
   #      signed application envelope to a process the device itself chose to
   #      run, listening on the device's own loopback. The SSH credential buys a
   #      tunnel and nothing else — it cannot name an operation.
-  #   2. What is reachable is decided by the device (a closed seven-route table,
-  #      enforced before dispatch, plus a local send allow list), not by the
-  #      control plane's credentials. A stolen Fleet secret yields seven named
-  #      questions and no way to widen them.
+  #   2. What is reachable is decided by the device (a closed eight-route table,
+  #      enforced before dispatch, plus a local send allow list and a local
+  #      create flag), not by the control plane's credentials. A stolen Fleet
+  #      secret yields eight named questions and no way to widen them.
   #   3. The link is established outbound by the device, under its owner's
   #      account, and drops without leaving anything listening. It is not a
   #      controller substitute; the controller role in
@@ -432,16 +482,18 @@ deployment:
 # that is not effort.
 
 not_implemented:
-  - id: session_create
-    why: >-
-      Creating a session on someone's workstation is a different question from
-      messaging one that exists, and this round had no authorized test target
-      for it. The provider adapter behind it is already written, so this is a
-      decision outstanding rather than code outstanding.
+  # `session_create` was on this list and is not any more: the round that built
+  # `fleet_create_session` answered the question this entry was waiting on, and
+  # the test below asserts the two are not the same statement. `session_start`
+  # stays, and it is a genuinely different verb — see its own reason.
   - id: session_start
     why: >-
-      Same. Starting a session is the verb that turns "I read a transcript"
-      into "I made a machine work", and it needs its own admission question.
+      Starting a session that exists is the verb that turns "I read a
+      transcript" into "I made a machine work", and it needs its own admission
+      question. It is not implied by creation: `fleet_create_session` may start
+      a run for the session it just made and only that one, because minting a
+      session is itself the grant. Reaching into a session the caller did not
+      create is a different question and this round did not open it.
   - id: arbitrary_shell_or_exec
     why: >-
       Not a roadmap item. Absent from the route table, absent from the provider
@@ -480,7 +532,7 @@ rules:
      never derived from a name, address or provider id."
   - "A credential is named by an anchor and read at the point of use. No value
      is written to a binding, a log, a prompt or a message."
-  - "The tool surface is seven names, asserted against the implementation, and
+  - "The tool surface is eight names, asserted against the implementation, and
      a route set that is closed by construction rather than by convention."
   - "Loopback is where this listens by default, not what protects it. Reaching
      it from off-host is an operator's decision and is reported as outstanding

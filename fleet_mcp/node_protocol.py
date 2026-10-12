@@ -59,6 +59,7 @@ ROUTES = (
     "GET /v1/health",
     "GET /v1/self",
     "GET /v1/sessions",
+    "POST /v1/sessions",
     "GET /v1/sessions/{id}",
     "POST /v1/sessions/{id}/read",
     "POST /v1/sessions/{id}/send",
