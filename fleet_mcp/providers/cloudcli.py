@@ -18,6 +18,7 @@ from typing import Any
 from ..config import ProviderBinding
 from ..errors import (
     BAD_REQUEST,
+    INTERNAL,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
@@ -265,4 +266,51 @@ class CloudCliProvider(DeviceProvider):
         payload = self._call("run_get", arguments, session=key)
         if not payload:
             raise refuse(RUN_NOT_FOUND, f"run {run_id!r} is not known for {key.ref}")
+        return payload
+
+    def create(
+        self,
+        *,
+        project: str,
+        message: str | None = None,
+        provider: str = "claude",
+        model: str | None = None,
+        lifecycle_mode: str | None = None,
+        permission_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the gateway's `session_create` with the gateway's own argument names.
+
+        The shape is CloudCLI 1.39's `SESSION_CREATE_INPUT_SCHEMA`, carried
+        unchanged: `project` (required, already an id — the gateway's target gate
+        resolves a name to one before this line), and the optional `message`,
+        `provider`, `model`, `lifecycleMode`, `permissionMode`.
+
+        An omitted field is *absent*, never `null`: the gateway resolves what is
+        left out against the user's own remembered session defaults, and sending
+        an explicit null would be an argument where the caller meant a gap. That
+        is also why there is no default value written here for anything but
+        `provider`, which the gateway itself defaults to `claude`.
+
+        No idempotency key is forwarded. CloudCLI has no such concept — a second
+        `session_create` is a second session, and this adapter will not imply a
+        guarantee the far side cannot make. The surface's replay guard runs
+        above this line, in `fleet.py`.
+        """
+        arguments: dict[str, Any] = {"project": project, "provider": provider}
+        for name, value in (
+            ("message", message),
+            ("model", model),
+            ("lifecycleMode", lifecycle_mode),
+            ("permissionMode", permission_mode),
+        ):
+            if value is not None:
+                arguments[name] = value
+        payload = self._call("session_create", arguments)
+        if not (payload.get("sessionId") or payload.get("session_id")):
+            raise refuse(
+                INTERNAL,
+                f"the gateway answered session_create without a sessionId "
+                f"(keys: {sorted(payload)}). A create that reports success has to "
+                f"name the session it made.",
+            )
         return payload

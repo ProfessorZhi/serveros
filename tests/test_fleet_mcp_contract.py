@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 7)
+        self.assertEqual(len(declared), 8)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -70,10 +70,11 @@ class TheContractDescribesThisCode(unittest.TestCase):
                     f"{tool.name} is declared {verb} and annotated otherwise",
                 )
 
-    def test_exactly_one_tool_is_a_write_and_it_is_the_one_named(self):
+    def test_the_writes_are_the_two_named_ones(self):
         writes = [t.name for t in tools_module.TOOLS if not t.annotations["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session"])
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
         self.assertEqual(contract()["tools"]["fleet_send_to_session"]["verb"], "write")
+        self.assertEqual(contract()["tools"]["fleet_create_session"]["verb"], "write")
 
     def test_every_tool_names_the_owner_that_answers_it(self):
         """The file's central promise: this surface owns no fact.
@@ -154,6 +155,11 @@ class TheNodeTransportIsTheWireModule(unittest.TestCase):
         floor = contract()["node_transport"]["control_floor"]
         self.assertEqual(floor["default"], [])
         self.assertIn("refused", floor["default_means"])
+        # Creation has its own floor on the same machine, and its default is the
+        # same answer: nothing on this device may be minted until a file here
+        # says so.
+        self.assertIs(floor["create_default"], False)
+        self.assertIn("refused", floor["create_default_means"])
 
     def test_the_tunnel_is_reconciled_with_the_existing_prohibition(self):
         """The one place this design touches a standing prohibition.
@@ -186,7 +192,7 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
 
     def test_the_declared_scopes_are_the_grantable_ones(self):
         declared = tuple(contract()["ingress"]["auth"]["scopes"])
-        self.assertEqual(declared, ("fleet:read", "fleet:send"))
+        self.assertEqual(declared, ("fleet:read", "fleet:send", "fleet:create"))
 
     def test_the_ingress_declines_to_fetch_a_caller_supplied_target(self):
         self.assertIs(contract()["ingress"]["request_shaped_fetch"], False)
@@ -331,12 +337,27 @@ class WhatIsNotBuilt(unittest.TestCase):
                 self.assertTrue(entry.get("why"), "a gap without a reason reads as an oversight")
 
     def test_the_unbuilt_capabilities_are_actually_unreachable(self):
-        """The list is a claim about the code, so it is checked against it."""
-        built = {name.removeprefix("fleet_") for name in tools_module.tool_names()}
-        for absent in ("session_create", "session_start"):
-            with self.subTest(capability=absent):
-                self.assertNotIn(absent, built)
-        self.assertNotIn("POST /v1/sessions", np.ROUTES)
+        """The list is a claim about the code, so it is checked against it.
+
+        `session_create` left this list when it was built; `session_start` is
+        still on it, and the check below is what keeps the two from being the
+        same statement.
+        """
+        names = set(tools_module.tool_names())
+        built = {name.removeprefix("fleet_") for name in names}
+        absent = {entry["id"] for entry in contract()["not_implemented"]}
+        self.assertIn("session_start", absent)
+        self.assertNotIn("session_create", absent)
+        # The list's ids are the provider's own verb names (`session_create`);
+        # the surface's are tool-shaped (`fleet_create_session`). Both halves
+        # are checked, because "left the list" and "appeared on the surface"
+        # are different claims and a rename alone would satisfy neither pair.
+        self.assertIn("fleet_create_session", names)
+        self.assertIn("create_session", built)
+        self.assertNotIn("fleet_start_session", names)
+        self.assertNotIn("start_session", built)
+        # The route that exists is the one for the capability that was built.
+        self.assertIn("POST /v1/sessions", np.ROUTES)
         self.assertNotIn("POST /v1/exec", np.ROUTES)
 
     def test_no_route_can_execute_a_command(self):

@@ -64,6 +64,13 @@ class ProviderBinding:
     # the operator wants visible in `fleet_list_devices` while write control is
     # withheld — the read/write split is per device, not per credential.
     allow_send: bool = False
+    # A device whose sessions may be *created* from this runtime. A separate
+    # grant from `allow_send` on purpose: messaging a session that exists and
+    # minting one that does not are different questions, and an operator who
+    # answered the first has not thereby answered the second. Default false,
+    # like every other grant here, so a binding that says nothing about creation
+    # does not authorize it.
+    allow_create: bool = False
 
     def credential(self) -> str | None:
         """Read the credential at the anchor. Never logged, never returned."""
@@ -84,8 +91,12 @@ class AuthBinding:
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
     # Scopes this surface issues. A ChatGPT connector is granted the read set
-    # plus `fleet:send` only if the operator adds it here.
-    grantable_scopes: tuple[str, ...] = ("fleet:read", "fleet:send")
+    # plus `fleet:send` / `fleet:create` only if the operator adds them here —
+    # this tuple is the ceiling the consent form may present, and the operator
+    # still ticks each box. `fleet:create` is listed beside `fleet:send` rather
+    # than folded into it: the two are granted separately, so clearing one box
+    # leaves the other exactly as it was.
+    grantable_scopes: tuple[str, ...] = ("fleet:read", "fleet:send", "fleet:create")
 
 
 @dataclass(frozen=True)
@@ -148,6 +159,7 @@ class FleetConfig:
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
                     "allow_send": b.allow_send,
+                    "allow_create": b.allow_create,
                     "credential_anchor_present": b.credential_anchor.exists(),
                 }
                 for ref, b in sorted(self.providers.items())
@@ -231,6 +243,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             enabled=bool(entry.get("enabled", True)),
             note=entry.get("note"),
             allow_send=bool(entry.get("allow_send", False)),
+            allow_create=bool(entry.get("allow_create", False)),
         )
 
     auth_raw = raw.get("auth") or {}
@@ -242,7 +255,9 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
-        grantable_scopes=tuple(auth_raw.get("grantable_scopes") or ("fleet:read", "fleet:send")),
+        grantable_scopes=tuple(
+            auth_raw.get("grantable_scopes") or ("fleet:read", "fleet:send", "fleet:create")
+        ),
     )
 
     server_raw = raw.get("server") or {}

@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .config import FleetConfig, load_config
 from .errors import INTERNAL, FleetRefusal, refuse
-from .fleet import FleetService, Principal, SCOPE_READ, SCOPE_SEND
+from .fleet import FleetService, Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 from .http_transport import HttpSurface, build_oauth, local_base_url, serve
 from .local_roots import binding_root, state_root
 from .oauth import TokenStore, store_root_for
@@ -33,8 +33,18 @@ from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION
 
 
 def owner_principal() -> Principal:
-    """The principal for a channel that is already inside the trust boundary."""
-    return Principal(name="local-owner", scopes=frozenset((SCOPE_READ, SCOPE_SEND)),
+    """The principal for a channel that is already inside the trust boundary.
+
+    All three scopes, including `fleet:create` — and that is not a loosening.
+    This principal exists for a channel that never left the host, so the scope
+    check is not what protects creation here; `allow_create` on the target
+    device is, and that default is refusal for every device. Withholding the
+    scope from the owner would buy nothing and would make the operator's own
+    local tools the one caller that cannot do what the deployment is configured
+    to allow.
+    """
+    return Principal(name="local-owner",
+                     scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
                      credential_kind="pat")
 
 

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from fleet_mcp.config import ProviderBinding
 from fleet_mcp.errors import (
+    INTERNAL,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
@@ -236,6 +237,62 @@ class ProviderFailuresKeepTheirMeaning(unittest.TestCase):
         with self.assertRaises(FleetRefusal) as caught:
             provider(client).list_sessions(limit=5)
         self.assertEqual(caught.exception.code, PROVIDER_TIMEOUT)
+
+
+class CreateSpeaksTheGatewaysOwnSchema(unittest.TestCase):
+    """`session_create`'s arguments are CloudCLI 1.39's, carried unchanged.
+
+    The declared shape is `mcp-session-lifecycle.js#SESSION_CREATE_INPUT_SCHEMA`
+    — `project` (required) plus optional `message`, `provider`, `model`,
+    `lifecycleMode`, `permissionMode` — and the gateway answers `{sessionId,
+    runId?}`, where the run id exists only when a first message was sent. This
+    surface invents no second spelling of any of them: the tool's snake_case
+    arguments are translated once, here, and nowhere else.
+    """
+
+    def test_a_create_carries_the_camel_case_names_and_no_extras(self):
+        client = FakeClient(responses={"session_create": {"sessionId": "s-new"}})
+        provider(client).create(project="p-1", message="go", provider="claude",
+                                model="m", lifecycle_mode="resident",
+                                permission_mode="bypassPermissions")
+        tool, arguments = client.calls[-1]
+        self.assertEqual(tool, "session_create")
+        self.assertEqual(arguments, {
+            "project": "p-1", "message": "go", "provider": "claude", "model": "m",
+            "lifecycleMode": "resident", "permissionMode": "bypassPermissions",
+        })
+
+    def test_an_omitted_optional_field_is_absent_rather_than_null(self):
+        """The gateway resolves what is left out against the user's own
+        remembered defaults. Sending `null` would be an argument, not a gap."""
+        client = FakeClient(responses={"session_create": {"sessionId": "s-new"}})
+        provider(client).create(project="p-1")
+        _, arguments = client.calls[-1]
+        self.assertEqual(arguments, {"project": "p-1", "provider": "claude"})
+
+    def test_the_answer_is_the_gateways_own_ids(self):
+        client = FakeClient(responses={"session_create": {"sessionId": "s-new", "runId": "r-1"}})
+        payload = provider(client).create(project="p-1", message="go")
+        self.assertEqual(payload, {"sessionId": "s-new", "runId": "r-1"})
+
+    def test_a_success_with_no_session_id_is_refused_rather_than_invented(self):
+        """A create that reports success must name what it created. A missing id
+        is an unusable answer, and the surface says so instead of returning a
+        payload its caller would have to guess about."""
+        client = FakeClient(responses={"session_create": {}})
+        with self.assertRaises(FleetRefusal) as caught:
+            provider(client).create(project="p-1")
+        self.assertEqual(caught.exception.code, INTERNAL)
+        self.assertIn("sessionId", caught.exception.detail)
+
+    def test_the_provider_never_sends_an_idempotency_key(self):
+        """CloudCLI has no idempotency concept, so the surface's key stops here —
+        exactly as it does for `session_send`."""
+        client = FakeClient(responses={"session_create": {"sessionId": "s-new"}})
+        provider(client).create(project="p-1")
+        _, arguments = client.calls[-1]
+        self.assertNotIn("idempotencyKey", arguments)
+        self.assertNotIn("idempotency_key", arguments)
 
 
 class HealthReadsTheGatewaysOwnIdentification(unittest.TestCase):

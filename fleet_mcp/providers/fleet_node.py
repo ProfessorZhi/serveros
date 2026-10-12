@@ -17,7 +17,7 @@ narrow, signed, allow-listed set of session operations.
 Consequences that are the point of the design:
 
 *   This surface holds no credential that can drive the Windows machine. It
-    holds a secret that can ask seven named questions and nothing else.
+    holds a secret that can ask eight named questions and nothing else.
 *   Withdrawing access is one file on one machine, and works whether or not the
     other machine is up.
 *   The connector being down is `PROVIDER_UNREACHABLE` for that device only.
@@ -236,6 +236,36 @@ class FleetNodeProvider(DeviceProvider):
             query["waitSeconds"] = str(float(wait_seconds))
         path = f"/v1/runs/{urllib.parse.quote(run_id)}?" + urllib.parse.urlencode(query)
         return self._request("GET", path)
+
+    def create(
+        self,
+        *,
+        project: str,
+        message: str | None = None,
+        provider: str = "claude",
+        model: str | None = None,
+        lifecycle_mode: str | None = None,
+        permission_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a session through the connector's `POST /v1/sessions`.
+
+        The body carries the provider's own field names — the same spellings the
+        connector hands to `session_create` — so there is one translation of the
+        tool's arguments, in the far side's adapter, and not a second one here.
+        The connector makes its own creation decision before it looks at any of
+        this; a refusal from it arrives as `WRITE_NOT_GRANTED` and is reported
+        as the machine's answer rather than this surface's.
+        """
+        body: dict[str, Any] = {"project": project, "provider": provider}
+        for name, value in (
+            ("message", message),
+            ("model", model),
+            ("lifecycleMode", lifecycle_mode),
+            ("permissionMode", permission_mode),
+        ):
+            if value is not None:
+                body[name] = value
+        return self._request("POST", "/v1/sessions", body)
 
 
 __all__ = ["FleetNodeProvider", "body_digest", "PROTOCOL", "PROTOCOL_HEADER"]
