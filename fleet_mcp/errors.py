@@ -91,6 +91,18 @@ APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 Control into a session is granted per session, by an operator, in the local
 binding — never by the caller naming a session id."""
 
+UNSUPPORTED_BY_TRANSPORT = "UNSUPPORTED_BY_TRANSPORT"
+"""The device resolved, this surface would allow the call, and the device's
+transport has no verb for it.
+
+Pressed into the closed set because it is a *different response* from all of
+its neighbours: SCOPE_DENIED and APPROVAL_REQUIRED are this surface declining,
+PROVIDER_UNREACHABLE is the route failing, and WRITE_NOT_GRANTED is the far
+side declining on its own authority. Here the call is admitted and there is
+simply no code at the far end to carry it. The fix is a connector upgrade on
+that device — so reporting it as a permission problem would send an operator to
+look at an allow-list that was never the obstacle."""
+
 RATE_LIMITED = "RATE_LIMITED"
 """The credential exceeded its admitted request rate for this window."""
 

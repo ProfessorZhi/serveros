@@ -23,11 +23,21 @@ the form. If `pat_anchor` is unset, OAuth is refused outright rather than
 falling back to anonymous issuance — an authorization server with no way to
 authenticate the human approving a client is a public token dispenser.
 
-What is granted
----------------
-The scopes are `fleet:read` and `fleet:send`, and they are granted one at a
-time by the operator on the consent form. `fleet:send` is only ever issued for
-sessions already allow-listed in the local binding: the token's scope is
+What may be granted, and what a grant is not
+--------------------------------------------
+The vocabulary this server recognises is `fleet_mcp/scopes.py`, read from there
+rather than restated — one definition, so the minting side and the requiring
+side cannot drift. The vocabulary is not what this deployment *issues*: that is
+`auth.grantable_scopes`, which defaults to reading and sending and must be
+widened by an operator in the local binding for anything else. A scope the code
+implements and the binding does not grant is refused as `invalid_scope`, not
+offered as a box that fails on submit.
+
+And a granted scope is never a capability. It says what the credential may ask
+for; whether the call is allowed is decided below this layer, by the device's
+local binding and by `policy`. `fleet:send` is only ever issued for
+sessions already allow-listed in the local binding, and `fleet:create` only
+produces a session that is *not* allow-listed: the token's scope is
 necessary and never sufficient.
 
 Token format
@@ -51,10 +61,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlencode, urlparse
 
 from .config import AuthBinding
+from .scopes import ALLOWED_SCOPES as _SCOPES_ALLOWED
 from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_NAME
 
 # Access-token lifetime. Short on purpose: the refresh path exists precisely so
@@ -62,7 +73,11 @@ from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_
 # smaller problem than one that dies in a month.
 DEFAULT_ACCESS_TTL = 3600
 AUTH_CODE_TTL = 120
-ALLOWED_SCOPES = ("fleet:read", "fleet:send")
+# The vocabulary, bound to its single definition in `fleet_mcp/scopes.py`.
+# Re-exported under this name because that is what the rest of this module and
+# its callers already read, and because `scopes.ALLOWED_SCOPES` is the same
+# tuple object rather than a copy that could drift from it.
+ALLOWED_SCOPES = _SCOPES_ALLOWED
 # Refresh tokens are opaque and carry this prefix, which is how the revocation
 # endpoint tells the two token kinds apart without a lookup that would make it
 # answer differently for a token it never issued.
@@ -612,7 +627,8 @@ def _validate_redirect_uri(uri: str) -> None:
 
 def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str | None = None,
                  authorize_path: str = "/oauth/authorize",
-                 granted: list[str] | None = None) -> str:
+                 granted: list[str] | None = None,
+                 grantable: Sequence[str]) -> str:
     """The form the operator completes. Plain HTML, no script, no external refs.
 
     `granted` names the boxes to render ticked. It is None on the first render,
@@ -620,9 +636,17 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
     actual ticks when the form is re-shown after a failed submit — because a
     re-render that silently re-ticked a box the operator had cleared would ask
     for consent to something it had just been told not to do.
+
+    `grantable` is the deployment's `auth.grantable_scopes`, and it is a
+    required argument rather than a default to `ALLOWED_SCOPES` so that a new
+    call site cannot inherit "show everything this surface implements" by
+    saying nothing. Only boxes the deployment will actually honour are drawn:
+    a box for a scope `validate_authorize` then refuses offers the operator a
+    choice whose refusal arrives later and elsewhere, which is the failure the
+    loader's own refusal was written to avoid — one document further on.
     """
     rows = []
-    for scope in ALLOWED_SCOPES:
+    for scope in grantable:
         requested = scope in (params.get("scope") or "").split()
         ticked = scope in granted if granted is not None else requested
         checked = "checked" if ticked else ""
@@ -630,6 +654,9 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
             "fleet:send": "Send messages to sessions the operator has already authorized",
+            "fleet:create": "Create new sessions in projects the operator has "
+                            "already authorized (a created session is NOT "
+                            "thereby authorized for messages)",
         }.get(scope, scope)
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
@@ -734,7 +761,13 @@ class AuthorizationServer:
             "resource": resource,
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
-            "scopes_supported": list(ALLOWED_SCOPES),
+            # What this deployment will issue, not what this surface could
+            # implement. RFC 8414's `scopes_supported` is read by a connector to
+            # decide what to ask for, so advertising a scope `validate_authorize`
+            # then refuses turns a deployment decision into what looks like a
+            # client bug — the same failure the loader's refusal exists to
+            # prevent, arriving one document later.
+            "scopes_supported": list(self.auth.grantable_scopes),
             "resource_documentation": f"{self.base_url}/docs",
         }
 
@@ -745,7 +778,7 @@ class AuthorizationServer:
             "token_endpoint": f"{self.base_url}/oauth/token",
             "registration_endpoint": f"{self.base_url}/oauth/register",
             "revocation_endpoint": f"{self.base_url}/oauth/revoke",
-            "scopes_supported": list(ALLOWED_SCOPES),
+            "scopes_supported": list(self.auth.grantable_scopes),
             "response_types_supported": ["code"],
             "response_modes_supported": ["query"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -778,7 +811,11 @@ class AuthorizationServer:
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
-            "scope": " ".join(ALLOWED_SCOPES),
+            # What this deployment will issue, for the same reason as
+            # `scopes_supported` below: a client reads this to decide what to
+            # ask for, and naming a scope that `validate_authorize` refuses
+            # makes a deployment's decision look like the client's mistake.
+            "scope": " ".join(self.auth.grantable_scopes),
         }
 
     # -- authorize ---------------------------------------------------------

@@ -1,4 +1,4 @@
-"""The seven tools ChatGPT sees, and nothing else.
+"""The tools ChatGPT sees, and nothing else.
 
 Naming
 ------
@@ -13,11 +13,14 @@ Annotations
 -----------
 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` are
 declared, not inferred from the description text. A connector UI that gates
-writes on the annotation has to be able to trust it: exactly one tool here is
-not read-only (`fleet_send_to_session`), it is non-destructive in the sense
-that it deletes nothing, and it declares `idempotentHint: false` because
-CloudCLI has no idempotency of its own and this surface only approximates it
-with a caller-supplied key.
+writes on the annotation has to be able to trust it. Two tools here are not
+read-only — `fleet_send_to_session` and `fleet_create_session` — both are
+non-destructive in the sense that they delete nothing, and both declare
+`idempotentHint: false` because CloudCLI has no idempotency of its own and this
+surface only approximates it with a caller-supplied key. The set is asserted
+exactly, by name, in the test module and in `fleet/fleet-mcp-contract.yaml`:
+"which verbs here can change a device" is not a question to answer by reading
+prose.
 
 Conventions
 -----------
@@ -178,6 +181,27 @@ def _get_run(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         run_id,
         wait=bool(args.get("wait", False)),
         wait_seconds=float(args.get("wait_seconds", 0.0)),
+    )
+
+
+def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    device = args.get("device")
+    if not isinstance(device, str) or not device.strip():
+        raise refuse(BAD_REQUEST, "`device` is required: a session is created on "
+                                  "one named device, never on 'the fleet'.")
+    project = args.get("project")
+    if not isinstance(project, str) or not project.strip():
+        raise refuse(BAD_REQUEST, "`project` is required and must be a non-empty string")
+    message = args.get("message")
+    if message is not None and not isinstance(message, str):
+        raise refuse(BAD_REQUEST, "`message`, when given, must be a string")
+    return ctx.service.create_session(
+        ctx.principal,
+        device=device,
+        project=project,
+        message=message,
+        lifecycle_mode=args.get("lifecycle_mode"),
+        idempotency_key=args.get("idempotency_key"),
     )
 
 
@@ -418,6 +442,90 @@ TOOLS: tuple[Tool, ...] = (
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         annotations=_read_only(),
         handler=_status,
+    ),
+    # Appended, never inserted. A client caches the tool list and the order it
+    # read; putting a new verb in the middle would renumber the ones after it
+    # for no reason a reader could see.
+    Tool(
+        name="fleet_create_session",
+        title="Create a session on a device",
+        description=(
+            "Create a session in one project on one device, and return its "
+            "`session_ref`. Nothing runs until you send to it — pass `message` "
+            "only if you want the first turn opened now, in which case the run "
+            "id comes back too and `run_started` says so.\n\n"
+            "This is the narrowest possible creation, and the narrowness is "
+            "deliberate. There is no way to name a model, a runtime family, a "
+            "permission mode, an environment or a working directory: those are "
+            "privilege decisions that belong to the device's local binding, and "
+            "a field this surface cannot bound is not offered rather than "
+            "passed through.\n\n"
+            "Two grants are required and neither comes from this call. The "
+            "device must be authorizing creation, AND the project must be "
+            "allow-listed by the operator; naming a project does not authorize "
+            "it. When either is missing the refusal is APPROVAL_REQUIRED and its "
+            "detail says which half.\n\n"
+            "Creating a session does NOT authorize you to drive it. The "
+            "`control` block in the result is expected to read `send_allowed: "
+            "false` — a new session is visible to `fleet_list_sessions` "
+            "immediately and is not sendable until an operator adds its exact "
+            "`session_ref` to the allow-list. Do not read a refusal from "
+            "`fleet_send_to_session` as a bug in this tool.\n\n"
+            "Pass an `idempotency_key` (any stable unique string). Repeating it "
+            "returns the recorded session and creates no second one — reported "
+            "as code IDEMPOTENT_REPLAY. This matters more here than on a send: a "
+            "duplicated message is noise, a duplicated session is a second "
+            "working directory and a second agent."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(
+                    f"The device to create the session on. {DEVICE_REF_DOC} "
+                    "Required — there is no fleet-wide default."
+                ),
+                "project": _string(
+                    "The provider's project id to create the session in, which "
+                    "the operator must have allow-listed in `policy.create_allow`. "
+                    "`fleet_list_devices` reports the allow-listed set per device "
+                    "under `control.create_allowed_projects`."
+                ),
+                "message": _string(
+                    "Optional first message. When given, the first run is opened "
+                    "and its id is returned; when omitted, the session exists and "
+                    "nothing has run."
+                ),
+                "lifecycle_mode": {
+                    "type": "string",
+                    "enum": ["per-run", "resident"],
+                    "description": (
+                        "How the session's host lives. `per-run` (the provider "
+                        "default) starts a process per run. `resident` keeps one "
+                        "alive between turns — it leaves a process running after "
+                        "the first turn ends, which is why the accepted set is "
+                        "bounded here rather than relayed."
+                    ),
+                },
+                "idempotency_key": _string(
+                    "Stable unique key for this creation. Reuse it when retrying "
+                    "an attempt whose outcome you did not observe."
+                ),
+            },
+            "required": ["device", "project"],
+            "additionalProperties": False,
+        },
+        annotations={
+            "readOnlyHint": False,
+            # It deletes nothing. It does leave a new working session behind on
+            # a real machine, which is why it is not read-only — but the
+            # destructive hint describes removal, and this is not that.
+            "destructiveHint": False,
+            # CloudCLI has no idempotency of its own; this surface approximates
+            # it with a caller-supplied key, so it holds only when one is given.
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+        handler=_create_session,
     ),
 )
 

@@ -183,5 +183,12 @@ _INSTRUCTIONS = (
     "`fleet_send_to_session` works only on sessions the operator explicitly "
     "authorized; everything else is refused with APPROVAL_REQUIRED. Sending a "
     "message is delivery, not authority over whatever the receiving session "
-    "then touches."
+    "then touches.\n\n"
+    "`fleet_create_session` is granted separately from sending, on a different "
+    "key: the device must authorize creation and the project must be "
+    "allow-listed. It confers no control over what it creates — the session it "
+    "returns is not sendable until an operator authorizes that session too, and "
+    "the result says so in its `control` block. A refusal from "
+    "`fleet_send_to_session` on a session you just created is the intended "
+    "behaviour, not a fault to work around."
 )

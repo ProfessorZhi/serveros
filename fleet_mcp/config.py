@@ -29,6 +29,7 @@ import yaml
 
 from .errors import BAD_REQUEST, refuse
 from .local_roots import binding_candidates, refusal_if_closed_root
+from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
 
@@ -64,6 +65,13 @@ class ProviderBinding:
     # the operator wants visible in `fleet_list_devices` while write control is
     # withheld — the read/write split is per device, not per credential.
     allow_send: bool = False
+    # A device this runtime may create sessions on. Deliberately NOT the same
+    # flag as `allow_send`: an operator who has agreed that this surface may
+    # message the sessions already running on a machine has not thereby agreed
+    # that it may mint new ones on it, and folding the two into one flag would
+    # make the second grant a side effect of the first. Default off, like
+    # `allow_send`, and for the same reason — a missing key withholds.
+    allow_create: bool = False
 
     def credential(self) -> str | None:
         """Read the credential at the anchor. Never logged, never returned."""
@@ -83,9 +91,13 @@ class AuthBinding:
     oauth_enabled: bool = True
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
-    # Scopes this surface issues. A ChatGPT connector is granted the read set
-    # plus `fleet:send` only if the operator adds it here.
-    grantable_scopes: tuple[str, ...] = ("fleet:read", "fleet:send")
+    # Scopes this deployment will actually issue. Default off for everything
+    # past reading and sending: `fleet_mcp/scopes.py` is the vocabulary this
+    # surface *implements*, and this is the strictly smaller set it *grants*.
+    # `fleet:create` exists in the first and is absent from the second, so a
+    # deployment that has not written it here cannot mint it, cannot offer it
+    # on the consent form, and refuses it as an ungrantable scope.
+    grantable_scopes: tuple[str, ...] = DEFAULT_GRANTABLE_SCOPES
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,17 @@ class PolicyBinding:
     # refused at load rather than at the first send, so a configuration mistake
     # is an outage on start rather than a silent widening at 3am.
     allow_wildcard_send: bool = False
+    # Provider project ids a caller may create a session in. A caller names a
+    # project; naming one must not authorize it, which is the same rule
+    # `send_allow` states for sessions — and it is the more consequential of
+    # the two, because a session is created *inside* a project and inherits
+    # whatever that project's working directory contains. Empty means no
+    # project may be created in, whatever `allow_create` says.
+    create_allow: tuple[str, ...] = ()
+    # The same refusal as `allow_wildcard_send`, for the same reason, stated
+    # separately rather than shared so that widening one cannot silently widen
+    # the other.
+    allow_wildcard_create: bool = False
     max_read_messages: int = 40
     max_message_chars: int = 8000
     read_redact: bool = True
@@ -148,6 +171,7 @@ class FleetConfig:
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
                     "allow_send": b.allow_send,
+                    "allow_create": b.allow_create,
                     "credential_anchor_present": b.credential_anchor.exists(),
                 }
                 for ref, b in sorted(self.providers.items())
@@ -156,6 +180,7 @@ class FleetConfig:
                        "mcp_path": self.server.mcp_path},
             "policy": {
                 "send_allow": list(self.policy.send_allow),
+                "create_allow": list(self.policy.create_allow),
                 "read_redact": self.policy.read_redact,
             },
         }
@@ -231,9 +256,24 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             enabled=bool(entry.get("enabled", True)),
             note=entry.get("note"),
             allow_send=bool(entry.get("allow_send", False)),
+            allow_create=bool(entry.get("allow_create", False)),
         )
 
     auth_raw = raw.get("auth") or {}
+    requested_grantable = tuple(auth_raw.get("grantable_scopes") or DEFAULT_GRANTABLE_SCOPES)
+    unimplemented = sorted(set(requested_grantable) - set(ALLOWED_SCOPES))
+    if unimplemented:
+        # Fail at load, not at the first consent form. A scope this deployment
+        # cannot issue is a deployment that would offer a box the operator can
+        # tick and that `validate_authorize` would then refuse — a broken
+        # configuration that looks like a broken client.
+        raise refuse(
+            BAD_REQUEST,
+            f"auth.grantable_scopes names {unimplemented}, which this surface "
+            f"does not implement. It implements {list(ALLOWED_SCOPES)}. The "
+            f"session-lifecycle verbs beyond these are designed but unwritten; "
+            f"naming one here does not write it.",
+        )
     auth = AuthBinding(
         pat_anchor=Path(_expand(auth_raw["pat_anchor"])) if auth_raw.get("pat_anchor") else None,
         owner_grant_anchor=(
@@ -242,7 +282,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
-        grantable_scopes=tuple(auth_raw.get("grantable_scopes") or ("fleet:read", "fleet:send")),
+        grantable_scopes=requested_grantable,
     )
 
     server_raw = raw.get("server") or {}
@@ -263,9 +303,20 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             "grant meaningless; set `allow_wildcard_send: true` if that is "
             "genuinely intended.",
         )
+    create_allow = tuple(policy_raw.get("create_allow") or ())
+    if "*" in create_allow and not bool(policy_raw.get("allow_wildcard_create", False)):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.create_allow contains '*'. A wildcard makes the per-project "
+            "grant meaningless — a created session inherits the working "
+            "directory of the project it is created in; set "
+            "`allow_wildcard_create: true` if that is genuinely intended.",
+        )
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=bool(policy_raw.get("allow_wildcard_send", False)),
+        create_allow=create_allow,
+        allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),
         max_message_chars=int(policy_raw.get("max_message_chars", 8000)),
         read_redact=bool(policy_raw.get("read_redact", True)),

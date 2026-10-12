@@ -223,6 +223,18 @@ class _HttpHarness(unittest.TestCase):
     OWNER_TOKEN = "owner-pat-value"
 
     @classmethod
+    def _auth_binding(cls, pat: Path) -> AuthBinding:
+        """The deployment's OAuth grant, as a hook rather than a literal.
+
+        `AuthBinding` with no `grantable_scopes` is the shape a real binding
+        takes when the operator has said nothing, so it is also the shape the
+        tests that matter are about: what this surface offers unasked. A
+        subclass overrides this to describe a deployment that opted in, and
+        never touches the server-building path below.
+        """
+        return AuthBinding(pat_anchor=pat, access_token_ttl=3600, refresh_token_ttl=3600)
+
+    @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         tmp = Path(cls._tmp.name)
@@ -234,7 +246,7 @@ class _HttpHarness(unittest.TestCase):
             source=None,
             local_device_ref=WINDOWS,
             providers={},
-            auth=AuthBinding(pat_anchor=cls.pat, access_token_ttl=3600, refresh_token_ttl=3600),
+            auth=cls._auth_binding(cls.pat),
             server=ServerBinding(bind="127.0.0.1", port=cls.port, public_base_url=cls.base),
             policy=PolicyBinding(),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
@@ -337,17 +349,18 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(status, 200)
         self.assertEqual(payload["result"]["protocolVersion"], "2025-06-18")
 
-    def test_tools_list_returns_seven_tools_with_their_annotations(self):
+    def test_tools_list_returns_eight_tools_with_their_annotations(self):
         status, _, payload = self.client.rpc(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token=self.OWNER_TOKEN
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        self.assertEqual(len(tools_out), 7)
+        self.assertEqual(len(tools_out), 8)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
+        self.assertIn("fleet_create_session", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session"])
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -595,7 +608,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 7)
+        self.assertEqual(len(body["result"]["tools"]), 8)
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()
@@ -917,6 +930,179 @@ class OAuthFlow(_HttpHarness):
                                              token=foreign)
         self.assertEqual(status, 401)
         self.assertIn("resource_metadata", headers.get("WWW-Authenticate", ""))
+
+
+class _ConsentPageMixin:
+    """Reading the consent form and the two discovery documents as a client does.
+
+    A real client registers, then asks. Each helper here registers its own
+    client so no test depends on another's.
+    """
+
+    def _authorize_markup(self, scope: str, *, status: int = 200) -> str:
+        """The form as the browser receives it.
+
+        A refused request is still answered with the form — the operator is
+        shown why, in place, rather than being redirected into a dead end — so
+        `status` is a parameter and the caller says which answer it expects.
+        """
+        client_id = self.register_client(name="probe")
+        params = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": CHATGPT_REDIRECT,
+            "scope": scope,
+            "state": "state-xyz",
+            "code_challenge": _b64(hashlib.sha256(b"v" * 64).digest()),
+            "code_challenge_method": "S256",
+        }
+        got, _, body = self.client.request(
+            "GET", "/oauth/authorize?" + urllib.parse.urlencode(params))
+        self.assertEqual(got, status, body)
+        return body.decode()
+
+    @staticmethod
+    def _boxes(markup: str) -> list[str]:
+        """The scopes actually drawn as tickable boxes, in the order drawn."""
+        return re.findall(r'name="scope" value="([^"]+)"', markup)
+
+    def _registration_response(self) -> dict:
+        status, _, body = self.client.request(
+            "POST", "/oauth/register",
+            body=json.dumps({"client_name": "probe",
+                             "redirect_uris": [CHATGPT_REDIRECT]}).encode())
+        self.assertEqual(status, 201, body)
+        return json.loads(body)
+
+    def _discovery(self) -> dict:
+        """Every document a connector reads to decide what to ask for."""
+        out = {}
+        for path in ("/.well-known/oauth-protected-resource/mcp",
+                     "/.well-known/oauth-authorization-server"):
+            status, _, body = self.client.request("GET", path)
+            self.assertEqual(status, 200, (path, body))
+            out[path] = json.loads(body)["scopes_supported"]
+        out["registration"] = self._registration_response()["scope"].split()
+        return out
+
+
+class WhatADefaultDeploymentOffers(_ConsentPageMixin, _HttpHarness):
+    """The surface implements one more scope than this deployment grants.
+
+    Both sets were the same two names until `fleet:create` was implemented, so
+    nothing here could distinguish a page drawn from the tool surface from one
+    drawn from the deployment's grant — they rendered identically. They no
+    longer do, and every assertion below is written to fail if the page or the
+    advertisement goes back to describing the surface instead of the
+    deployment. The difference matters because a box for a scope
+    `validate_authorize` then refuses is a choice whose refusal arrives later,
+    elsewhere, and looking like somebody else's bug.
+    """
+
+    def test_the_default_grant_is_read_and_send_which_is_the_premise(self):
+        """The rest of this class is only meaningful while this holds."""
+        self.assertEqual(list(self.config.auth.grantable_scopes),
+                         ["fleet:read", "fleet:send"],
+                         "a binding that says nothing must not grant the new scope")
+
+    def test_the_form_draws_exactly_the_scopes_this_deployment_would_issue(self):
+        """A request the deployment can honour: the boxes are its grant, not ours.
+
+        Drawn from `ALLOWED_SCOPES` — what the surface implements — this page
+        would carry a third box, because `fleet:create` is implemented here.
+        """
+        markup = self._authorize_markup("fleet:read fleet:send")
+        self.assertEqual(self._boxes(markup), list(self.config.auth.grantable_scopes))
+        self.assertNotIn("fleet:create", self._boxes(markup))
+
+    def test_no_document_advertises_a_scope_this_deployment_will_not_issue(self):
+        for where, scopes in self._discovery().items():
+            self.assertEqual(sorted(scopes), ["fleet:read", "fleet:send"],
+                             f"{where} advertises a scope this deployment refuses")
+
+    def test_asking_a_default_deployment_for_the_new_scope_is_refused_at_the_form(self):
+        """Refused where the operator can see it, not after a round trip.
+
+        The request names the scope, so it appears in the page — in the error
+        and in the hidden `requested_scope` field. What must not appear is a box
+        offering it, because a box is an offer.
+        """
+        markup = self._authorize_markup("fleet:create", status=400)
+        self.assertNotIn("fleet:create", self._boxes(markup))
+        self.assertIn("does not grant", markup)
+
+
+class AnOptedInDeployment(_ConsentPageMixin, _HttpHarness):
+    """The same surface, on a binding whose operator allowed the new scope.
+
+    The mirror of the class above: what the deployment grants is what it
+    offers, advertises and mints. Nothing here is about the tool surface —
+    that is `test_fleet_mcp_session_create.py`'s subject — and the last test
+    pins the boundary between the two: a token that carries `fleet:create` is
+    still refused a creation this deployment has not authorized, because a
+    scope is necessary and never sufficient.
+    """
+
+    @classmethod
+    def _auth_binding(cls, pat: Path) -> AuthBinding:
+        return AuthBinding(pat_anchor=pat, access_token_ttl=3600, refresh_token_ttl=3600,
+                           grantable_scopes=("fleet:read", "fleet:send", "fleet:create"))
+
+    def test_an_operator_who_allows_it_gets_the_box_back(self):
+        markup = self._authorize_markup("fleet:read fleet:send fleet:create")
+        self.assertEqual(self._boxes(markup),
+                         ["fleet:read", "fleet:send", "fleet:create"])
+        # The two clauses that keep the offer honest: it says what it grants and
+        # says that the grant stops short of control.
+        self.assertIn("NOT", markup)
+        self.assertIn("authorized for messages", markup)
+
+    def test_all_three_documents_follow_the_opt_in(self):
+        for where, scopes in self._discovery().items():
+            self.assertEqual(sorted(scopes),
+                             ["fleet:create", "fleet:read", "fleet:send"],
+                             f"{where} does not reflect the binding")
+
+    def test_the_token_carries_the_scope_and_the_creation_is_still_refused(self):
+        """Two different refusals, and the granted one is not the second."""
+        client_id = self.register_client(name="opted-in")
+        verifier = "v" * 64
+        form = {
+            "response_type": "code", "client_id": client_id,
+            "redirect_uri": CHATGPT_REDIRECT, "state": "s",
+            "code_challenge": _b64(hashlib.sha256(verifier.encode()).digest()),
+            "code_challenge_method": "S256",
+            "owner_token": self.OWNER_TOKEN,
+            # A POST from the browser page sends `scope` once per ticked box.
+            "scope": ["fleet:read", "fleet:send", "fleet:create"],
+        }
+        status, headers, _ = self.client.request("POST", "/oauth/authorize", form=form)
+        self.assertEqual(status, 302, headers)
+        code = urllib.parse.parse_qs(
+            urllib.parse.urlparse(headers["Location"]).query)["code"][0]
+        status, _, body = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": CHATGPT_REDIRECT, "code_verifier": verifier,
+        })
+        self.assertEqual(status, 200, body)
+        token = json.loads(body)
+        self.assertEqual(set(token["scope"].split()),
+                         {"fleet:read", "fleet:send", "fleet:create"})
+
+        status, _, body = self.client.rpc(
+            {"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+             "params": {"name": "fleet_create_session",
+                        "arguments": {"device": WINDOWS, "project": "probe",
+                                      "idempotency_key": "k1"}}},
+            token=token["access_token"],
+        )
+        self.assertEqual(status, 200)
+        result = body["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["code"], "APPROVAL_REQUIRED",
+                         "with the scope granted, the refusal must be about this "
+                         "deployment's authorization and not about the scope")
+        self.assertNotEqual(result["structuredContent"]["code"], "SCOPE_DENIED")
 
 
 class UrlShapes(unittest.TestCase):

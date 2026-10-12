@@ -40,6 +40,7 @@ from ..errors import (
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
     SESSION_NOT_FOUND,
+    UNSUPPORTED_BY_TRANSPORT,
     WRITE_NOT_GRANTED,
     refuse,
 )
@@ -227,6 +228,36 @@ class FleetNodeProvider(DeviceProvider):
         if not payload:
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
         return payload
+
+    def create_session(
+        self, *, project: str, message: str | None = None, lifecycle_mode: str | None = None
+    ) -> dict[str, Any]:
+        """Refuse, in the surface's own words, because the connector has no route.
+
+        `node_protocol.ROUTES` is the connector's whole surface and it carries
+        no creation route: the far side's closed API is seven read/send verbs,
+        and the connector's own design note says what crosses that tunnel is a
+        narrow, signed, allow-listed set of session operations. So this is not a
+        missing implementation on this side — the verb does not exist on the
+        other one, and writing a caller here would be this adapter inventing a
+        route the device would then answer `UNKNOWN_ROUTE` to.
+
+        The refusal is typed rather than raised as `AttributeError` for the
+        reason `base.py` states: an exception escaping a provider is reported by
+        `tools.call_tool` as a defect in this surface, and "we have not built
+        this for your kind of device yet" is not a defect. It is also
+        specifically NOT `WRITE_NOT_GRANTED` — nothing here was denied, and an
+        operator sent to look at an allow-list would find it already correct.
+        """
+        raise refuse(
+            UNSUPPORTED_BY_TRANSPORT,
+            f"{self.device_ref} is reached through a node connector, whose closed "
+            f"route table has no creation verb. This is a gap on the device "
+            f"(its connector would need the route added), not a permission — no "
+            f"allow-list change on this host makes it reachable.",
+            device_ref=self.device_ref,
+            transport_kind=self.kind,
+        )
 
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0

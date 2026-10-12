@@ -252,9 +252,11 @@ class HttpSurface:
                     client=_placeholder_client(params), params=params,
                     error=f"{exc.error}: {exc.description}",
                     authorize_path=authorize_path or "/oauth/authorize",
+                    grantable=self.oauth.auth.grantable_scopes,
                 ))
             return _html(200, consent_page(client=client, params=params,
-                                           authorize_path=authorize_path or "/oauth/authorize"))
+                                           authorize_path=authorize_path or "/oauth/authorize",
+                                           grantable=self.oauth.auth.grantable_scopes))
 
         if method != "POST":
             return _json(405, {"error": "invalid_request",
@@ -292,6 +294,7 @@ class HttpSurface:
                 error=f"{exc.error}: {exc.description}",
                 authorize_path=authorize_path or "/oauth/authorize",
                 granted=granted,
+                grantable=self.oauth.auth.grantable_scopes,
             ))
 
         try:
@@ -307,6 +310,7 @@ class HttpSurface:
                     error=f"{exc.error}: {exc.description}",
                     authorize_path=authorize_path or "/oauth/authorize",
                     granted=granted,
+                    grantable=self.oauth.auth.grantable_scopes,
                 ))
             # Any other failure is the client's to hear about, and the
             # redirect_uri is now known good.

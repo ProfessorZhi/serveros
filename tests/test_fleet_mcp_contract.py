@@ -10,15 +10,20 @@ round reopens it by adding a declaration rather than by making a decision.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import yaml
 
 from fleet_mcp import node_protocol as np
+from fleet_mcp import scopes
 from fleet_mcp import tools as tools_module
 from fleet_mcp import version as version_module
+from fleet_mcp.config import load_config
+from fleet_mcp.errors import BAD_REQUEST, FleetRefusal
 from fleet_mcp.identity import SessionKey
 from fleet_mcp.server import SUPPORTED_PROTOCOL_VERSIONS
 
@@ -57,7 +62,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 7)
+        self.assertEqual(len(declared), 8)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -70,10 +75,31 @@ class TheContractDescribesThisCode(unittest.TestCase):
                     f"{tool.name} is declared {verb} and annotated otherwise",
                 )
 
-    def test_exactly_one_tool_is_a_write_and_it_is_the_one_named(self):
+    def test_the_write_tools_are_exactly_the_two_named_ones_in_order(self):
+        """The set is asserted by name, not counted.
+
+        "Which verbs here can change a device" is the question the annotations
+        exist to answer, so it is answered against a literal list rather than
+        against a length — a count would stay green through a swap.
+        """
         writes = [t.name for t in tools_module.TOOLS if not t.annotations["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session"])
-        self.assertEqual(contract()["tools"]["fleet_send_to_session"]["verb"], "write")
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
+        for name in writes:
+            with self.subTest(tool=name):
+                self.assertEqual(contract()["tools"][name]["verb"], "write")
+
+    def test_the_new_tool_is_appended_rather_than_inserted(self):
+        """A cached tool list is a promise about order too.
+
+        `fleet_create_session` is the eighth tool and must sit after the seven
+        that `fleet-mcp-1` served, so a client that cached that list sees its own
+        seven unchanged and one appended, rather than a renumbering.
+        """
+        names = tools_module.tool_names()
+        self.assertEqual(names[0], "fleet_list_devices")
+        self.assertEqual(names[-1], "fleet_create_session")
+        self.assertNotIn("fleet_create_session", names[:-1])
+        self.assertEqual(list(contract()["tools"])[-1], "fleet_create_session")
 
     def test_every_tool_names_the_owner_that_answers_it(self):
         """The file's central promise: this surface owns no fact.
@@ -184,9 +210,103 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
         self.assertEqual(auth["discovery"], version_module.PROTECTED_RESOURCE_PATH)
         self.assertEqual(auth["authorization_server"], version_module.AUTHORIZATION_SERVER_PATH)
 
-    def test_the_declared_scopes_are_the_grantable_ones(self):
+    def test_the_declared_scopes_are_the_implemented_ones(self):
+        """The file's scope list and `fleet_mcp/scopes.py` are one list.
+
+        They were two, and drifted; `scopes.py` exists so that the vocabulary a
+        credential is minted from and the vocabulary a tool checks are the same
+        tuple rather than two copies that agree today.
+        """
         declared = tuple(contract()["ingress"]["auth"]["scopes"])
-        self.assertEqual(declared, ("fleet:read", "fleet:send"))
+        self.assertEqual(declared, scopes.ALLOWED_SCOPES)
+        self.assertEqual(declared, scopes.IMPLEMENTED_SCOPES)
+
+    def test_the_planned_scopes_are_declared_and_cannot_be_minted(self):
+        """Designed-but-unwritten is a state, and it is checked rather than
+        described: a planned scope that leaked into `ALLOWED_SCOPES` would be
+        grantable without any tool being written for it."""
+        planned = tuple(contract()["ingress"]["auth"]["scopes_designed_not_implemented"])
+        self.assertEqual(planned, scopes.PLANNED_SCOPES)
+        self.assertFalse(set(planned) & set(scopes.ALLOWED_SCOPES), "planned scopes are grantable")
+
+    def test_the_default_grantable_set_is_still_only_read_and_send(self):
+        """Default-off is the whole point of the new scope.
+
+        Adding `fleet:create` to the vocabulary must not add it to what a
+        deployment issues when it says nothing: an operator opts in by editing a
+        local binding. This is exercised through `load_config` rather than
+        against the constant, because the loader is what actually decides — a
+        constant that is correct and unused would pass a weaker test.
+        """
+        self.assertEqual(scopes.DEFAULT_GRANTABLE_SCOPES,
+                         (scopes.SCOPE_READ, scopes.SCOPE_SEND))
+        self.assertNotIn(scopes.SCOPE_CREATE, scopes.DEFAULT_GRANTABLE_SCOPES)
+
+        tmp = Path(tempfile.mkdtemp(prefix="fleet-mcp-scope-default-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        anchor = tmp / "pat"
+        anchor.write_text("owner-token-value", encoding="utf-8")
+        binding = tmp / "binding.yaml"
+        binding.write_text(
+            "schema: serveros/fleet-mcp.local/v1\n"
+            "device_ref: device:test-host\n"
+            "auth:\n"
+            f"  pat_anchor: {anchor}\n",
+            encoding="utf-8",
+        )
+        loaded = load_config(binding)
+        self.assertEqual(loaded.auth.grantable_scopes, scopes.DEFAULT_GRANTABLE_SCOPES)
+        self.assertNotIn(scopes.SCOPE_CREATE, loaded.auth.grantable_scopes)
+
+    def test_a_binding_cannot_grant_a_scope_this_surface_does_not_implement(self):
+        """Asking for an unwritten scope fails at load, not at the consent form.
+
+        A deployment that could name `fleet:control` here would offer the
+        operator a box to tick that the authorization server then refuses —
+        a configuration fault that presents as a client fault.
+        """
+        tmp = Path(tempfile.mkdtemp(prefix="fleet-mcp-scope-refused-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        anchor = tmp / "pat"
+        anchor.write_text("owner-token-value", encoding="utf-8")
+        binding = tmp / "binding.yaml"
+        binding.write_text(
+            "schema: serveros/fleet-mcp.local/v1\n"
+            "device_ref: device:test-host\n"
+            "auth:\n"
+            f"  pat_anchor: {anchor}\n"
+            "  grantable_scopes: [fleet:read, fleet:control]\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(FleetRefusal) as caught:
+            load_config(binding)
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertIn("fleet:control", caught.exception.detail)
+        # And the refusal names what the surface *does* implement, so an
+        # operator reads the alternative rather than guessing it.
+        for scope in scopes.ALLOWED_SCOPES:
+            with self.subTest(scope=scope):
+                self.assertIn(scope, caught.exception.detail)
+
+    def test_the_declared_scopes_partition_the_tools(self):
+        """Every scope in the vocabulary is a thing some tool does.
+
+        A scope naming no tool is a credential with no verb behind it — it would
+        read as an authorization to a caller and authorize nothing.
+        """
+        raw = contract()["ingress"]["auth"]["scopes"]
+        for name, description in raw.items():
+            with self.subTest(scope=name):
+                self.assertTrue(description, f"{name} says nothing about what it grants")
+        # `fleet:read` is the one scope whose tools are not named in the file —
+        # they are all of them, so it is checked against the annotations rather
+        # than against a list that would have to be maintained.
+        read_tools = [t.name for t in tools_module.TOOLS if t.annotations["readOnlyHint"]]
+        self.assertEqual(len(read_tools), 6)
+        self.assertEqual(
+            sorted(set(tools_module.tool_names()) - set(read_tools)),
+            ["fleet_create_session", "fleet_send_to_session"],
+        )
 
     def test_the_ingress_declines_to_fetch_a_caller_supplied_target(self):
         self.assertIs(contract()["ingress"]["request_shaped_fetch"], False)
@@ -331,13 +451,52 @@ class WhatIsNotBuilt(unittest.TestCase):
                 self.assertTrue(entry.get("why"), "a gap without a reason reads as an oversight")
 
     def test_the_unbuilt_capabilities_are_actually_unreachable(self):
-        """The list is a claim about the code, so it is checked against it."""
+        """The list is a claim about the code, so it is checked against it.
+
+        `session_create` was on this list through `fleet-mcp-1` and is not any
+        more — it has a tool, an admission rule and a scope. The four the list
+        still names are the ones with no tool, and each is checked to have no
+        tool by *name* rather than by absence from a hand-kept list, so adding
+        one to the surface without removing it here fails.
+        """
         built = {name.removeprefix("fleet_") for name in tools_module.tool_names()}
-        for absent in ("session_create", "session_start"):
+        self.assertIn("create_session", built, "session_create is implemented now")
+        for absent in ("session_start", "session_control", "session_approve",
+                       "session_navigate"):
             with self.subTest(capability=absent):
                 self.assertNotIn(absent, built)
+        declared_ids = {entry["id"] for entry in contract()["not_implemented"]}
+        self.assertNotIn("session_create", declared_ids)
+        for absent in ("session_start", "session_control", "session_approve",
+                       "session_navigate"):
+            with self.subTest(declared=absent):
+                self.assertIn(absent, declared_ids)
         self.assertNotIn("POST /v1/sessions", np.ROUTES)
         self.assertNotIn("POST /v1/exec", np.ROUTES)
+
+    def test_no_unwritten_verb_has_a_scope_it_could_be_reached_through(self):
+        """The two halves of "designed but unwritten" must both hold.
+
+        Naming a verb in the design while its scope is mintable would be the
+        dangerous half: a credential could carry `fleet:control` and there would
+        be nothing behind it to check the call against. The scope tuple is where
+        that is prevented, so this asserts the tuple rather than the prose.
+        """
+        for planned in scopes.PLANNED_SCOPES:
+            with self.subTest(scope=planned):
+                self.assertNotIn(planned, scopes.ALLOWED_SCOPES)
+                self.assertFalse(scopes.requires_implemented_scope(planned))
+        # And nothing in the surface references one. Checked as a name scan over
+        # the modules that gate calls, not as a string match on a call form: the
+        # constants are what a caller would use, and `SCOPE_CONTROL` appearing
+        # anywhere in `fleet.py` would mean a verb gated on an unmintable scope
+        # — a tool nobody can ever be given.
+        for module in ("fleet.py", "tools.py"):
+            source = (REPO / "fleet_mcp" / module).read_text(encoding="utf-8")
+            for planned in scopes.PLANNED_SCOPES:
+                constant = "SCOPE_" + planned.split(":", 1)[1].upper()
+                with self.subTest(module=module, constant=constant):
+                    self.assertNotIn(constant, source)
 
     def test_no_route_can_execute_a_command(self):
         """Checked against the route table, not against the prose.

@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-1
+tool_surface_revision: fleet-mcp-2
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -110,10 +110,16 @@ overlap_with:
 # Tools
 # ---------------------------------------------------------------------------
 #
-# Seven, and each one names the owner that answers it. The names are prefixed
+# Eight, and each one names the owner that answers it. The names are prefixed
 # so that a tool list pasted into an external client cannot be confused with
 # the local surfaces' names — a collision here would be a reader's problem
 # that no schema would catch.
+#
+# Seven of them were the whole surface through `fleet-mcp-1`. `fleet_create_session`
+# is the eighth, and it is *appended* rather than filed beside its relatives: a
+# client caches the list and the order it read, so inserting a verb in the middle
+# would renumber the ones after it for no reason a reader could see. The order of
+# this block is the order of the served list, and a test asserts the two match.
 
 tools:
   fleet_list_devices:
@@ -178,6 +184,53 @@ tools:
     answers: this surface's own health — which providers answered, which
       devices have no route, the policy in force, and the audit tail
     answered_by: this surface, about itself
+
+  fleet_create_session:
+    verb: write
+    answers: the session_ref of a session created in one project on one device,
+      plus the run id when a first message opened a run
+    answered_by: the device's provider adapter, through the provider's own
+      create verb
+    admission: >-
+      Two grants, and they are deliberately NOT the send grants. The device must
+      carry `allow_create: true` in its local binding, and the project must be
+      named in `policy.create_allow`. A device authorized for control is not
+      thereby authorized for creation, and the second half is a project rather
+      than a session because what is being authorized is a place a new session
+      will run in, not an object that already exists. Both default to off; the
+      device half is checked first so the two refusals stay about different
+      things. A wildcard project grant is refused at load unless
+      `allow_wildcard_create` is set, because a created session inherits the
+      working directory of the project it is created in.
+    cannot_express: >-
+      No model, no provider family, no permission mode, no environment and no
+      working directory. Those are privilege decisions belonging to the device's
+      local binding, and a field this surface cannot bound is absent rather than
+      passed through. The provider family is not defaulted by a caller either:
+      the adapter composes the session_ref with the family its binding already
+      names.
+    confers_no_control: >-
+      Creating a session does not authorize driving it. This call writes nothing
+      to `policy.send_allow` and has no mechanism to — the allow-list is
+      authored by an operator and this surface holds read access to it only. The
+      returned `control` block is expected to read `send_allowed: false`, and a
+      subsequent `fleet_send_to_session` refusal on the new session_ref is the
+      designed outcome. Without this separation an agent able to create would
+      have a way to manufacture its own control targets.
+    idempotency: >-
+      A caller-supplied `idempotency_key` is recorded with the session it
+      created. A replay returns the recorded session under IDEMPOTENT_REPLAY and
+      creates no second one. The grant is re-checked *before* the replay lookup,
+      so a permission withdrawn since the key was issued is not re-exercised by
+      replaying it. The key is not forwarded to the provider, which has no such
+      concept.
+    transport_gap: >-
+      Not every transport can carry this. A device reached through the outbound
+      node connector has no creation route in its closed route table, and
+      `fleet_create_session` refuses it with UNSUPPORTED_BY_TRANSPORT — which is
+      a statement about the connector on that device, not about an allow-list
+      here. Reporting it as a permission problem would send an operator to edit
+      a stanza that was never the obstacle.
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -254,9 +307,21 @@ ingress:
     authorization_server: /.well-known/oauth-authorization-server
     dynamic_client_registration: /oauth/register
     standards: [rfc8414, rfc9728, rfc7591, rfc7636, rfc8707]
+    # The vocabulary is defined once, in fleet_mcp/scopes.py, and this block is
+    # asserted to be that same tuple rather than a second copy of it. What is
+    # written here is what a credential of each scope can do.
     scopes:
-      fleet:read: the four read tools
-      fleet:send: fleet_send_to_session, and nothing else
+      fleet:read: "every tool that only reads — the six marked read-only"
+      fleet:send: "fleet_send_to_session, and nothing else"
+      fleet:create: "fleet_create_session, and nothing else"
+    # Named here and grantable nowhere. These three scopes are designed and not
+    # written; `ALLOWED_SCOPES` does not contain them, so no credential can be
+    # minted carrying one, and a binding that asks for one at load is refused
+    # rather than quietly narrowed.
+    scopes_designed_not_implemented:
+      - fleet:control
+      - fleet:approve
+      - fleet:navigate
     # The consent step has a human in it, and the human proves they are the
     # owner with the owner token — not with a claim the client made. ServerOS
     # cannot and does not self-authorize: with no owner token present there is
@@ -432,16 +497,43 @@ deployment:
 # that is not effort.
 
 not_implemented:
-  - id: session_create
-    why: >-
-      Creating a session on someone's workstation is a different question from
-      messaging one that exists, and this round had no authorized test target
-      for it. The provider adapter behind it is already written, so this is a
-      decision outstanding rather than code outstanding.
   - id: session_start
     why: >-
-      Same. Starting a session is the verb that turns "I read a transcript"
-      into "I made a machine work", and it needs its own admission question.
+      Starting a session is the verb that turns "I read a transcript" into "I
+      made a machine work", and it needs its own admission question. Creation
+      does not imply it: `fleet_create_session` can open a first run through the
+      provider's own create call, which is the one narrow form of starting this
+      round admits. Starting an *existing* session by naming it is not reachable
+      here at all.
+  - id: session_control
+    why: >-
+      The verbs behind `fleet:control` — interrupt a run, start or stop a
+      session's resident host, list and stop a background task, cancel a queued
+      message, reconfigure a session — exist in CloudCLI's own tool surface
+      (`session_interrupt`, `session_start`, `session_close`,
+      `session_background`, `session_cancel_queued`, `session_reconfigure`).
+      What is missing here is two things, and neither is the call: the provider
+      adapter in `fleet_mcp/providers/` has no method for any of them, and this
+      surface has no admission question for them. The question is the harder
+      half — "may this credential stop someone else's running agent" is about a
+      running process, not about a project — and answering it by inventing a
+      third allow-list would be guessing. The scope is named in
+      `fleet_mcp/scopes.py` as planned and is absent from `ALLOWED_SCOPES`, so it
+      can be neither requested on the consent form nor minted in the meantime.
+  - id: session_approve
+    why: >-
+      Answering an approval prompt (`approval_answer`) is the most consequential
+      of the unwritten verbs: it is the one that decides what a session is
+      allowed to do next. Its scope (`fleet:approve`) is deliberately separate
+      from control for that reason, and unwritten for the same reason as
+      control: no adapter method, and no admission question that is not a guess.
+  - id: session_navigate
+    why: >-
+      Opening a session in a connected browser (`ui_open_session`) is a verb
+      about a *client*, not about a device, and this surface addresses devices.
+      It needs a connected client to exist before it can mean anything at all.
+      Its scope (`fleet:navigate`) is named in the planned set and unwritten.
+      Nothing here drives a browser.
   - id: arbitrary_shell_or_exec
     why: >-
       Not a roadmap item. Absent from the route table, absent from the provider
@@ -480,8 +572,9 @@ rules:
      never derived from a name, address or provider id."
   - "A credential is named by an anchor and read at the point of use. No value
      is written to a binding, a log, a prompt or a message."
-  - "The tool surface is seven names, asserted against the implementation, and
-     a route set that is closed by construction rather than by convention."
+  - "The tool surface is eight names, asserted against the implementation in
+     order, and a route set that is closed by construction rather than by
+     convention."
   - "Loopback is where this listens by default, not what protects it. Reaching
      it from off-host is an operator's decision and is reported as outstanding
      until it is made."

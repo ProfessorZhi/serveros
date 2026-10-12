@@ -36,6 +36,7 @@ from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
     IDEMPOTENT_REPLAY,
+    INTERNAL,
     RATE_LIMITED,
     SCOPE_DENIED,
     UNKNOWN_DEVICE,
@@ -51,14 +52,21 @@ from .registry import (
     measured_availability,
     resolve_or_refuse,
 )
-
-SCOPE_READ = "fleet:read"
-SCOPE_SEND = "fleet:send"
+from .scopes import SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 
 # How long a recorded idempotency key is honoured. Long enough to cover a
 # caller's retry after a timeout, short enough that the table is bounded by the
 # session it belongs to rather than by uptime.
 IDEMPOTENCY_TTL_SECONDS = 3600
+
+# The lifecycle modes a caller may ask a new session to start in. Bounded here
+# rather than passed through, and the bound is the point: `resident` is the one
+# value that leaves a process alive after the first turn ends, so "whatever
+# string CloudCLI happens to accept today" is not a safe thing for this surface
+# to forward on a caller's behalf. A value outside this set is refused, not
+# relayed — the alternative is a gate that only holds for the values someone
+# remembered to enumerate.
+LIFECYCLE_MODES = ("per-run", "resident")
 
 
 @dataclass(frozen=True)
@@ -155,6 +163,45 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
+    def _may_create(self, device_ref: str, project: str) -> None:
+        """May this runtime create a session in `project` on `device_ref`.
+
+        Two keys again, and they are deliberately not the send keys: a device
+        the operator authorized for control is not thereby authorized for
+        creation, and the second half is a *project* rather than a session —
+        because the thing being authorized is a place a new session will run
+        in, not an object that already exists.
+
+        The device half is checked first so the two refusals stay about
+        different things: "this machine is not authorized" sends an operator to
+        the device block, "this project is not authorized" sends them to the
+        policy block. Collapsing them would tell a caller to edit the wrong
+        stanza.
+        """
+        binding = self.config.provider_for(device_ref)
+        if binding is None or not binding.allow_create:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{device_ref} is not authorized for session creation from this "
+                f"runtime. Creation is granted per device in the local binding "
+                f"(`allow_create: true`), separately from `allow_send` — and "
+                f"per project in `policy.create_allow`. Neither is conferred by "
+                f"naming a device or a project in a call.",
+                device_ref=device_ref,
+            )
+        allow = self.config.policy.create_allow
+        if self.config.policy.allow_wildcard_create and "*" in allow:
+            return
+        if project not in allow:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"project {project!r} is not in `policy.create_allow`. The "
+                f"device is authorized for creation and this project is not.",
+                device_ref=device_ref,
+                project=project,
+                allowed=sorted(allow),
+            )
+
     # -- devices -----------------------------------------------------------
 
     def _probe(self, device_ref: str) -> tuple[bool, bool, bool, ProviderHealth | None]:
@@ -203,6 +250,16 @@ class FleetService:
                         "send_allowed_sessions": [
                             ref for ref in self.config.policy.send_allow if ref.startswith(device.device_ref.ref + "|")
                         ],
+                        # Creation is reported separately from control, because
+                        # it is granted separately. A caller that needs to make a
+                        # session can read here whether it may — and, when it may
+                        # not, which of the two halves is missing: the device, or
+                        # every project (`create_allowed_projects` empty).
+                        "create_allowed_device": bool(
+                            self.config.provider_for(device.device_ref.ref)
+                            and self.config.provider_for(device.device_ref.ref).allow_create
+                        ),
+                        "create_allowed_projects": list(self.config.policy.create_allow),
                     },
                 }
             )
@@ -309,6 +366,32 @@ class FleetService:
             "device_authorized": device_ok,
             "session_allowlisted": bool(session_ok),
         }
+
+    @staticmethod
+    def _create_note(control: dict[str, Any]) -> str:
+        """What to tell a caller about the session creation just produced.
+
+        Written from the `control` block rather than as a fixed sentence, so the
+        note and the block cannot say different things — `create_session` and
+        its replay both compute `control` afresh, and a note asserting "NOT
+        authorized" beside a block reading `send_allowed: true` would be the
+        surface contradicting itself in one result.
+        """
+        if control.get("send_allowed"):
+            return (
+                "This session was created and is ALREADY authorized for control: "
+                "its session_ref is in `policy.send_allow` and the device allows "
+                "sends. That grant came from the operator's binding, not from "
+                "this call."
+            )
+        return (
+            "This session was created and is NOT authorized for control. "
+            "Creation conferred no right to drive what it created: "
+            "`fleet_send_to_session` will refuse this session_ref until an "
+            "operator adds it to `policy.send_allow`. The `control` block above "
+            "reports that, and `send_allowed: false` is its expected reading "
+            "here, not a fault."
+        )
 
     def resolve_session(self, principal: Principal, *, session_ref: str | None,
                         device: str | None, session: str | None,
@@ -462,6 +545,163 @@ class FleetService:
                     "over anything the receiving session may then operate on.",
         }
 
+    def create_session(
+        self,
+        principal: Principal,
+        *,
+        device: str,
+        project: str,
+        message: str | None = None,
+        lifecycle_mode: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a session in an authorized project, and hand back only its address.
+
+        The shape of this call is the security property, so it is worth stating
+        plainly. Creating a session is the one verb here whose *result* is a new
+        object — and the object it produces is, by construction, one the caller
+        cannot drive. `create_session` does not add anything to
+        `policy.send_allow` and has no mechanism to: the allow-list is authored
+        by an operator in the local binding, and this method has read access to
+        it and no write access to anything. What it returns is a `session_ref`
+        alongside a `control` block that is expected to read `send_allowed:
+        false`. So "create a session and then instruct it" is two grants, and
+        the caller learns the second one is missing from the answer to the
+        first.
+
+        That is deliberate and it is the reason this verb was worth adding to a
+        surface whose whole design is that a caller never chooses what it is
+        authorized to do. Without it, an agent able to create sessions would
+        have a way to manufacture its own control targets.
+
+        `message` is optional and means what it means on CloudCLI: with it, the
+        first run is opened through the same control service a UI send uses and
+        its run id comes back; without it, the session exists and nothing has
+        run. The two are reported separately (`run_started`) rather than being
+        collapsed, because "I made a session" and "I started an agent" are
+        different things to have done.
+
+        Idempotency is honoured here for the same reason it is honoured on
+        `send`, and the stakes are higher: a resend duplicates a message, a
+        re-create duplicates a *session*. A caller that repeats a key gets the
+        recorded session back and no second one is made.
+        """
+        principal.require(SCOPE_CREATE)
+        self.admit(principal)
+
+        if not isinstance(project, str) or not project.strip():
+            raise refuse(BAD_REQUEST, "`project` is required and must be a non-empty string")
+        if lifecycle_mode is not None and lifecycle_mode not in LIFECYCLE_MODES:
+            raise refuse(
+                BAD_REQUEST,
+                f"`lifecycle_mode` must be one of {list(LIFECYCLE_MODES)}; got "
+                f"{lifecycle_mode!r}. Refused rather than relayed: `resident` is "
+                f"the value that leaves a process running, so the accepted set "
+                f"is this surface's to name, not whatever the far side accepts.",
+            )
+        if message is not None and len(message) > self.config.policy.max_message_chars:
+            raise refuse(
+                WRITE_NOT_GRANTED,
+                f"message is {len(message)} characters; the policy maximum is "
+                f"{self.config.policy.max_message_chars}. Refused rather than "
+                f"truncated: a silently shortened instruction is executed as if "
+                f"it were the whole one.",
+            )
+
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        # Before the replay lookup, not after — the same order `send_to_session`
+        # uses, and for the same reason: a grant the operator has since
+        # withdrawn must not be re-exercised by replaying a key that was issued
+        # under it.
+        self._may_create(device_ref, project)
+
+        if idempotency_key:
+            replayed = self._lookup_idempotent(principal, idempotency_key)
+            if replayed is not None:
+                self.audit.record(
+                    "fleet.create_session.replay",
+                    principal=principal.name,
+                    device_ref=device_ref,
+                    project=project,
+                    idempotency_key=idempotency_key,
+                    session_ref=replayed.get("session_ref"),
+                )
+                # The stored record comes first so that the four fields below
+                # overrule it. Spreading it last would return the creation's own
+                # `created: True` and report a replay as a creation — the
+                # reverse of what was asked, and the one answer a caller acting
+                # on this result must not be given.
+                replay: dict[str, Any] = {
+                    **replayed,
+                    "created": False,
+                    "idempotent_replay": True,
+                    "code": IDEMPOTENT_REPLAY,
+                    "detail": "this idempotency_key already created this "
+                              "session; no second session was created",
+                }
+                # `control` is recomputed rather than echoed. The session's
+                # address and the run it produced are historical facts and are
+                # returned as recorded; whether it may be driven is a
+                # present-tense answer, and a grant added or withdrawn between
+                # the two calls would otherwise be reported as it was then. A
+                # caller that read a stale `send_allowed: false` would not try
+                # the send it is now permitted to make, and one that read a
+                # stale `true` would be told it may drive a session the operator
+                # has since closed off.
+                replay["control"] = self._session_control_state(
+                    SessionKey.parse(replay["session_ref"])
+                )
+                replay["note"] = self._create_note(replay["control"])
+                return replay
+
+        provider = self._require_provider(device_ref)
+        payload = provider.create_session(
+            project=project,
+            message=message or None,
+            lifecycle_mode=lifecycle_mode,
+        )
+        native = payload.get("sessionId") or payload.get("session_id")
+        if not native:
+            raise refuse(
+                INTERNAL,
+                "the provider answered without naming the session it created. A "
+                "session may exist on that device and this surface cannot "
+                "address it — do not retry blindly; look at the device.",
+                device_ref=device_ref,
+                project=project,
+            )
+        # CloudCLI's own create defaults the provider family to `claude` when it
+        # is not told otherwise, and this surface does not tell it otherwise —
+        # the family is a property of the device's provider binding, never a
+        # caller's choice, so there is no `provider` argument to get wrong.
+        key = SessionKey.compose(device_ref, "claude", str(native))
+        run_id = payload.get("runId") or payload.get("run_id")
+
+        control = self._session_control_state(key)
+        record = {
+            **key.as_dict(),
+            "created": True,
+            "idempotent_replay": False,
+            "run_id": run_id,
+            "run_started": run_id is not None,
+            "lifecycle_mode": lifecycle_mode,
+            "control": control,
+            "note": self._create_note(control),
+        }
+        if idempotency_key:
+            self._remember_idempotent(principal, idempotency_key, record)
+        self.audit.record(
+            "fleet.create_session",
+            principal=principal.name,
+            device_ref=device_ref,
+            project=project,
+            session_ref=key.ref,
+            run_id=run_id,
+            lifecycle_mode=lifecycle_mode,
+            idempotency_key=idempotency_key,
+        )
+        return record
+
     def get_run(
         self,
         principal: Principal,
@@ -538,6 +778,7 @@ class FleetService:
             "providers": providers,
             "policy": {
                 "send_allow": list(self.config.policy.send_allow),
+                "create_allow": list(self.config.policy.create_allow),
                 "read_redact": self.config.policy.read_redact,
                 "max_read_messages": self.config.policy.max_read_messages,
             },

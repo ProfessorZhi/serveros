@@ -10,6 +10,14 @@ provider that could forward any provider tool would make the Fleet surface a
 transparent proxy to a device — the caller would be choosing the operation, and
 there would be nothing left in the call to govern. Each verb below is named,
 bounded, and answers one question.
+
+That rule is why this interface does not grow by mirroring CloudCLI's tool list.
+CloudCLI exposes considerably more verbs than appear below — interrupt, start,
+close, reconfigure, background, cancel_queued, approval_answer, ui_open_session
+— and none of them is here yet. A verb is added when this surface can say what
+it is for, who may ask for it, and what it must refuse, not when the far end
+happens to have it. The unwritten ones are named in `fleet_mcp/scopes.py` so the
+gap is a published plan rather than an oversight.
 """
 from __future__ import annotations
 
@@ -201,9 +209,24 @@ class DeviceProvider(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def send(
-        self, key: SessionKey, message: str, *, idempotency_key: str | None = None
+    def create_session(
+        self, *, project: str, message: str | None = None, lifecycle_mode: str | None = None
     ) -> dict[str, Any]:
+        """Create a session in `project` and return the provider's own answer.
+
+        Named and bounded like every other verb here, and note what it does NOT
+        take: no caller-chosen provider family, no model, no permission mode, no
+        environment, no working directory. Those are the fields through which a
+        "create a session" call becomes "create a session with the properties I
+        want", and every one of them is a privilege decision that belongs to the
+        operator's binding rather than to a request body. A field this surface
+        cannot bound is absent rather than relayed.
+
+        A provider that has no such verb on its transport must refuse with
+        `UNSUPPORTED_BY_TRANSPORT` rather than raising `AttributeError` — "I
+        cannot do this" is an answer, and an exception escaping here would be
+        reported as a defect in this surface.
+        """
         ...
 
     def get_run(

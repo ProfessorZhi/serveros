@@ -252,6 +252,32 @@ class CloudCliProvider(DeviceProvider):
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
         return payload
 
+    def create_session(
+        self, *, project: str, message: str | None = None, lifecycle_mode: str | None = None
+    ) -> dict[str, Any]:
+        """Call CloudCLI's `session_create` with the fields this surface governs.
+
+        The mapping is deliberately partial. CloudCLI's own schema accepts
+        `provider`, `model` and `permissionMode` as well; none of them is sent,
+        because none of them is something this surface can bound on the
+        caller's behalf — `permissionMode` least of all, since it is exactly the
+        field that would let a create call raise the privileges of what it
+        created. Omitting a key is a different act from passing a default: the
+        far side applies its own default, and its default is not this surface's
+        to invent.
+
+        `message` and `lifecycleMode` are forwarded only when present, so the
+        request for a session with no first turn is byte-for-byte the request
+        for "just make the session" rather than one carrying empty values the
+        provider has to interpret.
+        """
+        arguments: dict[str, Any] = {"project": project}
+        if message:
+            arguments["message"] = message
+        if lifecycle_mode:
+            arguments["lifecycleMode"] = lifecycle_mode
+        return self._call("session_create", arguments)
+
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:
