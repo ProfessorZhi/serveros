@@ -73,6 +73,40 @@ from loader_graph import REPO, closure  # noqa: E402
 
 ARCHITECTURE = REPO / "ARCHITECTURE.md"
 
+# The device-side bootstrap: the five scripts a fleet NODE is enrolled with, on
+# ITS OWN machine. They are entry points in the only sense this set cares about
+# — something starts them as a program rather than sourcing them:
+#
+#   * `fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in`
+#     renders `ExecStart=…/fleet_mcp/node/start-connector.sh --config …`, and
+#     the tunnel twin does the same for `start-tunnel.sh`;
+#   * `uninstall.sh` execs `"$SCRIPT_DIR/stop.sh"` directly, not through `bash`;
+#   * `install.sh` — the thing that renders those two units, and is itself run
+#     directly by the operator the README hands it to and by that suite;
+#   * and `tests/test_fleet_node_linux_bootstrap.py` runs each of the five as
+#     `[str(NODE_DIR / name)]`, which is an exec, not `bash <name>`.
+#
+# `lib_paths.sh` sits in the same directory and is deliberately NOT here, and
+# deliberately not executable either: every one of the five sources it
+# (`. "$SCRIPT_DIR/lib_paths.sh"`), so giving it the bit would put a file on
+# this surface that nothing starts. That suite's `ALL_SHELL` is the list of
+# files it parses; `RUNNABLE` is the list something executes, and it is the
+# same five. The `.ps1` twins are not here either — the exec bit is not the
+# property a Windows host decides by, and nothing in this tree reads it.
+#
+# No `chmod` was needed to make this true: the five were already 100755 in the
+# index. The REGISTRATION was what was missing, and registering rather than
+# widening is the whole point — a sixth script, or a sourced library that
+# quietly gained the bit, fails `test_the_executable_surface_is_exactly_this`
+# instead of joining the set unnoticed. That equality is the authorization.
+NODE_SCRIPTS = {
+    "fleet_mcp/node/install.sh",
+    "fleet_mcp/node/start-connector.sh",
+    "fleet_mcp/node/start-tunnel.sh",
+    "fleet_mcp/node/stop.sh",
+    "fleet_mcp/node/uninstall.sh",
+}
+
 # Every tracked executable in the tree. A resident unit needs one of these (or
 # a unit file) to be started by anything; there is no other door.
 ENTRY_POINTS = {
@@ -95,7 +129,7 @@ ENTRY_POINTS = {
     # `fleet_mcp/deploy/serveros-fleet-mcp.service` starts — one host's
     # off-host MCP ingress, shipped to no node. See the module docstring.
     "fleet_mcp/bin/serveros-fleet-mcp",
-}
+} | NODE_SCRIPTS  # the device-side bootstrap; see its own comment above
 
 # The daemon itself. `scripts/release.py` refuses an artifact without this file,
 # and `test_the_unit_starts_the_core` asserts the unit names it.
@@ -449,6 +483,27 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # The ingress entry point is in the set it is held to, not merely
         # declared as a constant beside it.
         self.assertIn(INGRESS_ENTRY, ENTRY_POINTS)
+        # Same claim for the device-side bootstrap: `NODE_SCRIPTS` is a named
+        # set so that one comment can carry one reason, and this is what keeps
+        # it from becoming a constant declared beside `ENTRY_POINTS` instead of
+        # inside it.
+        self.assertTrue(NODE_SCRIPTS, "the set is empty; this test would check nothing")
+        self.assertTrue(NODE_SCRIPTS <= ENTRY_POINTS,
+                        sorted(NODE_SCRIPTS - ENTRY_POINTS))
+
+    def test_the_node_bootstrap_lives_outside_the_core_directory(self):
+        """The accidental-daemon argument, applied to the five scripts.
+
+        `fleet_mcp/node/` is the DEVICE side: what an operator runs on the
+        machine being enrolled. It is not something this node's core starts,
+        and the same directory argument that keeps the ingress out of
+        `CORE_DIRS` is what makes that a fact about where the code is rather
+        than a claim about it.
+        """
+        self.assertTrue(NODE_SCRIPTS, "the set is empty; this test would check nothing")
+        for rel in sorted(NODE_SCRIPTS):
+            with self.subTest(script=rel):
+                self.assertNotIn(Path(rel).parts[0], CORE_DIRS, rel)
 
     def test_the_unit_starts_the_core_and_nothing_else(self):
         unit = (REPO / next(iter(RESIDENT_UNITS))).read_text()
