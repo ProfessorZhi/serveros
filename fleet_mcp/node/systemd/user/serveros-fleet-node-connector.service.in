@@ -1,0 +1,42 @@
+# Template. install.sh --systemd renders this into
+# $XDG_CONFIG_HOME/systemd/user/serveros-fleet-node-connector.service and stops
+# there: it does not enable, start or reload anything.
+#
+# No secret is rendered into this file, and none belongs in it. Note in
+# particular that the Description names no device, host or credential: a unit's
+# Description is copied into the unit's scope and from there into anything that
+# lists units, which is how a credential ends up in a transcript. A name that
+# cannot carry a secret is a name nobody has to audit.
+#
+# There is no User= line because this is a *user* unit: it already runs as the
+# account that enabled it, with that account's HOME and its own binding root.
+# Nothing here needs root.
+
+[Unit]
+Description=ServerOS Fleet node connector (serves signed requests on loopback only)
+Documentation=file:@REPO_ROOT@/fleet_mcp/node/README.linux.md
+After=network.target
+
+[Service]
+Type=simple
+# start-connector.sh does not return until the connector exits, so the unit's
+# lifetime and the process's lifetime are the same thing and the exit code the
+# unit reports is the connector's own.
+ExecStart=@REPO_ROOT@/fleet_mcp/node/start-connector.sh --config @BINDING@
+
+# always, not on-failure: a connector that exits 0 is still a connector that is
+# not serving. RestartSec keeps a misconfiguration (a missing credential file,
+# which exits 3) to one journal line every fifteen seconds rather than a spin,
+# and it self-heals as soon as the missing file appears -- which is why no
+# RestartPreventExitStatus is set here: a unit that gave up permanently would
+# need somebody to know about `systemctl --user reset-failed`.
+Restart=always
+RestartSec=15
+
+# The journal, not a file. start-connector.sh can append to a log directory if
+# asked, but a second copy of the same lines is a copy that disagrees.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
