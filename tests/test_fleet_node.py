@@ -124,10 +124,11 @@ def test_a_binding_naming_an_unenrolled_device_does_not_enrol_it(tmp_path):
     with pytest.raises(node.NodeBindingInvalid) as exc:
         node.local_node(root, _registry())
     assert "cannot enrol" in str(exc.value)
-    # And the fleet is unchanged by the attempt. Four since Tokyo was enrolled;
-    # this asserts the count did not move DURING the attempt, so the number is
-    # only meaningful relative to the registry it is read from.
-    assert len(_registry().all()) == 4
+    # And the fleet is unchanged by the attempt. Five since the Dell LLM Lab
+    # host was enrolled; this asserts the count did not move DURING the
+    # attempt, so the number is only meaningful relative to the registry it is
+    # read from.
+    assert len(_registry().all()) == 5
 
 
 def test_the_control_root_may_not_carry_a_credential(tmp_path):
@@ -435,10 +436,10 @@ def test_a_controller_less_runtime_still_lists_every_device(tmp_path):
     api = _api(tmp_path, control_root=_root(tmp_path))
     fleet = api.call("fleet.devices")
 
-    assert fleet["count"] == 4
+    assert fleet["count"] == 5
     assert {d["device_ref"] for d in fleet["devices"]} == {
         "device:server-beijing", "device:work-fj", "device:personal-dell",
-        "device:tokyo-shared-dev-01"}
+        "device:tokyo-shared-dev-01", "device:llm-lab-dell"}
     assert fleet["controller"] == "NOT_EXPOSED"
     for device in fleet["devices"]:
         assert device["availability"]["local_agent_controller"] == "NOT_EXPOSED"
@@ -490,7 +491,7 @@ def test_capability_find_reports_external_only_rather_than_dropping_devices(tmp_
         assert found["level"] == "inspect" and found["aliased"] is (level != "inspect")
         assert {row["device_ref"] for row in found["devices"]} == {
             "device:server-beijing", "device:work-fj", "device:personal-dell",
-            "device:tokyo-shared-dev-01"}
+            "device:tokyo-shared-dev-01", "device:llm-lab-dell"}
         assert found["summary"] == ["EXTERNAL_ONLY"]
         assert "unsupported" not in found["note"].split("It is not")[0]
 
