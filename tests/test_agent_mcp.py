@@ -59,6 +59,9 @@ DELL = "device:personal-dell"
 # the expected ORDER stays asserted: `device.list` returns registry order, and
 # a set would let a reordering pass unnoticed.
 TOKYO = "device:tokyo-shared-dev-01"
+# Enrolled 2026-10-12, and last in registry order. The Linux GPU worker, not
+# the Windows laptop `DELL` above: same maker, different machine.
+LLM_LAB = "device:llm-lab-dell"
 RUNTIME = "agent-runtime:codex"
 PROVIDER = "provider:test-agent-session"
 # §17. A create states what its thread is for, and this is the Item the fixture
@@ -765,7 +768,7 @@ class TestTheReadPath(unittest.TestCase):
         self.assertFalse(is_error, answer)
         self.assertEqual(answer["level"], "L1")
         self.assertEqual([row["device_ref"] for row in answer["devices"]],
-                         [LOCAL, FJ, DELL, TOKYO])
+                         [LOCAL, FJ, DELL, TOKYO, LLM_LAB])
 
     def test_two_levels_do_not_return_the_same_fields(self):
         """§12 asks for this by name, so it is asserted rather than described."""
