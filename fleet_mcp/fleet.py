@@ -22,6 +22,16 @@ What it is careful about
     outcome returns the recorded run instead of sending a second message. The
     provider gets no such guarantee (CloudCLI has no idempotency key), so the
     guard lives here, above the provider, where the surface can honour it.
+
+*   **One question is asked once.** The three read verbs below fan out to
+    devices, and the transport serves each inbound call on its own thread, so
+    duplicate work arrived in duplicate. `self.reads` collapses reads already
+    in flight under a key of caller + verb + device + filters, which is the
+    only place a duplicate can be collapsed: the node connector refuses a
+    replayed request by nonce, so a retry that reaches the far side is a
+    refusal, not a saving. See `readguard.py` for the two properties the guard
+    will not trade away -- a failure is never stored, and a completed answer is
+    never served unless a TTL was configured and the caller discloses it.
 """
 from __future__ import annotations
 
@@ -45,6 +55,7 @@ from .errors import (
 from .identity import SessionKey
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
+from .readguard import ReadGuard, canonical_value
 from .registry import (
     authored_facts,
     load_registry,
@@ -104,11 +115,38 @@ class FleetService:
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self._idempotency: dict[str, _IdempotencyEntry] = {}
         self._idem_lock = threading.Lock()
+        self.reads = ReadGuard()
 
     # -- helpers -----------------------------------------------------------
 
     def _provider(self, device_ref: str) -> DeviceProvider | None:
         return self.providers.get(device_ref)
+
+    def _read_key(self, principal: Principal, verb: str, device_ref: str, **filters: Any) -> tuple:
+        """The identity of one read: who is asking, for what, of which device.
+
+        Built here and nowhere else, so no call site can forget the principal
+        and let two callers share an answer. The filters are canonicalised
+        rather than stringified so that a limit stays a limit and an absent
+        filter stays absent -- merging those would answer a different question
+        than the one asked.
+        """
+        return (
+            principal.name,
+            verb,
+            device_ref,
+            tuple(sorted((name, canonical_value(value)) for name, value in filters.items())),
+        )
+
+    def _sessions_ttl(self) -> float:
+        """How long a session listing may be reused, from policy.
+
+        Ships at 0.0, which means never: a listing reports `running` and
+        `hostState`, and a reused value would report a session as idle after it
+        started. An operator who accepts that trade sets
+        `policy.sessions_cache_seconds`, and every answer that used it says so.
+        """
+        return max(0.0, float(self.config.policy.sessions_cache_seconds or 0.0))
 
     def _require_provider(self, device_ref: str) -> DeviceProvider:
         provider = self.providers.get(device_ref)
@@ -157,11 +195,21 @@ class FleetService:
 
     # -- devices -----------------------------------------------------------
 
-    def _probe(self, device_ref: str) -> tuple[bool, bool, bool, ProviderHealth | None]:
+    def _probe(self, principal: Principal, device_ref: str) -> tuple[bool, bool, bool, ProviderHealth | None]:
         provider = self._provider(device_ref)
         if provider is None:
             return False, False, False, None
-        health = provider.health()
+        # Coalesced, never cached: a concurrent probe of this device by this
+        # same caller is the same measurement, so it is taken once. The TTL is
+        # zero here unconditionally -- reachability is the answer a caller
+        # reads to decide whether to retry, and a remembered one would tell
+        # them about a tunnel that has since dropped.
+        health, _reuse = self.reads.run(
+            self._read_key(principal, "health", device_ref),
+            provider.health,
+            ttl_seconds=0.0,
+            label=f"health:{device_ref}",
+        )
         return True, health.reachable, health.authorized, health
 
     def list_devices(self, principal: Principal, *, include_inactive: bool = True) -> dict[str, Any]:
@@ -170,7 +218,7 @@ class FleetService:
         rows: list[dict[str, Any]] = []
         for device in self.registry.all():
             facts = authored_facts(device)
-            present, reachable, authorized, health = self._probe(device.device_ref.ref)
+            present, reachable, authorized, health = self._probe(principal, device.device_ref.ref)
             is_local = device.device_ref.ref == self.config.local_device_ref
             availability, capability, probe = measured_availability(
                 device,
@@ -216,7 +264,10 @@ class FleetService:
             "local_device_ref": self.config.local_device_ref,
             "authority": {
                 "identity": "fleet/registry.yaml (authored)",
-                "reachability": "measured per call; never cached",
+                "reachability": "measured for this call, or joined to a probe of "
+                                "the same device already in flight for this same "
+                                "caller; never an answer from a completed earlier "
+                                "call",
                 "note": "a device listed here without a route is still an "
                         "enrolled device, and its absence from a session list "
                         "is not evidence that it has none",
@@ -244,8 +295,10 @@ class FleetService:
         else:
             targets = list(self.registry.all())
 
+        ttl = self._sessions_ttl()
         sessions: list[dict[str, Any]] = []
         unreachable: list[dict[str, Any]] = []
+        reused: list[dict[str, Any]] = []
         for entry in targets:
             ref = entry.device_ref.ref
             provider = self._provider(ref)
@@ -259,12 +312,32 @@ class FleetService:
                 )
                 continue
             try:
-                found = provider.list_sessions(limit=limit, project=project, state=state)
+                # Coalesced per (caller, device, filters). Two callers asking
+                # the same question of the same device at the same time make
+                # one call, and both are answered from it -- that is a
+                # measurement concurrent with both, not a remembered one. The
+                # TTL is 0 unless an operator set `sessions_cache_seconds`, and
+                # a reuse is reported below rather than passed off as a fresh
+                # reading.
+                found, reuse = self.reads.run(
+                    self._read_key(
+                        principal, "sessions", ref,
+                        project=project, state=state, limit=int(limit),
+                    ),
+                    lambda p=provider: p.list_sessions(limit=limit, project=project, state=state),
+                    ttl_seconds=ttl,
+                    label=f"sessions:{ref}",
+                )
             except Exception as exc:  # noqa: BLE001 - one device's failure is one device's failure
+                # The guard dropped this entry before delivering the refusal, so
+                # the next call asks the device again. A failure is never
+                # answered from memory.
                 code = getattr(exc, "code", "INTERNAL")
                 detail = getattr(exc, "detail", str(exc))
                 unreachable.append({"device_ref": ref, "code": code, "detail": detail})
                 continue
+            if reuse is not None:
+                reused.append({"device_ref": ref, **reuse})
             for summary in found:
                 row = summary.as_dict()
                 row["device_display_name"] = entry.display_name
@@ -281,8 +354,9 @@ class FleetService:
             devices=len(targets),
             sessions=len(sessions),
             unreachable=[u["device_ref"] for u in unreachable],
+            reused=[r["device_ref"] for r in reused],
         )
-        return {
+        result: dict[str, Any] = {
             "sessions": sessions,
             "total": len(sessions),
             "devices_queried": len(targets),
@@ -297,6 +371,19 @@ class FleetService:
                              "native_session_id; the native id alone is not an "
                              "address and the same id can exist on two devices",
         }
+        if reused:
+            # Present only when `policy.sessions_cache_seconds` is non-zero and
+            # a listing was actually reused. Absent in the shipped
+            # configuration, because in it nothing is ever reused.
+            result["devices_reused_within_ttl"] = reused
+            result["freshness_note"] = (
+                "for the devices listed in `devices_reused_within_ttl`, this "
+                "listing was measured earlier, within `policy."
+                "sessions_cache_seconds`, and not for this call. It may not "
+                "reflect a session that started, stopped or finished since. "
+                "Every other device here was measured for this call."
+            )
+        return result
 
     def _session_control_state(self, key: SessionKey) -> dict[str, Any]:
         binding = self.config.provider_for(key.device_ref)
@@ -503,11 +590,21 @@ class FleetService:
     # -- status ------------------------------------------------------------
 
     def status(self, principal: Principal) -> dict[str, Any]:
-        """Health of this surface and of every dependency it composes."""
+        """Health of this surface and of every dependency it composes.
+
+        The same coalescing applies as in `list_devices`, under the same key,
+        so a caller that follows this tool's own advice -- "use it first when a
+        call fails" -- and calls both does not make two probes of one device.
+        """
         self.admit(principal)
         providers: list[dict[str, Any]] = []
         for ref, provider in sorted(self.providers.items()):
-            health = provider.health()
+            health, _reuse = self.reads.run(
+                self._read_key(principal, "health", ref),
+                provider.health,
+                ttl_seconds=0.0,
+                label=f"health:{ref}",
+            )
             providers.append(health.as_dict())
         enrolled = [d.device_ref.ref for d in self.registry.all()]
         bound = sorted(self.providers)

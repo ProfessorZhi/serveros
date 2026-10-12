@@ -151,8 +151,10 @@ class ProviderHealth:
     server_version: str | None = None
     tool_count: int | None = None
     error_code: str | None = None
-    # `calls_served` is what this surface measured, not what the device
-    # promised. Nothing here is cached across a status call.
+    # `latency_ms` is what this surface measured with its own clock, not what
+    # the device promised. When two callers' probes are coalesced it describes
+    # the one probe they shared, which is why a payload must not present it as
+    # a per-caller figure. Nothing here is served from a completed earlier call.
     latency_ms: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -178,7 +180,8 @@ class DeviceProvider(Protocol):
     kind: str
 
     def health(self) -> ProviderHealth:
-        """Measure, now. Never a cached answer."""
+        """Measure now, or join a probe already in flight for the same device
+        and the same caller. Never an answer from a completed earlier call."""
 
     def list_sessions(
         self, *, limit: int, project: str | None = None, state: str | None = None

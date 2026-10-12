@@ -22,6 +22,12 @@ from typing import Any
 
 from .config import AuditBinding
 
+# How much of the end of the audit file is read to satisfy a `tail`. A record
+# is a few hundred bytes, so this holds hundreds of them; the full file is read
+# only when it does not, which keeps the cheap path and the correct path from
+# being different answers.
+_TAIL_WINDOW_BYTES = 64 * 1024
+
 
 class RateLimiter:
     """A sliding-window limiter, per credential identity.
@@ -97,17 +103,52 @@ class AuditLog:
             pass
 
     def tail(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Recent records, for `fleet_status`. Never returns transcript content."""
+        """Recent records, for `fleet_status`. Never returns transcript content.
+
+        Read from the end of the file rather than by splitting all of it.
+        `fleet_status` is the tool a caller reaches for when a call has failed,
+        which makes it the one most likely to be called repeatedly, and reading
+        up to `max_bytes` and splitting every line to keep the last twenty is
+        work that grows with the file and returns the same answer. The same
+        last-`limit` records are produced either way: the window is widened to
+        the whole file whenever it did not hold enough records to fill the
+        request, so a short answer is never silently short.
+        """
         if not self.binding:
             return []
-        try:
-            lines = self.binding.path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
+        lines = self._tail_lines(limit)
         out: list[dict[str, Any]] = []
-        for line in lines[-limit:]:
+        for line in lines:
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
         return out
+
+    def _tail_lines(self, limit: int) -> list[str]:
+        """The last `limit` lines, without reading the whole file when it fits
+        inside one window."""
+        path = self.binding.path
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as handle:
+                if size > _TAIL_WINDOW_BYTES:
+                    handle.seek(size - _TAIL_WINDOW_BYTES)
+                    raw = handle.read()
+                    # The window almost certainly opens mid-record; dropping the
+                    # partial first line is what makes the count honest.
+                    _, _, raw = raw.partition(b"\n")
+                else:
+                    raw = handle.read()
+        except OSError:
+            return []
+        lines = raw.decode("utf-8", "replace").splitlines()
+        if len(lines) >= limit or size <= _TAIL_WINDOW_BYTES:
+            return lines[-limit:]
+        # The window was smaller than the request -- records longer than
+        # expected, or a single line with no newline in it. Fall back to the
+        # whole file so the answer does not shrink just because it was cheap.
+        try:
+            return path.read_text(encoding="utf-8").splitlines()[-limit:]
+        except OSError:
+            return []

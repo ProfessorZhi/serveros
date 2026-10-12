@@ -203,7 +203,11 @@ TOOLS: tuple[Tool, ...] = (
             "and 'this runtime cannot reach it' is not 'it is gone'. The "
             "`availability` block carries three independent answers for that "
             "reason — presence, controller, inventory — plus a derived `state`.\n\n"
-            "Reachability is measured per call and never cached."
+            "Reachability is measured per call and never cached; two calls "
+            "arriving together probe a device once between them, and even then "
+            "the answer is a measurement taken during the newer call, not a "
+            "remembered one. Nothing here is answered from a completed earlier "
+            "call."
         ),
         input_schema={
             "type": "object",
@@ -238,7 +242,14 @@ TOOLS: tuple[Tool, ...] = (
             "reports one as running.\n\n"
             "Devices that did not answer are listed separately under "
             "`devices_unreachable` with a code — their sessions are unknown, not "
-            "absent. One unreachable device never hides another device's results."
+            "absent. One unreachable device never hides another device's results.\n\n"
+            "Each device is asked once per call; two calls arriving together ask "
+            "it once between them, and are answered from a measurement taken "
+            "during the newer one. In the shipped configuration nothing is "
+            "remembered between calls. If `policy.sessions_cache_seconds` has "
+            "been set, a device's listing may be reused, and when it is, that "
+            "device is named in `devices_reused_within_ttl` with the age of the "
+            "measurement — a reused listing is never presented as a fresh one."
         ),
         input_schema={
             "type": "object",
