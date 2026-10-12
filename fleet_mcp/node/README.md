@@ -4,6 +4,11 @@ This directory holds everything that runs **on a device**, as opposed to on the
 Fleet host. On this machine it is a Windows corporate workstation, so the
 launchers are PowerShell and the scheduled tasks are Windows scheduled tasks.
 
+On a POSIX device the same connector runs under shell launchers and systemd
+user units; the wire protocol, the binding schema and the send allow list are
+unchanged. `README.linux.md` covers that half, including an explicit list of
+where the two platforms differ.
+
 Read `fleet/fleet-mcp-contract.yaml` first if you want the reasoning. This file
 is the operator's half: what to run, what it does, and what to check.
 
@@ -52,6 +57,10 @@ ends. The tunnel is the only path between them, and this machine owns it.
 | `install.ps1` | this machine | writes the binding + secret, registers two tasks |
 | `uninstall.ps1` | this machine | unregisters the tasks; leaves the binding and secret |
 | `../node_protocol.py` | both | the wire format: routes, signing, verification |
+
+On POSIX the launchers are `install.sh`, `start-connector.sh`, `start-tunnel.sh`,
+`stop.sh` and `uninstall.sh`, sharing their path derivation in `lib_paths.sh`;
+see `README.linux.md`.
 
 ## Installing
 
