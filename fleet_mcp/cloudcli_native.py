@@ -476,7 +476,7 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     # LOW-13: the Fleet address a write's floor is stated over is REQUIRED at
     # runtime, so the schema says so — a schema-driven client learns it from the
     # schema rather than by trying.
-    if native.governance in (GOV_SEND, GOV_CONTROL, GOV_RECONFIGURE):
+    if native.governance in (GOV_SEND, GOV_CONTROL, GOV_RECONFIGURE, GOV_APPROVE):
         outer_required.append("session_ref")
     if native.governance == GOV_CREATE:
         outer_required.append("project")
