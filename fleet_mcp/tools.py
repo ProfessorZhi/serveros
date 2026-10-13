@@ -640,28 +640,23 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             f"A {native.governance} verb: its Fleet scope is planned and not "
             f"implemented, so it is refused rather than inherited."
         )
-    properties: dict[str, Any] = {
-        "device_ref": _string(f"Which device to call. {DEVICE_REF_DOC}"),
-        "arguments": {
-            "type": "object",
-            "description": (
-                f"`{native.name}`'s own arguments, passed through to the device "
-                f"unchanged. The device validates them against its own schema; "
-                f"`null` and an omitted key stay distinct. Arguments are NEVER a "
-                f"source of authority — the floor is checked on `device_ref` plus "
-                f"the Fleet addresses below."
-            ),
-        },
-    }
-    if native.governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
+    schema = cloudcli_native.mirrored_schema(native)
+    properties = schema["properties"]
+    properties["device_ref"] = _string(f"Which device to call. {DEVICE_REF_DOC}")
+    if "session_ref" in properties:
         properties["session_ref"] = _string(
             "Required for this verb. The full `device:<id>|<provider>|<native "
             "session id>` address, as `fleet_list_sessions` returns it; its "
             "device must equal `device_ref`.")
-    if native.governance == cloudcli_native.GOV_CREATE:
+    if "project" in properties:
         properties["project"] = _string(
             "Required for this verb. The project the new session is for; "
             "checked against `policy.create_allow`.")
+    properties["arguments"]["description"] = (
+        f"`{native.name}`'s own arguments, passed through to the device "
+        f"unchanged; `null` and an omitted key stay distinct. Arguments are "
+        f"NEVER a source of authority — the floor is checked on `device_ref` "
+        f"plus the Fleet addresses above.")
     return Tool(
         name=native.namespaced,
         title=f"CloudCLI {native.name} (inherited)",
@@ -670,12 +665,7 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             f"whole. Native scopes {', '.join(native.native_scopes)}; this surface "
             f"requires {', '.join(native.fleet_scopes())}. {class_note}"
         ),
-        input_schema={
-            "type": "object",
-            "properties": properties,
-            "required": ["device_ref"],
-            "additionalProperties": False,
-        },
+        input_schema=schema,
         annotations={
             "readOnlyHint": native.read_only,
             "destructiveHint": native.destructive,

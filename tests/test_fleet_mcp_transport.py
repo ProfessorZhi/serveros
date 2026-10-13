@@ -416,8 +416,8 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(payload["code_challenge_methods_supported"], ["S256"])
         self.assertEqual(payload["token_endpoint_auth_methods_supported"], ["none"])
         self.assertEqual(sorted(payload["scopes_supported"]),
-                         ["fleet:control", "fleet:create", "fleet:read",
-                          "fleet:send"])
+                         ["fleet:approve", "fleet:control", "fleet:create",
+                          "fleet:navigate", "fleet:read", "fleet:send"])
 
     # -- dynamic client registration --------------------------------------
 
@@ -782,7 +782,8 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(hidden.count("requested_scope"), 1)
         self.assertEqual(
             re.findall(r'name="scope" value="([^"]+)"', markup),
-            ["fleet:read", "fleet:send", "fleet:control", "fleet:create"],
+            ["fleet:read", "fleet:send", "fleet:control", "fleet:create",
+             "fleet:approve", "fleet:navigate"],
             "the only things named `scope` are the checkboxes",
         )
 

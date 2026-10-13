@@ -32,7 +32,8 @@ from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,
 from fleet_mcp.errors import (APPROVAL_REQUIRED, BAD_REQUEST, BAD_SESSION_REF,
                               PROVIDER_UNREACHABLE, SCOPE_DENIED,
                               UNKNOWN_DEVICE, WRITE_NOT_GRANTED, FleetRefusal)
-from fleet_mcp.fleet import (SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND,
+from fleet_mcp.fleet import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE,
+                             SCOPE_NAVIGATE, SCOPE_READ, SCOPE_SEND,
                              FleetService, Principal)
 from fleet_mcp.identity import SessionKey
 from fleet_mcp.providers.fleet_node import FleetNodeProvider
@@ -159,7 +160,7 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(len(ro), 12)
         self.assertEqual(len(cloudcli_native.NATIVE_TOOLS) - len(ro), 10)
 
-    def test_approve_and_navigate_map_to_planned_fleet_scopes(self):
+    def test_approve_and_navigate_are_implemented_but_not_default_granted(self):
         self.assertEqual(
             cloudcli_native.FLEET_SCOPE_FOR_NATIVE[cloudcli_native.NATIVE_APPROVE],
             "fleet:approve")
@@ -167,8 +168,31 @@ class ManifestTest(unittest.TestCase):
             cloudcli_native.FLEET_SCOPE_FOR_NATIVE[cloudcli_native.NATIVE_NAVIGATE],
             "fleet:navigate")
         from fleet_mcp import scopes
-        self.assertNotIn("fleet:approve", scopes.IMPLEMENTED_SCOPES)
-        self.assertNotIn("fleet:navigate", scopes.IMPLEMENTED_SCOPES)
+        # Implemented so the two verbs have a real floor, but NOT default
+        # grantable — a credential that was not granted them is refused.
+        self.assertIn("fleet:approve", scopes.IMPLEMENTED_SCOPES)
+        self.assertIn("fleet:navigate", scopes.IMPLEMENTED_SCOPES)
+        self.assertNotIn("fleet:approve", scopes.DEFAULT_GRANTABLE_SCOPES)
+        self.assertNotIn("fleet:navigate", scopes.DEFAULT_GRANTABLE_SCOPES)
+
+    def test_every_recorded_tool_has_a_schema(self):
+        for tool in cloudcli_native.NATIVE_TOOLS:
+            self.assertIn(tool.name, cloudcli_native.NATIVE_INPUT_SCHEMAS)
+        # The write tools carry their REAL required parameters, read from the
+        # registry — not an empty object.
+        self.assertEqual(
+            cloudcli_native.NATIVE_INPUT_SCHEMAS["session_send"]["required"],
+            ["session", "message"])
+        self.assertEqual(
+            cloudcli_native.NATIVE_INPUT_SCHEMAS["approval_answer"]["required"],
+            ["requestId", "allow"])
+
+    def test_background_governance_is_per_action(self):
+        bg = cloudcli_native.NATIVE_BY_NAME["session_background"]
+        self.assertEqual(cloudcli_native.governance_for(bg, {}),
+                         cloudcli_native.GOV_READ)
+        self.assertEqual(cloudcli_native.governance_for(bg, {"stopTaskId": "t"}),
+                         cloudcli_native.GOV_CONTROL)
 
     def test_dual_scope_tool_records_both(self):
         bg = cloudcli_native.NATIVE_BY_NAME["session_background"]
@@ -229,7 +253,8 @@ class NativeSchemaTest(unittest.TestCase):
     def test_mirrored_schema_adds_device_and_keeps_native_shape(self):
         native = cloudcli_native.NATIVE_BY_NAME["session_send"]
         schema = cloudcli_native.mirrored_schema(native, self.LIVE)
-        self.assertEqual(schema["required"], ["device_ref"])
+        # `arguments` is required because the native tool has required params.
+        self.assertEqual(schema["required"], ["device_ref", "arguments"])
         self.assertEqual(set(schema["properties"]),
                          {"device_ref", "session_ref", "arguments"})
         inner = schema["properties"]["arguments"]
@@ -237,6 +262,14 @@ class NativeSchemaTest(unittest.TestCase):
         # The nullable type is carried, not flattened.
         self.assertEqual(inner["properties"]["idempotency_key"]["type"],
                          ["string", "null"])
+
+    def test_a_recorded_schema_is_used_without_a_device(self):
+        # No live schema handed in: the schema RECORDED from CloudCLI 1.39.0 is
+        # used, so the served tool still carries real parameters.
+        schema = cloudcli_native.mirrored_schema(
+            cloudcli_native.NATIVE_BY_NAME["session_create"])
+        self.assertEqual(schema["properties"]["arguments"]["required"], ["project"])
+        self.assertIn("message", schema["properties"]["arguments"]["properties"])
 
     def test_create_schema_needs_a_project_not_a_session_ref(self):
         native = cloudcli_native.NATIVE_BY_NAME["session_create"]
@@ -403,25 +436,65 @@ class DispatchTest(unittest.TestCase):
                         principal=h.principal(SCOPE_READ, SCOPE_CREATE))
         self.assertEqual(result, {"ok": True, "tool": "session_create"})
 
-    def test_approval_answer_is_denied_because_fleet_does_not_grant_approve(self):
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("control", "send", "create")}})
+    def test_approval_answer_needs_the_approve_scope_then_a_grant_then_a_choice(self):
+        # 1. no `fleet:approve` scope -> refused at the scope gate.
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("approve",)}})
         with self.assertRaises(FleetRefusal) as caught:
-            h.call("approval_answer", args={"approvalId": "a1", "answers": {}},
-                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CREATE, SCOPE_CONTROL))
+            h.call("approval_answer", args={"requestId": "r1", "allow": True},
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
         self.assertEqual(h.providers[TOKYO].calls, [])
+        # 2. scope present, no operator grant -> refused at the grant gate.
+        ungranted = Harness(self.tmp, grants={})
+        with self.assertRaises(FleetRefusal) as caught:
+            ungranted.call("approval_answer", args={"requestId": "r1", "allow": True},
+                           principal=ungranted.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(ungranted.providers[TOKYO].calls, [])
+        # 3. granted, but no requestId -> refused (an answer to nothing).
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer", args={"allow": True},
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        # 4. granted, requestId present, but no user decision -> refused.
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer", args={"requestId": "r1"},
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+        # 5. scope + grant + a named request + the user's decision -> forwarded.
+        result = h.call("approval_answer",
+                        args={"requestId": "r1", "allow": True, "answers": {"a": "b"}},
+                        principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(result["tool"], "approval_answer")
+        self.assertEqual(h.providers[TOKYO].calls,
+                         [("approval_answer", {"requestId": "r1", "allow": True,
+                                               "answers": {"a": "b"}})])
+
+    def test_approvals_list_is_read_only(self):
+        h = Harness(self.tmp)
+        self.assertEqual(h.call("approvals_list", principal=h.principal(SCOPE_READ)),
+                         {"ok": True, "tool": "approvals_list"})
 
     def test_approvals_list_is_a_read(self):
         h = Harness(self.tmp)
         self.assertEqual(h.call("approvals_list", principal=h.principal(SCOPE_READ)),
                          {"ok": True, "tool": "approvals_list"})
 
-    def test_ui_open_session_is_denied_because_navigate_is_planned(self):
-        h = Harness(self.tmp)
+    def test_ui_open_session_needs_the_navigate_scope_and_a_grant(self):
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("navigate",)}})
         with self.assertRaises(FleetRefusal) as caught:
             h.call("ui_open_session", args={"session": "s1"},
                    principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
+        ungranted = Harness(self.tmp, grants={})
+        with self.assertRaises(FleetRefusal) as caught:
+            ungranted.call("ui_open_session", args={"session": "s1"},
+                           principal=ungranted.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        result = h.call("ui_open_session", args={"session": "s1"},
+                        principal=h.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual(result["tool"], "ui_open_session")
 
     def test_unknown_native_tool_is_refused_before_any_call(self):
         h = Harness(self.tmp)
@@ -592,6 +665,54 @@ class SurfaceTest(unittest.TestCase):
         for tool in tools_mod.NATIVE_MIRROR_TOOLS:
             if tool.annotations["readOnlyHint"]:
                 self.assertFalse(tool.annotations["destructiveHint"])
+
+
+class MatrixTest(unittest.TestCase):
+    """All 22 tools × the routing and the deny-path, counted, not sampled."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _minimal_args(native):
+        required = cloudcli_native.NATIVE_INPUT_SCHEMAS[native.name].get("required", [])
+        out = {}
+        props = cloudcli_native.NATIVE_INPUT_SCHEMAS[native.name].get("properties", {})
+        for name in required:
+            out[name] = True if props.get(name, {}).get("type") == "boolean" else "x"
+        return out
+
+    def test_every_read_tool_routes_on_both_provider_kinds(self):
+        for kind in ("cloudcli-mcp-http", "fleet-node"):
+            h = Harness(self.tmp, kinds={TOKYO: kind, WINDOWS: kind, DELL: kind})
+            reads = [t for t in cloudcli_native.NATIVE_TOOLS if t.read_only]
+            for tool in reads:
+                result = h.call(tool.name, args=self._minimal_args(tool),
+                                principal=h.principal(SCOPE_READ))
+                self.assertEqual(result["tool"], tool.name, f"{kind}/{tool.name}")
+            self.assertEqual(len(h.providers[TOKYO].calls), len(reads))
+
+    def test_every_write_tool_is_denied_with_only_a_read_credential(self):
+        h = Harness(self.tmp)
+        writes = [t for t in cloudcli_native.NATIVE_TOOLS
+                  if not t.read_only and t.name != "session_background"]
+        for tool in writes:
+            with self.assertRaises(FleetRefusal, msg=tool.name) as caught:
+                h.call(tool.name, args=self._minimal_args(tool),
+                       session_ref=ref(TOKYO, "x"), project="p",
+                       principal=h.principal(SCOPE_READ))
+            # Refused at the scope gate or the grant gate — never forwarded.
+            self.assertIn(caught.exception.code,
+                          (SCOPE_DENIED, WRITE_NOT_GRANTED), tool.name)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_the_whole_surface_is_discoverable_and_counted(self):
+        names = {t.name for t in tools_mod.SERVED_TOOLS}
+        self.assertEqual(len([n for n in names if n.startswith("fleet_cloudcli_")]), 22)
 
 
 if __name__ == "__main__":

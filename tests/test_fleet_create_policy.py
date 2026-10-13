@@ -433,7 +433,8 @@ class TheScopeVocabularyIsWrittenOnce(unittest.TestCase):
     def test_the_implemented_set_is_the_advertised_set(self):
         self.assertEqual(scopes.ALLOWED_SCOPES, scopes.IMPLEMENTED_SCOPES)
         self.assertEqual(sorted(scopes.ALLOWED_SCOPES),
-                         ["fleet:control", "fleet:create", "fleet:read", "fleet:send"])
+                         ["fleet:approve", "fleet:control", "fleet:create",
+                          "fleet:navigate", "fleet:read", "fleet:send"])
 
     def test_control_moved_out_of_planned_only_because_the_verb_landed(self):
         """The scope list is not a roadmap; it is a claim about code paths.
@@ -494,16 +495,14 @@ class TheScopeVocabularyIsWrittenOnce(unittest.TestCase):
                          ["fleet:create", "fleet:read", "fleet:send"])
 
     def test_a_binding_may_not_grant_a_verb_this_build_does_not_have(self):
-        """`fleet:approve`, not `fleet:control`.
+        """A scope the build does not implement is refused at load.
 
-        The example has to be a scope that is still unimplemented, or the test
-        stops testing anything: it would pass for the wrong reason (the loader
-        now accepts `fleet:control`) while appearing to prove that unknown verbs
-        are refused. Derived from `PLANNED_SCOPES` rather than spelled out, so
-        the day the last planned verb lands this fails loudly instead of
-        silently becoming vacuous.
+        `PLANNED_SCOPES` is empty now — every named verb is implemented — so
+        this uses a scope that is not in the vocabulary at all, which is the
+        same refusal the loader makes for a planned verb: a name that is not a
+        scope this build enforces is not grantable.
         """
-        unimplemented = scopes.PLANNED_SCOPES[0]
+        unimplemented = "fleet:teleport"
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "binding.yaml"
             path.write_text(_binding_yaml(f"grantable_scopes: [fleet:read, {unimplemented}]\n"),

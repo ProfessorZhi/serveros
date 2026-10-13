@@ -405,9 +405,10 @@ class TheVerbAxis(unittest.TestCase):
         # `control` and `create` graduated when the CloudCLI mirror needed to be
         # governed at the same principal x device x verb axis. Graduating a verb
         # grants nothing — a principal with no entry still holds nothing.
-        self.assertEqual(OPERATOR_GRANT_VERBS, ("send", "control", "create"))
-        self.assertEqual(set(PLANNED_OPERATOR_GRANT_VERBS),
-                         {"approve", "navigate"})
+        self.assertEqual(OPERATOR_GRANT_VERBS,
+                         ("send", "control", "create", "approve", "navigate"))
+        # Nothing is planned-but-inert any more; every name is enforced.
+        self.assertEqual(tuple(PLANNED_OPERATOR_GRANT_VERBS), ())
         self.assertEqual(set(OPERATOR_GRANT_VERBS) & set(PLANNED_OPERATOR_GRANT_VERBS),
                          set())
 
@@ -435,10 +436,12 @@ class TheVerbAxis(unittest.TestCase):
         directly: a grant that carries a verb is not a grant of *every* verb.
         """
         tmp = Path(tempfile.mkdtemp())
-        h = Harness(tmp, grants={OAUTH: {TOKYO: ("approve",)}})
-        self.assertEqual(h.service._operator_grant_verbs(h.principal(), TOKYO), ())
-        with self.assertRaises(FleetRefusal):
-            h.send(f"{TOKYO}|claude|x")
+        h = Harness(tmp, grants={OAUTH: {TOKYO: ("send",)}})
+        # The grant names exactly the verb it wrote.
+        self.assertEqual(h.service._operator_grant_verbs(h.principal(), TOKYO),
+                         ("send",))
+        self.assertNotIn("control",
+                         h.service._operator_grant_verbs(h.principal(), TOKYO))
 
     def test_an_unknown_verb_is_refused_at_load(self):
         with self.assertRaises(FleetRefusal) as caught:

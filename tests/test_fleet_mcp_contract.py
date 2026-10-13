@@ -215,7 +215,8 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
         """
         auth = contract()["ingress"]["auth"]
         self.assertEqual(tuple(auth["scopes"]),
-                         ("fleet:read", "fleet:send", "fleet:control", "fleet:create"))
+                         ("fleet:read", "fleet:send", "fleet:control",
+                          "fleet:create", "fleet:approve", "fleet:navigate"))
         # What the contract declares is what this build enforces — not what a
         # deployment grants by default. Those are different lists and the file
         # must not collapse them.
@@ -546,7 +547,8 @@ class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
         self.assertIn("send", self.declared["verbs"])
         self.assertIn("control", self.declared["verbs"])
         self.assertIn("create", self.declared["verbs"])
-        self.assertIn("approve", self.declared["verbs_planned"])
+        # Every named verb is implemented; nothing is planned-but-inert.
+        self.assertEqual(self.declared["verbs_planned"], [])
         self.assertIn("does not inherit", self.declared["verbs_rule"])
 
     def test_the_declared_eligibility_rule_is_the_implemented_one(self):

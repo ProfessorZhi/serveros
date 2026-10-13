@@ -201,10 +201,10 @@ class TheTemplateIsALoadableBinding(unittest.TestCase):
         node_text = fill(blocks()[1])
 
         cases = (
-            # `approve` is in PLANNED_OPERATOR_GRANT_VERBS: a binding that names
-            # it is a binding whose author believes an approve verb is live.
-            ("a planned verb in operator_grants", load_config, fleet_text,
-             fleet_text.replace("[send]", "[send, approve]", 1), "plan"),
+            # A verb the build does not have at all — every verb is implemented
+            # now, so the refusal this proves is the "not a verb" one.
+            ("an unknown verb in operator_grants", load_config, fleet_text,
+             fleet_text.replace("[send]", "[send, fleet_teleport]", 1), "not a verb"),
             # `create_allow` has exactly two value keys, and an unknown one is
             # refused rather than ignored.
             ("an invented key inside create_allow", load_config, fleet_text,
