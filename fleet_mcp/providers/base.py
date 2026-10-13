@@ -225,6 +225,29 @@ class DeviceProvider(Protocol):
         adapter has to invent one.
         """
 
+    def interrupt(self, key: SessionKey) -> dict[str, Any]:
+        """Stop the run `key` currently has, and nothing else.
+
+        The answer is the provider's own, not a boolean this layer invented:
+        CloudCLI's `session_interrupt` resolves either to `{"aborted": true}` or
+        to `{"aborted": false, "message": "<there was no run to abort>"}`, and
+        the second is a *true statement about the world* rather than a failure.
+        An adapter that flattened them into one `ok` would destroy the only
+        thing the caller needs to tell "I stopped it" from "there was nothing
+        running", which are the two readings that lead to different next actions.
+
+        No `idempotency_key` parameter, on purpose and in the interface rather
+        than only in the implementation: see `FleetService.interrupt_session`.
+        The provider could not honour one (CloudCLI has no such concept) and the
+        surface does not want one, so accepting the argument would be a promise
+        with nothing behind it.
+
+        What this must never become: a parameterised call. `session_interrupt`
+        takes exactly one argument — a session id — so there is no mode, no
+        signal, no command and no path for a caller to name. If a future revision
+        needs one, that is a new verb with its own floor, not an argument here.
+        """
+
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:

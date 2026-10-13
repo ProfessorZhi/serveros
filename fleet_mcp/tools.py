@@ -168,6 +168,14 @@ def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _interrupt_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    # No argument is read but the session. `_session_key` already refuses a
+    # request that names none, and the schema's `additionalProperties: false`
+    # has already refused anything else — so the handler's whole job is to be
+    # the place where a future field would have to be added on purpose.
+    return ctx.service.interrupt_session(ctx.principal, _session_key(ctx, args))
+
+
 def _get_run(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     run_id = args.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -524,6 +532,57 @@ TOOLS: tuple[Tool, ...] = (
             "openWorldHint": True,
         },
         handler=_create_session,
+    ),
+    Tool(
+        name="fleet_interrupt_session",
+        title="Stop the run a session is in",
+        description=(
+            "Stop the run a session currently has in flight, and nothing else. "
+            "The session survives, its transcript survives, and a session whose "
+            "process is owned by a resident host keeps that process — this verb "
+            "ends one run, it does not close, delete or kill anything.\n\n"
+            "`aborted: false` with a `message` is a **success**, not a failure: "
+            "it means the session had no run in flight, so there was nothing to "
+            "stop. Branch on `aborted`, not on whether the call raised.\n\n"
+            "Only sessions the operator has explicitly authorized are accepted. "
+            "The grant is per device AND per session, counts separately from the "
+            "grant to send, and naming a session id does not create it.\n\n"
+            "There is no idempotency key here, deliberately. An interrupt says "
+            "something about the present — 'the run in flight is not in flight "
+            "any more' — and a cached answer to that would be a statement about "
+            "the past wearing the present's clothes: it could tell you your run "
+            "was stopped after a later one had already started. Calling it again "
+            "is therefore the correct retry, and it is safe, because aborting a "
+            "session with nothing running is not an error."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_ref": _string(SESSION_REF_DOC),
+                "device": _string(f"{DEVICE_REF_DOC} Use together with `session` instead of `session_ref`."),
+                "session": _string("The provider-native session id."),
+                "provider": _string("Session provider family: `claude` (default) or `codex`."),
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        annotations={
+            "readOnlyHint": False,
+            # True by the MCP definition, and stated so a client gates it behind
+            # confirmation: this is the one verb here that removes work already
+            # under way. It is recoverable — nothing is deleted, and the run can
+            # be started again by sending a message — but "recoverable" is not
+            # "harmless", and a client that treated it like a read would be
+            # wrong.
+            "destructiveHint": True,
+            # Repeating it is safe and converges on the same state, which is
+            # exactly the MCP sense of the hint. It is not the create/send kind
+            # of idempotency (a key that returns the first attempt's answer);
+            # it is the stronger property that a second call cannot do damage.
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+        handler=_interrupt_session,
     ),
 )
 

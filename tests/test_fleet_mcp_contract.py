@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 8)
+        self.assertEqual(len(declared), 9)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -70,11 +70,27 @@ class TheContractDescribesThisCode(unittest.TestCase):
                     f"{tool.name} is declared {verb} and annotated otherwise",
                 )
 
-    def test_the_writes_are_the_two_named_ones(self):
+    def test_the_writes_are_the_three_named_ones(self):
         writes = [t.name for t in tools_module.TOOLS if not t.annotations["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
-        self.assertEqual(contract()["tools"]["fleet_send_to_session"]["verb"], "write")
-        self.assertEqual(contract()["tools"]["fleet_create_session"]["verb"], "write")
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
+                                  "fleet_interrupt_session"])
+        for name in writes:
+            with self.subTest(tool=name):
+                self.assertEqual(contract()["tools"][name]["verb"], "write")
+
+    def test_interrupt_is_the_only_write_annotated_destructive(self):
+        """The annotation is a claim about consequence, and it is the first one
+        in this surface to differ from the others.
+
+        A client gates a destructive write behind a confirmation; a client that
+        treated interrupt like a send would be wrong about the one verb here
+        that takes work away. Asserted as "exactly one" rather than
+        "interrupt is true" so that a second destructive verb cannot be added
+        without this test naming it.
+        """
+        destructive = [t.name for t in tools_module.TOOLS
+                       if t.annotations.get("destructiveHint")]
+        self.assertEqual(destructive, ["fleet_interrupt_session"])
 
     def test_every_tool_names_the_owner_that_answers_it(self):
         """The file's central promise: this surface owns no fact.
@@ -190,9 +206,22 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
         self.assertEqual(auth["discovery"], version_module.PROTECTED_RESOURCE_PATH)
         self.assertEqual(auth["authorization_server"], version_module.AUTHORIZATION_SERVER_PATH)
 
-    def test_the_declared_scopes_are_the_grantable_ones(self):
-        declared = tuple(contract()["ingress"]["auth"]["scopes"])
-        self.assertEqual(declared, ("fleet:read", "fleet:send", "fleet:create"))
+    def test_the_declared_scopes_are_the_implemented_ones(self):
+        """The contract names every scope this build enforces, in scope order.
+
+        Spelled out rather than compared against `ALLOWED_SCOPES`, because a
+        test derived from the same tuple it is checking cannot notice the
+        tuple growing.
+        """
+        auth = contract()["ingress"]["auth"]
+        self.assertEqual(tuple(auth["scopes"]),
+                         ("fleet:read", "fleet:send", "fleet:control", "fleet:create"))
+        # What the contract declares is what this build enforces — not what a
+        # deployment grants by default. Those are different lists and the file
+        # must not collapse them.
+        self.assertEqual(tuple(auth["scopes_grantable_default"]),
+                         ("fleet:read", "fleet:send"))
+        self.assertNotEqual(tuple(auth["scopes"]), tuple(auth["scopes_grantable_default"]))
 
     def test_the_ingress_declines_to_fetch_a_caller_supplied_target(self):
         self.assertIs(contract()["ingress"]["request_shaped_fetch"], False)
@@ -341,7 +370,9 @@ class WhatIsNotBuilt(unittest.TestCase):
 
         `session_create` left this list when it was built; `session_start` is
         still on it, and the check below is what keeps the two from being the
-        same statement.
+        same statement. Landing `fleet_interrupt_session` did not answer it
+        either — stopping a run and starting a host are opposite directions, and
+        the third block below keeps that true.
         """
         names = set(tools_module.tool_names())
         built = {name.removeprefix("fleet_") for name in names}
@@ -356,6 +387,13 @@ class WhatIsNotBuilt(unittest.TestCase):
         self.assertIn("create_session", built)
         self.assertNotIn("fleet_start_session", names)
         self.assertNotIn("start_session", built)
+        # Control is the third pairing, and the one where the two claims most
+        # easily get confused: `fleet_interrupt_session` is on the surface, and
+        # `session_start` is still unbuilt *because* the verb it names is not
+        # interrupt's. A test that only counted tools would read this as done.
+        self.assertIn("fleet_interrupt_session", names)
+        self.assertIn("interrupt_session", built)
+        self.assertNotIn("interrupt", absent)
         # The route that exists is the one for the capability that was built.
         self.assertIn("POST /v1/sessions", np.ROUTES)
         self.assertNotIn("POST /v1/exec", np.ROUTES)

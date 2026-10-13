@@ -255,6 +255,56 @@ tools:
       would otherwise be a second session. The key is not forwarded to the
       provider, which has no such concept.
 
+  fleet_interrupt_session:
+    verb: write
+    answers: whether the run a session had in flight was stopped
+    answered_by: the device's provider adapter (CloudCLI `session_interrupt`)
+    schema: >-
+      One argument, and it is CloudCLI 1.39's own: `session`, required, carried
+      as the provider-native id. That is the whole of the tool because that is
+      the whole of the gateway's `SESSION_INTERRUPT_INPUT_SCHEMA` — it reads
+      exactly one field and throws INVALID_ARGUMENT on an empty one. There is
+      deliberately no signal, no mode, no force and no free-text reason here: an
+      `interrupt` that accepted a reason string would be a transcript-adjacent
+      write in a surface that promises its audit log holds no message content,
+      and a `force` would turn a recoverable verb into `session_close`, which
+      this contract still lists as unbuilt.
+    admission: >-
+      Two gates, on two machines, and both must open — and neither is implied by
+      the send grants. This surface requires the independent `fleet:control`
+      scope, then the device's `allow_control`, then the per-session
+      `policy.control_allow`; the node connector on the device then applies its
+      own local `allow_control` + `allow_control_to`, which default to off and
+      empty and are not writable from here. The lists are separate from the send
+      lists rather than a superset of them: an operator who authorized messaging
+      a session has not thereby authorized ending its run, and sharing one list
+      would make the narrower grant unachievable.
+    what_it_does_not_do: >-
+      It does not close a session, kill a process, delete a transcript or end a
+      resident host. CloudCLI's own adapter holds no host-manager seam, so a
+      resident session's process survives an interrupt with its pid — that is a
+      property of the adapter's shape rather than of a check it performs, which
+      is why this surface can expose stop-without-destroy and cannot yet expose
+      `session_close`.
+    returns: >-
+      `aborted: true` when a run was stopped. `aborted: false` together with the
+      provider's own sentence when the session had no run in flight — a success
+      carrying a fact, not a failure, and collapsed into neither a boolean nor
+      an error because the two readings lead to different next actions. An
+      answer with no `aborted` field at all is refused as INTERNAL rather than
+      read as `false`: `structured()` returns `{}` for a result it could not
+      parse, and reporting "there was no run in flight" for a garbled reply
+      would tell the caller to stop worrying about work that may still be going.
+    idempotency: >-
+      None, and that is a decision rather than an omission. This tool takes no
+      `idempotency_key`. An interrupt asserts something about the present — "the
+      run in flight is not in flight any more" — and a cached copy of that
+      assertion is a statement about the past wearing the present's clothes: a
+      replay after a later run had started would report the caller's run stopped
+      while it was still going. Replaying the action instead is the safe
+      reading, because aborting a session with nothing running is not an error;
+      the provider answers `aborted: false` and says so.
+
 # ---------------------------------------------------------------------------
 # Addressability
 # ---------------------------------------------------------------------------
@@ -333,6 +383,12 @@ ingress:
     scopes:
       fleet:read: the six read tools
       fleet:send: fleet_send_to_session, and nothing else
+      fleet:control: >-
+        fleet_interrupt_session, and nothing else. Independent of fleet:send on
+        purpose, and in both directions: a credential issued to deliver a
+        message into a session is not thereby one that may end the run that
+        session is in the middle of, and the two grants are answered by
+        different questions.
       fleet:create: >-
         fleet_create_session, and nothing else. Independent of fleet:send on
         purpose — a credential issued to message sessions is not thereby one
@@ -341,15 +397,16 @@ ingress:
     # in the discovery documents as `scopes_supported`. What a *particular
     # deployment* will hand out is narrower and is published beside it as
     # `scopes_grantable`: the binding's `auth.grantable_scopes`, which defaults
-    # to read+send. `fleet:create` therefore has to be added deliberately before
-    # any OAuth client can be issued it — a deployment that never wrote the word
-    # has not authorized creation. Both lists come from one module
-    # (`fleet_mcp/scopes.py`); the verbs this build owes but does not implement
-    # (`fleet:control`, `fleet:approve`, `fleet:navigate`) are named there as
+    # to read+send. `fleet:create` and `fleet:control` therefore have to be
+    # added deliberately before any OAuth client can be issued either — a
+    # deployment that never wrote the word has not authorized that verb, and
+    # both of the heavy verbs are heavier than delivering a message. Both lists
+    # come from one module (`fleet_mcp/scopes.py`); the verbs this build owes but
+    # does not implement (`fleet:approve`, `fleet:navigate`) are named there as
     # planned and are deliberately absent from both, because a scope no code
     # path enforces is a promise rather than a grant.
     scopes_grantable_default: [fleet:read, fleet:send]
-    scopes_planned: [fleet:control, fleet:approve, fleet:navigate]
+    scopes_planned: [fleet:approve, fleet:navigate]
     declared_in: fleet_mcp/scopes.py
     # The consent step has a human in it, and the human proves they are the
     # owner with the owner token — not with a claim the client made. ServerOS
@@ -420,6 +477,7 @@ node_transport:
     - 'GET /v1/sessions/{id}'
     - 'POST /v1/sessions/{id}/read'
     - 'POST /v1/sessions/{id}/send'
+    - 'POST /v1/sessions/{id}/interrupt'
     - 'GET /v1/runs/{run_id}'
   route_set: closed
   declared_in: fleet_mcp/node_protocol.py#ROUTES
@@ -538,7 +596,9 @@ not_implemented:
   # `session_create` was on this list and is not any more: the round that built
   # `fleet_create_session` answered the question this entry was waiting on, and
   # the test below asserts the two are not the same statement. `session_start`
-  # stays, and it is a genuinely different verb — see its own reason.
+  # stays, and it is a genuinely different verb — see its own reason, and note
+  # the test beside this list asserting that landing interrupt did not quietly
+  # answer it.
   - id: session_start
     why: >-
       Starting a session that exists is the verb that turns "I read a
@@ -547,6 +607,13 @@ not_implemented:
       a run for the session it just made and only that one, because minting a
       session is itself the grant. Reaching into a session the caller did not
       create is a different question and this round did not open it.
+      CloudCLI's own `session_start` is narrower than the sentence above
+      suggests — it starts the session's *resident host* and answers with a pid
+      — which makes it a spawn rather than a resume, and a floor that permits
+      spawning processes on a workstation is not one this round designed.
+      Stopping a run, by contrast, is now implemented: `fleet_interrupt_session`
+      ends one run and leaves the host alone, so it starts nothing and is a
+      strictly smaller act than this entry describes.
   - id: arbitrary_shell_or_exec
     why: >-
       Not a roadmap item. Absent from the route table, absent from the provider
@@ -554,7 +621,11 @@ not_implemented:
   - id: session_delete_or_force_stop
     why: >-
       Destructive and not reversible from this surface. There is no tool, and
-      the honest shape for one has not been designed.
+      the honest shape for one has not been designed. `fleet_interrupt_session`
+      is deliberately not a step towards one: it stops a run, the session and
+      its transcript outlive it, and CloudCLI's `session_close` (which does end
+      a resident host, and refuses while background leases are held) is left
+      unbuilt here for the same reason this entry gives.
   - id: controller_connector
     why: >-
       controller-contract.yaml declares `connector.status: NOT_IMPLEMENTED`,

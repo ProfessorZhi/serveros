@@ -29,18 +29,23 @@ reads to the client as "the device did not answer" rather than "you never had
 this".
 
 `PLANNED_SCOPES` is the other half of the roadmap — the verbs the contract
-names as next (`fleet:control`, `fleet:approve`, `fleet:navigate`) and that
-this build does not implement. They are listed so that the three names exist
-in the vocabulary and a future revision extends `IMPLEMENTED_SCOPES` by moving
-one across, rather than by inventing a spelling. They are deliberately **not**
-in `ALLOWED_SCOPES`: naming a verb we owe is fine, issuing it is not.
+names as next (`fleet:approve`, `fleet:navigate`) and that this build does not
+implement. They are listed so that the names exist in the vocabulary and a
+future revision extends `IMPLEMENTED_SCOPES` by moving one across, rather than
+by inventing a spelling. They are deliberately **not** in `ALLOWED_SCOPES`:
+naming a verb we owe is fine, issuing it is not.
+
+A scope moves from `PLANNED_SCOPES` to `IMPLEMENTED_SCOPES` in the same change
+that adds the tool enforcing it, and never before. `fleet:control` made that
+move when `fleet_interrupt_session` landed: the scope is now real because there
+is a code path behind it, and it was not moved in anticipation of one.
 
 `DEFAULT_GRANTABLE_SCOPES` is the ceiling an operator who writes nothing gets.
-Read and send — **not** create. A deployment that has not said the word
-"create" has not authorized creation, and the OAuth consent form is where the
-operator says it per client. Adding `fleet:create` to `grantable_scopes` is
-therefore a deliberate act, and the only thing that makes a create-capable
-connector possible.
+Read and send — **not** create, and **not** control. A deployment that has not
+said the word "create" has not authorized creation, and the same goes for
+stopping a run: control is heavier than sending a message, so it cannot be the
+thing an operator obtains by omission. Adding either to `grantable_scopes` is a
+deliberate act, and the only thing that makes a capable connector possible.
 """
 from __future__ import annotations
 
@@ -51,14 +56,20 @@ SCOPE_SEND = "fleet:send"
 # authorized is not thereby trusted to mint new ones, and folding the two would
 # make the narrower grant unachievable.
 SCOPE_CREATE = "fleet:create"
+# Stopping something is a fourth question and a fourth scope. It is not implied
+# by `fleet:send` in either direction: a credential trusted to deliver a message
+# into a session is not thereby trusted to end the run that session is in the
+# middle of, and an operator who granted the first has not answered the second.
+# It is also the first verb here that takes something *away* rather than adding
+# to a session, which is why its device-side floor starts closed.
+SCOPE_CONTROL = "fleet:control"
 
 # Named, not implemented. These exist so the roadmap has one spelling each.
-SCOPE_CONTROL = "fleet:control"
 SCOPE_APPROVE = "fleet:approve"
 SCOPE_NAVIGATE = "fleet:navigate"
 
-IMPLEMENTED_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)
-PLANNED_SCOPES: tuple[str, ...] = (SCOPE_CONTROL, SCOPE_APPROVE, SCOPE_NAVIGATE)
+IMPLEMENTED_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL, SCOPE_CREATE)
+PLANNED_SCOPES: tuple[str, ...] = (SCOPE_APPROVE, SCOPE_NAVIGATE)
 
 # The wire-visible ceiling. Equal to the implemented set, on purpose: what is
 # advertised is what is enforced.

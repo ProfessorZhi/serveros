@@ -638,6 +638,7 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
             "fleet:send": "Send messages to sessions the operator has already authorized",
+            "fleet:control": "Stop the run currently in flight in sessions the operator has already authorized",
             "fleet:create": "Create new sessions on devices the operator has authorized for creation",
         }.get(scope, scope)
         rows.append(

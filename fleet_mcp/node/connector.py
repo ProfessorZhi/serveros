@@ -95,6 +95,20 @@ class NodeConfig:
     # There is no per-session form of this grant to write down, because the
     # session it would name does not exist yet.
     allow_create: bool = False
+    # A fourth grant, and the first one this machine uses to END something
+    # rather than to add to it. Off by default and independent of the other
+    # three: an operator who has authorized messaging and creation has still
+    # not said "you may stop my work", and that is the question this flag
+    # answers. It is the local floor for control — the Fleet surface has its
+    # own, and a caller reaches the provider only if BOTH said yes.
+    allow_control: bool = False
+    # Sessions this machine permits an interrupt on, by native id or full ref.
+    # Empty means "every interrupt is refused here", including from the Fleet
+    # owner — the workstation's answer, given at this keyboard, and withdrawable
+    # here without touching the other end. A device-wide owner grant for
+    # control would widen `permits_control` below and leave this list alone;
+    # that is the seam to extend, not the flag.
+    allow_control_to: tuple[str, ...] = ()
     max_body_bytes: int = 1_000_000
     notes: str = ""
 
@@ -106,6 +120,27 @@ class NodeConfig:
 
     def permits_send(self, key: SessionKey) -> bool:
         return key.ref in self.allow_send_to or key.native_session_id in self.allow_send_to
+
+    def permits_control(self, key: SessionKey) -> bool:
+        """The one place this machine decides whether a run on it may be stopped.
+
+        Both arms are here rather than inline in the handler so that a
+        device-wide grant — "this operator may stop any run on this machine" —
+        has exactly one seam to widen. Nothing in this revision implements such
+        a grant; the default remains "named sessions only, and none are named".
+        """
+        if not self.allow_control:
+            return False
+        return key.ref in self.allow_control_to or key.native_session_id in self.allow_control_to
+
+    def permits_any_control(self) -> bool:
+        """Whether any interrupt at all is permitted here — for the banner.
+
+        Separate from `permits_control` because the banner has no session to ask
+        about, and reporting "only []" for a machine that permits nothing would
+        read as a list rather than as a closed door.
+        """
+        return bool(self.allow_control and self.allow_control_to)
 
 
 def load_node_config(path: str | Path | None = None) -> NodeConfig:
@@ -161,6 +196,8 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         read_timeout=float(raw.get("read_timeout", 45.0)),
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
         allow_create=bool(raw.get("allow_create", False)),
+        allow_control=bool(raw.get("allow_control", False)),
+        allow_control_to=tuple(raw.get("allow_control_to") or ()),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
     )
@@ -186,6 +223,7 @@ class Connector:
                 # disagrees with the machine it describes.
                 allow_send=bool(config.allow_send_to),
                 allow_create=bool(config.allow_create),
+                allow_control=bool(config.allow_control),
             )
         )
 
@@ -307,6 +345,8 @@ class Connector:
             return 200, self._read(parts[2], payload)
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "send":
             return 200, self._send(parts[2], payload)
+        if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "interrupt":
+            return 200, self._interrupt(parts[2])
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             return 200, self._run(parts[2], args)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
@@ -356,6 +396,17 @@ class Connector:
                 # reading one must not have to infer the other.
                 "create_allowed": bool(self.config.allow_create),
                 "create_default": "allowed" if self.config.allow_create else "refused",
+                # Reported beside the other three and not folded into them.
+                # "Why can't ChatGPT stop my run" has to be answerable from
+                # this document alone, and an operator reading `send_default`
+                # must not have to infer this one from it.
+                "control_allowed": bool(self.config.allow_control),
+                "control_allow_list": list(self.config.allow_control_to),
+                "control_default": (
+                    "only the sessions named in allow_control_to"
+                    if self.config.allow_control and self.config.allow_control_to
+                    else "refused"
+                ),
             },
             "upstream_endpoint": self.config.cloudcli_endpoint,
             "credential_stays_here": True,
@@ -426,6 +477,34 @@ class Connector:
         # concept, and passing one along would imply a guarantee this hop cannot
         # make. The replay guard is the Fleet surface's, above this line.
         return self.provider.send(key, message)
+
+    def _interrupt(self, native: str):
+        """Stop the run this machine's session has in flight, if this machine said so.
+
+        The floor is checked before the provider is touched, and it is a
+        different decision from `permits_send`: an operator who authorized
+        messaging this session has not thereby authorized ending its run, and a
+        connector that read the send list here would be answering a question
+        nobody was asked.
+
+        No payload parameter, and that is deliberate rather than lazy. The only
+        thing an interrupt may name is the session — CloudCLI's own
+        `session_interrupt` takes one argument and validates it — so a handler
+        that accepted a body would be opening a door with nothing behind it
+        today and something behind it the first time someone added a field.
+        """
+        key = self._key(native)
+        if not self.config.permits_control(key):
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this connector is not authorized to interrupt runs of "
+                f"{key.ref}. Control is granted by `allow_control` and the "
+                f"`allow_control_to` list in this machine's own binding, and "
+                f"that file lives on this machine, not on the caller's. They "
+                f"are {self.config.allow_control!r} and "
+                f"{list(self.config.allow_control_to)} here.",
+            )
+        return self.provider.interrupt(key)
 
     def _run(self, run_id: str, args: dict[str, list[str]]):
         session = (args.get("session") or [None])[0]
@@ -525,6 +604,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{list(config.allow_send_to) or 'empty — every send is refused here'}\n"
         f"connector: create "
         f"{'allowed' if config.allow_create else 'refused — allow_create is false'}\n"
+        f"connector: control "
+        f"{('only ' + str(list(config.allow_control_to))) if config.permits_any_control() else 'refused — control is closed here'}\n"
     )
     try:
         server.serve_forever()

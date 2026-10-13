@@ -72,6 +72,12 @@ class ProviderBinding:
     # like every other grant here, so a binding that says nothing about creation
     # does not authorize it.
     allow_create: bool = False
+    # A device whose runs may be *stopped* from this runtime. The fourth grant,
+    # and the first one that takes something away: creation and messaging both
+    # add to the world, and an interrupt ends work that is in progress. Off by
+    # default, like every other grant, so a binding that never considered the
+    # question answers it with silence rather than with yes.
+    allow_control: bool = False
 
     def credential(self) -> str | None:
         """Read the credential at the anchor. Never logged, never returned."""
@@ -178,6 +184,21 @@ class PolicyBinding:
     # configuration mistake should be an outage on start, not a silent widening
     # at 3am.
     allow_wildcard_create: bool = False
+    # Sessions this runtime is additionally authorized to *interrupt*. A
+    # separate list from `send_allow` on purpose, and not a superset of it: an
+    # operator who authorized messaging a session has not thereby authorized
+    # ending its run, and keeping one list would make the second grant
+    # unachievable for anyone who needs the first but not the second.
+    #
+    # There is no inner ceiling to write down here, unlike `create_allow` — the
+    # caller names a session and nothing else. `session_interrupt`'s own
+    # argument list is one string, so there is no caller-supplied mode, model or
+    # path that could widen the grant; the whole of "how much" is the device
+    # flag and this list.
+    control_allow: tuple[str, ...] = ()
+    # `control_allow: ["*"]` would make the per-session grant meaningless,
+    # exactly as a wildcard send does. Refused at load, same reason.
+    allow_wildcard_control: bool = False
     max_read_messages: int = 40
     max_message_chars: int = 8000
     read_redact: bool = True
@@ -217,6 +238,7 @@ class FleetConfig:
                     "enabled": b.enabled,
                     "allow_send": b.allow_send,
                     "allow_create": b.allow_create,
+                    "allow_control": b.allow_control,
                     "credential_anchor_present": b.credential_anchor.exists(),
                 }
                 for ref, b in sorted(self.providers.items())
@@ -225,6 +247,7 @@ class FleetConfig:
                        "mcp_path": self.server.mcp_path},
             "policy": {
                 "send_allow": list(self.policy.send_allow),
+                "control_allow": list(self.policy.control_allow),
                 "create_allow": {
                     project: grant.as_dict()
                     for project, grant in sorted(self.policy.create_allow.items())
@@ -408,6 +431,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             note=entry.get("note"),
             allow_send=bool(entry.get("allow_send", False)),
             allow_create=bool(entry.get("allow_create", False)),
+            allow_control=bool(entry.get("allow_control", False)),
         )
 
     auth_raw = raw.get("auth") or {}
@@ -440,11 +464,21 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             "grant meaningless; set `allow_wildcard_send: true` if that is "
             "genuinely intended.",
         )
+    control_allow = tuple(policy_raw.get("control_allow") or ())
+    if "*" in control_allow and not bool(policy_raw.get("allow_wildcard_control", False)):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.control_allow contains '*'. A wildcard makes the per-session "
+            "grant meaningless; set `allow_wildcard_control: true` if that is "
+            "genuinely intended.",
+        )
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=bool(policy_raw.get("allow_wildcard_send", False)),
         create_allow=_create_allow(policy_raw),
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
+        control_allow=control_allow,
+        allow_wildcard_control=bool(policy_raw.get("allow_wildcard_control", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),
         max_message_chars=int(policy_raw.get("max_message_chars", 8000)),
         read_redact=bool(policy_raw.get("read_redact", True)),

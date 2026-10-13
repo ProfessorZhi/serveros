@@ -228,6 +228,34 @@ class FleetNodeProvider(DeviceProvider):
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
         return payload
 
+    def interrupt(self, key: SessionKey) -> dict[str, Any]:
+        """POST to the connector's `/v1/sessions/{id}/interrupt`, signed.
+
+        The body is empty, and that is the shape rather than an oversight: the
+        connector's own handler reads no field, so there is nothing here for a
+        caller to smuggle in. A body carrying a field the far side ignores would
+        read, in this file, as though the far side honoured it.
+
+        The connector has its own control floor, separate from the Fleet
+        surface's and closed by default. A refusal from it arrives as
+        `WRITE_NOT_GRANTED` and is reported as *that machine's* answer — which
+        is the point of having two gates: the far side's "no" is not this
+        side's "no", and an operator diagnosing a refused interrupt needs to
+        know which door was shut.
+
+        Unlike `send`, an empty answer is not read here as "no such session".
+        `send` may, because it has no other way to say so; an interrupt has an
+        answer shape of its own, and a connector that replied `{}` would be
+        replying with nothing — which `FleetService.interrupt_session` refuses
+        as `INTERNAL` rather than translating into the confident claim that no
+        run was in flight.
+        """
+        return self._request(
+            "POST",
+            f"/v1/sessions/{urllib.parse.quote(key.native_session_id)}/interrupt",
+            {},
+        )
+
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:

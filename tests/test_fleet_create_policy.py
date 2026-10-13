@@ -54,6 +54,7 @@ from fleet_mcp.config import (  # noqa: E402
 )
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.fleet import (  # noqa: E402
+    SCOPE_CONTROL,
     SCOPE_CREATE,
     SCOPE_READ,
     SCOPE_SEND,
@@ -432,7 +433,22 @@ class TheScopeVocabularyIsWrittenOnce(unittest.TestCase):
     def test_the_implemented_set_is_the_advertised_set(self):
         self.assertEqual(scopes.ALLOWED_SCOPES, scopes.IMPLEMENTED_SCOPES)
         self.assertEqual(sorted(scopes.ALLOWED_SCOPES),
-                         ["fleet:create", "fleet:read", "fleet:send"])
+                         ["fleet:control", "fleet:create", "fleet:read", "fleet:send"])
+
+    def test_control_moved_out_of_planned_only_because_the_verb_landed(self):
+        """The scope list is not a roadmap; it is a claim about code paths.
+
+        `fleet:control` left `PLANNED_SCOPES` in the same change that added
+        `fleet_interrupt_session`. Asserting the pairing — the scope is
+        implemented AND the tool that enforces it is served — is what stops a
+        future revision from promoting a name in anticipation of the verb, which
+        would advertise authority that silently does nothing when exercised.
+        """
+        from fleet_mcp.tools import tool_names
+
+        self.assertIn(SCOPE_CONTROL, scopes.IMPLEMENTED_SCOPES)
+        self.assertNotIn(SCOPE_CONTROL, scopes.PLANNED_SCOPES)
+        self.assertIn("fleet_interrupt_session", tool_names())
 
     def test_planned_scopes_are_named_but_never_issuable(self):
         """Naming a verb we owe is fine; issuing it is not. A token for a verb no
@@ -448,9 +464,16 @@ class TheScopeVocabularyIsWrittenOnce(unittest.TestCase):
 
         self.assertIs(oauth.ALLOWED_SCOPES, scopes.ALLOWED_SCOPES)
 
-    def test_the_default_ceiling_is_read_and_send_not_create(self):
+    def test_the_default_ceiling_is_read_and_send_and_neither_heavy_verb(self):
+        """Two verbs are implemented now and grantable by nobody by default.
+
+        Both are heavier than sending a message — one mints a session, the other
+        ends a run — so neither may be what an operator obtains by not thinking
+        about it. Narrowing this default again is how a deployment says so.
+        """
         self.assertEqual(scopes.DEFAULT_GRANTABLE_SCOPES, (SCOPE_READ, SCOPE_SEND))
         self.assertNotIn(SCOPE_CREATE, scopes.DEFAULT_GRANTABLE_SCOPES)
+        self.assertNotIn(SCOPE_CONTROL, scopes.DEFAULT_GRANTABLE_SCOPES)
 
     def test_a_binding_that_says_nothing_gets_the_narrow_ceiling(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -471,14 +494,24 @@ class TheScopeVocabularyIsWrittenOnce(unittest.TestCase):
                          ["fleet:create", "fleet:read", "fleet:send"])
 
     def test_a_binding_may_not_grant_a_verb_this_build_does_not_have(self):
+        """`fleet:approve`, not `fleet:control`.
+
+        The example has to be a scope that is still unimplemented, or the test
+        stops testing anything: it would pass for the wrong reason (the loader
+        now accepts `fleet:control`) while appearing to prove that unknown verbs
+        are refused. Derived from `PLANNED_SCOPES` rather than spelled out, so
+        the day the last planned verb lands this fails loudly instead of
+        silently becoming vacuous.
+        """
+        unimplemented = scopes.PLANNED_SCOPES[0]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "binding.yaml"
-            path.write_text(_binding_yaml("grantable_scopes: [fleet:read, fleet:control]\n"),
+            path.write_text(_binding_yaml(f"grantable_scopes: [fleet:read, {unimplemented}]\n"),
                             encoding="utf-8")
             with self.assertRaises(FleetRefusal) as caught:
                 load_config(path)
         self.assertEqual(caught.exception.code, "BAD_REQUEST")
-        self.assertIn("fleet:control", caught.exception.detail)
+        self.assertIn(unimplemented, caught.exception.detail)
 
     def test_the_discovery_documents_publish_the_ceiling(self):
         """A client that asks for something it will be refused should be able to
