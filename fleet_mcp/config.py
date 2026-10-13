@@ -44,8 +44,8 @@ PROVIDER_KINDS = ("cloudcli-mcp-http", "fleet-node")
 # additive rather than a redesign, but a name that reads as live while being
 # inert is worse than no name at all. A binding naming a planned verb is refused
 # at load, pointing at the scope that does not exist yet.
-OPERATOR_GRANT_VERBS = ("send",)
-PLANNED_OPERATOR_GRANT_VERBS = ("control", "approve", "navigate")
+OPERATOR_GRANT_VERBS = ("send", "control")
+PLANNED_OPERATOR_GRANT_VERBS = ("approve", "navigate")
 
 # The ownership value that makes a device eligible to appear in an owner grant.
 #
@@ -210,9 +210,9 @@ class PolicyBinding:
     #     `sub` is not.
     # *   **Device.** The `device:<id>` ref, and additionally the device must be
     #     eligible by ownership (see `GRANT_ELIGIBLE_OWNERSHIP`).
-    # *   **Verb.** Drawn from `OPERATOR_GRANT_VERBS`. `send` here is a verb, not a
-    #     mode: it admits `fleet_send_message` and nothing else, and the three
-    #     planned verbs are refused rather than inherited.
+    # *   **Verb.** Drawn from `OPERATOR_GRANT_VERBS`. `send` and `control`
+    #     authorize separate operations. Neither inherits from the other;
+    #     planned verbs are refused rather than silently accepted.
     #
     # Empty — the default — is no grant to anyone on any device. A principal
     # not named here keeps exactly the reach it had before this field existed.
