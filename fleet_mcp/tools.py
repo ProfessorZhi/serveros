@@ -611,6 +611,8 @@ def _native_handler(native: cloudcli_native.NativeTool):
             device_ref=args.get("device_ref"),
             native_tool=native.name,
             arguments=args.get("arguments") or {},
+            session_ref=args.get("session_ref"),
+            project=args.get("project"),
         )
     return handler
 
@@ -618,34 +620,59 @@ def _native_handler(native: cloudcli_native.NativeTool):
 def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
     if native.read_only:
         class_note = "Read-only."
+    elif native.governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
+        class_note = (
+            f"A {native.governance} verb: it needs an explicit grant on top of the "
+            f"device's `allow_{native.governance}` flag, and `session_ref` (the "
+            f"full `device:<id>|<provider>|<native id>`) — the session floor "
+            f"(`policy.send_allow` / `policy.control_allow`) is checked on that "
+            f"address, never on a session id inside `arguments`."
+        )
+    elif native.governance == cloudcli_native.GOV_CREATE:
+        class_note = (
+            "A create verb: it needs an explicit grant on top of the device's "
+            "`allow_create` flag, and `project` — the project floor "
+            "(`policy.create_allow`) is checked on that name, never on a project "
+            "read out of `arguments`."
+        )
     else:
         class_note = (
-            f"A {native.governance} verb: it needs an explicit grant, and a read "
-            f"or send grant is not inherited into it."
+            f"A {native.governance} verb: its Fleet scope is planned and not "
+            f"implemented, so it is refused rather than inherited."
         )
+    properties: dict[str, Any] = {
+        "device_ref": _string(f"Which device to call. {DEVICE_REF_DOC}"),
+        "arguments": {
+            "type": "object",
+            "description": (
+                f"`{native.name}`'s own arguments, passed through to the device "
+                f"unchanged. The device validates them against its own schema; "
+                f"`null` and an omitted key stay distinct. Arguments are NEVER a "
+                f"source of authority — the floor is checked on `device_ref` plus "
+                f"the Fleet addresses below."
+            ),
+        },
+    }
+    if native.governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
+        properties["session_ref"] = _string(
+            "Required for this verb. The full `device:<id>|<provider>|<native "
+            "session id>` address, as `fleet_list_sessions` returns it; its "
+            "device must equal `device_ref`.")
+    if native.governance == cloudcli_native.GOV_CREATE:
+        properties["project"] = _string(
+            "Required for this verb. The project the new session is for; "
+            "checked against `policy.create_allow`.")
     return Tool(
         name=native.namespaced,
         title=f"CloudCLI {native.name} (inherited)",
         description=(
             f"The CloudCLI `{native.name}` verb on one enrolled device, inherited "
             f"whole. Native scopes {', '.join(native.native_scopes)}; this surface "
-            f"requires {', '.join(native.fleet_scopes())}. {class_note} The "
-            f"`arguments` object is passed to the device unchanged — `null` and an "
-            f"omitted key stay distinct."
+            f"requires {', '.join(native.fleet_scopes())}. {class_note}"
         ),
         input_schema={
             "type": "object",
-            "properties": {
-                "device_ref": _string(f"Which device to call. {DEVICE_REF_DOC}"),
-                "arguments": {
-                    "type": "object",
-                    "description": (
-                        f"`{native.name}`'s own arguments, passed through to the "
-                        f"device unchanged. The device validates them against its "
-                        f"own schema."
-                    ),
-                },
-            },
+            "properties": properties,
             "required": ["device_ref"],
             "additionalProperties": False,
         },

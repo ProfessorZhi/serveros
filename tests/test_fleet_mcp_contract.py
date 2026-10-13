@@ -536,11 +536,17 @@ class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
         self.assertEqual(tuple(self.declared["verbs_planned"]),
                          config_module.PLANNED_OPERATOR_GRANT_VERBS)
 
-    def test_control_does_not_inherit_send(self):
-        """Read as a pair: `control` is planned (refused at load today) and
-        `send` is implemented, and neither list contains the other."""
-        self.assertNotIn("control", self.declared["verbs"])
-        self.assertNotIn("send", self.declared["verbs_planned"])
+    def test_no_verb_inherits_another(self):
+        """Read as a pair: the implemented and planned verb sets are disjoint,
+        so a verb in one is never implied by a verb in the other — `control`
+        and `create` graduated but a `send` grant still admits neither."""
+        self.assertEqual(
+            set(self.declared["verbs"]) & set(self.declared["verbs_planned"]),
+            set())
+        self.assertIn("send", self.declared["verbs"])
+        self.assertIn("control", self.declared["verbs"])
+        self.assertIn("create", self.declared["verbs"])
+        self.assertIn("approve", self.declared["verbs_planned"])
         self.assertIn("does not inherit", self.declared["verbs_rule"])
 
     def test_the_declared_eligibility_rule_is_the_implemented_one(self):

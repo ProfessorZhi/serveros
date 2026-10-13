@@ -65,6 +65,12 @@ ROUTES = (
     "POST /v1/sessions/{id}/send",
     "POST /v1/sessions/{id}/interrupt",
     "GET /v1/runs/{run_id}",
+    # The one mirrored-native route. The PATH is fixed — the tool is named in the
+    # signed body, never in the path — so there is no URL for a caller to shape,
+    # no path segment, and no redirect: the device refuses any tool name outside
+    # the recorded CloudCLI set. This is the whole of the cross-device native
+    # surface, and it is added here, by name, rather than as a catch-all forward.
+    "POST /v1/native/call",
 )
 
 

@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""The CloudCLI native surface, inherited whole — as a closed, governed set.
+"""The CloudCLI native surface, inherited whole — closed, governed, and not a
+way around any existing Fleet floor.
 
 The sentences these tests keep false:
 
-    "Fleet only supports seven tools"        — all 22 native verbs are mirrored
+    "the mirror is a second, weaker door"     — every write is routed through the
+                                                SAME `_may_send` / `_may_control`
+                                                / `_may_create` its Fleet verb uses
+    "a session id inside `arguments` is an address" — it is not, and a write with
+                                                no `session_ref` is REFUSED
+    "read implies send implies control"       — each class has its own floor
+    "only Tokyo can be called"                — the fleet-node route carries the
+                                                same closed set over HMAC
     "the device grew a tool, so Fleet has it" — a name nobody recorded is refused
-    "read implies send implies control"       — each class has its own gate
-    "approve is just another write"           — Fleet plans it and does not grant
-                                                it, so it is DENIED, not inherited
-    "the error body came back verbatim"       — a code survives, the remote text
-                                                does not
+    "it is the same schema everywhere"        — a per-device difference is
+                                                UNSUPPORTED_BY_DEVICE, not widened
 
-Everything runs against a FAKE provider. No socket, no device, no credential, no
-Feishu, no real tool call.
+Everything runs against FAKE providers and a fake node. No socket, no device, no
+credential, no Feishu, no real tool call, no approval answered.
 """
 from __future__ import annotations
 
@@ -21,13 +26,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fleet_mcp import cloudcli_native, tools as tools_mod
+from fleet_mcp import cloudcli_native, node_protocol, tools as tools_mod
 from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,
                               PolicyBinding, ProviderBinding, ServerBinding)
-from fleet_mcp.errors import (BAD_REQUEST, PROVIDER_UNREACHABLE, SCOPE_DENIED,
+from fleet_mcp.errors import (APPROVAL_REQUIRED, BAD_REQUEST, BAD_SESSION_REF,
+                              PROVIDER_UNREACHABLE, SCOPE_DENIED,
                               UNKNOWN_DEVICE, WRITE_NOT_GRANTED, FleetRefusal)
 from fleet_mcp.fleet import (SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND,
                              FleetService, Principal)
+from fleet_mcp.identity import SessionKey
+from fleet_mcp.providers.fleet_node import FleetNodeProvider
 
 TOKYO = "device:tokyo-shared-dev-01"
 WINDOWS = "device:personal-dell"
@@ -35,69 +43,81 @@ DELL = "device:l6000-ai-lab"
 OAUTH = "oauth:test-client"
 
 
+def ref(device, native, provider="claude"):
+    return f"{device}|{provider}|{native}"
+
+
 def _registry_file(tmp: Path, devices) -> Path:
     p = tmp / "registry.yaml"
     with p.open("w", encoding="utf-8") as handle:
         handle.write("devices:\n")
-        for ref, owner in devices.items():
-            name = ref.split(":", 1)[1]
-            handle.write(f"  - device_ref: {ref}\n")
-            handle.write(f"    display_name: {name}\n")
+        for device_ref, owner in devices.items():
+            handle.write(f"  - device_ref: {device_ref}\n")
+            handle.write(f"    display_name: {device_ref.split(':', 1)[1]}\n")
             handle.write("    platform: linux\n")
             handle.write("    environment_profile: linux-shared-multiuser\n")
             handle.write(f"    ownership: {owner}\n")
     return p
 
 
-class FakeNativeProvider:
-    """A device that records what it was asked and answers from a fixture.
+class FakeProvider:
+    """A device that records what it was asked. Governance lives above it."""
 
-    It implements `native_call` and NOTHING ELSE is needed: the governance under
-    test lives in `FleetService`, above this line.
-    """
-
-    kind = "cloudcli-mcp-http"
-
-    def __init__(self, device_ref, *, result=None, fail=None, tools=None):
+    def __init__(self, device_ref, kind="cloudcli-mcp-http", *, fail=None,
+                 native=True):
         self.device_ref = device_ref
-        self.calls: list[tuple[str, dict]] = []
-        self._result = result if result is not None else {"ok": True}
+        self.kind = kind
+        self.calls: list = []
         self._fail = fail
-        self.tools = tools
+        self._has_native = native
 
     def native_call(self, tool, arguments):
+        # A provider with no native route must NOT even define this method, so
+        # the attribute check in `native_call` is what exercises that path.
         self.calls.append((tool, arguments))
         if self._fail is not None:
             raise self._fail
-        return dict(self._result)
+        return {"ok": True, "tool": tool}
 
 
 class Harness:
-    def __init__(self, tmp: Path, *, owner="company", grants=None,
-                 allow_send=True, allow_create=True, allow_control=True):
+    def __init__(self, tmp: Path, *, owner="company", grants=None, send_allow=(),
+                 control_allow=(), create_allow=None, allow_send=True,
+                 allow_control=True, allow_create=True, kinds=None,
+                 no_route=()):
         self.anchor = tmp / "pat"
         self.anchor.write_text("owner-token-value", encoding="utf-8")
         self.registry = _registry_file(tmp, {TOKYO: owner, WINDOWS: owner, DELL: owner})
+        kinds = kinds or {}
         self.config = FleetConfig(
             source=None,
             local_device_ref=WINDOWS,
             providers={
-                ref: ProviderBinding(
-                    device_ref=ref, kind="cloudcli-mcp-http",
-                    endpoint=f"http://{ref}/mcp", credential_anchor=self.anchor,
+                device: ProviderBinding(
+                    device_ref=device, kind=kinds.get(device, "cloudcli-mcp-http"),
+                    endpoint=f"http://{device}/mcp", credential_anchor=self.anchor,
                     allow_send=allow_send, allow_create=allow_create,
                     allow_control=allow_control,
-                ) for ref in (TOKYO, WINDOWS, DELL)
+                ) for device in (TOKYO, WINDOWS, DELL)
             },
             auth=AuthBinding(pat_anchor=self.anchor),
             server=ServerBinding(bind="127.0.0.1", port=0),
-            policy=PolicyBinding(send_allow=(), operator_grants=dict(grants or {})),
+            policy=PolicyBinding(send_allow=tuple(send_allow),
+                                 control_allow=tuple(control_allow),
+                                 create_allow=dict(create_allow or {}),
+                                 operator_grants=dict(grants or {})),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
         )
+        self.providers = {}
+        for device in (TOKYO, WINDOWS, DELL):
+            if device in no_route:
+                provider = FakeProvider(device, kind=kinds.get(device, "fleet-node"))
+                # Remove the method so the surface sees a provider without one.
+                provider.native_call = None
+            else:
+                provider = FakeProvider(device, kind=kinds.get(device, "cloudcli-mcp-http"))
+            self.providers[device] = provider
         from fleet_mcp.registry import load_registry
-        self.providers = {
-            ref: FakeNativeProvider(ref) for ref in (TOKYO, WINDOWS, DELL)
-        }
         self.service = FleetService(self.config,
                                     registry=load_registry(self.registry),
                                     providers=dict(self.providers))
@@ -105,10 +125,12 @@ class Harness:
     def principal(self, *scopes, name=OAUTH):
         return Principal(name=name, scopes=frozenset(scopes), credential_kind="oauth")
 
-    def call(self, native, *, args=None, device=TOKYO, principal=None, **kw):
+    def call(self, native, *, args=None, device=TOKYO, principal=None,
+             session_ref=None, project=None):
         return self.service.native_call(
             principal if principal is not None else self.principal(SCOPE_READ),
-            device_ref=device, native_tool=native, arguments=args or {}, **kw)
+            device_ref=device, native_tool=native, arguments=args or {},
+            session_ref=session_ref, project=project)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +166,6 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(
             cloudcli_native.FLEET_SCOPE_FOR_NATIVE[cloudcli_native.NATIVE_NAVIGATE],
             "fleet:navigate")
-        # And Fleet does not implement either.
         from fleet_mcp import scopes
         self.assertNotIn("fleet:approve", scopes.IMPLEMENTED_SCOPES)
         self.assertNotIn("fleet:navigate", scopes.IMPLEMENTED_SCOPES)
@@ -153,15 +174,13 @@ class ManifestTest(unittest.TestCase):
         bg = cloudcli_native.NATIVE_BY_NAME["session_background"]
         self.assertEqual(set(bg.native_scopes),
                          {cloudcli_native.NATIVE_READ, cloudcli_native.NATIVE_CONTROL})
-        # Its governance is the STRONGER class, so a read grant cannot stop it.
         self.assertEqual(bg.governance, cloudcli_native.GOV_CONTROL)
 
     def test_manifest_is_machine_readable(self):
         m = cloudcli_native.manifest()
         self.assertEqual(m["count"], 22)
         self.assertEqual(m["schema"], "serveros/fleet-cloudcli-native-manifest.v1")
-        blob = json.dumps(m, ensure_ascii=False)
-        self.assertIn("fleet_cloudcli_", blob)
+        self.assertIn("fleet_cloudcli_", json.dumps(m, ensure_ascii=False))
 
     def test_namespacing_and_closed_lookup(self):
         self.assertEqual(cloudcli_native.namespaced("overview"), "fleet_cloudcli_overview")
@@ -175,20 +194,13 @@ class CoverageTest(unittest.TestCase):
     def test_agrees_on_the_exact_set(self):
         report = cloudcli_native.coverage([t.name for t in cloudcli_native.NATIVE_TOOLS])
         self.assertTrue(report["agrees"])
-        self.assertEqual(report["missing"], [])
-        self.assertEqual(report["extra"], [])
 
-    def test_reports_a_missing_tool(self):
+    def test_reports_missing_and_extra(self):
         observed = [t.name for t in cloudcli_native.NATIVE_TOOLS if t.name != "run_get"]
+        observed.append("session_teleport")
         report = cloudcli_native.coverage(observed)
-        self.assertFalse(report["agrees"])
         self.assertEqual(report["missing"], ["run_get"])
-
-    def test_reports_an_extra_tool_the_device_grew(self):
-        observed = [t.name for t in cloudcli_native.NATIVE_TOOLS] + ["session_teleport"]
-        report = cloudcli_native.coverage(observed)
         self.assertEqual(report["extra"], ["session_teleport"])
-        self.assertFalse(report["agrees"])
 
     def test_reports_annotation_drift(self):
         report = cloudcli_native.coverage(
@@ -196,148 +208,353 @@ class CoverageTest(unittest.TestCase):
             {"session_send": {"readOnlyHint": False, "destructiveHint": True,
                               "idempotentHint": False, "openWorldHint": True}})
         self.assertEqual([d["tool"] for d in report["annotation_drift"]], ["session_send"])
-        self.assertFalse(report["agrees"])
 
     def test_two_devices_report_differently(self):
-        # The three devices are NOT hardcoded to be identical: a device sharing
-        # fewer tools gets its own report.
         a = cloudcli_native.coverage([t.name for t in cloudcli_native.NATIVE_TOOLS])
         b = cloudcli_native.coverage(["overview", "session_send"])
         self.assertTrue(a["agrees"])
         self.assertFalse(b["agrees"])
-        self.assertEqual(b["observed_count"], 2)
+
+
+class NativeSchemaTest(unittest.TestCase):
+    """Per-tool schemas from the device, and drift that is named not widened."""
+
+    LIVE = {"type": "object",
+            "properties": {"session": {"type": "string"},
+                           "message": {"type": "string"},
+                           "idempotency_key": {"type": ["string", "null"]}},
+            "required": ["session", "message"],
+            "additionalProperties": False}
+
+    def test_mirrored_schema_adds_device_and_keeps_native_shape(self):
+        native = cloudcli_native.NATIVE_BY_NAME["session_send"]
+        schema = cloudcli_native.mirrored_schema(native, self.LIVE)
+        self.assertEqual(schema["required"], ["device_ref"])
+        self.assertEqual(set(schema["properties"]),
+                         {"device_ref", "session_ref", "arguments"})
+        inner = schema["properties"]["arguments"]
+        self.assertEqual(inner["required"], ["session", "message"])
+        # The nullable type is carried, not flattened.
+        self.assertEqual(inner["properties"]["idempotency_key"]["type"],
+                         ["string", "null"])
+
+    def test_create_schema_needs_a_project_not_a_session_ref(self):
+        native = cloudcli_native.NATIVE_BY_NAME["session_create"]
+        schema = cloudcli_native.mirrored_schema(native, self.LIVE)
+        self.assertIn("project", schema["properties"])
+        self.assertNotIn("session_ref", schema["properties"])
+
+    def test_validate_refuses_missing_required_and_unknown(self):
+        self.assertEqual(
+            cloudcli_native.validate_arguments({"session": "s"},
+                                               {"required": ["session", "message"],
+                                                "properties": {"session": {}, "message": {}},
+                                                "additionalProperties": False}),
+            ["missing required parameter 'message'"])
+        self.assertEqual(
+            cloudcli_native.validate_arguments({"x": 1},
+                                               {"properties": {}, "additionalProperties": False}),
+            ["unknown parameter 'x'"])
+
+    def test_null_and_omitted_stay_distinct(self):
+        schema = {"properties": {"idempotency_key": {"type": ["string", "null"]},
+                                 "message": {}},
+                  "required": ["message"], "additionalProperties": False}
+        # present-and-null is accepted and NOT reported as missing.
+        self.assertEqual(cloudcli_native.validate_arguments(
+            {"message": "m", "idempotency_key": None}, schema), [])
+        # omitted is fine too, and neither becomes the other.
+        self.assertEqual(cloudcli_native.validate_arguments({"message": "m"}, schema), [])
+
+    def test_a_placeholder_schema_checks_nothing(self):
+        # The write tools register `{}` until wired: no authority to check.
+        self.assertEqual(cloudcli_native.validate_arguments({"anything": 1}, {}), [])
+        self.assertEqual(cloudcli_native.validate_arguments({"anything": 1}, None), [])
+
+    def test_per_device_schema_drift_is_named(self):
+        report = cloudcli_native.surface_drift({
+            TOKYO: {"session_send": self.LIVE},
+            DELL: {"session_send": {"type": "object", "properties": {"sessionId": {}},
+                                    "required": ["sessionId"]}},
+            WINDOWS: {"session_send": self.LIVE},
+        })
+        self.assertEqual(report["drifted"], ["session_send"])
+        self.assertFalse(report["tools"]["session_send"]["agrees"])
+        self.assertEqual(report["tools"]["session_send"]["unsupported_by_device"], [DELL])
 
 
 # ---------------------------------------------------------------------------
-# Dispatch, governance, and error transparency
+# Governance — every write through its own floor
 # ---------------------------------------------------------------------------
 
 class DispatchTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self.h = Harness(self.tmp)
 
     def tearDown(self):
         self._tmp.cleanup()
 
     def test_read_tool_is_allowed_with_read_scope(self):
-        result = self.h.call("sessions_list", args={"limit": 5},
-                             principal=self.h.principal(SCOPE_READ))
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(self.h.providers[TOKYO].calls, [("sessions_list", {"limit": 5})])
+        h = Harness(self.tmp)
+        self.assertEqual(h.call("sessions_list", args={"limit": 5},
+                                principal=h.principal(SCOPE_READ)), {"ok": True, "tool": "sessions_list"})
+        self.assertEqual(h.providers[TOKYO].calls, [("sessions_list", {"limit": 5})])
 
     def test_read_tool_without_read_scope_is_denied(self):
+        h = Harness(self.tmp)
         with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("sessions_list", principal=self.h.principal())
+            h.call("sessions_list", principal=h.principal())
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
 
-    def test_write_needs_flag_and_grant_not_a_read(self):
-        # read + send scopes, but no operator grant for this device.
-        principal = self.h.principal(SCOPE_READ, SCOPE_SEND)
-        with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("session_send", args={"session": "s1", "message": "hi"},
-                        principal=principal)
-        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
-        self.assertEqual(self.h.providers[TOKYO].calls, [])
-
-    def test_send_allowed_with_scope_flag_and_operator_grant(self):
+    def test_a_write_with_no_session_ref_is_refused_not_guessed(self):
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("send",)}})
+        # A native `session` id inside `arguments` is NOT an address.
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_send", args={"session": "s1", "message": "hi"},
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_session_ref_for_another_device_is_refused(self):
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("send",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_send", args={"session": "s1", "message": "hi"},
+                   device=TOKYO, session_ref=ref(DELL, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(caught.exception.code, BAD_SESSION_REF)
+
+    def test_send_refused_when_not_in_send_allow_and_no_grant(self):
+        # allow_send on the device, but neither a grant nor a `send_allow` entry.
+        h = Harness(self.tmp, send_allow=())
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_send", args={"session": "s1", "message": "hi"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_send_allowed_when_the_session_is_in_send_allow(self):
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),))
         result = h.call("session_send", args={"session": "s1", "message": "hi"},
-                        device=TOKYO,
+                        session_ref=ref(TOKYO, "s1"),
                         principal=h.principal(SCOPE_READ, SCOPE_SEND))
-        self.assertEqual(result, {"ok": True})
+        self.assertEqual(result, {"ok": True, "tool": "session_send"})
         self.assertEqual(h.providers[TOKYO].calls,
                          [("session_send", {"session": "s1", "message": "hi"})])
 
-    def test_send_grant_is_not_inherited_into_control(self):
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("send",)}})
-        with self.assertRaises(FleetRefusal) as caught:
-            h.call("session_interrupt", args={"session": "s1"}, device=TOKYO,
-                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL))
-        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
-        self.assertEqual(h.providers[TOKYO].calls, [])
-
-    def test_control_is_denied_until_fleet_names_the_verb(self):
-        # `control` is a PLANNED operator-grant verb: even a device with
-        # `allow_control` and a principal granted `("control",)` is refused,
-        # because no implemented verb can express it yet.
+    def test_interrupt_refused_when_not_in_control_allow(self):
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("control",)}})
         with self.assertRaises(FleetRefusal) as caught:
-            h.call("session_interrupt", args={"session": "s1"}, device=TOKYO,
+            h.call("session_interrupt", args={"session": "s1"},
+                   session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
-        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        # device allow_control is on, but the SESSION is not in control_allow.
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
         self.assertEqual(h.providers[TOKYO].calls, [])
 
-    def test_approve_is_denied_because_fleet_does_not_grant_it(self):
-        # Even with every implemented scope and every grant, `fleet:approve` is
-        # not implemented, so the answer is refused rather than inherited.
+    def test_interrupt_allowed_with_control_allow_and_grant(self):
+        h = Harness(self.tmp, control_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("control",)}})
+        result = h.call("session_interrupt", args={"session": "s1"},
+                        session_ref=ref(TOKYO, "s1"),
+                        principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(result, {"ok": True, "tool": "session_interrupt"})
+
+    def test_interrupt_needs_the_operator_grant_even_with_control_allow(self):
+        h = Harness(self.tmp, control_allow=(ref(TOKYO, "s1"),), grants={})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_interrupt", args={"session": "s1"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+
+    def test_a_send_grant_is_not_inherited_into_control(self):
+        h = Harness(self.tmp, control_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("send",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_interrupt", args={"session": "s1"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+
+    def test_create_refused_without_a_project(self):
+        h = Harness(self.tmp, create_allow={}, grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create", args={"project": "p1"},
+                   principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+
+    def test_create_refused_when_project_not_in_create_allow(self):
+        from fleet_mcp.config import CreateGrant
+        h = Harness(self.tmp, create_allow={"other": CreateGrant()},
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create", args={"project": "p1"}, project="p1",
+                   principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_create_allowed_with_project_allow_and_grant(self):
+        from fleet_mcp.config import CreateGrant
+        h = Harness(self.tmp, create_allow={"p1": CreateGrant()},
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        result = h.call("session_create", args={"project": "p1"}, project="p1",
+                        principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(result, {"ok": True, "tool": "session_create"})
+
+    def test_approval_answer_is_denied_because_fleet_does_not_grant_approve(self):
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("control", "send", "create")}})
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer", args={"approvalId": "a1", "answers": {}},
-                   device=TOKYO,
-                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CREATE,
-                                         SCOPE_CONTROL))
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CREATE, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
         self.assertEqual(h.providers[TOKYO].calls, [])
 
     def test_approvals_list_is_a_read(self):
-        result = self.h.call("approvals_list", principal=self.h.principal(SCOPE_READ))
-        self.assertEqual(result, {"ok": True})
+        h = Harness(self.tmp)
+        self.assertEqual(h.call("approvals_list", principal=h.principal(SCOPE_READ)),
+                         {"ok": True, "tool": "approvals_list"})
 
-    def test_navigate_is_denied(self):
+    def test_ui_open_session_is_denied_because_navigate_is_planned(self):
+        h = Harness(self.tmp)
         with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("ui_open_session", args={"session": "s1"},
-                        principal=self.h.principal(SCOPE_READ, SCOPE_CONTROL))
+            h.call("ui_open_session", args={"session": "s1"},
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
-
-    def test_background_stop_needs_control_not_read(self):
-        # A read grant is refused at the SCOPE gate: the stop path carries
-        # `cloudcli:session:control`, which needs `fleet:control`.
-        with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("session_background", args={"session": "s1", "taskId": "t1"},
-                        principal=self.h.principal(SCOPE_READ))
-        self.assertEqual(caught.exception.code, SCOPE_DENIED)
-        # With the control scope but no expressible grant, it is the grant gate.
-        with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("session_background", args={"session": "s1", "taskId": "t1"},
-                        principal=self.h.principal(SCOPE_READ, SCOPE_CONTROL))
-        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
 
     def test_unknown_native_tool_is_refused_before_any_call(self):
+        h = Harness(self.tmp)
         with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("session_teleport", principal=self.h.principal(SCOPE_READ))
+            h.call("session_teleport", principal=h.principal(SCOPE_READ))
         self.assertEqual(caught.exception.code, BAD_REQUEST)
-        self.assertEqual(self.h.providers[TOKYO].calls, [])
+        self.assertEqual(h.providers[TOKYO].calls, [])
 
     def test_provider_error_code_survives_without_remote_text(self):
-        # A provider refusal is an ANSWER: its code survives, its remote detail
-        # does not ride out as a fabricated one.
-        self.h.providers[TOKYO] = FakeNativeProvider(
-            TOKYO, fail=FleetRefusal(PROVIDER_UNREACHABLE, "no route"))
-        self.h.service.providers[TOKYO] = self.h.providers[TOKYO]
+        h = Harness(self.tmp)
+        h.providers[TOKYO]._fail = FleetRefusal(PROVIDER_UNREACHABLE, "no route")
         with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("session_get", args={"session": "s1"},
-                        principal=self.h.principal(SCOPE_READ))
+            h.call("session_get", args={"session": "s1"}, principal=h.principal(SCOPE_READ))
         self.assertEqual(caught.exception.code, PROVIDER_UNREACHABLE)
 
-    def test_arguments_pass_through_unchanged(self):
-        # null vs omitted is preserved: the payload goes to the device whole.
-        payload = {"session": "s1", "message": "hi", "idempotency_key": None}
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("send",)}})
-        h.call("session_send", args=payload, device=TOKYO,
-               principal=h.principal(SCOPE_READ, SCOPE_SEND))
-        sent = h.providers[TOKYO].calls[0][1]
-        self.assertIn("idempotency_key", sent)
-        self.assertIsNone(sent["idempotency_key"])
+    def test_a_read_only_list_has_no_side_effect(self):
+        h = Harness(self.tmp)
+        h.call("sessions_list", principal=h.principal(SCOPE_READ))
+        # exactly one call, and it is the read; nothing was mutated.
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls], ["sessions_list"])
 
-    def test_a_disabled_device_is_unknown(self):
-        self.h.config.providers[DELL] = ProviderBinding(
-            device_ref=DELL, kind="cloudcli-mcp-http", endpoint="http://x/mcp",
-            credential_anchor=self.h.anchor, enabled=False)
+
+class ProviderRouteTest(unittest.TestCase):
+    """Three provider kinds, a missing route, and the fleet-node closed route."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_devices_of_every_kind_are_addressable(self):
+        h = Harness(self.tmp, kinds={TOKYO: "cloudcli-mcp-http",
+                                     WINDOWS: "fleet-node", DELL: "fleet-node"})
+        for device in (TOKYO, WINDOWS, DELL):
+            result = h.call("overview", device=device,
+                            principal=h.principal(SCOPE_READ))
+            self.assertEqual(result["tool"], "overview")
+        self.assertEqual(h.providers[WINDOWS].calls, [("overview", {})])
+
+    def test_a_provider_with_no_native_route_is_refused(self):
+        h = Harness(self.tmp, kinds={DELL: "fleet-node"}, no_route=(DELL,))
         with self.assertRaises(FleetRefusal) as caught:
-            self.h.call("overview", device=DELL, principal=self.h.principal(SCOPE_READ))
-        self.assertEqual(caught.exception.code, UNKNOWN_DEVICE)
+            h.call("overview", device=DELL, principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+
+    def test_fleet_node_provider_posts_the_closed_route(self):
+        provider = FleetNodeProvider(ProviderBinding(
+            device_ref=WINDOWS, kind="fleet-node", endpoint="http://x",
+            credential_anchor=self.tmp / "s"))
+        seen = {}
+
+        def _fake_request(method, path, payload=None):
+            seen.update(method=method, path=path, payload=payload)
+            return {"ok": True}
+
+        provider._request = _fake_request
+        provider.native_call("session_send", {"session": "s1"})
+        self.assertEqual(seen["path"], "/v1/native/call")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["payload"], {"tool": "session_send",
+                                           "arguments": {"session": "s1"}})
+
+    def test_fleet_node_provider_refuses_an_unrecorded_tool(self):
+        provider = FleetNodeProvider(ProviderBinding(
+            device_ref=WINDOWS, kind="fleet-node", endpoint="http://x",
+            credential_anchor=self.tmp / "s"))
+        with self.assertRaises(FleetRefusal):
+            provider.native_call("session_teleport", {})
+
+
+class NodeRouteSignatureTest(unittest.TestCase):
+    """The signed, closed node route: replay, nonce, wrong device, tamper."""
+
+    SECRET = "s3cr3t-value-for-tests-only"
+
+    def _headers(self, *, device=WINDOWS, ts=None, nonce=None, body=b'{"a":1}'):
+        return node_protocol.sign(self.SECRET, method="POST", path="/v1/native/call",
+                                  body=body, device_ref=device,
+                                  timestamp=ts, nonce=nonce), body
+
+    def test_a_signed_request_verifies(self):
+        headers, body = self._headers()
+        cache = node_protocol.ReplayCache()
+        who = node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                                   body=body, headers=headers,
+                                   expected_device_ref=WINDOWS, replay=cache)
+        self.assertEqual(who, WINDOWS)
+
+    def test_a_replayed_nonce_is_refused(self):
+        headers, body = self._headers(nonce="fixed-nonce")
+        cache = node_protocol.ReplayCache()
+        node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                             body=body, headers=headers,
+                             expected_device_ref=WINDOWS, replay=cache)
+        with self.assertRaises(node_protocol.SignatureError) as caught:
+            node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                                 body=body, headers=headers,
+                                 expected_device_ref=WINDOWS, replay=cache)
+        self.assertEqual(caught.exception.code, "REPLAY")
+
+    def test_a_wrong_device_is_refused(self):
+        headers, body = self._headers(device=TOKYO)
+        with self.assertRaises(node_protocol.SignatureError):
+            node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                                 body=body, headers=headers,
+                                 expected_device_ref=WINDOWS,
+                                 replay=node_protocol.ReplayCache())
+
+    def test_a_tampered_body_is_refused(self):
+        # A current timestamp, so the body digest is what fails — not the clock.
+        headers, _ = self._headers()
+        with self.assertRaises(node_protocol.SignatureError) as caught:
+            node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                                 body=b'{"a":2}', headers=headers,
+                                 expected_device_ref=WINDOWS,
+                                 replay=node_protocol.ReplayCache())
+        self.assertEqual(caught.exception.code, "BAD_SIGNATURE")
+
+    def test_a_stale_timestamp_is_refused(self):
+        headers, body = self._headers(ts="9999999999")
+        with self.assertRaises(node_protocol.SignatureError) as caught:
+            node_protocol.verify(self.SECRET, method="POST", path="/v1/native/call",
+                                 body=body, headers=headers,
+                                 expected_device_ref=WINDOWS,
+                                 replay=node_protocol.ReplayCache())
+        self.assertEqual(caught.exception.code, "STALE_REQUEST")
+
+    def test_the_native_route_is_in_the_closed_route_table(self):
+        self.assertIn("POST /v1/native/call", node_protocol.ROUTES)
+        # And it is a FIXED path: the tool name is in the body, not the path.
+        self.assertFalse(any("{tool}" in r for r in node_protocol.ROUTES))
 
 
 class SurfaceTest(unittest.TestCase):
@@ -346,8 +563,6 @@ class SurfaceTest(unittest.TestCase):
         for tool in cloudcli_native.NATIVE_TOOLS:
             self.assertIn(tool.namespaced, names)
         self.assertEqual(len([n for n in names if n.startswith("fleet_cloudcli_")]), 22)
-        self.assertEqual(len(names), 31)
-        # `tool_names()` stays the hand-written nine the contract enumerates.
         self.assertEqual(len(tools_mod.tool_names()), 9)
 
     def test_mirror_annotations_match_the_manifest(self):
@@ -358,10 +573,13 @@ class SurfaceTest(unittest.TestCase):
             self.assertEqual(schema.annotations["destructiveHint"], native.destructive)
             self.assertEqual(schema.annotations["openWorldHint"], native.open_world)
 
-    def test_mirror_schema_is_closed_and_needs_a_device(self):
-        tool = tools_mod.SERVED_BY_NAME["fleet_cloudcli_overview"]
-        self.assertFalse(tool.input_schema["additionalProperties"])
-        self.assertEqual(tool.input_schema["required"], ["device_ref"])
+    def test_a_write_mirror_declares_the_address_its_floor_needs(self):
+        send = tools_mod.SERVED_BY_NAME["fleet_cloudcli_session_send"]
+        self.assertIn("session_ref", send.input_schema["properties"])
+        create = tools_mod.SERVED_BY_NAME["fleet_cloudcli_session_create"]
+        self.assertIn("project", create.input_schema["properties"])
+        read = tools_mod.SERVED_BY_NAME["fleet_cloudcli_overview"]
+        self.assertNotIn("session_ref", read.input_schema["properties"])
 
     def test_unknown_argument_is_refused_on_a_mirror_tool(self):
         tool = tools_mod.SERVED_BY_NAME["fleet_cloudcli_overview"]

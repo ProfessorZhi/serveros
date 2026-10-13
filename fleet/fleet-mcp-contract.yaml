@@ -505,8 +505,8 @@ authorization:
       every caller, or an access token, which is refreshed on a schedule that
       has nothing to do with an operator's intent
     device_form: 'device:<id>, a registry ref; a hostname is not an identity'
-    verbs: [send]
-    verbs_planned: [control, approve, navigate]
+    verbs: [send, control, create]
+    verbs_planned: [approve, navigate]
     verbs_rule: >-
       A planned verb is refused at load rather than accepted and ignored, and
       `control` does not inherit `send`: each is written and read as its own
@@ -557,6 +557,43 @@ authorization:
 # signed, allow-listed set of eight session operations served by a connector
 # that machine runs.
 
+native_mirror:
+  # The CloudCLI native surface, inherited whole. The 22 verbs are NOT
+  # enumerated here: the surface is DERIVED once, in
+  # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
+  # hand-written nine. Restating 22 rows here would be a second copy that drifts
+  # the first time CloudCLI adds a parameter.
+  declared_in: fleet_mcp/cloudcli_native.py#NATIVE_TOOLS
+  manifest_schema: serveros/fleet-cloudcli-native-manifest.v1
+  prefix: 'fleet_cloudcli_'
+  native_server: CloudCLI
+  native_version_recorded: '1.39.0'
+  count: 22
+  served_total: 31            # the nine hand-written tools plus the 22 mirrored
+  # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
+  # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
+  # need it are DENIED rather than inherited.
+  scope_map:
+    'cloudcli:read': 'fleet:read'
+    'cloudcli:session:send': 'fleet:send'
+    'cloudcli:session:create': 'fleet:create'
+    'cloudcli:session:control': 'fleet:control'
+    'cloudcli:approve': 'fleet:approve'      # planned -> denied
+    'cloudcli:navigate': 'fleet:navigate'    # planned -> denied
+  # Every write is routed through the SAME floor its Fleet verb uses, and the
+  # session / project the floor is stated over must be named at the outer layer
+  # (`session_ref` / `project`), never read out of the native `arguments`.
+  write_floor:
+    send: _may_send            # policy.send_allow, per session
+    control: _may_control      # policy.control_allow, per session
+    create: _may_create        # policy.create_allow, per project
+    arguments_are_not_authority: true
+  drift:
+    rule: >-
+      Per-tool schemas come from the device's live `tools/list`. A tool whose
+      schema differs between devices is UNSUPPORTED_BY_DEVICE for the devices
+      that differ, rather than widened to a union no device accepts.
+
 node_transport:
   kind: fleet-node
   protocol: serveros/fleet-node/v1
@@ -587,6 +624,10 @@ node_transport:
     - 'POST /v1/sessions/{id}/send'
     - 'POST /v1/sessions/{id}/interrupt'
     - 'GET /v1/runs/{run_id}'
+    # The one mirrored-native route. The PATH is fixed and the tool is named in
+    # the SIGNED body, so there is no path parameter and no redirect; the device
+    # refuses any tool name outside the recorded CloudCLI set.
+    - 'POST /v1/native/call'
   route_set: closed
   declared_in: fleet_mcp/node_protocol.py#ROUTES
   rule: >-

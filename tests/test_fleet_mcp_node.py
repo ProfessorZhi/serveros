@@ -72,6 +72,13 @@ class FakeProvider:
         if self.fail is not None:
             raise self.fail
 
+    def native_call(self, tool, arguments):
+        # The mirrored-native half of CloudCLI. The connector forwards a name
+        # from its closed set to here and records what it was asked.
+        self.calls.append(("native_call", tool, arguments))
+        self._maybe_fail()
+        return {"tool": tool, "arguments": arguments}
+
     def health(self) -> ProviderHealth:
         self.calls.append(("health",))
         if self.fail is not None:
@@ -257,6 +264,7 @@ class RouteClosure(_Base):
             ("POST", f"/v1/sessions/{ALLOWED}/interrupt", {}),
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
             ("POST", "/v1/sessions", {"project": "p-1"}),
+            ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
         ]
         self.assertEqual(len(cases), len(np.ROUTES))
         for method, path, body in cases:
