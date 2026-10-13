@@ -181,6 +181,16 @@ class NodeConfig:
     # which admits a session this list does not name. Read `control_grant`
     # rather than this list to find out which of the two admitted a given call.
     allow_control_to: tuple[str, ...] = ()
+    # The mirrored `approval_answer`: may a caller answer an approval request ON
+    # THIS MACHINE? Off by default and its own flag, because answering an
+    # approval is a person's decision about one request, not a consequence of
+    # being allowed to stop a run or send a message. A device that never wrote
+    # this word refuses every approval answer, including from the Fleet owner.
+    allow_approve: bool = False
+    # The mirrored `ui_open_session`: may a caller change what this machine's
+    # screen shows? Off by default and separate from control, because navigation
+    # is a visible side effect on somebody's desktop, not a session operation.
+    allow_navigate: bool = False
     max_body_bytes: int = 1_000_000
     notes: str = ""
     # Owner-granted floors: verbs the person at this keyboard has granted for
@@ -715,6 +725,13 @@ class Connector:
             )
         if not isinstance(arguments, dict):
             raise FleetRefusal("BAD_REQUEST", "arguments must be a JSON object")
+        # BLOCKER-2: the DEVICE's own floor, applied here on the machine, using
+        # the device-LOCAL session id inside `arguments` (not the Fleet-side
+        # address, which this machine never sees). Without this the route would
+        # be a way around every `allow_send_to` / `allow_create` /
+        # `allow_control_to` this workstation's owner wrote at this keyboard.
+        self._native_floor(cloudcli_native, cloudcli_native.NATIVE_BY_NAME[tool],
+                           arguments)
         caller = getattr(self.provider, "native_call", None)
         if caller is None:
             raise FleetRefusal(
@@ -723,6 +740,91 @@ class Connector:
                 f"does not inherit the CloudCLI native surface.",
             )
         return caller(tool, arguments)
+
+    def _native_floor(self, native_mod, native, arguments: dict[str, Any]) -> None:
+        """The DEVICE's own floor for one mirrored verb. Both ends must say yes.
+
+        The host checks the Fleet floor; this checks the machine's, and the
+        two are independent — a host credential that reaches this route has not
+        thereby opened anything on this workstation. Which machine-floor applies
+        is the verb's class:
+
+          * send -> `send_grant(key)`, the same list/floor `_send` uses;
+          * control / reconfigure -> `permits_control(key)`, the same one
+            `_interrupt` uses — `session_start`/`session_close` land here too;
+          * create -> `allow_create` AND `allow_create_projects`;
+          * approve / navigate -> new default-deny flags (`allow_approve`,
+            `allow_navigate`), because neither is a session operation and
+            neither may ride on `allow_control`.
+
+        The session is taken from `arguments.session` — the DEVICE-LOCAL id the
+        native payload carries, which is what `_key` composes against. The host
+        side is the mirror image (it uses the Fleet address), and neither may be
+        skipped.
+        """
+        governance = native_mod.governance_for(native, arguments)
+        if governance == native_mod.GOV_READ:
+            return
+        if governance == native_mod.GOV_APPROVE:
+            if not self.config.allow_approve:
+                raise FleetRefusal(
+                    "WRITE_NOT_GRANTED",
+                    "this machine does not authorize an approval to be answered "
+                    "on it. `allow_approve` is off in its own binding, and that "
+                    "file lives on this machine, not on the caller's.",
+                )
+            return
+        if governance == native_mod.GOV_NAVIGATE:
+            if not self.config.allow_navigate:
+                raise FleetRefusal(
+                    "WRITE_NOT_GRANTED",
+                    "this machine does not authorize its screen to be navigated. "
+                    "`allow_navigate` is off in its own binding.",
+                )
+            return
+        if governance == native_mod.GOV_CREATE:
+            if not self.config.allow_create:
+                raise FleetRefusal(
+                    "WRITE_NOT_GRANTED",
+                    "this machine does not authorize session creation. "
+                    "`allow_create` is off in its own binding.",
+                )
+            project = arguments.get("project")
+            if (not isinstance(project, str) or not project.strip()
+                    or project not in self.config.allow_create_projects):
+                raise FleetRefusal(
+                    "WRITE_NOT_GRANTED",
+                    f"project {project!r} is not one this machine authorizes a "
+                    f"session on. `allow_create_projects` names them, and the "
+                    f"default is none.",
+                )
+            return
+        # send / control / reconfigure: the session-bound machine floors.
+        native_id = arguments.get("session")
+        if not isinstance(native_id, str) or not native_id.strip():
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "this verb addresses one session, and the call named none. The "
+                "machine floor is stated over a session id and cannot be skipped "
+                "by omitting it.",
+            )
+        key = self._key(native_id.strip())
+        if governance == native_mod.GOV_SEND:
+            if self.config.send_grant(key) is None:
+                raise FleetRefusal(
+                    "WRITE_NOT_GRANTED",
+                    f"this machine is not authorized to send to {key.ref}. Its "
+                    f"allow_send_to list is {list(self.config.allow_send_to)} and "
+                    f"that decision lives on this machine, not on the caller's.",
+                )
+            return
+        if not self.config.permits_control(key):
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this machine is not authorized to control {key.ref}. Its "
+                f"allow_control_to list is {list(self.config.allow_control_to)} "
+                f"and that decision lives on this machine, not on the caller's.",
+            )
 
     # -- handlers ----------------------------------------------------------
 

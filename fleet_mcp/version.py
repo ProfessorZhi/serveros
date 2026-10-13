@@ -6,7 +6,10 @@ SERVER_VERSION = "0.1.0"
 # The revision of the Fleet tool surface. Bumped when a tool's contract changes
 # shape, not when an implementation detail does — a caller caches the tool list
 # and the annotations it read, so a change to either is a new surface revision.
-TOOL_SURFACE_REVISION = "fleet-mcp-2"
+# `fleet-mcp-3`: the surface grew from nine hand-written tools to those nine
+# PLUS the 22 inherited CloudCLI verbs — a change a client that cached
+# `tools/list` must be told about, so the revision moved with it.
+TOOL_SURFACE_REVISION = "fleet-mcp-3"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

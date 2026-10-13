@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-2
+tool_surface_revision: fleet-mcp-3
 
 # ---------------------------------------------------------------------------
 # Ownership

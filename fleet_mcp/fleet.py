@@ -1197,9 +1197,37 @@ class FleetService:
             )
         for fleet_scope in native.fleet_scopes():
             principal.require(fleet_scope)
-        self._gate_native_write(principal, device_ref, binding, native,
-                                arguments or {}, session_ref=session_ref,
-                                project=project)
+        # HIGH-6: the rate limiter every hand-written verb passes through. A
+        # mirrored call is a call like any other and must not be a way around it.
+        self.admit(principal)
+        # LOW-14: `arguments` is passed to the device. A value that is not an
+        # object is refused here rather than silently coerced (`dict(["ab"])`
+        # turns a list into a mapping) or raising a Python-level error later.
+        if arguments is not None and not isinstance(arguments, dict):
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}`'s arguments must be a JSON object; a "
+                f"{type(arguments).__name__} was given.",
+            )
+        args = dict(arguments or {})
+        self._gate_native_write(principal, device_ref, binding, native, args,
+                                session_ref=session_ref, project=project)
+        # HIGH-7: validate the caller's arguments against the tool's OWN schema
+        # (recorded from CloudCLI 1.39.0; a live per-device schema may override).
+        # A required parameter that is missing, or one the schema does not
+        # declare, is refused rather than forwarded and silently ignored.
+        problems = cloudcli_native.validate_arguments(
+            args, cloudcli_native.input_schema(native_tool))
+        if problems:
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` arguments do not match the CloudCLI "
+                f"schema: {'; '.join(problems)}.",
+            )
+        # HIGH-5: the read limit is the SAME bound the hand-written reader uses;
+        # a mirrored read cannot ask for more than `fleet_read_session` may.
+        if cloudcli_native.governance_for(native, args) == cloudcli_native.GOV_READ:
+            self._clamp_native_read(args)
         provider = self._require_provider(device_ref)
         caller = getattr(provider, "native_call", None)
         if caller is None:
@@ -1208,16 +1236,29 @@ class FleetService:
                 f"{device_ref}'s provider ({provider.kind}) does not inherit the "
                 f"CloudCLI native surface.",
             )
-        result = caller(native_tool, dict(arguments or {}))
+        result = caller(native_tool, args)
         audit = getattr(self, "audit", None)
         if audit is not None:
-            # Only allowlisted fields: the egress table (`disclosure.py`) admits
-            # `principal` and `device_ref`. The native tool NAME is a fact worth
-            # recording and is not on that table yet — naming it belongs to
-            # `disclosure.py`'s owner, not to this caller.
+            # The tool NAME is on the audit allowlist so the record says WHICH
+            # verb ran; the arguments are not, so nothing a user typed or a
+            # session held is written to the log.
             audit.record("mcp.native_call", principal=principal.name,
-                         device_ref=device_ref)
+                         device_ref=device_ref, tool=native.name)
         return result
+
+    def _clamp_native_read(self, args: dict[str, Any]) -> None:
+        """Cap a mirrored read's page size to the surface's own bound.
+
+        `fleet_read_session` clamps `limit` to `policy.max_read_messages`; a
+        mirrored `session_read`/`session_search` must not be a way to ask for
+        everything at once. The cap is applied to the arguments SENT to the
+        device, so the device is never handed an unbounded page.
+        """
+        if not isinstance(args.get("limit"), int):
+            return
+        bound = self.config.policy.max_read_messages
+        if isinstance(bound, int) and args["limit"] > bound:
+            args["limit"] = bound
 
     def _gate_native_write(self, principal: Principal, device_ref: str, binding,
                            native, arguments: dict[str, Any], *,
@@ -1243,19 +1284,41 @@ class FleetService:
         governance = cloudcli_native.governance_for(native, arguments)
         if governance == cloudcli_native.GOV_READ:
             return
-        if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
+        if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL,
+                          cloudcli_native.GOV_RECONFIGURE):
             key = self._native_session_key(device_ref, session_ref, native)
+            # BLOCKER-1: the session the floor passed on MUST be the session the
+            # device is asked about. Without this, a `session_ref` for an
+            # allowed session alongside `arguments.session` for another one
+            # would be authorized as the first and delivered to the second.
+            self._same_identity(arguments, "session", key.native_session_id, native)
             if governance == cloudcli_native.GOV_SEND:
                 self._may_send(principal, key)
             else:
                 self._may_control(key)
                 self._require_operator_verb(principal, device_ref, "control", native)
+                if governance == cloudcli_native.GOV_RECONFIGURE:
+                    # HIGH-4: reconfigure can raise a session's model/effort/
+                    # permission mode, so it carries the same ceiling a create
+                    # does — checked against the SESSION's project grant.
+                    self._native_reconfigure_ceiling(device_ref, project,
+                                                     arguments, native)
             return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)
-            self._may_create(device_ref, project_name)
+            # BLOCKER-1 for the project axis: the project the floor passed on is
+            # the project that must be minted in.
+            self._same_identity(arguments, "project", project_name, native)
+            grant = self._may_create(device_ref, project_name)
             self._require_operator_verb(principal, device_ref, "create", native,
                                         project=project_name)
+            # HIGH-3: a caller may not name a model or permission mode the
+            # project's grant does not allow — the same ceiling the hand-written
+            # `fleet_create_session` applies, reused rather than restated.
+            self._may_name_mode_and_model(
+                device_ref, project_name, grant,
+                model=arguments.get("model"),
+                permission_mode=arguments.get("permissionMode"))
             return
         if governance == cloudcli_native.GOV_APPROVE:
             self._native_approval(arguments, native)
@@ -1270,6 +1333,63 @@ class FleetService:
             f"Fleet floor; it must be refused at the scope gate, and reaching "
             f"this branch is a defect in `cloudcli_native`'s governance map.",
         )
+
+    def _same_identity(self, arguments: dict[str, Any], field: str,
+                       expected: str, native) -> None:
+        """The address the floor passed on is the address forwarded.
+
+        The floor (`_may_send` / `_may_control` / `_may_create`) is stated over
+        a Fleet address given at the OUTER layer; the native tool names its own
+        target inside `arguments`. If the two disagree, the call is authorized
+        as one and delivered to another, which is the whole of BLOCKER-1. Both
+        are therefore required, and they must match exactly.
+        """
+        got = arguments.get(field)
+        if not isinstance(got, str) or not got.strip():
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` must name its own `{field}` inside "
+                f"`arguments` — the same one the floor was checked on — and this "
+                f"call named none. The surface will not fill it in from the "
+                f"outer address, because a call that addresses one thing and is "
+                f"checked against another is how the floor is bypassed.",
+            )
+        if got.strip() != expected:
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}`: the `{field}` the floor was checked on "
+                f"and the `{field}` being forwarded differ. A call authorized "
+                f"against one target and delivered to another is refused.",
+                field=field,
+            )
+
+    def _native_reconfigure_ceiling(self, device_ref: str, project: str | None,
+                                    arguments: dict[str, Any], native) -> None:
+        """A reconfigure that names a model/mode is bounded by the project grant."""
+        mode = arguments.get("permissionMode")
+        model = arguments.get("model")
+        if mode is None and model is None:
+            return
+        if not isinstance(project, str) or not project.strip():
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` names a `permissionMode` or `model`, so it "
+                f"must also name `project` — the ceiling a permission change is "
+                f"checked against is the project's own grant, and with no project "
+                f"there is nothing to check it against, so it is refused.",
+            )
+        grant = self.config.policy.create_allow.get(project.strip())
+        if grant is None:
+            raise refuse(
+                WRITE_NOT_GRANTED,
+                f"`{native.namespaced}` cannot change {project!r}'s model or "
+                f"permission mode: the project is not in `policy.create_allow`, so "
+                f"no ceiling exists to allow `{mode or model}`. An unbounded "
+                f"permission change is refused rather than defaulted.",
+                device_ref=device_ref, project=project,
+            )
+        self._may_name_mode_and_model(device_ref, project.strip(), grant,
+                                      model=model, permission_mode=mode)
 
     def _native_approval(self, arguments: dict[str, Any], native) -> None:
         """An approval answer must name the request AND the user's choice.

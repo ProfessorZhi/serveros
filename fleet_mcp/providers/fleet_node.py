@@ -35,6 +35,7 @@ from typing import Any
 
 from .. import cloudcli_native
 from ..config import ProviderBinding
+from ..disclosure import remote_summary
 from ..errors import (
     BAD_REQUEST,
     PROVIDER_TIMEOUT,
@@ -104,7 +105,11 @@ class FleetNodeProvider(DeviceProvider):
         try:
             decoded = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
-            raise refuse(BAD_REQUEST, f"connector returned non-JSON: {raw[:200]!r}") from None
+            # MEDIUM-11: the connector's bytes are measured, never relayed — the
+            # same `disclosure.remote_summary` the HTTP provider uses, so the
+            # node path is not a wider egress than the MCP path (#157).
+            raise refuse(BAD_REQUEST, remote_summary(
+                f"the {self.device_ref} connector", method=method, body=raw)) from None
         if isinstance(decoded, dict) and "error" in decoded:
             err = decoded["error"] or {}
             raise self._map_code(err.get("code"), err.get("detail") or "")
@@ -141,7 +146,8 @@ class FleetNodeProvider(DeviceProvider):
                     "the connector rejected this runtime's signature. The tunnel "
                     "is up and the secret is wrong — check both copies.",
                 )
-            return refuse(PROVIDER_UNREACHABLE, f"connector returned HTTP {status}: {raw[:200]}")
+            return refuse(PROVIDER_UNREACHABLE, remote_summary(
+                f"the {self.device_ref} connector", status=status, body=raw))
 
     @staticmethod
     def _map_code(code: str | None, detail: str):

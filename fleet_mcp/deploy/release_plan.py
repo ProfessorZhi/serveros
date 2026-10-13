@@ -56,6 +56,52 @@ def installed_revision() -> dict:
     return info
 
 
+#: Markers of a production fix this branch must NOT clobber. The running
+#: revision was built from `fleet-oauth-rfc9207-review-20261013`; the source tree
+#: here descends from an older integration branch and does NOT carry them. If a
+#: deploy went out as-is it would REGRESS them, so the precheck refuses to call
+#: the tree deployable until they are reconciled.
+PRODUCTION_FIX_MARKERS = {
+    "fleet_mcp/http_transport.py": "_redirect_origin",
+    "fleet_mcp/oauth.py": "authorization_response_iss_parameter_supported",
+}
+
+
+def source_delta() -> dict:
+    """Files where the SOURCE tree differs from the RUNNING revision, and
+    whether the source is missing a production fix.
+
+    Read-only. The source is the loser in a plain copy-deploy: a file the
+    deployed tree has and this one does not is a production change a deploy
+    would delete. This names them instead of letting `install.py` overwrite
+    silently.
+    """
+    missing_markers: list[str] = []
+    for rel, marker in PRODUCTION_FIX_MARKERS.items():
+        src = _ROOT / rel
+        if src.is_file() and marker not in src.read_text(encoding="utf-8"):
+            missing_markers.append(rel)
+    differing: list[str] = []
+    if CURRENT.exists():
+        for rel in sorted(PRODUCTION_FIX_MARKERS):
+            deployed = CURRENT / rel
+            src = _ROOT / rel
+            if (deployed.is_file() and src.is_file()
+                    and deployed.read_bytes() != src.read_bytes()):
+                differing.append(rel)
+    return {
+        "differing_from_running": differing,
+        "source_missing_production_fix": missing_markers,
+        "reconcile_before_deploy": bool(missing_markers),
+        "note": (
+            "The running revision (`fleet-mcp-pr165`/`pr166` CSP+RFC9207) carries "
+            "changes this branch does not. REBASE OR MERGE THEM BEFORE ANY "
+            "DEPLOY: a copy-deploy from this tree would remove the CSP "
+            "`form-action` fix and RFC 9207 `iss`, which are production "
+            "behaviour, not cosmetics."),
+    }
+
+
 def source_surface() -> dict:
     """What THIS source tree serves, and the contract's digest."""
     if str(_ROOT) not in sys.path:
@@ -87,6 +133,7 @@ def plan() -> dict:
             "surface_would_change": not same_surface,
             "note": ("The running ingress is the 9-tool surface; this tree serves "
                      "the hand-written nine plus the 22 inherited CloudCLI verbs."),
+            "production_delta": source_delta(),
         },
         "rollout": [
             {

@@ -176,6 +176,10 @@ KIND_BY_FIELD: dict[str, str] = {
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,
+    # The mirrored CloudCLI verb a `mcp.native_call` ran. A NAME from the closed
+    # set — never a value the caller typed — so the audit says WHICH verb ran
+    # without carrying anything a session held.
+    "tool": CODE,
     "session_ref": REF,
     "project": REF,
     "run_id": REF,

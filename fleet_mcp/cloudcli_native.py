@@ -85,6 +85,11 @@ GOV_CREATE = "create"
 GOV_CONTROL = "control"
 GOV_APPROVE = "approve"
 GOV_NAVIGATE = "navigate"
+#: `session_reconfigure` stops nothing; it CHANGES a session's model, effort and
+#: permission mode. That is a change to the session's authority, so it carries
+#: the create-side ceiling as well as the control floor — its own class rather
+#: than `control`, which would leave the model/mode unbounded.
+GOV_RECONFIGURE = "reconfigure"
 
 
 @dataclass(frozen=True)
@@ -195,7 +200,7 @@ NATIVE_TOOLS: tuple[NativeTool, ...] = (
        destructive=False, idempotent=True, open_world=False),
     _t("session_cancel_queued", GOV_CONTROL, NATIVE_CONTROL, read_only=False,
        destructive=True, idempotent=True, open_world=False),
-    _t("session_reconfigure", GOV_CONTROL, NATIVE_CONTROL, read_only=False,
+    _t("session_reconfigure", GOV_RECONFIGURE, NATIVE_CONTROL, read_only=False,
        destructive=False, idempotent=True, open_world=False),
     # Dual scope: listing needs read, the stop branch needs control. Recorded
     # with BOTH so a caller cannot stop a task under a read grant.
@@ -468,6 +473,13 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     # without — a caller that omits the payload is refused at the outer schema
     # rather than at the device.
     outer_required = ["device_ref"] + (["arguments"] if native_required else [])
+    # LOW-13: the Fleet address a write's floor is stated over is REQUIRED at
+    # runtime, so the schema says so — a schema-driven client learns it from the
+    # schema rather than by trying.
+    if native.governance in (GOV_SEND, GOV_CONTROL, GOV_RECONFIGURE):
+        outer_required.append("session_ref")
+    if native.governance == GOV_CREATE:
+        outer_required.append("project")
     return {
         "type": "object",
         "properties": {**outer, "arguments": arguments},
