@@ -269,7 +269,8 @@ class HttpSurface:
                     authorize_path=authorize_path or "/oauth/authorize",
                 ))
             return _html(200, consent_page(client=client, params=params,
-                                           authorize_path=authorize_path or "/oauth/authorize"))
+                                           authorize_path=authorize_path or "/oauth/authorize"),
+                         form_action=_redirect_origin(params.get("redirect_uri", "")))
 
         if method != "POST":
             return _json(405, {"error": "invalid_request",
@@ -322,16 +323,19 @@ class HttpSurface:
                     error=f"{exc.error}: {exc.description}",
                     authorize_path=authorize_path or "/oauth/authorize",
                     granted=granted,
-                ))
+                ), form_action=_redirect_origin(form.get("redirect_uri", "")))
             # Any other failure is the client's to hear about, and the
             # redirect_uri is now known good.
             return _redirect(redirect_with_error(
-                form.get("redirect_uri", ""), exc.error, exc.description, form.get("state")
+                form.get("redirect_uri", ""), exc.error, exc.description, form.get("state"),
+                issuer=self.oauth.base_url,
             ))
         if self.audit:
             self.audit.record("oauth.approve", client_id=client.client_id,
                               redirect_uri=form.get("redirect_uri"))
-        return _redirect(redirect_with_code(form["redirect_uri"], code, form.get("state")))
+        return _redirect(redirect_with_code(
+            form["redirect_uri"], code, form.get("state"), issuer=self.oauth.base_url,
+        ))
 
     def _oauth_token(self, method: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
         if self.oauth is None:
@@ -510,8 +514,32 @@ def _json(status: int, payload: Any, extra_headers: dict[str, str] | None = None
     return status, headers, raw
 
 
-def _html(status: int, markup: str):
+def _redirect_origin(redirect_uri: str) -> str | None:
+    """The one origin the consent form may be *redirected to* after a submit.
+
+    `form-action` is enforced against every hop of a submission's redirect
+    chain, not only against the URL the form posts to. The page posts to
+    `self`, the server answers 302 to the client's registered redirect_uri, and
+    the browser then checks that new URL against this same policy: `'self'`
+    alone blocks it, the navigation is abandoned, and the operator is left on
+    the consent page with no error at all. Allowing just the origin of the
+    redirect_uri this request already had to prove (`validate_authorize` ran
+    first) leaves the policy's intent intact: the owner token still cannot be
+    posted anywhere else.
+    """
+    if not redirect_uri:
+        return None
+    parts = urlparse(redirect_uri)
+    if not parts.scheme or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _html(status: int, markup: str, form_action: str | None = None):
     raw = markup.encode("utf-8")
+    csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+    if form_action:
+        csp += " " + form_action
     return status, {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Length": str(len(raw)),
@@ -519,8 +547,9 @@ def _html(status: int, markup: str):
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         # The consent form carries an owner token. Nothing on the page may load
-        # from, or post to, anywhere but here.
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+        # from, or post to, anywhere but here -- plus the single callback origin
+        # the server is about to redirect to, which the browser re-checks.
+        "Content-Security-Policy": csp,
     }, raw
 
 
