@@ -459,13 +459,19 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
         outer["session_ref"] = {"type": "string"}
     if native.governance == GOV_CREATE:
         outer["project"] = {"type": "string"}
+    # The `arguments` object carries the SAME closure the runtime validator
+    # uses: `additionalProperties` is copied from the recorded schema, not
+    # advertised open. A published schema that said `true` while the runtime
+    # refused unknown keys would be a contract that lies to the client.
+    additional = True
+    if isinstance(source, dict) and "additionalProperties" in source:
+        additional = source["additionalProperties"]
     arguments: dict[str, Any] = {
         "type": "object",
         "description": f"{native.name}'s own arguments, passed through unchanged.",
-        "additionalProperties": True,
+        "additionalProperties": additional,
+        "properties": native_props,
     }
-    if native_props:
-        arguments["properties"] = native_props
     if native_required:
         arguments["required"] = native_required
     # The native `required` lives INSIDE `arguments`, so `arguments` itself is
@@ -488,20 +494,56 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     }
 
 
+class NativeArgumentError(ValueError):
+    """An argument this surface refuses before the device is ever asked.
+
+    Raised by the single `governance_for` decision so both the host and the
+    device translate it one way (BAD_REQUEST) rather than each deciding.
+    """
+
+
 def governance_for(native: "NativeTool", arguments: dict[str, Any] | None) -> str:
     """The class a CALL falls under, which for one tool depends on its arguments.
 
-    `session_background` is two verbs under one name — listing background tasks
-    is a READ (`cloudcli:read`) and stopping one is CONTROL
-    (`cloudcli:session:control`). The class is decided by whether the call names
-    a task to stop, so a read grant cannot stop a task through this tool.
+    `session_background` is two verbs under one name. CloudCLI's own handler
+    (`mcp-session-background`) decides by PRESENCE, not truthiness: a
+    `stopTaskId` that is `undefined`/`null` LISTS, and a `stopTaskId` that is
+    present but not a non-empty string is `INVALID_ARGUMENT` — it never falls
+    back to a listing. This surface matches that and is deliberately STRICTER on
+    one point: a present `null` is also refused here rather than listed, because
+    "present but valueless" is not a listing anyone asked for, and no read scope
+    may ever reach the stop path.
+
+    So: key absent -> READ; key present and a non-empty string -> CONTROL; key
+    present and anything else (`""`, `None`, a number, `False`) -> refuse.
+    `in args` rather than `args.get(...)`, because a falsy value is exactly the
+    case that must never be read as a listing.
     """
     if native.name == "session_background":
-        # Listing background tasks is a read; stopping one is control.
-        if isinstance(arguments, dict) and arguments.get("stopTaskId"):
-            return GOV_CONTROL
-        return GOV_READ
+        if not isinstance(arguments, dict) or "stopTaskId" not in arguments:
+            return GOV_READ
+        value = arguments["stopTaskId"]
+        if not isinstance(value, str) or not value.strip():
+            raise NativeArgumentError(
+                "`session_background` was given a `stopTaskId` that is not a "
+                "non-empty string. A stop request is refused rather than read as "
+                "a listing, so a read scope can never stop a background task."
+            )
+        return GOV_CONTROL
     return native.governance
+
+
+def fleet_scopes_for(native: "NativeTool", governance: str) -> tuple[str, ...]:
+    """The Fleet scopes a CALL needs, given the class it resolved to.
+
+    A dual-scope tool names both in `fleet_scopes()` because it CAN be either;
+    the requirement follows the class the call actually took. So a
+    `session_background` LIST needs only `fleet:read`, and only its STOP needs
+    `fleet:control` — which is the whole point of the split.
+    """
+    if native.name == "session_background" and governance == GOV_READ:
+        return (FLEET_SCOPE_FOR_NATIVE[NATIVE_READ],)
+    return native.fleet_scopes()
 
 
 def surface_drift(per_device: dict[str, dict[str, Any]]) -> dict:

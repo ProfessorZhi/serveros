@@ -762,7 +762,12 @@ class Connector:
         side is the mirror image (it uses the Fleet address), and neither may be
         skipped.
         """
-        governance = native_mod.governance_for(native, arguments)
+        try:
+            governance = native_mod.governance_for(native, arguments)
+        except native_mod.NativeArgumentError as exc:
+            # The ONE decision, reused on this side too: a present-but-empty
+            # `stopTaskId` is refused here exactly as it is on the host.
+            raise FleetRefusal("BAD_REQUEST", str(exc)) from None
         if governance == native_mod.GOV_READ:
             return
         if governance == native_mod.GOV_APPROVE:

@@ -145,6 +145,25 @@ def _approval_ids(listing) -> set[str]:
     return out
 
 
+def _session_project(detail) -> str | None:
+    """The project id a device's `session_get` answer reports, or `None`.
+
+    Looks at the answer and one nested level (`session` / `data`), under the
+    names CloudCLI uses (`projectId` / `project_id` / `project`). `None` means
+    «the device did not state a project», which a caller refuses on — so an
+    unrecognised shape fails closed rather than defaulting to the caller's claim.
+    """
+    if not isinstance(detail, dict):
+        return None
+    for node in (detail, detail.get("session"), detail.get("data")):
+        if isinstance(node, dict):
+            for key in ("projectId", "project_id", "project"):
+                value = node.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return None
+
+
 @dataclass(frozen=True)
 class Principal:
     """Who is calling, and what they may do.
@@ -1219,8 +1238,6 @@ class FleetService:
                 UNKNOWN_DEVICE,
                 f"{device_ref} is not an enabled provider on this runtime.",
             )
-        for fleet_scope in native.fleet_scopes():
-            principal.require(fleet_scope)
         # HIGH-6: the rate limiter every hand-written verb passes through. A
         # mirrored call is a call like any other and must not be a way around it.
         self.admit(principal)
@@ -1234,8 +1251,21 @@ class FleetService:
                 f"{type(arguments).__name__} was given.",
             )
         args = dict(arguments or {})
+        # The class is decided ONCE, here, and BEFORE the scope gate, so a
+        # `session_background` whose `stopTaskId` is present-but-empty is
+        # refused as a bad request rather than screened as a listing — no read
+        # scope can ever reach the stop path by way of a typo'd stop value.
+        try:
+            governance = cloudcli_native.governance_for(native, args)
+        except cloudcli_native.NativeArgumentError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        # The scope the call needs follows the CLASS: a `session_background`
+        # LIST is `fleet:read`, and only its STOP is `fleet:control`.
+        for fleet_scope in cloudcli_native.fleet_scopes_for(native, governance):
+            principal.require(fleet_scope)
         self._gate_native_write(principal, device_ref, binding, native, args,
-                                session_ref=session_ref, project=project)
+                                session_ref=session_ref, project=project,
+                                governance=governance)
         # HIGH-7: validate the caller's arguments against the tool's OWN schema
         # (recorded from CloudCLI 1.39.0; a live per-device schema may override).
         # A required parameter that is missing, or one the schema does not
@@ -1250,7 +1280,7 @@ class FleetService:
             )
         # HIGH-5: the read limit is the SAME bound the hand-written reader uses;
         # a mirrored read cannot ask for more than `fleet_read_session` may.
-        if cloudcli_native.governance_for(native, args) == cloudcli_native.GOV_READ:
+        if governance == cloudcli_native.GOV_READ:
             # Minimal disclosure for the approval register: a device-wide list
             # is other principals' pending decisions, so the list is SCOPED to
             # one named session and an unscoped read is refused.
@@ -1274,7 +1304,20 @@ class FleetService:
         # answer rather than accepting a string it cannot check.
         if native_tool == "approval_answer":
             self._verify_approval_ownership(provider, args, session_ref, device_ref)
+        # HIGH-4 (stronger): a reconfigure that names a model or a permission
+        # mode is checked against the project the SESSION actually belongs to,
+        # read from the device — not the project the caller asserted.
+        if governance == cloudcli_native.GOV_RECONFIGURE and (
+                args.get("model") is not None or args.get("permissionMode") is not None):
+            self._native_reconfigure_ceiling(provider, device_ref, session_ref,
+                                             project, args, native)
         result = caller(native_tool, args)
+        # HIGH-5: a mirrored READ carries the same "this is data, not
+        # instruction" marking the hand-written reader attaches, so a consumer
+        # cannot mistake a remote transcript for a local fact.
+        if governance == cloudcli_native.GOV_READ and isinstance(result, dict):
+            result.setdefault("untrusted_content", True)
+            result.setdefault("untrusted_notice", UNTRUSTED_NOTICE)
         audit = getattr(self, "audit", None)
         if audit is not None:
             # The tool NAME is on the audit allowlist so the record says WHICH
@@ -1300,7 +1343,8 @@ class FleetService:
 
     def _gate_native_write(self, principal: Principal, device_ref: str, binding,
                            native, arguments: dict[str, Any], *,
-                           session_ref: str | None, project: str | None) -> None:
+                           session_ref: str | None, project: str | None,
+                           governance: str) -> None:
         """Route a native write through the SAME floor its Fleet verb uses.
 
         A read returns here untouched. Every other class is refused unless the
@@ -1319,7 +1363,6 @@ class FleetService:
         allowed. `arguments` is carried to the device verbatim but is NEVER a
         source of authority.
         """
-        governance = cloudcli_native.governance_for(native, arguments)
         if governance == cloudcli_native.GOV_READ:
             return
         if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL,
@@ -1335,12 +1378,9 @@ class FleetService:
             else:
                 self._may_control(key)
                 self._require_operator_verb(principal, device_ref, "control", native)
-                if governance == cloudcli_native.GOV_RECONFIGURE:
-                    # HIGH-4: reconfigure can raise a session's model/effort/
-                    # permission mode, so it carries the same ceiling a create
-                    # does — checked against the SESSION's project grant.
-                    self._native_reconfigure_ceiling(device_ref, project,
-                                                     arguments, native)
+                # The model/mode ceiling for a reconfigure is applied in
+                # `native_call`, AFTER the provider is resolved, because it must
+                # read the session's REAL project from the device.
             return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)
@@ -1410,32 +1450,84 @@ class FleetService:
                 field=field,
             )
 
-    def _native_reconfigure_ceiling(self, device_ref: str, project: str | None,
+    def _native_reconfigure_ceiling(self, provider, device_ref: str,
+                                    session_ref: str | None, project: str | None,
                                     arguments: dict[str, Any], native) -> None:
-        """A reconfigure that names a model/mode is bounded by the project grant."""
+        """A reconfigure's model/mode is bounded by the SESSION's REAL project.
+
+        The caller's `project` is a claim. The project that decides the ceiling
+        is the one the target session actually belongs to, read from the device
+        (`session_get` — a metadata read, never a transcript). The two must
+        agree, and the ceiling is applied against the DEVICE-stated project.
+        A caller cannot widen its own authority by declaring a laxer project,
+        and a session whose project cannot be confirmed is refused rather than
+        guessed. `session_get` is itself a read the current authorization
+        already permits, so no new reach is added to establish this.
+        """
         mode = arguments.get("permissionMode")
         model = arguments.get("model")
-        if mode is None and model is None:
-            return
         if not isinstance(project, str) or not project.strip():
             raise refuse(
                 BAD_REQUEST,
                 f"`{native.namespaced}` names a `permissionMode` or `model`, so it "
-                f"must also name `project` — the ceiling a permission change is "
-                f"checked against is the project's own grant, and with no project "
-                f"there is nothing to check it against, so it is refused.",
+                f"must also name `project` — the ceiling is the project's own "
+                f"grant, and with no project to check it against it is refused.",
             )
-        grant = self.config.policy.create_allow.get(project.strip())
+        declared = project.strip()
+        try:
+            key = SessionKey.parse(str(session_ref))
+        except Exception:  # noqa: BLE001 - any parse failure is one refusal
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` must name `session_ref` so the session's "
+                f"real project can be read; a bare session id is not an address.",
+            ) from None
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"`{native.namespaced}` cannot confirm which project the session "
+                f"belongs to (this provider does not report it), so a permission "
+                f"change is refused rather than trusted to the caller's claim.",
+            )
+        try:
+            detail = caller("session_get", {"session": key.native_session_id})
+        except FleetRefusal as exc:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"`{native.namespaced}` could not confirm the session's project: "
+                f"the device would not report it ({exc.code}). A permission "
+                f"change with no confirmed project is refused.",
+                device_ref=device_ref,
+            ) from None
+        actual = _session_project(detail)
+        if actual is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"`{native.namespaced}` could not confirm the session's project: "
+                f"the device reported no project id, so the ceiling cannot be "
+                f"checked and the change is refused.",
+                device_ref=device_ref,
+            )
+        if actual != declared:
+            raise refuse(
+                WRITE_NOT_GRANTED,
+                f"`{native.namespaced}`: the session belongs to project {actual!r} "
+                f"on the device, not the {declared!r} the caller named. A "
+                f"permission change is checked against the session's OWN project, "
+                f"never against a project the caller chose.",
+                device_ref=device_ref, device_project=actual, declared=declared,
+            )
+        grant = self.config.policy.create_allow.get(actual)
         if grant is None:
             raise refuse(
                 WRITE_NOT_GRANTED,
-                f"`{native.namespaced}` cannot change {project!r}'s model or "
+                f"`{native.namespaced}` cannot change {actual!r}'s model or "
                 f"permission mode: the project is not in `policy.create_allow`, so "
-                f"no ceiling exists to allow `{mode or model}`. An unbounded "
-                f"permission change is refused rather than defaulted.",
-                device_ref=device_ref, project=project,
+                f"no ceiling exists to allow `{mode or model}`.",
+                device_ref=device_ref, project=actual,
             )
-        self._may_name_mode_and_model(device_ref, project.strip(), grant,
+        self._may_name_mode_and_model(device_ref, actual, grant,
                                       model=model, permission_mode=mode)
 
     def _native_approval(self, arguments: dict[str, Any], native) -> None:
