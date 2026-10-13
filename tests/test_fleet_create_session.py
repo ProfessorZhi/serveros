@@ -36,6 +36,7 @@ from fleet_mcp import tools as fleet_tools  # noqa: E402
 from fleet_mcp.config import (  # noqa: E402
     AuditBinding,
     AuthBinding,
+    CreateGrant,
     FleetConfig,
     PolicyBinding,
     ProviderBinding,
@@ -145,10 +146,25 @@ def _binding(device_ref: str, *, allow_create: bool, anchor: Path) -> ProviderBi
 
 
 class Harness:
-    """A service over the three target devices, one of them unauthorized."""
+    """A service over the three target devices, one of them unauthorized.
+
+    Two independent authorizations, and the harness states both rather than
+    relying on a default: `authorized` is the *device* gate (`allow_create` on
+    the binding) and `projects` is the *project* gate (`policy.create_allow`).
+    Neither implies the other, and the empty default for each is refusal — so a
+    test that wants a create to happen has to say which project, which is the
+    property under test elsewhere in this file.
+    """
+
+    # The projects these tests name. `p-1` throughout, with the ceiling the
+    # `ArgumentsAreCloudclisOwnSchema` case needs: it asserts the snake_case
+    # names reach the wire as camelCase, which requires a case that is allowed
+    # to name a permission mode and a model at all.
+    GRANT = {"p-1": CreateGrant(permission_modes=("bypassPermissions", "plan"),
+                                models=("claude-opus-4", "m"))}
 
     def __init__(self, tmp: Path, *, authorized=TARGETS, rate_limit: int = 10_000,
-                 max_message_chars: int = 8000):
+                 max_message_chars: int = 8000, projects=None):
         anchor = tmp / "pat"
         anchor.write_text("owner-token-value", encoding="utf-8")
         every = (TOKYO, WINDOWS, DELL_LLM, PERSONAL_DELL)
@@ -161,7 +177,10 @@ class Harness:
             },
             auth=AuthBinding(pat_anchor=anchor),
             server=ServerBinding(bind="127.0.0.1", port=0),
-            policy=PolicyBinding(max_message_chars=max_message_chars),
+            policy=PolicyBinding(
+                max_message_chars=max_message_chars,
+                create_allow=dict(self.GRANT if projects is None else projects),
+            ),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=rate_limit),
         )
         self.anchor = anchor

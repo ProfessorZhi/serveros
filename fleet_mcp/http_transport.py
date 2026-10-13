@@ -118,9 +118,19 @@ class HttpSurface:
         if pat and hmac.compare_digest(pat, token):
             # The owner's own token carries all three scopes. `fleet:create` is
             # not a widening of what this credential can reach: creation is
-            # still gated per device by `allow_create`, which defaults to
-            # refusal, so the operator holds the scope for the devices they
-            # authorized and nothing more.
+            # gated per device by `allow_create` *and* per project by
+            # `policy.create_allow`, both of which refuse by default, so the
+            # operator holds the scope for exactly the projects they authorized
+            # and nothing more.
+            #
+            # This is deliberately not the same question as `grantable_scopes`.
+            # That tuple is the ceiling on what this deployment will *hand out*
+            # — to an OAuth client, on the consent form — and it defaults to
+            # read+send so a connector is never minted with creation authority
+            # nobody asked for. Withholding `fleet:create` from the operator's
+            # own credential would buy nothing and cost the whole feature: the
+            # local tools would be the one caller unable to do what the binding
+            # is configured to permit.
             return Principal(
                 name="owner-pat",
                 scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),

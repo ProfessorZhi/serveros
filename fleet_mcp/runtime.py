@@ -37,11 +37,17 @@ def owner_principal() -> Principal:
 
     All three scopes, including `fleet:create` — and that is not a loosening.
     This principal exists for a channel that never left the host, so the scope
-    check is not what protects creation here; `allow_create` on the target
-    device is, and that default is refusal for every device. Withholding the
-    scope from the owner would buy nothing and would make the operator's own
-    local tools the one caller that cannot do what the deployment is configured
-    to allow.
+    check is not what protects creation here; `allow_create` on the target device
+    and the project's entry in `policy.create_allow` are, and both default to
+    refusal. Withholding the scope from the owner would buy nothing and would
+    make the operator's own local tools the one caller that cannot do what the
+    deployment is configured to allow.
+
+    Note the asymmetry with `AuthBinding.grantable_scopes`, which defaults to
+    read+send: that is the ceiling on what may be *handed to someone else*, and
+    it is narrow because a third party should have to be granted creation
+    explicitly. This is the owner's own channel, where the binding is the
+    authority and the scope merely stops the call before the binding is read.
     """
     return Principal(name="local-owner",
                      scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),

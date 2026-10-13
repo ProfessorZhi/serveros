@@ -476,7 +476,9 @@ TOOLS: tuple[Tool, ...] = (
                 ),
                 "project": _string(
                     "The provider project id the session is filed under. Required, "
-                    "already an id — this surface does not resolve a project name."
+                    "already an id — this surface does not resolve a project name. "
+                    "The project must be listed in the local `policy.create_allow`; "
+                    "an unlisted project is refused before the device is asked."
                 ),
                 "message": _string(
                     "Optional first message. Supplying one starts a run immediately "
@@ -486,7 +488,10 @@ TOOLS: tuple[Tool, ...] = (
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "model": _string(
                     "Model id for the session. Omit to let the device use its own "
-                    "default for the chosen provider."
+                    "default for the chosen provider — which is the only value "
+                    "every project accepts. A model named here must be listed for "
+                    "this project in the local binding; a caller does not get to "
+                    "pick a backend the operator has not considered."
                 ),
                 "lifecycle_mode": _string(
                     "Provider-native lifecycle mode. Omit to use the owner's own "
@@ -494,7 +499,10 @@ TOOLS: tuple[Tool, ...] = (
                 ),
                 "permission_mode": _string(
                     "Provider-native permission mode for the session. Omit to use "
-                    "the owner's own remembered default."
+                    "the owner's own remembered default. Naming one is constrained "
+                    "to this project's own policy in the local binding: create is "
+                    "not a route to widening your own authority, so a project that "
+                    "has not authorized a mode refuses it rather than applying it."
                 ),
                 "idempotency_key": _string(
                     "Stable unique key for this create. Reuse it when retrying an "

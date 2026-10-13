@@ -59,6 +59,11 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from .config import AuthBinding
+# The vocabulary lives in `scopes.py`. Imported rather than re-spelled: this
+# module used to hold its own literal copy of the three names, and a copy is how
+# a scope nothing implements ends up advertised on the wire — nothing forces two
+# lists to agree, so eventually they do not.
+from .scopes import ALLOWED_SCOPES  # noqa: F401  (re-exported; see `__all__`)
 from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_NAME
 
 # Access-token lifetime. Short on purpose: the refresh path exists precisely so
@@ -66,7 +71,6 @@ from .version import AUTHORIZATION_SERVER_PATH, PROTECTED_RESOURCE_PATH, SERVER_
 # smaller problem than one that dies in a month.
 DEFAULT_ACCESS_TTL = 3600
 AUTH_CODE_TTL = 120
-ALLOWED_SCOPES = ("fleet:read", "fleet:send", "fleet:create")
 # Refresh tokens are opaque and carry this prefix, which is how the revocation
 # endpoint tells the two token kinds apart without a lookup that would make it
 # answer differently for a token it never issued.
@@ -740,6 +744,14 @@ class AuthorizationServer:
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": list(ALLOWED_SCOPES),
+            # What `scopes_supported` does not say: which of those this
+            # *deployment* will actually grant. A client that asks for
+            # `fleet:create` where the binding leaves `grantable_scopes` at its
+            # default is refused at the authorize step, and a refusal the client
+            # could have read from discovery is a worse experience than one it
+            # never triggers. Additive, so a client that reads only the standard
+            # key is unaffected.
+            "scopes_grantable": list(self.auth.grantable_scopes),
             "resource_documentation": f"{self.base_url}/docs",
         }
 
@@ -751,6 +763,7 @@ class AuthorizationServer:
             "registration_endpoint": f"{self.base_url}/oauth/register",
             "revocation_endpoint": f"{self.base_url}/oauth/revoke",
             "scopes_supported": list(ALLOWED_SCOPES),
+            "scopes_grantable": list(self.auth.grantable_scopes),
             "response_types_supported": ["code"],
             "response_modes_supported": ["query"],
             "grant_types_supported": ["authorization_code", "refresh_token"],

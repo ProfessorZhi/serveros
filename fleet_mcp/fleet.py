@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
-from .config import FleetConfig
+from .config import CreateGrant, FleetConfig
 from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
@@ -52,19 +52,58 @@ from .registry import (
     measured_availability,
     resolve_or_refuse,
 )
-
-SCOPE_READ = "fleet:read"
-SCOPE_SEND = "fleet:send"
-# Creating a session is a third question, and a third scope. It is not implied
-# by `fleet:send`: a credential trusted to message sessions an operator already
-# authorized is not thereby trusted to mint new ones, and folding the two would
-# make the narrower grant unachievable.
-SCOPE_CREATE = "fleet:create"
+# The scope names are defined once, in `scopes.py`, and re-exported here because
+# this module is where callers have always imported them from.
+from .scopes import SCOPE_CREATE, SCOPE_READ, SCOPE_SEND  # noqa: F401
 
 # How long a recorded idempotency key is honoured. Long enough to cover a
 # caller's retry after a timeout, short enough that the table is bounded by the
 # session it belongs to rather than by uptime.
 IDEMPOTENCY_TTL_SECONDS = 3600
+
+# The two verbs that carry an idempotency key, named once so the identity they
+# compose cannot drift from the identity they look up. `send` and `create` share
+# one table, so the verb is part of a key's identity: without it a key spent on
+# one verb answers for the other, and the answer has the wrong shape.
+_VERB_SEND = "send"
+_VERB_CREATE = "create"
+
+
+def _create_scope(device_ref: str, project: str) -> str:
+    """What a create key is scoped to: the device *and* the project.
+
+    Both, because either alone is wrong in a way the caller cannot see. Scoped
+    to the device only, the same key against two projects returns the first
+    project's session — a session in the wrong working tree, wearing a plausible
+    session id. Scoped to the project only, the same key against two devices
+    returns a session on the wrong machine, which is the worse of the two: the
+    caller asked Tokyo to make something and would be told it is on the laptop.
+    """
+    return f"{device_ref}\x00{project}"
+
+
+def _key_from_record(record: dict[str, Any], device_ref: str) -> SessionKey | None:
+    """Recover the session key from a stored create record, or None if it is not
+    a shape this surface wrote. Never raises: a malformed record must not turn a
+    replay into an error whose message is about this surface's own bookkeeping.
+
+    The device is cross-checked rather than assumed. The identity a key is
+    looked up under already includes the device, so a mismatch here would mean
+    the lookup and the record disagree — and the honest answer to that is "I
+    cannot say what this session is", which is a missing `control` block, not a
+    session ref borrowed from the record.
+    """
+    session = record.get("session")
+    if not isinstance(session, dict):
+        return None
+    ref = session.get("session_ref")
+    if not isinstance(ref, str) or not ref:
+        return None
+    try:
+        key = SessionKey.parse(ref)
+    except Exception:  # noqa: BLE001 - a bad record is a missing control block, not a refusal
+        return None
+    return key if key.device_ref == device_ref else None
 
 
 @dataclass(frozen=True)
@@ -161,16 +200,35 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
-    def _may_create(self, device_ref: str) -> None:
-        """Creation is granted per device, and by an operator, in the binding.
+    def _may_create(self, device_ref: str, project: str) -> CreateGrant:
+        """Creation is granted per device *and* per project, by the binding.
 
-        There is no per-session half to this check — the session does not exist
-        yet, and naming one is not a thing this call can do. What replaces it is
-        that the grant is a *different flag* from `allow_send`: a device
-        authorized for control is not thereby a device authorized to be minted
-        on, so an operator who wants one and not the other can say so.
+        Two gates, and both are needed. The device gate (`allow_create`) is a
+        different flag from `allow_send` on purpose: a device authorized for
+        control is not thereby a device authorized to be minted on, so an
+        operator who wants one and not the other can say so. The project gate
+        (`policy.create_allow`) is the second half, and it is the one that answers
+        the question the device gate cannot: *which* project. A project id is
+        what decides the working tree, the credentials and the reachable services
+        a minted session inherits, so "authorized to create here" is not an
+        answer to "authorized to create this".
+
+        There is no per-session half — the session does not exist yet, and naming
+        one is not a thing this call can do. That absence is why the two gates
+        above carry the whole weight, and why the project allowlist is closed by
+        default: an empty `create_allow` means no project, never every project.
+
+        Returns the project's grant, so the caller checks the mode/model ceiling
+        against the same lookup the authorization came from rather than resolving
+        the project a second time and hoping the two agree.
         """
         binding = self.config.provider_for(device_ref)
+        if binding is None:
+            # No binding is not "not authorized", it is "not reachable", and the
+            # two send an operator to different configuration. `_require_provider`
+            # is where that distinction is already drawn; this defers to it
+            # rather than folding unreachability into an authorization refusal.
+            self._require_provider(device_ref)
         if binding is None or not binding.allow_create:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -179,6 +237,62 @@ class FleetService:
                 f"(`allow_create: true`) and is refused by default — never by "
                 f"the caller naming a device id.",
             )
+        grants = self.config.policy.create_allow
+        if grants.get(project) is None:
+            wildcard = grants.get("*") if self.config.policy.allow_wildcard_create else None
+            if wildcard is None:
+                raise refuse(
+                    APPROVAL_REQUIRED,
+                    f"project {project!r} is not in `policy.create_allow` for "
+                    f"{device_ref}. The device is authorized for creation and "
+                    f"this project is not: a project id decides which working "
+                    f"tree and which credentials a minted session inherits, so "
+                    f"the allowlist is closed and an unlisted project is refused "
+                    f"rather than defaulted.",
+                    device_ref=device_ref,
+                    project=project,
+                    allowed=sorted(grants),
+                )
+            return wildcard
+        return grants[project]
+
+    def _may_name_mode_and_model(
+        self, device_ref: str, project: str, grant: CreateGrant, *,
+        model: str | None, permission_mode: str | None,
+    ) -> None:
+        """Constrain what the caller may *name*, not the provider's own default.
+
+        A caller that supplies neither gets the provider's default, which the
+        operator who configured that provider has already accepted — so the
+        ceilings only apply to values the caller chose. That asymmetry is the
+        point: the failure this closes is a caller widening its own authority by
+        asking for a session that runs with, say, `bypassPermissions`, which is a
+        strictly larger grant than messaging a session the operator authorized.
+        Without this check the create scope would be a route around `allow_send`.
+
+        Empty means "you may not name one": the default posture is that a create
+        grants no discretion over privilege or backend.
+        """
+        for what, value, allowed in (
+            ("permission_mode", permission_mode, grant.permission_modes),
+            ("model", model, grant.models),
+        ):
+            if value is None:
+                continue
+            if value not in allowed:
+                raise refuse(
+                    WRITE_NOT_GRANTED,
+                    f"`{what}` {value!r} is not authorized for project {project!r} "
+                    f"on {device_ref}. A caller-supplied {what} is constrained to "
+                    f"the project's own development policy in the local binding "
+                    f"(`policy.create_allow.<project>.{what}s`), and the default "
+                    f"is that the caller may not name one at all — the provider's "
+                    f"own default applies instead.",
+                    device_ref=device_ref,
+                    project=project,
+                    requested=value,
+                    allowed=sorted(allowed),
+                )
 
     # -- devices -----------------------------------------------------------
 
@@ -335,6 +449,24 @@ class FleetService:
             "session_allowlisted": bool(session_ok),
         }
 
+    def _control_block(self, key: SessionKey) -> dict[str, Any]:
+        """The control state, computed fresh, with the not-a-grant said out loud.
+
+        Attached to `create_session`'s answer because that is where the wrong
+        inference is most available: a caller that has just minted a session and
+        sees `session_ref` come back will read it as a handle it may now write
+        through. It is not. `create` minted the session; `send` is a separate
+        grant, checked per device and per session, and this block is the answer
+        to that check rather than a promise about it.
+        """
+        return {
+            **self._session_control_state(key),
+            "note": "control is a separate grant from creation. A session this "
+                    "caller may not send to is reported, not hidden: sending "
+                    "requires `allow_send` on the device and the session in "
+                    "`policy.send_allow`.",
+        }
+
     def resolve_session(self, principal: Principal, *, session_ref: str | None,
                         device: str | None, session: str | None,
                         provider_name: str | None) -> SessionKey:
@@ -437,10 +569,13 @@ class FleetService:
                 f"truncated: a silently shortened instruction is executed as if "
                 f"it were the whole one.",
             )
+        # Above the replay lookup, for the same reason as in `create_session`:
+        # `_may_send` is the revocation recheck. A session dropped from
+        # `policy.send_allow` must stop answering from the idempotency cache too.
         self._may_send(key)
 
         if idempotency_key:
-            replayed = self._lookup_idempotent(principal, idempotency_key)
+            replayed = self._lookup_idempotent(principal, _VERB_SEND, key.ref, idempotency_key)
             if replayed is not None:
                 self.audit.record(
                     "fleet.send.replay",
@@ -469,7 +604,7 @@ class FleetService:
             "raw": payload,
         }
         if idempotency_key and run_id:
-            self._remember_idempotent(principal, idempotency_key, record)
+            self._remember_idempotent(principal, _VERB_SEND, key.ref, idempotency_key, record)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -544,10 +679,29 @@ class FleetService:
             )
         resolved = resolve_or_refuse(self.registry, device)
         device_ref = resolved.device_ref.ref
-        self._may_create(device_ref)
+        # Reachability first, then policy. A caller with no route to the device
+        # is told that, not told about an allowlist — the two answers point at
+        # different configuration, and answering the second when the first is
+        # true sends an operator to edit the wrong file.
+        adapter = self._require_provider(device_ref)
+        # Authorization is re-established on *every* call, including a call that
+        # turns out to be an idempotent replay — which is why this line is above
+        # the replay lookup and not below it. A replay is a plain "may you do
+        # this now?" answered from a cached record, and the record was written
+        # when the answer was yes. Moving the check after the lookup would make
+        # the cache the authority: an operator who removes a project from
+        # `create_allow` would find that the key minted under the old grant still
+        # returns its session, so a revoked grant would keep answering for as
+        # long as the key was retried.
+        grant = self._may_create(device_ref, project)
+        self._may_name_mode_and_model(
+            device_ref, project, grant, model=model, permission_mode=permission_mode
+        )
 
         if idempotency_key:
-            replayed = self._lookup_idempotent(principal, idempotency_key)
+            replayed = self._lookup_idempotent(
+                principal, _VERB_CREATE, _create_scope(device_ref, project), idempotency_key
+            )
             if replayed is not None:
                 self.audit.record(
                     "fleet.create_session.replay",
@@ -555,6 +709,7 @@ class FleetService:
                     device_ref=device_ref,
                     idempotency_key=idempotency_key,
                 )
+                key = _key_from_record(replayed, device_ref)
                 return {
                     **replayed.get("session", {}),
                     "idempotent_replay": True,
@@ -563,9 +718,17 @@ class FleetService:
                               "no second session was created",
                     "run_id": replayed.get("run_id"),
                     "created": replayed,
+                    # Recomputed rather than replayed: the session is the thing
+                    # the key remembers, and what may be done with it is a
+                    # question about policy *now*. A cached answer here would be
+                    # exactly the stale grant this surface refuses everywhere
+                    # else.
+                    "control": self._control_block(key) if key else None,
+                    "note": "replayed from the idempotency record; no second "
+                            "session was created and nothing on the device was "
+                            "called.",
                 }
 
-        adapter = self._require_provider(device_ref)
         payload = adapter.create(
             project=project,
             message=message,
@@ -593,7 +756,9 @@ class FleetService:
             "raw": payload,
         }
         if idempotency_key:
-            self._remember_idempotent(principal, idempotency_key, record)
+            self._remember_idempotent(
+                principal, _VERB_CREATE, _create_scope(device_ref, project), idempotency_key, record
+            )
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -609,9 +774,16 @@ class FleetService:
             "idempotent_replay": False,
             "run_id": run_id,
             "created": record,
+            # The caller is told, in the same answer, whether the session it just
+            # minted is one it may drive. Sent separately it would be a second
+            # round trip the caller could forget, and the natural mistake — treat
+            # "created" as "mine to control" — is exactly the inference this
+            # block exists to prevent.
+            "control": self._control_block(key),
             "note": "session_create mints a session and, when a first message was "
                     "given, starts its run. It grants no authority over anything "
-                    "that session may then operate on.",
+                    "that session may then operate on: see `control` for whether "
+                    "sending to it is authorized here, which is a separate grant.",
         }
 
     def get_run(
@@ -634,18 +806,52 @@ class FleetService:
 
     # -- idempotency -------------------------------------------------------
 
-    def _idem_identity(self, principal: Principal, key: str) -> str:
-        return f"{principal.name}\x00{key}"
+    def _idem_identity(self, principal: Principal, verb: str, scope: str, key: str) -> str:
+        """What an idempotency key is a name *for*.
 
-    def _lookup_idempotent(self, principal: Principal, key: str) -> dict[str, Any] | None:
+        Four components, and every one of them is here because leaving it out
+        was a bug with the same shape:
+
+        *   **the credential** — otherwise one caller's key answers another's
+            retry, which is a cross-credential answer to a question nobody asked;
+        *   **the verb** — `send` and `create` had one shared table, so a key
+            used to message a session would, replayed with `create`, return a
+            *create* result that had never been created. Two verbs are two
+            namespaces; a key is a name for one attempt, and the verb is part of
+            which attempt it was;
+        *   **the target** — the device and the project for `create`, the session
+            ref for `send`. Without it, the same key against a *different*
+            device or a different project returned the first device's session:
+            the caller would be handed a session id minted somewhere else, on the
+            strength of a key they only meant to retry once, and the second
+            device would never be asked. This is the one that matters most,
+            because the returned record *looks* wholly valid — it names a real
+            session, just not the one that was asked for;
+        *   **the key itself**.
+
+        `\\x00` is the separator because it cannot occur in any of the four: a
+        principal name, a verb, a project id and a session ref all come from
+        text a user or a registry authored, and a separator that could occur in
+        one component would let two distinct identities compose to the same
+        string.
+        """
+        return f"{principal.name}\x00{verb}\x00{scope}\x00{key}"
+
+    def _lookup_idempotent(
+        self, principal: Principal, verb: str, scope: str, key: str
+    ) -> dict[str, Any] | None:
         with self._idem_lock:
             self._sweep_idempotent()
-            entry = self._idempotency.get(self._idem_identity(principal, key))
+            entry = self._idempotency.get(self._idem_identity(principal, verb, scope, key))
             return entry.run if entry else None
 
-    def _remember_idempotent(self, principal: Principal, key: str, run: dict[str, Any]) -> None:
+    def _remember_idempotent(
+        self, principal: Principal, verb: str, scope: str, key: str, run: dict[str, Any]
+    ) -> None:
         with self._idem_lock:
-            self._idempotency[self._idem_identity(principal, key)] = _IdempotencyEntry(run=run)
+            self._idempotency[self._idem_identity(principal, verb, scope, key)] = (
+                _IdempotencyEntry(run=run)
+            )
 
     def _sweep_idempotent(self) -> None:
         cutoff = time.time() - IDEMPOTENCY_TTL_SECONDS
