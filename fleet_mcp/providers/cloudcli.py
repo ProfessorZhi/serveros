@@ -70,6 +70,15 @@ class CloudCliProvider(DeviceProvider):
         self._health: ProviderHealth | None = None
         self._health_at: float = 0.0
         self._tools: list[dict[str, Any]] | None = None
+        self._coverage: dict[str, Any] = {}
+
+    def native_coverage(self) -> dict[str, Any]:
+        """The last live `tools/list` compared with the recorded 22.
+
+        Read by `fleet_status` so a device that runs a different CloudCLI is
+        visible as drift rather than as a verb that fails only when called.
+        """
+        return dict(self._coverage)
 
     # -- plumbing ----------------------------------------------------------
 
@@ -133,12 +142,23 @@ class CloudCliProvider(DeviceProvider):
             return self._health
         server = (info or {}).get("serverInfo") or {}
         self._tools = tools
+        # HIGH-7(f): the device's LIVE tool list is compared with the recorded
+        # set here, so a device running a different CloudCLI is a fact in
+        # `fleet_status` rather than a surprise at call time.
+        self._coverage = cloudcli_native.coverage(
+            [t.get("name") for t in tools if isinstance(t, dict)],
+            {t.get("name"): (t.get("annotations") or {})
+             for t in tools if isinstance(t, dict)})
+        drift = ("" if self._coverage.get("agrees") else
+                 f"; TOOL LIST DRIFT vs {cloudcli_native.NATIVE_TOOL_COUNT} "
+                 f"recorded — missing={self._coverage.get('missing')} "
+                 f"extra={self._coverage.get('extra')}")
         self._health = ProviderHealth(
             device_ref=self.device_ref,
             kind=self.kind,
             reachable=True,
             authorized=True,
-            detail=f"gateway answered; {len(tools)} tools declared",
+            detail=f"gateway answered; {len(tools)} tools declared{drift}",
             server_name=server.get("name"),
             server_version=server.get("version"),
             tool_count=len(tools),

@@ -691,7 +691,36 @@ TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
 # verbs directly. Until the contract is extended, it declares the nine and this
 # module declares the generated mirror — the known integration point, reported
 # rather than hidden by quietly appending to `TOOLS`.
-SERVED_TOOLS: tuple[Tool, ...] = TOOLS + NATIVE_MIRROR_TOOLS
+def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]:
+    """The whole inherited surface, machine-readable, with per-tool schemas.
+
+    A refusal that says «this name is not among the mirrored tools» is only
+    actionable if the caller can FIND the mirrored set, so the set is itself a
+    read tool. It carries each verb's governance, native scope, and the JSON
+    schema recorded from CloudCLI 1.39.0, so a client can discover the closed
+    set rather than guess.
+    """
+    return cloudcli_native.manifest()
+
+
+NATIVE_MANIFEST_TOOL = Tool(
+    name="fleet_cloudcli_native_manifest",
+    title="The inherited CloudCLI surface (22 verbs)",
+    description=(
+        "The 22 CloudCLI-native verbs this surface mirrors as "
+        "`fleet_cloudcli_<name>`, each with its governance class, the native "
+        "scope it needs, and the input schema recorded from CloudCLI. Read this "
+        "to discover the closed set; a name not in it is refused rather than "
+        "forwarded."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": [],
+                  "additionalProperties": False},
+    annotations=_read_only(),
+    handler=_native_manifest,
+)
+
+SERVED_TOOLS: tuple[Tool, ...] = (TOOLS + NATIVE_MIRROR_TOOLS
+                                  + (NATIVE_MANIFEST_TOOL,))
 SERVED_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in SERVED_TOOLS}
 
 
@@ -746,7 +775,8 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     if tool is None:
         return _disclose(ctx, _error(principal=ctx.principal, exc=refuse(
             BAD_REQUEST,
-            f"unknown tool {name!r}. This surface exposes: {tool_names()}",
+            f"unknown tool {name!r}. This surface exposes: "
+            f"{sorted(SERVED_BY_NAME)}",
         )))
     args = arguments or {}
     if not isinstance(args, dict):

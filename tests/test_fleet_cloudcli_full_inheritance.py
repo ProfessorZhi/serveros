@@ -253,8 +253,11 @@ class NativeSchemaTest(unittest.TestCase):
     def test_mirrored_schema_adds_device_and_keeps_native_shape(self):
         native = cloudcli_native.NATIVE_BY_NAME["session_send"]
         schema = cloudcli_native.mirrored_schema(native, self.LIVE)
-        # `arguments` is required because the native tool has required params.
-        self.assertEqual(schema["required"], ["device_ref", "arguments"])
+        # `arguments` is required because the native tool has required params,
+        # and `session_ref` because this is a session verb whose floor is stated
+        # over one (LOW-13).
+        self.assertEqual(schema["required"],
+                         ["device_ref", "arguments", "session_ref"])
         self.assertEqual(set(schema["properties"]),
                          {"device_ref", "session_ref", "arguments"})
         inner = schema["properties"]["arguments"]
@@ -635,7 +638,11 @@ class SurfaceTest(unittest.TestCase):
         names = {t.name for t in tools_mod.SERVED_TOOLS}
         for tool in cloudcli_native.NATIVE_TOOLS:
             self.assertIn(tool.namespaced, names)
-        self.assertEqual(len([n for n in names if n.startswith("fleet_cloudcli_")]), 22)
+        mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
+        self.assertEqual(len(mirrored), 22)
+        # The nine hand-written, the 22 mirrored, and the manifest reader.
+        self.assertEqual(len(names), 32)
+        self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertEqual(len(tools_mod.tool_names()), 9)
 
     def test_mirror_annotations_match_the_manifest(self):
@@ -711,8 +718,247 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(h.providers[TOKYO].calls, [])
 
     def test_the_whole_surface_is_discoverable_and_counted(self):
-        names = {t.name for t in tools_mod.SERVED_TOOLS}
-        self.assertEqual(len([n for n in names if n.startswith("fleet_cloudcli_")]), 22)
+        mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
+        self.assertEqual(len(mirrored), 22)
+        self.assertTrue(mirrored <= {t.name for t in tools_mod.SERVED_TOOLS})
+
+
+class IdentityMismatchTest(unittest.TestCase):
+    """BLOCKER-1: the address the floor passed on is the address forwarded."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _session_cases(self):
+        # (tool, scope, grant verb) for every session-addressed write.
+        return [
+            ("session_send", (SCOPE_READ, SCOPE_SEND), None),
+            ("session_interrupt", (SCOPE_READ, SCOPE_CONTROL), "control"),
+            ("session_start", (SCOPE_READ, SCOPE_CONTROL), "control"),
+            ("session_close", (SCOPE_READ, SCOPE_CONTROL), "control"),
+            ("session_reconfigure", (SCOPE_READ, SCOPE_CONTROL), "control"),
+            ("session_cancel_queued", (SCOPE_READ, SCOPE_CONTROL), "control"),
+            ("session_background", (SCOPE_READ, SCOPE_CONTROL), "control"),
+        ]
+
+    def test_a_session_id_that_disagrees_with_the_floor_is_refused(self):
+        for tool, scopes, verb in self._session_cases():
+            with self.subTest(tool=tool):
+                grants = {OAUTH: {TOKYO: (verb,)}} if verb else {}
+                h = Harness(self.tmp, grants=grants,
+                            send_allow=(ref(TOKYO, "s1"),) if not verb else (),
+                            control_allow=(ref(TOKYO, "s1"),) if verb else ())
+                args = {"session": "s2"}
+                if tool == "session_send":
+                    args["message"] = "hi"
+                if tool == "session_cancel_queued":
+                    args["messageUuid"] = "m1"
+                if tool == "session_background":
+                    args["stopTaskId"] = "t1"
+                with self.assertRaises(FleetRefusal) as caught:
+                    h.call(tool, args=args, session_ref=ref(TOKYO, "s1"),
+                           principal=h.principal(*scopes))
+                self.assertEqual(caught.exception.code, BAD_REQUEST)
+                # The device was never reached with the mismatched address.
+                self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_matching_session_id_is_forwarded(self):
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),))
+        h.call("session_send", args={"session": "s1", "message": "hi"},
+               session_ref=ref(TOKYO, "s1"),
+               principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(h.providers[TOKYO].calls,
+                         [("session_send", {"session": "s1", "message": "hi"})])
+
+    def test_a_missing_session_id_in_arguments_is_refused(self):
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),))
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_send", args={"message": "hi"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_project_that_disagrees_with_the_floor_is_refused(self):
+        from fleet_mcp.config import CreateGrant
+        h = Harness(self.tmp, create_allow={"p1": CreateGrant()},
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create", args={"project": "p2"}, project="p1",
+                   principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+
+class ElevationCeilingTest(unittest.TestCase):
+    """HIGH-3 / HIGH-4: a mirrored verb may not name more privilege than granted."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_create_may_not_name_a_permission_mode_the_project_forbids(self):
+        from fleet_mcp.config import CreateGrant
+        # The project grant allows no permission modes and no models by default.
+        h = Harness(self.tmp, create_allow={"p": CreateGrant()},
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create",
+                   args={"project": "p", "permissionMode": "bypassPermissions"},
+                   project="p", principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_reconfigure_with_a_mode_needs_a_project_and_a_ceiling(self):
+        h = Harness(self.tmp, control_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("control",)}})
+        # No project named -> there is no ceiling to check the mode against.
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_reconfigure",
+                   args={"session": "s1", "permissionMode": "bypassPermissions"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_reconfigure_with_a_mode_and_no_grant_for_the_project_is_refused(self):
+        h = Harness(self.tmp, control_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("control",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_reconfigure",
+                   args={"session": "s1", "permissionMode": "bypassPermissions"},
+                   session_ref=ref(TOKYO, "s1"), project="p",
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+
+class ArgumentValidationTest(unittest.TestCase):
+    """HIGH-7: an argument the native schema does not declare is refused."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_an_unknown_native_argument_is_refused(self):
+        h = Harness(self.tmp)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_get", args={"session": "s1", "oops": 1},
+                   principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_missing_required_native_argument_is_refused(self):
+        h = Harness(self.tmp)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_get", args={}, principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+
+    def test_a_read_limit_is_clamped_to_the_surface_bound(self):
+        h = Harness(self.tmp)
+        h.call("session_read", args={"session": "s1", "limit": 1_000_000},
+               principal=h.principal(SCOPE_READ))
+        sent = h.providers[TOKYO].calls[0][1]
+        self.assertLessEqual(sent["limit"], h.config.policy.max_read_messages)
+
+
+class ConnectorFloorTest(unittest.TestCase):
+    """BLOCKER-2: the DEVICE's own floor, on the mirrored route."""
+
+    class _Provider:
+        kind = "cloudcli-mcp-http"
+
+        def __init__(self):
+            self.calls = []
+
+        def native_call(self, tool, arguments):
+            self.calls.append((tool, arguments))
+            return {"ok": True}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _connector(self, **over):
+        from fleet_mcp.node.connector import Connector, NodeConfig
+        fields = dict(device_ref="device:tokyo-shared-dev-01",
+                      secret_anchor=self.tmp / "secret",
+                      cloudcli_endpoint="http://127.0.0.1:1",
+                      cloudcli_credential_anchor=self.tmp / "cred")
+        fields.update(over)
+        connector = Connector(NodeConfig(**fields))
+        connector.provider = self._Provider()
+        return connector
+
+    def _call(self, connector, tool, arguments):
+        return connector._native_call({"tool": tool, "arguments": arguments})
+
+    def test_send_is_refused_with_empty_allow_send_to(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            self._call(c, "session_send", {"session": "s1", "message": "hi"})
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(c.provider.calls, [])
+
+    def test_send_is_allowed_when_the_session_is_named(self):
+        c = self._connector(allow_send_to=("s1",))
+        self.assertEqual(self._call(c, "session_send",
+                                    {"session": "s1", "message": "hi"}), {"ok": True})
+        self.assertEqual(c.provider.calls,
+                         [("session_send", {"session": "s1", "message": "hi"})])
+
+    def test_control_is_refused_when_allow_control_is_off(self):
+        for tool in ("session_interrupt", "session_start", "session_close"):
+            with self.subTest(tool=tool):
+                c = self._connector()
+                with self.assertRaises(FleetRefusal) as caught:
+                    self._call(c, tool, {"session": "s1"})
+                self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+                self.assertEqual(c.provider.calls, [])
+
+    def test_create_refused_without_allow_create_then_project(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal):
+            self._call(c, "session_create", {"project": "p"})
+        self.assertEqual(c.provider.calls, [])
+        c2 = self._connector(allow_create=True)   # but names no project
+        with self.assertRaises(FleetRefusal):
+            self._call(c2, "session_create", {"project": "p"})
+        self.assertEqual(c2.provider.calls, [])
+
+    def test_approve_and_navigate_are_default_denied_on_the_device(self):
+        for tool, args in (("approval_answer", {"requestId": "r", "allow": True}),
+                           ("ui_open_session", {"session": "s1"})):
+            with self.subTest(tool=tool):
+                c = self._connector()
+                with self.assertRaises(FleetRefusal) as caught:
+                    self._call(c, tool, args)
+                self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+                self.assertEqual(c.provider.calls, [])
+
+    def test_reads_need_no_device_floor(self):
+        c = self._connector()
+        self.assertEqual(self._call(c, "sessions_list", {}), {"ok": True})
+
+    def test_an_unrecorded_tool_is_refused(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            self._call(c, "session_teleport", {})
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(c.provider.calls, [])
 
 
 if __name__ == "__main__":
