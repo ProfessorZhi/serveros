@@ -1,0 +1,4 @@
+# Build products belong under ARTIFACTS_ROOT, not in the source tree. This entry
+# exists so that an in-tree build by mistake is never committed, not as an
+# invitation to build here.
+build/
