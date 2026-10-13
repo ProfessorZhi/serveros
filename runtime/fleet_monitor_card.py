@@ -41,6 +41,7 @@ The rules this card will not break
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -63,6 +64,23 @@ CARD_KEY = "fleet-monitor"
 STATE_KNOWN = "KNOWN"
 STATE_UNKNOWN = "UNKNOWN"
 STATE_STALE = "STALE"
+
+#: The four axes of a service's health, MIRRORED from `runtime/health.py`'s
+#: `AXES`. The pure module does not import `health`, because `health` loads the
+#: registry and its contracts — I/O — and this module must stay I/O-free. The
+#: two lists are bound instead by a test that imports both and asserts equality,
+#: so the vocabulary cannot drift while the purity holds.
+SERVICE_AXES = ("liveness", "transport", "functional", "readiness")
+
+#: A card is read at 390px (`runtime/cards.py`'s `MOBILE_WIDTH`). A markdown
+#: line past this many characters wraps into a paragraph nobody reads on that
+#: width, so the renderer splits on the budget rather than trusting the source.
+MOBILE_LINE_CHARS = 64
+
+#: The attribution a host-share reading must carry to be shown at all. A share
+#: that nobody attributed to a cgroup is not this user's usage, and showing it
+#: would credit (or charge) the wrong account.
+CGROUP_ATTRIBUTION = "cgroup"
 
 #: The element tags this renderer may emit, and nothing else. `validate` walks a
 #: rendered card and refuses a tag outside this set — inventing a plausible tag
@@ -165,6 +183,39 @@ def network_reading(value, *, scope, observed_at=None, cap_bps=None,
                    severity=severity, kind="network", scope=scope)
 
 
+def quota_reading(bps, *, observed_at, confirmed, label="公网出口配额"):
+    """The CONFIRMED egress quota, or `None` when it is not confirmed.
+
+    `None` rather than an unobserved reading, and the difference is the point:
+    the user confirmed exactly one quota (Tokyo, 100 Mbps) and confirmed none
+    for the other machines. An unobserved quota row on every device would be a
+    placeholder spending a card line to say nothing — the space `不拿…待持续采集
+    占空间` refuses — and inventing a number would be worse. So an unconfirmed
+    quota is simply absent, and `confirmed=True` is the only way a quota exists.
+    """
+    if not confirmed:
+        return None
+    return reading(label, bps / 1_000_000, unit="Mbps",
+                   note="用户已确认", observed_at=observed_at, kind="network",
+                   scope="public")
+
+
+def share_reading(value, *, attribution, observed_at, note="cgroup 归因",
+                  label="用户资源份额"):
+    """A user's share of the host, or `None` when no cgroup attributed it.
+
+    §"东京整机/vince 占用只有真实 cgroup 归因才显示" is the rule, and it is a
+    rule about omission, not about wording: a share reading with no `cgroup`
+    attribution is withheld entirely rather than shown as 无法确认, because a
+    share nobody attributed is not an unknown share — it is not this user's
+    share at all, and a card that printed it would be reading the wrong account.
+    """
+    if attribution != CGROUP_ATTRIBUTION:
+        return None
+    return reading(label, value, note=note, observed_at=observed_at,
+                   kind="host-share", scope=CGROUP_ATTRIBUTION)
+
+
 # ---------------------------------------------------------------------------
 # The view model — pure
 # ---------------------------------------------------------------------------
@@ -225,13 +276,43 @@ def _reachability(device, now_dt, stale_after_s):
             "observed_at": raw.get("observed_at")}
 
 
+def _normalize_service(service, now_dt, stale_after_s):
+    """One service's four axes, its derived state, and its freshness.
+
+    The derived `state` is the AUTHORITY's word (whatever produced the service
+    health) and is never recomputed here — only DOWNGRADED, and only for the two
+    reasons rule 1 covers: a state that is not one of the three carryable words
+    becomes UNKNOWN, and a carryable state whose observation is missing or old
+    becomes UNKNOWN or STALE. A service is counted by this effective word, so a
+    service whose health nobody re-read does not keep counting as healthy.
+    """
+    axes = {axis: (service.get("axis") or {}).get(axis) for axis in SERVICE_AXES}
+    state = str(service.get("state") or "").upper()
+    observed_at = service.get("observed_at")
+    reason = service.get("reason")
+    if state not in ("OK", "ATTENTION", "CRITICAL"):
+        state, reason = STATE_UNKNOWN, reason or "没有该服务健康状态的判定"
+    elif observed_at is None:
+        state, reason = STATE_UNKNOWN, "健康判定没有观测时间，不构成一次观测"
+    else:
+        when = _parse(observed_at)
+        if when is None:
+            state, reason = STATE_UNKNOWN, "健康判定的观测时间不可解析"
+        elif (now_dt - when).total_seconds() > stale_after_s:
+            state = STATE_STALE
+            reason = f"健康判定 {observed_at} 已过期，不能当作当前健康"
+    return {"name": service.get("name"), "state": state, "axes": axes,
+            "observed_at": observed_at, "reason": reason}
+
+
 def _service_counts(services):
-    counts = {"total": 0, "ok": 0, "attention": 0, "critical": 0, "unknown": 0}
+    """Counts over services ALREADY normalized, keyed by effective state."""
+    counts = {"total": 0, "ok": 0, "attention": 0, "critical": 0,
+              "stale": 0, "unknown": 0}
     for service in services:
         counts["total"] += 1
-        state = str(service.get("state") or "").upper()
-        key = {"OK": "ok", "ATTENTION": "attention",
-               "CRITICAL": "critical"}.get(state, "unknown")
+        key = {"OK": "ok", "ATTENTION": "attention", "CRITICAL": "critical",
+               STATE_STALE: "stale"}.get(service.get("state"), "unknown")
         counts[key] += 1
     return counts
 
@@ -308,7 +389,8 @@ def monitor_model(*, devices, services=(), network=None, now, sample=False,
             "readings": readings,
         })
 
-    services = list(services)
+    services = [_normalize_service(s, now_dt, stale_after_s)
+                for s in (services or [])]
     service_counts = _service_counts(services)
     unreached = sum(1 for d in built if d["reachability"]["state"] != STATE_KNOWN)
     reached = len(built) - unreached
@@ -327,11 +409,7 @@ def monitor_model(*, devices, services=(), network=None, now, sample=False,
         "generated_at": now,
         "summary": summary,
         "attention": attention,
-        "services": [
-            {"name": s.get("name"), "state": str(s.get("state") or "UNKNOWN").upper(),
-             "reason": s.get("reason")}
-            for s in services
-        ],
+        "services": services,
         "devices": built,
         # Rule 6: one logical card. The refresh cadence, the urgent path and the
         # physical rotation are metadata about THIS card, not about a second one.
@@ -473,29 +551,33 @@ def _device_title(device):
     return f"{mark} {device['display_name']} · {word}{tail}".strip()
 
 
-def _device_elements(device, *, charts_verified, index):
+def _device_elements(device, *, rich, charts_verified, index):
     ref = device.get("device_ref") or str(index)
     slug = _slug(ref)
     elements = []
-    known = [r for r in (device.get("readings") or [])
+    readings = device.get("readings") or []
+    known = [r for r in readings
              if r.get("state") == STATE_KNOWN and r.get("value") is not None]
-    if known:
+    if known and rich:
         cells = [f"**{r['label']}**\n{_value(r)}"
                  + (f"\n{r['note']}" if r.get("note") else "") for r in known[:4]]
         elements.append(_column_set(f"dev-{slug}-face", cells))
-    else:
-        elements.append(_md("_本机没有可用读数_" if device["reachability"]["state"]
-                            == STATE_KNOWN else
-                            "_未联系到本机，没有读数_"))
-    lines = [reading_line(r) for r in device.get("readings") or []]
-    for r in device.get("readings") or []:
+    elif known:
+        # The safe variant: the same readings as ONE markdown line, built from
+        # `markdown`, which every card this node sends already uses.
+        face = " · ".join(f"**{r['label']}** {_value(r)}" for r in known[:6])
+        elements.append(_md(_wrap_lines(face)))
+    elif device["reachability"]["state"] != STATE_KNOWN:
+        elements.append(_md("_未联系到本机，没有读数_"))
+    lines = [reading_line(r) for r in readings]
+    for r in readings:
         trend = _trend_line(r)
         if trend:
             lines.append(trend)
     if lines:
-        elements.append(_md("\n".join(lines)))
-    if charts_verified:
-        for r in device.get("readings") or []:
+        elements.append(_md(_wrap_lines("\n".join(lines))))
+    if rich and charts_verified:
+        for r in readings:
             if len(r.get("trend") or []) >= 2:
                 elements.append(_chart(f"dev-{slug}-trend-{_slug(r['label'])}",
                                        title=f"{device['display_name']} {r['label']}",
@@ -504,16 +586,48 @@ def _device_elements(device, *, charts_verified, index):
 
 
 def _slug(text):
-    return re.sub(r"[^0-9a-zA-Z]+", "-", str(text)).strip("-") or "x"
+    """A stable, collision-safe id fragment from any label.
+
+    A CJK label has no ASCII to keep, so the cleaned form is empty and two
+    different labels ("内存", "磁盘 /") would both fall back to the same word —
+    which is how two elements share an `element_id`. The fallback is therefore a
+    digest of the ORIGINAL text, so distinct labels stay distinct and the same
+    label stays stable across renders.
+    """
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "-", str(text)).strip("-")
+    if cleaned:
+        return cleaned
+    return "u" + hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:8]
 
 
 def _summary_line(model):
     s = model["summary"]["services"]
     d = model["summary"]["devices"]
     return (f"**服务** 共 {s['total']} · 正常 {s['ok']} · 需关注 "
-            f"{s['attention']} · 需处理 {s['critical']} · 无法确认 {s['unknown']}"
+            f"{s['attention']} · 需处理 {s['critical']} · 已过期 {s['stale']}"
+            f" · 无法确认 {s['unknown']}"
             f"\n**设备** 共 {d['total']} · 可达 {d['reached']} · 不可达 "
             f"{d['unreached']}")
+
+
+def _wrap_lines(text, *, limit=MOBILE_LINE_CHARS):
+    """Split any line past the 390px budget at the last space before it.
+
+    A card is read on a phone and this renderer cannot see the phone. What it
+    can do is refuse to emit a line longer than the width the tree already
+    measured for a card, so a long reading wraps where the source put a space
+    rather than wherever the client happens to break it.
+    """
+    out = []
+    for line in text.split("\n"):
+        while len(line) > limit:
+            cut = line.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            out.append(line[:cut].rstrip())
+            line = line[cut:].lstrip()
+        out.append(line)
+    return "\n".join(out)
 
 
 def _fleet_verdict(model):
@@ -524,23 +638,45 @@ def _fleet_verdict(model):
     if services["attention"] or model["attention"]:
         return "ATTENTION"
     # Every service OK but something unmeasured is NOT OK: rule 1 says an
-    # unmeasured reading may not be rounded to a healthy one.
-    if services["unknown"] or model["summary"]["devices"]["unreached"]:
+    # unmeasured reading may not be rounded to a healthy one. STALE counts with
+    # UNKNOWN here — a health word nobody re-read is not a health word.
+    if (services["unknown"] or services["stale"]
+            or model["summary"]["devices"]["unreached"]):
         return "UNCONFIRMED"
     return "OK"
+
+
+def is_urgent(model):
+    """True when a CRITICAL finding is present, so the next send skips the wait.
+
+    Asked of the MODEL and never of a clock: «severe enough to be immediate» is
+    a property of what is on the card, and the cadence belongs to the caller
+    (`runtime/fleet_monitor_plan.plan_update`).
+    """
+    return any(item.get("severity") == "CRITICAL"
+               for item in (model.get("attention") or []))
 
 
 _TEMPLATES = {"OK": "green", "ATTENTION": "orange",
               "CRITICAL": "red", "UNCONFIRMED": "grey"}
 
 
-def render_cardkit(model, *, charts_verified=False):
-    """The Fleeet monitor card as Feishu CardKit 2.0 JSON. PURE.
+def render_cardkit(model, *, rich=False, charts_verified=False):
+    """The Fleet monitor card as Feishu CardKit 2.0 JSON. PURE.
 
     The envelope matches `runtime/cards.py`'s `_card`: `schema: 2.0`, a header
-    with `template`/`title`/`subtitle`, and a `body` with `elements`. Every
-    element carries an `element_id` where the schema allows one, and `validate`
-    checks those ids are unique before this card is returned.
+    with `template`/`title`/`subtitle`, and a `body` with `elements`.
+
+    THE SAFE VARIANT IS THE DEFAULT, and the two flags are the whole reason.
+    `rich=False` emits only `markdown`, `hr` and `collapsible_panel` — the
+    vocabulary every card this node already sends uses, so it is known to render
+    in production. `column_set` was REMOVED from the live status card by
+    `runtime/cards.py` (`_flex`: under `flex_mode: "none"` a phone narrows the
+    columns rather than stacking them) and `chart`'s schema is not verified
+    against the SDK here, so `rich=True` (which restores `column_set`) and
+    `charts_verified=True` are BOTH opt-in and BOTH unverified against a real
+    client. Until a real phone reads a real card, the default must not be the
+    one nobody has seen.
     """
     verdict = _fleet_verdict(model)
     title = "Fleet 监控"
@@ -550,23 +686,20 @@ def render_cardkit(model, *, charts_verified=False):
     elements = []
     if model.get("sample"):
         elements.append(_md(SAMPLE_LINE))
-    elements.append(_md(_summary_line(model)))
+    elements.append(_md(_wrap_lines(_summary_line(model))))
 
     if model["attention"]:
         lines = [f"**⚠️ 需要关注（{len(model['attention'])}）**"]
         lines += [f"- {item['text']}" for item in model["attention"]]
-        elements.append(_md("\n".join(lines)))
+        elements.append(_md(_wrap_lines("\n".join(lines))))
 
     elements.append(_hr())
     for index, device in enumerate(model["devices"]):
-        elements.append(_panel(f"dev-{_slug(device.get('device_ref') or index)}-fold",
-                               _device_title(device),
-                               [], expanded=False))
-        # The fold's own body is folded in below via the panel elements; kept
-        # separate so the header can be read without rendering the body.
-        elements[-1]["elements"] = _device_elements(
-            device, charts_verified=charts_verified, index=index)
-        elements[-1]["elements"].insert(0, _md("​"))  # zero-width spacing guard
+        fold = _panel(f"dev-{_slug(device.get('device_ref') or index)}-fold",
+                      _device_title(device), [], expanded=False)
+        fold["elements"] = _device_elements(
+            device, rich=rich, charts_verified=charts_verified, index=index)
+        elements.append(fold)
 
     if model.get("network"):
         elements.append(_md(reading_line(model["network"])))
@@ -663,4 +796,13 @@ def validate_model(model):
                 raise MonitorCardError(
                     f"reading {r.get('label')!r} is {r.get('state')} with no "
                     "reason; an unestablished fact must say why")
+            # A host share is this user's share only under a real cgroup
+            # attribution; `share_reading` withholds one without it, and this
+            # refuses a model that smuggled one in by another door.
+            if r.get("kind") == "host-share" and r.get("scope") != CGROUP_ATTRIBUTION:
+                raise MonitorCardError(
+                    f"host-share reading {r.get('label')!r} carries "
+                    f"attribution {r.get('scope')!r}, not "
+                    f"{CGROUP_ATTRIBUTION!r}; a share nobody attributed is not "
+                    "this user's share")
     return model

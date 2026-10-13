@@ -51,6 +51,73 @@ def _load(name: str, path: Path):
 card_source = _load("serveros_card_source", _HERE / "card_source.py")
 monitor = _load("serveros_fleet_monitor_card", _HERE / "fleet_monitor_card.py")
 
+#: The schema id the C++ Native Core's `NodeResourceSnapshot v1` must declare to
+#: pass the acceptance seam below. This module OWNS the string and the C++ side
+#: must match it; nothing is imported from the C++ tree, so the two can land in
+#: either order and be assembled by calling `accept_device_snapshot` with the
+#: parsed document.
+NODE_RESOURCE_SNAPSHOT_SCHEMA = "serveros/node-resource-snapshot.v1"
+
+
+class SnapshotRefused(RuntimeError):
+    """A document handed to the acceptance seam that this seam cannot accept."""
+
+
+def accept_device_snapshot(document):
+    """The typed acceptance seam for the C++ `NodeResourceSnapshot v1`.
+
+    Takes a PARSED document and returns the device entry
+    `monitor.monitor_model` consumes, or raises `SnapshotRefused` naming the
+    first field it could not accept. It reads no file and imports nothing from
+    the C++ side, so the bridge is assembled later — and in either order — by
+    calling this with the producer's output.
+
+    What it insists on is exactly the part of the contract the card rests on: a
+    declared schema id, a device identity, a reachability state, and reading
+    atoms where a non-UNKNOWN state carries its `observed_at`. Everything else
+    is passed through untouched, because a seam that decided what a field MEANS
+    would be a second place the decisions live.
+    """
+    if not isinstance(document, dict):
+        raise SnapshotRefused(
+            f"a snapshot is an object, got {type(document).__name__}")
+    schema = document.get("schema")
+    if schema != NODE_RESOURCE_SNAPSHOT_SCHEMA:
+        raise SnapshotRefused(
+            f"schema {schema!r} is not {NODE_RESOURCE_SNAPSHOT_SCHEMA!r}; a "
+            f"snapshot from an unknown producer version is not accepted")
+    device_ref = document.get("device_ref")
+    if not device_ref:
+        raise SnapshotRefused("a snapshot names no device_ref")
+    readings = document.get("readings")
+    if not isinstance(readings, list):
+        raise SnapshotRefused("a snapshot carries no `readings` list")
+    for index, r in enumerate(readings):
+        if not isinstance(r, dict):
+            raise SnapshotRefused(f"reading {index} is not an object")
+        if not r.get("label"):
+            raise SnapshotRefused(f"reading {index} names no label")
+        state = r.get("state")
+        if state not in (monitor.STATE_KNOWN, monitor.STATE_UNKNOWN,
+                         monitor.STATE_STALE):
+            raise SnapshotRefused(
+                f"reading {index} ({r.get('label')!r}) has state {state!r}, "
+                f"which is not one of KNOWN/UNKNOWN/STALE")
+        if state == monitor.STATE_KNOWN and not r.get("observed_at"):
+            raise SnapshotRefused(
+                f"reading {index} ({r.get('label')!r}) is KNOWN with no "
+                f"observed_at; a measurement without provenance is not one")
+    reachability = document.get("reachability")
+    if not isinstance(reachability, dict) or "state" not in reachability:
+        raise SnapshotRefused("a snapshot carries no reachability state")
+    return {
+        "device_ref": device_ref,
+        "display_name": document.get("display_name") or device_ref,
+        "platform": document.get("platform") or "未知",
+        "reachability": dict(reachability),
+        "readings": [dict(r) for r in readings],
+    }
+
 #: The four section states `card_source` uses, mapped to the severity a reading
 #: carries. Everything not listed is OK. A section that is UNKNOWN is NOT mapped
 #: to a severity: it becomes an unobserved reading with the section's own why.

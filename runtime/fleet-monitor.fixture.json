@@ -1,5 +1,5 @@
 {
-  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. This file is the read-only producer adapter's OUTPUT shape — what tests hand to the pure model. It is deliberately not machine-specific: the refs are the fleet's, the values are illustrative.",
+  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. The refs are the fleet's; the values are illustrative. Note what is ABSENT: Windows and the A6000 carry NO egress-quota reading, because the user confirmed a quota for Tokyo only and an unconfirmed quota must not be invented. Tokyo's share carries attribution=cgroup, the only attribution under which a host share is shown.",
   "now": "2026-10-13T06:00:00Z",
   "sample": true,
   "stale_after_s": 1800,
@@ -12,11 +12,12 @@
       "readings": [
         {"kind": "reading", "label": "CPU", "value": 32, "unit": "%", "note": "整机 16 逻辑核", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "trend": [21, 25, 30, 28, 32]},
         {"kind": "reading", "label": "内存", "value": 58, "unit": "%", "note": "整机 125 GiB", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "trend": [51, 54, 56, 57, 58]},
-        {"kind": "reading", "label": "vince 资源份额", "value": "3.2 核 / 12 GiB", "note": "cgroup 实测", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "trend": []},
+        {"kind": "host-share", "label": "vince 资源份额", "value": "3.2 核 / 12 GiB", "note": "cgroup 归因", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "cgroup", "trend": []},
         {"kind": "reading", "label": "磁盘 /", "value": 41, "unit": "%", "note": "可用 118 GiB", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "trend": []},
         {"kind": "reading", "label": "磁盘 /data", "value": 27, "unit": "%", "note": "可用 3.0 TiB", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "trend": []},
-        {"kind": "reading", "label": "磁盘忙碌度", "value": 6, "unit": "%", "note": "iostat 15s 平均", "state": "KNOWN", "observed_at": "2026-10-13T05:40:00Z", "severity": "OK", "trend": []},
-        {"kind": "network", "label": "公网出向", "value": 4.1, "unit": "Mbps", "note": "配额 100 Mbps（用户已确认）", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "public", "trend": []}
+        {"kind": "reading", "label": "磁盘忙碌度", "value": 6, "unit": "%", "note": "iostat 15s 平均", "state": "KNOWN", "observed_at": "2026-10-13T05:00:00Z", "severity": "OK", "trend": []},
+        {"kind": "network", "label": "公网出向", "value": 4.1, "unit": "Mbps", "note": "", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "public", "trend": []},
+        {"kind": "network", "label": "公网出口配额", "value": 100, "unit": "Mbps", "note": "用户已确认", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "public", "trend": []}
       ]
     },
     {
@@ -57,11 +58,12 @@
     }
   ],
   "services": [
-    {"name": "serverosd", "state": "OK"},
-    {"name": "litellm-shared-postgres", "state": "OK"},
-    {"name": "alert-sync.timer", "state": "OK"},
-    {"name": "vllm-qwen-7b", "state": "ATTENTION", "reason": "首次 token 延迟升高"},
-    {"name": "gateway0", "state": "OK"},
-    {"name": "feishu-card-publisher", "state": "UNKNOWN", "reason": "尚未从该机取到就绪记录"}
+    {"name": "serverosd", "state": "OK", "observed_at": "2026-10-13T05:58:00Z", "axis": {"liveness": "RUNNING", "transport": "CONNECTED", "functional": "OK", "readiness": "READY"}},
+    {"name": "litellm-shared-postgres", "state": "OK", "observed_at": "2026-10-13T05:58:00Z"},
+    {"name": "alert-sync.timer", "state": "OK", "observed_at": "2026-10-13T05:57:00Z"},
+    {"name": "vllm-qwen-7b", "state": "ATTENTION", "observed_at": "2026-10-13T05:59:00Z", "reason": "首次 token 延迟升高"},
+    {"name": "gateway0", "state": "OK", "observed_at": "2026-10-13T05:58:00Z"},
+    {"name": "feishu-card-publisher", "state": "UNKNOWN", "reason": "尚未从该机取到就绪记录"},
+    {"name": "nightly-backup", "state": "OK", "observed_at": "2026-10-13T03:00:00Z"}
   ]
 }

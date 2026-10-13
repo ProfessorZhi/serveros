@@ -74,22 +74,26 @@ class RuleTest(unittest.TestCase):
     """Each rule the module declares, checked where it is applied."""
 
     def test_new_service_enters_the_count_automatically(self):
-        base = [{"name": "a", "state": "OK"}, {"name": "b", "state": "OK"}]
+        base = [{"name": "a", "state": "OK", "observed_at": NOW},
+                {"name": "b", "state": "OK", "observed_at": NOW}]
         before = monitor.monitor_model(devices=[], services=base, now=NOW)
         after = monitor.monitor_model(
-            devices=[], services=base + [{"name": "c", "state": "OK"}], now=NOW)
+            devices=[],
+            services=base + [{"name": "c", "state": "OK", "observed_at": NOW}],
+            now=NOW)
         self.assertEqual(before["summary"]["services"]["total"], 2)
         self.assertEqual(after["summary"]["services"]["total"], 3)
         self.assertEqual(after["summary"]["services"]["ok"], 3)
 
     def test_service_counts_are_derived_never_authored(self):
-        services = [{"name": "a", "state": "OK"},
-                    {"name": "b", "state": "CRITICAL", "reason": "挂了"},
+        services = [{"name": "a", "state": "OK", "observed_at": NOW},
+                    {"name": "b", "state": "CRITICAL", "reason": "挂了",
+                     "observed_at": NOW},
                     {"name": "c", "state": "UNKNOWN", "reason": "未取到"}]
         counts = monitor.monitor_model(
             devices=[], services=services, now=NOW)["summary"]["services"]
         self.assertEqual(counts, {"total": 3, "ok": 1, "attention": 0,
-                                  "critical": 1, "unknown": 1})
+                                  "critical": 1, "stale": 0, "unknown": 1})
 
     def test_anomaly_is_pinned_to_the_top(self):
         readings = [monitor.reading("磁盘 C:", 92, unit="%", severity="CRITICAL",
@@ -201,9 +205,10 @@ class StructureTest(unittest.TestCase):
     def _model(self):
         readings = [monitor.reading("CPU", 30, unit="%", observed_at=NOW,
                                     trend=[1, 2, 3])]
-        return monitor.monitor_model(devices=[dev(readings=readings)],
-                                     services=[{"name": "a", "state": "OK"}],
-                                     now=NOW)
+        return monitor.monitor_model(
+            devices=[dev(readings=readings)],
+            services=[{"name": "a", "state": "OK", "observed_at": NOW}],
+            now=NOW)
 
     def test_element_ids_are_unique_and_schema_is_2_0(self):
         card = monitor.render_cardkit(self._model())
@@ -234,9 +239,14 @@ class StructureTest(unittest.TestCase):
 
     def test_chart_is_gated_behind_verified_flag(self):
         model = self._model()
+        # Neither gate open: the safe variant, and no chart.
         plain = json.dumps(monitor.render_cardkit(model))
         self.assertNotIn('"tag": "chart"', plain)
-        verified = monitor.render_cardkit(model, charts_verified=True)
+        self.assertNotIn('"tag": "column_set"', plain)
+        # `charts_verified` alone is not enough — `rich` must be open too.
+        self.assertNotIn("chart", monitor._walk_tags(
+            monitor.render_cardkit(model, charts_verified=True), []))
+        verified = monitor.render_cardkit(model, rich=True, charts_verified=True)
         self.assertIn("chart", monitor._walk_tags(verified, []))
         # And the trend is still visible without the chart: as a text line,
         # inside the device's fold.
@@ -330,6 +340,137 @@ class AdapterTest(unittest.TestCase):
                    if d["device_ref"] == "device:personal-dell")
         net = next(r for r in win["readings"] if r["kind"] == "network")
         self.assertNotIn("公网", net["label"])
+
+
+class Phase2Test(unittest.TestCase):
+    """Phase 2: the safe variant, four axes, evidence-gated network/share, the
+    mobile-width budget, and privacy."""
+
+    def test_default_card_is_the_safe_variant(self):
+        model = source.model_from_fixture()
+        tags = set(monitor._walk_tags(monitor.render_cardkit(model), []))
+        self.assertTrue(tags <= {"markdown", "hr", "collapsible_panel",
+                                 "plain_text", "standard_icon"},
+                        f"unexpected tag(s): {tags}")
+        self.assertNotIn("column_set", tags)
+        self.assertNotIn("chart", tags)
+
+    def test_rich_variant_restores_column_set(self):
+        model = source.model_from_fixture()
+        tags = set(monitor._walk_tags(
+            monitor.render_cardkit(model, rich=True), []))
+        self.assertIn("column_set", tags)
+
+    def test_service_axes_match_health_vocabulary(self):
+        # Imported only HERE, in a test: the pure module must not import the
+        # module that loads the registry and its contracts.
+        health = _load("serveros_runtime_health", ROOT / "runtime" / "health.py")
+        self.assertEqual(tuple(monitor.SERVICE_AXES), tuple(health.AXES))
+
+    def test_stale_service_is_not_counted_healthy(self):
+        services = [{"name": "s", "state": "OK",
+                     "observed_at": "2026-10-13T03:00:00Z"}]
+        model = monitor.monitor_model(devices=[], services=services, now=NOW,
+                                      stale_after_s=1800)
+        self.assertEqual(model["services"][0]["state"], "STALE")
+        self.assertEqual(model["summary"]["services"]["ok"], 0)
+        self.assertEqual(model["summary"]["services"]["stale"], 1)
+        self.assertEqual(monitor._fleet_verdict(model), "UNCONFIRMED")
+
+    def test_unconfirmed_quota_is_absent_not_invented(self):
+        self.assertIsNone(monitor.quota_reading(100_000_000, observed_at=NOW,
+                                                confirmed=False))
+        confirmed = monitor.quota_reading(100_000_000, observed_at=NOW,
+                                          confirmed=True)
+        self.assertEqual(confirmed["value"], 100)
+        model = source.model_from_fixture()
+
+        def quotas(ref):
+            device = next(d for d in model["devices"] if d["device_ref"] == ref)
+            return [r for r in device["readings"] if r["label"] == "公网出口配额"]
+
+        self.assertEqual(len(quotas("device:tokyo-shared-dev-01")), 1)
+        self.assertEqual(quotas("device:personal-dell"), [])
+        self.assertEqual(quotas("device:llm-lab-dell"), [])
+
+    def test_host_share_needs_cgroup_attribution(self):
+        self.assertIsNone(monitor.share_reading("3 核", attribution="guess",
+                                                observed_at=NOW))
+        kept = monitor.share_reading("3 核", attribution="cgroup",
+                                     observed_at=NOW)
+        self.assertEqual(kept["scope"], "cgroup")
+        model = monitor.monitor_model(devices=[], now=NOW)
+        model["devices"] = [dev(readings=[
+            {"kind": "host-share", "label": "份额", "value": "3 核",
+             "state": "KNOWN", "observed_at": NOW, "scope": "guess"}])]
+        with self.assertRaises(monitor.MonitorCardError):
+            monitor.validate_model(model)
+
+    def test_every_markdown_line_fits_the_mobile_budget(self):
+        card = monitor.render_cardkit(source.model_from_fixture(), rich=True)
+        for content in _markdown(card):
+            for line in content.split("\n"):
+                self.assertLessEqual(len(line), monitor.MOBILE_LINE_CHARS,
+                                     f"line too wide for 390px: {line!r}")
+
+    def test_card_carries_no_private_material(self):
+        card = monitor.render_cardkit(source.model_from_fixture(), rich=True,
+                                      charts_verified=True)
+        blob = json.dumps(card, ensure_ascii=False).lower()
+        # Credential and home-path markers, not the bare word "token" — which is
+        # a legitimate `standard_icon` field and appears in ordinary prose.
+        for token in ("bearer ", "secret", "password", "authorization:",
+                      "-----begin", ".secrets", "/home/vince", "cookie",
+                      "private key", "om_", "oc_"):
+            self.assertNotIn(token, blob, f"card leaked {token!r}")
+
+    def test_is_urgent_tracks_critical(self):
+        self.assertTrue(monitor.is_urgent(source.model_from_fixture()))
+        self.assertFalse(monitor.is_urgent(
+            monitor.monitor_model(devices=[], services=[], now=NOW)))
+
+
+class AcceptanceSeamTest(unittest.TestCase):
+    """The typed seam the C++ `NodeResourceSnapshot v1` is assembled through."""
+
+    def _doc(self, **over):
+        doc = {"schema": source.NODE_RESOURCE_SNAPSHOT_SCHEMA,
+               "device_ref": "device:tokyo-shared-dev-01",
+               "display_name": "东京共享开发机", "platform": "linux",
+               "reachability": {"state": "KNOWN", "observed_at": NOW},
+               "readings": [{"kind": "reading", "label": "CPU", "value": 32,
+                             "unit": "%", "state": "KNOWN",
+                             "observed_at": NOW}]}
+        doc.update(over)
+        return doc
+
+    def test_accepts_a_well_formed_snapshot(self):
+        entry = source.accept_device_snapshot(self._doc())
+        self.assertEqual(entry["device_ref"], "device:tokyo-shared-dev-01")
+        model = monitor.monitor_model(devices=[entry], services=[], now=NOW)
+        self.assertEqual(model["devices"][0]["readings"][0]["label"], "CPU")
+
+    def test_refuses_an_unknown_schema(self):
+        with self.assertRaises(source.SnapshotRefused):
+            source.accept_device_snapshot(self._doc(schema="something-else"))
+
+    def test_refuses_known_without_provenance(self):
+        doc = self._doc(readings=[{"kind": "reading", "label": "CPU",
+                                   "value": 1, "state": "KNOWN"}])
+        with self.assertRaises(source.SnapshotRefused):
+            source.accept_device_snapshot(doc)
+
+    def test_refuses_missing_identity(self):
+        doc = self._doc()
+        del doc["device_ref"]
+        with self.assertRaises(source.SnapshotRefused):
+            source.accept_device_snapshot(doc)
+
+    def test_seam_fixture_is_accepted(self):
+        path = ROOT / "runtime" / "node-resource-snapshot.fixture.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entry = source.accept_device_snapshot(doc)
+        self.assertEqual(entry["device_ref"], doc["device_ref"])
 
 
 if __name__ == "__main__":
