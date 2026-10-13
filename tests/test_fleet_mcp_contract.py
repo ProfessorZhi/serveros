@@ -537,9 +537,11 @@ class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
                          config_module.PLANNED_OPERATOR_GRANT_VERBS)
 
     def test_control_does_not_inherit_send(self):
-        """Read as a pair: `control` is planned (refused at load today) and
-        `send` is implemented, and neither list contains the other."""
-        self.assertNotIn("control", self.declared["verbs"])
+        """Both verbs are implemented, separately grantable and neither
+        is a planned alias or an implicit grant of the other."""
+        self.assertIn("control", self.declared["verbs"])
+        self.assertIn("send", self.declared["verbs"])
+        self.assertNotIn("control", self.declared["verbs_planned"])
         self.assertNotIn("send", self.declared["verbs_planned"])
         self.assertIn("does not inherit", self.declared["verbs_rule"])
 
