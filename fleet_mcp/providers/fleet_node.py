@@ -115,15 +115,19 @@ class FleetNodeProvider(DeviceProvider):
             raise self._map_code(err.get("code"), err.get("detail") or "")
         return decoded if isinstance(decoded, dict) else {}
 
-    def native_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def native_call(self, tool: str, arguments: dict[str, Any], *,
+                    session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE mirrored native tool on this node, over the signed route.
 
-        The path is fixed (`/v1/native/call`) and the tool is named in the
-        SIGNED body, so there is no URL, path segment, shell or redirect for a
-        caller to shape — the device refuses any name outside the recorded
-        CloudCLI set. This is the cross-device half of the mirror: without it
-        only a `cloudcli-mcp-http` device could answer a native call, and the
-        Windows and A6000 nodes are `fleet-node`.
+        The path is fixed (`/v1/native/call`) and the tool — and, for an
+        approval, the session PROOF — are named in the SIGNED body, so there is
+        no URL, path segment, shell or redirect for a caller to shape, and the
+        device refuses any name outside the recorded CloudCLI set.
+
+        `session_ref` is the Fleet address the HOST already verified the floor
+        over. It rides in the signed body as a PROOF the device can re-check
+        against its own register: the device does not take the caller's word for
+        what an approval request belongs to.
         """
         if cloudcli_native.NATIVE_BY_NAME.get(tool) is None:
             raise refuse(
@@ -131,8 +135,24 @@ class FleetNodeProvider(DeviceProvider):
                 f"{tool!r} is not a CloudCLI native tool this build mirrors; the "
                 f"node route refuses names it did not record.",
             )
-        return self._request("POST", "/v1/native/call",
-                             {"tool": tool, "arguments": dict(arguments or {})})
+        payload: dict[str, Any] = {"tool": tool, "arguments": dict(arguments or {})}
+        if session_ref:
+            payload["session_ref"] = session_ref
+        return self._request("POST", "/v1/native/call", payload)
+
+    def capability_snapshot(self) -> dict[str, Any]:
+        """The node route cannot enumerate verbs: an honest UNKNOWN.
+
+        There is no `tools/list` on the signed node route — the connector's
+        closed table is a set of ROUTES, not a CloudCLI verb inventory — so this
+        device's 22-verb coverage is not observable from here. It is reported
+        UNKNOWN with that reason rather than assumed complete, and rather than
+        reached by a credential this surface does not hold.
+        """
+        return cloudcli_native.capability_snapshot(
+            device_ref=self.device_ref, source=self.kind,
+            reason=("the signed node route exposes no tools/list; this device's "
+                    "verb coverage is verified per call, not enumerated here"))
 
     def _refusal_from_body(self, status: int, raw: str):
         try:

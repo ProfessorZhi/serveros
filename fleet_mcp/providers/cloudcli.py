@@ -80,6 +80,29 @@ class CloudCliProvider(DeviceProvider):
         """
         return dict(self._coverage)
 
+    def capability_snapshot(self) -> dict[str, Any]:
+        """A READ-ONLY snapshot of what THIS device exposes, from its live list.
+
+        Calls `health()` (the one place the live `tools/list` is fetched) and
+        shapes the answer with `cloudcli_native.capability_snapshot`, so a verb
+        this device does not declare is `UNSUPPORTED_BY_DEVICE` rather than
+        assumed present. Nothing here reads a credential or mutates the device.
+        """
+        health = self.health()
+        if not self._tools:
+            return cloudcli_native.capability_snapshot(
+                device_ref=self.device_ref, source=self.kind,
+                reason=health.error_code or "the device's tool list was not read")
+        observed = {}
+        for row in self._tools:
+            if isinstance(row, dict) and isinstance(row.get("name"), str):
+                observed[row["name"]] = {"annotations": row.get("annotations"),
+                                         "schema": row.get("inputSchema")}
+        return cloudcli_native.capability_snapshot(
+            device_ref=self.device_ref, observed=observed, source=self.kind,
+            version=health.server_version,
+            sampled_at=health.__dict__.get("sampled_at"))
+
     # -- plumbing ----------------------------------------------------------
 
     def _client(self) -> McpHttpClient:
@@ -101,7 +124,8 @@ class CloudCliProvider(DeviceProvider):
 
     # -- health ------------------------------------------------------------
 
-    def native_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def native_call(self, tool: str, arguments: dict[str, Any], *,
+                    session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE native tool by a name this build records. Never a proxy.
 
         `_call` can forward any name the transport is handed; THIS method is the
@@ -120,6 +144,10 @@ class CloudCliProvider(DeviceProvider):
                 f"{tool!r} is not a CloudCLI native tool this build mirrors; the "
                 f"mirror forwards only names it recorded.",
             )
+        # `session_ref` is accepted for parity with the node route and is not
+        # used here: for a `cloudcli-mcp-http` device the ownership check runs
+        # one layer up, against THIS device's own `approvals_list` register, so
+        # the proof has already been spent by the time this is called.
         return self._call(tool, dict(arguments or {}))
 
     def health(self) -> ProviderHealth:

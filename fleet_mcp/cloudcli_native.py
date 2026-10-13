@@ -533,6 +533,88 @@ def governance_for(native: "NativeTool", arguments: dict[str, Any] | None) -> st
     return native.governance
 
 
+def capability_snapshot(*, device_ref: str, observed=None, source: str | None = None,
+                        version: str | None = None, sampled_at: str | None = None,
+                        reason: str | None = None) -> dict[str, Any]:
+    """A read-only snapshot of what ONE device actually exposes.
+
+    `observed` is `{tool_name: {"annotations": ..., "schema": ...}}` read from
+    the device's OWN `tools/list`, or `None` when nobody could read it (a device
+    that needs a credential this surface does not hold is reported UNKNOWN, not
+    assumed complete).
+
+    A recorded verb the device does NOT declare is `UNSUPPORTED_BY_DEVICE` — the
+    22 names this build mirrors are not 22 working verbs on every machine, and a
+    count of 22 is not evidence that any of them answer. A verb the device
+    declares that this build did NOT record is reported separately; it is not
+    silently added, because a name that arrived from the wire is not a
+    capability this build decided to offer.
+    """
+    base = {
+        "schema": "serveros/fleet-cloudcli-capability.v1",
+        "device_ref": device_ref,
+        "recorded_count": len(NATIVE_TOOLS),
+        "source": source,
+        "version": version,
+        "sampled_at": sampled_at,
+    }
+    if observed is None:
+        return {**base, "state": "UNKNOWN", "observed_count": None,
+                "reason": reason or "the device's tool list was not read",
+                "tools": {}, "unsupported_by_device": sorted(NATIVE_BY_NAME),
+                "unrecorded_by_build": []}
+    observed = {k: v for k, v in observed.items() if isinstance(k, str)}
+    tools: dict[str, Any] = {}
+    unsupported: list[str] = []
+    for native in NATIVE_TOOLS:
+        entry = observed.get(native.name)
+        if entry is None:
+            tools[native.name] = {
+                "state": UNSUPPORTED_BY_DEVICE,
+                "reason": "the device does not declare this verb",
+            }
+            unsupported.append(native.name)
+            continue
+        entry = entry if isinstance(entry, dict) else {}
+        tools[native.name] = {
+            "state": "USABLE",
+            # Carried through, not interpreted: the device's own annotation.
+            "annotations": entry.get("annotations"),
+            "schema_present": isinstance(entry.get("schema"), dict),
+        }
+    return {**base, "state": "OBSERVED", "observed_count": len(observed),
+            "tools": tools, "unsupported_by_device": sorted(unsupported),
+            "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME))}
+
+
+def approval_ids(listing) -> set[str]:
+    """The request ids a device's `approvals_list` answer carries.
+
+    ONE extractor, used by BOTH trust domains: the host verifies a request
+    belongs to the session it will answer, and the device connector verifies it
+    belongs to a request this machine enumerated. Two readers of the same shape
+    would drift, and the one that drifted would be the one a caller saw.
+
+    Tolerant of the envelope (`approvals` / `items` / `data` / `requests`) and
+    strict about what counts as an id: a top-level list of objects, each naming
+    its request under `requestId` / `request_id` / `id`. Anything else yields
+    nothing — and nothing means «cannot locate», which callers refuse on, so an
+    unrecognised shape fails closed rather than open.
+    """
+    out: set[str] = set()
+    for key in ("approvals", "items", "data", "requests"):
+        rows = listing.get(key) if isinstance(listing, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for id_key in ("requestId", "request_id", "id"):
+                    value = row.get(id_key)
+                    if isinstance(value, str) and value:
+                        out.add(value)
+    return out
+
+
 def fleet_scopes_for(native: "NativeTool", governance: str) -> tuple[str, ...]:
     """The Fleet scopes a CALL needs, given the class it resolved to.
 

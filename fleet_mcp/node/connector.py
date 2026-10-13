@@ -732,6 +732,12 @@ class Connector:
         # `allow_control_to` this workstation's owner wrote at this keyboard.
         self._native_floor(cloudcli_native, cloudcli_native.NATIVE_BY_NAME[tool],
                            arguments)
+        # DEVICE-side approval ownership: the requestId must be one THIS machine
+        # enumerates for the named session, checked here from the machine's own
+        # register. The host checks the same thing on its side; both must hold,
+        # and neither trusts the other's word for what the request belongs to.
+        if tool == "approval_answer":
+            self._verify_approval_ownership(payload, arguments)
         caller = getattr(self.provider, "native_call", None)
         if caller is None:
             raise FleetRefusal(
@@ -740,6 +746,64 @@ class Connector:
                 f"does not inherit the CloudCLI native surface.",
             )
         return caller(tool, arguments)
+
+    def _verify_approval_ownership(self, payload: dict[str, Any],
+                                   arguments: dict[str, Any]) -> None:
+        """The requestId must be one THIS machine enumerates for a session here.
+
+        The proof is the SIGNED `session_ref` in the payload — the whole body is
+        HMAC-signed, so it is authenticated, and it says which Fleet session the
+        host checked the floor over. The MACHINE re-checks, against its OWN
+        register: it enumerates `approvals_list(session=<native id>)` on the
+        local CloudCLI and requires the `requestId` to be in it. So the host's
+        word that a request belongs somewhere is never enough, and an answer to
+        a request that belongs to another device, another session, or that has
+        expired (and so left the register) is refused here.
+
+        It is fail-closed at every step: no proof, a proof naming another
+        device, a device that will not enumerate, or an id nobody enumerates all
+        refuse the answer, and the answer never reaches the provider.
+        """
+        request_id = arguments.get("requestId")
+        proof = payload.get("session_ref")
+        native_id = None
+        if isinstance(proof, str) and proof:
+            parts = proof.split("|")
+            if len(parts) == 3 and parts[0] == self.config.device_ref:
+                native_id = parts[2]
+        if not native_id:
+            raise FleetRefusal(
+                "APPROVAL_REQUIRED",
+                "the approval answer carried no session proof bound to this "
+                "machine, so which request it belongs to cannot be established "
+                "here. An answer is not executed on a caller's word alone.",
+            )
+        caller = getattr(self.provider, "native_call", None)
+        if caller is None:
+            raise FleetRefusal(
+                "APPROVAL_REQUIRED",
+                "this connector's provider cannot enumerate approvals, so the "
+                "request's ownership cannot be confirmed and the answer is "
+                "refused.",
+            )
+        try:
+            listing = caller("approvals_list", {"session": native_id})
+        except FleetRefusal as exc:
+            raise FleetRefusal(
+                "APPROVAL_REQUIRED",
+                f"this machine could not enumerate its approvals for the named "
+                f"session ({exc.code}); a request that cannot be located is not "
+                f"answered.",
+            ) from None
+        from .. import cloudcli_native
+        if request_id not in cloudcli_native.approval_ids(listing):
+            raise FleetRefusal(
+                "APPROVAL_REQUIRED",
+                "the request is not one this machine enumerates for the named "
+                "session: it belongs to another session, another device, or has "
+                "expired. An answer is executed only for a request this machine "
+                "can locate.",
+            )
 
     def _native_floor(self, native_mod, native, arguments: dict[str, Any]) -> None:
         """The DEVICE's own floor for one mirrored verb. Both ends must say yes.

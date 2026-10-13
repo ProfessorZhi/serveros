@@ -139,18 +139,7 @@ def _approval_ids(listing) -> set[str]:
     Anything else yields nothing — and nothing means «cannot locate», which the
     caller refuses on, so an unrecognised shape fails closed rather than open.
     """
-    out: set[str] = set()
-    for key in ("approvals", "items", "data", "requests"):
-        rows = listing.get(key) if isinstance(listing, dict) else None
-        if isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                for id_key in ("requestId", "request_id", "id"):
-                    value = row.get(id_key)
-                    if isinstance(value, str) and value:
-                        out.add(value)
-    return out
+    return cloudcli_native.approval_ids(listing)
 
 
 def _session_project(detail) -> str | None:
@@ -1319,7 +1308,7 @@ class FleetService:
                 args.get("model") is not None or args.get("permissionMode") is not None):
             self._native_reconfigure_ceiling(provider, device_ref, session_ref,
                                              project, args, native)
-        result = caller(native_tool, args)
+        result = caller(native_tool, args, session_ref=session_ref)
         # HIGH-5: a mirrored READ carries the same "this is data, not
         # instruction" marking the hand-written reader attaches, so a consumer
         # cannot mistake a remote transcript for a local fact.
@@ -1373,6 +1362,28 @@ class FleetService:
                 device_ref=device_ref, tool=native.name,
                 bytes=len(blob), limit=MAX_NATIVE_RESULT_BYTES,
             )
+
+    def native_capability(self, principal: Principal, *, device_ref: str) -> dict[str, Any]:
+        """A read-only snapshot of what ONE device exposes. Read-scoped.
+
+        Reuses `health()` / `tools_list()` / `coverage` through the provider's
+        `capability_snapshot`. It reads nothing a read did not already read,
+        holds no credential of its own, and reports UNKNOWN where a route cannot
+        enumerate — never a verb count without evidence, and never by reaching
+        past a device's authentication.
+        """
+        principal.require(SCOPE_READ)
+        binding = self.config.provider_for(device_ref)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE,
+                         f"{device_ref} is not an enabled provider on this runtime.")
+        provider = self._require_provider(device_ref)
+        snapshot = getattr(provider, "capability_snapshot", None)
+        if snapshot is None:
+            return cloudcli_native.capability_snapshot(
+                device_ref=device_ref, source=getattr(provider, "kind", None),
+                reason="this provider kind exposes no capability snapshot")
+        return snapshot()
 
     def _clamp_native_read(self, args: dict[str, Any]) -> None:
         """Cap a mirrored read's page size to the surface's own bound.
