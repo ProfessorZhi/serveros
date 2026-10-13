@@ -434,7 +434,7 @@ class AcceptanceSeamTest(unittest.TestCase):
     """The typed seam the C++ `NodeResourceSnapshot v1` is assembled through."""
 
     def _doc(self, **over):
-        doc = {"schema": source.NODE_RESOURCE_SNAPSHOT_SCHEMA,
+        doc = {"schema": source.DEVICE_ENTRY_SCHEMA,
                "device_ref": "device:tokyo-shared-dev-01",
                "display_name": "东京共享开发机", "platform": "linux",
                "reachability": {"state": "KNOWN", "observed_at": NOW},
@@ -467,7 +467,7 @@ class AcceptanceSeamTest(unittest.TestCase):
             source.accept_device_snapshot(doc)
 
     def test_seam_fixture_is_accepted(self):
-        path = ROOT / "runtime" / "node-resource-snapshot.fixture.json"
+        path = ROOT / "runtime" / "fleet-monitor-device.fixture.json"
         doc = json.loads(path.read_text(encoding="utf-8"))
         entry = source.accept_device_snapshot(doc)
         self.assertEqual(entry["device_ref"], doc["device_ref"])

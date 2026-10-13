@@ -51,12 +51,18 @@ def _load(name: str, path: Path):
 card_source = _load("serveros_card_source", _HERE / "card_source.py")
 monitor = _load("serveros_fleet_monitor_card", _HERE / "fleet_monitor_card.py")
 
-#: The schema id the C++ Native Core's `NodeResourceSnapshot v1` must declare to
-#: pass the acceptance seam below. This module OWNS the string and the C++ side
-#: must match it; nothing is imported from the C++ tree, so the two can land in
-#: either order and be assembled by calling `accept_device_snapshot` with the
-#: parsed document.
-NODE_RESOURCE_SNAPSHOT_SCHEMA = "serveros/node-resource-snapshot.v1"
+#: The schema of the DEVICE ENTRY this module assembles — the shape
+#: `monitor.monitor_model` consumes. It is deliberately NOT
+#: `serveros/node-resource-snapshot.v1`: that id names the C++ collector's own
+#: snapshot (see PR#161's `contract/node-resource-snapshot.v1.schema.json`), and
+#: an id that named two different shapes would make a consumer unable to tell
+#: which it was handed. This rename was made during the Phase 3 cross-PR audit,
+#: when the collision was found.
+DEVICE_ENTRY_SCHEMA = "serveros/fleet-monitor-device.v1"
+
+#: The envelope the C++ adapter produces (`native/node-core/adapter/
+#: native_node_core.py`, PR#161) and the ONLY native document this bridge reads.
+NATIVE_MEASUREMENT_SCHEMA = "serveros/native-node-measurement.v1"
 
 
 class SnapshotRefused(RuntimeError):
@@ -82,10 +88,10 @@ def accept_device_snapshot(document):
         raise SnapshotRefused(
             f"a snapshot is an object, got {type(document).__name__}")
     schema = document.get("schema")
-    if schema != NODE_RESOURCE_SNAPSHOT_SCHEMA:
+    if schema != DEVICE_ENTRY_SCHEMA:
         raise SnapshotRefused(
-            f"schema {schema!r} is not {NODE_RESOURCE_SNAPSHOT_SCHEMA!r}; a "
-            f"snapshot from an unknown producer version is not accepted")
+            f"schema {schema!r} is not {DEVICE_ENTRY_SCHEMA!r}; a "
+            f"device entry from an unknown producer version is not accepted")
     device_ref = document.get("device_ref")
     if not device_ref:
         raise SnapshotRefused("a snapshot names no device_ref")
@@ -122,6 +128,306 @@ def accept_device_snapshot(document):
 #: carries. Everything not listed is OK. A section that is UNKNOWN is NOT mapped
 #: to a severity: it becomes an unobserved reading with the section's own why.
 _SECTION_SEVERITY = {"ATTENTION": "ATTENTION", "CRITICAL": "CRITICAL"}
+
+
+# ---------------------------------------------------------------------------
+# The native bridge: PR#161's envelope -> a device entry. Typed, pure, no import
+# of any C++ file.
+# ---------------------------------------------------------------------------
+
+class NativeMeasurementRefused(RuntimeError):
+    """An envelope this bridge cannot accept, or can only accept fail-closed."""
+
+
+def _gib(value):
+    if value is None:
+        return "未读到"
+    try:
+        return f"{float(value) / 1024 ** 3:.1f} GiB"
+    except (TypeError, ValueError):
+        return "未读到"
+
+
+def _rate(value):
+    """A byte-per-second figure in a unit a person reads. Not a percent."""
+    if value is None:
+        return "未读到"
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return "未读到"
+    for unit in ("B/s", "KiB/s", "MiB/s", "GiB/s"):
+        if abs(size) < 1024 or unit == "GiB/s":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return "未读到"
+
+
+def _percent(used, total):
+    try:
+        if not total:
+            return None
+        return round(float(used) / float(total) * 100, 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _failure_reason(envelope):
+    """Why there is no reading, from the envelope's own words. Never invented."""
+    measurements = envelope.get("measurements")
+    if isinstance(measurements, dict) and measurements.get("reason"):
+        return str(measurements["reason"])
+    refusals = envelope.get("refusals") or []
+    if refusals and isinstance(refusals[0], dict) and refusals[0].get("reason"):
+        return str(refusals[0]["reason"])
+    unknowns = envelope.get("unknowns") or []
+    if unknowns and isinstance(unknowns[0], dict) and unknowns[0].get("reason"):
+        return str(unknowns[0]["reason"])
+    return "envelope 声明没有可用读数（readings_available=false）"
+
+
+def _native_freshness(envelope, observed_at, now, freshness_bound):
+    """The ONE freshness word every reading in this envelope shares. fail-closed.
+
+    Both authorities are applied and the STRICTER wins: the envelope's own
+    `freshness.state` and the caller's `freshness_bound` measured against
+    `observed_at`. A reading is KNOWN only when the envelope says FRESH AND its
+    age is within the bound — so a missing window, an unparseable instant, a
+    replay of an old sample, or a clock that cannot be compared all land on
+    UNKNOWN or STALE and never on a green reading.
+    """
+    freshness = envelope.get("freshness") or {}
+    word = str(freshness.get("state") or "UNKNOWN").upper()
+    if word == "UNKNOWN":
+        return monitor.STATE_UNKNOWN, (
+            freshness.get("why") or "envelope 未给出可判定的新鲜度")
+    when, clock = monitor._parse(observed_at), monitor._parse(now)
+    if when is None or clock is None:
+        return monitor.STATE_UNKNOWN, "观测时间或当前时间不可解析，无法判定新鲜度"
+    age = (clock - when).total_seconds()
+    if word == "STALE" or age > freshness_bound:
+        return monitor.STATE_STALE, (
+            f"最后观测 {observed_at} 距今 {int(age // 60)} 分钟，超过新鲜度上限 "
+            f"{freshness_bound // 60} 分钟")
+    return monitor.STATE_KNOWN, None
+
+
+def _native_readings(envelope, *, observed_at, state, why):
+    """The measurements as card readings, under ONE freshness word.
+
+    FAIL-CLOSED. When `state` is not KNOWN every reading keeps a word with a
+    reason and no number, because a number beside a stale or unknown reading is
+    read as current. The mapping itself is deliberate and narrow:
+
+      * `cpu.used_percent` -> the host-wide CPU reading.
+      * `memory` -> total/available BYTES, converted and noted; the percent is
+        this bridge's own arithmetic over those bytes, not a second source.
+      * `filesystems.roles[ROOT_FS|DATA_FS]` -> the card's disk readings, using
+        `available_bytes` (f_bavail, what a non-root writer gets) and NOT
+        `free_bytes` (f_bfree, which includes root-reserved blocks — the 22 GiB
+        the two producers disagree by on `/`).
+      * `disk_io` and `interfaces` -> LOCAL throughput only, labelled so. An
+        interface's link `speed_mbps` is never a public quota, and a flow that
+        has not been split is never called 公网.
+      * GPU, active-agent count and service state are NOT in this envelope, so
+        this bridge invents none of them.
+
+    Returns `(readings, reachability)`.
+    """
+    measurements = envelope.get("measurements")
+    if not isinstance(measurements, dict):
+        reason = "envelope 没有 measurements 对象"
+        return ([monitor.unobserved("主机读数", reason=reason, kind="host")],
+                {"state": monitor.STATE_UNKNOWN, "reason": reason})
+    out = []
+
+    def emit(label, value, *, unit="", note="", kind="reading", scope=None):
+        if state == monitor.STATE_KNOWN:
+            return monitor.reading(label, value, unit=unit, note=note,
+                                   observed_at=observed_at, kind=kind, scope=scope)
+        if state == monitor.STATE_STALE:
+            return monitor.stale(monitor.reading(label, value, unit=unit,
+                                                 note=note, observed_at=observed_at,
+                                                 kind=kind, scope=scope), reason=why)
+        return monitor.unobserved(label, reason=why, kind=kind, scope=scope)
+
+    def present(block):
+        return isinstance(block, dict) and block.get("state") in (None, "PRESENT")
+
+    cpu = measurements.get("cpu") or {}
+    if present(cpu) and cpu.get("used_percent") is not None:
+        out.append(emit("CPU", cpu["used_percent"], unit="%",
+                        note=f"整机 · {cpu.get('sample_seconds')}s 窗口", kind="cpu"))
+    else:
+        out.append(monitor.unobserved("CPU", reason="cpu 未测量或不可用", kind="cpu"))
+
+    memory = measurements.get("memory") or {}
+    if present(memory):
+        total, available = memory.get("total_bytes"), memory.get("available_bytes")
+        used = (total - available
+                if isinstance(total, (int, float)) and isinstance(available, (int, float))
+                else None)
+        percent = _percent(used, total)
+        out.append(emit(
+            "内存", percent if percent is not None else "—",
+            unit="%" if percent is not None else "",
+            note=f"可用 {_gib(available)} / 共 {_gib(total)}"
+                 f"（MemAvailable 口径，由 bytes 换算）",
+            kind="memory"))
+    else:
+        out.append(monitor.unobserved("内存", reason="memory 未测量或不可用",
+                                      kind="memory"))
+
+    filesystems = measurements.get("filesystems") or {}
+    for role in (filesystems.get("roles") or []):
+        if not isinstance(role, dict):
+            continue
+        name = role.get("role") or role.get("mount_point") or "?"
+        if role.get("state") != "PRESENT":
+            out.append(monitor.unobserved(f"磁盘 {name}", reason="该角色未测量",
+                                          kind="filesystem"))
+            continue
+        note = f"可用 {_gib(role.get('available_bytes'))}（f_bavail）"
+        inode = (role.get("inodes") or {}).get("used_percent")
+        if inode is not None:
+            note += f" · inode {inode}%"
+        out.append(emit(f"磁盘 {name}", role.get("used_percent"), unit="%",
+                        note=note, kind="filesystem"))
+
+    disk_io = measurements.get("disk_io") or {}
+    for role in (disk_io.get("roles") or []):
+        if not isinstance(role, dict):
+            continue
+        out.append(emit(
+            f"磁盘吞吐 {role.get('role') or role.get('name')}",
+            f"读 {_rate(role.get('read_bytes_per_second'))} · "
+            f"写 {_rate(role.get('write_bytes_per_second'))}",
+            note="本机设备吞吐，非公网", kind="disk-io", scope="local-device"))
+
+    for interface in (measurements.get("interfaces") or []):
+        if not isinstance(interface, dict) or not interface.get("active"):
+            continue
+        if interface.get("loopback"):
+            continue
+        note = "本机网卡吞吐，未区分公网/内网"
+        speed = interface.get("speed_mbps")
+        if isinstance(speed, (int, float)):
+            note += f" · 链路速率 {speed} Mbps（非公网配额）"
+        out.append(emit(
+            f"网卡 {interface.get('name')} 吞吐",
+            f"入 {_rate(interface.get('rx_bytes_per_second'))} · "
+            f"出 {_rate(interface.get('tx_bytes_per_second'))}",
+            note=note, kind="network", scope="undifferentiated"))
+
+    reachability = ({"state": monitor.STATE_KNOWN, "observed_at": observed_at}
+                    if state == monitor.STATE_KNOWN
+                    else {"state": state, "reason": why})
+    return out, reachability
+
+
+def accept_native_measurement(envelope, *, device_ref, now, freshness_bound):
+    """PR#161's `serveros/native-node-measurement.v1` -> a device entry. PURE.
+
+    Reads no file, imports nothing from the C++ tree, opens no collector: it
+    takes a PARSED envelope and returns the device entry `monitor.monitor_model`
+    consumes, or raises `NativeMeasurementRefused`. The C++ producer is
+    assembled by CALLING this with its output, so the two land in either order.
+
+    Everything it cannot establish FAILS CLOSED — to a word with a reason, never
+    to a zero and never to a green reading:
+
+      * a `readings_available` that is not `true` -> an UNKNOWN host reading;
+      * a `scope` that is not `host-wide` -> a refusal (a reading that is not
+        host-wide must not be rendered as one that is);
+      * a `provenance.live` that is not a boolean -> a refusal (whether these
+        facts are a reading of a host or a fixture is not optional);
+      * an `attribution.scope` that is not `self` -> a refusal (the only
+        account-scoped fact this envelope carries is the collector's own cgroup,
+        and treating it as a user's host-wide share is forbidden);
+      * any freshness the caller's bound or the envelope cannot establish ->
+        STALE or UNKNOWN on every reading.
+
+    The reading atoms it produces are validated by `accept_device_snapshot`, so
+    the «a non-UNKNOWN reading carries its observed_at» rule lives in ONE place
+    and this bridge does not restate it.
+    """
+    if not isinstance(envelope, dict):
+        raise NativeMeasurementRefused(
+            f"an envelope is an object, got {type(envelope).__name__}")
+    if envelope.get("schema") != NATIVE_MEASUREMENT_SCHEMA:
+        raise NativeMeasurementRefused(
+            f"schema {envelope.get('schema')!r} is not "
+            f"{NATIVE_MEASUREMENT_SCHEMA!r}")
+    if envelope.get("scope") != "host-wide":
+        raise NativeMeasurementRefused(
+            f"scope {envelope.get('scope')!r} is not 'host-wide'; a reading that "
+            f"describes something other than the whole machine must not be "
+            f"rendered as one that describes it")
+    if not isinstance(envelope.get("readings_available"), bool):
+        raise NativeMeasurementRefused(
+            "readings_available is not a boolean; whether a reading exists must "
+            "be stated, not inferred")
+    provenance = envelope.get("provenance")
+    if not isinstance(provenance, dict) or not isinstance(provenance.get("live"), bool):
+        raise NativeMeasurementRefused(
+            "provenance.live is not stated as a boolean; whether these facts are "
+            "a reading of a host or a fixture is not optional")
+
+    sample = envelope.get("sample") or {}
+    observed_at = sample.get("observed_at")
+    native = {
+        "source": envelope.get("source"),
+        "collector": provenance.get("collector"),
+        "collector_version": provenance.get("collector_version"),
+        "language": provenance.get("language"),
+        "live": provenance["live"],
+        "replayed": bool(provenance.get("replayed")),
+        "executed_now": provenance.get("executed_now"),
+        "status": provenance.get("status"),
+        "observed_at": observed_at,
+        "enveloped_at": sample.get("enveloped_at"),
+    }
+
+    if envelope["readings_available"] is not True:
+        reason = _failure_reason(envelope)
+        device = {
+            "schema": DEVICE_ENTRY_SCHEMA, "device_ref": device_ref,
+            "display_name": device_ref, "platform": "未知",
+            "reachability": {"state": monitor.STATE_UNKNOWN, "reason": reason},
+            "readings": [monitor.unobserved("主机读数", reason=reason, kind="host")],
+        }
+        entry = accept_device_snapshot(device)
+        entry["native"] = native
+        return entry
+
+    attribution = envelope.get("attribution")
+    if not isinstance(attribution, dict) or attribution.get("scope") != "self":
+        raise NativeMeasurementRefused(
+            "attribution.scope is not 'self'; the only account-scoped fact in "
+            "this envelope is the collector's own cgroup, and reading it as a "
+            "user's host-wide share is forbidden")
+
+    state, why = _native_freshness(envelope, observed_at, now, freshness_bound)
+    readings, reachability = _native_readings(
+        envelope, observed_at=observed_at, state=state, why=why)
+    cgroup_memory = attribution.get("memory_current_bytes")
+    if cgroup_memory is not None:
+        reading = (monitor.reading(
+            "采集进程 cgroup 内存", _gib(cgroup_memory),
+            note="仅本采集进程的 cgroup，不是用户整机占比",
+            observed_at=observed_at, kind="cgroup-self", scope="self")
+            if state == monitor.STATE_KNOWN else
+            monitor.unobserved("采集进程 cgroup 内存", reason=why, kind="cgroup-self"))
+        readings.append(reading)
+
+    device = {
+        "schema": DEVICE_ENTRY_SCHEMA, "device_ref": device_ref,
+        "display_name": device_ref, "platform": "未知",
+        "reachability": reachability, "readings": readings,
+    }
+    entry = accept_device_snapshot(device)
+    entry["native"] = native
+    return entry
 
 
 def device_from_snapshot(device_ref, snapshot, *, display_name=None,

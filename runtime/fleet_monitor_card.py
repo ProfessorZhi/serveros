@@ -381,13 +381,25 @@ def monitor_model(*, devices, services=(), network=None, now, sample=False,
     for device in devices:
         readings = [_staleness(r, now_dt, stale_after_s)
                     for r in (device.get("readings") or [])]
-        built.append({
+        entry = {
             "device_ref": device.get("device_ref"),
             "display_name": device.get("display_name") or device.get("device_ref"),
             "platform": device.get("platform") or "未知",
             "reachability": _reachability(device, now_dt, stale_after_s),
             "readings": readings,
-        })
+        }
+        # A bridge may attach what it knows about the SOURCE of these readings
+        # (a native measurement's `live`/`replayed`). Carried through untouched
+        # so the card can say a fixture is a fixture.
+        if device.get("native"):
+            entry["native"] = device["native"]
+        built.append(entry)
+
+    # A device whose facts came from a fixture (`live` is False) makes the whole
+    # card a sample. A reading that is not of any host must not be drawn as one,
+    # whatever the caller passed for `sample`.
+    if any((d.get("native") or {}).get("live") is False for d in built):
+        sample = True
 
     services = [_normalize_service(s, now_dt, stale_after_s)
                 for s in (services or [])]
