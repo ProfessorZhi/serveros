@@ -462,7 +462,7 @@ ingress:
 #   policy:
 #     operator_grants:
 #       <principal name>:
-#         device:<device id>: [send]
+#         device:<device id>: [send, control]
 #
 # The principal is the OAuth client id (`cid`), not the subject. The subject
 # claim is the literal string `operator` for every caller in this build, so
@@ -478,8 +478,8 @@ ingress:
 #   accepted and interpreted as "the useful case".
 # * A principal name that is not a principal is not an error to be discovered
 #   at use: the verb list is filtered to the implemented vocabulary, so naming
-#   `control` today writes a grant that does nothing today and is refused at
-#   load rather than silently implied by `send`.
+#   `approve` or `navigate` today writes a grant that does nothing and is
+#   refused at load rather than silently implied by `send` or `control`.
 # * A device whose registry entry is not `ownership: company` cannot hold a
 #   grant even when it is named. The registry, not this table, is what decides
 #   whether a machine is owned by the party that is being authorized, and
@@ -505,12 +505,12 @@ authorization:
       every caller, or an access token, which is refreshed on a schedule that
       has nothing to do with an operator's intent
     device_form: 'device:<id>, a registry ref; a hostname is not an identity'
-    verbs: [send]
-    verbs_planned: [control, approve, navigate]
+    verbs: [send, control]
+    verbs_planned: [approve, navigate]
     verbs_rule: >-
-      A planned verb is refused at load rather than accepted and ignored, and
-      `control` does not inherit `send`: each is written and read as its own
-      row, so a future round has to authorize `control` on purpose.
+      Planned verbs are refused at load rather than accepted and ignored.
+      `control` does not inherit `send`, and `send` does not inherit `control`:
+      each requires its own scope, enabled device and explicit verb grant.
     eligible_ownership: company
     ownership_rule: >-
       The registry decides whether a device may hold a grant at all. A device
