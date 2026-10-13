@@ -338,6 +338,15 @@ Steps 1–3 are the ones that can take the surface down. Steps 5–7 are additiv
 each key defaults to closed, so a deployment that stops after 4 is exactly
 today's behaviour with the wildcard replaced by a named table.
 
+**Steps 0–2 are a pre-check, not a deploy, and they belong to whoever is on the
+Tokyo host.** Everything in this document was measured from outside: the binding
+was read, the refusal was reproduced with this branch's loader, and the two
+revisions' `config.py` files were compared — all read-only, none of it a change.
+The revision cut (step 3), the restart (step 4) and the node bindings (step 6)
+are a second decision, taken by that person, on the evidence of their own
+re-run of step 2. This plan does not ask to be trusted on the load check; it
+asks for the check to be run.
+
 ## 7. Rollback
 
 `current` → `previous` (`fleet-mcp-20261011a@f4f728c`) and restart. **But the
