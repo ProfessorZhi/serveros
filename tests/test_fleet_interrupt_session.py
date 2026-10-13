@@ -764,6 +764,76 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
         self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
 
 
+class TheDeviceBindingDefaultsToRefusal(unittest.TestCase):
+    """A provider entry that says nothing about a verb has not authorized it.
+
+    The device gate is the outermost of the control gates, and the only one an
+    operator writes by hand in the local binding. Every boolean on it therefore
+    needs a default, and every default has to be the closed one — `allow_send`
+    for the reason the send gates gave, `allow_create` for the create gate's,
+    and `allow_control` because it is the one whose flip would end a run in
+    flight. A suite that writes all three explicitly in every harness would
+    stay green if any of those defaults were inverted, which is why this class
+    writes none of them.
+    """
+
+    def _load(self, tmp: str, extra: str = ""):
+        path = Path(tmp) / "binding.yaml"
+        path.write_text(
+            "schema: serveros/fleet-mcp.local/v1\n"
+            "device_ref: device:work-fj\n"
+            "providers:\n"
+            "  device:work-fj:\n"
+            "    kind: cloudcli-mcp-http\n"
+            "    endpoint: http://127.0.0.1:13001/mcp\n"
+            "    credential_anchor: ~/.fleet/pat\n"
+            + extra,
+            encoding="utf-8",
+        )
+        return load_config(path)
+
+    def test_a_binding_that_names_no_verb_authorizes_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._load(tmp)
+        binding = config.providers[WINDOWS]
+        self.assertIs(binding.allow_send, False)
+        self.assertIs(binding.allow_create, False)
+        self.assertIs(binding.allow_control, False)
+        # And the session half is empty rather than a wildcard nobody wrote.
+        self.assertEqual(config.policy.control_allow, ())
+        self.assertIs(config.policy.allow_wildcard_control, False)
+
+    def test_the_control_flag_survives_the_round_trip_on_the_device_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._load(tmp, "    allow_control: true\n")
+        self.assertIs(config.providers[WINDOWS].allow_control, True)
+        # The flag alone is the device half; it names no session.
+        self.assertEqual(config.policy.control_allow, ())
+
+    def test_the_device_flag_alone_does_not_admit_an_interrupt(self):
+        """Both halves, or nothing — measured through the service, not the field.
+
+        `allow_control: true` with nothing in `policy.control_allow` is the
+        state a binding passes through while it is being written, and it has to
+        be a refusal rather than an accidental grant, so that a caller cannot
+        reach a run by naming it before the operator has named it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._load(tmp, "    allow_control: true\n")
+        device = FakeProvider(WINDOWS)
+        service = FleetService(config, providers={WINDOWS: device})
+        principal = Principal(
+            name="owner",
+            scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE, SCOPE_CONTROL)),
+            credential_kind="pat",
+        )
+        with self.assertRaises(FleetRefusal) as caught:
+            service.interrupt_session(principal, SessionKey.parse(f"{WINDOWS}|claude|{NATIVE}"))
+        self.assertEqual(caught.exception.code, "APPROVAL_REQUIRED")
+        self.assertIn("control_allow", caught.exception.detail)
+        self.assertEqual(device.asked, [], "the device was asked before its session was named")
+
+
 def _binding_yaml(auth_extra: str = "", *, policy_extra: str = "") -> str:
     """A minimal valid local binding, with one line's worth of room to vary."""
     return (
