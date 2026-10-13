@@ -539,14 +539,30 @@ class TheContractSaysWhatTheCodeDoes(unittest.TestCase):
             path.write_text(_binding_yaml(), encoding="utf-8")
             self.assertEqual(load_config(path).policy.create_allow, {})
 
-    def test_the_declaration_does_not_claim_the_device_enforces_the_project_floor(self):
-        """The most dangerous kind of drift here is a claim of coverage: a
-        reader who believes the device enforces projects would rely on a
-        boundary that is only on this side."""
+    def test_the_declaration_names_both_sides_that_enforce_the_project_floor(self):
+        """A claim of coverage is the drift that matters here, in either
+        direction: a reader who believes the device enforces projects relies on
+        a boundary that is only on this side, and a reader told it does not
+        would go and build a second one that already exists.
+
+        So the declaration is checked for naming the device field *and* for
+        saying which transport it exists on — the connector is on the far side
+        of the fleet-node path and nowhere else."""
         floor = self.contract["tools"]["fleet_create_session"]["project_floor"]
-        self.assertEqual(floor["enforced_by"], "this surface, before the device is asked")
-        self.assertIn("node connector", floor["not_enforced_by"])
-        self.assertIn("does not add", floor["not_enforced_by"])
+        self.assertEqual(floor["enforced_by"][0], "this surface, before the device is asked")
+        self.assertIn("allow_create_projects", floor["enforced_by"][1])
+        self.assertIn("fleet-node transport", floor["enforced_by"][1])
+        self.assertIn("Fleet-local provider", floor["not_enforced_by"])
+
+    def test_the_declared_device_project_floor_is_the_connectors_own_field(self):
+        """The contract names `allow_create_projects`; the connector is the
+        machine that reads it, so the two are checked against each other."""
+        from fleet_mcp.node.connector import NodeConfig
+
+        self.assertIn("allow_create_projects", NodeConfig.__dataclass_fields__)
+        self.assertEqual(
+            self.contract["node_transport"]["control_floor"]["create_projects_field"],
+            "allow_create_projects")
 
     def test_the_declared_caller_ceiling_names_the_fields_it_constrains(self):
         entry = self.contract["tools"]["fleet_create_session"]

@@ -35,6 +35,38 @@ No `exec`. No shell. No path parameter. No generic "call any CloudCLI tool"
 route. The route table in `fleet_mcp.node_protocol.ROUTES` is the whole surface,
 and an unlisted route is refused *by name* before any dispatch happens, so
 adding one is an edit to that tuple rather than a default a framework chose.
+
+The grant that names no session
+-------------------------------
+`allow_send_to` is a list of sessions. It has one shape it cannot express, and
+it is the shape the Fleet owner actually asked for: *any* session on this
+machine, including one that does not exist yet. A named list cannot say that,
+because it cannot name a session that has not been created — so keeping it
+current means editing this file on every creation, and a list that has to be
+edited to stay true stops being a record of what was authorized. The list that
+was audited and the list in the file drift, silently, in the direction of
+granting more than was read.
+
+So there is a second grant here, `allow_all_sessions_for_owner`: a list of
+*verbs*, empty by default, that the person at this keyboard may open for every
+session on this device at once. It is separate from `allow_send_to` rather than
+a wildcard entry inside it, because the two are read differently — the named
+list is read against the sessions it covers, and a floor is read against the
+machine. Which of the two admitted a given message is reported (`send_grant`)
+and, for the floor, journalled, since a floor send is the only one that leaves
+no trace in this binding.
+
+It is not a claim about **who** the caller is. Nothing on this side can see a
+remote principal: the signature proves a holder of the far end's secret, not a
+person, and the Fleet host's scope-and-device decision was made on another
+machine by a process this one cannot interrogate. A floor is therefore the
+owner of *this* machine stating what may be driven *here* — the same kind of
+statement `allow_send_to` is, made at a wider width. It is revocable by the
+person who granted it, in this file, without the other end's cooperation; and
+the vocabulary it can be written in is closed (`OWNER_FLOOR_VERBS`), so that
+widening it is an edit to a tuple in this file rather than a word a caller or
+an operator can invent. `bypassPermissions` is a CloudCLI session's own mode
+and is not, and does not become, this.
 """
 from __future__ import annotations
 
@@ -75,6 +107,21 @@ _PEER_REJECTIONS = frozenset(
 
 DEFAULT_CONFIG_PATHS = binding_candidates("fleet-node.local.yaml")
 
+# What an owner floor may be a floor *for*. Closed on purpose, because of the
+# shape of the failure it prevents. `allow_send_to` names sessions, so a typo in
+# it refuses a send loudly at the session it names. A floor names none, so a
+# floor that silently meant nothing would refuse every send with nothing to
+# point at but a binding that reads as correct — and, in the other direction, an
+# operator who wrote `"*"` or `"all"` or `"root"` and got the widest grant this
+# file can express would have skipped every question this gate exists to ask.
+# So a word outside this tuple is refused when the binding is read, not ignored
+# when a caller arrives.
+#
+# Adding `"control"` here would NOT implement control: it would only let a
+# binding claim it, and the verb still has to refuse until a route, a provider
+# method and a scope exist for it. That is the intended order.
+OWNER_FLOOR_VERBS: tuple[str, ...] = ("send",)
+
 
 @dataclass
 class NodeConfig:
@@ -95,8 +142,40 @@ class NodeConfig:
     # There is no per-session form of this grant to write down, because the
     # session it would name does not exist yet.
     allow_create: bool = False
+    # Which projects a create may name *on this machine*. Empty is the default
+    # and means none.
+    #
+    # `allow_create` alone answers "may a session be minted here"; it cannot
+    # answer "a session on what". A project id is what decides the working tree,
+    # the credentials and the reachable services the minted session inherits, so
+    # the second question is the one that matters and the boolean was never an
+    # answer to it. Until this field existed the floor was device-wide, which
+    # `fleet/fleet-mcp-contract.yaml` recorded as a gap rather than as a
+    # decision.
+    #
+    # Empty meaning *none* rather than *all* is the same polarity as elsewhere
+    # in this system, and it is enforced rather than merely documented: a
+    # binding that sets `allow_create: true` and names no project is refused at
+    # load. That is a contradiction an operator can only have reached by
+    # accident — "creation is on, for nothing" — and it would otherwise present
+    # as a connector that accepts the request and refuses every project.
+    #
+    # Exact match, no wildcard, and no `"*"` spelling: an entry that means
+    # "every project" would re-open the question this field closes.
+    allow_create_projects: tuple[str, ...] = ()
     max_body_bytes: int = 1_000_000
     notes: str = ""
+    # Owner-granted floors: verbs the person at this keyboard has granted for
+    # EVERY session on this machine, the ones that exist and the ones that do
+    # not yet. Deliberately a separate field from `allow_send_to` rather than a
+    # wildcard entry inside it — see the module docstring, "The grant that names
+    # no session". Empty is the default, and empty means exactly what this file
+    # meant before the field existed.
+    #
+    # Withdrawing a floor is removing its verb here and restarting, the same
+    # latency and the same place as every other binding in this system. Nothing
+    # else reads this file, so nothing else can re-grant it.
+    allow_all_sessions_for_owner: tuple[str, ...] = ()
 
     def secret(self) -> str | None:
         try:
@@ -104,8 +183,114 @@ class NodeConfig:
         except OSError:
             return None
 
+    def send_grant(self, key: SessionKey) -> str | None:
+        """Which gate admits a send to `key`: `"named"`, `"owner-floor"`, `None`.
+
+        The named list is asked first, so a session an operator wrote down stays
+        attributed to that list even while a floor is open. Withdrawing a floor
+        must not silently move a send that was named into the wider bucket, or
+        the wider bucket's audit line would grow entries that were never the
+        floor's to admit.
+
+        `key` is always composed from *this* config's `device_ref` (see
+        `Connector._key`), so neither gate can be satisfied on behalf of another
+        device: a caller cannot name a foreign device into existence here.
+        """
+        if key.ref in self.allow_send_to or key.native_session_id in self.allow_send_to:
+            return "named"
+        if "send" in self.allow_all_sessions_for_owner:
+            return "owner-floor"
+        return None
+
+    def send_default(self) -> str:
+        """One sentence, for an operator, on a send to a session this file does
+        not name. Reported rather than inferred: three distinct states, because
+        "nothing is named" and "nothing may be sent" are not the same answer."""
+        floor = "send" in self.allow_all_sessions_for_owner
+        if floor and self.allow_send_to:
+            return (
+                "the sessions named in allow_send_to, and every other session on "
+                "this device (owner floor: send)"
+            )
+        if floor:
+            return "every session on this device (owner floor: send); none is named here"
+        if self.allow_send_to:
+            return "only the sessions named in allow_send_to"
+        return "refused"
+
     def permits_send(self, key: SessionKey) -> bool:
-        return key.ref in self.allow_send_to or key.native_session_id in self.allow_send_to
+        return self.send_grant(key) is not None
+
+
+def _owner_floors(value: Any) -> tuple[str, ...]:
+    """Read the owner floor, refusing anything this file cannot mean.
+
+    Refused at load rather than dropped at use, for the reason in
+    `OWNER_FLOOR_VERBS`: the failure a floor has to be protected from is not
+    "an attacker widened it" but "nobody noticed it was never on". A binding
+    that says something this connector cannot honour must fail where an operator
+    is watching, which is startup, not at the first caller.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"allow_all_sessions_for_owner must be a list of verbs, not a "
+            f"{type(value).__name__}. It names no session, so there is no "
+            f"per-session form of it to accept instead.",
+        )
+    unknown = [v for v in value if v not in OWNER_FLOOR_VERBS]
+    if unknown:
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"allow_all_sessions_for_owner names {unknown!r}, which is not a "
+            f"floor this connector has. It knows exactly "
+            f"{list(OWNER_FLOOR_VERBS)}. Refusing rather than ignoring: a floor "
+            f"that silently meant nothing would look exactly like a floor that "
+            f"was never needed, and this binding would still read as correct.",
+        )
+    # One grant repeated is still one grant; the list is read by a person, so
+    # its shape is kept as written and only made hashable/stable.
+    return tuple(dict.fromkeys(str(v) for v in value))
+
+
+def _create_projects(value: Any) -> tuple[str, ...]:
+    """Read the project floor, refusing a wildcard and refusing a bare string.
+
+    A bare string is refused rather than wrapped, for the same reason it is in
+    `_owner_floors`: `allow_create_projects: notes` is a one-character-away
+    typo, and the reading that makes it a one-element list is also the reading
+    that makes a mistake into a grant. Refusing means the operator writes the
+    brackets.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"allow_create_projects must be a list of project ids, not a "
+            f"{type(value).__name__}. A bare string is refused rather than "
+            f"wrapped: this field decides which working trees a minted session "
+            f"inherits, and a typo that silently became a grant is the failure "
+            f"it exists to prevent.",
+        )
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise FleetRefusal(
+                BAD_REQUEST, "allow_create_projects must contain non-empty strings")
+        name = item.strip()
+        if name == "*":
+            raise FleetRefusal(
+                BAD_REQUEST,
+                "allow_create_projects contains '*'. A wildcard would make the "
+                "project floor meaningless — it would be `allow_create` again, "
+                "under a longer name. Name the projects.",
+            )
+        if name not in out:
+            out.append(name)
+    return tuple(out)
 
 
 def load_node_config(path: str | Path | None = None) -> NodeConfig:
@@ -150,6 +335,23 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
             "A hostname would give two machines the same identity the moment one "
             "was renamed.",
         )
+    allow_create = bool(raw.get("allow_create", False))
+    allow_create_projects = _create_projects(raw.get("allow_create_projects"))
+    if allow_create and not allow_create_projects:
+        # "Creation is on, for nothing" is only reachable by accident, and the
+        # accident is invisible at the moment it happens: the connector starts,
+        # serves, and refuses every project for a reason no operator wrote
+        # down. Failing here puts it where the operator who made the edit is
+        # still looking at the file.
+        raise FleetRefusal(
+            BAD_REQUEST,
+            "`allow_create` is true and `allow_create_projects` names no project. "
+            "Creation on this machine is per project as well as per device: the "
+            "project id decides which working tree and which credentials a "
+            "minted session inherits, so `allow_create: true` alone grants "
+            "creation for nothing. Name the projects (or set `allow_create: "
+            "false`).",
+        )
     return NodeConfig(
         device_ref=device_ref,
         secret_anchor=Path(str(raw["secret_anchor"])).expanduser(),
@@ -160,9 +362,11 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         connect_timeout=float(raw.get("connect_timeout", 5.0)),
         read_timeout=float(raw.get("read_timeout", 45.0)),
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
-        allow_create=bool(raw.get("allow_create", False)),
+        allow_create=allow_create,
+        allow_create_projects=allow_create_projects,
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
+        allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
     )
 
 
@@ -182,9 +386,10 @@ class Connector:
                 read_timeout=config.read_timeout,
                 # Inert here — nothing above this line reads it — but carried
                 # honestly: a binding that claimed `allow_send: True` on a
-                # connector whose allow list is empty would be a document that
-                # disagrees with the machine it describes.
-                allow_send=bool(config.allow_send_to),
+                # connector that would refuse every send would be a document
+                # that disagrees with the machine it describes. Either gate
+                # opening makes a send possible, so either one makes this true.
+                allow_send=bool(config.allow_send_to or config.allow_all_sessions_for_owner),
                 allow_create=bool(config.allow_create),
             )
         )
@@ -347,15 +552,26 @@ class Connector:
             "routes": list(ROUTES),
             "control": {
                 "send_allow_list": list(self.config.allow_send_to),
-                "send_default": (
-                    "refused" if not self.config.allow_send_to
-                    else "only the sessions named in allow_send_to"
-                ),
+                # Reported beside the named list rather than folded into it, and
+                # as its own key rather than as a `"*"` entry inside it: the two
+                # are read differently. "May this session be sent to" is answered
+                # by the list; "may anything on this machine be" is answered
+                # here, and an operator auditing the first needs to be able to
+                # see which of the two actually admitted a message.
+                "send_owner_floor": list(self.config.allow_all_sessions_for_owner),
+                "send_default": self.config.send_default(),
                 # Separate from the sends above, and reported separately: the
                 # two grants answer different questions, and an operator
                 # reading one must not have to infer the other.
                 "create_allowed": bool(self.config.allow_create),
                 "create_default": "allowed" if self.config.allow_create else "refused",
+                # The project half, reported beside the boolean rather than
+                # folded into it. `create_allowed: true` with an empty list is
+                # unreachable — the loader refuses it — but a caller asking "may
+                # I create *here*" needs the projects to answer, and an operator
+                # auditing a create needs to see which of the two floors
+                # admitted it.
+                "create_projects": list(self.config.allow_create_projects),
             },
             "upstream_endpoint": self.config.cloudcli_endpoint,
             "credential_stays_here": True,
@@ -383,12 +599,18 @@ class Connector:
     def _create(self, payload: dict[str, Any]):
         """Mint a session here, if this machine has said that may happen.
 
-        The create floor is checked before the provider is touched, and it is a
+        Two floors, and both are needed. The device floor (`allow_create`) is a
         different flag from `allow_send_to`: the two grants answer different
         questions, and an operator who has answered one has not answered the
-        other. A missing project is refused before the floor is consulted, so
-        the two refusals stay distinguishable — one is about the request, the
-        other about this machine.
+        other. The project floor (`allow_create_projects`) is the second half,
+        and it is the one that answers the question the boolean cannot: *which*
+        project. A project id is what decides the working tree, the credentials
+        and the reachable services a minted session inherits, so "authorized to
+        create here" was never an answer to "authorized to create this".
+
+        A missing project is refused before either floor is consulted, so the
+        three refusals stay distinguishable — one is about the request, one
+        about this machine, and one about the project named.
         """
         project = payload.get("project")
         if not isinstance(project, str) or not project.strip():
@@ -400,6 +622,17 @@ class Connector:
                 f"creation is granted by `allow_create` in this machine's own "
                 f"binding, and that file lives on this machine, not on the "
                 f"caller's. It is {self.config.allow_create!r} here.",
+            )
+        if project.strip() not in self.config.allow_create_projects:
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this connector is not authorized to create a session on "
+                f"project {project.strip()!r}. Creation is granted per project "
+                f"as well as per device by `allow_create_projects` in this "
+                f"machine's own binding, and this project is not in it. The "
+                f"list is {list(self.config.allow_create_projects)}.",
+                project=project.strip(),
+                allowed=list(self.config.allow_create_projects),
             )
         return self.provider.create(
             project=project,
@@ -415,12 +648,33 @@ class Connector:
         message = payload.get("message")
         if not isinstance(message, str) or not message.strip():
             raise FleetRefusal("BAD_REQUEST", "message must be a non-empty string")
-        if not self.config.permits_send(key):
+        grant = self.config.send_grant(key)
+        if grant is None:
             raise FleetRefusal(
                 "WRITE_NOT_GRANTED",
                 f"this connector is not authorized to send to {key.ref}. Its "
-                f"allow_send_to list is {list(self.config.allow_send_to)}, and "
-                f"that list lives on this machine, not on the caller's.",
+                f"allow_send_to list is {list(self.config.allow_send_to)} and its "
+                f"owner floor is "
+                f"{list(self.config.allow_all_sessions_for_owner) or 'closed'}; "
+                f"both live on this machine, not on the caller's.",
+            )
+        if grant == "owner-floor":
+            # The only send this machine admits without naming the session, and
+            # therefore the only one whose admission is explained nowhere in the
+            # binding. The Fleet host records the send itself, but nothing over
+            # there can record that this machine had not named the session, so
+            # this line is what an operator reads to answer "what went out under
+            # the floor, and when it started".
+            #
+            # The ref is the one the request line above already carries (see
+            # `_Handler.log_message`); what is added here is the *gate*, not the
+            # identity. Repeated rather than left implicit so that the pair of
+            # lines cannot be mismatched by two concurrent handlers: the request
+            # line is interleavable, this one is self-contained. One `write` call
+            # for the same reason. No message body, no header, no signature.
+            sys.stderr.write(
+                f"connector: send admitted by the owner floor, session not named "
+                f"in this binding: {key.ref}\n"
             )
         # The caller's idempotency key is not forwarded: CloudCLI has no such
         # concept, and passing one along would imply a guarantee this hop cannot
@@ -522,9 +776,11 @@ def main(argv: list[str] | None = None) -> int:
         f"http://{config.bind}:{config.port}\n"
         f"connector: upstream CloudCLI {config.cloudcli_endpoint}\n"
         f"connector: send allow list "
-        f"{list(config.allow_send_to) or 'empty — every send is refused here'}\n"
+        f"{list(config.allow_send_to) or 'empty'}"
+        f"; owner floor {list(config.allow_all_sessions_for_owner) or 'closed'}"
+        f" — a session not named here: {config.send_default()}\n"
         f"connector: create "
-        f"{'allowed' if config.allow_create else 'refused — allow_create is false'}\n"
+        f"{'allowed for ' + str(list(config.allow_create_projects)) if config.allow_create else 'refused — allow_create is false'}\n"
     )
     try:
         server.serve_forever()

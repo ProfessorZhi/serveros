@@ -37,6 +37,27 @@ SCHEMA = "serveros/fleet-mcp.local/v1"
 # a binding must not silently produce a device that reports "no sessions".
 PROVIDER_KINDS = ("cloudcli-mcp-http", "fleet-node")
 
+# The verbs `policy.operator_grants` may name, and the ones it may not yet.
+#
+# Same two-list shape as `scopes.py`'s `IMPLEMENTED_SCOPES` / `PLANNED_SCOPES`,
+# and for the same reason: the plan has to be visible for the next verb to be
+# additive rather than a redesign, but a name that reads as live while being
+# inert is worse than no name at all. A binding naming a planned verb is refused
+# at load, pointing at the scope that does not exist yet.
+OPERATOR_GRANT_VERBS = ("send",)
+PLANNED_OPERATOR_GRANT_VERBS = ("control", "approve", "navigate")
+
+# The ownership value that makes a device eligible to appear in an owner grant.
+#
+# A single allowed value rather than "anything except `personal`", because the
+# field is `str | None` and the two polarities differ exactly on the inputs
+# nobody thought about: `None` (authored without an owner), `"Company"`, and
+# `"personal "` all pass a `!= "personal"` test and all mean "this device's
+# owner is not established". Unknown ownership is DEFER here as it is everywhere
+# else on this host, and DEFER is not a grant.
+GRANT_ELIGIBLE_OWNERSHIP = "company"
+
+
 
 def _expand(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value))
@@ -166,6 +187,37 @@ class PolicyBinding:
     # refused at load rather than at the first send, so a configuration mistake
     # is an outage on start rather than a silent widening at 3am.
     allow_wildcard_send: bool = False
+    # Who may drive which device, by verb: `{principal name: {device_ref:
+    # [verbs]}}`. This is the third axis the other two gates do not have.
+    #
+    # `send_allow` answers "which sessions", and a device's `allow_send` answers
+    # "may this runtime reach it at all" — neither answers *who*. `send_allow:
+    # ["*"]` therefore reads as "every session" to every caller holding
+    # `fleet:send`, which is a broader statement than any operator means to make
+    # and is why the wildcard is refused outright below.
+    #
+    # Three exact-match dimensions, no wildcard in any of them:
+    #
+    # *   **Principal.** `Principal.name` — the identity the credential produced,
+    #     never a parameter. For OAuth that is `oauth:<client_id>`; see
+    #     `load_operator_grants` for why that is the stable half of the token and
+    #     `sub` is not.
+    # *   **Device.** The `device:<id>` ref, and additionally the device must be
+    #     eligible by ownership (see `GRANT_ELIGIBLE_OWNERSHIP`).
+    # *   **Verb.** Drawn from `OPERATOR_GRANT_VERBS`. `send` here is a verb, not a
+    #     mode: it admits `fleet_send_message` and nothing else, and the three
+    #     planned verbs are refused rather than inherited.
+    #
+    # Empty — the default — is no grant to anyone on any device. A principal
+    # not named here keeps exactly the reach it had before this field existed.
+    #
+    # Named `operator_grants` and not `owner_grants` because `AuthBinding` in
+    # this same file already has `owner_grant_anchor`, which is a **credential**
+    # — the anchor that lets an operator become the owner. Two keys one word
+    # apart, one a path to a secret and one a table of authority, is the kind of
+    # pair that gets edited by mistake. The axis here is the operator, not the
+    # credential.
+    operator_grants: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
     # Projects this runtime may create sessions on, mapped to that project's
     # ceiling on the caller-supplied `permissionMode` and `model`. A device that
     # sets `allow_create: true` is authorized to be minted on; *which* projects
@@ -228,6 +280,25 @@ class FleetConfig:
                 "create_allow": {
                     project: grant.as_dict()
                     for project, grant in sorted(self.policy.create_allow.items())
+                },
+                # Grants are reported as their *shape* — how many principals,
+                # which devices, which verbs — and not as the principal names.
+                # A principal name is a credential identifier (`oauth:<client_id>`,
+                # see `fleet.py#Principal`), and this summary is the one policy
+                # view that is safe to print at start-up. The operator-facing
+                # question "who holds what" is answered per call instead, by
+                # `fleet_list_devices`, which reports the caller's own grant and
+                # so cannot leak a different principal's.
+                "operator_grants": {
+                    "principals": len(self.policy.operator_grants),
+                    "devices": sorted(
+                        {ref for per_device in self.policy.operator_grants.values()
+                         for ref in per_device}
+                    ),
+                    "verbs": sorted(
+                        {verb for per_device in self.policy.operator_grants.values()
+                         for verbs in per_device.values() for verb in verbs}
+                    ),
                 },
                 "read_redact": self.policy.read_redact,
             },
@@ -347,6 +418,112 @@ def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
     return grants
 
 
+def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Parse `policy.operator_grants` into `{principal: {device_ref: (verbs,)}}`.
+
+        operator_grants:
+          "oauth:fleet-XXXXXXXX":
+            device:tokyo-shared-dev-01: [send]
+            device:work-fj: [send]
+
+    What this parser will not do is the part worth reading.
+
+    **It cannot validate a principal name.** OAuth clients are registered at
+    runtime (`register_client`), so at load time the set of names that will
+    exist is not knowable, and a check against "the clients I can see" would
+    refuse the very grant an operator is trying to write. So a name that does
+    not match any credential is accepted here and fails at the first send, with
+    a message that names what was presented — see `fleet.py#_owner_grant_verbs`.
+    The failure mode is a refusal that says which name it saw, never a grant that
+    quietly applies to nobody.
+
+    **It refuses a planned verb.** `control`, `approve` and `navigate` are
+    named in `PLANNED_OPERATOR_GRANT_VERBS` and refused at load, because a binding
+    that lists one is a binding whose author believes a control verb is live.
+    Accepting it would produce a file that reads as authority and a runtime in
+    which the verb does nothing — and the next person to debug that has to
+    discover, from a silent no-op, which of the two halves is missing.
+
+    **It refuses a wildcard in either dimension.** `"*"` as a principal or as a
+    device would make the dimension meaningless in exactly the way
+    `allow_wildcard_send` makes `send_allow` meaningless, and an operator who
+    wants "all of them" is really asking for the three devices to be written
+    out, which is the sentence that can be reviewed.
+    """
+    raw = policy_raw.get("operator_grants")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.operator_grants must be a mapping of principal name to a "
+            "mapping of device ref to a list of verbs",
+        )
+    grants: dict[str, dict[str, tuple[str, ...]]] = {}
+    for principal, devices in raw.items():
+        if not isinstance(principal, str) or not principal.strip():
+            raise refuse(BAD_REQUEST, "policy.operator_grants principal names must be non-empty strings")
+        name = principal.strip()
+        if name == "*":
+            raise refuse(
+                BAD_REQUEST,
+                "policy.operator_grants names '*' as a principal. A wildcard "
+                "principal would give every credential that can reach this "
+                "runtime the same authority — the global grant this field "
+                "exists to replace. Name the principals.",
+            )
+        if not isinstance(devices, dict):
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.operator_grants[{name!r}] must be a mapping of device ref "
+                f"to a list of verbs",
+            )
+        per_device: dict[str, tuple[str, ...]] = {}
+        for device_ref, verbs in devices.items():
+            if not isinstance(device_ref, str) or not device_ref.strip():
+                raise refuse(
+                    BAD_REQUEST,
+                    f"policy.operator_grants[{name!r}] device refs must be non-empty strings",
+                )
+            ref = device_ref.strip()
+            if ref == "*":
+                raise refuse(
+                    BAD_REQUEST,
+                    f"policy.operator_grants[{name!r}] names '*' as a device. A "
+                    f"wildcard device would make the device axis meaningless; "
+                    f"write the device refs out.",
+                )
+            if not ref.startswith("device:"):
+                raise refuse(
+                    BAD_REQUEST,
+                    f"policy.operator_grants[{name!r}] device ref {ref!r} is not a "
+                    f"typed ref; device refs are `device:<id>`",
+                )
+            named = _name_list(verbs, f"policy.operator_grants[{name!r}][{ref!r}]")
+            planned = [v for v in named if v in PLANNED_OPERATOR_GRANT_VERBS]
+            if planned:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"policy.operator_grants[{name!r}][{ref!r}] names {sorted(planned)}, "
+                    f"which this build does not implement. Known verbs: "
+                    f"{list(OPERATOR_GRANT_VERBS)}; the planned verbs "
+                    f"{list(PLANNED_OPERATOR_GRANT_VERBS)} are recorded in "
+                    f"`scopes.py` as scopes and are not live here either.",
+                )
+            unknown = [v for v in named if v not in OPERATOR_GRANT_VERBS]
+            if unknown:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"policy.operator_grants[{name!r}][{ref!r}] names {sorted(unknown)}, "
+                    f"which is not a verb. Known verbs: {list(OPERATOR_GRANT_VERBS)}.",
+                )
+            if named:
+                per_device[ref] = named
+        if per_device:
+            grants[name] = per_device
+    return grants
+
+
 def load_config(path: str | Path | None = None) -> FleetConfig:
     explicit = path if path is not None else default_config_path()
     if explicit is None:
@@ -433,16 +610,49 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
 
     policy_raw = raw.get("policy") or {}
     send_allow = tuple(policy_raw.get("send_allow") or ())
-    if "*" in send_allow and not bool(policy_raw.get("allow_wildcard_send", False)):
+    wildcard_send = bool(policy_raw.get("allow_wildcard_send", False))
+    # `allow_wildcard_send` used to be the switch that made `send_allow: ["*"]`
+    # legal. It is refused outright now, and the refusal is a breaking change to
+    # any deployment that set it — which is said here rather than discovered.
+    #
+    # Why refuse rather than merely deprioritize: deprioritizing leaves the old
+    # grant in place. A deployment with `send_allow: ["*"]` and the wildcard on
+    # still hands every credential holding `fleet:send` the whole fleet, so an
+    # operator who registers a *second* OAuth client gets the broad authority
+    # without ever editing `operator_grants` — the grant nobody wrote, arriving
+    # through the door this change exists to close. A named-principal table is
+    # only the answer if it is the only way to say "all of them", and that means
+    # the wildcard has to stop working, not merely stop being consulted.
+    #
+    # The message is the migration: it names the three devices, so an operator
+    # can act on it without reading this code.
+    if wildcard_send or "*" in send_allow:
+        # Name the trigger that actually fired: an operator who wrote
+        # `send_allow: ["*"]` and one who wrote `allow_wildcard_send: true` are
+        # editing two different lines, and a message that says "or" makes the
+        # first of them re-read a key they never set.
+        if wildcard_send and "*" in send_allow:
+            trigger = "`send_allow` contains '*' and `allow_wildcard_send` is set"
+        elif wildcard_send:
+            trigger = "`allow_wildcard_send` is set"
+        else:
+            trigger = "`send_allow` contains '*'"
         raise refuse(
             BAD_REQUEST,
-            "policy.send_allow contains '*'. A wildcard makes the per-session "
-            "grant meaningless; set `allow_wildcard_send: true` if that is "
-            "genuinely intended.",
+            f"policy.{trigger}. This grant is global, not per principal: every "
+            f"credential holding `fleet:send` receives it. It is refused rather "
+            f"than honoured, because the replacement is a named table and a "
+            f"working wildcard is a second way to say the same thing. Replace it "
+            f"with `policy.operator_grants: {{<principal>: {{<device_ref>: [send]}}}}` "
+            f"naming the devices individually — for example "
+            f"`device:tokyo-shared-dev-01`, `device:work-fj`, `device:llm-lab-dell` "
+            f"— and drop `allow_wildcard_send`. Per-session `send_allow` entries "
+            f"that name a session ref and not '*' are unaffected.",
         )
     policy = PolicyBinding(
         send_allow=send_allow,
-        allow_wildcard_send=bool(policy_raw.get("allow_wildcard_send", False)),
+        allow_wildcard_send=wildcard_send,
+        operator_grants=load_operator_grants(policy_raw),
         create_allow=_create_allow(policy_raw),
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),
