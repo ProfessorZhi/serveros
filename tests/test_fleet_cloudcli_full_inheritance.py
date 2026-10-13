@@ -30,11 +30,11 @@ from fleet_mcp import cloudcli_native, node_protocol, tools as tools_mod
 from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,
                               PolicyBinding, ProviderBinding, ServerBinding)
 from fleet_mcp.errors import (APPROVAL_REQUIRED, BAD_REQUEST, BAD_SESSION_REF,
-                              PROVIDER_UNREACHABLE, SCOPE_DENIED,
+                              PROVIDER_UNREACHABLE, RATE_LIMITED, SCOPE_DENIED,
                               UNKNOWN_DEVICE, WRITE_NOT_GRANTED, FleetRefusal)
 from fleet_mcp.fleet import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE,
                              SCOPE_NAVIGATE, SCOPE_READ, SCOPE_SEND,
-                             FleetService, Principal)
+                             FleetService, Principal, RateLimiter)
 from fleet_mcp.identity import SessionKey
 from fleet_mcp.providers.fleet_node import FleetNodeProvider
 
@@ -1398,6 +1398,62 @@ class CapabilitySnapshotTest(unittest.TestCase):
         got = tools_mod.SERVED_BY_NAME["fleet_cloudcli_native_capability"].handler(
             ctx, {"device_ref": TOKYO})
         self.assertEqual(got["state"], "UNKNOWN")
+
+    # -- a declared verb is not a verb that answers -------------------------
+
+    def test_a_declared_placeholder_is_never_usable(self):
+        """Being on the device's `tools/list` is not answering.
+
+        CloudCLI registers all 22 names at stage 4 and leaves the ones whose deps
+        are absent on the named `MCP_TOOL_NOT_IMPLEMENTED` refusal — the installed
+        1.39.0 registers `overview` as `notImplemented('overview', 'AC-247')`. A
+        snapshot calling such a verb `USABLE` would answer "what does this device
+        expose?" with a verb that cannot answer, which is the count-of-22 error
+        reappearing in the one place built to prevent it.
+        """
+        observed = {t.name: {"annotations": {}, "schema": {}}
+                    for t in cloudcli_native.NATIVE_TOOLS}
+        snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
+        placeholders = sorted(t.name for t in cloudcli_native.NATIVE_TOOLS
+                              if t.placeholder_default)
+        self.assertTrue(placeholders, "the recorded set must still carry placeholders")
+        for name in placeholders:
+            self.assertEqual(snap["tools"][name]["state"],
+                             cloudcli_native.DECLARED_NOT_IMPLEMENTED)
+            self.assertNotEqual(snap["tools"][name]["state"], cloudcli_native.USABLE)
+            self.assertIs(snap["tools"][name]["placeholder_default"], True)
+        self.assertEqual(snap["declared_not_implemented"], placeholders)
+
+    def test_usable_is_exactly_the_wired_verbs(self):
+        """`USABLE` is withheld from every placeholder and given to every other
+        declared verb, so a declared count of 22 can never read as 22 answering."""
+        observed = {t.name: {} for t in cloudcli_native.NATIVE_TOOLS}
+        snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
+        usable = sorted(n for n, v in snap["tools"].items()
+                        if v["state"] == cloudcli_native.USABLE)
+        wired = sorted(t.name for t in cloudcli_native.NATIVE_TOOLS
+                       if not t.placeholder_default)
+        self.assertEqual(usable, wired)
+        self.assertLess(len(usable), cloudcli_native.NATIVE_TOOL_COUNT)
+        self.assertEqual(len(usable) + len(snap["declared_not_implemented"]),
+                         cloudcli_native.NATIVE_TOOL_COUNT)
+
+    def test_an_unknown_snapshot_claims_no_usable_verb(self):
+        snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, reason="no list")
+        self.assertEqual(snap["state"], "UNKNOWN")
+        self.assertEqual(snap["tools"], {})
+        self.assertEqual(snap["declared_not_implemented"], [])
+
+    def test_the_capability_snapshot_is_rate_limited(self):
+        """It reads the device's `tools/list`, so it is an outbound call like any
+        other and must pass the limiter every other read passes."""
+        h = Harness(self.tmp)
+        h.service.limiter = RateLimiter(1)
+        first = h.service.native_capability(h.principal(SCOPE_READ), device_ref=TOKYO)
+        self.assertEqual(first["state"], "UNKNOWN")   # the fake has no snapshot
+        with self.assertRaises(FleetRefusal) as caught:
+            h.service.native_capability(h.principal(SCOPE_READ), device_ref=TOKYO)
+        self.assertEqual(caught.exception.code, RATE_LIMITED)
 
 
 if __name__ == "__main__":

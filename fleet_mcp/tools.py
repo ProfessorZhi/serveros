@@ -729,11 +729,13 @@ NATIVE_CAPABILITY_TOOL = Tool(
     title="Live capability snapshot for one device",
     description=(
         "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
-        "verb's state (`USABLE`, or `UNSUPPORTED_BY_DEVICE` when the device does "
-        "not declare it), the device's own annotations, and the source/version/"
-        "sample time. A device whose tool list cannot be read is reported "
-        "`UNKNOWN` with a reason — a count of 22 is never evidence that 22 "
-        "answer."
+        "verb's state (`USABLE` only when the device declares it AND this build "
+        "records a wired handler; `DECLARED_NOT_IMPLEMENTED` when the device "
+        "declares it but its handler is the named not-implemented refusal, e.g. "
+        "`overview`; `UNSUPPORTED_BY_DEVICE` when the device does not declare "
+        "it), the device's own annotations, and the source/version/sample time. "
+        "A device whose tool list cannot be read is reported `UNKNOWN` with a "
+        "reason — a count of 22 is never evidence that 22 answer."
     ),
     input_schema={
         "type": "object",
