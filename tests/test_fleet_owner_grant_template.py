@@ -132,10 +132,9 @@ class TheTemplateIsALoadableBinding(unittest.TestCase):
                 )
                 self.assertEqual(
                     config.policy.operator_grants[principal]["device:company-c"],
-                    ("send",),
-                    "`send` is the whole vocabulary this axis accepts; a "
-                    "template that wrote `control` here would be refused at "
-                    "load, and this is where that would show",
+                    ("send", "control"),
+                    "send and control are separate implemented verbs. The "
+                    "template must name both for future sessions",
                 )
 
         for ref in ("device:company-a", "device:company-b", "device:company-c"):
@@ -146,8 +145,8 @@ class TheTemplateIsALoadableBinding(unittest.TestCase):
                 self.assertTrue(binding.allow_create)
                 self.assertTrue(binding.allow_control)
 
-        self.assertTrue(config.policy.allow_wildcard_control)
-        self.assertEqual(tuple(config.policy.control_allow), ("*",))
+        self.assertFalse(config.policy.allow_wildcard_control)
+        self.assertEqual(tuple(config.policy.control_allow), ())
         self.assertFalse(
             config.policy.allow_wildcard_send,
             "the template replaces the send wildcard with a grant table; "
@@ -201,10 +200,10 @@ class TheTemplateIsALoadableBinding(unittest.TestCase):
         node_text = fill(blocks()[1])
 
         cases = (
-            # `control` is in PLANNED_OPERATOR_GRANT_VERBS: a binding that names
-            # it is a binding whose author believes a control verb is live.
+            # `approve` is still planned: accepting it as a live grant would
+            # make the binding read as authority the server cannot honor.
             ("a planned verb in operator_grants", load_config, fleet_text,
-             fleet_text.replace("[send]", "[send, control]", 1), "plan"),
+             fleet_text.replace("[send, control]", "[send, control, approve]", 1), "plan"),
             # `create_allow` has exactly two value keys, and an unknown one is
             # refused rather than ignored.
             ("an invented key inside create_allow", load_config, fleet_text,
