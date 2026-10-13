@@ -82,6 +82,41 @@ class AuditLog:
 
                 sys.stderr.write(f"fleet-mcp: audit write failed for {event}\n")
 
+    def record_grant(
+        self,
+        *,
+        event: str,
+        principal: str,
+        device_ref: str,
+        verb: str,
+        decision: str,
+        reason: str,
+        session_ref: str | None = None,
+    ) -> None:
+        """A grant decision, written through a closed field set.
+
+        The allowlist here is not a filter applied to the fields — it *is* the
+        signature. There is no `**fields`, so a message body, a transcript, a
+        session title or a credential is not rejected by this method; it is not
+        expressible through it. That is the stronger form of the rule, and it is
+        the one that survives someone adding a call site in a hurry: a filter
+        has to be remembered, a signature does not.
+
+        The fields that *are* here are all identifiers the control plane already
+        handles — `principal` is the credential's own name (`oauth:<client_id>`
+        or `owner-pat`, the same value `fleet.oauth.*` records as `client_id`),
+        never a secret. `reason` is written by this surface, not by a caller.
+        """
+        self.record(
+            event,
+            principal=principal,
+            device_ref=device_ref,
+            verb=verb,
+            decision=decision,
+            reason=reason,
+            session_ref=session_ref,
+        )
+
     def _rotate_if_needed(self) -> None:
         assert self.binding is not None
         path: Path = self.binding.path

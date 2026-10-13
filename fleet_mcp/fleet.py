@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
-from .config import CreateGrant, FleetConfig
+from .config import CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP, OPERATOR_GRANT_VERBS
 from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
@@ -178,7 +178,55 @@ class FleetService:
                     retry_after_seconds=round(retry_after, 1),
                 )
 
-    def _may_send(self, key: SessionKey) -> None:
+    def _device_ownership(self, device_ref: str) -> str | None:
+        """The authored owner of a device, or None if the registry has no say."""
+        for device in self.registry.all():
+            if device.device_ref.ref == device_ref:
+                return device.ownership
+        return None
+
+    def _operator_grant_verbs(self, principal: Principal, device_ref: str) -> tuple[str, ...]:
+        """The verbs `principal` holds on `device_ref` — `()`, usually.
+
+        Three exact matches and no fourth, each one a refusal with its own
+        reason rather than a single "no":
+
+        *   **Principal.** `principal.name`, which is what the presented
+            credential produced. The caller cannot influence it: it is not a
+            tool parameter, and `Principal` is constructed in the transport from
+            the token, never from the request body.
+        *   **Device.** The `device:<id>` ref, and only after the device passes
+            the ownership test below.
+        *   **Verb.** `send` is asked for by name. A caller holding a grant that
+            lists only some other verb gets nothing here — verbs do not inherit
+            from one another, which is what keeps the three planned ones from
+            arriving for free on the day they are implemented.
+
+        On the ownership test: a grant naming `device:personal-dell` is not
+        *narrowed* here, it is inert, and the refusal says so. The rule is
+        `ownership == "company"` — the registered devices of the organization
+        this runtime serves — rather than "not personal", because `ownership` is
+        `str | None` and an unset owner is an unknown owner, and an unknown owner
+        is DEFER on this host rather than an authorization. Writing the eligible
+        set as one allowed value also means a registry edit that changes a
+        device's owner changes the answer here, with no second list to keep in
+        step.
+        """
+        per_device = self.config.policy.operator_grants.get(principal.name)
+        if not per_device:
+            return ()
+        verbs = per_device.get(device_ref)
+        if not verbs:
+            return ()
+        if not self._device_is_grant_eligible(device_ref):
+            return ()
+        return tuple(v for v in verbs if v in OPERATOR_GRANT_VERBS)
+
+    def _device_is_grant_eligible(self, device_ref: str) -> bool:
+        """Whether a device may appear in an operator grant at all."""
+        return self._device_ownership(device_ref) == GRANT_ELIGIBLE_OWNERSHIP
+
+    def _may_send(self, principal: Principal, key: SessionKey) -> None:
         binding = self.config.provider_for(key.device_ref)
         if binding is None or not binding.allow_send:
             raise refuse(
@@ -188,15 +236,83 @@ class FleetService:
                 f"(`allow_send: true`), and per session in `policy.send_allow` "
                 f"— never by the caller naming a session id.",
             )
-        allow = self.config.policy.send_allow
-        if self.config.policy.allow_wildcard_send and "*" in allow:
+        # The operator grant, checked before the per-session list and on a
+        # different axis. Reaching here means the device is reachable at all;
+        # what the grant adds is *who*, and a session that does not exist yet
+        # cannot be named in `send_allow`, which is the whole reason the axis
+        # exists. It does not widen `send_allow` in either direction: a
+        # principal named in the grant still cannot send to a device its owner
+        # is not the organization's, and a principal not named still has exactly
+        # the per-session reach it had before.
+        if "send" in self._operator_grant_verbs(principal, key.device_ref):
+            # The one admission that leaves no trace in the binding: a send
+            # allowed per device, to a session `send_allow` never named. The
+            # `fleet.send` record that follows says a message went out but not
+            # why it was permitted, and "why" is the question an audit of a
+            # grant exists to answer.
+            self.audit.record_grant(
+                event="fleet.grant",
+                principal=principal.name,
+                device_ref=key.device_ref,
+                verb="send",
+                decision="allowed",
+                reason="operator-grant",
+                session_ref=key.ref,
+            )
             return
+        allow = self.config.policy.send_allow
         if key.ref not in allow:
+            # The refusal distinguishes three situations that a single "denied"
+            # would flatten, because they send an operator to three different
+            # edits: a principal with no grant anywhere, a principal whose grant
+            # does name this device, and a grant that names a device its owner
+            # does not make eligible. Only the third is a policy question rather
+            # than a typo, and it is the one worth saying out loud — a grant
+            # written against a personal device reads as authority and is inert.
+            granted_here = (
+                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
+            )
+            if granted_here:
+                ownership = self._device_ownership(key.device_ref)
+                # Recorded as well as reported, because the operator who wrote
+                # the grant and the principal refused by it are usually not the
+                # same person: a grant that reads as authority and does nothing
+                # is invisible to everyone except whoever hits it.
+                self.audit.record_grant(
+                    event="fleet.grant",
+                    principal=principal.name,
+                    device_ref=key.device_ref,
+                    verb="send",
+                    decision="refused",
+                    reason="device-not-eligible",
+                    session_ref=key.ref,
+                )
+                detail = (
+                    f"`policy.operator_grants[{principal.name!r}][{key.device_ref!r}]` "
+                    f"does name {list(granted_here)}, but {key.device_ref} is "
+                    f"{ownership!r} and only {GRANT_ELIGIBLE_OWNERSHIP!r} devices "
+                    f"may be granted. The grant is inert here rather than "
+                    f"narrowed: the owner of a device is a registry fact, and "
+                    f"an unset owner is an unknown one, which this host defers "
+                    f"on rather than authorizes."
+                )
+            else:
+                detail = (
+                    f"credential {principal.name!r} holds no `send` grant for "
+                    f"{key.device_ref} in `policy.operator_grants`. If this name "
+                    f"is not the one your credential presents, the grant is "
+                    f"addressed to a principal that does not exist — the name is "
+                    f"`oauth:<client_id>` for OAuth and `owner-pat` for the PAT."
+                )
             raise refuse(
                 APPROVAL_REQUIRED,
-                f"{key.ref} is not in `policy.send_allow`. The device is "
-                f"authorized for control and this session is not.",
+                f"{key.ref} is not in `policy.send_allow`, and {detail} Nothing "
+                f"was inferred from the session id: a session is reachable by "
+                f"being named, either per session in `send_allow` or per device "
+                f"in an operator grant.",
                 session_ref=key.ref,
+                principal=principal.name,
+                device_ref=key.device_ref,
                 allowed=sorted(allow),
             )
 
@@ -342,6 +458,19 @@ class FleetService:
                         "send_allowed_sessions": [
                             ref for ref in self.config.policy.send_allow if ref.startswith(device.device_ref.ref + "|")
                         ],
+                        # The caller's *own* grant, reported to the caller.
+                        # This is the discoverability surface for the grant, and
+                        # it is safe to be one because it is scoped to the
+                        # credential making the call: it can only ever show a
+                        # caller what it already holds, never what someone else
+                        # does. That matters more than usual here, because a
+                        # grant addressed to a mis-spelled principal name cannot
+                        # be caught at load — OAuth clients register at runtime —
+                        # so "what do I actually hold" has to be answerable
+                        # without reading the binding file.
+                        "operator_grant_verbs": sorted(
+                            self._operator_grant_verbs(principal, device.device_ref.ref)
+                        ),
                     },
                 }
             )
@@ -407,7 +536,7 @@ class FleetService:
             for summary in found:
                 row = summary.as_dict()
                 row["device_display_name"] = entry.display_name
-                row["control_allowed"] = self._session_control_state(summary.key)
+                row["control_allowed"] = self._session_control_state(principal, summary.key)
                 sessions.append(row)
 
         if classification:
@@ -437,34 +566,50 @@ class FleetService:
                              "address and the same id can exist on two devices",
         }
 
-    def _session_control_state(self, key: SessionKey) -> dict[str, Any]:
+    def _session_control_state(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
+        """What `principal` may do with `key` — the same check `_may_send` makes.
+
+        Takes the principal because the gate it reports on does. A control state
+        computed without one would answer "may anyone", and reporting that under
+        the key `send_allowed` would tell a caller it may send to a session that
+        `send_to_session` will refuse — a read surface disagreeing with the
+        machine about the one question it was asked, which is worse than not
+        reporting it.
+        """
         binding = self.config.provider_for(key.device_ref)
         device_ok = bool(binding and binding.allow_send)
-        session_ok = key.ref in self.config.policy.send_allow or (
-            self.config.policy.allow_wildcard_send and "*" in self.config.policy.send_allow
-        )
+        session_ok = key.ref in self.config.policy.send_allow
+        grant_verbs = self._operator_grant_verbs(principal, key.device_ref)
         return {
-            "send_allowed": bool(device_ok and session_ok),
+            "send_allowed": bool(device_ok and (session_ok or "send" in grant_verbs)),
             "device_authorized": device_ok,
             "session_allowlisted": bool(session_ok),
+            # Reported as the verbs the grant actually supplied, and empty for
+            # the ordinary case, so a caller can tell "I am here because an
+            # operator named this session" from "I am here because an operator
+            # named me". `()` is also the answer for a grant that names this
+            # principal and device but lists some other verb: a verb is not
+            # satisfied by a sibling.
+            "operator_grant_verbs": sorted(grant_verbs),
         }
 
-    def _control_block(self, key: SessionKey) -> dict[str, Any]:
+    def _control_block(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
         """The control state, computed fresh, with the not-a-grant said out loud.
 
         Attached to `create_session`'s answer because that is where the wrong
         inference is most available: a caller that has just minted a session and
         sees `session_ref` come back will read it as a handle it may now write
         through. It is not. `create` minted the session; `send` is a separate
-        grant, checked per device and per session, and this block is the answer
-        to that check rather than a promise about it.
+        grant, checked per principal, per device and per session, and this block
+        is the answer to that check rather than a promise about it.
         """
         return {
-            **self._session_control_state(key),
+            **self._session_control_state(principal, key),
             "note": "control is a separate grant from creation. A session this "
                     "caller may not send to is reported, not hidden: sending "
-                    "requires `allow_send` on the device and the session in "
-                    "`policy.send_allow`.",
+                    "requires `allow_send` on the device and either the session "
+                    "in `policy.send_allow` or a `send` grant for this principal "
+                    "on this device in `policy.operator_grants`.",
         }
 
     def resolve_session(self, principal: Principal, *, session_ref: str | None,
@@ -489,7 +634,7 @@ class FleetService:
         self.admit(principal)
         provider = self._require_provider(key.device_ref)
         detail = provider.get_session(key)
-        detail["control"] = self._session_control_state(key)
+        detail["control"] = self._session_control_state(principal, key)
         self.audit.record("fleet.get_session", principal=principal.name, session_ref=key.ref)
         return detail
 
@@ -572,7 +717,7 @@ class FleetService:
         # Above the replay lookup, for the same reason as in `create_session`:
         # `_may_send` is the revocation recheck. A session dropped from
         # `policy.send_allow` must stop answering from the idempotency cache too.
-        self._may_send(key)
+        self._may_send(principal, key)
 
         if idempotency_key:
             replayed = self._lookup_idempotent(principal, _VERB_SEND, key.ref, idempotency_key)
@@ -723,7 +868,7 @@ class FleetService:
                     # question about policy *now*. A cached answer here would be
                     # exactly the stale grant this surface refuses everywhere
                     # else.
-                    "control": self._control_block(key) if key else None,
+                    "control": self._control_block(principal, key) if key else None,
                     "note": "replayed from the idempotency record; no second "
                             "session was created and nothing on the device was "
                             "called.",
@@ -779,7 +924,7 @@ class FleetService:
             # round trip the caller could forget, and the natural mistake — treat
             # "created" as "mine to control" — is exactly the inference this
             # block exists to prevent.
-            "control": self._control_block(key),
+            "control": self._control_block(principal, key),
             "note": "session_create mints a session and, when a first message was "
                     "given, starts its run. It grants no authority over anything "
                     "that session may then operate on: see `control` for whether "

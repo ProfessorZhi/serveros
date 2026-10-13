@@ -156,9 +156,12 @@ tools:
     answered_by: the device's provider adapter
     admission: >-
       Two gates, on two machines, and both must open. This surface admits the
-      call through the per-credential scope, the device's `allow_send`, and the
-      per-session `policy.send_allow`; the node connector on the device then
-      applies its own local `allow_send_to`, which defaults to empty and is not
+      call through the per-credential scope `fleet:send`, the device's
+      `allow_send`, and then a per-session decision that is either the session's
+      own entry in `policy.send_allow` or an operator grant covering the whole
+      device (see `authorization.operator_grants`); the node connector on the
+      device then applies its own local floor — `allow_send_to`, or the owner
+      floor `allow_all_sessions_for_owner` — which defaults to empty and is not
       writable from here. Delivery is not authority: a message reaching a
       session grants nothing over whatever that session can itself do.
     idempotency: >-
@@ -228,12 +231,21 @@ tools:
       field: policy.create_allow
       default: {}
       default_means: every project refused; the allowlist is closed
-      enforced_by: this surface, before the device is asked
+      enforced_by:
+        - this surface, before the device is asked
+        - >-
+          the device's own connector, on the fleet-node transport, through the
+          second and independent field `allow_create_projects` in that machine's
+          binding. It is a different file on a different machine and it is
+          closed by omission: with `allow_create` on and no project named, the
+          connector refuses to start rather than serving a device-wide grant
+          under the name of a project floor.
       not_enforced_by: >-
-        the node connector, whose own local floor is device-wide (`allow_create`)
-        and knows nothing about projects. A deployment that wants the project
-        boundary to survive a compromised Fleet surface needs a second one on
-        the device, which this revision does not add.
+        a device this surface reaches through a Fleet-local provider rather than
+        through the fleet-node connector. That path has no connector on the far
+        side, so the project boundary there is this surface's alone and stands
+        or falls with it. Which path a given device uses is a property of the
+        deployment's binding and is not visible from this repository.
       inner_ceiling: >-
         each project entry's `permission_modes` and `models`, both defaulting to
         empty; they bound what the caller may *name*, not what the provider may
@@ -375,6 +387,97 @@ ingress:
     - a client registered through the consent page by the owner
 
 # ---------------------------------------------------------------------------
+# Authorization: who may drive which device
+# ---------------------------------------------------------------------------
+#
+# A scope says what a credential may *ask for*. It does not say which machines
+# the answer is yes about, and until this round nothing did: the deployment
+# answered that question with `policy.send_allow: ['*']` together with
+# `allow_wildcard_send: true`, which is a global grant. Any OAuth principal
+# holding `fleet:send` could then message any session on any device the device
+# floor happened to be open on, and the device floor has no way to tell one
+# principal from another — the connector verifies a device signature, not a
+# person.
+#
+# `operator_grants` replaces that with three dimensions named together:
+# principal, device and verb.
+#
+#   policy:
+#     operator_grants:
+#       <principal name>:
+#         device:<device id>: [send]
+#
+# The principal is the OAuth client id (`cid`), not the subject. The subject
+# claim is the literal string `operator` for every caller in this build, so
+# binding authority to it would grant everyone everything; and an access token
+# is the wrong unit for the same reason a session id was: it is minted and
+# refreshed on a schedule that has nothing to do with an operator's intent.
+# `cid` survives both — it is minted once, at registration, and stored — so a
+# grant written against it keeps meaning after the next refresh.
+#
+# What is refused, and where
+# -------------------------
+# * A wildcard in either dimension is refused at load, by name, rather than
+#   accepted and interpreted as "the useful case".
+# * A principal name that is not a principal is not an error to be discovered
+#   at use: the verb list is filtered to the implemented vocabulary, so naming
+#   `control` today writes a grant that does nothing today and is refused at
+#   load rather than silently implied by `send`.
+# * A device whose registry entry is not `ownership: company` cannot hold a
+#   grant even when it is named. The registry, not this table, is what decides
+#   whether a machine is owned by the party that is being authorized, and
+#   naming a `personal` device is an error rather than a narrower grant.
+# * A principal with an empty device map is dropped rather than kept as a row
+#   that reads like a grant.
+#
+# Revocation is deleting the entry. The audit trail records, per decision, the
+# principal, the device, the verb and whether the answer came from a grant or
+# from the per-session allowlist — those fields and no message body.
+
+authorization:
+  operator_grants:
+    field: policy.operator_grants
+    declared_in: fleet_mcp/config.py#load_operator_grants
+    # The three dimensions, named together, because two of them together are
+    # not an authorization: a device without a principal is a global device
+    # floor, and a principal without a device is a licence to drive the fleet.
+    dimensions: [principal, device, verb]
+    principal_field: cid
+    principal_is_not: >-
+      the subject claim, which this build sets to the literal `operator` for
+      every caller, or an access token, which is refreshed on a schedule that
+      has nothing to do with an operator's intent
+    device_form: 'device:<id>, a registry ref; a hostname is not an identity'
+    verbs: [send]
+    verbs_planned: [control, approve, navigate]
+    verbs_rule: >-
+      A planned verb is refused at load rather than accepted and ignored, and
+      `control` does not inherit `send`: each is written and read as its own
+      row, so a future round has to authorize `control` on purpose.
+    eligible_ownership: company
+    ownership_rule: >-
+      The registry decides whether a device may hold a grant at all. A device
+      whose entry is not `ownership: company` is refused even when named — the
+      question is not which devices an operator wants to reach but which
+      machines the authorizing party owns.
+    wildcard: refused at load in both dimensions, by name
+    default: {}
+    default_means: >-
+      no principal is granted anything. The device floor may still be open, in
+      which case only a session named in `policy.send_allow` may be messaged.
+    supersedes: >-
+      `policy.send_allow: ['*']` together with `allow_wildcard_send: true`,
+      which was a single global grant for every principal holding `fleet:send`.
+      Both spellings are now refused at load rather than honoured, so a
+      deployment carrying either will fail to start with a refusal naming the
+      three devices and this field. That is deliberate: the previous shape is
+      not narrowed, it is withdrawn, and silently treating `['*']` as "no
+      grants" would turn an operator's explicit decision into its opposite.
+    revocable_by: deleting the entry
+    audit_fields: [ts, event, principal, device_ref, verb, decision, reason, session_ref]
+    audit_excludes: message bodies and every other caller-supplied string
+
+# ---------------------------------------------------------------------------
 # The outbound node transport
 # ---------------------------------------------------------------------------
 #
@@ -441,6 +544,15 @@ node_transport:
     create_field: allow_create
     create_default: false
     create_default_means: every create refused, including from the Fleet owner
+    # The device's floor is not one decision but two, because a boolean answers
+    # "may sessions be minted here" and not "which working tree does one get".
+    create_projects_field: allow_create_projects
+    create_projects_default: []
+    create_projects_default_means: >-
+      no project, so nothing to create. `allow_create: true` with an empty list
+      is refused at load — a device that is open "for nothing" is reachable
+      only by accident, and it would refuse every caller for a reason nobody
+      wrote down. Exact match, no wildcard, no prefix.
     lives_on: the device
     rule: >-
       The Fleet surface decides whether a caller may drive the device; the
