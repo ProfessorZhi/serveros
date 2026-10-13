@@ -719,8 +719,34 @@ NATIVE_MANIFEST_TOOL = Tool(
     handler=_native_manifest,
 )
 
+def _native_capability(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.native_capability(ctx.principal,
+                                         device_ref=args.get("device_ref"))
+
+
+NATIVE_CAPABILITY_TOOL = Tool(
+    name="fleet_cloudcli_native_capability",
+    title="Live capability snapshot for one device",
+    description=(
+        "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
+        "verb's state (`USABLE`, or `UNSUPPORTED_BY_DEVICE` when the device does "
+        "not declare it), the device's own annotations, and the source/version/"
+        "sample time. A device whose tool list cannot be read is reported "
+        "`UNKNOWN` with a reason — a count of 22 is never evidence that 22 "
+        "answer."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"device_ref": _string(f"Which device. {DEVICE_REF_DOC}")},
+        "required": ["device_ref"],
+        "additionalProperties": False,
+    },
+    annotations=_read_only(),
+    handler=_native_capability,
+)
+
 SERVED_TOOLS: tuple[Tool, ...] = (TOOLS + NATIVE_MIRROR_TOOLS
-                                  + (NATIVE_MANIFEST_TOOL,))
+                                  + (NATIVE_MANIFEST_TOOL, NATIVE_CAPABILITY_TOOL))
 SERVED_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in SERVED_TOOLS}
 
 

@@ -74,7 +74,7 @@ class FakeProvider:
         self.project = project
         self.result = result
 
-    def native_call(self, tool, arguments):
+    def native_call(self, tool, arguments, *, session_ref=None):
         # A provider with no native route must NOT even define this method, so
         # the attribute check in `native_call` is what exercises that path.
         self.calls.append((tool, arguments))
@@ -692,9 +692,10 @@ class SurfaceTest(unittest.TestCase):
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
         self.assertEqual(len(mirrored), 22)
-        # The nine hand-written, the 22 mirrored, and the manifest reader.
-        self.assertEqual(len(names), 32)
+        # nine hand-written + 22 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 33)
         self.assertIn("fleet_cloudcli_native_manifest", names)
+        self.assertIn("fleet_cloudcli_native_capability", names)
         self.assertEqual(len(tools_mod.tool_names()), 9)
 
     def test_mirror_annotations_match_the_manifest(self):
@@ -940,7 +941,7 @@ class ConnectorFloorTest(unittest.TestCase):
         def __init__(self):
             self.calls = []
 
-        def native_call(self, tool, arguments):
+        def native_call(self, tool, arguments, *, session_ref=None):
             self.calls.append((tool, arguments))
             return {"ok": True}
 
@@ -1247,6 +1248,156 @@ class ReadSizeCapTest(unittest.TestCase):
                    session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_SEND))
         self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
+
+
+class DeviceApprovalOwnershipTest(unittest.TestCase):
+    """(A) The DEVICE re-checks approval ownership from its OWN register."""
+
+    class _Provider:
+        kind = "cloudcli-mcp-http"
+
+        def __init__(self, ids=("r1",)):
+            self.calls = []
+            self.ids = ids
+            self.fail = None
+
+        def native_call(self, tool, arguments, *, session_ref=None):
+            self.calls.append((tool, arguments))
+            if self.fail is not None:
+                raise self.fail
+            if tool == "approvals_list":
+                return {"approvals": [{"requestId": i} for i in self.ids]}
+            return {"ok": True, "tool": tool}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _connector(self, **over):
+        from fleet_mcp.node.connector import Connector, NodeConfig
+        fields = dict(device_ref=TOKYO, secret_anchor=self.tmp / "s",
+                      cloudcli_endpoint="http://x",
+                      cloudcli_credential_anchor=self.tmp / "c", allow_approve=True)
+        fields.update(over)
+        c = Connector(NodeConfig(**fields))
+        c.provider = self._Provider()
+        return c
+
+    def _answered(self, connector):
+        return "approval_answer" in [c[0] for c in connector.provider.calls]
+
+    def test_allow_approve_off_refuses_before_anything(self):
+        c = self._connector(allow_approve=False)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "approval_answer",
+                            "session_ref": ref(TOKYO, "s1"),
+                            "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertFalse(self._answered(c))
+
+    def test_an_answer_with_no_session_proof_is_refused(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "approval_answer",
+                            "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(c.provider.calls, [])
+
+    def test_a_proof_for_another_device_is_refused(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "approval_answer",
+                            "session_ref": ref(WINDOWS, "s1"),
+                            "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertFalse(self._answered(c))
+
+    def test_a_request_this_machine_does_not_enumerate_is_refused(self):
+        c = self._connector()          # enumerates only r1
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "approval_answer",
+                            "session_ref": ref(TOKYO, "s1"),
+                            "arguments": {"requestId": "someone-elses",
+                                          "allow": True}})
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertFalse(self._answered(c))
+
+    def test_a_device_that_will_not_enumerate_refuses_the_answer(self):
+        c = self._connector()
+        c.provider.fail = FleetRefusal("PROVIDER_UNREACHABLE", "no route")
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "approval_answer",
+                            "session_ref": ref(TOKYO, "s1"),
+                            "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertFalse(self._answered(c))
+
+    def test_an_enumerated_request_is_forwarded_only_after_the_check(self):
+        c = self._connector()
+        got = c._native_call({"tool": "approval_answer",
+                              "session_ref": ref(TOKYO, "s1"),
+                              "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(got["ok"], True)
+        self.assertEqual([x[0] for x in c.provider.calls],
+                         ["approvals_list", "approval_answer"])
+
+
+class CapabilitySnapshotTest(unittest.TestCase):
+    """(B) A read-only per-device snapshot; a missing verb is named, not assumed."""
+
+    def test_a_missing_verb_is_unsupported_by_device(self):
+        snap = cloudcli_native.capability_snapshot(
+            device_ref=TOKYO, observed={"session_send": {"annotations": {}, "schema": {}}})
+        self.assertEqual(snap["state"], "OBSERVED")
+        self.assertEqual(snap["observed_count"], 1)
+        self.assertEqual(snap["tools"]["session_send"]["state"], "USABLE")
+        self.assertEqual(snap["tools"]["overview"]["state"],
+                         cloudcli_native.UNSUPPORTED_BY_DEVICE)
+        self.assertEqual(len(snap["unsupported_by_device"]), 21)
+
+    def test_an_unreadable_device_is_unknown_not_complete(self):
+        snap = cloudcli_native.capability_snapshot(device_ref=TOKYO,
+                                                   reason="needs a credential")
+        self.assertEqual(snap["state"], "UNKNOWN")
+        self.assertIsNone(snap["observed_count"])
+        self.assertEqual(len(snap["unsupported_by_device"]), 22)
+        self.assertIn("credential", snap["reason"])
+
+    def test_a_verb_the_build_did_not_record_is_reported_not_added(self):
+        snap = cloudcli_native.capability_snapshot(
+            device_ref=TOKYO, observed={"overview": {}, "session_teleport": {}})
+        self.assertEqual(snap["unrecorded_by_build"], ["session_teleport"])
+        self.assertEqual(len(snap["tools"]), 22)   # the recorded set, unchanged
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_the_service_snapshot_is_read_scoped(self):
+        h = Harness(self.tmp)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.service.native_capability(h.principal(), device_ref=TOKYO)
+        self.assertEqual(caught.exception.code, SCOPE_DENIED)
+
+    def test_a_provider_that_cannot_enumerate_is_unknown(self):
+        h = Harness(self.tmp)
+        snap = h.service.native_capability(h.principal(SCOPE_READ), device_ref=TOKYO)
+        self.assertEqual(snap["state"], "UNKNOWN")
+        self.assertIn("capability snapshot", snap["reason"])
+
+    def test_the_tool_exposes_the_snapshot(self):
+        from fleet_mcp.tools import ToolContext
+        h = Harness(self.tmp)
+        ctx = ToolContext(service=h.service, principal=h.principal(SCOPE_READ))
+        got = tools_mod.SERVED_BY_NAME["fleet_cloudcli_native_capability"].handler(
+            ctx, {"device_ref": TOKYO})
+        self.assertEqual(got["state"], "UNKNOWN")
 
 
 if __name__ == "__main__":
