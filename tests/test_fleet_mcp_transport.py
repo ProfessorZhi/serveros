@@ -406,6 +406,8 @@ class HttpTransport(_HttpHarness):
         payload = json.loads(body)
         self.assertEqual(payload["code_challenge_methods_supported"], ["S256"])
         self.assertEqual(payload["token_endpoint_auth_methods_supported"], ["none"])
+        self.assertEqual(payload["issuer"], self.base)
+        self.assertIs(payload["authorization_response_iss_parameter_supported"], True)
         self.assertEqual(sorted(payload["scopes_supported"]),
                          ["fleet:control", "fleet:create", "fleet:read",
                           "fleet:send"])
@@ -585,6 +587,27 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(status, 302)
         query = urllib.parse.parse_qs(urllib.parse.urlparse(headers["Location"]).query)
         self.assertEqual(query["state"], ["state-xyz"])
+        self.assertEqual(query["iss"], [self.base],
+                         "RFC 9207 issuer must match advertised metadata exactly")
+        self.assertEqual(query["code"][0][:4], "fac-")
+
+    def test_callback_id_redirect_also_carries_issuer(self):
+        """The newer ChatGPT callback shape must get the same issuer binding."""
+        callback = "https://chatgpt.com/connector/oauth/test-callback-123"
+        client_id = self.register_client(redirect=callback, name="ChatGPT callback")
+        form = dict(self._params(redirect=callback), client_id=client_id)
+        form["owner_token"] = self.OWNER_TOKEN
+        form["scope"] = ["fleet:read"]
+        status, headers, _ = self.client.request(
+            "POST", "/oauth/authorize", form=form
+        )
+        self.assertEqual(status, 302)
+        url = urllib.parse.urlparse(headers["Location"])
+        query = urllib.parse.parse_qs(url.query)
+        self.assertEqual(f"{url.scheme}://{url.netloc}{url.path}", callback)
+        self.assertEqual(query["iss"], [self.base])
+        self.assertEqual(query["state"], ["state-xyz"])
+        self.assertIn("code", query)
 
     # -- tokens ------------------------------------------------------------
 
@@ -792,6 +815,10 @@ class OAuthFlow(_HttpHarness):
         location = headers["Location"]
         self.assertNotIn("code=", location)
         self.assertIn("access_denied", location)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        self.assertEqual(query["iss"], [self.base],
+                         "RFC 9207 also requires issuer on error redirects")
+        self.assertEqual(query["state"], ["state-xyz"])
 
     # -- revocation: the declared semantics, enforced ----------------------
 
