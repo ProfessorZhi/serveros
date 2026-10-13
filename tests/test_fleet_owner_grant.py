@@ -392,7 +392,7 @@ class ThePrincipalAxis(unittest.TestCase):
         rows = h.audit_rows("fleet.grant")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["decision"], "refused")
-        self.assertEqual(rows[0]["reason"], "device-not-eligible")
+        self.assertEqual(rows[0]["grant_reason"], "device-not-eligible")
         self.assertEqual(rows[0]["device_ref"], PERSONAL_DELL)
 
 
@@ -644,7 +644,7 @@ class TheAuditTrail(unittest.TestCase):
     #: there is no `**fields` — so this set is closed by construction, and the
     #: test below checks the construction rather than trusting it.
     GRANT_FIELDS = {"ts", "event", "principal", "device_ref", "verb",
-                    "decision", "reason", "session_ref"}
+                    "decision", "grant_reason", "session_ref"}
 
     def test_an_admission_through_the_grant_is_recorded(self):
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("send",)}})
@@ -652,7 +652,7 @@ class TheAuditTrail(unittest.TestCase):
         rows = h.audit_rows("fleet.grant")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["decision"], "allowed")
-        self.assertEqual(rows[0]["reason"], "operator-grant")
+        self.assertEqual(rows[0]["grant_reason"], "operator-grant")
         self.assertEqual(rows[0]["principal"], OAUTH)
         self.assertEqual(rows[0]["verb"], "send")
 
