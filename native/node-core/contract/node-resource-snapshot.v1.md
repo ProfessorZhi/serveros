@@ -53,6 +53,8 @@ walking the document.
 | `memory.scope` | Always `host-wide`. These are the machine's figures and are never divided by account. |
 | `filesystems.roles[].role` | A role (`ROOT_FS`, `DATA_FS`, …), never a device name — `/dev/vda2` means nothing to a policy that says "protect the system disk". |
 | `filesystems.roles[].mount_point` | The mount the path lands on, which is not always the path asked about. |
+| `filesystems.roles[].free_bytes` | `statvfs f_bfree`: every free block, **including** those reserved for root. **This is not `runtime/inventory.py`'s role-row `free_bytes`**, which is df's Avail column (`f_bavail`). Measured on this host: 22.1 GB apart on `/`, identical on `/data` (xfs reserves nothing) — a join by name is therefore wrong only on filesystems that reserve blocks, which is the shape of a defect that survives review. Join on `available_bytes`. |
+| `filesystems.roles[].available_bytes` | `statvfs f_bavail`: the free blocks a non-root writer can use, and the field that does line up with `runtime/inventory.py`'s role-row `free_bytes`. |
 | `filesystems.roles[].used_percent` | `used / (used + available)`: df's arithmetic, excluding blocks reserved for root. |
 | `filesystems.roles[].inodes` | A separate exhaustion axis, with its own state. "No inode budget" (`tmpfs`) and "an empty inode budget" are different facts. |
 | `disk_io.roles[]` | Only for mounts whose source is a real kernel block device name. Mounts that are not (overlay, tmpfs, bind, `/dev/mapper/*`, `/dev/disk/by-*/*`) appear in `unmapped[]` with a reason. |
