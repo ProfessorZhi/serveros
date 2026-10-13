@@ -1218,6 +1218,11 @@ class TheDataclassDefaultsAreClosed(unittest.TestCase):
         self.assertEqual(config.allow_create_projects, ())
         self.assertIs(config.allow_control, False)
         self.assertEqual(config.allow_control_to, ())
+        # These two were missing from this list as well as from the loader, which
+        # is how a grant can be declared, read by its floor, and still
+        # unreachable: nothing here built the object that would have shown it.
+        self.assertIs(config.allow_approve, False)
+        self.assertIs(config.allow_navigate, False)
         self.assertEqual(config.allow_all_sessions_for_owner, ())
 
     def test_the_bare_config_permits_none_of_the_three_verbs(self):
@@ -1228,6 +1233,148 @@ class TheDataclassDefaultsAreClosed(unittest.TestCase):
         self.assertFalse(config.permits_control(key))
         self.assertFalse(config.permits_any_control())
         self.assertEqual(config.control_default(), "refused")
+
+
+class TheApproveAndNavigateFlagsInTheBindingFile(BindingFile):
+    """`approval_answer` and `ui_open_session` are switchable, and off by default.
+
+    Both flags were declared on `NodeConfig` and read by `_native_floor`, but the
+    loader never passed them — so a device owner could write `allow_approve: true`
+    in their own binding and get a machine that refused every approval anyway,
+    with nothing on it that said why. A field the loader forgets is a field no
+    operator can turn on, so what is tested here is the ROUND TRIP: the file says
+    true, the loaded config says true.
+
+    The negatives are the same shape the other grants use, because the failure
+    they prevent is the same one: a template that interpolates a flag produces
+    `"false"`, and `bool("false")` is True.
+    """
+
+    def test_the_default_is_off_for_both(self):
+        config = load_node_config(self._write(self._valid()))
+        self.assertIs(config.allow_approve, False)
+        self.assertIs(config.allow_navigate, False)
+
+    def test_an_approve_grant_survives_the_round_trip(self):
+        config = load_node_config(self._write(self._valid(allow_approve=True)))
+        self.assertIs(config.allow_approve, True)
+        self.assertIs(config.allow_navigate, False,
+                      "opening one verb must not open the other")
+
+    def test_a_navigate_grant_survives_the_round_trip(self):
+        config = load_node_config(self._write(self._valid(allow_navigate=True)))
+        self.assertIs(config.allow_navigate, True)
+        self.assertIs(config.allow_approve, False,
+                      "opening one verb must not open the other")
+
+    def test_both_can_be_opened_together(self):
+        config = load_node_config(self._write(
+            self._valid(allow_approve=True, allow_navigate=True)))
+        self.assertIs(config.allow_approve, True)
+        self.assertIs(config.allow_navigate, True)
+
+    def test_either_flag_explicitly_false_stays_false(self):
+        config = load_node_config(self._write(
+            self._valid(allow_approve=False, allow_navigate=False)))
+        self.assertIs(config.allow_approve, False)
+        self.assertIs(config.allow_navigate, False)
+
+    def test_a_quoted_boolean_is_refused_rather_than_read_as_true(self):
+        for field in ("allow_approve", "allow_navigate"):
+            with self.subTest(field=field):
+                with self.assertRaises(FleetRefusal) as caught:
+                    load_node_config(self._write(self._valid(**{field: '"false"'})))
+                self.assertEqual(caught.exception.code, "BAD_REQUEST")
+                self.assertIn(field, caught.exception.detail)
+                self.assertIn("must be true or false", caught.exception.detail)
+
+    def test_a_non_boolean_is_refused_for_both(self):
+        """A list and a number, so the refusal is about the TYPE and not about
+        one spelling of one wrong value."""
+        for field, rendered in (("allow_approve", "[1, 2]"),
+                               ("allow_navigate", "3")):
+            with self.subTest(field=field):
+                with self.assertRaises(FleetRefusal) as caught:
+                    load_node_config(self._write(self._valid(**{field: rendered})))
+                self.assertEqual(caught.exception.code, "BAD_REQUEST")
+                self.assertIn(field, caught.exception.detail)
+
+
+class _EnumeratingProvider:
+    """A CloudCLI that answers, and enumerates one approval request.
+
+    The device-side ownership check reads `approvals_list` before it forwards an
+    answer, so a fake that answers nothing would make the positive case below
+    fail for a reason that has nothing to do with the flags under test.
+    """
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def native_call(self, tool, arguments):
+        self.calls.append((tool, arguments))
+        if tool == "approvals_list":
+            return {"approvals": [{"requestId": "r1"}]}
+        return {"ok": True, "tool": tool}
+
+
+class TheFlagsReachTheFloorThroughTheBindingFile(BindingFile):
+    """The whole chain: binding YAML -> `load_node_config` -> `Connector` -> floor.
+
+    Every other device-side approval test builds `NodeConfig(...)` directly, with
+    `allow_approve=True` written into the constructor call. That is exactly why
+    the loader bug survived a green suite: nothing ever went through the file an
+    operator actually edits. These tests start from the YAML and end at the
+    provider, so a flag the loader forgets fails here.
+    """
+
+    def _connector(self, **over):
+        config = load_node_config(self._write(self._valid(**over)))
+        connector = Connector(config)
+        connector.provider = _EnumeratingProvider()
+        return connector
+
+    def _session_ref(self, native="s1"):
+        return f"{DEVICE}|claude|{native}"
+
+    def test_an_opened_binding_lets_approval_reach_the_provider(self):
+        c = self._connector(allow_approve=True)
+        got = c._native_call({"tool": "approval_answer",
+                              "session_ref": self._session_ref(),
+                              "arguments": {"requestId": "r1", "allow": True}})
+        self.assertEqual(got["ok"], True)
+        self.assertEqual([name for name, _ in c.provider.calls],
+                         ["approvals_list", "approval_answer"])
+
+    def test_an_opened_binding_lets_navigation_reach_the_provider(self):
+        c = self._connector(allow_navigate=True)
+        got = c._native_call({"tool": "ui_open_session",
+                              "arguments": {"session": "s1"}})
+        self.assertEqual(got["ok"], True)
+        self.assertEqual([name for name, _ in c.provider.calls], ["ui_open_session"])
+
+    def test_a_binding_that_says_nothing_still_refuses_both(self):
+        """The same constructor, the same provider, one edit apart: without the
+        flag the call never reaches the device. This is the negative that makes
+        the two above mean something."""
+        for tool, payload in (("approval_answer",
+                               {"session_ref": self._session_ref(),
+                                "arguments": {"requestId": "r1", "allow": True}}),
+                              ("ui_open_session", {"arguments": {"session": "s1"}})):
+            with self.subTest(tool=tool):
+                c = self._connector()
+                with self.assertRaises(FleetRefusal) as caught:
+                    c._native_call({"tool": tool, **payload})
+                self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+                self.assertEqual(c.provider.calls, [])
+
+    def test_opening_approve_does_not_open_navigate(self):
+        c = self._connector(allow_approve=True)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "ui_open_session",
+                            "arguments": {"session": "s1"}})
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+        self.assertEqual(c.provider.calls, [])
 
 
 if __name__ == "__main__":

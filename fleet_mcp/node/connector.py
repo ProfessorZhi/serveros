@@ -544,6 +544,15 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_create_projects=allow_create_projects,
         allow_control=_flag(raw.get("allow_control"), name="allow_control"),
         allow_control_to=_control_sessions(raw.get("allow_control_to")),
+        # The two flags that open `approval_answer` and `ui_open_session` on THIS
+        # machine. They were declared on `NodeConfig` and read by `_native_floor`,
+        # but never passed here — so both stayed at their `False` default however
+        # the binding was written, and a device owner who set them got a machine
+        # that silently refused every approval and every navigation while their
+        # own file said the opposite. A field the loader forgets is a field no
+        # operator can turn on, so this is the whole of the switch.
+        allow_approve=_flag(raw.get("allow_approve"), name="allow_approve"),
+        allow_navigate=_flag(raw.get("allow_navigate"), name="allow_navigate"),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
