@@ -142,6 +142,27 @@ class NodeConfig:
     # There is no per-session form of this grant to write down, because the
     # session it would name does not exist yet.
     allow_create: bool = False
+    # Which projects a create may name *on this machine*. Empty is the default
+    # and means none.
+    #
+    # `allow_create` alone answers "may a session be minted here"; it cannot
+    # answer "a session on what". A project id is what decides the working tree,
+    # the credentials and the reachable services the minted session inherits, so
+    # the second question is the one that matters and the boolean was never an
+    # answer to it. Until this field existed the floor was device-wide, which
+    # `fleet/fleet-mcp-contract.yaml` recorded as a gap rather than as a
+    # decision.
+    #
+    # Empty meaning *none* rather than *all* is the same polarity as elsewhere
+    # in this system, and it is enforced rather than merely documented: a
+    # binding that sets `allow_create: true` and names no project is refused at
+    # load. That is a contradiction an operator can only have reached by
+    # accident — "creation is on, for nothing" — and it would otherwise present
+    # as a connector that accepts the request and refuses every project.
+    #
+    # Exact match, no wildcard, and no `"*"` spelling: an entry that means
+    # "every project" would re-open the question this field closes.
+    allow_create_projects: tuple[str, ...] = ()
     max_body_bytes: int = 1_000_000
     notes: str = ""
     # Owner-granted floors: verbs the person at this keyboard has granted for
@@ -234,6 +255,44 @@ def _owner_floors(value: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(v) for v in value))
 
 
+def _create_projects(value: Any) -> tuple[str, ...]:
+    """Read the project floor, refusing a wildcard and refusing a bare string.
+
+    A bare string is refused rather than wrapped, for the same reason it is in
+    `_owner_floors`: `allow_create_projects: notes` is a one-character-away
+    typo, and the reading that makes it a one-element list is also the reading
+    that makes a mistake into a grant. Refusing means the operator writes the
+    brackets.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"allow_create_projects must be a list of project ids, not a "
+            f"{type(value).__name__}. A bare string is refused rather than "
+            f"wrapped: this field decides which working trees a minted session "
+            f"inherits, and a typo that silently became a grant is the failure "
+            f"it exists to prevent.",
+        )
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise FleetRefusal(
+                BAD_REQUEST, "allow_create_projects must contain non-empty strings")
+        name = item.strip()
+        if name == "*":
+            raise FleetRefusal(
+                BAD_REQUEST,
+                "allow_create_projects contains '*'. A wildcard would make the "
+                "project floor meaningless — it would be `allow_create` again, "
+                "under a longer name. Name the projects.",
+            )
+        if name not in out:
+            out.append(name)
+    return tuple(out)
+
+
 def load_node_config(path: str | Path | None = None) -> NodeConfig:
     if path is None:
         for candidate in DEFAULT_CONFIG_PATHS:
@@ -276,6 +335,23 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
             "A hostname would give two machines the same identity the moment one "
             "was renamed.",
         )
+    allow_create = bool(raw.get("allow_create", False))
+    allow_create_projects = _create_projects(raw.get("allow_create_projects"))
+    if allow_create and not allow_create_projects:
+        # "Creation is on, for nothing" is only reachable by accident, and the
+        # accident is invisible at the moment it happens: the connector starts,
+        # serves, and refuses every project for a reason no operator wrote
+        # down. Failing here puts it where the operator who made the edit is
+        # still looking at the file.
+        raise FleetRefusal(
+            BAD_REQUEST,
+            "`allow_create` is true and `allow_create_projects` names no project. "
+            "Creation on this machine is per project as well as per device: the "
+            "project id decides which working tree and which credentials a "
+            "minted session inherits, so `allow_create: true` alone grants "
+            "creation for nothing. Name the projects (or set `allow_create: "
+            "false`).",
+        )
     return NodeConfig(
         device_ref=device_ref,
         secret_anchor=Path(str(raw["secret_anchor"])).expanduser(),
@@ -286,7 +362,8 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         connect_timeout=float(raw.get("connect_timeout", 5.0)),
         read_timeout=float(raw.get("read_timeout", 45.0)),
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
-        allow_create=bool(raw.get("allow_create", False)),
+        allow_create=allow_create,
+        allow_create_projects=allow_create_projects,
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
@@ -488,6 +565,13 @@ class Connector:
                 # reading one must not have to infer the other.
                 "create_allowed": bool(self.config.allow_create),
                 "create_default": "allowed" if self.config.allow_create else "refused",
+                # The project half, reported beside the boolean rather than
+                # folded into it. `create_allowed: true` with an empty list is
+                # unreachable — the loader refuses it — but a caller asking "may
+                # I create *here*" needs the projects to answer, and an operator
+                # auditing a create needs to see which of the two floors
+                # admitted it.
+                "create_projects": list(self.config.allow_create_projects),
             },
             "upstream_endpoint": self.config.cloudcli_endpoint,
             "credential_stays_here": True,
@@ -515,12 +599,18 @@ class Connector:
     def _create(self, payload: dict[str, Any]):
         """Mint a session here, if this machine has said that may happen.
 
-        The create floor is checked before the provider is touched, and it is a
+        Two floors, and both are needed. The device floor (`allow_create`) is a
         different flag from `allow_send_to`: the two grants answer different
         questions, and an operator who has answered one has not answered the
-        other. A missing project is refused before the floor is consulted, so
-        the two refusals stay distinguishable — one is about the request, the
-        other about this machine.
+        other. The project floor (`allow_create_projects`) is the second half,
+        and it is the one that answers the question the boolean cannot: *which*
+        project. A project id is what decides the working tree, the credentials
+        and the reachable services a minted session inherits, so "authorized to
+        create here" was never an answer to "authorized to create this".
+
+        A missing project is refused before either floor is consulted, so the
+        three refusals stay distinguishable — one is about the request, one
+        about this machine, and one about the project named.
         """
         project = payload.get("project")
         if not isinstance(project, str) or not project.strip():
@@ -532,6 +622,17 @@ class Connector:
                 f"creation is granted by `allow_create` in this machine's own "
                 f"binding, and that file lives on this machine, not on the "
                 f"caller's. It is {self.config.allow_create!r} here.",
+            )
+        if project.strip() not in self.config.allow_create_projects:
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this connector is not authorized to create a session on "
+                f"project {project.strip()!r}. Creation is granted per project "
+                f"as well as per device by `allow_create_projects` in this "
+                f"machine's own binding, and this project is not in it. The "
+                f"list is {list(self.config.allow_create_projects)}.",
+                project=project.strip(),
+                allowed=list(self.config.allow_create_projects),
             )
         return self.provider.create(
             project=project,
@@ -679,7 +780,7 @@ def main(argv: list[str] | None = None) -> int:
         f"; owner floor {list(config.allow_all_sessions_for_owner) or 'closed'}"
         f" — a session not named here: {config.send_default()}\n"
         f"connector: create "
-        f"{'allowed' if config.allow_create else 'refused — allow_create is false'}\n"
+        f"{'allowed for ' + str(list(config.allow_create_projects)) if config.allow_create else 'refused — allow_create is false'}\n"
     )
     try:
         server.serve_forever()
