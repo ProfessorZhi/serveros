@@ -398,6 +398,43 @@ class WhatIsNotBuilt(unittest.TestCase):
         self.assertIn("POST /v1/sessions", np.ROUTES)
         self.assertNotIn("POST /v1/exec", np.ROUTES)
 
+    def test_the_close_verb_is_named_as_a_gap_and_reachable_from_nowhere(self):
+        """The one gap that would delete data if it were opened by accident.
+
+        Closing a session ends its resident host; CloudCLI's `session_close`
+        deletes the session's host and transcript, and `force` skips the checks
+        that stop it. So this is the entry where "named in the contract" has to
+        be backed by the code rather than by the sentence — a batch transcript
+        delete must not be reachable by a caller who has every scope this
+        deployment mints.
+
+        Three surfaces are checked separately, because each one alone would be
+        satisfiable by a rename: the contract's own list, the routes the node
+        serves, and the tools the MCP surface exposes.
+        """
+        absent = {entry["id"] for entry in contract()["not_implemented"]}
+        self.assertIn("session_delete_or_force_stop", absent)
+        # No route, under any spelling of the verb.
+        for route in np.ROUTES:
+            with self.subTest(route=route):
+                self.assertNotIn("close", route)
+                self.assertNotIn("delete", route)
+        # No provider method, which is what a route would have to call. The
+        # protocol is the interface a device must satisfy, so a verb it does not
+        # declare is a verb no connector can be asked for.
+        from fleet_mcp.providers.base import DeviceProvider
+
+        methods = {name for name in dir(DeviceProvider) if not name.startswith("_")}
+        self.assertIn("interrupt", methods, "the scan missed the interface it reads")
+        for forbidden in ("close", "close_session", "delete", "delete_session", "kill"):
+            with self.subTest(method=forbidden):
+                self.assertNotIn(forbidden, methods)
+        # And no tool, so no scope can reach one.
+        names = set(tools_module.tool_names())
+        for forbidden in ("fleet_close_session", "fleet_delete_session", "fleet_stop_session"):
+            with self.subTest(tool=forbidden):
+                self.assertNotIn(forbidden, names)
+
     def test_no_route_can_execute_a_command(self):
         """Checked against the route table, not against the prose.
 
