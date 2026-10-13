@@ -105,6 +105,15 @@ tell "I sent it once and this is that run" from "I just sent it now"."""
 INTERNAL = "INTERNAL"
 """A defect in this surface. Never used for a provider's behaviour."""
 
+OUTPUT_TOO_LARGE = "OUTPUT_TOO_LARGE"
+"""A mirrored CloudCLI answer was larger than this surface will relay.
+
+It is a refusal, not a truncation: a silently shortened answer looks complete
+and is not, so a caller could act on a transcript that is missing its middle.
+The error names the device, the verb and the measured size, and carries NO
+remote text — the oversized body is measured and dropped, never copied into
+the error or the audit record."""
+
 
 class FleetRefusal(Exception):
     """A typed, expected refusal. Carries a code a caller can branch on."""
