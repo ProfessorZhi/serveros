@@ -65,13 +65,14 @@ class FakeProvider:
     """A device that records what it was asked. Governance lives above it."""
 
     def __init__(self, device_ref, kind="cloudcli-mcp-http", *, fail=None,
-                 native=True, project="p"):
+                 native=True, project="p", result=None):
         self.device_ref = device_ref
         self.kind = kind
         self.calls: list = []
         self._fail = fail
         self._has_native = native
         self.project = project
+        self.result = result
 
     def native_call(self, tool, arguments):
         # A provider with no native route must NOT even define this method, so
@@ -79,6 +80,8 @@ class FakeProvider:
         self.calls.append((tool, arguments))
         if self._fail is not None:
             raise self._fail
+        if self.result is not None:
+            return self.result
         if tool == "approvals_list":
             # The device's own register. Ownership of an `approval_answer` is
             # checked against THIS, so the fake must enumerate ids.
@@ -1157,6 +1160,93 @@ class ReconfigureProjectOwnershipTest(unittest.TestCase):
         # The device was asked for the project BEFORE it was reconfigured.
         self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
                          ["session_get", "session_reconfigure"])
+
+
+class ReadSizeCapTest(unittest.TestCase):
+    """The mirrored answer is measured before it leaves; oversize is REFUSED."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _overhead():
+        """Bytes a read result carries before its content: the markers."""
+        from fleet_mcp.privacy import UNTRUSTED_NOTICE
+        payload = {"blob": "", "untrusted_content": True,
+                   "untrusted_notice": UNTRUSTED_NOTICE}
+        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def _sized(self, nbytes):
+        return {"blob": "x" * (nbytes - self._overhead())}
+
+    def _harness(self, result, **over):
+        h = Harness(self.tmp, **over)
+        h.providers[TOKYO].result = result
+        return h
+
+    def test_exactly_at_the_limit_is_allowed(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        h = self._harness(self._sized(MAX_NATIVE_RESULT_BYTES))
+        got = h.call("sessions_list", principal=h.principal(SCOPE_READ))
+        self.assertEqual(got["blob"][:1], "x")
+
+    def test_one_byte_over_is_refused_without_relaying_the_text(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        from fleet_mcp.errors import OUTPUT_TOO_LARGE
+        h = self._harness(self._sized(MAX_NATIVE_RESULT_BYTES + 1))
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("sessions_list", principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
+        detail = caught.exception.detail
+        self.assertIn(str(MAX_NATIVE_RESULT_BYTES), detail)
+        # The oversized body is MEASURED, never copied into the error.
+        self.assertNotIn("xxxx", detail)
+
+    def test_multibyte_is_measured_in_bytes_not_characters(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        from fleet_mcp.errors import OUTPUT_TOO_LARGE
+        # Fewer characters than the limit, more BYTES than the limit.
+        over = MAX_NATIVE_RESULT_BYTES - self._overhead() + 3
+        blob = "\u3042" * (over // 3)          # 3 bytes each in UTF-8
+        h = self._harness({"blob": blob})
+        self.assertLess(len(blob), MAX_NATIVE_RESULT_BYTES)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("sessions_list", principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
+
+    def test_a_batch_of_many_messages_is_measured_as_a_whole(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        from fleet_mcp.errors import OUTPUT_TOO_LARGE
+        many = {"messages": [{"i": i, "t": "m" * 400} for i in range(100000)]}
+        h = self._harness(many)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_read", args={"session": "s1"},
+                   principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
+
+    def test_the_bounded_read_is_the_same_on_a_node_device(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        from fleet_mcp.errors import OUTPUT_TOO_LARGE
+        h = self._harness(self._sized(MAX_NATIVE_RESULT_BYTES + 1),
+                          kinds={TOKYO: "fleet-node"})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("sessions_list", principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
+
+    def test_a_write_result_is_bounded_too(self):
+        from fleet_mcp.fleet import MAX_NATIVE_RESULT_BYTES
+        from fleet_mcp.errors import OUTPUT_TOO_LARGE
+        h = self._harness({"blob": "x" * (MAX_NATIVE_RESULT_BYTES + 1)},
+                          send_allow=(ref(TOKYO, "s1"),))
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_send", args={"session": "s1", "message": "hi"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND))
+        self.assertEqual(caught.exception.code, OUTPUT_TOO_LARGE)
 
 
 if __name__ == "__main__":

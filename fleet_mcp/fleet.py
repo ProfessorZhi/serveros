@@ -25,6 +25,7 @@ What it is careful about
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -44,6 +45,7 @@ from .errors import (
     SCOPE_DENIED,
     UNKNOWN_DEVICE,
     WRITE_NOT_GRANTED,
+    OUTPUT_TOO_LARGE,
     refuse,
 )
 from .identity import SessionKey
@@ -64,6 +66,12 @@ from .scopes import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE, SCOPE_NAVIGATE,
 # caller's retry after a timeout, short enough that the table is bounded by the
 # session it belongs to rather than by uptime.
 IDEMPOTENCY_TTL_SECONDS = 3600
+
+#: The largest mirrored CloudCLI answer this surface will relay, in BYTES. A
+#: paginated read (`limit`, `cursor`) stays far under it; a runaway single
+#: transcript does not. It bounds the MIRROR only — the hand-written nine keep
+#: their own semantics and their own read bounds, so this changes no old tool.
+MAX_NATIVE_RESULT_BYTES = 1_048_576
 
 # The two verbs that carry an idempotency key, named once so the identity they
 # compose cannot drift from the identity they look up. `send` and `create` share
@@ -1318,6 +1326,11 @@ class FleetService:
         if governance == cloudcli_native.GOV_READ and isinstance(result, dict):
             result.setdefault("untrusted_content", True)
             result.setdefault("untrusted_notice", UNTRUSTED_NOTICE)
+        # The mirrored answer is MEASURED before it leaves. A runaway transcript
+        # is refused with a typed error rather than relayed whole into the
+        # ingress (and on to ChatGPT); the size is the one the wire would carry,
+        # so a multi-byte transcript counts as its bytes, not its characters.
+        self._refuse_oversized_result(result, native, device_ref)
         audit = getattr(self, "audit", None)
         if audit is not None:
             # The tool NAME is on the audit allowlist so the record says WHICH
@@ -1326,6 +1339,40 @@ class FleetService:
             audit.record("mcp.native_call", principal=principal.name,
                          device_ref=device_ref, tool=native.name)
         return result
+
+    def _refuse_oversized_result(self, result, native, device_ref: str) -> None:
+        """Refuse a mirrored answer past the byte limit this surface relays.
+
+        Measured on the exact payload that would be returned, encoded the way
+        the wire carries it (UTF-8), so a page of multi-byte text is counted as
+        its bytes. The refusal names the device, the verb and the measured size
+        and carries NO remote text — the oversized body is measured and dropped,
+        never copied into the error or the audit. It is a REFUSAL, never a
+        truncation: a shortened transcript reads as a complete one.
+        """
+        try:
+            blob = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
+        except (TypeError, ValueError):
+            # A result that will not serialise cannot be measured, and an
+            # unmeasurable answer is refused rather than sent on unmeasured.
+            raise refuse(
+                OUTPUT_TOO_LARGE,
+                f"`{native.namespaced}` on {device_ref} returned a value this "
+                f"surface cannot measure; an unmeasurable answer is refused "
+                f"rather than relayed.",
+                device_ref=device_ref, tool=native.name,
+            ) from None
+        if len(blob) > MAX_NATIVE_RESULT_BYTES:
+            raise refuse(
+                OUTPUT_TOO_LARGE,
+                f"`{native.namespaced}` on {device_ref} returned {len(blob)} bytes, "
+                f"over the {MAX_NATIVE_RESULT_BYTES}-byte limit this surface "
+                f"relays. The answer is refused rather than truncated — a "
+                f"shortened transcript reads as a complete one. Narrow the read "
+                f"(a smaller `limit`, a `cursor`) to take it in pages.",
+                device_ref=device_ref, tool=native.name,
+                bytes=len(blob), limit=MAX_NATIVE_RESULT_BYTES,
+            )
 
     def _clamp_native_read(self, args: dict[str, Any]) -> None:
         """Cap a mirrored read's page size to the surface's own bound.
