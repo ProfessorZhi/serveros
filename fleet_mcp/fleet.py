@@ -1373,6 +1373,12 @@ class FleetService:
         past a device's authentication.
         """
         principal.require(SCOPE_READ)
+        # The rate limiter every hand-written read passes through, in the order
+        # the rest of this class uses it. A capability snapshot reads the
+        # device's `tools/list`, so on a `cloudcli-mcp-http` device it is an
+        # outbound call like any other; exempting it would make this the one
+        # read that can be hammered.
+        self.admit(principal)
         binding = self.config.provider_for(device_ref)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE,
