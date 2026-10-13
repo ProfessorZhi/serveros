@@ -65,12 +65,13 @@ class FakeProvider:
     """A device that records what it was asked. Governance lives above it."""
 
     def __init__(self, device_ref, kind="cloudcli-mcp-http", *, fail=None,
-                 native=True):
+                 native=True, project="p"):
         self.device_ref = device_ref
         self.kind = kind
         self.calls: list = []
         self._fail = fail
         self._has_native = native
+        self.project = project
 
     def native_call(self, tool, arguments):
         # A provider with no native route must NOT even define this method, so
@@ -82,6 +83,9 @@ class FakeProvider:
             # The device's own register. Ownership of an `approval_answer` is
             # checked against THIS, so the fake must enumerate ids.
             return {"approvals": [{"requestId": "r1"}, {"requestId": "r2"}]}
+        if tool == "session_get":
+            # The device's own statement of which project the session belongs to.
+            return {"tool": tool, "session": {"projectId": self.project}}
         return {"ok": True, "tool": tool}
 
 
@@ -337,8 +341,12 @@ class DispatchTest(unittest.TestCase):
 
     def test_read_tool_is_allowed_with_read_scope(self):
         h = Harness(self.tmp)
-        self.assertEqual(h.call("sessions_list", args={"limit": 5},
-                                principal=h.principal(SCOPE_READ)), {"ok": True, "tool": "sessions_list"})
+        got = h.call("sessions_list", args={"limit": 5},
+                     principal=h.principal(SCOPE_READ))
+        self.assertEqual(got["tool"], "sessions_list")
+        # A mirrored read carries the data-not-instruction marking.
+        self.assertIs(got["untrusted_content"], True)
+        self.assertTrue(got["untrusted_notice"])
         self.assertEqual(h.providers[TOKYO].calls, [("sessions_list", {"limit": 5})])
 
     def test_read_tool_without_read_scope_is_denied(self):
@@ -883,7 +891,9 @@ class ElevationCeilingTest(unittest.TestCase):
                    session_ref=ref(TOKYO, "s1"), project="p",
                    principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
-        self.assertEqual(h.providers[TOKYO].calls, [])
+        # The project was READ from the device; the reconfigure itself was not
+        # forwarded.
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls], ["session_get"])
 
 
 class ArgumentValidationTest(unittest.TestCase):
@@ -1005,6 +1015,148 @@ class ConnectorFloorTest(unittest.TestCase):
             self._call(c, "session_teleport", {})
         self.assertEqual(caught.exception.code, BAD_REQUEST)
         self.assertEqual(c.provider.calls, [])
+
+
+class BackgroundStopGateTest(unittest.TestCase):
+    """(1) `stopTaskId` PRESENCE decides the class; an empty value is refused."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_absent_stop_task_id_is_a_read(self):
+        h = Harness(self.tmp)
+        got = h.call("session_background", args={"session": "s1"},
+                     principal=h.principal(SCOPE_READ))
+        self.assertEqual(got["tool"], "session_background")
+
+    def test_each_empty_value_is_refused_and_never_reads_as_a_list(self):
+        h = Harness(self.tmp)
+        for value in ("", "   ", None, False, 0):
+            with self.subTest(value=value):
+                with self.assertRaises(FleetRefusal) as caught:
+                    h.call("session_background",
+                           args={"session": "s1", "stopTaskId": value},
+                           session_ref=ref(TOKYO, "s1"),
+                           principal=h.principal(SCOPE_READ))
+                self.assertEqual(caught.exception.code, BAD_REQUEST)
+        # Nothing reached the device, under any of the empty spellings.
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_non_empty_stop_task_id_needs_control_not_read(self):
+        h = Harness(self.tmp)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_background",
+                   args={"session": "s1", "stopTaskId": "t1"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, SCOPE_DENIED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_the_device_floor_refuses_an_empty_stop_task_id_too(self):
+        from fleet_mcp.node.connector import Connector, NodeConfig
+        c = Connector(NodeConfig(device_ref=TOKYO, secret_anchor=self.tmp / "s",
+                                 cloudcli_endpoint="http://x",
+                                 cloudcli_credential_anchor=self.tmp / "c"))
+        c.provider = FakeProvider(TOKYO)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._native_call({"tool": "session_background",
+                            "arguments": {"session": "s1", "stopTaskId": ""}})
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(c.provider.calls, [])
+
+
+class PublishedSchemaClosureTest(unittest.TestCase):
+    """(2) The advertised closure is the enforced closure."""
+
+    def test_every_mirrored_arguments_object_is_closed(self):
+        for native in cloudcli_native.NATIVE_TOOLS:
+            inner = cloudcli_native.mirrored_schema(native)["properties"]["arguments"]
+            with self.subTest(tool=native.name):
+                self.assertIs(inner.get("additionalProperties"), False,
+                              f"{native.name} advertises an open arguments object")
+
+    def test_the_served_tool_and_the_runtime_rule_agree_on_unknown_keys(self):
+        tool = tools_mod.SERVED_BY_NAME["fleet_cloudcli_session_send"]
+        inner = tool.input_schema["properties"]["arguments"]
+        self.assertIs(inner["additionalProperties"], False)
+        self.assertEqual(inner["required"], ["session", "message"])
+        # The runtime refuses exactly what the schema says it will.
+        self.assertEqual(
+            cloudcli_native.validate_arguments({"session": "s", "message": "m", "x": 1},
+                                               cloudcli_native.input_schema("session_send")),
+            ["unknown parameter 'x'"])
+
+    def test_a_tool_with_no_parameters_advertises_an_empty_closed_object(self):
+        inner = cloudcli_native.mirrored_schema(
+            cloudcli_native.NATIVE_BY_NAME["ui_clients_list"])["properties"]["arguments"]
+        self.assertEqual(inner.get("properties"), {})
+        self.assertIs(inner.get("additionalProperties"), False)
+
+
+class ReconfigureProjectOwnershipTest(unittest.TestCase):
+    """(3) The ceiling is the SESSION's real project, not the caller's claim."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _harness(self, **over):
+        from fleet_mcp.config import CreateGrant
+        return Harness(self.tmp,
+                       control_allow=(ref(TOKYO, "s1"),),
+                       grants={OAUTH: {TOKYO: ("control",)}},
+                       create_allow=over.pop("create_allow", {"p": CreateGrant()}),
+                       **over)
+
+    def test_a_forged_project_is_refused(self):
+        from fleet_mcp.config import CreateGrant
+        # The session belongs to "p"; the caller declares a laxer "wide".
+        h = self._harness(create_allow={"p": CreateGrant(), "wide": CreateGrant()})
+        h.providers[TOKYO].project = "p"
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_reconfigure",
+                   args={"session": "s1", "permissionMode": "acceptEdits"},
+                   session_ref=ref(TOKYO, "s1"), project="wide",
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+
+    def test_a_session_whose_project_the_device_omits_is_refused(self):
+        h = self._harness()
+        h.providers[TOKYO].project = None      # device states no project
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_reconfigure",
+                   args={"session": "s1", "permissionMode": "acceptEdits"},
+                   session_ref=ref(TOKYO, "s1"), project="p",
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+
+    def test_a_project_not_in_create_allow_is_refused(self):
+        h = self._harness(create_allow={})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_reconfigure",
+                   args={"session": "s1", "permissionMode": "acceptEdits"},
+                   session_ref=ref(TOKYO, "s1"), project="p",
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+
+    def test_a_permitted_mode_on_the_sessions_own_project_is_allowed(self):
+        from fleet_mcp.config import CreateGrant
+        h = self._harness(create_allow={"p": CreateGrant(permission_modes=("acceptEdits",))})
+        got = h.call("session_reconfigure",
+                     args={"session": "s1", "permissionMode": "acceptEdits"},
+                     session_ref=ref(TOKYO, "s1"), project="p",
+                     principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(got["tool"], "session_reconfigure")
+        # The device was asked for the project BEFORE it was reconfigured.
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
+                         ["session_get", "session_reconfigure"])
 
 
 if __name__ == "__main__":
