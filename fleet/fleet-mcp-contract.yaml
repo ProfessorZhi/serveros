@@ -166,7 +166,11 @@ tools:
       A replay returns the recorded run under IDEMPOTENT_REPLAY rather than
       sending a second message. The key is not forwarded to the provider, which
       has no such concept — passing it on would imply a guarantee this hop
-      cannot make.
+      cannot make. A key is a name for one attempt, and the attempt is the
+      credential, the verb and the target together: `send` and `create` share
+      one table, so a key spent on one does not answer the other, and the same
+      key against a different session or device is a different attempt rather
+      than a replay of this one.
 
   fleet_get_run:
     verb: read
@@ -191,15 +195,50 @@ tools:
       field the caller omits is absent on the wire rather than null, so the
       device's own remembered session defaults still apply.
     admission: >-
-      Two gates, on two machines, and both must open — and neither is implied
-      by the device's `allow_send`. This surface requires the independent
+      Three gates, on two machines, and all must open — and none is implied by
+      the device's `allow_send`. This surface requires the independent
       `fleet:create` scope (a credential that may message sessions is not
-      thereby one that may make them) and the device's `allow_create`, which
-      defaults to false for every device including ones authorized for control.
-      The connector on the device then applies its own local `allow_create`,
-      which is a second file on a second machine. An unauthorized device is
-      refused before any provider is asked: a check that runs after the session
-      exists is a report, not a gate.
+      thereby one that may make them), the device's `allow_create`, and the
+      project's own entry in `policy.create_allow`. The third is the one the
+      device gate cannot answer: a project id decides which working tree, which
+      credentials and which reachable services a minted session inherits, so
+      "authorized to create on this device" is not an answer to "authorized to
+      create this project". The allowlist is closed and its default is empty —
+      an unlisted project is refused, not defaulted. The connector on the device
+      then applies its own local `allow_create`, which is a second file on a
+      second machine. An unauthorized device or project is refused before any
+      provider is asked: a check that runs after the session exists is a report,
+      not a gate.
+    caller_discretion: >-
+      A caller-supplied `permissionMode` or `model` is constrained to the
+      project's own ceiling in `policy.create_allow.<project>`, which defaults
+      to empty. Empty means the caller may name neither and the provider's own
+      default applies — the default posture is that creation grants no
+      discretion over privilege or backend. This is what stops `create` from
+      being a route around `allow_send`: without it, a caller holding the create
+      scope could mint a session running with `bypassPermissions`, which is a
+      strictly larger authority than messaging a session an operator already
+      authorized. The ceiling belongs to the project rather than the policy
+      because that is the scope the answer is actually known at.
+    # Where the project floor lives, and — just as load-bearing — where it does
+    # not. The device floor above is a second file on a second machine; this one
+    # is not, and saying so is the difference between a documented gap and an
+    # assumed coverage.
+    project_floor:
+      field: policy.create_allow
+      default: {}
+      default_means: every project refused; the allowlist is closed
+      enforced_by: this surface, before the device is asked
+      not_enforced_by: >-
+        the node connector, whose own local floor is device-wide (`allow_create`)
+        and knows nothing about projects. A deployment that wants the project
+        boundary to survive a compromised Fleet surface needs a second one on
+        the device, which this revision does not add.
+      inner_ceiling: >-
+        each project entry's `permission_modes` and `models`, both defaulting to
+        empty; they bound what the caller may *name*, not what the provider may
+        do, so an omitted field still gets the device's own remembered default.
+      declared_in: fleet_mcp/config.py#CreateGrant
     partial_success: >-
       There is none to report. Creation is single-device by construction, so
       there is no fan-out and no state in which some devices created and others
@@ -298,6 +337,20 @@ ingress:
         fleet_create_session, and nothing else. Independent of fleet:send on
         purpose — a credential issued to message sessions is not thereby one
         that may mint them.
+    # The vocabulary above is what this build implements, and it is advertised
+    # in the discovery documents as `scopes_supported`. What a *particular
+    # deployment* will hand out is narrower and is published beside it as
+    # `scopes_grantable`: the binding's `auth.grantable_scopes`, which defaults
+    # to read+send. `fleet:create` therefore has to be added deliberately before
+    # any OAuth client can be issued it — a deployment that never wrote the word
+    # has not authorized creation. Both lists come from one module
+    # (`fleet_mcp/scopes.py`); the verbs this build owes but does not implement
+    # (`fleet:control`, `fleet:approve`, `fleet:navigate`) are named there as
+    # planned and are deliberately absent from both, because a scope no code
+    # path enforces is a promise rather than a grant.
+    scopes_grantable_default: [fleet:read, fleet:send]
+    scopes_planned: [fleet:control, fleet:approve, fleet:navigate]
+    declared_in: fleet_mcp/scopes.py
     # The consent step has a human in it, and the human proves they are the
     # owner with the owner token — not with a claim the client made. ServerOS
     # cannot and does not self-authorize: with no owner token present there is

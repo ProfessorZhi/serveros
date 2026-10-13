@@ -29,6 +29,7 @@ import yaml
 
 from .errors import BAD_REQUEST, refuse
 from .local_roots import binding_candidates, refusal_if_closed_root
+from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
 
@@ -96,7 +97,14 @@ class AuthBinding:
     # still ticks each box. `fleet:create` is listed beside `fleet:send` rather
     # than folded into it: the two are granted separately, so clearing one box
     # leaves the other exactly as it was.
-    grantable_scopes: tuple[str, ...] = ("fleet:read", "fleet:send", "fleet:create")
+    #
+    # The default is `DEFAULT_GRANTABLE_SCOPES` — read and send, and **not**
+    # create. A deployment that never wrote the word "create" has not authorized
+    # creation, so the omit-the-key case must be the narrow one; an operator who
+    # wants a create-capable connector says so per client, in this tuple. (The
+    # earlier revision defaulted to all three, which made "create" the thing you
+    # got by not thinking about it.)
+    grantable_scopes: tuple[str, ...] = DEFAULT_GRANTABLE_SCOPES
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,43 @@ class ServerBinding:
 
 
 @dataclass(frozen=True)
+class CreateGrant:
+    """What may be asked for *on one project*, once creation is on for a device.
+
+    Two independent ceilings, both of them narrow by default:
+
+    *   **Which projects.** The grant exists only for the projects named as keys
+        of `PolicyBinding.create_allow`; a project that is not a key is refused
+        before any provider is asked. There is no "any project" default, because
+        a project id is what decides which working tree, which credentials and
+        which reachable services a minted session inherits — so an allowlist
+        that is empty by omission must mean "none", not "all".
+    *   **Which permission mode and which model the caller may name.** Empty
+        means the caller may name neither, and the provider's own default
+        applies. This is the ceiling that stops `create` from being a way to
+        widen one's own authority: without it, a caller holding the create scope
+        could mint a session that runs with `bypassPermissions`, which is a
+        larger grant than messaging a session an operator already authorized.
+        A model is here for the same shape of reason — a model name selects a
+        backend, and a backend not named in the binding is not one the operator
+        considered.
+
+    The ceilings are *per project* rather than per policy because that is the
+    scope at which the answer is actually known: a project whose sessions are
+    read-only research notes and a project whose sessions touch a live service
+    do not deserve the same latitude, and one flat allowlist would have to
+    answer for both with a single word.
+    """
+
+    permission_modes: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"permission_modes": list(self.permission_modes),
+                "models": list(self.models)}
+
+
+@dataclass(frozen=True)
 class PolicyBinding:
     # Sessions this runtime is additionally authorized to drive. Control into a
     # session is granted per session by an operator, never by the caller naming
@@ -121,6 +166,18 @@ class PolicyBinding:
     # refused at load rather than at the first send, so a configuration mistake
     # is an outage on start rather than a silent widening at 3am.
     allow_wildcard_send: bool = False
+    # Projects this runtime may create sessions on, mapped to that project's
+    # ceiling on the caller-supplied `permissionMode` and `model`. A device that
+    # sets `allow_create: true` is authorized to be minted on; *which* projects
+    # is this mapping, and an empty mapping means no project at all. Everything
+    # the device gate refuses, this gate refuses one level in — see `CreateGrant`
+    # for why the inner ceiling is the narrow one.
+    create_allow: dict[str, CreateGrant] = field(default_factory=dict)
+    # `create_allow: {"*": ...}` would make the project allowlist meaningless,
+    # exactly as a wildcard send does. Refused at load for the same reason: a
+    # configuration mistake should be an outage on start, not a silent widening
+    # at 3am.
+    allow_wildcard_create: bool = False
     max_read_messages: int = 40
     max_message_chars: int = 8000
     read_redact: bool = True
@@ -168,8 +225,13 @@ class FleetConfig:
                        "mcp_path": self.server.mcp_path},
             "policy": {
                 "send_allow": list(self.policy.send_allow),
+                "create_allow": {
+                    project: grant.as_dict()
+                    for project, grant in sorted(self.policy.create_allow.items())
+                },
                 "read_redact": self.policy.read_redact,
             },
+            "grantable_scopes": list(self.auth.grantable_scopes),
         }
 
 
@@ -181,6 +243,108 @@ def default_config_path() -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _name_list(value: Any, what: str) -> tuple[str, ...]:
+    """A list of strings, de-duplicated, order preserved, refusals not silent."""
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise refuse(BAD_REQUEST, f"{what} must be a list of strings")
+    seen: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise refuse(BAD_REQUEST, f"{what} must contain non-empty strings")
+        name = item.strip()
+        if name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+def _grantable_scopes(auth_raw: dict[str, Any]) -> tuple[str, ...]:
+    """The scopes this deployment will issue, checked against the one vocabulary.
+
+    Absent means `DEFAULT_GRANTABLE_SCOPES` — read and send. Present means
+    exactly what was written, and every name in it must be a scope this build
+    implements: a binding that says `fleet:control` is a binding that expects a
+    verb this code does not have, and minting a token for it would hand a client
+    authority whose every exercise silently does nothing. Refused at load, so
+    the mistake is an outage on start rather than a token that half-works.
+    """
+    if "grantable_scopes" not in auth_raw or auth_raw.get("grantable_scopes") is None:
+        return DEFAULT_GRANTABLE_SCOPES
+    declared = _name_list(auth_raw.get("grantable_scopes"), "auth.grantable_scopes")
+    unknown = [s for s in declared if s not in ALLOWED_SCOPES]
+    if unknown:
+        raise refuse(
+            BAD_REQUEST,
+            f"auth.grantable_scopes names {sorted(unknown)}, which this build "
+            f"does not implement. Known scopes: {list(ALLOWED_SCOPES)}.",
+        )
+    return declared
+
+
+def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
+    """Parse `policy.create_allow` into project grants.
+
+    Two shapes are accepted for each entry, because the common case is a grant
+    with no inner ceiling and writing `project: {}` for it is noise:
+
+        create_allow:
+          p-notes:                 # no caller-supplied mode or model at all
+          p-research:
+            permission_modes: [plan]
+            models: [claude-sonnet-5-5]
+
+    Both are the same object; the bare form is `CreateGrant()`.
+    """
+    raw = policy_raw.get("create_allow")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.create_allow must be a mapping of project id to its grant "
+            "(or to nothing, for a grant with no caller-supplied mode or model)",
+        )
+    grants: dict[str, CreateGrant] = {}
+    for project, entry in raw.items():
+        if not isinstance(project, str) or not project.strip():
+            raise refuse(BAD_REQUEST, "policy.create_allow project ids must be non-empty strings")
+        name = project.strip()
+        # `==` and not `in`: a project id is one name, and a substring test here
+        # would refuse a project that merely contains an asterisk — a false
+        # positive on the one gate whose whole job is to be exact.
+        if name == "*" and not bool(policy_raw.get("allow_wildcard_create", False)):
+            raise refuse(
+                BAD_REQUEST,
+                "policy.create_allow contains '*'. A wildcard makes the project "
+                "allowlist meaningless; set `allow_wildcard_create: true` if "
+                "that is genuinely intended.",
+            )
+        if entry is None:
+            grants[name] = CreateGrant()
+            continue
+        if not isinstance(entry, dict):
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.create_allow[{name!r}] must be a mapping or empty",
+            )
+        unknown = set(entry) - {"permission_modes", "models"}
+        if unknown:
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.create_allow[{name!r}] has unknown key(s) {sorted(unknown)}; "
+                f"known keys: ['models', 'permission_modes']",
+            )
+        grants[name] = CreateGrant(
+            permission_modes=_name_list(
+                entry.get("permission_modes"),
+                f"policy.create_allow[{name!r}].permission_modes",
+            ),
+            models=_name_list(entry.get("models"), f"policy.create_allow[{name!r}].models"),
+        )
+    return grants
 
 
 def load_config(path: str | Path | None = None) -> FleetConfig:
@@ -255,9 +419,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
-        grantable_scopes=tuple(
-            auth_raw.get("grantable_scopes") or ("fleet:read", "fleet:send", "fleet:create")
-        ),
+        grantable_scopes=_grantable_scopes(auth_raw),
     )
 
     server_raw = raw.get("server") or {}
@@ -281,6 +443,8 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=bool(policy_raw.get("allow_wildcard_send", False)),
+        create_allow=_create_allow(policy_raw),
+        allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),
         max_message_chars=int(policy_raw.get("max_message_chars", 8000)),
         read_redact=bool(policy_raw.get("read_redact", True)),
