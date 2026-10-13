@@ -248,8 +248,11 @@ providers:
 policy:
   create_allow:
     "<PROJECT_ID>": { permission_modes: [default], models: [] }
-  allow_wildcard_control: true
-  control_allow: ["*"]
+  # Replace the send-only principal grants from step 1 with separate
+  # [send, control] grants on each named company device, for the exact GPT
+  # OAuth client and any separately authorized local owner-pat.
+  allow_wildcard_control: false
+  control_allow: []
 ```
 
 **Node side** — on each device, in `fleet-node.local.yaml`, the switch that
@@ -275,14 +278,12 @@ The floor is the field that means "all of this owner's sessions"; a wildcard in
 a list of names is a different claim wearing the same clothes, so it gets its
 own sentence rather than being quietly honoured.
 
-`control_allow: ["*"]` with `allow_wildcard_control: true` is on the Fleet side
-instead, and it is the one place this plan spends a wildcard. Reason, and it is
-the honest one: **there is no per-principal arm for control.** `control` is in
-`PLANNED_OPERATOR_GRANT_VERBS` and a binding naming it in `operator_grants` is
-refused at load — so `send` can be scoped to *who*, and `control` cannot. On a
-single-operator deployment this costs nothing. Where two operators should be
-able to stop different things, it is the difference that matters, and it is
-written up as gap **G1** in `fleet/owner-grant-3devices.md`.
+Do **not** set a global control wildcard on the Fleet side. The
+`operator_grants` table now accepts `control` as a distinct verb from
+`send`; configure it only for the exact GPT OAuth principal and authorized
+company devices. The provider `allow_control` flag and each node's local
+owner floor remain independent requirements. An unrelated OAuth principal
+holding `fleet:control` must still be refused.
 
 ## 5. The one step that is not a file edit
 
@@ -330,7 +331,7 @@ simply never call a tool it has no use for.
 | 2 | run the load check from §3 | host | — |
 | 3 | cut a revision and move `current` to it | host | `current` back to `previous` |
 | 4 | restart the unit; confirm 9 tools and `fleet_status` | host | symlink + restart |
-| 5 | add `grantable_scopes`, `allow_create`, `allow_control`, `create_allow`, `control_allow` | host | restore the file |
+| 5 | add `grantable_scopes`, `allow_create`, `allow_control`, `create_allow`, and principal-scoped `[send, control]` grants (no control wildcard) | host | restore the file |
 | 6 | node bindings on the three devices | each device | restore the file |
 | 7 | re-add the ChatGPT connector | ChatGPT | remove it again |
 
