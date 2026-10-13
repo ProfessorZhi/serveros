@@ -37,6 +37,7 @@ from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
     BAD_SESSION_REF,
+    FleetRefusal,
     IDEMPOTENT_REPLAY,
     INTERNAL,
     RATE_LIMITED,
@@ -119,6 +120,29 @@ def _key_from_record(record: dict[str, Any], device_ref: str) -> SessionKey | No
     except Exception:  # noqa: BLE001 - a bad record is a missing control block, not a refusal
         return None
     return key if key.device_ref == device_ref else None
+
+
+def _approval_ids(listing) -> set[str]:
+    """The request ids a device's `approvals_list` answer carries.
+
+    Tolerant of the ENVELOPE (`approvals` / `items` / `data` / `requests`, at
+    any depth) and strict about what counts as an id: a top-level list of
+    objects, each naming its request under `requestId` / `request_id` / `id`.
+    Anything else yields nothing — and nothing means «cannot locate», which the
+    caller refuses on, so an unrecognised shape fails closed rather than open.
+    """
+    out: set[str] = set()
+    for key in ("approvals", "items", "data", "requests"):
+        rows = listing.get(key) if isinstance(listing, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for id_key in ("requestId", "request_id", "id"):
+                    value = row.get(id_key)
+                    if isinstance(value, str) and value:
+                        out.add(value)
+    return out
 
 
 @dataclass(frozen=True)
@@ -1227,6 +1251,12 @@ class FleetService:
         # HIGH-5: the read limit is the SAME bound the hand-written reader uses;
         # a mirrored read cannot ask for more than `fleet_read_session` may.
         if cloudcli_native.governance_for(native, args) == cloudcli_native.GOV_READ:
+            # Minimal disclosure for the approval register: a device-wide list
+            # is other principals' pending decisions, so the list is SCOPED to
+            # one named session and an unscoped read is refused.
+            if native_tool == "approvals_list":
+                key = self._native_session_key(device_ref, session_ref, native)
+                args["session"] = key.native_session_id
             self._clamp_native_read(args)
         provider = self._require_provider(device_ref)
         caller = getattr(provider, "native_call", None)
@@ -1236,6 +1266,14 @@ class FleetService:
                 f"{device_ref}'s provider ({provider.kind}) does not inherit the "
                 f"CloudCLI native surface.",
             )
+        # OWNERSHIP before the answer: the requestId must be one THIS device
+        # enumerates for the session named. This runs on the host, over a READ
+        # (`approvals_list`), so an arbitrary string cannot be used to clear a
+        # request that belongs to another session, another user or another
+        # device. It fails closed: a device that will not enumerate refuses the
+        # answer rather than accepting a string it cannot check.
+        if native_tool == "approval_answer":
+            self._verify_approval_ownership(provider, args, session_ref, device_ref)
         result = caller(native_tool, args)
         audit = getattr(self, "audit", None)
         if audit is not None:
@@ -1321,6 +1359,15 @@ class FleetService:
                 permission_mode=arguments.get("permissionMode"))
             return
         if governance == cloudcli_native.GOV_APPROVE:
+            # An approval is answered for ONE request, on ONE device, in ONE
+            # session. The session is named at the outer layer so the request's
+            # ownership can be ENUMERATED on that device (see
+            # `_verify_approval_ownership`); a bare `requestId` string is not an
+            # address and is never enough to answer one.
+            key = self._native_session_key(device_ref, session_ref, native)
+            got = arguments.get("session")
+            if got is not None:
+                self._same_identity(arguments, "session", key.native_session_id, native)
             self._native_approval(arguments, native)
             self._require_operator_verb(principal, device_ref, "approve", native)
             return
@@ -1416,6 +1463,59 @@ class FleetService:
                 f"`{native.namespaced}` requires `allow` (a boolean) — the "
                 f"user's decision. This surface never chooses for the user; it "
                 f"carries a choice they made.",
+            )
+
+    def _verify_approval_ownership(self, provider, args: dict[str, Any],
+                                   session_ref: str | None, device_ref: str) -> None:
+        """The `requestId` must be one THIS device enumerates, for a named session.
+
+        CloudCLI's `approvals_list` is the device's own register. Asking it,
+        scoped to the session, is what turns «this request belongs here» from a
+        string the caller asserted into a fact the device stated. It fails
+        CLOSED at every step: no session named, a device that will not
+        enumerate, or an answer whose ids cannot be read all refuse the answer
+        rather than accepting an id this surface cannot locate. An arbitrary
+        string can therefore never clear another session's, user's or device's
+        approval.
+        """
+        request_id = args["requestId"]
+        try:
+            key = SessionKey.parse(str(session_ref))
+        except Exception:  # noqa: BLE001 - any parse failure is one refusal
+            raise refuse(
+                BAD_REQUEST,
+                "`approval_answer` must name `session_ref` so the request can be "
+                "located on the device; a bare `requestId` is not an address and "
+                "is never enough to answer one.",
+            ) from None
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"`approval_answer` cannot confirm that request {request_id!r} "
+                f"belongs to {device_ref}: this provider does not enumerate "
+                f"approvals, so ownership cannot be established and the answer "
+                f"is refused.",
+            )
+        try:
+            listing = caller("approvals_list", {"session": key.native_session_id})
+        except FleetRefusal as exc:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"`approval_answer` could not confirm that request {request_id!r} "
+                f"belongs to {device_ref}: the device would not enumerate its "
+                f"approvals ({exc.code}). A request this surface cannot locate is "
+                f"not answered.",
+                device_ref=device_ref,
+            ) from None
+        enumerated = _approval_ids(listing)
+        if request_id not in enumerated:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"request {request_id!r} is not one this device enumerates for the "
+                f"named session. An approval is answered only for a request that "
+                f"belongs to it, never by naming an id that appears nowhere.",
+                device_ref=device_ref, enumerated=len(enumerated),
             )
 
     def _native_session_key(self, device_ref: str, session_ref: str | None,

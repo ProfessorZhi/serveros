@@ -78,6 +78,10 @@ class FakeProvider:
         self.calls.append((tool, arguments))
         if self._fail is not None:
             raise self._fail
+        if tool == "approvals_list":
+            # The device's own register. Ownership of an `approval_answer` is
+            # checked against THIS, so the fake must enumerate ids.
+            return {"approvals": [{"requestId": "r1"}, {"requestId": "r2"}]}
         return {"ok": True, "tool": tool}
 
 
@@ -450,39 +454,76 @@ class DispatchTest(unittest.TestCase):
         # 2. scope present, no operator grant -> refused at the grant gate.
         ungranted = Harness(self.tmp, grants={})
         with self.assertRaises(FleetRefusal) as caught:
-            ungranted.call("approval_answer", args={"requestId": "r1", "allow": True},
+            ungranted.call("approval_answer",
+                           args={"requestId": "r1", "allow": True},
+                           session_ref=ref(TOKYO, "s1"),
                            principal=ungranted.principal(SCOPE_READ, SCOPE_APPROVE))
         self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
         self.assertEqual(ungranted.providers[TOKYO].calls, [])
         # 3. granted, but no requestId -> refused (an answer to nothing).
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer", args={"allow": True},
+                   session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
         self.assertEqual(caught.exception.code, BAD_REQUEST)
         # 4. granted, requestId present, but no user decision -> refused.
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer", args={"requestId": "r1"},
+                   session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
         self.assertEqual(caught.exception.code, BAD_REQUEST)
         self.assertEqual(h.providers[TOKYO].calls, [])
-        # 5. scope + grant + a named request + the user's decision -> forwarded.
+        # 5. scope + grant + a request the device ENUMERATES + the decision.
         result = h.call("approval_answer",
                         args={"requestId": "r1", "allow": True, "answers": {"a": "b"}},
+                        session_ref=ref(TOKYO, "s1"),
                         principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
         self.assertEqual(result["tool"], "approval_answer")
-        self.assertEqual(h.providers[TOKYO].calls,
-                         [("approval_answer", {"requestId": "r1", "allow": True,
-                                               "answers": {"a": "b"}})])
+        # The ownership READ ran first, then the answer.
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
+                         ["approvals_list", "approval_answer"])
 
     def test_approvals_list_is_read_only(self):
         h = Harness(self.tmp)
-        self.assertEqual(h.call("approvals_list", principal=h.principal(SCOPE_READ)),
-                         {"ok": True, "tool": "approvals_list"})
+        got = h.call("approvals_list", session_ref=ref(TOKYO, "s1"),
+                     principal=h.principal(SCOPE_READ))
+        self.assertEqual(got["approvals"][0]["requestId"], "r1")
+
+    def test_approvals_list_must_be_scoped_to_a_session(self):
+        # Minimal disclosure: an unscoped register is other principals'
+        # decisions, so it is refused rather than enumerated device-wide.
+        h = Harness(self.tmp)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approvals_list", principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_request_id_the_device_does_not_enumerate_is_refused(self):
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("approve",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer",
+                   args={"requestId": "someone-elses", "allow": True},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        # The answer was NEVER forwarded — only the ownership read ran.
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls], ["approvals_list"])
+
+    def test_a_device_that_will_not_enumerate_refuses_the_answer(self):
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("approve",)}})
+        h.providers[TOKYO]._fail = FleetRefusal("PROVIDER_UNREACHABLE", "no route")
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer",
+                   args={"requestId": "r1", "allow": True},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
 
     def test_approvals_list_is_a_read(self):
         h = Harness(self.tmp)
-        self.assertEqual(h.call("approvals_list", principal=h.principal(SCOPE_READ)),
-                         {"ok": True, "tool": "approvals_list"})
+        got = h.call("approvals_list", session_ref=ref(TOKYO, "s1"),
+                     principal=h.principal(SCOPE_READ))
+        self.assertIn("approvals", got)
 
     def test_ui_open_session_needs_the_navigate_scope_and_a_grant(self):
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("navigate",)}})
@@ -698,9 +739,14 @@ class MatrixTest(unittest.TestCase):
             h = Harness(self.tmp, kinds={TOKYO: kind, WINDOWS: kind, DELL: kind})
             reads = [t for t in cloudcli_native.NATIVE_TOOLS if t.read_only]
             for tool in reads:
+                extra = ({"session_ref": ref(TOKYO, "s1")}
+                         if tool.name == "approvals_list" else {})
                 result = h.call(tool.name, args=self._minimal_args(tool),
-                                principal=h.principal(SCOPE_READ))
-                self.assertEqual(result["tool"], tool.name, f"{kind}/{tool.name}")
+                                principal=h.principal(SCOPE_READ), **extra)
+                if tool.name == "approvals_list":
+                    self.assertIn("approvals", result)
+                else:
+                    self.assertEqual(result["tool"], tool.name, f"{kind}/{tool.name}")
             self.assertEqual(len(h.providers[TOKYO].calls), len(reads))
 
     def test_every_write_tool_is_denied_with_only_a_read_credential(self):
