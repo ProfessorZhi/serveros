@@ -364,6 +364,77 @@ class TheScopeIsItsOwn(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class ThePrincipalScopedOwnerControl(unittest.TestCase):
+    """An owner may interrupt all sessions only via its own device/verb grant."""
+
+    def test_owner_grant_controls_an_unlisted_future_session_and_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), control_allow=())
+            h.edit_policy(operator_grants={"tester": {TOKYO: ("control",)}})
+            future = f"{TOKYO}|claude|{OTHER_NATIVE}"
+            answer = h.interrupt(future)
+            self.assertTrue(answer["aborted"])
+            self.assertEqual(h.providers[TOKYO].interrupted, [OTHER_NATIVE])
+            rows = [json.loads(line) for line in h.audit_lines(tmp)]
+            grants = [row for row in rows if row.get("event") == "fleet.grant"]
+            self.assertEqual(len(grants), 1)
+            self.assertEqual(grants[0]["verb"], "control")
+            self.assertEqual(grants[0]["decision"], "allowed")
+            self.assertEqual(grants[0]["grant_reason"], "operator-grant")
+
+    def test_another_principal_cannot_use_the_grant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), control_allow=())
+            h.edit_policy(operator_grants={"tester": {TOKYO: ("control",)}})
+            other = h.principal(name="not-the-owner")
+            with self.assertRaises(FleetRefusal) as caught:
+                h.service.interrupt_session(other, SessionKey.parse(REF))
+            self.assertEqual(caught.exception.code, "APPROVAL_REQUIRED")
+            self.assertEqual(h.providers[TOKYO].asked, [])
+
+    def test_send_only_grant_never_allows_control(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), control_allow=())
+            h.edit_policy(operator_grants={"tester": {TOKYO: ("send",)}})
+            with self.assertRaises(FleetRefusal):
+                h.interrupt()
+            self.assertEqual(h.providers[TOKYO].asked, [])
+
+    def test_control_grant_never_bypasses_device_consent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), allow_control=False, control_allow=())
+            h.edit_policy(operator_grants={"tester": {TOKYO: ("control",)}})
+            with self.assertRaises(FleetRefusal):
+                h.interrupt()
+            self.assertEqual(h.providers[TOKYO].asked, [])
+
+    def test_revoking_control_grant_stops_future_interrupts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), control_allow=())
+            h.edit_policy(operator_grants={"tester": {TOKYO: ("control",)}})
+            self.assertTrue(h.interrupt()["aborted"])
+            h.edit_policy(operator_grants={})
+            with self.assertRaises(FleetRefusal):
+                h.interrupt()
+            self.assertEqual(h.providers[TOKYO].interrupted, [NATIVE])
+
+    def test_personal_device_grant_is_inert_and_audited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), authorized=EVERY, control_allow=())
+            h.edit_policy(operator_grants={
+                "tester": {PERSONAL_DELL: ("control",)}
+            })
+            ref = f"{PERSONAL_DELL}|claude|{NATIVE}"
+            with self.assertRaises(FleetRefusal):
+                h.interrupt(ref)
+            self.assertEqual(h.providers[PERSONAL_DELL].asked, [])
+            rows = [json.loads(line) for line in h.audit_lines(tmp)]
+            refusals = [row for row in rows if row.get("event") == "fleet.grant"]
+            self.assertEqual(len(refusals), 1)
+            self.assertEqual(refusals[0]["decision"], "refused")
+            self.assertEqual(refusals[0]["grant_reason"], "device-not-eligible")
+
+
 class TheDeviceGateIsItsOwn(unittest.TestCase):
     def test_a_device_that_never_authorized_control_is_refused_and_not_asked(self):
         with tempfile.TemporaryDirectory() as tmp:
