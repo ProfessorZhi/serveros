@@ -390,6 +390,31 @@ def _create_projects(value: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _flag(value: Any, *, name: str) -> bool:
+    """Read a boolean binding field, refusing anything that is not a bool.
+
+    `bool(raw.get(...))` answers True for the string `"false"`, which a binding
+    rendered from a template produces without anyone intending it. On
+    `allow_control` that is the wrong way to be wrong: the field opens a verb
+    that ends a run, and the mistake is silent on both sides — the file reads
+    as "off" to the person who wrote it and as "on" to the connector.
+
+    YAML 1.1 already reads the unquoted spellings (`true`/`false`, and
+    `yes`/`no`/`on`/`off`) as booleans, so asking for the type costs an operator
+    nothing they were doing on purpose.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"`{name}` must be true or false, not {type(value).__name__} "
+            f"({value!r}). A quoted `\"false\"` is a string, and a non-empty "
+            f"string is true.",
+        )
+    return value
+
+
 def _control_sessions(value: Any) -> tuple[str, ...]:
     """Read `allow_control_to`, refusing a wildcard and refusing a bare string.
 
@@ -478,7 +503,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
             "A hostname would give two machines the same identity the moment one "
             "was renamed.",
         )
-    allow_create = bool(raw.get("allow_create", False))
+    allow_create = _flag(raw.get("allow_create"), name="allow_create")
     allow_create_projects = _create_projects(raw.get("allow_create_projects"))
     if allow_create and not allow_create_projects:
         # "Creation is on, for nothing" is only reachable by accident, and the
@@ -507,7 +532,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
         allow_create=allow_create,
         allow_create_projects=allow_create_projects,
-        allow_control=bool(raw.get("allow_control", False)),
+        allow_control=_flag(raw.get("allow_control"), name="allow_control"),
         allow_control_to=_control_sessions(raw.get("allow_control_to")),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
