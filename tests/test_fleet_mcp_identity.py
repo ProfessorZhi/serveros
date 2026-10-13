@@ -276,14 +276,39 @@ class Binding(unittest.TestCase):
         self.assertEqual(caught.exception.code, "BAD_REQUEST")
         self.assertIn("wildcard", caught.exception.detail)
 
-    def test_a_wildcard_really_intended_is_allowed(self):
+    def test_there_is_no_longer_a_way_to_really_intend_a_wildcard(self):
+        """`allow_wildcard_send` used to be the escape hatch. It is gone.
+
+        This test replaces `test_a_wildcard_really_intended_is_allowed`, which
+        asserted the opposite and was correct when it was written: the switch
+        existed, and the load-time refusal above only guarded the *unintended*
+        case. What changed is what the flag means. A wildcard that works is a
+        grant to every credential holding `fleet:send` — including one
+        registered tomorrow by somebody who never read this binding — and the
+        named-principal table only replaces it if it is the *only* way to say
+        "all of them". Leaving the hatch in place would leave a second way to
+        say the same thing, reachable without editing `operator_grants`.
+
+        Both spellings are pinned, because they are two different lines an
+        operator might have written and only one of them is the one they meant.
+        """
         import tempfile
 
-        body = self._minimal(policy={"send_allow": ["*"], "allow_wildcard_send": True})
-        with tempfile.TemporaryDirectory() as tmp:
-            path = self._write(Path(tmp), body)
-            config = fleet_config.load_config(path)
-        self.assertTrue(config.policy.allow_wildcard_send)
+        for policy in (
+            {"send_allow": ["*"], "allow_wildcard_send": True},  # the old hatch
+            {"send_allow": ["a"], "allow_wildcard_send": True},  # the flag alone
+        ):
+            with self.subTest(policy=policy):
+                body = self._minimal(policy=policy)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write(Path(tmp), body)
+                    with self.assertRaises(FleetRefusal) as caught:
+                        fleet_config.load_config(path)
+                self.assertEqual(caught.exception.code, "BAD_REQUEST")
+                # The refusal has to carry the migration, not just the denial:
+                # this is the one message a live deployment will meet on start.
+                self.assertIn("operator_grants", caught.exception.detail)
+                self.assertIn("device:tokyo-shared-dev-01", caught.exception.detail)
 
     def test_an_unknown_provider_kind_is_refused(self):
         import tempfile

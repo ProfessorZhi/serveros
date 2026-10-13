@@ -441,5 +441,90 @@ class Deployment(unittest.TestCase):
                          "the two are the same kind of program and carry the same mode")
 
 
+
+class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
+    """Who may drive which machine is now part of the contract, so it is
+    checked like the rest of it: against the code rather than against a copy.
+
+    The declaration is prose and the vocabulary is a tuple, and the two are the
+    same fact stated twice. Stating it twice is only worth doing if something
+    compares them.
+    """
+
+    def setUp(self):
+        self.declared = contract()["authorization"]["operator_grants"]
+
+    def test_the_declared_verbs_are_the_enforced_ones(self):
+        from fleet_mcp import config as config_module
+
+        self.assertEqual(tuple(self.declared["verbs"]), config_module.OPERATOR_GRANT_VERBS)
+        self.assertEqual(tuple(self.declared["verbs_planned"]),
+                         config_module.PLANNED_OPERATOR_GRANT_VERBS)
+
+    def test_control_does_not_inherit_send(self):
+        """Read as a pair: `control` is planned (refused at load today) and
+        `send` is implemented, and neither list contains the other."""
+        self.assertNotIn("control", self.declared["verbs"])
+        self.assertNotIn("send", self.declared["verbs_planned"])
+        self.assertIn("does not inherit", self.declared["verbs_rule"])
+
+    def test_the_declared_eligibility_rule_is_the_implemented_one(self):
+        from fleet_mcp import config as config_module
+
+        self.assertEqual(self.declared["eligible_ownership"],
+                         config_module.GRANT_ELIGIBLE_OWNERSHIP)
+
+    def test_the_declared_field_is_a_field_the_binding_carries(self):
+        from fleet_mcp.config import PolicyBinding
+
+        self.assertEqual(self.declared["field"], "policy.operator_grants")
+        self.assertIn("operator_grants", PolicyBinding.__dataclass_fields__)
+
+    def test_the_declared_default_is_the_dataclass_default(self):
+        """`default: {}` is a claim about a binding that mentions nothing, and
+        a mutable default is exactly where that claim goes wrong."""
+        from fleet_mcp.config import PolicyBinding
+
+        field = PolicyBinding.__dataclass_fields__["operator_grants"]
+        self.assertEqual(self.declared["default"], {})
+        self.assertIs(field.default_factory, dict)
+
+    def test_the_named_loader_is_where_the_file_says_it_is(self):
+        """`declared_in` is a file and a symbol, and both are checked: a
+        pointer to a renamed function is the drift that makes a reader stop
+        looking."""
+        from fleet_mcp import config as config_module
+
+        path, _, symbol = self.declared["declared_in"].partition("#")
+        self.assertTrue((REPO / path).is_file(), path)
+        self.assertTrue(callable(getattr(config_module, symbol, None)), symbol)
+
+    def test_the_declared_audit_fields_are_the_closed_signature(self):
+        """The field list is not a filter — it is the parameter list, and the
+        parameter list is what makes the rule unfilterable. So the contract is
+        compared against the signature rather than against a sample row: a
+        sample would pass on a method that also accepted `**fields`."""
+        import inspect
+
+        from fleet_mcp.audit import AuditLog
+
+        written = set(inspect.signature(AuditLog.record_grant).parameters) - {"self"}
+        # `ts` is added by `record` for every event rather than passed by a
+        # caller, so the parameter list is the declared list minus that one.
+        self.assertEqual(set(self.declared["audit_fields"]) - {"ts"}, written)
+        self.assertIn("message", self.declared["audit_excludes"])
+
+    def test_the_withdrawal_is_named_rather_than_left_to_be_discovered(self):
+        """A deployment that carries the old shape will fail to start, and the
+        contract has to be the place that says so."""
+        self.assertIn("allow_wildcard_send", self.declared["supersedes"])
+        self.assertIn("send_allow", self.declared["supersedes"])
+        self.assertIn("refused at load", self.declared["supersedes"])
+
+    def test_the_three_dimensions_are_named_together(self):
+        self.assertEqual(self.declared["dimensions"], ["principal", "device", "verb"])
+        self.assertEqual(self.declared["principal_field"], "cid")
+        self.assertIn("subject", self.declared["principal_is_not"])
+
 if __name__ == "__main__":
     unittest.main()
