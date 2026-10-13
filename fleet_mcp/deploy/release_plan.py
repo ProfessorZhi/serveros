@@ -5,12 +5,20 @@ per-device rollout and rollback, in DRY-RUN by default.
 What this is for
 ----------------
 The 22-tool mirror changes three things a live ingress depends on: the served
-`tools/list` (9 → 31), the advertised OAuth scopes (adding `fleet:approve` and
-`fleet:navigate`), and the node route table (one route added). This module reads
-the RUNNING revision, compares it with this source tree, and prints what an
-operator would do — device by device, with a rollback step — WITHOUT doing any
-of it. `--execute` exists so the plan is not a dead end, but this module never
-calls it from tests and the plan's default is to change nothing.
+`tools/list`, the advertised OAuth scopes (adding `fleet:approve` and
+`fleet:navigate`), and the node route table (one route added). The served set is
+the hand-written nine, the 22 mirrored CloudCLI verbs, and the two read-only
+tools that describe the mirror (`fleet_cloudcli_native_manifest`,
+`fleet_cloudcli_native_capability`) — 33 today. This module READS that number
+from `tools.SERVED_TOOLS` and never restates it, because a count written down in
+two places is a count that disagrees the first time one of them moves: this
+docstring said "9 → 31" while the tree served 33.
+
+This module reads the RUNNING revision, compares it with this source tree, and
+prints what an operator would do — device by device, with a rollback step —
+WITHOUT doing any of it. `--execute` exists so the plan is not a dead end, but
+this module never calls it from tests and the plan's default is to change
+nothing.
 
 It opens the running ingress directory and the source tree READ-ONLY. It does
 not install, restart, write a unit, touch OAuth, or reach a device.
@@ -32,10 +40,41 @@ INGRESS_ROOT = Path("/data/home/vince/runtime-assets/serveros-fleet-mcp/ingress"
 CURRENT = INGRESS_ROOT / "current"
 REVISIONS = INGRESS_ROOT / "revisions"
 
-#: The three company-owned devices the mirror is granted on. A personal device
-#: is deliberately absent: nothing here widens a grant to one.
-COMPANY_DEVICES = ("device:tokyo-shared-dev-01", "device:personal-dell",
-                   "device:llm-lab-dell")
+#: The devices the mirror is granted on, DERIVED from the authored registry's own
+#: `ownership` rather than listed here.
+#:
+#: A hand-written list is exactly how a personal machine enters a company
+#: rollout. This constant used to name `device:personal-dell` — which the
+#: registry declares `ownership: personal` — while omitting `device:work-fj`,
+#: the company Windows workstation (`ownership: company`, role
+#: `corporate-workstation`) the rollout is actually for. The registry already
+#: answers "which devices are the company's", so the plan asks it instead of
+#: keeping a second answer that can disagree.
+def company_devices() -> list[str]:
+    """Every `ownership: company` device, as its canonical `device:<id>` ref.
+
+    Sorted, so the plan reads the same whatever order a registry declares its
+    devices in. Refuses an empty set rather than returning one: a rollout step
+    that connects a connector on no devices would read as a completed step, and
+    silence is the wrong answer to "which machines is this for".
+    """
+    # Imported by absolute path, like `source_surface` below, because this file
+    # is also run AS A SCRIPT (it has a `__main__`): a relative import here
+    # raises `attempted relative import with no known parent package` the moment
+    # anyone runs `python3 fleet_mcp/deploy/release_plan.py`, which is the one
+    # way an operator invokes it.
+    if str(_ROOT) not in sys.path:
+        sys.path.insert(0, str(_ROOT))
+    from fleet_mcp.registry import load_registry
+
+    refs = sorted(str(device.device_ref) for device in load_registry().all()
+                  if getattr(device, "ownership", None) == "company")
+    if not refs:
+        raise ValueError(
+            "the registry declares no `ownership: company` device, so the "
+            "rollout has no targets. A plan whose device list is empty is not a "
+            "plan, and this one refuses to print as though it were.")
+    return refs
 
 
 def installed_revision() -> dict:
@@ -93,12 +132,21 @@ def source_delta() -> dict:
         "differing_from_running": differing,
         "source_missing_production_fix": missing_markers,
         "reconcile_before_deploy": bool(missing_markers),
+        # The note follows the MEASUREMENT, not a fixed paragraph. It used to be
+        # one static sentence that asserted this branch lacks the CSP/RFC 9207
+        # fix — which stopped being true when `b3c0640` ported them, and a note
+        # that keeps saying "REBASE OR MERGE" after the rebase is a note an
+        # operator learns to skip, which is the one moment it has to be read.
         "note": (
-            "The running revision (`fleet-mcp-pr165`/`pr166` CSP+RFC9207) carries "
-            "changes this branch does not. REBASE OR MERGE THEM BEFORE ANY "
-            "DEPLOY: a copy-deploy from this tree would remove the CSP "
-            "`form-action` fix and RFC 9207 `iss`, which are production "
-            "behaviour, not cosmetics."),
+            "This tree is missing a production fix the running revision carries. "
+            "REBASE OR MERGE BEFORE ANY DEPLOY: a copy-deploy from this tree "
+            "would remove the CSP `form-action` fix and RFC 9207 `iss`, which "
+            "are production behaviour, not cosmetics."
+            if missing_markers else
+            "This tree carries the production CSP `form-action` / RFC 9207 `iss` "
+            "fixes the running revision has, so a copy-deploy does not regress "
+            "them. Re-read `differing_from_running` above if either of those two "
+            "files changes again."),
     }
 
 
@@ -123,7 +171,11 @@ def plan() -> dict:
     """The precheck + per-device rollout + rollback, as data. Nothing is run."""
     installed = installed_revision()
     source = source_surface()
+    devices = company_devices()
     same_surface = (installed.get("tools") == source["served_tools"])
+    installed_tools = installed.get("tools")
+    installed_phrase = (f"the {installed_tools}-tool surface"
+                        if isinstance(installed_tools, int) else "an unreadable surface")
     return {
         "schema": "serveros/fleet-cloudcli-release-plan.v1",
         "mode": "DRY_RUN",
@@ -131,8 +183,11 @@ def plan() -> dict:
             "installed": installed,
             "source": source,
             "surface_would_change": not same_surface,
-            "note": ("The running ingress is the 9-tool surface; this tree serves "
-                     "the hand-written nine plus the 22 inherited CloudCLI verbs."),
+            "note": (f"The running ingress is {installed_phrase}; this tree serves "
+                     f"{source['served_tools']} — the hand-written "
+                     f"{source['hand_written']}, the {source['mirrored']} inherited "
+                     f"CloudCLI verbs, and the two read-only tools that describe "
+                     f"the mirror."),
             "production_delta": source_delta(),
         },
         "rollout": [
@@ -141,15 +196,20 @@ def plan() -> dict:
                 "target": "ingress",
                 "action": "publish a new revision under ingress/revisions and repoint "
                           "`current`",
-                "gates": ["contract sha matches", "served_tools == 31",
-                          "scopes_supported == 6"],
+                # Derived, not written down. These two numbers are the whole
+                # point of the gate, and the copy of them that lived here said
+                # "31" for a tree that serves 33.
+                "gates": ["contract sha matches",
+                          f"served_tools == {source['served_tools']}",
+                          f"scopes_supported == {len(source['scopes'])}"],
                 "reversible_by": "rollback step 1",
             },
             {
                 "step": 2,
                 "target": "devices",
                 "action": "connect the updated node connector on each fleet-node device",
-                "devices": list(COMPANY_DEVICES),
+                "devices": devices,
+                "device_source": "fleet/registry.yaml, `ownership: company`",
                 "gates": ["POST /v1/native/call is in the connector's closed route "
                           "table", "device owner floor unchanged"],
                 "reversible_by": "rollback step 2 (previous connector)",
@@ -202,9 +262,15 @@ def main(argv=None) -> int:
     else:
         print(f"mode: {document['mode']}")
         print(f"installed: {document['precheck']['installed']['current']}")
-        print(f"source serves: {document['precheck']['source']['served_tools']} tools "
-              f"({document['precheck']['source']['hand_written']} hand-written + "
-              f"{document['precheck']['source']['mirrored']} mirrored)")
+        # The parts are named as a sum that ADDS UP: the hand-written nine, the
+        # mirrored 22, and the two tools that describe the mirror. An earlier
+        # line here printed two of the three parts as though they were the whole.
+        _source = document["precheck"]["source"]
+        print(f"source serves: {_source['served_tools']} tools "
+              f"({_source['hand_written']} hand-written + {_source['mirrored']} "
+              f"mirrored + {_source['served_tools'] - _source['hand_written'] - _source['mirrored']} "
+              f"describing the mirror)")
+        print(f"rollout targets: {', '.join(document['rollout'][1]['devices'])}")
         for step in document["rollout"]:
             print(f"  rollout {step['step']}: {step['target']} — {step['action']}")
         for step in document["rollback"]:
