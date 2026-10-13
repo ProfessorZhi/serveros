@@ -253,6 +253,28 @@ class CloudCliProvider(DeviceProvider):
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
         return payload
 
+    def interrupt(self, key: SessionKey) -> dict[str, Any]:
+        """Call CloudCLI's `session_interrupt` with its one argument.
+
+        The argument name is `session` and the value is the *native* id, because
+        that is what the gateway's own `readSessionInterruptInput` reads — it
+        validates exactly one field and throws `INVALID_ARGUMENT` on an empty
+        one. Nothing else is sent: not the full Fleet ref, not a run id, not the
+        caller's name. Passing the ref would fail validation, and adding fields
+        the tool does not declare would be this surface deciding what the
+        gateway's schema should be.
+
+        The answer is returned as the provider shaped it. When the session has no
+        run in flight CloudCLI answers `{"aborted": false, "message": "This
+        session currently has no run in flight, so there is no run to abort."}`
+        — a success carrying a fact — and that sentence is forwarded, not
+        replaced. A refusal (an unknown session, an unreachable gateway) arrives
+        as a `McpToolError` and is translated by `_translate`, so "I could not
+        ask" keeps sending the operator somewhere different from "it is not
+        there".
+        """
+        return self._call("session_interrupt", {"session": key.native_session_id}, session=key)
+
     def get_run(
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:

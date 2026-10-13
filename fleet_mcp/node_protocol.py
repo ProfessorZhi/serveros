@@ -63,6 +63,7 @@ ROUTES = (
     "GET /v1/sessions/{id}",
     "POST /v1/sessions/{id}/read",
     "POST /v1/sessions/{id}/send",
+    "POST /v1/sessions/{id}/interrupt",
     "GET /v1/runs/{run_id}",
 )
 

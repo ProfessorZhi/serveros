@@ -165,7 +165,10 @@ class NodeSignature(unittest.TestCase):
             method, _, path = route.partition(" ")
             self.assertIn(method, ("GET", "POST"))
             self.assertTrue(path.startswith("/v1/"))
-        self.assertEqual(len(np.ROUTES), 8)
+        self.assertEqual(len(np.ROUTES), 9)
+        # The one route control added, named so that a future edit cannot add a
+        # second one under cover of this count going up.
+        self.assertIn("POST /v1/sessions/{id}/interrupt", np.ROUTES)
 
 
 def _free_port() -> int:
@@ -337,17 +340,18 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(status, 200)
         self.assertEqual(payload["result"]["protocolVersion"], "2025-06-18")
 
-    def test_tools_list_returns_the_eight_tools_with_their_annotations(self):
+    def test_tools_list_returns_the_nine_tools_with_their_annotations(self):
         status, _, payload = self.client.rpc(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token=self.OWNER_TOKEN
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        self.assertEqual(len(tools_out), 8)
+        self.assertEqual(len(tools_out), 9)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
+                                  "fleet_interrupt_session"])
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -403,7 +407,8 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(payload["code_challenge_methods_supported"], ["S256"])
         self.assertEqual(payload["token_endpoint_auth_methods_supported"], ["none"])
         self.assertEqual(sorted(payload["scopes_supported"]),
-                         ["fleet:create", "fleet:read", "fleet:send"])
+                         ["fleet:control", "fleet:create", "fleet:read",
+                          "fleet:send"])
 
     # -- dynamic client registration --------------------------------------
 
@@ -596,7 +601,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 8)
+        self.assertEqual(len(body["result"]["tools"]), 9)
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()
@@ -768,7 +773,7 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(hidden.count("requested_scope"), 1)
         self.assertEqual(
             re.findall(r'name="scope" value="([^"]+)"', markup),
-            ["fleet:read", "fleet:send", "fleet:create"],
+            ["fleet:read", "fleet:send", "fleet:control", "fleet:create"],
             "the only things named `scope` are the checkboxes",
         )
 

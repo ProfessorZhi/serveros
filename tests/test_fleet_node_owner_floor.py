@@ -145,15 +145,38 @@ class TheGrantItself(unittest.TestCase):
     def test_the_floor_is_what_was_granted_and_not_merely_that_something_was(self):
         """A floor for another verb does not open send.
 
-        Constructed directly rather than through the loader, because the loader
-        would refuse the word today — the point is that the *runtime* is
-        verb-specific, so that adding `"control"` to `OWNER_FLOOR_VERBS` later
-        cannot silently hand over send as well.
+        `control` is now a word the loader accepts, so this could be built
+        through `load_node_config` — but it is built directly anyway, because
+        what is being asserted is the *runtime*'s verb-specificity, not the
+        loader's. A runtime that read the floor as "something was granted here"
+        would open send for a device that only ever agreed to stop runs, and
+        this is the test that would fail.
+
+        The mirror image is the next test.
         """
         config = _config(self.root, allow_all_sessions_for_owner=("control",))
         self.assertIsNone(config.send_grant(self.other_key()))
         self.assertFalse(config.permits_send(self.other_key()))
         self.assertEqual(config.send_default(), "refused")
+
+    def test_a_send_floor_opens_no_interrupt(self):
+        """The other direction of the same rule, and the more dangerous one.
+
+        `control` ends work; `send` adds to it. A device whose owner floor says
+        "this operator may message anything here" has said nothing whatever
+        about stopping runs, so the flag that turns control on for that device
+        must still find no session the floor admits. Read the other way round,
+        this would be a silent widening of a destructive verb, which is exactly
+        the shape of mistake the closed vocabulary exists to prevent.
+        """
+        config = _config(
+            self.root,
+            allow_control=True,
+            allow_all_sessions_for_owner=("send",),
+        )
+        self.assertIsNone(config.control_grant(self.other_key()))
+        self.assertFalse(config.permits_control(self.other_key()))
+        self.assertEqual(config.control_default(), "refused")
 
     def test_a_wildcard_in_the_named_list_is_still_just_a_name_that_matches_nothing(self):
         """`"*"` is the one string an operator is most likely to reach for, and
@@ -197,9 +220,25 @@ class TheGrantItself(unittest.TestCase):
         self.assertEqual(key.provider, "claude")
         self.assertEqual(key.native_session_id, NEVER_NAMED)
 
-    def test_the_vocabulary_is_closed_and_contains_only_send(self):
-        self.assertEqual(OWNER_FLOOR_VERBS, ("send",))
-        for word in ("*", "all", "root", "bypassPermissions", "control"):
+    def test_the_vocabulary_is_closed_and_names_exactly_two_verbs(self):
+        """The closed vocabulary, and the words that must stay out of it.
+
+        `control` is in this tuple because the interrupt route exists to honour
+        it — the route, the provider method and the scope all ship together. So
+        this test fixes the vocabulary at two words; it does not assert that one
+        word implies the other. `test_the_floor_is_what_was_granted_and_not_
+        merely_that_something_was` above is where the two are held apart: a
+        floor of `["control"]` opens no send, and `["send"]` opens no interrupt.
+
+        The negative list is deliberately wider than the names of things:
+        `interrupt` is the operation, but `control` is the word the grant uses,
+        so `interrupt` must not be spellable as a floor. `read` and `create`
+        are verbs this vocabulary does not carry at all — a floor is a floor for
+        a verb that has a route and a scope, and neither of those does today.
+        """
+        self.assertEqual(OWNER_FLOOR_VERBS, ("send", "control"))
+        for word in ("*", "all", "root", "bypassPermissions", "read", "create",
+                     "start", "close", "interrupt"):
             self.assertNotIn(word, OWNER_FLOOR_VERBS)
 
 

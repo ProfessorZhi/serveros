@@ -197,15 +197,16 @@ class Harness:
 
 
 class TheToolIsOnTheSurfaceAndTheOldOnesAreUnchanged(unittest.TestCase):
-    def test_the_surface_gained_exactly_one_tool_and_kept_the_seven(self):
+    def test_the_surface_keeps_the_seven_and_puts_create_after_them(self):
         names = fleet_tools.tool_names()
-        self.assertIn("fleet_create_session", names)
-        self.assertEqual(len(names), 8)
-        # The seven that existed are still there, still in their order.
-        self.assertEqual(names[:7], [
+        # The surface as #155 left it: the seven read/send tools, then create.
+        # `fleet_interrupt_session` was appended by a later revision, so this
+        # asserts the prefix rather than a total — the count is not what this
+        # test is about, and a total would make every later verb fail here.
+        self.assertEqual(names[:8], [
             "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
             "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
-            "fleet_status",
+            "fleet_status", "fleet_create_session",
         ])
 
     def test_the_new_tool_declares_itself_a_write(self):
