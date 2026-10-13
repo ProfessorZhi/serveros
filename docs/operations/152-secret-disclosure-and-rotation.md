@@ -61,8 +61,28 @@ mcp_http.py ── 远端原文 ────────────┤        �
     只用它们的**长度**和 body 的**粗分类**（`json` / `event-stream` / `html` /
     `plain-text` / `empty` / `binary`），并在需要时报告 HTTP 状态码与 JSON-RPC code。
     它自己写出一句本地描述。媒体类型字符串也不转发 —— 那是远端输入，被分类而不是被回显。
-  * **audit 的字段名与值形状都是封闭的。** `project_record()` 按名字放行，按值收窄：
-    短标量、或短标量列表；嵌套对象直接拒（audit 字段里的一个 dict 是一份文档，不是一条事实）。
+  * **audit 的字段名与值形状都是封闭的。** `project_record()` 按名字放行，**按名字选出一
+    个类型，再由类型决定这个值能不能留下**：计数（非负整数）、布尔、时间戳（本模块自己写
+    的那个格式）、小写控制码、引用（`device|provider|native` 那种）、OAuth scope（每个
+    token 必须是 `namespace:action`）、URI origin（**只留 `scheme://host[:port]`，丢掉
+    path / query / fragment / userinfo**）、摘要（SHA-256 前 12 位）、以及**一律不留**。
+    列表按下标逐个套同一个类型；嵌套对象直接拒（audit 字段里的一个 dict 是一份文档，
+    不是一条事实）。类型表在 `disclosure.KIND_BY_FIELD`，`SAFE_AUDIT_FIELDS` 由它派生 ——
+    两份清单会漂移，一份不会。
+  * **自由文本不是一种类型。** `detail`、`reason`、`client_name` 一律置为
+    `[omitted:fleet-mcp]`，**不看长度、不看内容**。只按名字放行、再按「够短就是事实」放行
+    的做法有一个洞：`ccp_` 加十六字节 hex 是 37 个字符，一行 `Authorization` 更短，
+    都远在 200 字符的门槛之内 —— 而 `detail` 恰恰是调用方自己填的自由文本，往错误消息里
+    粘一个 token 就把它放进了 audit。
+  * **`idempotency_key` 存摘要而不是值。** 这个值对端有一个调用方、内容不透明，没有任何
+    模式能区分「会话 id」和「token」；而 audit 需要它只是为了证明两条记录带的是同一个 key
+    —— 摘要能做到，原值做不到。`redirect_uri` 同理只留 origin：query 里坐的是授权码或
+    access token，userinfo 按定义就是放凭据的地方。
+  * **已知残留（写出来，不藏起来）：** `ref` 类型的字段仍然可以装下一个**裸** token，因为
+    `[A-Za-z0-9._:|-]+` 正是会话引用和 token 共同的长相。这些字段恰好是本 surface **自己
+    的响应里已经返回**的那些（transcript 先拿到 `session_ref` 和 `run_id`，audit 后拿到），
+    所以 audit 不是它们最后一道防线；再收窄只会让日志说不出「哪一次 run」，换不来一个它
+    并不独有的保证。
 * **`fleet_mcp/mcp_http.py`** —— 上表五处全部改走 `remote_summary()`。文件内不再存在
   对远端 body 的切片（有测试断言 `"raw[" not in source`）。
 * **`fleet_mcp/audit.py`** —— `record()` 写入前投影，`tail()` 读出时**再投影一次**。
@@ -73,12 +93,29 @@ mcp_http.py ── 远端原文 ────────────┤        �
   session transcript 是自由文本，allowlist 在那里会变成「读出来的会话内容少了一段」，
   那是另一种谎。它现在只服务这一种输入，其余出口走 allowlist。
 
-### 唯一一处对外可见的行为变化
+### 对外可见的行为变化（两处）
 
-`fleet_status` 里 `providers[*].detail` 在网关异常时的**文本形状变了**：以前是一段远端
-摘录，现在是「哪个网关、对哪个方法、HTTP 几、body 多少字节、什么类型、原文被扣下」。
-排障时需要看原文的话，去产生它的那台设备上看 —— 那份正文属于那台设备的主人，
-而不属于任何能读到 Agent transcript 的人。**这一点请让使用者知道。**
+1. `fleet_status` 里 `providers[*].detail` 在网关异常时的**文本形状变了**：以前是一段远端
+   摘录，现在是「哪个网关、对哪个方法、HTTP 几、body 多少字节、什么类型、原文被扣下」。
+   排障时需要看原文的话，去产生它的那台设备上看 —— 那份正文属于那台设备的主人，
+   而不属于任何能读到 Agent transcript 的人。**这一点请让使用者知道。**
+2. **audit 里几个字段的值形状变了**（`fleet_status` 的 `recent_audit` 一并受影响）：
+
+   | 字段 | 以前 | 现在 |
+   |---|---|---|
+   | `detail`、`reason`、`client_name` | 原样（< 200 字符即可） | `[omitted:fleet-mcp]`，并计入 `withheld` |
+   | `redirect_uri`、`redirect_uris` | 原样，含 query | 只剩 `scheme://host[:port]` |
+   | `idempotency_key` | 原样 | `sha256:<12 位>`，同 key 仍可对齐、原值不可得 |
+
+   这三处都是**有意选择「不泄漏」而不是「保留原样」**：`detail` 在 `mcp.unauthorized` 上
+   就是调用方填的自由文本，`redirect_uri` 的 query 在授权流程里坐的就是凭据。
+   代价是明确的：**audit 不再直接告诉你「鉴权为什么失败」**。那条原因仍然存在，只是分成
+   了两处：发请求的那个调用方在 401 响应体里照旧拿到 `error_description`（值是它自己触发
+   的），而 unit 的 journal 里有 `fleet-mcp: audit withheld N field(s) on <event>` 这一行，
+   告诉你**某个事件上丢了几个字段**——journal 只说丢了，不说内容，因为说出内容就是把值放回
+   刚拦住它的地方。audit 的读者是**另一个凭据**，不是发起人，这就是两者的区别。
+   其余字段（`event`、`device_ref`、`session_ref`、`run_id`、`principal`、`mode`、计数……）
+   与合法测试用例**逐字不变**。
 
 ---
 
