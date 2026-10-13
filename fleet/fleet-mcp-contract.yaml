@@ -231,12 +231,21 @@ tools:
       field: policy.create_allow
       default: {}
       default_means: every project refused; the allowlist is closed
-      enforced_by: this surface, before the device is asked
+      enforced_by:
+        - this surface, before the device is asked
+        - >-
+          the device's own connector, on the fleet-node transport, through the
+          second and independent field `allow_create_projects` in that machine's
+          binding. It is a different file on a different machine and it is
+          closed by omission: with `allow_create` on and no project named, the
+          connector refuses to start rather than serving a device-wide grant
+          under the name of a project floor.
       not_enforced_by: >-
-        the node connector, whose own local floor is device-wide (`allow_create`)
-        and knows nothing about projects. A deployment that wants the project
-        boundary to survive a compromised Fleet surface needs a second one on
-        the device, which this revision does not add.
+        a device this surface reaches through a Fleet-local provider rather than
+        through the fleet-node connector. That path has no connector on the far
+        side, so the project boundary there is this surface's alone and stands
+        or falls with it. Which path a given device uses is a property of the
+        deployment's binding and is not visible from this repository.
       inner_ceiling: >-
         each project entry's `permission_modes` and `models`, both defaulting to
         empty; they bound what the caller may *name*, not what the provider may
@@ -535,6 +544,15 @@ node_transport:
     create_field: allow_create
     create_default: false
     create_default_means: every create refused, including from the Fleet owner
+    # The device's floor is not one decision but two, because a boolean answers
+    # "may sessions be minted here" and not "which working tree does one get".
+    create_projects_field: allow_create_projects
+    create_projects_default: []
+    create_projects_default_means: >-
+      no project, so nothing to create. `allow_create: true` with an empty list
+      is refused at load — a device that is open "for nothing" is reachable
+      only by accident, and it would refuse every caller for a reason nobody
+      wrote down. Exact match, no wildcard, no prefix.
     lives_on: the device
     rule: >-
       The Fleet surface decides whether a caller may drive the device; the

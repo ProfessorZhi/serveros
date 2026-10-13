@@ -123,6 +123,11 @@ class FakeProvider:
 class _Base(unittest.TestCase):
     allow_send_to: tuple[str, ...] = ()
     allow_create: bool = False
+    # A create grant is per device *and* per project on this side of the wire,
+    # so a class that turns `allow_create` on has to say which project too —
+    # the loader refuses `allow_create: true` with no project, because
+    # "creation is on, for nothing" is only reachable by accident.
+    allow_create_projects: tuple[str, ...] = ("p-1",)
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -138,6 +143,7 @@ class _Base(unittest.TestCase):
             port=0,
             allow_send_to=tuple(cls.allow_send_to),
             allow_create=cls.allow_create,
+            allow_create_projects=tuple(cls.allow_create_projects),
         )
         cls.connector = Connector(cls.config)
         cls.provider = FakeProvider()
@@ -157,6 +163,7 @@ class _Base(unittest.TestCase):
     def setUp(self) -> None:
         self.provider.calls.clear()
         self.provider.sent.clear()
+        self.provider.created.clear()
         self.provider.fail = None
         self.connector.replay = np.ReplayCache()
 
@@ -534,11 +541,74 @@ class CreateWithTheGrant(_Base):
         self.assertEqual(status, 200)
         self.assertEqual(payload["control"]["create_default"], "allowed")
         self.assertIs(payload["control"]["create_allowed"], True)
+        self.assertEqual(payload["control"]["create_projects"], ["p-1"])
 
 
-# ---------------------------------------------------------------------------
-# Identity handling on the wire
-# ---------------------------------------------------------------------------
+class TheProjectFloorOnCreation(_Base):
+    """`allow_create` says *whether*; the project list says *what*.
+
+    Until this existed the floor here was device-wide and the contract recorded
+    that as a gap rather than a decision (`fleet_create_session.project_floor`).
+    A project id is what decides the working tree and the credentials a minted
+    session inherits, so a boolean was never an answer to the question that
+    matters.
+    """
+
+    allow_create = True
+    allow_create_projects = ("p-1", "p-2")
+
+    def test_a_listed_project_is_forwarded(self):
+        status, _ = self.request("POST", "/v1/sessions", {"project": "p-2"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.provider.created[-1]["project"], "p-2")
+
+    def test_an_unlisted_project_is_refused_before_the_provider_is_asked(self):
+        status, payload = self.request("POST", "/v1/sessions", {"project": "p-other"})
+        self.assertEqual(status, 403, payload)
+        self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+        self.assertIn("allow_create_projects", payload["error"]["detail"])
+        self.assertEqual(self.provider.created, [])
+        self.assertEqual([c for c in self.provider.calls if c[0] == "create"], [])
+
+    def test_the_match_is_exact_and_not_a_prefix(self):
+        """`p-1` must not admit `p-10`: a project id is one name.
+
+        The two are different working trees, and a prefix test would let a
+        project be reached by naming its first three characters.
+        """
+        self.request("POST", "/v1/sessions", {"project": "p-10"})
+        self.assertEqual(self.provider.created, [])
+
+    def test_a_project_that_is_only_whitespace_is_refused(self):
+        """A blank project is a bad request, not a refusal by the floor.
+
+        The emptiness is a property of the request, so it is answered with the
+        same 400 a missing project gets, whichever floor happens to be open on
+        this machine. Reporting it as 403 would say "this machine declines",
+        which is a different sentence from "you did not name a project".
+        """
+        status, payload = self.request("POST", "/v1/sessions", {"project": "   "})
+        self.assertEqual(status, 400, payload)
+        self.assertEqual(payload["error"]["code"], "BAD_REQUEST")
+        self.assertEqual(self.provider.created, [])
+
+    def test_the_refusal_names_what_is_allowed(self):
+        """The list travels in the message, not in a side field.
+
+        The node's error envelope carries a code and a detail, so an operator
+        reading the connector's answer to a caller has the same information the
+        operator reading the binding does. A structured `allowed` beside a
+        detail that did not mention it would be a second spelling of one answer.
+        """
+        _, payload = self.request("POST", "/v1/sessions", {"project": "nope"})
+        self.assertIn("p-1", payload["error"]["detail"])
+        self.assertIn("p-2", payload["error"]["detail"])
+
+    def test_the_device_floor_is_still_asked_first(self):
+        """The project floor does not replace the boolean, it narrows it."""
+        status, payload = self.request("POST", "/v1/sessions", {"project": "p-1"})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(len(self.provider.created), 1)
 
 
 class PathHandling(_Base):
@@ -749,10 +819,65 @@ class BindingFile(unittest.TestCase):
         self.assertFalse(config.permits_send(SessionKey.compose(DEVICE, "claude", OTHER)))
 
     def test_a_create_grant_survives_the_round_trip(self):
-        config = load_node_config(self._write(self._valid() + "allow_create: true\n"))
+        text = self._valid() + "allow_create: true\nallow_create_projects:\n  - p-1\n"
+        config = load_node_config(self._write(text))
         self.assertIs(config.allow_create, True)
+        self.assertEqual(config.allow_create_projects, ("p-1",))
         self.assertIs(load_node_config(self._write(self._valid())).allow_create, False)
+        self.assertEqual(
+            load_node_config(self._write(self._valid())).allow_create_projects, ())
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheProjectFloorIsRefusedWhenContradictory(BindingFile):
+    """`allow_create: true` with no project is refused at load, not at use.
+
+    "Creation is on, for nothing" is only reachable by accident and is invisible
+    at the moment it happens: the connector would start, serve, and refuse every
+    project for a reason nobody wrote down. The loader puts it where the operator
+    who made the edit is still looking at the file.
+    """
+
+    def test_create_with_no_project_is_refused_at_load(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(self._valid(allow_create=True)))
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+        self.assertIn("allow_create_projects", caught.exception.detail)
+
+    def test_create_off_with_no_project_is_the_ordinary_case(self):
+        config = load_node_config(self._write(self._valid()))
+        self.assertIs(config.allow_create, False)
+        self.assertEqual(config.allow_create_projects, ())
+
+    def test_create_off_with_projects_is_accepted(self):
+        """Turning the device floor off does not require deleting the list.
+
+        An operator withdrawing creation for a while is undoing one edit, not
+        two; the projects are inert while `allow_create` is false, and the
+        loader says nothing about them.
+        """
+        config = load_node_config(
+            self._write(self._valid(allow_create=False, allow_create_projects=["p-1"])))
+        self.assertIs(config.allow_create, False)
+        self.assertEqual(config.allow_create_projects, ("p-1",))
+
+    def test_a_wildcard_project_is_refused(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(
+                self._valid(allow_create=True, allow_create_projects=["*"])))
+        self.assertIn("wildcard", caught.exception.detail.lower())
+
+    def test_a_bare_string_is_refused_rather_than_wrapped(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(
+                self._valid(allow_create=True, allow_create_projects="p-1")))
+        self.assertIn("not a str", caught.exception.detail)
+
+    def test_duplicates_collapse(self):
+        config = load_node_config(self._write(
+            self._valid(allow_create=True, allow_create_projects=["p-1", "p-1", "p-2"])))
+        self.assertEqual(config.allow_create_projects, ("p-1", "p-2"))
+

@@ -189,6 +189,49 @@ Two consequences worth knowing before turning it on:
   same latency as every other binding here. There is no path by which the Fleet
   host, or anything holding the node secret, can turn it on or off from outside.
 
+## The create floor: which project, not only whether
+
+`allow_create` is a second, independent grant on this machine — not a
+consequence of `allow_send_to`, because "you may talk to a session I have" and
+"you may make me a new one" are answers an operator gives one at a time. It
+ships **false**, which means every create is refused, including one from the
+Fleet owner.
+
+It is not enough on its own. A project id is what decides the working tree, the
+credentials and the reachable services a minted session inherits, so
+"authorized to create here" was never an answer to "authorized to create this".
+The second half of the answer is a list of project ids in the same file:
+
+```yaml
+allow_create: true
+allow_create_projects:
+  - my-project
+```
+
+* Exact match. No wildcard, no prefix — `my-project` does not admit
+  `my-project-2`, and a project is reached by naming it, not by naming the
+  beginning of it.
+* **Empty means none**, and `allow_create: true` with no project is refused when
+  this file is read rather than at the first call. A device that is open "for
+  nothing" is reachable only by accident and would refuse every caller for a
+  reason nobody wrote down; the refusal happens where the operator who made the
+  edit is still looking at the file.
+* A bare string is refused rather than wrapped in a list, so
+  `allow_create_projects: my-project` is an error and not a one-element grant.
+* Turning the device floor off does not require deleting the list. The projects
+  are inert while `allow_create` is false and the loader says nothing about
+  them.
+* `*` and `"*"` are refused by name. A wildcard here would make the project
+  floor meaningless — it would be `allow_create` again, under a longer name.
+
+Reported by `GET /v1/self` under `control.create_allowed`,
+`control.create_default` and `control.create_projects`, so what this machine has
+been asked to do is readable without reading this file or trusting the far end.
+
+The far end cannot set any of it. The Fleet host's own project floor
+(`policy.create_allow`) is a separate file on a separate machine with a separate
+operator, and this one is the half that survives the Fleet host being wrong.
+
 ## What it will not do
 
 * No route executes a command. There is no shell route, no exec route, and no
