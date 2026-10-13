@@ -99,6 +99,31 @@ GOV_NAVIGATE = "navigate"
 #: than `control`, which would leave the model/mode unbounded.
 GOV_RECONFIGURE = "reconfigure"
 
+#: The governance classes whose Fleet floor is stated over ONE session. The
+#: outer schema must therefore both DECLARE `session_ref` and REQUIRE it, and
+#: these are ONE predicate read twice rather than two lists.
+#:
+#: They were two lists, and they disagreed: `reconfigure` and `approve` had the
+#: key in `required` while `properties` never declared it, under a top-level
+#: `additionalProperties: false` — so a client that validates its own call
+#: against the published schema had to supply a field the same schema forbade,
+#: and the two tools were uncallable by anything that validates. Nothing in the
+#: runtime noticed, because the runtime reads `session_ref` from the request and
+#: never from the schema.
+#:
+#: `approve` belongs here on the runtime's own terms, not by symmetry: an
+#: approval is answered for one request in one session, and
+#: `_verify_approval_ownership` parses `session_ref` before it will enumerate
+#: that session's requests. Leaving it out of this tuple would have declared a
+#: tool whose required key the runtime demands and the schema did not — the same
+#: defect with the sign flipped.
+SESSION_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_SEND, GOV_CONTROL,
+                                                 GOV_RECONFIGURE, GOV_NAVIGATE,
+                                                 GOV_APPROVE)
+
+#: The one class whose floor is stated over a PROJECT rather than a session.
+PROJECT_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_CREATE,)
+
 
 @dataclass(frozen=True)
 class NativeTool:
@@ -486,10 +511,21 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     outer: dict[str, Any] = {
         "device_ref": {"type": "string", "description": "Which device to call."},
     }
-    if native.governance in (GOV_SEND, GOV_CONTROL):
-        outer["session_ref"] = {"type": "string"}
-    if native.governance == GOV_CREATE:
-        outer["project"] = {"type": "string"}
+    if native.governance in SESSION_ADDRESSED_GOVERNANCE:
+        outer["session_ref"] = {
+            "type": "string",
+            "description": ("The session this verb is addressed to, as "
+                            "`device:<id>|<provider>|<native session id>`. Its "
+                            "device must equal `device_ref`, and its native id "
+                            "must equal the `session` inside `arguments`."),
+        }
+    if native.governance in PROJECT_ADDRESSED_GOVERNANCE:
+        outer["project"] = {
+            "type": "string",
+            "description": ("The project the new session is for; checked against "
+                            "the project floor and named here rather than read "
+                            "out of `arguments`."),
+        }
     # The `arguments` object carries the SAME closure the runtime validator
     # uses: `additionalProperties` is copied from the recorded schema, not
     # advertised open. A published schema that said `true` while the runtime
@@ -512,10 +548,12 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     outer_required = ["device_ref"] + (["arguments"] if native_required else [])
     # LOW-13: the Fleet address a write's floor is stated over is REQUIRED at
     # runtime, so the schema says so — a schema-driven client learns it from the
-    # schema rather than by trying.
-    if native.governance in (GOV_SEND, GOV_CONTROL, GOV_RECONFIGURE, GOV_APPROVE):
+    # schema rather than by trying. Read from the SAME predicate that declared
+    # the property above, so `required` can never name a key `properties` does
+    # not carry.
+    if native.governance in SESSION_ADDRESSED_GOVERNANCE:
         outer_required.append("session_ref")
-    if native.governance == GOV_CREATE:
+    if native.governance in PROJECT_ADDRESSED_GOVERNANCE:
         outer_required.append("project")
     return {
         "type": "object",
