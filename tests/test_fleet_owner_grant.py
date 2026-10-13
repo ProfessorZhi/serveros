@@ -401,10 +401,10 @@ class ThePrincipalAxis(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TheVerbAxis(unittest.TestCase):
-    def test_send_is_the_only_verb_this_build_has(self):
-        self.assertEqual(OPERATOR_GRANT_VERBS, ("send",))
+    def test_send_and_control_are_distinct_implemented_verbs(self):
+        self.assertEqual(OPERATOR_GRANT_VERBS, ("send", "control"))
         self.assertEqual(set(PLANNED_OPERATOR_GRANT_VERBS),
-                         {"control", "approve", "navigate"})
+                         {"approve", "navigate"})
 
     def test_a_planned_verb_is_refused_at_load_and_names_the_gap(self):
         """Refused, not accepted-and-ignored.
@@ -425,15 +425,20 @@ class TheVerbAxis(unittest.TestCase):
     def test_a_grant_listing_only_a_verb_that_is_not_send_admits_nothing(self):
         """Verbs do not inherit, checked on the service rather than the parser.
 
-        The parser refuses `control` outright, so this constructs the state a
-        future revision could reach and asks the gate directly: a grant that
-        carries a verb is not a grant of *every* verb.
+        Control is implemented, but a control-only grant must not pass the
+        send gate. A grant for one verb is not a grant of every verb.
         """
         tmp = Path(tempfile.mkdtemp())
         h = Harness(tmp, grants={OAUTH: {TOKYO: ("control",)}})
-        self.assertEqual(h.service._operator_grant_verbs(h.principal(), TOKYO), ())
+        self.assertEqual(h.service._operator_grant_verbs(h.principal(), TOKYO), ("control",))
         with self.assertRaises(FleetRefusal):
             h.send(f"{TOKYO}|claude|x")
+
+    def test_a_control_only_grant_loads_with_no_implicit_send(self):
+        parsed = load_operator_grants(
+            {"operator_grants": {OAUTH: {TOKYO: ["control"]}}}
+        )
+        self.assertEqual(parsed, {OAUTH: {TOKYO: ("control",)}})
 
     def test_an_unknown_verb_is_refused_at_load(self):
         with self.assertRaises(FleetRefusal) as caught:
