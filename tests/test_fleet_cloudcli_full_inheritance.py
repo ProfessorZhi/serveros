@@ -1608,6 +1608,25 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
                                  f"recorded {declared.get(hint)!r}")
         self.assertEqual(moved, [], "\n" + "\n".join(moved))
 
+    def test_placeholder_default_is_the_capture_s_not_implemented_set(self):
+        """Checkable against the wire, not against prose.
+
+        A tool whose default handler is the named `MCP_TOOL_NOT_IMPLEMENTED`
+        refusal advertises that code in its own `_meta`, so the recorded flag is
+        a fact the device states. A flag that were set from memory would be
+        wrong in whichever direction the memory drifted.
+        """
+        on_the_wire = {
+            entry["name"] for entry in _capture()["tools"]
+            if NOT_IMPLEMENTED_CODE
+            in ((entry.get("_meta") or {}).get("cloudcli/errorCodes") or [])
+        }
+        recorded = {tool.name for tool in cloudcli_native.NATIVE_TOOLS
+                    if tool.placeholder_default}
+        self.assertEqual(recorded, on_the_wire,
+                         f"recorded {sorted(recorded)}; "
+                         f"the device declares {sorted(on_the_wire)}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
