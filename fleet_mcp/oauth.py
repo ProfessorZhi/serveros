@@ -759,6 +759,9 @@ class AuthorizationServer:
     def authorization_server_metadata(self) -> dict[str, Any]:
         return {
             "issuer": self.base_url,
+            # RFC 9207: the client may pin a stable redirect only when we
+            # advertise, and actually return, issuer identification.
+            "authorization_response_iss_parameter_supported": True,
             "authorization_endpoint": f"{self.base_url}/oauth/authorize",
             "token_endpoint": f"{self.base_url}/oauth/token",
             "registration_endpoint": f"{self.base_url}/oauth/register",
@@ -980,8 +983,10 @@ def _pkce_matches(verifier: str, challenge: str) -> bool:
     return hmac.compare_digest(_b64(digest), challenge)
 
 
-def redirect_with_code(redirect_uri: str, code: str, state: str | None) -> str:
-    params = {"code": code}
+def redirect_with_code(redirect_uri: str, code: str, state: str | None,
+                       *, issuer: str) -> str:
+    """Include the exact metadata issuer in every success response (RFC 9207)."""
+    params = {"code": code, "iss": issuer}
     if state:
         params["state"] = state
     joiner = "&" if "?" in redirect_uri else "?"
@@ -989,8 +994,9 @@ def redirect_with_code(redirect_uri: str, code: str, state: str | None) -> str:
 
 
 def redirect_with_error(redirect_uri: str, error: str, description: str,
-                        state: str | None) -> str:
-    params = {"error": error, "error_description": description}
+                        state: str | None, *, issuer: str) -> str:
+    """A redirected OAuth error must identify its issuer too (RFC 9207)."""
+    params = {"error": error, "error_description": description, "iss": issuer}
     if state:
         params["state"] = state
     joiner = "&" if "?" in redirect_uri else "?"

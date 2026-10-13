@@ -1111,3 +1111,33 @@ class KeepAliveIsNotStalled(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsentFormCspTest(unittest.TestCase):
+    """Reconcile regression: the CSP `form-action` fix (prod `pr166`).
+
+    The consent form posts to `self`, the server 302s to the client's
+    registered callback, and the browser re-checks THAT hop against the same
+    policy. `'self'` alone blocks the redirect, so the callback's origin must be
+    in the policy — but only the origin this request already had to prove, and
+    only the one this form is about to redirect to. This is a regression guard:
+    the fix came from a production artifact with no git commit of its own, so
+    without a test it would be lost the next time this file is edited.
+    """
+
+    def test_redirect_origin_is_read_from_the_callback_and_nothing_else(self):
+        from fleet_mcp.http_transport import _redirect_origin
+        self.assertEqual(_redirect_origin("https://app.example/cb?x=1"),
+                         "https://app.example")
+        self.assertIsNone(_redirect_origin(""))
+        self.assertIsNone(_redirect_origin("not-a-url"))
+        self.assertIsNone(_redirect_origin("//no-scheme.example"))
+
+    def test_the_csp_carries_the_callback_origin_only_when_one_is_named(self):
+        from fleet_mcp.http_transport import _html
+        _, headers, _ = _html(200, "<p>x</p>", form_action="https://app.example")
+        self.assertIn("form-action 'self' https://app.example",
+                      headers["Content-Security-Policy"])
+        _, plain, _ = _html(200, "x")
+        self.assertIn("form-action 'self'", plain["Content-Security-Policy"])
+        self.assertNotIn("app.example", plain["Content-Security-Policy"])
