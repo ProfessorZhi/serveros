@@ -1430,14 +1430,26 @@ class FleetService:
         if governance == cloudcli_native.GOV_READ:
             return
         if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL,
-                          cloudcli_native.GOV_RECONFIGURE):
+                          cloudcli_native.GOV_RECONFIGURE,
+                          cloudcli_native.GOV_NAVIGATE):
             key = self._native_session_key(device_ref, session_ref, native)
             # BLOCKER-1: the session the floor passed on MUST be the session the
             # device is asked about. Without this, a `session_ref` for an
             # allowed session alongside `arguments.session` for another one
             # would be authorized as the first and delivered to the second.
             self._same_identity(arguments, "session", key.native_session_id, native)
-            if governance == cloudcli_native.GOV_SEND:
+            if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_NAVIGATE):
+                # `session_send` and `ui_open_session` are both "may this caller
+                # address THIS session on THIS device", so they share the one
+                # per-session floor that already answers it. Navigate used to be
+                # gated on the device alone — scope plus the `navigate` operator
+                # grant — which on a shared company machine let a caller put ANY
+                # session on that machine in front of whoever is sitting at it,
+                # without being able to name that session in any per-session
+                # list. It now takes the same outer `session_ref` every
+                # session-addressed verb takes, must agree with the native
+                # `arguments.session`, and is bounded by `send_allow` / the
+                # `send` grant before the `navigate` grant is even consulted.
                 self._may_send(principal, key)
             else:
                 self._may_control(key)
@@ -1445,6 +1457,8 @@ class FleetService:
                 # The model/mode ceiling for a reconfigure is applied in
                 # `native_call`, AFTER the provider is resolved, because it must
                 # read the session's REAL project from the device.
+            if governance == cloudcli_native.GOV_NAVIGATE:
+                self._require_operator_verb(principal, device_ref, "navigate", native)
             return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)

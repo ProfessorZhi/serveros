@@ -537,19 +537,79 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("approvals", got)
 
     def test_ui_open_session_needs_the_navigate_scope_and_a_grant(self):
+        """Navigation is bounded like every other session-addressed verb.
+
+        It used to be gated on the DEVICE alone — the `fleet:navigate` scope plus
+        the `navigate` operator grant — so on a shared company machine a caller
+        could put any session on that machine in front of whoever was sitting at
+        it, without being able to name that session in any per-session list. It
+        now names the session at the outer layer and passes that session's own
+        floor first.
+        """
+        # A scope it does not hold is still refused first.
         h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("navigate",)}})
         with self.assertRaises(FleetRefusal) as caught:
             h.call("ui_open_session", args={"session": "s1"},
+                   session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
+
+        # The scope, but no per-session floor for THIS session: refused before
+        # the navigate grant is consulted at all.
         ungranted = Harness(self.tmp, grants={})
         with self.assertRaises(FleetRefusal) as caught:
             ungranted.call("ui_open_session", args={"session": "s1"},
+                           session_ref=ref(TOKYO, "s1"),
                            principal=ungranted.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(ungranted.providers[TOKYO].calls, [])
+
+        # The session floor open, the navigate grant still required.
+        no_grant = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),))
+        with self.assertRaises(FleetRefusal) as caught:
+            no_grant.call("ui_open_session", args={"session": "s1"},
+                          session_ref=ref(TOKYO, "s1"),
+                          principal=no_grant.principal(SCOPE_READ, SCOPE_NAVIGATE))
         self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
-        result = h.call("ui_open_session", args={"session": "s1"},
-                        principal=h.principal(SCOPE_READ, SCOPE_NAVIGATE))
-        self.assertEqual(result["tool"], "ui_open_session")
+        self.assertEqual(no_grant.providers[TOKYO].calls, [])
+
+        # All three, and it reaches the device.
+        allowed = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),),
+                          grants={OAUTH: {TOKYO: ("navigate",)}})
+        allowed.call("ui_open_session", args={"session": "s1"},
+                     session_ref=ref(TOKYO, "s1"),
+                     principal=allowed.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual([c[0] for c in allowed.providers[TOKYO].calls],
+                         ["ui_open_session"])
+
+    def test_navigation_must_name_the_session_it_navigates(self):
+        """No `session_ref` at all, and a `session_ref` for a DIFFERENT session:
+        the first is refused for naming nothing, the second for naming one thing
+        while asking about another."""
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("navigate",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("ui_open_session", args={"session": "s1"},
+                   principal=h.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("ui_open_session", args={"session": "s2"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_navigation_cannot_reach_a_session_the_send_floor_excludes(self):
+        """The containment the change exists for: the device and the grant are
+        not enough to reach a session the per-session floor does not name."""
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("navigate",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("ui_open_session", args={"session": "someone-elses"},
+                   session_ref=ref(TOKYO, "someone-elses"),
+                   principal=h.principal(SCOPE_READ, SCOPE_NAVIGATE))
+        self.assertIn(caught.exception.code, (APPROVAL_REQUIRED, WRITE_NOT_GRANTED))
+        self.assertEqual(h.providers[TOKYO].calls, [])
 
     def test_unknown_native_tool_is_refused_before_any_call(self):
         h = Harness(self.tmp)
@@ -1626,6 +1686,138 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
         self.assertEqual(recorded, on_the_wire,
                          f"recorded {sorted(recorded)}; "
                          f"the device declares {sorted(on_the_wire)}")
+
+
+class AdvertisedSchemaInvariantTest(unittest.TestCase):
+    """Every published mirror schema is one a client can actually satisfy.
+
+    `fleet_cloudcli_session_reconfigure` and `fleet_cloudcli_approval_answer`
+    required an outer `session_ref` that their `properties` never declared, under
+    a top-level `additionalProperties: false`. A client that validates its call
+    against the published schema therefore had to send a field the same schema
+    forbade, and both tools were uncallable by anything that validates. No
+    runtime check could see it: the runtime reads `session_ref` from the request
+    and never from the schema, so the two halves of the contract drifted with
+    every test still green.
+
+    The invariant is stated once, structurally, and walked at every depth of
+    every mirrored tool: **a key in `required` is a key in `properties`**. It is
+    checked by walking rather than by a JSON Schema library because this property
+    is exactly that walk, and this repository carries no schema validator (the
+    evidence tests carry their own assertions for the same reason).
+    """
+
+    def _undeclared_required(self, node, path, out):
+        if not isinstance(node, dict):
+            return
+        props = node.get("properties") or {}
+        for name in node.get("required") or []:
+            if name not in props:
+                out.append(f"{path or 'root'}.{name}")
+        for name, sub in props.items():
+            self._undeclared_required(sub, f"{path}.{name}" if path else name, out)
+
+    def test_no_mirrored_schema_requires_a_key_it_does_not_declare(self):
+        broken: list[str] = []
+        for native in cloudcli_native.NATIVE_TOOLS:
+            self._undeclared_required(cloudcli_native.mirrored_schema(native), "", broken)
+        self.assertEqual(broken, [], "a required key the schema does not declare "
+                                     "is a call no validating client can make")
+
+    def test_the_two_that_were_broken_declare_what_they_require(self):
+        for name in ("session_reconfigure", "approval_answer"):
+            with self.subTest(tool=name):
+                schema = cloudcli_native.mirrored_schema(cloudcli_native.NATIVE_BY_NAME[name])
+                self.assertIn("session_ref", schema["properties"])
+                self.assertIn("session_ref", schema["required"])
+
+    def test_every_session_addressed_class_declares_and_requires_session_ref(self):
+        """Read from the same predicate the schema builder uses, so a class added
+        to one half later cannot leave the other behind — which is the shape of
+        the defect, not the two names it happened to hit."""
+        for governance in cloudcli_native.SESSION_ADDRESSED_GOVERNANCE:
+            native = next((t for t in cloudcli_native.NATIVE_TOOLS
+                           if t.governance == governance), None)
+            with self.subTest(governance=governance):
+                self.assertIsNotNone(native, f"no recorded tool uses {governance}")
+                schema = cloudcli_native.mirrored_schema(native)
+                self.assertIn("session_ref", schema["properties"])
+                self.assertIn("session_ref", schema["required"])
+
+    def test_the_project_axis_belongs_to_create_alone(self):
+        for native in cloudcli_native.NATIVE_TOOLS:
+            with self.subTest(tool=native.name):
+                schema = cloudcli_native.mirrored_schema(native)
+                if native.governance == cloudcli_native.GOV_CREATE:
+                    self.assertIn("project", schema["properties"])
+                    self.assertIn("project", schema["required"])
+                else:
+                    self.assertNotIn("project", schema["properties"])
+                    self.assertNotIn("project", schema["required"])
+
+    def test_a_nested_required_key_is_declared_at_its_own_level(self):
+        """`ui_open_session.at` is an `anyOf` of two objects, each with its own
+        `required` — the depth the top-level check alone would miss."""
+        schema = cloudcli_native.mirrored_schema(
+            cloudcli_native.NATIVE_BY_NAME["ui_open_session"])
+        branches = schema["properties"]["arguments"]["properties"]["at"]["anyOf"]
+        self.assertTrue(branches)
+        for branch in branches:
+            self.assertTrue(set(branch.get("required") or [])
+                            <= set(branch.get("properties") or {}), branch)
+
+    def test_a_valid_call_exists_for_every_mirrored_tool(self):
+        """The satisfiability half, stated as construction: fill in exactly what
+        each schema asks for, at every depth, and never invent a key the schema
+        does not carry. Before the fix this raised for the two broken tools."""
+        def least(node, path, out, depth=0):
+            if depth > 8 or not isinstance(node, dict):
+                return "x"
+            if "anyOf" in node:
+                return least((node["anyOf"] or [{}])[0], path, out, depth + 1)
+            if "properties" in node or node.get("type") == "object":
+                props = node.get("properties") or {}
+                built = {}
+                for name in node.get("required") or []:
+                    if name not in props:
+                        out.append(f"{path}.{name}")
+                        continue
+                    built[name] = least(props[name], f"{path}.{name}", out, depth + 1)
+                return built
+            if node.get("type") == "boolean":
+                return True
+            if node.get("type") in ("integer", "number"):
+                return 1
+            return "x"
+
+        for native in cloudcli_native.NATIVE_TOOLS:
+            with self.subTest(tool=native.name):
+                missing: list[str] = []
+                instance = least(cloudcli_native.mirrored_schema(native), "root", missing)
+                self.assertEqual(missing, [])
+                self.assertEqual(set(instance) >= set(
+                    cloudcli_native.mirrored_schema(native)["required"]), True)
+
+    def test_the_outer_closure_still_refuses_an_unknown_key(self):
+        """The fix declares `session_ref`; it must not have opened the outer
+        object to keep the schema satisfiable."""
+        for native in cloudcli_native.NATIVE_TOOLS:
+            with self.subTest(tool=native.name):
+                self.assertIs(cloudcli_native.mirrored_schema(native)
+                              .get("additionalProperties"), False)
+
+    def test_the_arguments_object_mirrors_the_native_closure(self):
+        """What is advertised inside `arguments` is what the runtime validator
+        enforces, so a call that validates is a call that passes."""
+        for native in cloudcli_native.NATIVE_TOOLS:
+            with self.subTest(tool=native.name):
+                recorded = cloudcli_native.NATIVE_INPUT_SCHEMAS.get(native.name) or {}
+                advertised = (cloudcli_native.mirrored_schema(native)
+                              ["properties"]["arguments"])
+                self.assertEqual(advertised.get("additionalProperties"),
+                                 recorded.get("additionalProperties", True))
+                self.assertEqual(sorted(advertised.get("properties") or {}),
+                                 sorted(recorded.get("properties") or {}))
 
 
 if __name__ == "__main__":
