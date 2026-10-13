@@ -1178,6 +1178,50 @@ class TheControlGrantInTheBindingFile(BindingFile):
         self.assertIn("allow_create", caught.exception.detail)
 
 
+class TheDataclassDefaultsAreClosed(unittest.TestCase):
+    """Every grant defaults to refusal on the dataclass, not only in the loader.
+
+    The binding file is one door; `NodeConfig(...)` is another. A test suite
+    where every class passes its grants explicitly would stay green if the
+    dataclass default were flipped to `True`, because nothing would ever build
+    the bare object. These tests build exactly that object — the one an embedder
+    or a future caller gets when they name no grants at all — and pin every
+    default to the closed posture. `allow_control` is the one that matters most:
+    it is the only default here that would turn a destructive verb on.
+    """
+
+    def _bare(self) -> NodeConfig:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "node.secret").write_text(SECRET, encoding="utf-8")
+        (root / "cloudcli.token").write_text("ccp_not-a-real-token", encoding="utf-8")
+        return NodeConfig(
+            device_ref=DEVICE,
+            secret_anchor=root / "node.secret",
+            cloudcli_endpoint="http://127.0.0.1:3001/mcp",
+            cloudcli_credential_anchor=root / "cloudcli.token",
+        )
+
+    def test_no_grant_named_means_no_grant(self):
+        config = self._bare()
+        self.assertEqual(config.allow_send_to, ())
+        self.assertIs(config.allow_create, False)
+        self.assertEqual(config.allow_create_projects, ())
+        self.assertIs(config.allow_control, False)
+        self.assertEqual(config.allow_control_to, ())
+        self.assertEqual(config.allow_all_sessions_for_owner, ())
+
+    def test_the_bare_config_permits_none_of_the_three_verbs(self):
+        config = self._bare()
+        key = SessionKey.compose(DEVICE, "claude", ALLOWED)
+        self.assertIsNone(config.send_grant(key))
+        self.assertFalse(config.permits_send(key))
+        self.assertFalse(config.permits_control(key))
+        self.assertFalse(config.permits_any_control())
+        self.assertEqual(config.control_default(), "refused")
+
+
 if __name__ == "__main__":
     unittest.main()
 
