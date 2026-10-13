@@ -33,14 +33,22 @@ not, and a credential trusted to list is not thereby trusted to answer.
 
 The recorded baseline and the live list
 ---------------------------------------
-`MANIFEST` is the recorded baseline — what CloudCLI 1.39.0 declares. The
+`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.39.0 declares. The
 provider already fetches the LIVE `tools/list` on every `health()`. `coverage()`
 compares the two and reports drift (a tool that appeared, one that vanished, an
 annotation that moved), so an upgrade is a diff a person reads rather than a
-silent difference in what the mirror forwards. The per-tool `inputSchema` is NOT
-re-recorded here: it travels through from the live list unchanged, which is what
-"参数语义无损映射 (null vs omitted preserved)" requires — a schema restated here
-would be a second copy that drifts.
+silent difference in what the mirror forwards.
+
+`NATIVE_INPUT_SCHEMAS` IS a re-recording, and it is deliberate rather than
+incidental: `tools/list` is answered for the whole surface before any device is
+dialled, so the published `arguments` schema needs a device-independent baseline,
+and `mirrored_schema` / `validate_arguments` read the same table so that what is
+advertised and what is enforced cannot disagree. The cost is the one this
+paragraph used to deny: a restated schema drifts, silently, the first time
+CloudCLI changes a parameter. That is paid for by
+`tests/test_fleet_cloudcli_full_inheritance.py`'s capture tests, which hold this
+table against a VERBATIM 1.39.0 `tools/list` capture — a restatement checked
+against the thing it restates, rather than trusted.
 
 No I/O, no clock, no credentials. This module is a table and the functions over
 it.
@@ -247,7 +255,7 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "session_read": _s({
         "session": {"type": "string"},
         "mode": {"type": "string", "enum": ["latest", "outline", "around"]},
-        "limit": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
         "aroundId": {"type": "string"},
         "before": {"type": "number"},
         "after": {"type": "number"},
@@ -271,7 +279,7 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "project": {"type": "string"},
         "provider": {"type": "string", "enum": ["claude", "codex"]},
         "speaker": {"type": "string", "enum": ["user", "assistant", "any"]},
-        "limit": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "cursor": {"type": "string"},
         "mode": {"type": "string", "enum": ["fulltext"]},
     }, ["query"]),
@@ -295,7 +303,16 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "ui_open_session": _s({
         "client": {"type": "string"},
         "session": {"type": "string"},
-        "at": {"type": "object"},
+        # A discriminated union, not a bare object: the device accepts exactly
+        # `{latest: true}` or `{messageId: <non-empty>}`. Recorded flat as
+        # `{"type": "object"}` it advertised a shape the device refuses, and
+        # dropped the `required` each branch carries.
+        "at": {"anyOf": [
+            {"type": "object", "properties": {"latest": {"type": "boolean", "const": True}},
+             "required": ["latest"]},
+            {"type": "object", "properties": {"messageId": {"type": "string"}},
+             "required": ["messageId"]},
+        ]},
     }, ["session"]),
     "session_cancel_queued": _s({"session": {"type": "string"},
                                  "messageUuid": {"type": "string"}},

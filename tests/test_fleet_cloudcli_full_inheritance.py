@@ -1456,5 +1456,158 @@ class CapabilitySnapshotTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, RATE_LIMITED)
 
 
+# ---------------------------------------------------------------------------
+# The recorded table, held against the build it claims to record
+# ---------------------------------------------------------------------------
+#
+# Everything above tests the mirror's BEHAVIOUR. This block tests its
+# PROVENANCE: `NATIVE_INPUT_SCHEMAS`, the four annotation hints and
+# `placeholder_default` are restatements of what CloudCLI 1.39.0 declares, and a
+# restatement is worth exactly as much as the check that keeps it in step with
+# the original. That check is a verbatim capture of the live gateway's own
+# `tools/list`:
+#
+#     tests/data/capture-cloudcli-1.39.0-tools-list-2026-10-14.json
+#
+# The sentences these tests keep false:
+#
+#     "the recorded schema is the device's schema"       — a constraint the
+#                               device declares and the table drops is a
+#                               published schema describing a DIFFERENT tool
+#                               than the one it is published for
+#     "placeholder is a matter of opinion"               — a tool whose default
+#                               handler is the named refusal says so in the
+#                               device's own `_meta`, so the flag is checkable
+#                               against the wire rather than against prose
+#     "the capture is the contract"                      — it is an
+#                               OBSERVATION, true of the one build it names;
+#                               the name is pinned here so that comparing a
+#                               different build's capture is a deliberate act
+#
+# The direction of every check below is one-way on purpose: the recorded table
+# may be STRICTER than the device (it publishes `additionalProperties: false`
+# where the device states nothing — that refuses earlier and never widens), but
+# it may never state LESS, because a parameter the caller is told about and the
+# device does not accept is a lie the other way round.
+
+CAPTURE = (Path(__file__).resolve().parent / "data"
+           / "capture-cloudcli-1.39.0-tools-list-2026-10-14.json")
+
+#: The build the recorded baseline claims to be. A capture naming another build
+#: must not be quietly held against 1.39.0's table.
+CAPTURED_CLOUDCLI_VERSION = "1.39.0"
+
+#: CloudCLI's code for "registered, but its behaviour is delivered elsewhere" —
+#: the fact `placeholder_default` records.
+NOT_IMPLEMENTED_CODE = "MCP_TOOL_NOT_IMPLEMENTED"
+
+
+def _capture():
+    with CAPTURE.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _missing_constraints(recorded, live, where):
+    """Constraints `live` states that `recorded` does not, as strings."""
+    if not isinstance(live, dict):
+        return []
+    if not isinstance(recorded, dict):
+        return [f"{where}: device states {json.dumps(live, sort_keys=True)}; "
+                f"recorded is {recorded!r}"]
+    problems = []
+    for key, want in live.items():
+        if key in ("description", "title", "$schema"):
+            continue
+        if key == "properties":
+            got = recorded.get("properties")
+            if not isinstance(got, dict):
+                problems.append(f"{where}/properties: device declares properties; "
+                                f"recorded has none")
+                continue
+            for name, sub in want.items():
+                if name not in got:
+                    problems.append(f"{where}/properties: device declares {name!r}; "
+                                    f"recorded omits it")
+                else:
+                    problems.extend(_missing_constraints(
+                        got[name], sub, f"{where}/properties/{name}"))
+            continue
+        if key == "required":
+            got = recorded.get("required") or []
+            for name in want:
+                if name not in got:
+                    problems.append(f"{where}/required: device requires {name!r}; "
+                                    f"recorded does not")
+            continue
+        if key in ("anyOf", "oneOf", "allOf"):
+            got = recorded.get(key)
+            if not isinstance(got, list) or len(got) != len(want):
+                problems.append(f"{where}/{key}: device declares {len(want)} branches; "
+                                f"recorded has {got!r}")
+                continue
+            for index, (branch_want, branch_got) in enumerate(zip(want, got)):
+                problems.extend(_missing_constraints(
+                    branch_got, branch_want, f"{where}/{key}[{index}]"))
+            continue
+        got = recorded.get(key, "<absent>")
+        if got != want:
+            problems.append(f"{where}/{key}: device says {want!r}; recorded says {got!r}")
+    return problems
+
+
+class RecordedTableMatchesTheBuildTest(unittest.TestCase):
+    """Every restatement in `cloudcli_native`, held against the capture it restates."""
+
+    def test_the_capture_is_the_build_the_table_claims(self):
+        capture = _capture()
+        self.assertEqual(capture["server"]["name"], "claudecodeui-mcp-gateway")
+        self.assertEqual(capture["protocolVersion"], "2025-06-18")
+        self.assertEqual(capture["cloudcli_package_version"], CAPTURED_CLOUDCLI_VERSION)
+        self.assertEqual(len(capture["tools"]), cloudcli_native.NATIVE_TOOL_COUNT)
+        self.assertEqual(sorted(entry["name"] for entry in capture["tools"]),
+                         sorted(cloudcli_native.NATIVE_BY_NAME))
+
+    def test_no_recorded_schema_omits_a_constraint_the_device_declares(self):
+        problems = []
+        for entry in _capture()["tools"]:
+            recorded = cloudcli_native.NATIVE_INPUT_SCHEMAS.get(entry["name"])
+            self.assertIsNotNone(recorded, f"{entry['name']} has no recorded schema")
+            problems.extend(_missing_constraints(
+                recorded, entry["inputSchema"] or {}, entry["name"]))
+        self.assertEqual(problems, [], "\n" + "\n".join(problems))
+
+    def test_the_PUBLISHED_arguments_schema_omits_nothing_the_device_declares(self):
+        """The same check against the schema a caller actually receives.
+
+        The recorded table is only half the story — `mirrored_schema` decides
+        what `tools/list` shows, so a table that were right and a projection
+        that dropped it would still publish a wrong tool.
+        """
+        problems = []
+        for entry in _capture()["tools"]:
+            native = cloudcli_native.NATIVE_BY_NAME[entry["name"]]
+            published = tools_mod.SERVED_BY_NAME[native.namespaced].input_schema
+            arguments = (published.get("properties") or {}).get("arguments") or {}
+            problems.extend(_missing_constraints(
+                arguments, entry["inputSchema"] or {}, entry["name"]))
+        self.assertEqual(problems, [], "\n" + "\n".join(problems))
+
+    def test_recorded_annotations_are_the_capture_s_annotations(self):
+        moved = []
+        for entry in _capture()["tools"]:
+            tool = cloudcli_native.NATIVE_BY_NAME[entry["name"]]
+            declared = {
+                "readOnlyHint": tool.read_only,
+                "destructiveHint": tool.destructive,
+                "idempotentHint": tool.idempotent,
+                "openWorldHint": tool.open_world,
+            }
+            for hint, want in (entry["annotations"] or {}).items():
+                if declared.get(hint) != want:
+                    moved.append(f"{entry['name']}/{hint}: device {want!r}; "
+                                 f"recorded {declared.get(hint)!r}")
+        self.assertEqual(moved, [], "\n" + "\n".join(moved))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
