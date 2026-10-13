@@ -328,50 +328,70 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
-    def _may_control(self, key: SessionKey) -> None:
-        """The single place this runtime decides whether a run may be stopped.
+    def _may_control(self, principal: Principal, key: SessionKey) -> None:
+        """Apply the independent principal × device × control authorization.
 
-        Two gates, both on this side, and both closed by default:
-
-        *   **the device**, `allow_control` on its binding — may this runtime
-            stop runs on that machine at all;
-        *   **the session**, `policy.control_allow` — and, given the first, this
-            one run in particular.
-
-        They are separate from the send grants rather than shared with them.
-        Delivering a message and ending the work it started are different
-        questions, and an operator who answered the first has not answered the
-        second; folding them would make "may write, may not stop" unexpressible.
-
-        **Integration point.** This method is the one seam a device-wide owner
-        grant for control is meant to plug into — a floor that answers "this
-        operator may stop *any* run on this device" would widen the device arm
-        here and leave the session arm alone. It is deliberately one method with
-        one caller so that lands as an edit in a single place rather than as
-        conditions scattered through the verb. Nothing in this revision
-        implements that floor; the node connector has its own, separately.
+        interrupt_session already checks fleet:control scope. The provider
+        binding must separately enable control on this device. A session
+        is then eligible by an explicit session allowlist entry OR a
+        principal-specific control grant on a company-owned device.
+        Neither send nor create authorizes an interrupt.
         """
         binding = self.config.provider_for(key.device_ref)
         if binding is None or not binding.allow_control:
             raise refuse(
                 APPROVAL_REQUIRED,
-                f"{key.device_ref} is not authorized for control from this "
-                f"runtime. Stopping a run is granted per device in the local "
-                f"binding (`allow_control: true`) and per session in "
-                f"`policy.control_allow` — never by the caller naming a session "
-                f"id, and never as a side effect of the send grants.",
+                f"{key.device_ref} has not enabled control in its local "
+                f"provider binding (allow_control: true is required).",
             )
+
+        # An owner grant covers old and future sessions, but only for this
+        # exact principal, this exact device, and the control verb. The
+        # ownership check lives in _operator_grant_verbs, not in the caller.
+        if "control" in self._operator_grant_verbs(principal, key.device_ref):
+            self.audit.record_grant(
+                event="fleet.grant",
+                principal=principal.name,
+                device_ref=key.device_ref,
+                verb="control",
+                decision="allowed",
+                grant_reason="operator-grant",
+                session_ref=key.ref,
+            )
+            return
+
+        # Preserve the older, explicitly named session authorization.
         allow = self.config.policy.control_allow
         if self.config.policy.allow_wildcard_control and "*" in allow:
             return
-        if key.ref not in allow:
-            raise refuse(
-                APPROVAL_REQUIRED,
-                f"{key.ref} is not in `policy.control_allow`. The device is "
-                f"authorized for control and this session is not.",
+        if key.ref in allow:
+            return
+
+        # A grant on a personal/unknown-ownership device is inert. Record
+        # that specific reason without treating a send grant as control.
+        configured = self.config.policy.operator_grants.get(principal.name, {}).get(
+            key.device_ref, ()
+        )
+        if "control" in configured and not self._device_is_grant_eligible(key.device_ref):
+            self.audit.record_grant(
+                event="fleet.grant",
+                principal=principal.name,
+                device_ref=key.device_ref,
+                verb="control",
+                decision="refused",
+                grant_reason="device-not-eligible",
                 session_ref=key.ref,
-                allowed=sorted(allow),
             )
+        raise refuse(
+            APPROVAL_REQUIRED,
+            f"{key.ref} is not in policy.control_allow and principal "
+            f"{principal.name!r} has no eligible control grant for "
+            f"{key.device_ref} in policy.operator_grants. "
+            f"Neither send permission nor a caller-supplied session id "
+            f"authorizes interrupt.",
+            session_ref=key.ref,
+            allowed=sorted(allow),
+        )
 
     def _may_create(self, device_ref: str, project: str) -> CreateGrant:
         """Creation is granted per device *and* per project, by the binding.
@@ -863,7 +883,7 @@ class FleetService:
         """
         principal.require(SCOPE_CONTROL)
         self.admit(principal)
-        self._may_control(key)
+        self._may_control(principal, key)
 
         provider = self._require_provider(key.device_ref)
         payload = provider.interrupt(key)
