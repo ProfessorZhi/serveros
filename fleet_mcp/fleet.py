@@ -54,7 +54,7 @@ from .registry import (
 )
 # The scope names are defined once, in `scopes.py`, and re-exported here because
 # this module is where callers have always imported them from.
-from .scopes import SCOPE_CREATE, SCOPE_READ, SCOPE_SEND  # noqa: F401
+from .scopes import SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND  # noqa: F401
 
 # How long a recorded idempotency key is honoured. Long enough to cover a
 # caller's retry after a timeout, short enough that the table is bounded by the
@@ -67,6 +67,18 @@ IDEMPOTENCY_TTL_SECONDS = 3600
 # one verb answers for the other, and the answer has the wrong shape.
 _VERB_SEND = "send"
 _VERB_CREATE = "create"
+
+# There is deliberately no `_VERB_CONTROL`. `fleet_interrupt_session` takes no
+# idempotency key and stores nothing, so it has no verb to file under — and the
+# reason is worth stating where the other two are defined, because it looks like
+# an omission. An interrupt is a statement about the present: "the run in flight
+# is not in flight any more". A cached answer to that is a statement about the
+# past wearing the present's clothes. Record `aborted: true` now, let a later run
+# start, and a retry of the same key would be told the caller's run is stopped
+# while it is still going. Replaying the *action* instead is the safe reading,
+# because aborting an idle session is not an error — CloudCLI answers
+# `aborted: false` and says there was no run to abort — so a duplicate delivers
+# the truth rather than a fabrication. See `interrupt_session`.
 
 
 def _create_scope(device_ref: str, project: str) -> str:
@@ -195,6 +207,51 @@ class FleetService:
             raise refuse(
                 APPROVAL_REQUIRED,
                 f"{key.ref} is not in `policy.send_allow`. The device is "
+                f"authorized for control and this session is not.",
+                session_ref=key.ref,
+                allowed=sorted(allow),
+            )
+
+    def _may_control(self, key: SessionKey) -> None:
+        """The single place this runtime decides whether a run may be stopped.
+
+        Two gates, both on this side, and both closed by default:
+
+        *   **the device**, `allow_control` on its binding — may this runtime
+            stop runs on that machine at all;
+        *   **the session**, `policy.control_allow` — and, given the first, this
+            one run in particular.
+
+        They are separate from the send grants rather than shared with them.
+        Delivering a message and ending the work it started are different
+        questions, and an operator who answered the first has not answered the
+        second; folding them would make "may write, may not stop" unexpressible.
+
+        **Integration point.** This method is the one seam a device-wide owner
+        grant for control is meant to plug into — a floor that answers "this
+        operator may stop *any* run on this device" would widen the device arm
+        here and leave the session arm alone. It is deliberately one method with
+        one caller so that lands as an edit in a single place rather than as
+        conditions scattered through the verb. Nothing in this revision
+        implements that floor; the node connector has its own, separately.
+        """
+        binding = self.config.provider_for(key.device_ref)
+        if binding is None or not binding.allow_control:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{key.device_ref} is not authorized for control from this "
+                f"runtime. Stopping a run is granted per device in the local "
+                f"binding (`allow_control: true`) and per session in "
+                f"`policy.control_allow` — never by the caller naming a session "
+                f"id, and never as a side effect of the send grants.",
+            )
+        allow = self.config.policy.control_allow
+        if self.config.policy.allow_wildcard_control and "*" in allow:
+            return
+        if key.ref not in allow:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{key.ref} is not in `policy.control_allow`. The device is "
                 f"authorized for control and this session is not.",
                 session_ref=key.ref,
                 allowed=sorted(allow),
@@ -621,6 +678,87 @@ class FleetService:
             "note": "session_send is message delivery. It grants no authority "
                     "over anything the receiving session may then operate on.",
         }
+
+    def interrupt_session(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
+        """Stop the run this session currently has. Nothing else.
+
+        What the verb is
+        ----------------
+        `session_interrupt` on the provider side stops the run a session has in
+        flight and leaves its host alone — CloudCLI's own adapter holds no
+        host-manager seam, so a resident session's process survives an interrupt
+        with its pid. That shape is what makes this verb safe to expose at all:
+        it is recoverable (the session row, the transcript and the process are
+        all still there), and it is *not* delete, force-close or `session_close`,
+        which the contract still lists as unbuilt for the good reason that they
+        take something away that this surface cannot put back.
+
+        Three answers, and the middle one is not a failure
+        --------------------------------------------------
+        An interrupt resolves to one of three things, and collapsing them would
+        be the whole bug: the run was stopped; there was no run in flight; the
+        call did not succeed. CloudCLI distinguishes the first two itself,
+        answering `aborted: false` with a sentence saying there was no run to
+        abort, and this method forwards that distinction rather than flattening
+        it into a boolean. A caller told "aborted" when nothing was running
+        would think it had stopped work that was never started.
+
+        No idempotency key
+        ------------------
+        Accepted from nobody and stored for nobody — see the note beside
+        `_VERB_SEND`. The caller's answer is the provider's answer, every time.
+
+        No message content anywhere
+        ---------------------------
+        Nothing here is passed to the audit log but the session reference and the
+        provider's own verdict. The verb has no free-text argument to leak, by
+        construction rather than by redaction: an `interrupt` that also accepted
+        a reason string would be a transcript-adjacent write in a log that
+        promises not to hold one.
+        """
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        self._may_control(key)
+
+        provider = self._require_provider(key.device_ref)
+        payload = provider.interrupt(key)
+        # An answer with no `aborted` field is not an answer. This is not
+        # defensive padding: `structured()` returns `{}` for a provider result it
+        # could not parse, and `bool({}.get("aborted"))` is `False` — so without
+        # this line a garbled reply would be reported to the caller as the
+        # specific, confident claim "there was no run in flight". That is the
+        # worst possible reading, because it tells the caller to stop worrying
+        # about a run that may well still be going.
+        if "aborted" not in payload:
+            raise refuse(
+                INTERNAL,
+                f"{key.device_ref} answered `session_interrupt` without an "
+                f"`aborted` field, so this surface cannot tell whether a run "
+                f"was stopped. Reported rather than read as `false`.",
+                session_ref=key.ref,
+            )
+        aborted = bool(payload["aborted"])
+        self.audit.record(
+            "fleet.interrupt",
+            principal=principal.name,
+            session_ref=key.ref,
+            aborted=aborted,
+        )
+        answer: dict[str, Any] = {
+            **key.as_dict(),
+            "aborted": aborted,
+            "note": "`aborted: false` means there was no run in flight, not that "
+                    "the call failed. Interrupt stops a run; it does not close "
+                    "the session, end its host, or delete anything.",
+        }
+        # Forwarded verbatim when the provider explained itself, so the caller
+        # reads CloudCLI's own sentence rather than this surface's paraphrase of
+        # it. `aborted: true` carries no message because there is nothing to
+        # explain.
+        message = payload.get("message")
+        if message:
+            answer["message"] = message
+        return answer
 
     def create_session(
         self,
