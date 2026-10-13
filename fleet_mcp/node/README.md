@@ -147,6 +147,48 @@ Fleet host reading, and does not require the connector to be restarted
 cooperatively — this machine can refuse every send whether or not the other end
 is up.
 
+### The owner floor: every session on this machine, named in none of them
+
+A named list cannot express *any* session, and the case it cannot express is the
+one that keeps it from being maintained: a session that does not exist yet has
+no name to add. So there is a second grant, in a different key, which the person
+at this keyboard can open for the whole machine at once:
+
+```yaml
+allow_all_sessions_for_owner:
+  - send
+```
+
+Empty is the default and means nothing changes. `send` here means "a send to any
+session on this device, including one created after this file was last read".
+The named list still works and still wins: a session it names is attributed to
+the list, not to the floor, so withdrawing the floor cannot silently move a
+named session into the wider bucket.
+
+It is **not** a wildcard you can put inside `allow_send_to`, and it is not a
+statement about who is calling. Nothing on this side can see a remote principal
+— the signature proves possession of this device's secret, not a person, and the
+Fleet host's scope-and-device decision is made on another machine. A floor is
+the owner of *this* machine saying what may be driven *here*. Reported by
+`GET /v1/self` under `control.send_owner_floor`, alongside `control.send_default`,
+which spells out the resulting answer for a session this file does not name.
+
+Only the words in `OWNER_FLOOR_VERBS` are accepted. A word outside it is refused
+when the binding is read, not ignored — a floor that silently meant nothing
+would look exactly like a floor that was never needed, and this file would still
+read as correct.
+
+Two consequences worth knowing before turning it on:
+
+* A send admitted by the floor is the only send that leaves no trace in this
+  binding, so it is journalled to the connector's own stderr
+  (`send admitted by the owner floor, session not named in this binding: <ref>`)
+  — that log, and `GET /v1/self`, are where "what went out under the floor" is
+  answered.
+* Withdrawing it is an edit to this file plus a restart of the connector, the
+  same latency as every other binding here. There is no path by which the Fleet
+  host, or anything holding the node secret, can turn it on or off from outside.
+
 ## What it will not do
 
 * No route executes a command. There is no shell route, no exec route, and no
