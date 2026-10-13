@@ -326,12 +326,15 @@ class HttpSurface:
             # Any other failure is the client's to hear about, and the
             # redirect_uri is now known good.
             return _redirect(redirect_with_error(
-                form.get("redirect_uri", ""), exc.error, exc.description, form.get("state")
+                form.get("redirect_uri", ""), exc.error, exc.description, form.get("state"),
+                issuer=self.oauth.base_url,
             ))
         if self.audit:
             self.audit.record("oauth.approve", client_id=client.client_id,
                               redirect_uri=form.get("redirect_uri"))
-        return _redirect(redirect_with_code(form["redirect_uri"], code, form.get("state")))
+        return _redirect(redirect_with_code(
+            form["redirect_uri"], code, form.get("state"), issuer=self.oauth.base_url,
+        ))
 
     def _oauth_token(self, method: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
         if self.oauth is None:
