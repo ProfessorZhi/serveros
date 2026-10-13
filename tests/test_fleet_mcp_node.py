@@ -1007,10 +1007,6 @@ class BindingFile(unittest.TestCase):
             load_node_config(self._write(self._valid())).allow_create_projects, ())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TheProjectFloorIsRefusedWhenContradictory(BindingFile):
     """`allow_create: true` with no project is refused at load, not at use.
 
@@ -1059,4 +1055,129 @@ class TheProjectFloorIsRefusedWhenContradictory(BindingFile):
         config = load_node_config(self._write(
             self._valid(allow_create=True, allow_create_projects=["p-1", "p-1", "p-2"])))
         self.assertEqual(config.allow_create_projects, ("p-1", "p-2"))
+
+
+class TheControlGrantInTheBindingFile(BindingFile):
+    """Control is read out of the binding the strict way, and its default is off.
+
+    The grant has two halves that are validated differently, and the difference
+    is the point: the boolean is asked for as a boolean, the list is asked for
+    as a list of session names. Either half alone is inert — the flag with no
+    list interrupts nothing, and a list under a closed flag interrupts nothing —
+    and both of those states are checked here rather than at the route, because
+    a binding that reads as "on" to its author and as "off" to the connector is
+    the failure this whole class exists for.
+    """
+
+    def test_the_default_is_off_and_names_nothing(self):
+        config = load_node_config(self._write(self._valid()))
+        self.assertIs(config.allow_control, False)
+        self.assertEqual(config.allow_control_to, ())
+        self.assertFalse(config.permits_any_control())
+        self.assertEqual(config.control_default(), "refused")
+
+    def test_a_control_grant_survives_the_round_trip(self):
+        text = self._valid() + f"allow_control: true\nallow_control_to:\n  - {ALLOWED}\n"
+        config = load_node_config(self._write(text))
+        self.assertIs(config.allow_control, True)
+        self.assertEqual(config.allow_control_to, (ALLOWED,))
+        self.assertTrue(config.permits_control(SessionKey.compose(DEVICE, "claude", ALLOWED)))
+        self.assertFalse(config.permits_control(SessionKey.compose(DEVICE, "claude", OTHER)))
+        self.assertEqual(config.control_default(),
+                         "only the sessions named in allow_control_to")
+
+    def test_the_open_flag_with_no_list_is_a_closed_door(self):
+        """`allow_control: true` alone permits nothing, and says so.
+
+        A binding is written in two edits more often than one — the flag first,
+        then the sessions — so the state in between has to be the safe one. It
+        is, and this test is what keeps it that way if anyone later decides the
+        flag alone should mean "any session".
+        """
+        config = load_node_config(self._write(self._valid(allow_control=True)))
+        self.assertIs(config.allow_control, True)
+        self.assertEqual(config.allow_control_to, ())
+        self.assertFalse(config.permits_any_control())
+        self.assertFalse(config.permits_control(SessionKey.compose(DEVICE, "claude", ALLOWED)))
+        self.assertEqual(config.control_default(), "refused")
+
+    def test_the_list_under_a_closed_flag_is_inert_and_visible(self):
+        """Withdrawing the flag does not require deleting the list.
+
+        The same shape as the create floor: an operator turning control off for
+        a while is undoing one edit. The list stays in the file, permits nothing,
+        and is still reported beside the flag — so an operator reading `/v1/self`
+        sees a non-empty `control_allow_list` next to `control_allowed: false`
+        and can tell "deleted" from "switched off".
+        """
+        config = load_node_config(self._write(
+            self._valid(allow_control=False, allow_control_to=[ALLOWED])))
+        self.assertIs(config.allow_control, False)
+        self.assertEqual(config.allow_control_to, (ALLOWED,))
+        self.assertFalse(config.permits_control(SessionKey.compose(DEVICE, "claude", ALLOWED)))
+        self.assertEqual(config.control_default(), "refused")
+
+    def test_a_wildcard_is_refused_and_the_refusal_names_the_other_field(self):
+        """`"*"` in a session list would be a second spelling of the floor.
+
+        The device-wide grant is written `allow_all_sessions_for_owner:
+        [control]`, so a wildcard here is refused with a message that says where
+        that grant lives. A refusal that only said "wildcard" would leave an
+        operator who meant "everything" with nowhere to go.
+        """
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(
+                self._valid(allow_control=True, allow_control_to=["*"])))
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+        self.assertIn("allow_all_sessions_for_owner", caught.exception.detail)
+
+    def test_a_bare_string_is_refused_rather_than_wrapped(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(
+                self._valid(allow_control=True, allow_control_to=ALLOWED)))
+        self.assertIn("not a str", caught.exception.detail)
+
+    def test_a_blank_entry_is_refused(self):
+        with self.assertRaises(FleetRefusal):
+            load_node_config(self._write(
+                self._valid(allow_control=True, allow_control_to=["  "])))
+
+    def test_a_non_string_entry_is_refused(self):
+        """YAML reads a bare number as an int, and a session id is never one."""
+        with self.assertRaises(FleetRefusal):
+            load_node_config(self._write(
+                self._valid(allow_control=True, allow_control_to=[5])))
+
+    def test_duplicates_collapse_and_order_survives(self):
+        config = load_node_config(self._write(
+            self._valid(allow_control=True, allow_control_to=[OTHER, OTHER, ALLOWED])))
+        self.assertEqual(config.allow_control_to, (OTHER, ALLOWED))
+
+    def test_a_full_ref_in_the_list_matches_the_session_it_names(self):
+        ref = f"{DEVICE}|claude|{ALLOWED}"
+        config = load_node_config(self._write(
+            self._valid(allow_control=True, allow_control_to=[ref])))
+        self.assertTrue(config.permits_control(SessionKey.parse(ref)))
+
+    def test_a_quoted_boolean_is_refused_rather_than_read_as_true(self):
+        """The one-coercion bug this binding must not have.
+
+        A template that interpolates a flag produces `allow_control: "false"`,
+        and `bool("false")` is True. Refusing it is the only answer that is
+        right in both directions: the operator who meant false is protected, and
+        the operator who meant true is told their file is not what they think.
+        """
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(self._valid(allow_control='"false"')))
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+        self.assertIn("must be true or false", caught.exception.detail)
+
+    def test_the_same_rule_holds_for_the_create_flag(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            load_node_config(self._write(self._valid(allow_create='"false"')))
+        self.assertIn("allow_create", caught.exception.detail)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
