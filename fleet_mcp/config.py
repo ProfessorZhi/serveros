@@ -52,8 +52,8 @@ PROVIDER_KINDS = ("cloudcli-mcp-http", "fleet-node")
 # (`fleet._may_control` / `_may_create`). `approve` and `navigate` stay planned —
 # their Fleet scopes do not exist, so no grant can express them, and the two
 # native verbs that need them are DENIED rather than inherited.
-OPERATOR_GRANT_VERBS = ("send", "control", "create")
-PLANNED_OPERATOR_GRANT_VERBS = ("approve", "navigate")
+OPERATOR_GRANT_VERBS = ("send", "control", "create", "approve", "navigate")
+PLANNED_OPERATOR_GRANT_VERBS = ()
 
 # The ownership value that makes a device eligible to appear in an owner grant.
 #

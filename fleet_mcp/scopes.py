@@ -68,8 +68,14 @@ SCOPE_CONTROL = "fleet:control"
 SCOPE_APPROVE = "fleet:approve"
 SCOPE_NAVIGATE = "fleet:navigate"
 
-IMPLEMENTED_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL, SCOPE_CREATE)
-PLANNED_SCOPES: tuple[str, ...] = (SCOPE_APPROVE, SCOPE_NAVIGATE)
+# `approve` and `navigate` graduated when the CloudCLI mirror needed a real
+# floor for `approval_answer` and `ui_open_session`. Graduating a scope makes it
+# EXPRESSIBLE, not granted: it is not in `DEFAULT_GRANTABLE_SCOPES`, so a
+# credential that has not been granted it is refused — the fail-closed default
+# the mirror needs.
+IMPLEMENTED_SCOPES: tuple[str, ...] = (SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL,
+                                       SCOPE_CREATE, SCOPE_APPROVE, SCOPE_NAVIGATE)
+PLANNED_SCOPES: tuple[str, ...] = ()
 
 # The wire-visible ceiling. Equal to the implemented set, on purpose: what is
 # advertised is what is enforced.

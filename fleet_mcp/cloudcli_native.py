@@ -210,6 +210,118 @@ NATIVE_TOOLS: tuple[NativeTool, ...] = (
 NATIVE_BY_NAME: dict[str, NativeTool] = {t.name: t for t in NATIVE_TOOLS}
 BY_NAMESPACED: dict[str, NativeTool] = {t.namespaced: t for t in NATIVE_TOOLS}
 
+
+# ---------------------------------------------------------------------------
+# The native input schemas — READ OFF CloudCLI 1.39.0's tool registry
+# ---------------------------------------------------------------------------
+#
+# These are not guessed from prose. Each is the JSON-Schema form of the zod
+# object CloudCLI's own registered handler validates against, read from the
+# installed build (`server/modules/mcp-gateway/*`): the `TOOL_BODIES` read
+# schemas, the named `*_INPUT_SCHEMA` write schemas, and `sessionReadInputSchema`
+# / `sessionSearchInputSchema`. `required` lists the parameters the native tool
+# refuses to run without; a parameter absent from `required` is optional, and a
+# nullable type is carried as a type ARRAY so `null` is not flattened into
+# "omitted". A tool whose registered schema was the placeholder `{}` at 1.39.0
+# records `{}` here — which is the truth about that build, not a widening.
+
+def _s(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {"type": "object", "properties": properties, "required": required,
+            "additionalProperties": False}
+
+
+NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "overview": _s({"project": {"type": "string"}}, []),
+    "projects_list": _s({"includeArchived": {"type": "boolean"}}, []),
+    "sessions_list": _s({
+        "project": {"type": "string"},
+        "state": {"type": "string", "enum": ["running", "idle", "resident", "any"]},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+    }, []),
+    "session_get": _s({"session": {"type": "string"}}, ["session"]),
+    "session_read": _s({
+        "session": {"type": "string"},
+        "mode": {"type": "string", "enum": ["latest", "outline", "around"]},
+        "limit": {"type": "integer", "minimum": 1},
+        "aroundId": {"type": "string"},
+        "before": {"type": "number"},
+        "after": {"type": "number"},
+        "cursor": {"type": "string"},
+    }, ["session"]),
+    "run_get": _s({
+        "runId": {"type": "string"},
+        "waitSeconds": {"type": "number"},
+        "session": {"type": "string"},
+        "run": {"type": "string"},
+        "wait": {"type": "boolean"},
+    }, []),
+    "quay_snapshot": _s({"project": {"type": "string"},
+                         "refresh": {"type": "boolean"}}, []),
+    "ui_last_opened_session": _s({}, []),
+    "ui_visible_context": _s({"client": {"type": "string"},
+                              "navigationId": {"type": "string"}}, []),
+    "ui_clients_list": _s({}, []),
+    "session_search": _s({
+        "query": {"type": "string", "minLength": 1},
+        "project": {"type": "string"},
+        "provider": {"type": "string", "enum": ["claude", "codex"]},
+        "speaker": {"type": "string", "enum": ["user", "assistant", "any"]},
+        "limit": {"type": "integer", "minimum": 1},
+        "cursor": {"type": "string"},
+        "mode": {"type": "string", "enum": ["fulltext"]},
+    }, ["query"]),
+    "session_send": _s({
+        "session": {"type": "string"},
+        "message": {"type": "string"},
+        "waitSeconds": {"type": "number"},
+    }, ["session", "message"]),
+    "session_create": _s({
+        "project": {"type": "string"},
+        "message": {"type": "string"},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "lifecycleMode": {"type": "string"},
+        "permissionMode": {"type": "string"},
+    }, ["project"]),
+    "session_interrupt": _s({"session": {"type": "string"}}, ["session"]),
+    "session_start": _s({"session": {"type": "string"}}, ["session"]),
+    "session_close": _s({"session": {"type": "string"},
+                         "force": {"type": "boolean"}}, ["session"]),
+    "ui_open_session": _s({
+        "client": {"type": "string"},
+        "session": {"type": "string"},
+        "at": {"type": "object"},
+    }, ["session"]),
+    "session_cancel_queued": _s({"session": {"type": "string"},
+                                 "messageUuid": {"type": "string"}},
+                                ["session", "messageUuid"]),
+    "session_reconfigure": _s({
+        "session": {"type": "string"},
+        "model": {"type": "string"},
+        "effort": {"type": "string"},
+        "permissionMode": {"type": "string"},
+    }, ["session"]),
+    "session_background": _s({"session": {"type": "string"},
+                              "stopTaskId": {"type": "string"}}, ["session"]),
+    "approvals_list": _s({"session": {"type": "string"}}, []),
+    "approval_answer": _s({
+        "requestId": {"type": "string"},
+        "allow": {"type": "boolean"},
+        "answers": {},
+        "message": {"type": "string"},
+    }, ["requestId", "allow"]),
+}
+
+
+def input_schema(native_name: str) -> dict[str, Any]:
+    """The recorded native schema for one tool, or an empty object.
+
+    An empty object means the registered schema declared nothing — never "any
+    parameters". `validate_arguments` treats `{}` as no authority to check
+    against, which is the honest reading.
+    """
+    return NATIVE_INPUT_SCHEMAS.get(native_name, {})
+
 #: The count this build mirrors, as a number a test and a status can both read.
 NATIVE_TOOL_COUNT = 22
 
@@ -243,7 +355,8 @@ def manifest() -> dict[str, Any]:
         "count": len(NATIVE_TOOLS),
         "count_expected": NATIVE_TOOL_COUNT,
         "scope_map": dict(FLEET_SCOPE_FOR_NATIVE),
-        "tools": [t.as_dict() for t in NATIVE_TOOLS],
+        "tools": [{**t.as_dict(), "input_schema": NATIVE_INPUT_SCHEMAS.get(t.name, {})}
+                  for t in NATIVE_TOOLS],
     }
 
 
@@ -315,7 +428,7 @@ def native_schema(tool_entry: dict) -> dict | None:
     return schema if isinstance(schema, dict) else None
 
 
-def mirrored_schema(native: NativeTool, device_schema: dict | None) -> dict:
+def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> dict:
     """The mirrored tool's inputSchema for one device.
 
     The native tool's OWN parameters, carried UNCHANGED under `arguments`, with
@@ -329,9 +442,11 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None) -> dict:
     """
     native_props: dict[str, Any] = {}
     native_required: list[str] = []
-    if isinstance(device_schema, dict):
-        native_props = dict(device_schema.get("properties") or {})
-        native_required = list(device_schema.get("required") or [])
+    source = device_schema if isinstance(device_schema, dict) and device_schema \
+        else NATIVE_INPUT_SCHEMAS.get(native.name, {})
+    if isinstance(source, dict):
+        native_props = dict(source.get("properties") or {})
+        native_required = list(source.get("required") or [])
     outer: dict[str, Any] = {
         "device_ref": {"type": "string", "description": "Which device to call."},
     }
@@ -348,12 +463,33 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None) -> dict:
         arguments["properties"] = native_props
     if native_required:
         arguments["required"] = native_required
+    # The native `required` lives INSIDE `arguments`, so `arguments` itself is
+    # required exactly when the native tool has a parameter it refuses to run
+    # without — a caller that omits the payload is refused at the outer schema
+    # rather than at the device.
+    outer_required = ["device_ref"] + (["arguments"] if native_required else [])
     return {
         "type": "object",
         "properties": {**outer, "arguments": arguments},
-        "required": ["device_ref"],
+        "required": outer_required,
         "additionalProperties": False,
     }
+
+
+def governance_for(native: "NativeTool", arguments: dict[str, Any] | None) -> str:
+    """The class a CALL falls under, which for one tool depends on its arguments.
+
+    `session_background` is two verbs under one name — listing background tasks
+    is a READ (`cloudcli:read`) and stopping one is CONTROL
+    (`cloudcli:session:control`). The class is decided by whether the call names
+    a task to stop, so a read grant cannot stop a task through this tool.
+    """
+    if native.name == "session_background":
+        # Listing background tasks is a read; stopping one is control.
+        if isinstance(arguments, dict) and arguments.get("stopTaskId"):
+            return GOV_CONTROL
+        return GOV_READ
+    return native.governance
 
 
 def surface_drift(per_device: dict[str, dict[str, Any]]) -> dict:

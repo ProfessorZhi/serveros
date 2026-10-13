@@ -56,7 +56,8 @@ from .registry import (
 )
 # The scope names are defined once, in `scopes.py`, and re-exported here because
 # this module is where callers have always imported them from.
-from .scopes import SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND  # noqa: F401
+from .scopes import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE, SCOPE_NAVIGATE,  # noqa: F401
+                     SCOPE_READ, SCOPE_SEND)
 
 # How long a recorded idempotency key is honoured. Long enough to cover a
 # caller's retry after a timeout, short enough that the table is bounded by the
@@ -1239,7 +1240,7 @@ class FleetService:
         allowed. `arguments` is carried to the device verbatim but is NEVER a
         source of authority.
         """
-        governance = native.governance
+        governance = cloudcli_native.governance_for(native, arguments)
         if governance == cloudcli_native.GOV_READ:
             return
         if governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
@@ -1256,14 +1257,46 @@ class FleetService:
             self._require_operator_verb(principal, device_ref, "create", native,
                                         project=project_name)
             return
-        # approve / navigate: their Fleet scope is planned and `principal.require`
-        # already refused them above. Reaching here is a defect in the mapping.
+        if governance == cloudcli_native.GOV_APPROVE:
+            self._native_approval(arguments, native)
+            self._require_operator_verb(principal, device_ref, "approve", native)
+            return
+        if governance == cloudcli_native.GOV_NAVIGATE:
+            self._require_operator_verb(principal, device_ref, "navigate", native)
+            return
         raise refuse(
             WRITE_NOT_GRANTED,
             f"`{native.namespaced}` is a {governance} verb with no implemented "
             f"Fleet floor; it must be refused at the scope gate, and reaching "
-            f"this branch is a defect in `cloudcli_native`'s scope map.",
+            f"this branch is a defect in `cloudcli_native`'s governance map.",
         )
+
+    def _native_approval(self, arguments: dict[str, Any], native) -> None:
+        """An approval answer must name the request AND the user's choice.
+
+        `approval_answer` is the one mirrored verb whose whole meaning is a
+        person's decision, so its Fleet floor refuses two absences: no
+        `requestId` (an answer to nothing is not an answer) and no boolean
+        `allow` (this surface never chooses for the user — it carries a choice
+        the user made). This is the FLEET half only; the DEVICE's native control
+        plane re-confirms the requestId belongs to it, and this surface never
+        answers on the user's behalf.
+        """
+        request_id = arguments.get("requestId")
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` answers ONE approval request and this "
+                f"call named no `requestId`. An answer to nothing is not an "
+                f"answer, and this surface will not pick a request to answer.",
+            )
+        if not isinstance(arguments.get("allow"), bool):
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` requires `allow` (a boolean) — the "
+                f"user's decision. This surface never chooses for the user; it "
+                f"carries a choice they made.",
+            )
 
     def _native_session_key(self, device_ref: str, session_ref: str | None,
                             native) -> SessionKey:
