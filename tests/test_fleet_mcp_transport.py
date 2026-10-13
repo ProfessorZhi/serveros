@@ -340,18 +340,27 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(status, 200)
         self.assertEqual(payload["result"]["protocolVersion"], "2025-06-18")
 
-    def test_tools_list_returns_the_nine_tools_with_their_annotations(self):
+    def test_tools_list_returns_the_served_tools_with_their_annotations(self):
         status, _, payload = self.client.rpc(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token=self.OWNER_TOKEN
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        self.assertEqual(len(tools_out), 9)
+        # The served surface is the hand-written Fleet tools PLUS the 22
+        # inherited CloudCLI verbs — one MCP surface, discoverable whole.
+        self.assertEqual(len(tools_out), 31)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
-                                  "fleet_interrupt_session"])
+        # The hand-written Fleet writes are unchanged...
+        fleet_writes = [n for n in writes if n.startswith("fleet_")
+                        and not n.startswith("fleet_cloudcli_")]
+        self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
+                                        "fleet_interrupt_session"])
+        # ...and the inherited CloudCLI mirror contributes its own ten writes,
+        # carry CloudCLI's annotations rather than this surface's opinion.
+        self.assertEqual(
+            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 10)
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -601,7 +610,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 9)
+        self.assertEqual(len(body["result"]["tools"]), 31)  # 9 fleet + 22 inherited
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

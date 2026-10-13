@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from . import cloudcli_native
 from .errors import BAD_REQUEST, FleetRefusal, refuse
 from .fleet import Principal
 from .identity import SessionKey
@@ -586,7 +587,95 @@ TOOLS: tuple[Tool, ...] = (
     ),
 )
 
+# --------------------------------------------------------------------------
+# The CloudCLI native mirror — one typed tool per native verb
+# --------------------------------------------------------------------------
+#
+# Each of CloudCLI's 22 native verbs becomes `fleet_cloudcli_<native_name>`, a
+# first-class tool a caller discovers directly. The native parameters ride in an
+# `arguments` object rather than being flattened into this schema: the native
+# tool's own schema is the AUTHORITY on what it accepts, and a flattened copy
+# here would be a second one that drifts the first time CloudCLI changes a
+# parameter. `additionalProperties: false` is kept, so the only arguments this
+# surface accepts are the device and the payload — the closure the rest of this
+# module relies on still holds.
+#
+# Governance lives in `FleetService.native_call`, not here: the handler is the
+# thinnest possible edge so there is one place, not twenty-two, where a write
+# gate could be forgotten.
+
+def _native_handler(native: cloudcli_native.NativeTool):
+    def handler(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        return ctx.service.native_call(
+            ctx.principal,
+            device_ref=args.get("device_ref"),
+            native_tool=native.name,
+            arguments=args.get("arguments") or {},
+        )
+    return handler
+
+
+def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
+    if native.read_only:
+        class_note = "Read-only."
+    else:
+        class_note = (
+            f"A {native.governance} verb: it needs an explicit grant, and a read "
+            f"or send grant is not inherited into it."
+        )
+    return Tool(
+        name=native.namespaced,
+        title=f"CloudCLI {native.name} (inherited)",
+        description=(
+            f"The CloudCLI `{native.name}` verb on one enrolled device, inherited "
+            f"whole. Native scopes {', '.join(native.native_scopes)}; this surface "
+            f"requires {', '.join(native.fleet_scopes())}. {class_note} The "
+            f"`arguments` object is passed to the device unchanged — `null` and an "
+            f"omitted key stay distinct."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device_ref": _string(f"Which device to call. {DEVICE_REF_DOC}"),
+                "arguments": {
+                    "type": "object",
+                    "description": (
+                        f"`{native.name}`'s own arguments, passed through to the "
+                        f"device unchanged. The device validates them against its "
+                        f"own schema."
+                    ),
+                },
+            },
+            "required": ["device_ref"],
+            "additionalProperties": False,
+        },
+        annotations={
+            "readOnlyHint": native.read_only,
+            "destructiveHint": native.destructive,
+            "idempotentHint": native.idempotent,
+            "openWorldHint": native.open_world,
+        },
+        handler=_native_handler(native),
+    )
+
+
+NATIVE_MIRROR_TOOLS: tuple[Tool, ...] = tuple(
+    _native_tool(t) for t in cloudcli_native.NATIVE_TOOLS
+)
+
 TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
+
+# The SERVED surface: the hand-written Fleet tools PLUS the inherited native
+# set. `TOOLS` / `tool_names()` stay the hand-written nine, because that is what
+# `fleet/fleet-mcp-contract.yaml` enumerates and what the surface contract tests
+# pin; enumerating 22 generated verbs in that contract is a contract-owned edit,
+# not this module's. `call_tool` and the MCP server's `tools/list` read the
+# MERGED set, so ONE MCP surface serves all 31 and a caller discovers the native
+# verbs directly. Until the contract is extended, it declares the nine and this
+# module declares the generated mirror — the known integration point, reported
+# rather than hidden by quietly appending to `TOOLS`.
+SERVED_TOOLS: tuple[Tool, ...] = TOOLS + NATIVE_MIRROR_TOOLS
+SERVED_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in SERVED_TOOLS}
 
 
 def tool_names() -> list[str]:
@@ -636,7 +725,7 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     on — whereas an escaping exception becomes a transport-level error that
     tells the caller nothing about which of their inputs to change.
     """
-    tool = TOOLS_BY_NAME.get(name)
+    tool = SERVED_BY_NAME.get(name)
     if tool is None:
         return _disclose(ctx, _error(principal=ctx.principal, exc=refuse(
             BAD_REQUEST,

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
+from . import cloudcli_native
 from .config import CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP, OPERATOR_GRANT_VERBS
 from .errors import (
     APPROVAL_REQUIRED,
@@ -1142,6 +1143,119 @@ class FleetService:
             self._idempotency.pop(key, None)
 
     # -- status ------------------------------------------------------------
+
+    def native_call(
+        self,
+        principal: Principal,
+        *,
+        device_ref: str,
+        native_tool: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inherit ONE CloudCLI native tool, under Fleet's own gates.
+
+        The tool name is checked against the recorded closed set FIRST, because
+        a name that is not in it is not a capability this build offers and must
+        never reach a device. After that the call passes three gates that a
+        read could not have satisfied:
+
+          1. the native verb's OWN scopes, mapped onto Fleet scopes, through
+             `Principal.require`. A native scope Fleet plans but does not
+             implement (`approve`, `navigate`) maps to a planned Fleet scope and
+             is refused — inheriting a device's verb cannot widen a credential;
+          2. a non-read verb also needs the per-device flag AND an operator grant
+             verb for this principal: a read grant, and a `send` grant, are not
+             inherited into `create`/`control`;
+          3. the provider must actually implement the native surface.
+
+        What it deliberately does NOT do: name a device by a mutable default,
+        forward a tool the caller named, or translate the provider's answer. The
+        provider's own output travels out unchanged, minus the redaction the MCP
+        surface applies to every payload.
+        """
+        native = cloudcli_native.NATIVE_BY_NAME.get(native_tool)
+        if native is None:
+            raise refuse(
+                BAD_REQUEST,
+                f"{native_tool!r} is not a CloudCLI tool this build mirrors. The "
+                f"mirrored set is the {cloudcli_native.NATIVE_TOOL_COUNT} tools in "
+                f"`fleet_cloudcli_native_manifest`; a name that is not among them "
+                f"is refused rather than forwarded to a device.",
+            )
+        binding = self.config.provider_for(device_ref)
+        if binding is None or not binding.enabled:
+            raise refuse(
+                UNKNOWN_DEVICE,
+                f"{device_ref} is not an enabled provider on this runtime.",
+            )
+        for fleet_scope in native.fleet_scopes():
+            principal.require(fleet_scope)
+        if native.governance != cloudcli_native.GOV_READ:
+            self._require_native_grant(principal, device_ref, binding, native)
+        provider = self._require_provider(device_ref)
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(
+                BAD_REQUEST,
+                f"{device_ref}'s provider ({provider.kind}) does not inherit the "
+                f"CloudCLI native surface; `fleet_cloudcli_<tool>` needs a "
+                f"`cloudcli-mcp-http` provider.",
+            )
+        result = caller(native_tool, dict(arguments or {}))
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            # Only allowlisted fields: the egress table (`disclosure.py`) admits
+            # `principal` and `device_ref`. The native tool NAME is a fact worth
+            # recording and is not on that table yet — naming it belongs to
+            # `disclosure.py`'s owner, not to this caller.
+            audit.record("mcp.native_call", principal=principal.name,
+                         device_ref=device_ref)
+        return result
+
+    def _require_native_grant(self, principal: Principal, device_ref: str,
+                              binding, native) -> None:
+        """The write-class gate: the device flag AND an operator grant verb.
+
+        Both, not either — and the verb must be one this build IMPLEMENTS.
+        `OPERATOR_GRANT_VERBS` names exactly one (`send`); `create` and `control`
+        are in `PLANNED_OPERATOR_GRANT_VERBS`, so NO grant can express them yet.
+        They are therefore DENIED rather than inherited from a `send` grant, and
+        the refusal names the missing vocabulary as the integration point. That
+        is the fail-closed reading of «凡写操作无明示 grant 则 return DENIED»: a
+        verb nobody can grant is a verb nobody holds. The finer per-session
+        (`control_allow`) and per-project floors are where an operator floor is
+        meant to plug in, and this method does not pretend to apply them to an
+        opaque native payload.
+        """
+        flags = {
+            cloudcli_native.GOV_SEND: getattr(binding, "allow_send", False),
+            cloudcli_native.GOV_CREATE: getattr(binding, "allow_create", False),
+            cloudcli_native.GOV_CONTROL: getattr(binding, "allow_control", False),
+        }
+        flag = flags.get(native.governance, False)
+        verbs = self._operator_grant_verbs(principal, device_ref)
+        grantable = native.governance in OPERATOR_GRANT_VERBS
+        held = grantable and native.governance in verbs
+        if flag and held:
+            return
+        if not grantable:
+            reason = (
+                f"`{native.governance}` is not an operator-grant verb in this "
+                f"build (OPERATOR_GRANT_VERBS={list(OPERATOR_GRANT_VERBS)}), so no "
+                f"grant can express it yet — denied rather than inherited from a "
+                f"`send` grant")
+        elif not flag:
+            reason = f"the device's `allow_{native.governance}` flag is False"
+        else:
+            reason = (f"this credential holds no `{native.governance}` operator "
+                      f"grant on {device_ref}")
+        raise refuse(
+            WRITE_NOT_GRANTED,
+            f"`{native.namespaced}` is a {native.governance} verb and may not be "
+            f"performed on {device_ref}: {reason}. The operator grant verbs for "
+            f"{principal.name!r} are {list(verbs) or 'none'}.",
+            device_ref=device_ref, required_governance=native.governance,
+        )
 
     def status(self, principal: Principal) -> dict[str, Any]:
         """Health of this surface and of every dependency it composes."""
