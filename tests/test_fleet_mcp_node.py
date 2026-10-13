@@ -61,6 +61,11 @@ class FakeProvider:
         self.calls: list[tuple] = []
         self.sent: list[tuple[str, str]] = []
         self.created: list[dict] = []
+        self.interrupted: list[str] = []
+        # What `session_interrupt` answers. CloudCLI reports "there was no run
+        # in flight" as `aborted: false` with a message, not as an error, so the
+        # fake has to be able to say that too.
+        self.interrupt_answer: dict = {"aborted": True}
         self.fail = fail
 
     def _maybe_fail(self):
@@ -103,6 +108,12 @@ class FakeProvider:
         self.sent.append((key.native_session_id, message))
         return {"run_id": "run-7", "session_ref": key.ref, "queued": False}
 
+    def interrupt(self, key):
+        self.calls.append(("interrupt", key.ref))
+        self._maybe_fail()
+        self.interrupted.append(key.native_session_id)
+        return dict(self.interrupt_answer)
+
     def get_run(self, key, run_id, *, wait=False, wait_seconds=0.0):
         self.calls.append(("get_run", key.ref, run_id, wait))
         self._maybe_fail()
@@ -128,6 +139,11 @@ class _Base(unittest.TestCase):
     # the loader refuses `allow_create: true` with no project, because
     # "creation is on, for nothing" is only reachable by accident.
     allow_create_projects: tuple[str, ...] = ("p-1",)
+    # Off unless a class turns it on, which is the whole point of the floor:
+    # the default posture of a connector that has been asked to stop things is
+    # still "no".
+    allow_control: bool = False
+    allow_control_to: tuple[str, ...] = ()
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -144,6 +160,8 @@ class _Base(unittest.TestCase):
             allow_send_to=tuple(cls.allow_send_to),
             allow_create=cls.allow_create,
             allow_create_projects=tuple(cls.allow_create_projects),
+            allow_control=cls.allow_control,
+            allow_control_to=tuple(cls.allow_control_to),
         )
         cls.connector = Connector(cls.config)
         cls.provider = FakeProvider()
@@ -164,6 +182,8 @@ class _Base(unittest.TestCase):
         self.provider.calls.clear()
         self.provider.sent.clear()
         self.provider.created.clear()
+        self.provider.interrupted.clear()
+        self.provider.interrupt_answer = {"aborted": True}
         self.provider.fail = None
         self.connector.replay = np.ReplayCache()
 
@@ -220,6 +240,10 @@ class RouteClosure(_Base):
     # Creation is a separate grant and is on for this class so that the route
     # table's completeness is checked without the create floor confounding it.
     allow_create = True
+    # Likewise for control: the table's completeness is checked without the
+    # control floor confounding it, because that floor has its own class.
+    allow_control = True
+    allow_control_to = (ALLOWED,)
 
     def test_every_declared_route_is_actually_reachable(self):
         """The route table is a promise; this checks the promise is kept."""
@@ -230,6 +254,7 @@ class RouteClosure(_Base):
             ("GET", f"/v1/sessions/{ALLOWED}", None),
             ("POST", f"/v1/sessions/{ALLOWED}/read", {"mode": "latest"}),
             ("POST", f"/v1/sessions/{ALLOWED}/send", {"message": "hello"}),
+            ("POST", f"/v1/sessions/{ALLOWED}/interrupt", {}),
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
             ("POST", "/v1/sessions", {"project": "p-1"}),
         ]
@@ -280,7 +305,7 @@ class RouteClosure(_Base):
         # And the placeholders that do exist name only ids.
         self.assertEqual(
             sorted(s.strip("{}") for r in np.ROUTES for s in r.partition(" ")[2].split("/") if s.startswith("{")),
-            ["id", "id", "id", "run_id"],
+            ["id", "id", "id", "id", "run_id"],
         )
 
 
@@ -609,6 +634,160 @@ class TheProjectFloorOnCreation(_Base):
         status, payload = self.request("POST", "/v1/sessions", {"project": "p-1"})
         self.assertEqual(status, 200, payload)
         self.assertEqual(len(self.provider.created), 1)
+
+
+# ---------------------------------------------------------------------------
+# This machine's own control decision
+# ---------------------------------------------------------------------------
+
+
+class ControlFloorIsOnTheDevice(_Base):
+    """Stopping a run is a third, separate grant, and the default is refusal.
+
+    The first of the grants here that *ends* something rather than adding to it,
+    and the one an operator is most likely to want off while leaving messaging
+    on. So a machine that authorized sending to a session is not thereby a
+    machine that authorized ending its run, and this class asserts that the
+    distinction survives as far as the provider call — which, on the refusal
+    path, it must never reach.
+    """
+
+    # Messaging this session is authorized; stopping it is not. The point is
+    # that the first does not carry the second.
+    allow_send_to = (ALLOWED,)
+    allow_control = False
+    allow_control_to = (ALLOWED,)
+
+    def test_every_interrupt_is_refused_and_nothing_reaches_cloudcli(self):
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/interrupt", {}
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+        self.assertEqual(self.provider.interrupted, [])
+        self.assertEqual([c for c in self.provider.calls if c[0] == "interrupt"], [])
+
+    def test_send_being_allowed_here_does_not_make_control_allowed(self):
+        """The negative half of the sentence above, asserted through the socket."""
+        status, _ = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/send", {"message": "hello"}
+        )
+        self.assertEqual(status, 200, "send was expected to work for this contrast")
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/interrupt", {}
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+
+    def test_the_refusal_says_where_the_decision_lives(self):
+        _, payload = self.request("POST", f"/v1/sessions/{ALLOWED}/interrupt", {})
+        detail = payload["error"]["detail"]
+        self.assertIn("allow_control", detail)
+        self.assertIn("this machine", detail)
+
+    def test_the_floor_is_reported_rather_than_left_blank(self):
+        status, payload = self.request("GET", "/v1/self")
+        self.assertEqual(status, 200)
+        self.assertIs(payload["control"]["control_allowed"], False)
+        self.assertEqual(payload["control"]["control_default"], "refused")
+
+    def test_reads_are_unaffected_by_the_control_floor(self):
+        status, payload = self.request("GET", "/v1/sessions")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sessions"]), 1)
+
+
+class ControlWithTheGrant(_Base):
+    allow_control = True
+    allow_control_to = (ALLOWED,)
+
+    def test_an_allow_listed_session_is_interrupted_and_returns_the_verdict(self):
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/interrupt", {}
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIs(payload["aborted"], True)
+        self.assertEqual(self.provider.interrupted, [ALLOWED])
+
+    def test_a_session_outside_the_allow_list_is_still_refused(self):
+        """The list is a list, not a switch."""
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{OTHER}/interrupt", {}
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+        self.assertEqual(self.provider.interrupted, [])
+
+    def test_a_full_ref_is_accepted_in_the_allow_list_too(self):
+        ref = f"{DEVICE}|claude|{ALLOWED}"
+        self.assertTrue(self.config.permits_control(SessionKey.parse(ref)))
+        self.assertTrue(
+            Connector(NodeConfig(
+                device_ref=DEVICE, secret_anchor=self.config.secret_anchor,
+                cloudcli_endpoint=self.config.cloudcli_endpoint,
+                cloudcli_credential_anchor=self.config.cloudcli_credential_anchor,
+                allow_control=True, allow_control_to=(ref,),
+            )).config.permits_control(SessionKey.parse(ref))
+        )
+
+    def test_the_verdict_is_forwarded_rather_than_flattened(self):
+        """`aborted: false` with a sentence is a success, and it survives the hop."""
+        sentence = "This session currently has no run in flight, so there is no run to abort."
+        self.provider.interrupt_answer = {"aborted": False, "message": sentence}
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/interrupt", {}
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIs(payload["aborted"], False)
+        self.assertEqual(payload["message"], sentence)
+
+    def test_a_body_is_not_read_because_there_is_nothing_to_read(self):
+        """The handler takes no parameter, so a smuggled field changes nothing.
+
+        A field that were silently ignored would read, at the caller, as though
+        the far side honoured it.
+        """
+        status, payload = self.request(
+            "POST", f"/v1/sessions/{ALLOWED}/interrupt",
+            {"signal": "SIGKILL", "force": True, "command": "rm -rf /"},
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertIs(payload["aborted"], True)
+        self.assertEqual(self.provider.interrupted, [ALLOWED])
+        # The body reached nobody: the one interrupt call the provider saw
+        # carries the session and no second value.
+        self.assertEqual([c for c in self.provider.calls if c[0] == "interrupt"],
+                         [("interrupt", f"{DEVICE}|claude|{ALLOWED}")])
+
+    def test_the_self_report_names_the_grant(self):
+        status, payload = self.request("GET", "/v1/self")
+        self.assertEqual(status, 200)
+        self.assertIs(payload["control"]["control_allowed"], True)
+        self.assertEqual(payload["control"]["control_allow_list"], [ALLOWED])
+        self.assertEqual(payload["control"]["control_default"],
+                         "only the sessions named in allow_control_to")
+
+    def test_the_device_with_no_named_session_reports_a_closed_door(self):
+        """`control_allow: true` with an empty list permits nothing.
+
+        The banner has no session to ask about, so it must not report the empty
+        list as though it were a list of permissions.
+        """
+        other = Connector(NodeConfig(
+            device_ref=DEVICE, secret_anchor=self.config.secret_anchor,
+            cloudcli_endpoint=self.config.cloudcli_endpoint,
+            cloudcli_credential_anchor=self.config.cloudcli_credential_anchor,
+            allow_control=True, allow_control_to=(),
+        ))
+        self.assertFalse(other.config.permits_any_control())
+        self.assertFalse(
+            other.config.permits_control(SessionKey.parse(f"{DEVICE}|claude|{ALLOWED}"))
+        )
+
+
+# ---------------------------------------------------------------------------
+# Identity handling on the wire
+# ---------------------------------------------------------------------------
 
 
 class PathHandling(_Base):

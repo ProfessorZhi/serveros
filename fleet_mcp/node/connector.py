@@ -117,10 +117,13 @@ DEFAULT_CONFIG_PATHS = binding_candidates("fleet-node.local.yaml")
 # So a word outside this tuple is refused when the binding is read, not ignored
 # when a caller arrives.
 #
-# Adding `"control"` here would NOT implement control: it would only let a
-# binding claim it, and the verb still has to refuse until a route, a provider
-# method and a scope exist for it. That is the intended order.
-OWNER_FLOOR_VERBS: tuple[str, ...] = ("send",)
+# `"control"` is here because the order this comment demanded has been paid:
+# the route (`POST /v1/sessions/{id}/interrupt` in `ROUTES`), the provider
+# method (`CloudCliProvider.interrupt`) and the scope (`fleet:control`) all
+# exist in this revision, so a binding that claims a control floor is claiming
+# something the connector can actually honour. Adding the word before that
+# would have let a binding read as if it granted a verb that had nowhere to go.
+OWNER_FLOOR_VERBS: tuple[str, ...] = ("send", "control")
 
 
 @dataclass
@@ -163,6 +166,21 @@ class NodeConfig:
     # Exact match, no wildcard, and no `"*"` spelling: an entry that means
     # "every project" would re-open the question this field closes.
     allow_create_projects: tuple[str, ...] = ()
+    # A fourth grant, and the first one this machine uses to END something
+    # rather than to add to it. Off by default and independent of the other
+    # three: an operator who has authorized messaging and creation has still
+    # not said "you may stop my work", and that is the question this flag
+    # answers. It is the local floor for control — the Fleet surface has its
+    # own, and a caller reaches the provider only if BOTH said yes.
+    allow_control: bool = False
+    # Sessions this machine permits an interrupt on, by native id or full ref.
+    # Empty means "every interrupt is refused here *by name*", including from
+    # the Fleet owner — the workstation's answer, given at this keyboard, and
+    # withdrawable here without touching the other end. It is not the whole
+    # answer any more: `allow_all_sessions_for_owner` may carry `"control"`,
+    # which admits a session this list does not name. Read `control_grant`
+    # rather than this list to find out which of the two admitted a given call.
+    allow_control_to: tuple[str, ...] = ()
     max_body_bytes: int = 1_000_000
     notes: str = ""
     # Owner-granted floors: verbs the person at this keyboard has granted for
@@ -220,6 +238,85 @@ class NodeConfig:
 
     def permits_send(self, key: SessionKey) -> bool:
         return self.send_grant(key) is not None
+
+    def control_grant(self, key: SessionKey) -> str | None:
+        """Which gate admits an interrupt of `key`: `"named"`, `"owner-floor"`, `None`.
+
+        The exact mirror of `send_grant`, and separated from `permits_control`
+        for the same reason: the two lists are read differently by an operator
+        auditing them, so a call admitted by the device-wide floor must not
+        appear to have been admitted by the named list.
+
+        The named list is asked first. Withdrawing a floor must not silently
+        re-bucket a session that was named, or the floor's audit line would grow
+        entries that were never the floor's to admit.
+        """
+        if key.ref in self.allow_control_to or key.native_session_id in self.allow_control_to:
+            return "named"
+        if "control" in self.allow_all_sessions_for_owner:
+            return "owner-floor"
+        return None
+
+    def control_default(self) -> str:
+        """One sentence, for an operator, on an interrupt of a session this file
+        does not name. Reported rather than inferred, and three-valued for the
+        same reason `send_default` is.
+
+        Send has no machine-wide switch — a send happens here exactly when some
+        list names a session — but control does, so this method asks
+        `allow_control` before the lists and answers "refused" when it is off.
+        The lists are still reported beside this sentence (`control_allowed`,
+        `control_allow_list`, `control_owner_floor` in `_self`), which is where
+        an operator sees the case this method flattens: a device carrying a
+        generous `allow_control_to` under `allow_control: false`, whose list is
+        inert. That case gets the same sentence as a device that names nothing,
+        because at the door it is the same answer, and a fourth branch here
+        would be a second spelling of a state the fields already show.
+        """
+        if not self.allow_control:
+            return "refused"
+        floor = "control" in self.allow_all_sessions_for_owner
+        if floor and self.allow_control_to:
+            return (
+                "the sessions named in allow_control_to, and every other session "
+                "on this device (owner floor: control)"
+            )
+        if floor:
+            return "every session on this device (owner floor: control); none is named here"
+        if self.allow_control_to:
+            return "only the sessions named in allow_control_to"
+        return "refused"
+
+    def permits_control(self, key: SessionKey) -> bool:
+        """The one place this machine decides whether a run on it may be stopped.
+
+        Both arms live in `control_grant` rather than inline in the handler so
+        that the device-wide grant — "this operator may stop any run on this
+        machine" — has exactly one seam to widen, and it is the same seam
+        `send_grant` has.
+
+        `allow_control` is still asked first and still means what it always
+        meant: an operator who has not said "control happens on this machine at
+        all" is not overridden by a floor. The floor names no session; the flag
+        decides whether this machine ends anything. Both are needed.
+        """
+        if not self.allow_control:
+            return False
+        return self.control_grant(key) is not None
+
+    def permits_any_control(self) -> bool:
+        """Whether any interrupt at all is permitted here.
+
+        Separate from `permits_control` because a caller asking "can this
+        machine be asked to stop anything" has no session to ask about, and
+        `permits_control` answers a different question about one session. Kept
+        narrow on purpose: it is the flag AND (a named session OR the floor),
+        so a machine with `allow_control: true` and neither list answers False
+        rather than reading as an open door.
+        """
+        if not self.allow_control:
+            return False
+        return bool(self.allow_control_to) or "control" in self.allow_all_sessions_for_owner
 
 
 def _owner_floors(value: Any) -> tuple[str, ...]:
@@ -293,6 +390,52 @@ def _create_projects(value: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _control_sessions(value: Any) -> tuple[str, ...]:
+    """Read `allow_control_to`, refusing a wildcard and refusing a bare string.
+
+    `allow_send_to` is read with a bare `tuple(...)` because it predates this
+    file's rule about floors, and a session named there is refused loudly at the
+    session it names, so a typo costs one failed send and nothing else. Control
+    is not the same shape of grant: it *ends* work rather than adding to it, and
+    the failure a wildcard would cause is not a refused call but a silent one.
+    So this field is read the strict way from the start — the same way
+    `allow_create_projects` is — rather than inheriting the older leniency by
+    accident of being next to `allow_send_to` in the binding.
+
+    A wildcard is refused here specifically because the device-wide grant
+    already exists and is written elsewhere (`allow_all_sessions_for_owner:
+    [control]`). Accepting `"*"` in this list would give an operator two
+    spellings for one grant, and the one that reads like a session list would
+    be the one that is not.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"allow_control_to must be a list of sessions, not a "
+            f"{type(value).__name__}. A bare string is refused rather than "
+            f"wrapped: this field authorizes ending a run, and a typo that "
+            f"silently became a grant is the failure it exists to prevent.",
+        )
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise FleetRefusal(
+                BAD_REQUEST, "allow_control_to must contain non-empty strings")
+        name = item.strip()
+        if name == "*":
+            raise FleetRefusal(
+                BAD_REQUEST,
+                "allow_control_to contains '*'. The device-wide control grant is "
+                "written as `allow_all_sessions_for_owner: [control]`, not as a "
+                "wildcard in a list of sessions. Name the sessions, or move the "
+                "grant to the field that means it.",
+            )
+        if name not in out:
+            out.append(name)
+    return tuple(out)
+
 def load_node_config(path: str | Path | None = None) -> NodeConfig:
     if path is None:
         for candidate in DEFAULT_CONFIG_PATHS:
@@ -364,6 +507,8 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
         allow_create=allow_create,
         allow_create_projects=allow_create_projects,
+        allow_control=bool(raw.get("allow_control", False)),
+        allow_control_to=_control_sessions(raw.get("allow_control_to")),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
         notes=str(raw.get("notes") or ""),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
@@ -391,6 +536,7 @@ class Connector:
                 # opening makes a send possible, so either one makes this true.
                 allow_send=bool(config.allow_send_to or config.allow_all_sessions_for_owner),
                 allow_create=bool(config.allow_create),
+                allow_control=bool(config.allow_control),
             )
         )
 
@@ -512,6 +658,8 @@ class Connector:
             return 200, self._read(parts[2], payload)
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "send":
             return 200, self._send(parts[2], payload)
+        if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "interrupt":
+            return 200, self._interrupt(parts[2])
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             return 200, self._run(parts[2], args)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
@@ -572,6 +720,27 @@ class Connector:
                 # auditing a create needs to see which of the two floors
                 # admitted it.
                 "create_projects": list(self.config.allow_create_projects),
+                # Reported beside the sends and the create above, and not folded
+                # into either. "Why can't ChatGPT stop my run" has to be
+                # answerable from this document alone, and an operator reading
+                # `send_default` must not have to infer this one from it — the
+                # two answer different questions about two different verbs.
+                #
+                # `control_default` is the three-valued sentence from the
+                # config, not a re-derivation here: the owner floor can admit
+                # an interrupt that no list names, so a two-branch expression
+                # in this method would report "refused" for a device that in
+                # fact interrupts everything.
+                "control_allowed": bool(self.config.allow_control),
+                "control_allow_list": list(self.config.allow_control_to),
+                # The raw floor, exactly as `send_owner_floor` reports it and
+                # for the same reason: this document says what the file says,
+                # and `control_default` — the sentence below — is where the
+                # reader learns whether the flag in front of it is open. Hiding
+                # an inert floor here would make the two floors audit
+                # differently for no gain.
+                "control_owner_floor": list(self.config.allow_all_sessions_for_owner),
+                "control_default": self.config.control_default(),
             },
             "upstream_endpoint": self.config.cloudcli_endpoint,
             "credential_stays_here": True,
@@ -681,6 +850,34 @@ class Connector:
         # make. The replay guard is the Fleet surface's, above this line.
         return self.provider.send(key, message)
 
+    def _interrupt(self, native: str):
+        """Stop the run this machine's session has in flight, if this machine said so.
+
+        The floor is checked before the provider is touched, and it is a
+        different decision from `permits_send`: an operator who authorized
+        messaging this session has not thereby authorized ending its run, and a
+        connector that read the send list here would be answering a question
+        nobody was asked.
+
+        No payload parameter, and that is deliberate rather than lazy. The only
+        thing an interrupt may name is the session — CloudCLI's own
+        `session_interrupt` takes one argument and validates it — so a handler
+        that accepted a body would be opening a door with nothing behind it
+        today and something behind it the first time someone added a field.
+        """
+        key = self._key(native)
+        if not self.config.permits_control(key):
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                f"this connector is not authorized to interrupt runs of "
+                f"{key.ref}. Control is granted by `allow_control` and the "
+                f"`allow_control_to` list in this machine's own binding, and "
+                f"that file lives on this machine, not on the caller's. They "
+                f"are {self.config.allow_control!r} and "
+                f"{list(self.config.allow_control_to)} here.",
+            )
+        return self.provider.interrupt(key)
+
     def _run(self, run_id: str, args: dict[str, list[str]]):
         session = (args.get("session") or [None])[0]
         if not session:
@@ -781,6 +978,8 @@ def main(argv: list[str] | None = None) -> int:
         f" — a session not named here: {config.send_default()}\n"
         f"connector: create "
         f"{'allowed for ' + str(list(config.allow_create_projects)) if config.allow_create else 'refused — allow_create is false'}\n"
+        f"connector: control "
+        f"{config.control_default()}\n"
     )
     try:
         server.serve_forever()

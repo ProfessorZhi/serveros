@@ -154,19 +154,36 @@ class Harness:
 class ToolSurface(unittest.TestCase):
     """What a connector reads before it decides what it is allowed to do."""
 
-    def test_the_surface_is_exactly_the_eight_named_tools(self):
+    def test_the_surface_is_exactly_the_nine_named_tools(self):
         self.assertEqual(
             sorted(fleet_tools.tool_names()),
             sorted([
                 "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                 "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
-                "fleet_status", "fleet_create_session",
+                "fleet_status", "fleet_create_session", "fleet_interrupt_session",
             ]),
         )
 
-    def test_exactly_two_tools_are_not_read_only(self):
+    def test_the_eight_read_and_send_tools_were_not_disturbed_by_this_addition(self):
+        """Appending is the whole of the compatibility promise.
+
+        A client caches the tool list by position as well as by name, so the
+        nine-tool surface must begin with the eight it already had, in the order
+        it already had them. Checked as a prefix rather than as "the old names
+        are somewhere in the list", which would pass after a reordering.
+        """
+        self.assertEqual(
+            fleet_tools.tool_names()[:8],
+            ["fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
+             "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
+             "fleet_status", "fleet_create_session"],
+        )
+        self.assertEqual(fleet_tools.tool_names()[8:], ["fleet_interrupt_session"])
+
+    def test_exactly_three_tools_are_not_read_only(self):
         writes = [t.name for t in fleet_tools.TOOLS if not t.annotations["readOnlyHint"]]
-        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session"])
+        self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
+                                  "fleet_interrupt_session"])
 
     def test_no_tool_claims_to_be_idempotent_while_writing(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_send_to_session"]
