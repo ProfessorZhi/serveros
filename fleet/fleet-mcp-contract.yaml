@@ -531,8 +531,13 @@ authorization:
       not narrowed, it is withdrawn, and silently treating `['*']` as "no
       grants" would turn an operator's explicit decision into its opposite.
     revocable_by: deleting the entry
-    audit_fields: [ts, event, principal, device_ref, verb, decision, reason, session_ref]
-    audit_excludes: message bodies and every other caller-supplied string
+    audit_fields: [ts, event, principal, device_ref, verb, decision, grant_reason, session_ref]
+    audit_excludes: >-
+      message bodies and every other caller-supplied string. `grant_reason` is
+      not the `reason` of the surrounding audit: it is a code this surface
+      writes from a closed set, and the two are named differently so that the
+      generic `reason` — which a caller may fill — stays value-withheld while a
+      grant's own "why" survives in the log.
 
 # ---------------------------------------------------------------------------
 # The outbound node transport

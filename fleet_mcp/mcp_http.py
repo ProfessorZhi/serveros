@@ -19,6 +19,14 @@ What it is careful about
 *   The credential is never logged, never echoed into an error, and never
     placed in a URL — it travels only in the `Authorization` header, so it
     cannot be captured by a proxy access log or a redirect.
+*   **Remote text is never relayed.** An error body, an upstream JSON-RPC error
+    message, a response that is not JSON — this process did not write any of it,
+    and the far end is a gateway in front of a model provider, which is where an
+    upstream API key gets quoted back. Every one of those strings is measured by
+    `disclosure.remote_summary` and left behind; what crosses is a description
+    written here. The earlier shape of this file truncated them to 200
+    characters instead, which is a bound on how much of an unknown string is
+    relayed rather than a decision not to relay it.
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .disclosure import remote_summary
 from .errors import (
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
@@ -125,8 +134,13 @@ class McpHttpClient:
                 ) from None
             raise ProviderRefusal(
                 INTERNAL,
-                f"{self.label} returned HTTP {status} for {payload.get('method')}: "
-                f"{raw[:200]}",
+                remote_summary(
+                    self.label,
+                    method=payload.get("method"),
+                    status=status,
+                    body=raw,
+                    content_type=exc.headers.get("Content-Type") if exc.headers else None,
+                ),
                 status=status,
             ) from None
         except (socket.timeout, TimeoutError) as exc:
@@ -145,10 +159,10 @@ class McpHttpClient:
 
         if notify or status == 202:
             return {"_accepted": True, "_status": status}
-        return self._decode(raw, ctype)
+        return self._decode(raw, ctype, label=self.label)
 
     @staticmethod
-    def _decode(raw: str, ctype: str) -> dict[str, Any]:
+    def _decode(raw: str, ctype: str, *, label: str = "provider") -> dict[str, Any]:
         """Accept both plain JSON and an SSE frame carrying one JSON message.
 
         CloudCLI's gateway answers plain JSON today. Handling SSE as well is not
@@ -167,12 +181,14 @@ class McpHttpClient:
                         return json.loads(chunk)
                     except json.JSONDecodeError:
                         continue
-            raise ProviderRefusal(INTERNAL, f"unparseable SSE frame from {raw[:200]!r}")
+            raise ProviderRefusal(
+                INTERNAL, remote_summary(label, body=raw, content_type=ctype)
+            )
         try:
             return json.loads(raw) if stripped else {}
         except json.JSONDecodeError:
             raise ProviderRefusal(
-                INTERNAL, f"provider returned non-JSON: {raw[:200]!r}"
+                INTERNAL, remote_summary(label, body=raw, content_type=ctype)
             ) from None
 
     # -- protocol -----------------------------------------------------------
@@ -191,7 +207,12 @@ class McpHttpClient:
             err = reply["error"] or {}
             raise ProviderRefusal(
                 INTERNAL,
-                f"{self.label} refused {method}: {err.get('code')} {err.get('message')}",
+                remote_summary(
+                    self.label,
+                    method=method,
+                    rpc_code=err.get("code"),
+                    error_message=err.get("message"),
+                ),
             )
         return reply.get("result", {})
 
@@ -220,7 +241,7 @@ class McpHttpClient:
         return self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
 
 
-def structured(result: dict[str, Any]) -> dict[str, Any]:
+def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[str, Any]:
     """Pull the structured half of an MCP tool result.
 
     CloudCLI returns both a text block and `structuredContent`. The structured
@@ -228,6 +249,13 @@ def structured(result: dict[str, Any]) -> dict[str, Any]:
     for; the text half is a rendering. Where only the text half exists it is
     parsed as JSON, and a failure to parse is reported rather than swallowed —
     a caller silently handed `{}` would read it as "no sessions".
+
+    A tool result flagged `isError` carries a message the far end wrote, and
+    that message is not relayed: it is the one place a gateway quotes back a
+    value it was configured with. Its length is reported and the text is left
+    where it was produced. A result flagged `isError` with *no* text cannot be
+    told from a provider that simply produced nothing, so it says exactly that
+    rather than inventing a reason.
     """
     if isinstance(result, dict) and "structuredContent" in result:
         value = result["structuredContent"]
@@ -246,5 +274,7 @@ def structured(result: dict[str, Any]) -> dict[str, Any]:
         text = " ".join(
             b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
-        raise refuse(INTERNAL, f"{text[:300] or 'provider reported an error'}")
+        if not text:
+            raise refuse(INTERNAL, f"{label} reported an error and said nothing more")
+        raise refuse(INTERNAL, remote_summary(label, error_message=text))
     return {}

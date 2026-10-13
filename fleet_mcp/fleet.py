@@ -268,7 +268,7 @@ class FleetService:
                 device_ref=key.device_ref,
                 verb="send",
                 decision="allowed",
-                reason="operator-grant",
+                grant_reason="operator-grant",
                 session_ref=key.ref,
             )
             return
@@ -296,7 +296,7 @@ class FleetService:
                     device_ref=key.device_ref,
                     verb="send",
                     decision="refused",
-                    reason="device-not-eligible",
+                    grant_reason="device-not-eligible",
                     session_ref=key.ref,
                 )
                 detail = (

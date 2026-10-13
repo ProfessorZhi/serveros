@@ -16,6 +16,15 @@ the caller:
     description matters more than the coverage, because a redactor believed to
     be complete is worse than one known to be partial.
 
+    This is the one surface that gets a mask, and it gets one because it is the
+    one surface where a mask is all that can be had: a session's history is
+    free-form, and a read that dropped fields it did not recognise would be a
+    read that lied about what the session said. Everywhere else — remote
+    response text, audit records — the rule is the allowlist in `disclosure.py`.
+    That is a different instrument with a different failure mode: it withholds
+    what was not named rather than removing what was recognised, so a credential
+    shape nobody anticipated stays in instead of going out.
+
 What this module deliberately does NOT do: summarize, rank, or drop messages.
 Deciding which turns are "relevant" is the caller's judgement, and a surface
 that made it would be answering a different question than the one asked.
