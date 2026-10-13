@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from ..config import ProviderBinding
+from .. import cloudcli_native
 from ..errors import (
     BAD_REQUEST,
     INTERNAL,
@@ -90,6 +91,27 @@ class CloudCliProvider(DeviceProvider):
         return structured(result)
 
     # -- health ------------------------------------------------------------
+
+    def native_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call ONE native tool by a name this build records. Never a proxy.
+
+        `_call` can forward any name the transport is handed; THIS method is the
+        one place that decides which names are allowed to reach it, so the
+        decision is in one place rather than at every call site. A name absent
+        from `cloudcli_native`'s closed set is refused before a socket opens.
+
+        Arguments are passed through UNCHANGED — `null` and omitted stay
+        distinct, because the native tool's own schema is the authority on what
+        it accepts, and re-encoding them here would be a second, drifting copy of
+        that authority.
+        """
+        if cloudcli_native.NATIVE_BY_NAME.get(tool) is None:
+            raise refuse(
+                BAD_REQUEST,
+                f"{tool!r} is not a CloudCLI native tool this build mirrors; the "
+                f"mirror forwards only names it recorded.",
+            )
+        return self._call(tool, dict(arguments or {}))
 
     def health(self) -> ProviderHealth:
         started = time.monotonic()

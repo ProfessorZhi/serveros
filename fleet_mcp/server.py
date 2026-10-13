@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from .errors import BAD_REQUEST, INTERNAL, FleetRefusal, refuse
 from .fleet import Principal
-from .tools import ToolContext, TOOLS, call_tool, tool_names
+from .tools import ToolContext, SERVED_TOOLS, call_tool, tool_names
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION, TOOL_SURFACE_REVISION
 
 # Versions this surface speaks. `2024-11-05` is the one the ServerOS MCP
@@ -92,7 +92,7 @@ class McpServer:
             return {}
         if method == "tools/list":
             return {
-                "tools": [tool.as_mcp() for tool in TOOLS],
+                "tools": [tool.as_mcp() for tool in SERVED_TOOLS],
                 "ttl": 0,  # static surface: no cached list can go stale
             }
         if method == "tools/call":
