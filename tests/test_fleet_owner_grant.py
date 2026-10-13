@@ -401,10 +401,15 @@ class ThePrincipalAxis(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TheVerbAxis(unittest.TestCase):
-    def test_send_is_the_only_verb_this_build_has(self):
-        self.assertEqual(OPERATOR_GRANT_VERBS, ("send",))
+    def test_the_implemented_verbs_and_the_planned_ones_are_disjoint(self):
+        # `control` and `create` graduated when the CloudCLI mirror needed to be
+        # governed at the same principal x device x verb axis. Graduating a verb
+        # grants nothing — a principal with no entry still holds nothing.
+        self.assertEqual(OPERATOR_GRANT_VERBS, ("send", "control", "create"))
         self.assertEqual(set(PLANNED_OPERATOR_GRANT_VERBS),
-                         {"control", "approve", "navigate"})
+                         {"approve", "navigate"})
+        self.assertEqual(set(OPERATOR_GRANT_VERBS) & set(PLANNED_OPERATOR_GRANT_VERBS),
+                         set())
 
     def test_a_planned_verb_is_refused_at_load_and_names_the_gap(self):
         """Refused, not accepted-and-ignored.
@@ -425,12 +430,12 @@ class TheVerbAxis(unittest.TestCase):
     def test_a_grant_listing_only_a_verb_that_is_not_send_admits_nothing(self):
         """Verbs do not inherit, checked on the service rather than the parser.
 
-        The parser refuses `control` outright, so this constructs the state a
-        future revision could reach and asks the gate directly: a grant that
-        carries a verb is not a grant of *every* verb.
+        The parser refuses `approve` outright (it is planned), so this
+        constructs the state a future revision could reach and asks the gate
+        directly: a grant that carries a verb is not a grant of *every* verb.
         """
         tmp = Path(tempfile.mkdtemp())
-        h = Harness(tmp, grants={OAUTH: {TOKYO: ("control",)}})
+        h = Harness(tmp, grants={OAUTH: {TOKYO: ("approve",)}})
         self.assertEqual(h.service._operator_grant_verbs(h.principal(), TOKYO), ())
         with self.assertRaises(FleetRefusal):
             h.send(f"{TOKYO}|claude|x")

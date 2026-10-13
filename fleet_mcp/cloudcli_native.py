@@ -47,6 +47,7 @@ it.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -287,3 +288,134 @@ def coverage(observed_names: Iterable[str],
         "annotation_drift": drift,
         "agrees": not (missing or extra or drift),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-tool native schemas, generated from the live tools/list
+# ---------------------------------------------------------------------------
+
+#: A tool whose live schema differs between devices. The call for a device that
+#: differs is refused by name rather than widened to a union no device accepts.
+UNSUPPORTED_BY_DEVICE = "UNSUPPORTED_BY_DEVICE"
+
+
+def native_schema(tool_entry: dict) -> dict | None:
+    """One live tool entry's own `inputSchema`, or `None`.
+
+    Read from the DEVICE's `tools/list`, which is the version-reviewed
+    authority. This module does NOT restate 22 schemas: a restated schema drifts
+    the first time CloudCLI changes a parameter, and the drift is silent. A tool
+    with no `inputSchema` (a placeholder registration — the write tools register
+    `{}` until their deps are wired) returns `None`, which means "no parameters
+    declared" and never "any parameters".
+    """
+    if not isinstance(tool_entry, dict):
+        return None
+    schema = tool_entry.get("inputSchema")
+    return schema if isinstance(schema, dict) else None
+
+
+def mirrored_schema(native: NativeTool, device_schema: dict | None) -> dict:
+    """The mirrored tool's inputSchema for one device.
+
+    The native tool's OWN parameters, carried UNCHANGED under `arguments`, with
+    the Fleet outer fields ADDED: `device_ref` always, and `session_ref` /
+    `project` for the writes whose floor needs them. `required`, `properties`
+    and a nullable type are the native tool's; the outer layer only adds keys and
+    never rewrites a native one. When `device_schema` is `None` the outer layer
+    still declares `arguments` as an open object, because there is no native
+    schema to narrow it with — and an open `arguments` is honest about that
+    rather than inventing a closure.
+    """
+    native_props: dict[str, Any] = {}
+    native_required: list[str] = []
+    if isinstance(device_schema, dict):
+        native_props = dict(device_schema.get("properties") or {})
+        native_required = list(device_schema.get("required") or [])
+    outer: dict[str, Any] = {
+        "device_ref": {"type": "string", "description": "Which device to call."},
+    }
+    if native.governance in (GOV_SEND, GOV_CONTROL):
+        outer["session_ref"] = {"type": "string"}
+    if native.governance == GOV_CREATE:
+        outer["project"] = {"type": "string"}
+    arguments: dict[str, Any] = {
+        "type": "object",
+        "description": f"{native.name}'s own arguments, passed through unchanged.",
+        "additionalProperties": True,
+    }
+    if native_props:
+        arguments["properties"] = native_props
+    if native_required:
+        arguments["required"] = native_required
+    return {
+        "type": "object",
+        "properties": {**outer, "arguments": arguments},
+        "required": ["device_ref"],
+        "additionalProperties": False,
+    }
+
+
+def surface_drift(per_device: dict[str, dict[str, Any]]) -> dict:
+    """Compare per-device live tool sets and schemas.
+
+    `per_device` is `{device_ref: {tool_name: inputSchema}}`. Per tool it reports
+    whether every device that declares it AGREES, and which devices DIFFER. A
+    tool whose schema differs by device is `UNSUPPORTED_BY_DEVICE` for the
+    devices that differ, rather than being widened to a union nobody's device
+    accepts — which is the failure the mirror exists to avoid, arriving as a
+    convenience.
+    """
+    table: dict[str, dict[str, Any]] = {}
+    for device, tools in (per_device or {}).items():
+        for name, schema in (tools or {}).items():
+            table.setdefault(name, {})[device] = schema
+    report: dict[str, Any] = {}
+    for name, by_device in table.items():
+        variants: dict[str, list[str]] = {}
+        for device, schema in by_device.items():
+            variants.setdefault(json.dumps(schema, sort_keys=True), []).append(device)
+        if len(variants) <= 1:
+            report[name] = {"devices": sorted(by_device), "agrees": True,
+                            "unsupported_by_device": []}
+            continue
+        # The devices that DISAGREE with the most common schema are the ones
+        # whose call cannot be trusted to match what the surface declares. A tie
+        # (no majority) leaves every device unsupported rather than picking one.
+        ranked = sorted(variants.values(), key=len, reverse=True)
+        tied = len(ranked[0]) == len(ranked[1])
+        unsupported = (sorted(by_device) if tied
+                       else sorted(d for group in ranked[1:] for d in group))
+        report[name] = {"devices": sorted(by_device), "agrees": False,
+                        "unsupported_by_device": unsupported}
+    return {
+        "schema": "serveros/fleet-cloudcli-surface-drift.v1",
+        "tools": report,
+        "drifted": sorted(n for n, r in report.items() if not r["agrees"]),
+    }
+
+
+def validate_arguments(arguments, schema) -> list[str]:
+    """Check `arguments` against a live native schema. Returns problem strings.
+
+    Only the two rules that protect the device: a REQUIRED parameter must be
+    present, and a parameter the schema does not declare is refused rather than
+    forwarded and ignored (an ignored filter widens the call). `null` and an
+    omitted key are LEFT DISTINCT — `null` is present-and-null, an omitted key is
+    absent, and neither is turned into the other. A `None` schema (a placeholder
+    registration) checks nothing and returns `[]`, because there is no authority
+    to check against.
+    """
+    if not isinstance(schema, dict):
+        return []
+    problems: list[str] = []
+    if not isinstance(arguments, dict):
+        return ["arguments must be an object"]
+    declared = set(schema.get("properties") or {})
+    for name in schema.get("required") or []:
+        if name not in arguments:
+            problems.append(f"missing required parameter {name!r}")
+    if schema.get("additionalProperties") is False:
+        for name in sorted(set(arguments) - declared):
+            problems.append(f"unknown parameter {name!r}")
+    return problems

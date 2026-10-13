@@ -687,7 +687,42 @@ class Connector:
             return 200, self._interrupt(parts[2])
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             return 200, self._run(parts[2], args)
+        if parts == ["v1", "native", "call"]:
+            return 200, self._native_call(payload)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
+
+    def _native_call(self, payload: dict[str, Any]):
+        """One mirrored CloudCLI verb, over the closed route.
+
+        The tool is named in the SIGNED body and refused BY NAME if it is not in
+        the recorded 22: there is no path, no URL, no shell and no redirect here,
+        and the connector forwards a verb it did not record only by refusing it.
+        `arguments` go to the local CloudCLI gateway unchanged. This device-side
+        half is why a `fleet-node` machine answers a native call at all — without
+        it, only a `cloudcli-mcp-http` device could.
+        """
+        from .. import cloudcli_native
+
+        tool = payload.get("tool")
+        arguments = payload.get("arguments") or {}
+        if cloudcli_native.NATIVE_BY_NAME.get(tool) is None:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                f"{tool!r} is not a CloudCLI tool this connector mirrors; it "
+                f"serves the {cloudcli_native.NATIVE_TOOL_COUNT} recorded verbs. "
+                f"A tool name that arrived off the wire is not a capability this "
+                f"connector offers.",
+            )
+        if not isinstance(arguments, dict):
+            raise FleetRefusal("BAD_REQUEST", "arguments must be a JSON object")
+        caller = getattr(self.provider, "native_call", None)
+        if caller is None:
+            raise FleetRefusal(
+                "MCP_TOOL_NOT_IMPLEMENTED",
+                f"this connector's provider ({getattr(self.provider, 'kind', '?')}) "
+                f"does not inherit the CloudCLI native surface.",
+            )
+        return caller(tool, arguments)
 
     # -- handlers ----------------------------------------------------------
 

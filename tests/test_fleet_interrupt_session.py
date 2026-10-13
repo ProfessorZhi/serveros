@@ -708,7 +708,8 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
     def test_the_route_table_gained_exactly_one_entry(self):
         from fleet_mcp import node_protocol as np
 
-        self.assertEqual(len(np.ROUTES), 9)
+        # Nine session routes plus the one mirrored-native route.
+        self.assertEqual(len(np.ROUTES), 10)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

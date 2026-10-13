@@ -165,7 +165,7 @@ class NodeSignature(unittest.TestCase):
             method, _, path = route.partition(" ")
             self.assertIn(method, ("GET", "POST"))
             self.assertTrue(path.startswith("/v1/"))
-        self.assertEqual(len(np.ROUTES), 9)
+        self.assertEqual(len(np.ROUTES), 10)
         # The one route control added, named so that a future edit cannot add a
         # second one under cover of this count going up.
         self.assertIn("POST /v1/sessions/{id}/interrupt", np.ROUTES)

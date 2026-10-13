@@ -44,8 +44,16 @@ PROVIDER_KINDS = ("cloudcli-mcp-http", "fleet-node")
 # additive rather than a redesign, but a name that reads as live while being
 # inert is worse than no name at all. A binding naming a planned verb is refused
 # at load, pointing at the scope that does not exist yet.
-OPERATOR_GRANT_VERBS = ("send",)
-PLANNED_OPERATOR_GRANT_VERBS = ("control", "approve", "navigate")
+#
+# `control` and `create` graduated here so the CloudCLI mirror can be governed at
+# the principal x device x verb axis the SAME way `send` is. Graduating the verb
+# does not grant anything: a principal with no entry still holds nothing, and the
+# per-device flag and the per-session / per-project floor are checked on top
+# (`fleet._may_control` / `_may_create`). `approve` and `navigate` stay planned —
+# their Fleet scopes do not exist, so no grant can express them, and the two
+# native verbs that need them are DENIED rather than inherited.
+OPERATOR_GRANT_VERBS = ("send", "control", "create")
+PLANNED_OPERATOR_GRANT_VERBS = ("approve", "navigate")
 
 # The ownership value that makes a device eligible to appear in an owner grant.
 #

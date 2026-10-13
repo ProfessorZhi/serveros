@@ -33,6 +33,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .. import cloudcli_native
 from ..config import ProviderBinding
 from ..errors import (
     BAD_REQUEST,
@@ -108,6 +109,25 @@ class FleetNodeProvider(DeviceProvider):
             err = decoded["error"] or {}
             raise self._map_code(err.get("code"), err.get("detail") or "")
         return decoded if isinstance(decoded, dict) else {}
+
+    def native_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call ONE mirrored native tool on this node, over the signed route.
+
+        The path is fixed (`/v1/native/call`) and the tool is named in the
+        SIGNED body, so there is no URL, path segment, shell or redirect for a
+        caller to shape — the device refuses any name outside the recorded
+        CloudCLI set. This is the cross-device half of the mirror: without it
+        only a `cloudcli-mcp-http` device could answer a native call, and the
+        Windows and A6000 nodes are `fleet-node`.
+        """
+        if cloudcli_native.NATIVE_BY_NAME.get(tool) is None:
+            raise refuse(
+                BAD_REQUEST,
+                f"{tool!r} is not a CloudCLI native tool this build mirrors; the "
+                f"node route refuses names it did not record.",
+            )
+        return self._request("POST", "/v1/native/call",
+                             {"tool": tool, "arguments": dict(arguments or {})})
 
     def _refusal_from_body(self, status: int, raw: str):
         try:
