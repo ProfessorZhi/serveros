@@ -21,7 +21,16 @@ WHAT IT REFUSES TO DO
 ---------------------
 - **它不把一条消息读成一条需求。** 「源的 revision 动了」是一件关于来源的事实；开一项
   工作是从一个被接受的目标作出的**决定**。这两者之间的那一步必须有人。所以 `propose()`
-  产出的东西叫候选，`work_ref` 是 `None`，而 `open_work()` 没有一次人类授权就拒绝。
+  产出的东西叫候选，`work_ref` 是 `None`，而 `open_work()` 没有一次**被验证过的**人类
+  授权就拒绝。
+- **它不把调用方自己说的「我是人」当身份。** `context/actor-context-contract.yaml` 的第一句
+  就是这件事：**identity is a lookup, not an argument**。一个能宣称自己背后有人的 Agent
+  运行时，可以为此后的每一次变更背书，而它背后的每一道准入闸门都变成了装饰。所以
+  `authorize()` **不读** JSON 里的 kind/by/trusted/APPROVE 文本——那些只被用来**拒绝**，
+  从不被用来接受。身份只能来自一次 lookup：调用方呈上一个 `context_ref`，由注入的
+  权威验证器把它换成一条 `context/actor.py` 形状的可信记录，再交给**那个模块自己的**
+  `validate()` 与 `authorizes()` 判。验证器没有绑定时，答案是 `NEEDS_HUMAN`——不是
+  「先信着」，也不是一个默认通过的兜底。
 - **它不把重复或编辑读成第二项工作。** 收据的身份是消息身份 `(source_id, message_id)`，
   不是 revision。同一条消息被改了是**同一条消息的新修订**，不是第二条消息。
 - **它不接受自称。** 一次运行的结论来自**观察**（真的跑了、退出码是多少），用的是
@@ -83,6 +92,18 @@ def _report_delivery():
     return _load("serveros_runtime_report_delivery", _HERE / "report_delivery.py")
 
 
+def _actor():
+    """The trusted actor plane, loaded under its one name.
+
+    This module does NOT re-implement any of the checks below. It presents a ref,
+    and the answers come from `context/actor.py` — `validate()`, `authorizes()`,
+    `normalize_actor_ref()`, `verify_delegation()`. A second copy of "may this
+    context authorize a mutation" is how two answers to one security question
+    come to exist, and the one that drifts is the one nobody re-reads.
+    """
+    return _load("serveros_context_actor", ROOT / "context" / "actor.py")
+
+
 class Refused(Exception):
     """这次输入不能变成一条收据，理由随消息一起说出来。"""
 
@@ -131,21 +152,27 @@ def stops(document: dict | None = None) -> tuple:
     return _closed_ids(document or contract(), "stops")
 
 
-def decided_by_humans(document: dict | None = None) -> tuple:
-    block = (document or contract()).get("decision_kinds") or {}
-    rows = block.get("accepted")
+def claim_kinds_that_proceed(document: dict | None = None) -> tuple:
+    """声称自己是人类入口的 kind —— 它们**不因此获得任何东西**。
+
+    这个列表里的一切只说明「这条输入可以被送去验证」。名字就是它的含义：一个 claim
+    是字符串，不是一个身份。
+    """
+    block = (document or contract()).get("claim_kinds") or {}
+    rows = block.get("proceeds_to_verification")
     if not isinstance(rows, list) or not rows:
-        raise Refused("契约里读不到 `decision_kinds.accepted`：没有它，就没有任何来源能授权")
+        raise Refused("契约里读不到 `claim_kinds.proceeds_to_verification`："
+                      "没有它，就没有任何声称能被送去验证")
     return tuple(str(row["id"]) for row in rows if isinstance(row, dict) and row.get("id"))
 
 
-def refused_decision_kinds(document: dict | None = None) -> dict:
+def refused_claim_kinds(document: dict | None = None) -> dict:
     """`{id: because}` —— 不能产生授权的来源，**具名**。
 
     一个只有「不合法」的拒绝，收到的人不知道自己做错了什么，也不知道什么才算对。
     具名之后，答复是「子任务 DONE 不产生授权」这一句。
     """
-    block = (document or contract()).get("decision_kinds") or {}
+    block = (document or contract()).get("claim_kinds") or {}
     rows = block.get("refused_by_name") or []
     return {str(row["id"]): str(row.get("because") or "")
             for row in rows if isinstance(row, dict) and row.get("id")}
@@ -302,49 +329,144 @@ def propose(store: dict, *, goal, acceptance=(), sources) -> dict:
     }
 
 
-def authorize(proposal: dict, *, decision) -> dict:
-    """对一条候选作出一次决定。只有可信人类入口的决定能**接受**它。
+def authorize(proposal: dict, *, claim=None, verifier=None, now=None) -> dict:
+    """一次**被验证过的**人类授权，或者一个说得清楚的停法。
 
-    三种结局，一个都不合并：
+    这是整条链上唯一的信任边界，所以它读什么、不读什么必须逐字说清楚。
 
-        kind 不是人类入口        → 抛 Refused（具名说出哪一样不算授权）
-        kind 对，但没带作出者     → 抛 Refused
-        kind 对，但不是对这一版   → 返回 NEEDS_HUMAN（**不是**拒绝：输入成立，只差再问一次）
-        其余                      → 返回 ACCEPTED
+    **不读的** —— 调用方 JSON 里的这些只被用来**拒绝**，从不被用来接受：
 
-    第三种是 `docs/architecture/NATIVE-WORK-ENVIRONMENT.md` §3 的那条规则：来源版本变了
-    之后，受影响的决定要重新过一遍。它返回 `NEEDS_HUMAN` 而不是抛错，因为一次过期的决定
-    不是一次错误——它是一个人上次说过的话，只是现在不再覆盖眼前这一版了。
+        `kind: "human"`   一句话，不是身份
+        `by: "..."`      一个字符串，不是主体
+        `for_revision`   一个自称，不是版本绑定
+        `trusted: true`  更糟：它看起来像证明，而它什么都不是
+        `APPROVE` 文本    一份产物，不是一个人
+
+    **读的** —— `claim["context_ref"]`，而且它只是一个**把手**。
+    `context/actor.py#resolve` 的注释写了这条协议的两半：调用方呈上一个 ref，拿到一条
+    记录或一次 miss，而 miss 不是要被抹平的异常，它就是答案。
+
+    `verifier` 把那个把手换成一条可信记录。它是**注入**的，因为「谁是权威」是部署的事实
+    而不是一个模块常量：生产入口是 `actor_verifier()`，测试注入一个独立的 fake。
+    **`verifier is None` 时答案是 `NEEDS_HUMAN`**，没有别的分支 —— 一个没有验证器的进程
+    不能因为调用方在 JSON 里写了什么就产出授权。
+
+    停法（`REFUSED` 与 `NEEDS_HUMAN` 的分界是「这次输入不成立」对「只差一个人的答复」）：
+
+        调用方声称一个具名的非人类来源 → REFUSED，具名说出它为什么不产生授权
+        没有 context_ref              → REFUSED：声称有人，却拿不出任何把手
+        验证器没有绑定                 → NEEDS_HUMAN
+        验证器抛错 / 答一次 miss       → REFUSED：它断言的授权没有任何 provider 报过
+        记录不是声明的形状             → REFUSED
+        记录不是 FRESH/VERIFIED/FACT   → NEEDS_HUMAN：可能只是过期，再问一次
+        批准覆盖的不是当前这一版来源    → NEEDS_HUMAN：它是对的，只是不再覆盖眼前这一版
+        主体不是这一项期望的人          → REFUSED
     """
-    humans = decided_by_humans()
-    refused = refused_decision_kinds()
-    if not isinstance(decision, dict):
-        raise Refused(f"决定是一个 {type(decision).__name__}，不是一份带着 kind 的记录")
-    kind = str(decision.get("kind") or "").strip()
-    if not kind:
-        raise Refused(
-            "这次决定没有说它是什么来源。『有人同意了』而说不出是谁、凭什么，"
-            "与没有同意没有区别")
-    if kind not in humans:
-        because = refused.get(kind)
+    claim = claim if isinstance(claim, dict) else {}
+    claimed_kind = str(claim.get("kind") or "").strip()
+    refused = refused_claim_kinds()
+    humans = claim_kinds_that_proceed()
+    if claimed_kind and claimed_kind not in humans:
+        because = refused.get(claimed_kind)
         if because:
-            raise Refused(f"一个 `{kind}` 的决定不产生授权。{because}")
+            raise Refused(f"一个 `{claimed_kind}` 的决定不产生授权。{because}")
         raise Refused(
-            f"`{kind}` 不是一个声明过的决定来源（会产生授权的是 {list(humans)}）。"
+            f"`{claimed_kind}` 不是一个能产生授权的来源（会的是 {list(humans)}）。"
             f"认不出的来源按不产生授权处理——把没见过的词读成「可以」是这一类缺陷里最安静的一种")
-    by = _need(decision, "by", f"一次 `{kind}` 的决定")
-    for_revision = str(decision.get("for_revision") or "").strip()
-    at = decision.get("at")
-    if for_revision != proposal["source_revision"]:
-        return {"state": "NEEDS_HUMAN", "kind": kind, "by": by, "at": at,
-                "why": (f"这次决定是对来源版本 {for_revision or '（未说明）'} 作出的，"
-                        f"而 {proposal['requirement_ref']} 现在的来源版本是 "
-                        f"{proposal['source_revision']}。来源在决定之后动过，"
-                        f"这次决定不再覆盖眼前这一版——需要重新问一次，"
-                        f"而不是把旧决定套在新内容上")}
-    return {"state": "ACCEPTED", "kind": kind, "by": by, "at": at,
-            "for_revision": for_revision,
-            "why": f"来自可信人类入口 {by} 的决定，且它正是对这一版来源作出的"}
+
+    if verifier is None:
+        return {"state": "NEEDS_HUMAN", "context_ref": None,
+                "why": ("这次输入声称有人同意了，但没有任何可信的 Actor 验证器被绑定，"
+                        "所以那个声称无法被换成一条记录。身份是一次 lookup 而不是一个"
+                        "参数——一个能宣称自己背后有人的进程，可以为它此后的每一次变更"
+                        "背书。要接受这一条，需要把验证器接上：生产入口是 "
+                        "`runtime/journey.py#actor_verifier`，它只认 "
+                        "`context/actor.py#verify_delegation` 验过的签名证据")}
+
+    ref = str(claim.get("context_ref") or "").strip()
+    if not ref:
+        raise Refused(
+            "这次输入声称有人同意了，却没有呈上任何 `context_ref`。身份是一次 lookup 而"
+            "不是一个参数：拿不出把手的『有人同意了』与没有同意没有区别")
+
+    try:
+        resolution = verifier(claim, now)
+    except Exception as exc:
+        # A verifier that raised is a check that did not happen, and a check that
+        # did not happen authorizes nothing. Reading it as a yes is the same
+        # defect §23.2 names for a transport: unknown is not safe-to-repeat.
+        raise Refused(
+            f"验证器在回答之前抛出了 {type(exc).__name__}: {exc}。这次检查没有发生，"
+            f"而一次没有发生的检查不授权任何东西") from exc
+    if not isinstance(resolution, dict):
+        raise Refused(f"验证器答了一个 {type(resolution).__name__}，不是一份带 found 的解析结果")
+    if not resolution.get("found"):
+        raise Refused(
+            f"`{ref}` 没有被任何 HumanControlProvider 报过："
+            f"{resolution.get('because') or '（验证器没有给理由）'}。"
+            f"呈上一个自己编的 ref 得到的不是一条默认记录——它就是一次 miss")
+
+    actor = _actor()
+    record = resolution.get("context")
+    try:
+        actor.validate(record)
+    except Exception as exc:
+        raise Refused(f"验证器给的记录不是可信 Actor 契约的形状：{exc}") from exc
+
+    # The handle has to be the handle. Without this the presented `context_ref`
+    # is decoration — an interface where the caller presents A and the authority
+    # answers about B hands "who is this about" back to the caller, which is the
+    # whole thing the lookup exists to prevent.
+    resolved_ref = str(record.get("context_ref") or "").strip()
+    if resolved_ref != ref:
+        raise Refused(
+            f"调用方呈上的把手是 {ref}，而验证器给出的记录自称 {resolved_ref}。"
+            f"两者不是同一条上下文——一个把 ref 当摆设的接口，等于把「这是关于谁的」"
+            f"交回给调用方")
+
+    verdict = actor.authorizes(record, now)
+    if not verdict["authorizes"]:
+        return {"state": "NEEDS_HUMAN", "context_ref": ref,
+                "actor_ref": record.get("actor_ref"),
+                "why": (f"这条记录的形状成立，但它现在不授权一次变更："
+                        f"{verdict['because']}。过期的证据不是假的证据——它是需要"
+                        f"再问一次的证据")}
+
+    approved = str(resolution.get("approved_revision") or "").strip()
+    if approved != proposal["source_revision"]:
+        return {"state": "NEEDS_HUMAN", "context_ref": ref,
+                "actor_ref": record.get("actor_ref"),
+                "why": (f"被验证过的批准覆盖的是来源版本 {approved or '（验证器没有给出这一版）'}，"
+                        f"而 {proposal['requirement_ref']} 现在是 "
+                        f"{proposal['source_revision']}。来源在批准之后动过——"
+                        f"这一版需要重新问一次，而不是把旧批准套在新内容上")}
+
+    expected = str(claim.get("approver_ref") or "").strip()
+    if expected:
+        try:
+            got = actor.normalize_actor_ref(record["actor_ref"])
+            want = actor.normalize_actor_ref(expected)
+        except Exception as exc:
+            raise Refused(f"主体引用读不了：{exc}") from exc
+        if got != want:
+            raise Refused(
+                f"这次批准来自 {got}，而这一项期望的是 {want}。说得出是谁、与说得出"
+                f"是**谁**，是两件事——前者是身份，后者是这一项的授权范围")
+
+    grant_ref = str(resolution.get("grant_ref") or "").strip()
+    if not grant_ref:
+        raise Refused(
+            "这次批准没有说它依据的是哪一份 grant。一个说不出自己凭什么的批准，"
+            "在它被复查的那天无从被复查")
+
+    return {"state": "ACCEPTED", "context_ref": ref,
+            "actor_ref": record["actor_ref"], "message_ref": record["message_ref"],
+            "grant_ref": grant_ref, "approved_revision": approved, "at": now,
+            "freshness": verdict["state"],
+            "why": (f"来自可信人类入口 {record['actor_ref']} 的批准"
+                    f"（{record['human_control_provider']} 经 {record['transport']} 验证，"
+                    f"新鲜度 {verdict['state']}），依据 grant {grant_ref}，"
+                    f"覆盖来源版本 {approved}")}
 
 
 def open_work(proposal: dict, authorization: dict, *, epoch: int = 1) -> dict:
@@ -352,22 +474,77 @@ def open_work(proposal: dict, authorization: dict, *, epoch: int = 1) -> dict:
 
     这里**不**做 owner/epoch 的 fencing —— 那件事的权威是
     `runtime/agent_control_store.py`（它按 (Item, epoch) 拒绝旧结果晚到覆盖新 epoch）。
-    这里只保证一件事：一个没有被接受的候选，拿不到 work_ref。
+    这里保证两件事：
+
+    1. 一个没有被**验证过**的批准，拿不到 work_ref；
+    2. **重复批准不产生第二项工作。** work_ref 是
+       `(requirement_ref, 被验证的主体, 那次批准的事件, epoch)` 的纯函数，而
+       `context/actor-context-contract.yaml` 说 `message_ref` 是「这条上下文所关于的
+       那**一个**事件，所以一条消息不能授权两个动作」。于是同一件事被批两次得到的是
+       **同一个** work_ref，而不是两项工作 —— 这一条不需要任何账本就能成立，
+       因为它是身份的函数，不是一次查表的结果。
     """
     if (authorization or {}).get("state") != "ACCEPTED":
         raise Refused(
-            "没有一次被接受的决定，就不能铸造工作引用。候选不是工作："
-            "把 `propose` 的产物直接当成 Item，正是「没有人的决定就没有工作」"
+            "没有一次被**验证过**的批准，就不能铸造工作引用。候选不是工作："
+            "把 `propose` 的产物直接当成 Item，正是「没有人的批准就没有工作」"
             "这条规则唯一可能失效的地方")
     if not isinstance(epoch, int) or epoch < 1:
         raise Refused(f"epoch 是 {epoch!r}，不是一个 >= 1 的整数")
-    owner = _need(authorization, "by", "一次被接受的决定")
-    work_ref = "work:" + _sha12(f"{proposal['requirement_ref']}|{owner}|{epoch}")
+    owner = _need(authorization, "actor_ref", "一次被接受的批准")
+    event = _need(authorization, "message_ref", "一次被接受的批准")
+    work_ref = "work:" + _sha12(
+        f"{proposal['requirement_ref']}|{owner}|{event}|{epoch}")
     return {"work_ref": work_ref, "requirement_ref": proposal["requirement_ref"],
-            "owner": owner, "epoch": epoch,
+            "owner": owner, "approved_by_event": event,
+            "grant_ref": authorization.get("grant_ref"), "epoch": epoch,
             "source_revision": proposal["source_revision"],
-            "why": (f"由 {owner} 接受的候选铸造出来的工作引用。epoch={epoch}；"
-                    f"写者交接的 fencing 在 runtime/agent_control_store.py，不在这里")}
+            "why": (f"由 {owner} 通过 {authorization.get('grant_ref')} 批准的候选铸造出来的"
+                    f"工作引用（依据的事件 {event}）。epoch={epoch}；写者交接的 fencing 在 "
+                    f"runtime/agent_control_store.py，不在这里")}
+
+
+def actor_verifier():
+    """生产入口：把调用方呈现的**签名证据**交给 Actor 契约自己的验证器。
+
+    这是 `authorize(verifier=...)` 应当被接上的那一个。它只做三件事：
+
+      1. 取 `claim["evidence"]` —— 调用方呈现的材料，**不可信**；
+      2. 交给 `context/actor.py#verify_delegation` —— issuer、公钥、受众、Ed25519 签名、
+         主体、时间窗**全部由那个模块判**，这里一个字都不重写（第二份实现就是第二个
+         会漂移的地方，而漂移的那一个一定是不常跑的）；
+      3. 把结果翻译成本模块的解析形状。
+
+    第 3 步里最关键的是 `approved_revision`：它取自**签名载荷**里的 `scope_digests`
+    （`covers` 里的引用为键），不是调用方 JSON 里的任何字段。取不到就是 `None`，
+    而 `authorize` 对 `None` 的答案是 `NEEDS_HUMAN` —— 拿不出被签名的版本绑定时，
+    fail-closed。
+
+    刻意**没有** `trust` 参数：`context/actor.py#delegation_trust` 写了为什么——一个
+    准入路径可以指向别处的信任根，就是一个由调用方选择的信任根。
+
+    在这台机器上这个入口是 **BLOCKED**，而它阻塞的原因是可核对的：项目 venv 里没有
+    `cryptography`（`verify_delegation` 会答 `DELEGATION_VERIFIER_UNAVAILABLE`），且
+    `~/.config/serveros/human-control-trust.json` 不存在（`DELEGATION_PROVIDER_UNBOUND`）。
+    两种情况都会被 `authorize` 翻成 REFUSED —— 一个验证器抛错时，这次检查没有发生，
+    而一次没有发生的检查不授权任何东西。
+    """
+    def verify(claim, now):
+        actor = _actor()
+        evidence = (claim or {}).get("evidence")
+        grant, context = actor.verify_delegation(evidence, now=now)
+        presented = str((claim or {}).get("context_ref") or "").strip()
+        if presented and context["context_ref"] != presented:
+            raise actor.Rejected(
+                "PRESENTED_REF_MISMATCH: 呈上的 context_ref 不是这份委派被签发给的那一条")
+        digests = grant.get("scope_digests") or {}
+        covers = [str(c) for c in (grant.get("covers") or [])]
+        approved = next((digests[c] for c in covers if c in digests), None)
+        return {"found": True, "context": context,
+                "grant_ref": grant.get("grant_ref"),
+                "approved_revision": approved,
+                "because": "provider-signed delegation verified"}
+    return verify
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +663,7 @@ def _stop(receipts: list, stop: str, why: str, refs: dict) -> dict:
             "stop": stop, "why": why}
 
 
-def walk(journey: dict, *, out_dir=None, sender=None, at=None) -> dict:
+def walk(journey: dict, *, out_dir=None, sender=None, at=None, verifier=None) -> dict:
     """一条旅程：从一批来源观察，走到它该停的地方。
 
     它**按需**走，不是一条固定流水线 —— `docs/ABILITY-OPERATING-MODEL.md` §12 的
@@ -520,24 +697,31 @@ def walk(journey: dict, *, out_dir=None, sender=None, at=None) -> dict:
                              proposal["source_revision"], "PROPOSED",
                              proposal["why"], at))
 
-    decision = journey.get("decision")
-    if not decision:
+    claim = journey.get("approval_claim")
+    if not claim:
         return _stop(receipts, "NEEDS_HUMAN",
-                     f"{proposal['requirement_ref']} 已成为候选，但没有人的决定。"
-                     f"没有决定就没有工作——这一条停在这里，等一个可信人类入口的答复",
+                     f"{proposal['requirement_ref']} 已成为候选，但没有人的批准。"
+                     f"没有批准就没有工作——这一条停在这里，等一个可信人类入口的答复",
                      refs)
 
-    authorization = authorize(proposal, decision=decision)
+    if at is None:
+        raise Refused(
+            "走到授权这一步需要一个时钟（at）。新鲜度是关于「现在」的判断，而一个自己读"
+            "时钟的模块会产出一条没人能复现其窗口的记录——`context/actor.py#build` 对 "
+            "`now` 立过同一条规矩")
+
+    authorization = authorize(proposal, claim=claim, verifier=verifier, now=at)
     receipts.append(_receipt("decision", proposal["requirement_ref"],
                              proposal["source_revision"], authorization["state"],
-                             authorization["why"], authorization.get("at")))
+                             authorization["why"], at))
     if authorization["state"] != "ACCEPTED":
         return _stop(receipts, "NEEDS_HUMAN", authorization["why"], refs)
 
     work = open_work(proposal, authorization)
     refs["work_ref"] = work["work_ref"]
+    refs["approved_by"] = authorization["actor_ref"]
     receipts.append(_receipt("work", work["work_ref"], work["source_revision"],
-                             f"OPEN@{work['epoch']}", work["why"], authorization.get("at")))
+                             f"OPEN@{work['epoch']}", work["why"], at))
 
     run = journey.get("run")
     if run is None:

@@ -1,5 +1,5 @@
 {
-  "_sample": "决定 + 真实观察 + 报告 + 待发意图。预期 stop = PENDING（没有消费者，所以不投递）。",
+  "_sample": "调用方**声称**有人同意了。生产 CLI 不接验证器，所以预期 stop = NEEDS_HUMAN：那个声称换不成一条记录，也就铸造不出 work_ref。这不是「还没做」——一个能被 JSON 授权的人类批准，等于没有人类批准。被验证过的接受示例在 tests/test_journey.py 里（注入一个独立 fake 验证器）。",
   "observations": [
     {
       "source_id": "feishu:chat:oc_sample",
@@ -15,10 +15,13 @@
     "测试退出码为 0"
   ],
   "sources": ["feishu:chat:oc_sample|om_sample_0001"],
-  "decision": {
+  "approval_claim": {
     "kind": "human",
+    "context_ref": "human-context:botmux-human-control/0000000000000000",
+    "approver_ref": "feishu:union:on_sample",
+    "_note": "以下三个字段刻意留着，用来说明它们**什么都不做**：by / trusted / for_revision 都不是身份，也不是版本绑定。它们既不能产生授权，也不能让这条链多走一步。",
     "by": "person:vince",
-    "at": "2026-10-14T10:05:00+09:00",
+    "trusted": true,
     "for_revision": "c02c82d563f3"
   },
   "run": {

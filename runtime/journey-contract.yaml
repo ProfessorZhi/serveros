@@ -39,7 +39,10 @@ receipt_kinds:
   - id: requirement
     is: B3 —— 从已捕获的消息形成的一条需求**候选**。它不是 Item。
   - id: decision
-    is: B3 的门 —— 对这条候选作出的一次决定，以及它是否覆盖当前这一版来源。
+    is: >-
+      B3 的门 —— 一次**被验证过的**批准，或者它为什么没有成立。这一条收据读的是
+      `authorize()` 的判定：`ACCEPTED` 只在一条由 HumanControlProvider 报过、现在
+      仍然 FRESH/VERIFIED/FACT、且覆盖当前这一版来源的记录存在时才会出现。
   - id: work
     is: B4 —— 被接受之后才铸造的工作引用与它的 owner。
   - id: acceptance
@@ -71,16 +74,29 @@ stops:
   - id: UNKNOWN
     means: 试过，但这一次投递到底有没有到达，没有任何人能确定。
 
-# ── 什么算一次授权 ────────────────────────────────────────────────────────────
+# ── 调用方的自述：只用来拒绝，从不用来接受 ────────────────────────────────────
 #
-# `docs/architecture/NATIVE-WORK-ENVIRONMENT.md` §3 逐字点名了不能产生授权的三样东西
-# （研究结果、仓库里的 APPROVE 文本、模型生成的卡片与子任务 DONE）。它们在这里是**具名**
-# 拒绝，而不是「格式不合法」—— 具名之后，下次一个人拿子任务的 DONE 来立项时，
-# 得到的答复是「子任务 DONE 不产生授权」这一句，而不是一个解析错误。
-decision_kinds:
-  accepted:
+# 这一节的名字是 `claim`（声称）而不是 `decision`（决定），因为这就是它在这条链上的地位：
+# 一个字符串。`context/actor-context-contract.yaml` 的第一句话是整件事的理由 ——
+# **identity is a lookup, not an argument**。一个能宣称自己背后有人的 Agent 运行时，
+# 可以为它此后的每一次变更背书，而它背后每一道准入闸门都变成了装饰。
+#
+# 于是调用方 JSON 里的 `kind` 只有两种去向：**具名拒绝**，或者**进入验证**。没有第三种。
+# 没有任何字段（`trusted: true`、`by`、`for_revision`、一段 APPROVE 文本）能让一个声称
+# 直接变成一次授权。
+claim_kinds:
+  # 声称自己是人类入口的，**不因此获得任何东西**：它只是获准被送去验证。
+  proceeds_to_verification:
     - id: human
-      means: 来自可信人类入口的决定。它必须带上作出者与它是对哪一版来源作出的。
+      means: >-
+        调用方声称这是一个人。这个声称本身不产生任何东西——它只是把这条输入送去
+        `verifier` 那里，由 `context/actor.py` 判一个 `context_ref` 背后到底有没有一条
+        由 HumanControlProvider 报过、且现在仍然 FRESH/VERIFIED/FACT 的记录。
+
+  # `docs/architecture/NATIVE-WORK-ENVIRONMENT.md` §3 逐字点名了不能产生授权的三样东西
+  # （研究结果、仓库里的 APPROVE 文本、模型生成的卡片与子任务 DONE）。它们在这里是**具名**
+  # 拒绝，而不是「格式不合法」——具名之后，下次一个人拿子任务的 DONE 来立项时，得到的答复是
+  # 「子任务 DONE 不产生授权」这一句，而不是一个解析错误。
   refused_by_name:
     - id: model
       because: >-
@@ -96,6 +112,44 @@ decision_kinds:
       because: >-
         仓库里的一份文本（一个 `APPROVE`、一次 review 的措辞）是**产物**，
         而任何人都能写一份产物。它记录「有人这样写过」，不记录「谁在什么时候为什么答应」。
+
+# ── 授权协议：一个把手，被换成一条记录 ────────────────────────────────────────
+#
+# 调用方那一半协议只有**一个**字段：`context_ref`。而且它只是一个把手 ——
+# `context/actor.py#resolve` 的注释写了这条协议的两半：呈上一个 ref，拿到一条记录或
+# 一次 miss，而 miss 不是要被抹平的异常，它就是答案。
+#
+# 另一半是 `verifier`，一个**注入**的可调用对象。它被注入而不是被配置，因为
+# 「谁是权威」是部署的事实而不是一个模块常量：生产入口是 `runtime/journey.py#actor_verifier`，
+# 测试注入一个独立的 fake。它的签名与返回形状如下，因为一个形状说不清的权威接口，正是
+# 两份实现开始各自漂移的地方。
+authorization:
+  caller_supplies:
+    - context_ref
+    - approver_ref      # 可选：这一项期望的批准主体。它只能**收窄**，不能伪造——
+                        # 主体本身来自被验证的记录，这个字段只用来判「是不是这个人」。
+    - evidence          # 可选：呈给权威验证器的签名材料。**不可信**，直到被验过。
+  verifier:
+    signature: "verifier(claim, now) -> resolution"
+    resolution_found: true
+    resolution_fields:
+      - found              # false 表示没有任何 provider 报过这个 ref —— 一次 miss
+      - context            # found 时：`context/actor-context-contract.yaml` 形状的记录
+      - grant_ref          # found 时：这次批准依据的 grant
+      - approved_revision  # found 时：**被签名载荷**覆盖的来源版本，取不到就是 null
+      - because
+    verified_by: context/actor.py
+    # 这些判据一个字都不在本模块里重写：第二份实现就是第二个会漂移的地方。
+    checks:
+      - validate(record)           # 记录是不是声明的形状
+      - authorizes(record, now)    # 现在 FRESH 且 VERIFIED 且 provenance FACT？
+      - approved_revision == proposal.source_revision
+      - normalize_actor_ref(record.actor_ref) == normalize_actor_ref(approver_ref)
+  unbound_verifier_stops: NEEDS_HUMAN
+  unbound_verifier_because: >-
+    `verifier is None` 时唯一的答案是 NEEDS_HUMAN，没有别的分支：一个没有验证器的进程
+    不能因为调用方在 JSON 里写了 `kind: human` 就产出授权。这不是留给以后的兜底，
+    这就是现在生产 CLI 的行为。
 
 # ── 一条收据要能回答的问题 ────────────────────────────────────────────────────
 #

@@ -312,6 +312,14 @@ def cmd_journey_walk(args) -> int:
     它也不自己挑时间、不猜收件人：`--at` 和输入里的 recipient/requested_by/why 都由
     调用方给。`--worktree` 给的时候才去真实测量工作树的提交窗口；不给就是一处**缺口**，
     报告会写「没人看过」，而不是「本周期没有提交」。
+
+    **这条命令不接验证器，所以它永远授权不了任何东西。** `mod.walk(...)` 的 `verifier`
+    恒为 `None`，于是输入里那个 `approval_claim`（哪怕写着 `kind: human`、`by`、`trusted:
+    true`、或一段 APPROVE 文本）得到的答案是 `NEEDS_HUMAN`——因为身份是一次 lookup 而不是
+    一个参数，而这条命令手上没有任何权威可以 lookup。这不是「还没做」：一个能被 JSON
+    授权的人类批准，等于没有人类批准。要真正接受一条候选，需要把
+    `runtime/journey.py#actor_verifier` 接上，而它在这台机器上是 BLOCKED 的
+    （venv 里没有 `cryptography`，且 `human-control-trust.json` 不存在）。
     """
     mod = _load_module_from(REPO_ROOT / "runtime" / "journey.py",
                             "serveros_runtime_journey")
