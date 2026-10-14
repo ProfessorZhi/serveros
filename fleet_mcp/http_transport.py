@@ -238,8 +238,25 @@ class HttpSurface:
         if method != "POST":
             return _json(405, {"error": "invalid_request",
                                "error_description": "registration requires POST"})
-        payload = _json_body(body)
-        registered = self.oauth.register(payload)
+        try:
+            payload = _json_body(body)
+            registered = self.oauth.register(payload)
+        except OAuthError as exc:
+            # A refusal is answered and forgotten here: the body goes back to the
+            # caller and nothing of the request survives in this process, so the
+            # audit is the only place an operator can later read *why* a client
+            # was turned away. What is written is the error code alone — a closed
+            # word from the RFC's own set, and the same field the refusal body
+            # already returned, so it tells the party that caused it nothing it
+            # did not already hold. `exc.description` is deliberately NOT
+            # recorded: it is free text this surface built out of the caller's
+            # input (for `invalid_redirect_uri` it quotes the redirect_uri), and
+            # no other part of the request is recorded either. The error is
+            # re-raised untouched, so the status and the JSON body are exactly
+            # what they were before this line existed.
+            if self.audit:
+                self.audit.record("oauth.register.refused", error=exc.error)
+            raise
         if self.audit:
             self.audit.record(
                 "oauth.register",
