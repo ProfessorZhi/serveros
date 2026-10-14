@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -683,6 +684,144 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
             self.assertTrue(eid[:1].isalpha())
         self.assertLessEqual(card_period._element_count(card["body"]) + 1,
                              card_period._NATIVE_MAX_ELEMENTS)
+
+
+class TheKpiIsTypedAndNarrowSafe(unittest.TestCase):
+    """The 18:32 desktop screenshot's follow-ups, each pinned by an assertion.
+
+    The defect that started this: the tile read «CPU 128», which a reader takes
+    for a utilization, when 128 is the LOGICAL CORE COUNT. The captions now come
+    from a typed axis table, not from the reading's label, and a reading that
+    contradicts its axis is dropped rather than mislabelled.
+    """
+
+    NOW = "2026-10-14T18:32:00+08:00"
+
+    def _reading(self, label, value, *, unit="", note="", severity="OK"):
+        return monitor.reading(label, value, unit=unit, note=note,
+                               observed_at=self.NOW, severity=severity)
+
+    def _device(self, ref, name, readings=None, *, state=monitor.STATE_KNOWN,
+                platform="linux", reason=None):
+        reach = {"state": state}
+        if state == monitor.STATE_KNOWN:
+            reach["observed_at"] = self.NOW
+        if reason:
+            reach["reason"] = reason
+        return {"device_ref": ref, "display_name": name, "platform": platform,
+                "reachability": reach, "readings": list(readings or []), "accounts": []}
+
+    def _model(self, *, tokyo=(), extras=()):
+        devices = [self._device("device:tokyo-shared-dev-01", "东京共享开发机", tokyo)] \
+            + list(extras)
+        return monitor.monitor_model(devices=devices, services=(), now=self.NOW)
+
+    def _tiles(self, card):
+        rows = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+        return [c for r in rows for c in (r.get("columns") or [])]
+
+    def _caption(self, tile):
+        return re.sub(r"</?font[^>]*>", "", tile["elements"][1]["content"])
+
+    def _value(self, tile):
+        return tile["elements"][0]["content"]
+
+    def test_a_core_count_is_captioned_as_cores_and_never_a_percentage(self):
+        model = self._model(tokyo=[self._reading("CPU", "128 逻辑核")])
+        card = card_period.render_period_card(model)
+        tiles = self._tiles(card)
+        self.assertEqual(len(tiles), 1)
+        self.assertIn("逻辑核", self._caption(tiles[0]))
+        self.assertIn("128", self._value(tiles[0]))
+        blob = json.dumps(card, ensure_ascii=False)
+        self.assertNotIn("128%", blob)          # a count is not a percentage
+        self.assertNotIn(">CPU<", blob)         # nor is it a bare "CPU"
+
+    def test_a_real_utilization_earns_the_utilization_caption(self):
+        model = self._model(tokyo=[self._reading("CPU", "12.5%")])
+        tiles = self._tiles(card_period.render_period_card(model))
+        self.assertIn("使用率", self._caption(tiles[0]))
+
+    def test_the_percent_axes_keep_their_units_and_labels(self):
+        model = self._model(tokyo=[self._reading("内存", "32.6%"),
+                                   self._reading("交换区", "89.2%", note="阈值 90.0%"),
+                                   self._reading("磁盘 /", "9.5%")])
+        tiles = self._tiles(card_period.render_period_card(model))
+        self.assertEqual([self._caption(t) for t in tiles], ["内存", "交换区", "磁盘"])
+        for tile in tiles:
+            self.assertIn("%", self._value(tile))
+
+    def test_an_axis_with_no_reading_is_not_invented(self):
+        card = card_period.render_period_card(
+            self._model(tokyo=[self._reading("内存", "32.6%")]))
+        self.assertEqual(len(self._tiles(card)), 1)
+        self.assertNotIn("0%", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("未获取</font>", json.dumps(card, ensure_ascii=False))
+
+    def test_an_axis_whose_reading_contradicts_its_unit_is_dropped(self):
+        # A byte count under the memory axis (declared `percent`) would put a
+        # wrong caption under the number — the exact class of the CPU defect.
+        card = card_period.render_period_card(
+            self._model(tokyo=[self._reading("内存", "2048 MiB")]))
+        self.assertEqual(self._tiles(card), [])
+
+    def test_the_narrow_layout_uses_no_fixed_pixel_width(self):
+        card = card_period.render_period_card(
+            self._model(tokyo=[self._reading("内存", "32.6%")]))
+
+        def walk(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "column":
+                    self.assertEqual(node.get("width"), "weighted")
+                    self.assertNotIn("px", str(node.get("width")))
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(card["body"])
+
+    def test_colours_are_theme_tokens_not_raw_rgba(self):
+        # Theme tokens (grey-50 / yellow-50 / blue) carry their own light/dark;
+        # a raw colour would pin one theme and be unreadable in the other.
+        blob = json.dumps(card_period.render_period_card(
+            self._model(tokyo=[self._reading("内存", "32.6%")])), ensure_ascii=False)
+        self.assertNotIn("rgba(", blob)
+        self.assertNotIn("light_mode", blob)
+        self.assertNotIn("dark_mode", blob)
+
+    def test_the_swap_threshold_earns_the_yellow_tile_and_not_below_it(self):
+        hot = self._model(tokyo=[self._reading("交换区", "89.2%", note="阈值 90.0%")])
+        cool = self._model(tokyo=[self._reading("交换区", "40.0%")])
+        self.assertEqual(self._tiles(card_period.render_period_card(hot))[0]["background_style"],
+                         "yellow-50")
+        self.assertEqual(self._tiles(card_period.render_period_card(cool))[0]["background_style"],
+                         "grey-50")
+
+    def test_the_server_verified_structure_does_not_regress(self):
+        # schema 2.0 / two 2-column column_set / three folds — what the remote
+        # `user_card_content` read-back confirmed. None of it may regress.
+        model = self._model(
+            tokyo=[self._reading("CPU", "128 逻辑核"), self._reading("内存", "32.6%"),
+                   self._reading("交换区", "89.2%"), self._reading("磁盘 /", "9.5%")],
+            extras=[self._device("device:work-fj", "FJPCOS 工作站", state=monitor.STATE_UNKNOWN,
+                                 platform="windows", reason="无采集"),
+                    self._device("device:llm-lab-dell", "A6000 推理机",
+                                 state=monitor.STATE_UNKNOWN, reason="无采集")])
+        card = card_period.render_period_card(model)
+        self.assertEqual(card["schema"], "2.0")
+        rows = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+        self.assertEqual([len(r["columns"]) for r in rows], [2, 2])
+        tags = []
+        monitor._walk_tags(card["body"], tags)
+        self.assertEqual(tags.count("collapsible_panel"), 3)
+        self.assertNotIn("chart", tags)
+        self.assertNotIn("table", tags)
+        self.assertNotIn("corner_radius",
+                         json.dumps([c for r in rows for c in r["columns"]]))
+        self.assertEqual(card["header"]["icon"]["token"], card_period._HEADER_ICON)
+        self.assertEqual(len(card["header"]["text_tag_list"]), 2)
 
 
 class TheRowKeepsOnlyWhatItNames(unittest.TestCase):

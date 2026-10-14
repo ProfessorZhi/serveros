@@ -186,6 +186,38 @@ for»）。默认表：
 200 元素/30KB；**客户端是否真渲染 `column_set` 背景、`div.fields`、`text_tag_list`
 须由用户桌面/手机截图确认**。
 
+## 4.3 下一代原生模块：设计决策（2026-10-14，桌面截图认可后）
+
+用户已认可 18:32 的原生 2×2 KPI 分栏（「这样漂亮」）。本轮**保持该基线**，只做 P0
+精修与组件化收敛。以下是**可验收的组件使用合同**，供下一轮灰度前确认：
+
+| 组件 | 允许的条件 | 不允许 |
+|---|---|---|
+| `column_set` + `column` | KPI 分栏（`flex_mode:none` + `weighted`，浅底色 `grey-50`/`yellow-50`） | 固定 px 宽、`stretch` 拉伸、`column.corner_radius`（非法，见 §4.2）|
+| `div.fields` | label/value 对（设备覆盖） | 用 `column_set` 模拟字段对 |
+| `collapsible_panel` | 设备详情的收纳（折叠内可放 `column_set`） | 折叠里放 `table`；嵌套 > 5 层 |
+| **`chart`（VChart）** | **仅当有真实带时间戳的时序样本（≥2 拍，含来源/缺口量）**；`chart_spec` 为纯 JSON；移动端**需真机验收后**才开门 | 单拍画曲线；用 `rainbow` 配色；把缺口补成 0 或复制末次值 |
+| **`table`** | 只放 **Card2.0 body 根**（不可嵌折叠） | 用于 302px 主卡；宽表硬塞 |
+| **`input` / `button`** | **仅当存在真实授权的 callback**（有可核的交互语义） | 无回调的装饰按钮；未授权的控制面 |
+| **`interactive_container`** | 必须带**合法 `behaviors`** 且确有交互 | 纯装饰块 |
+| 彩色 header / 关键警告 | 语义一致：红**只**代表**真实确认的 CRITICAL**（`_real_critical`）；`yellow/orange` 代表接近阈值的提示 | 用 UNKNOWN/未采集触发红色；用彩色表达装饰 |
+
+**语义边界（不改）**：UNKNOWN（未获取采样）**不等于离线/失联**；「服务未采集」
+**不等于 0 个服务**；缺失读数**不补 0、不复制末次值**。
+
+**本轮保持不变的基线**：2×2 浅色原生 KPI 分栏、header（icon + title/subtitle +
+`text_tag_list`）、`div.fields` 覆盖、3 个原生 `collapsible_panel`、零
+`corner_radius` / `chart` / `table` / `interactive_container`。
+
+**KPI 现在是类型化的**：caption 由 `_KPI_AXES` 的类型表决定，不抄读数 label；
+`CPU逻辑核`（计数）与 `CPU 使用率`（百分比）按值的单位区分，读数与轴单位**矛盾则
+该格从网格丢弃**（原始读数仍留在折叠中）——「CPU 128」被误读成利用率的缺陷由此根治。
+
+**下一轮图表的真实采样缺口**：目前每个时段只有**单拍**样本，且 `card_period` 的
+row 只保留 `verdict/observation/sections/gaps` 的**状态词**，**不含带时间戳的
+CPU/RAM/GPU/Swap/网络数值序列**。要打开 `chart` 必须先有：(a) 采集侧提供带
+`observed_at` 的数值时序；(b) 每时段 ≥2 拍；(c) 真机验收移动端 VChart。
+
 ## 5. 明确没做 / 不声称
 
 - **不部署、不启用定时器、不发真实飞书、不读生产 token**；不动 `ops/`、

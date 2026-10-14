@@ -1567,7 +1567,7 @@ def _fold_body(device, *, index: int) -> list[dict]:
                      "elements": [
                          _md(monitor._value(r)),
                          {"tag": "markdown", "text_size": "notation",
-                          "content": f"<font color='grey'>{r['label']}</font>"},
+                          "content": f"<font color='grey'>{_reading_caption(r)}</font>"},
                      ]}
                     for r in known[start:start + 2]
                 ],
@@ -1695,9 +1695,46 @@ _NATIVE_TAG_COLORS = ("neutral", "blue", "turquoise", "lime", "orange", "violet"
 #: a made-up token renders as nothing.
 _HEADER_ICON = "setting_outlined"
 _NATIVE_MAX_ELEMENTS = 200
-#: The KPI axes the grid shows, in tile order, matched against a reading's own
-#: label. An axis with no reading is simply absent — never a zero.
-_KPI_AXES = ("CPU", "内存", "交换", "磁盘")
+#: The KPI axes, TYPED. `label` is what the tile prints — chosen by this table
+#: rather than copied from the reading — and `unit` says what the number IS.
+#: The type check is the whole point: a reading whose value contradicts its axis
+#: is DROPPED from the grid rather than shown under a caption that lies about
+#: it, which is exactly the confusion the desktop screenshot caught —
+#: «CPU 128» was 128 logical CORES, not a utilization, because the caption came
+#: from the reading's label instead of from what the number was.
+#:
+#: `unit: "any"` with `labels` picks the caption FROM the value's own type, so a
+#: source that later reports a real CPU utilization gets the caption it has
+#: earned and a source reporting a core count keeps the honest one.
+_KPI_AXES = (
+    {"match": "CPU", "unit": "any",
+     "labels": {"percent": "CPU 使用率", "other": "CPU逻辑核"}},
+    {"match": "内存", "unit": "percent", "labels": {"percent": "内存", "other": "内存"}},
+    {"match": "交换", "unit": "percent", "labels": {"percent": "交换区", "other": "交换区"}},
+    {"match": "磁盘", "unit": "percent", "labels": {"percent": "磁盘", "other": "磁盘"}},
+)
+
+
+def _value_unit(value) -> str:
+    """What a formatted value IS: `percent` or `other`. One place decides."""
+    return "percent" if str(value).strip().endswith("%") else "other"
+
+
+def _reading_caption(reading) -> str:
+    """A READING's tile caption, typed when its axis is known.
+
+    The fold tiles take their caption from here for the same reason the KPI
+    grid does: a bare «CPU» under a core count is the confusion this whole layer
+    exists to remove, and the fold is not a place it is allowed to reappear. An
+    unknown label keeps its own name rather than being forced into an axis.
+    """
+    label = str(reading.get("label") or "")
+    value, _ = _split_value(reading.get("value"))
+    unit = _value_unit(value)
+    for axis in _KPI_AXES:
+        if axis["match"] in label:
+            return (axis.get("labels") or {}).get(unit, label)
+    return label
 
 
 def _split_value(raw) -> tuple[str, str]:
@@ -1718,12 +1755,9 @@ def _split_value(raw) -> tuple[str, str]:
     return text, ""
 
 
-def _kpi_cell(reading, label) -> dict:
+def _kpi_cell(axis: dict, value: str, note: str) -> dict:
     """One KPI tile: its value, caption, and the colours it has EARNED."""
-    if reading is None:
-        return {"label": label, "value": "未获取", "note": "",
-                "bg": "grey-50", "color": "grey"}
-    value, note = _split_value(reading.get("value"))
+    label = (axis.get("labels") or {}).get(_value_unit(value), axis.get("match"))
     color, background = "blue", "grey-50"
     if label.startswith("交换") and value.endswith("%"):
         try:
@@ -1736,7 +1770,13 @@ def _kpi_cell(reading, label) -> dict:
 
 
 def _kpi_cells(model: dict) -> list[dict]:
-    """The measured KPIs, in axis order. An axis with no reading is absent."""
+    """The measured KPIs, in axis order, type-checked against their axis.
+
+    An axis with no reading is ABSENT — never a zero, never a green tile. An
+    axis whose reading contradicts its declared unit is absent too: «a
+    percentage is not a core count» and a tile that showed one under the other
+    would be the caption lying, which is what this table exists to prevent.
+    """
     devices = model.get("devices") or []
     main = next((d for d in devices if _reach_state(d) == "KNOWN"),
                 devices[0] if devices else None)
@@ -1746,14 +1786,27 @@ def _kpi_cells(model: dict) -> list[dict]:
                  if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
     cells = []
     for axis in _KPI_AXES:
-        match = next((r for r in known if axis in str(r.get("label") or "")), None)
-        if match is not None:
-            cells.append(_kpi_cell(match, "交换区" if axis == "交换" else axis))
+        match = next((r for r in known
+                      if axis["match"] in str(r.get("label") or "")), None)
+        if match is None:
+            continue
+        value, note = _split_value(match.get("value"))
+        if axis["unit"] != "any" and _value_unit(value) != axis["unit"]:
+            # A contradiction between the number and what it claims to be. The
+            # raw reading still appears in the device fold; the grid simply does
+            # not repeat it under a caption it does not match.
+            continue
+        cells.append(_kpi_cell(axis, value, note))
     return cells
 
 
 def _kpi_tile(cell: dict) -> dict:
-    """One native `column`: a big value over a small grey caption."""
+    """One native `column`: a big value over a small grey caption.
+
+    Value and caption only. The reading's own note (a byte split, a threshold)
+    lives in the device fold, so the tile stays two lines and the 2x2 keeps its
+    height on a phone.
+    """
     return {
         "tag": "column", "width": "weighted", "weight": 1,
         "background_style": cell["bg"], "padding": "12px",
@@ -1785,7 +1838,7 @@ def _kpi_grid(cells: list[dict]) -> list[dict]:
     return elements
 
 
-def _status_fields(model: dict) -> dict:
+def _source_coverage(model: dict) -> dict:
     """Per-device coverage as native `div.fields` label/value pairs.
 
     Native alignment, not a `column_set` used to fake a field grid — and one
@@ -1825,7 +1878,20 @@ def _native_panel(title: str, elements: list[dict], eid: str) -> dict:
     }
 
 
-def _summary_block(archive: dict) -> dict:
+def _device_panel(model: dict, device: dict, index: int, *, main) -> dict:
+    """One device's fold: its detail, plus the collected device's service line."""
+    elements = _fold_body(device, index=index)
+    if device is main:
+        # Service COUNTS live inside the collected device's own fold, never as a
+        # standalone first-screen line — «服务：未采集» as its own row was one of
+        # the things that made an earlier card read badly.
+        elements.append({"tag": "markdown", "text_size": "notation",
+                         "content": f"<font color='grey'>{_service_line(model)}</font>"})
+    return _native_panel(_fold_title(device), elements,
+                         monitor.element_id("pan", device.get("device_ref") or index))
+
+
+def _archive_panel(archive: dict) -> dict:
     """The FINAL closure, a light-background block after the first screen."""
     return {
         "tag": "column_set", "flex_mode": "none", "margin": "0px 0px 8px 0px",
@@ -1836,6 +1902,13 @@ def _summary_block(archive: dict) -> dict:
             "elements": [_md("\n".join(_archive_lines(archive)))],
         }],
     }
+
+
+def _card_footer(test_mark) -> dict:
+    """The one-line read-only footer, shared by LIVE and ARCHIVED."""
+    return {"tag": "markdown", "text_size": "notation",
+            "content": "<font color='grey'>只读 · 本卡不会停止、重启或清理任何东西"
+            + (" · 灰度测试，非正式播报" if test_mark else "") + "</font>"}
 
 
 def _native_header(model: dict, *, archive, test_mark, now_hhmm) -> dict:
@@ -1936,13 +2009,16 @@ def render_period_card(model: dict, *, archive: dict | None = None,
     main = next((d for d in devices if _reach_state(d) == "KNOWN"),
                 devices[0] if devices else None)
     elements: list[dict] = []
+    # The component tree, in order, each piece a named helper so LIVE and
+    # ARCHIVED cannot drift: KpiGrid → Warning → SourceCoverage → Gap →
+    # [ArchivePanel] → DevicePanel×N → Footer.
     elements.extend(_kpi_grid(_kpi_cells(model)))
     warning = _swap_warning(main) if main else None
     if warning:
         elements.append({"tag": "markdown", "text_size": "notation",
                          "margin": "0px 0px 8px 0px", "content": f"⚠️ {warning}"})
     if devices:
-        elements.append(_status_fields(model))
+        elements.append(_source_coverage(model))
     unknown_names = [_device_name(d) for d in devices if _reach_state(d) != "KNOWN"]
     if unknown_names:
         elements.append({
@@ -1950,21 +2026,10 @@ def render_period_card(model: dict, *, archive: dict | None = None,
             "content": "<font color='grey'>" + "、".join(unknown_names)
                        + " 未获取资源采样（连接器可达 ≠ 已采集）</font>"})
     if archive is not None:
-        elements.append(_summary_block(archive))
+        elements.append(_archive_panel(archive))
     for index, device in enumerate(devices):
-        body = _fold_body(device, index=index)
-        if device is main:
-            # Service COUNTS live inside the collected device's own fold, never
-            # as a standalone first-screen line — «服务：未采集» as its own row
-            # was one of the things that made the previous card read badly.
-            body.append({"tag": "markdown", "text_size": "notation",
-                         "content": f"<font color='grey'>{_service_line(model)}</font>"})
-        elements.append(_native_panel(
-            _fold_title(device), body,
-            monitor.element_id("pan", device.get("device_ref") or index)))
-    elements.append({"tag": "markdown", "text_size": "notation",
-                     "content": "<font color='grey'>只读 · 本卡不会停止、重启或清理任何东西"
-                     + (" · 灰度测试，非正式播报" if test_mark else "") + "</font>"})
+        elements.append(_device_panel(model, device, index, main=main))
+    elements.append(_card_footer(test_mark))
     card = {
         "schema": "2.0",
         "config": {"update_multi": True, "width_mode": "default"},
