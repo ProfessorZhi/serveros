@@ -28,7 +28,9 @@ from typing import Any
 import yaml
 
 from .errors import BAD_REQUEST, refuse
+from .identity import SessionKey
 from .local_roots import binding_candidates, refusal_if_closed_root
+from .runtime_identity import BASE_RUNTIME
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
@@ -80,12 +82,30 @@ def _anchor(value: Any, what: str) -> Path:
 DEFAULT_CONFIG_PATHS = binding_candidates("fleet-mcp.local.yaml")
 
 
+def provider_key(device_ref: str, runtime: str = BASE_RUNTIME) -> str:
+    """The ledger key one runtime on one device is filed under.
+
+    The device's own runtime keeps the BARE `device:<id>` key, so a binding
+    written before a second runtime existed is unchanged on disk and in memory.
+    Any other runtime appends `|<tag>` — the separator a session reference
+    already uses — so the two spellings agree about where the runtime sits.
+    """
+    return device_ref if runtime == BASE_RUNTIME else f"{device_ref}|{runtime}"
+
+
 @dataclass(frozen=True)
 class ProviderBinding:
     device_ref: str
     kind: str
     endpoint: str
     credential_anchor: Path
+    #: Which runtime ON that device this binding reaches. One physical machine
+    #: can host several — different OS accounts, each with its own CloudCLI and
+    #: its own credential — and they are reached by separate bindings with
+    #: separate endpoints and separate anchors. It defaults to the device's own
+    #: runtime, so a binding written before a second one existed means exactly
+    #: what it meant then.
+    runtime: str = BASE_RUNTIME
     connect_timeout: float = 5.0
     read_timeout: float = 45.0
     enabled: bool = True
@@ -283,8 +303,14 @@ class FleetConfig:
     audit: AuditBinding | None = None
     registry_path: Path | None = None
 
-    def provider_for(self, device_ref: str) -> ProviderBinding | None:
-        return self.providers.get(device_ref)
+    def provider_for(self, device_ref: str,
+                     runtime: str = BASE_RUNTIME) -> ProviderBinding | None:
+        """The binding for one runtime on one device, or `None`.
+
+        `runtime` defaults to the device's own, so every call site written
+        before a device could serve two means the same thing it meant then.
+        """
+        return self.providers.get(provider_key(device_ref, runtime))
 
     def describe(self) -> dict[str, Any]:
         """A summary safe to emit. Anchors are shown as paths, never values."""
@@ -293,6 +319,8 @@ class FleetConfig:
             "registry_path": str(self.registry_path) if self.registry_path else None,
             "providers": {
                 ref: {
+                    "device_ref": b.device_ref,
+                    "runtime": b.runtime,
                     "kind": b.kind,
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
@@ -603,10 +631,29 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                 BAD_REQUEST,
                 f"provider {ref} declares unknown kind {kind!r}; known kinds: {list(PROVIDER_KINDS)}",
             )
-        if not str(ref).startswith("device:"):
+        # A second runtime on one machine is a second provider entry. The
+        # runtime is written either in the key (`device:<id>|<tag>`) or in a
+        # `runtime:` field, and never in both without agreeing — a binding whose
+        # callers reach it under a different name from the one it declares is a
+        # binding nobody can find.
+        device_ref, _, keyed_runtime = str(ref).partition("|")
+        field_runtime = entry.get("runtime")
+        if keyed_runtime and field_runtime and str(field_runtime) != keyed_runtime:
+            raise refuse(
+                BAD_REQUEST,
+                f"provider {ref} names runtime {keyed_runtime!r} in its key and "
+                f"{field_runtime!r} in its `runtime` field",
+            )
+        runtime = str(field_runtime or keyed_runtime or BASE_RUNTIME)
+        if not device_ref.startswith("device:"):
             raise refuse(BAD_REQUEST, f"provider key {ref!r} is not a typed device ref")
-        providers[ref] = ProviderBinding(
-            device_ref=ref,
+        # The runtime must be a tag this surface can address in a session ref;
+        # the authority for that grammar is `SessionKey`, so it is asked rather
+        # than restated here.
+        SessionKey(device_ref, runtime, "binding-validation")
+        providers[provider_key(device_ref, runtime)] = ProviderBinding(
+            device_ref=device_ref,
+            runtime=runtime,
             kind=kind,
             endpoint=str(entry.get("endpoint") or ""),
             credential_anchor=_anchor(entry.get("credential_anchor"), f"provider {ref} credential_anchor"),

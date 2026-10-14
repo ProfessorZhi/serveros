@@ -206,17 +206,18 @@ class TheIsolationContractIsOnTheDeviceTest(unittest.TestCase):
                 self.assertEqual(row["owner"], "device",
                                  f"{row['fact']} is not this host's to verify")
 
-    def test_the_signature_does_not_yet_carry_the_runtime(self):
-        """A CHARACTERIZATION of the gap, pinned so that closing it is a
-        deliberate edit to this assertion and to the design note.
+    def test_the_v1_signature_still_carries_no_runtime(self):
+        """v1 is left exactly as it was, and v2 is a SEPARATE function.
 
-        `node_protocol.base_string` takes a `device_ref` and no runtime, so two
-        runtimes on one device sign and verify identically: a holder of the
-        device's node secret can present a request for either runtime, and the
-        device side decides which one it was. With one runtime per device that
-        was the same statement; with two accounts on one machine it is the
-        isolation the `node_secret` row above cannot yet deliver. See
-        `docs/fleet-multi-runtime-design.md`, gap G1.
+        This pins the shape of `base_string`: the field was not added to it, it
+        was added to `base_string_v2`. A machine that speaks v1 keeps signing
+        and verifying byte-identically, which is what lets the two halves of the
+        rollout ship apart.
+
+        `base_string` takes a `device_ref` and no runtime — deliberately, and
+        permanently: every connector in the field speaks v1. The runtime is
+        carried by `base_string_v2`, which a second runtime on a shared machine
+        signs with. See `docs/fleet-multi-runtime-design.md` §9.
         """
         args = dict(method="POST", path="/v1/native/call", body=b"{}",
                     timestamp="1700000000", nonce="a" * 32)

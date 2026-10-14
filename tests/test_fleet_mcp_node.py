@@ -386,8 +386,14 @@ class SignatureGate(_Base):
         self.assertEqual(right[0], 200, right[1])
 
     def test_the_protocol_version_is_pinned(self):
+        """A protocol this connector does not speak is refused by name.
+
+        `v2` is NOT a foreign value any more — it is the version a second
+        runtime on the same machine uses — so the check that a version this
+        build does not know is refused uses one no revision has ever spoken.
+        """
         status, payload = self.request(
-            "GET", "/v1/health", headers={"X-Fleet-Protocol": "serveros/fleet-node/v2"}
+            "GET", "/v1/health", headers={"X-Fleet-Protocol": "serveros/fleet-node/v3"}
         )
         self.assertEqual(status, 401)
         self.assertEqual(payload["error"]["code"], "PROTOCOL_MISMATCH")

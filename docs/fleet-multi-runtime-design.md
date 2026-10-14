@@ -1,6 +1,8 @@
 # One physical device, several runtimes
 
-Status of this document: **design + offline naming rule. Nothing here is live.**
+Status of this document: **G1 and G2 are IMPLEMENTED as a prototype on
+`feat/fleet-multi-runtime-identity-20261014`; nothing here is deployed and no
+second runtime exists on any machine yet.**
 No device, binding, connector, credential or running surface was changed to
 produce it, and no part of it has been exercised against a real machine.
 
@@ -60,10 +62,9 @@ never used for routing. Closing it means keying providers by
 `(device_ref, provider)` and routing on the tag the reference already carries.
 This is the change that would touch the running surface, and it is not made here.
 
-**Why neither is made here.** Both alter behaviour of a surface that is live.
-The naming rule is the part that can be settled first: it is pure, it has no
-callers, and once its invariants are pinned, the routing change is a change to
-*how* a tag is dispatched rather than a change to *what a tag is*.
+**Both are now closed in code — see §9**, which states what each side does and
+what is still missing. This section is kept as the analysis the change was made
+against: it is what the gaps WERE, and the two rows above are why they existed.
 
 ## 4. The isolation contract
 
@@ -98,7 +99,9 @@ three it cannot see.
 
 ## 6. Production GO gate
 
-Nothing below is done. In dependency order:
+**Superseded by §10** — the two code items below are done; the registry,
+device and grant items are the ones that remain. Kept for the dependency
+analysis. In dependency order:
 
 1. **G1** — extend the signed base string (and the connector's verification) to
    cover the runtime. Wire-protocol change; needs its own review and a
@@ -140,3 +143,88 @@ that is not typed rather than inventing one: one machine is one authenticated
 device, and giving it two identities would be two things to keep in step.
 Personal devices remain out of scope — nothing here widens the eligible set,
 which stays `ownership: company` through the existing operator-grant filter.
+
+
+---
+
+## 9. Status after the G1/G2 change
+
+**G1 — closed in code.** `node_protocol` now speaks two versions:
+
+| | canonical message | runtime |
+|---|---|---|
+| `serveros/fleet-node/v1` | `METHOD · PATH · hash(body) · device_ref · ts · nonce` | not signed — BYTE-IDENTICAL to what it always was |
+| `serveros/fleet-node/v2` | v1's, with `runtime` inserted before `ts` | inside the signature |
+
+A v1 request is accepted only for the device's own runtime; a connector serving a
+second one refuses it by name (`RUNTIME_REQUIRED`). A v1 request that *carries* a
+runtime header is refused (`RUNTIME_NOT_SIGNED`) — the caller cannot self-report
+an account, and that is a property of the protocol rather than of a check someone
+remembered to write. A v2 request must name the runtime the connector serves, the
+name is inside the signature, and a secret for one runtime cannot produce a
+signature that verifies for another. Replay and the timestamp window are unchanged
+and apply to both versions.
+
+The device's own runtime keeps signing v1: a machine nobody has touched keeps
+answering exactly as before, and the two halves can be deployed independently
+(see §10).
+
+**G2 — closed in code.** `ProviderBinding` carries a `runtime`; `FleetConfig`
+files bindings under `provider_key(device_ref, runtime)` — the BARE `device:<id>`
+for the device's own runtime, so every existing binding is unchanged on disk and
+in memory, and `device:<id>|<tag>` for a second one. `provider_for`,
+`_require_provider`, the session-addressed paths (`get_session`, `read`, `send`,
+`interrupt`, `native_call`), `create_session` and `native_capability` all route by
+the runtime; `create_session`'s existing `provider` parameter is the CloudCLI
+AGENT family and stays a separate axis, because one connector can serve several.
+
+**Grants are per runtime.** `_operator_grant_verbs` looks the grant up under the
+same `provider_key`, so a grant written before a device could serve two means what
+it meant then, and a SECOND runtime needs its own entry: adding a runtime is never
+a widening of the one beside it. A personal device's grants stay inert for both
+(unchanged `ownership: company` filter).
+
+### What is still not done
+
+1. **No second connector exists on any machine.** The device half is implemented
+   (`NodeConfig.runtime`, loaded from the `runtime:` binding key, passed to
+   `verify`) but nothing runs it. This is `fjd`'s or an operator's work, as
+   `fjd`.
+2. **No registry or binding change.** `fleet/registry.yaml` still declares one
+   runtime for the device, and no second `providers` entry exists anywhere.
+3. **Not deployed.** The running ingress is unchanged.
+4. **`list_sessions` is still device-scoped.** It does not yet take a runtime, so
+   an admin listing both runtimes gets one of them. This is the one part of the
+   user's requested surface that is NOT adapted, and it is named here rather than
+   left to be discovered.
+
+## 10. Rollout, in two halves
+
+Each half is independently deployable and independently reversible.
+
+| stage | what ships | rollback |
+|---|---|---|
+| **A — host** | the Fleet ingress with `provider_for(device,runtime)` and the v2 signer | repoint `ingress/current`; a v1-only fleet is unaffected because the base runtime still signs v1 |
+| **B — device** | `fjd`'s connector, bound to `runtime: claude-fjd`, with `fjd`'s own secret, credential and endpoint | stop that connector; the base runtime is untouched |
+
+Order matters in one direction only: stage A is safe with no second runtime
+(nothing routes to one), and stage B requires stage A to have shipped, because a
+v2 signer is what produces the request the connector verifies. A crash between
+them leaves the base runtime serving exactly as before — there is no window in
+which the device's own sessions are unreachable.
+
+No single point of interruption: the ingress restart is the only service event,
+and the second connector is a new process that can be started and stopped without
+touching the first.
+
+### Who does what
+
+- **`fjd` (or an operator with that account)**: create `fjd`'s CloudCLI
+  credential, state root, node secret, and run the connector as `fjd` bound to
+  `runtime: claude-fjd`. None of this can be done from `vince`.
+- **You (Fleet owner)**: add the second `providers` entry (endpoint + credential
+  anchor + `runtime: claude-fjd`), declare the runtime in the registry, and grant
+  whatever verbs the admin principal should hold **on that runtime** — separate
+  entries, because the base runtime's grants do not carry over.
+- **This host**: already done for G1/G2 at the code level; the remaining host
+  work is `list_sessions`.

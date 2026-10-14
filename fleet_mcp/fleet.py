@@ -33,7 +33,9 @@ from typing import Any
 
 from .audit import AuditLog, RateLimiter
 from . import cloudcli_native
-from .config import CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP, OPERATOR_GRANT_VERBS
+from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
+                     OPERATOR_GRANT_VERBS, provider_key)
+from .runtime_identity import BASE_RUNTIME
 from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
@@ -207,16 +209,28 @@ class FleetService:
 
     # -- helpers -----------------------------------------------------------
 
-    def _provider(self, device_ref: str) -> DeviceProvider | None:
-        return self.providers.get(device_ref)
+    def _provider(self, device_ref: str,
+                  runtime: str = BASE_RUNTIME) -> DeviceProvider | None:
+        return self.providers.get(provider_key(device_ref, runtime))
 
-    def _require_provider(self, device_ref: str) -> DeviceProvider:
-        provider = self.providers.get(device_ref)
+    def _require_provider(self, device_ref: str,
+                          runtime: str = BASE_RUNTIME) -> DeviceProvider:
+        """The provider for one RUNTIME on one device.
+
+        One physical machine can reach this surface through more than one
+        binding — a second OS account with its own CloudCLI, its own endpoint
+        and its own credential — and the runtime is what picks between them.
+        `runtime` defaults to the device's own, so a caller written before a
+        device could serve two reaches exactly the binding it reached then.
+        """
+        provider = self.providers.get(provider_key(device_ref, runtime))
         if provider is None:
             raise refuse(
                 UNKNOWN_DEVICE,
-                f"{device_ref} is enrolled but this runtime holds no route to "
-                f"it. `fleet_list_devices` reports the same fact as "
+                f"{device_ref} has no route for runtime {runtime!r} on this "
+                f"runtime. One device may hold several; this one holds "
+                f"{sorted(k for k in self.providers if k.split('|')[0] == device_ref) or 'none'}. "
+                f"`fleet_list_devices` reports the same fact as "
                 f"`local_agent_controller: UNKNOWN`.",
             )
         return provider
@@ -240,7 +254,8 @@ class FleetService:
                 return device.ownership
         return None
 
-    def _operator_grant_verbs(self, principal: Principal, device_ref: str) -> tuple[str, ...]:
+    def _operator_grant_verbs(self, principal: Principal, device_ref: str,
+                              runtime: str = BASE_RUNTIME) -> tuple[str, ...]:
         """The verbs `principal` holds on `device_ref` — `()`, usually.
 
         Three exact matches and no fourth, each one a refusal with its own
@@ -270,7 +285,12 @@ class FleetService:
         per_device = self.config.policy.operator_grants.get(principal.name)
         if not per_device:
             return ()
-        verbs = per_device.get(device_ref)
+        # Looked up under the SAME key a provider binding uses: the base runtime
+        # keeps the bare `device:<id>` key, so a grant written before a device
+        # could serve two means exactly what it meant then, and a SECOND runtime
+        # needs its own entry. That is the "independent owner consent" a new
+        # runtime requires — it is not inherited from the runtime beside it.
+        verbs = per_device.get(provider_key(device_ref, runtime))
         if not verbs:
             return ()
         if not self._device_is_grant_eligible(device_ref):
@@ -282,7 +302,7 @@ class FleetService:
         return self._device_ownership(device_ref) == GRANT_ELIGIBLE_OWNERSHIP
 
     def _may_send(self, principal: Principal, key: SessionKey) -> None:
-        binding = self.config.provider_for(key.device_ref)
+        binding = self.config.provider_for(key.device_ref, key.provider)
         if binding is None or not binding.allow_send:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -299,7 +319,7 @@ class FleetService:
         # principal named in the grant still cannot send to a device its owner
         # is not the organization's, and a principal not named still has exactly
         # the per-session reach it had before.
-        if "send" in self._operator_grant_verbs(principal, key.device_ref):
+        if "send" in self._operator_grant_verbs(principal, key.device_ref, key.provider):
             # The one admission that leaves no trace in the binding: a send
             # allowed per device, to a session `send_allow` never named. The
             # `fleet.send` record that follows says a message went out but not
@@ -343,7 +363,8 @@ class FleetService:
                     session_ref=key.ref,
                 )
                 detail = (
-                    f"`policy.operator_grants[{principal.name!r}][{key.device_ref!r}]` "
+                    f"`policy.operator_grants[{principal.name!r}]"
+                    f"[{provider_key(key.device_ref, key.provider)!r}]` "
                     f"does name {list(granted_here)}, but {key.device_ref} is "
                     f"{ownership!r} and only {GRANT_ELIGIBLE_OWNERSHIP!r} devices "
                     f"may be granted. The grant is inert here rather than "
@@ -405,7 +426,7 @@ class FleetService:
         `session_background`'s stop branch — reaches this one method, so they
         cannot disagree about who may stop what.
         """
-        binding = self.config.provider_for(key.device_ref)
+        binding = self.config.provider_for(key.device_ref, key.provider)
         if binding is None or not binding.allow_control:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -415,7 +436,7 @@ class FleetService:
                 f"`policy.control_allow` — never by the caller naming a session "
                 f"id, and never as a side effect of the send grants.",
             )
-        if "control" in self._operator_grant_verbs(principal, key.device_ref):
+        if "control" in self._operator_grant_verbs(principal, key.device_ref, key.provider):
             self.audit.record_grant(
                 event="fleet.grant",
                 principal=principal.name,
@@ -457,7 +478,8 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
-    def _may_create(self, device_ref: str, project: str) -> CreateGrant:
+    def _may_create(self, device_ref: str, project: str,
+                    runtime: str = BASE_RUNTIME) -> CreateGrant:
         """Creation is granted per device *and* per project, by the binding.
 
         Two gates, and both are needed. The device gate (`allow_create`) is a
@@ -717,10 +739,10 @@ class FleetService:
         machine about the one question it was asked, which is worse than not
         reporting it.
         """
-        binding = self.config.provider_for(key.device_ref)
+        binding = self.config.provider_for(key.device_ref, key.provider)
         device_ok = bool(binding and binding.allow_send)
         session_ok = key.ref in self.config.policy.send_allow
-        grant_verbs = self._operator_grant_verbs(principal, key.device_ref)
+        grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
         return {
             "send_allowed": bool(device_ok and (session_ok or "send" in grant_verbs)),
             "device_authorized": device_ok,
@@ -773,7 +795,7 @@ class FleetService:
     def get_session(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref)
+        provider = self._require_provider(key.device_ref, key.provider)
         detail = provider.get_session(key)
         detail["control"] = self._session_control_state(principal, key)
         self.audit.record("fleet.get_session", principal=principal.name, session_ref=key.ref)
@@ -793,7 +815,7 @@ class FleetService:
     ) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref)
+        provider = self._require_provider(key.device_ref, key.provider)
         applied, clamped = clamp_limit(
             limit, self.config.policy.max_read_messages, default=min(20, self.config.policy.max_read_messages)
         )
@@ -879,7 +901,7 @@ class FleetService:
                     "run_id": replayed.get("run_id"),
                 }
 
-        provider = self._require_provider(key.device_ref)
+        provider = self._require_provider(key.device_ref, key.provider)
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
         record = {
@@ -949,7 +971,7 @@ class FleetService:
         self.admit(principal)
         self._may_control(principal, key)
 
-        provider = self._require_provider(key.device_ref)
+        provider = self._require_provider(key.device_ref, key.provider)
         payload = provider.interrupt(key)
         # An answer with no `aborted` field is not an answer. This is not
         # defensive padding: `structured()` returns `{}` for a provider result it
@@ -1001,6 +1023,7 @@ class FleetService:
         lifecycle_mode: str | None = None,
         permission_mode: str | None = None,
         idempotency_key: str | None = None,
+        runtime: str = BASE_RUNTIME,
     ) -> dict[str, Any]:
         """Mint a session on one device, and start its first run only if asked.
 
@@ -1050,7 +1073,7 @@ class FleetService:
         # is told that, not told about an allowlist — the two answers point at
         # different configuration, and answering the second when the first is
         # true sends an operator to edit the wrong file.
-        adapter = self._require_provider(device_ref)
+        adapter = self._require_provider(device_ref, runtime)
         # Authorization is re-established on *every* call, including a call that
         # turns out to be an idempotent replay — which is why this line is above
         # the replay lookup and not below it. A replay is a plain "may you do
@@ -1060,7 +1083,7 @@ class FleetService:
         # `create_allow` would find that the key minted under the old grant still
         # returns its session, so a revoked grant would keep answering for as
         # long as the key was retried.
-        grant = self._may_create(device_ref, project)
+        grant = self._may_create(device_ref, project, runtime)
         self._may_name_mode_and_model(
             device_ref, project, grant, model=model, permission_mode=permission_mode
         )
@@ -1164,7 +1187,7 @@ class FleetService:
     ) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref)
+        provider = self._require_provider(key.device_ref, key.provider)
         payload = provider.get_run(key, run_id, wait=wait, wait_seconds=wait_seconds)
         self.audit.record(
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
@@ -1227,6 +1250,31 @@ class FleetService:
 
     # -- status ------------------------------------------------------------
 
+    def _runtime_for_call(self, device_ref: str, session_ref: str | None,
+                          runtime: str | None) -> str:
+        """Which runtime a call is addressed to, or a refusal.
+
+        A `session_ref` already names one — `device:<id>|<runtime>|<native id>`
+        — so a call that names one runtime in its reference and another on the
+        call is refused rather than resolved in favour of either. It is the same
+        mistake as a reference whose device disagrees with `device_ref`, and it
+        is the one a caller makes when a session's UUID is the same under both
+        runtimes: on this surface it never is, because the runtime is part of
+        the address.
+        """
+        if not session_ref:
+            return runtime or BASE_RUNTIME
+        key = SessionKey.parse(str(session_ref))
+        if runtime is not None and runtime != key.provider:
+            raise refuse(
+                BAD_SESSION_REF,
+                f"`session_ref` names runtime {key.provider!r} and this call "
+                f"names {runtime!r}. A session is addressed on the runtime that "
+                f"holds it, and the two halves must agree — the same id under "
+                f"two runtimes is two different sessions.",
+            )
+        return key.provider
+
     def native_call(
         self,
         principal: Principal,
@@ -1236,6 +1284,7 @@ class FleetService:
         arguments: dict[str, Any] | None = None,
         session_ref: str | None = None,
         project: str | None = None,
+        runtime: str | None = None,
     ) -> dict[str, Any]:
         """Inherit ONE CloudCLI native tool, under Fleet's own gates.
 
@@ -1270,11 +1319,13 @@ class FleetService:
                 f"`fleet_cloudcli_native_manifest`; a name that is not among them "
                 f"is refused rather than forwarded to a device.",
             )
-        binding = self.config.provider_for(device_ref)
+        runtime = self._runtime_for_call(device_ref, session_ref, runtime)
+        binding = self.config.provider_for(device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(
                 UNKNOWN_DEVICE,
-                f"{device_ref} is not an enabled provider on this runtime.",
+                f"{device_ref} is not an enabled provider for runtime "
+                f"{runtime!r} on this runtime.",
             )
         # HIGH-6: the rate limiter every hand-written verb passes through. A
         # mirrored call is a call like any other and must not be a way around it.
@@ -1303,7 +1354,7 @@ class FleetService:
             principal.require(fleet_scope)
         self._gate_native_write(principal, device_ref, binding, native, args,
                                 session_ref=session_ref, project=project,
-                                governance=governance)
+                                governance=governance, runtime=runtime)
         # HIGH-7: validate the caller's arguments against the tool's OWN schema
         # (recorded from CloudCLI 1.39.0; a live per-device schema may override).
         # A required parameter that is missing, or one the schema does not
@@ -1326,7 +1377,7 @@ class FleetService:
                 key = self._native_session_key(device_ref, session_ref, native)
                 args["session"] = key.native_session_id
             self._clamp_native_read(args)
-        provider = self._require_provider(device_ref)
+        provider = self._require_provider(device_ref, runtime)
         caller = getattr(provider, "native_call", None)
         if caller is None:
             raise refuse(
@@ -1404,7 +1455,8 @@ class FleetService:
                 bytes=len(blob), limit=MAX_NATIVE_RESULT_BYTES,
             )
 
-    def native_capability(self, principal: Principal, *, device_ref: str) -> dict[str, Any]:
+    def native_capability(self, principal: Principal, *, device_ref: str,
+                          runtime: str = BASE_RUNTIME) -> dict[str, Any]:
         """A read-only snapshot of what ONE device exposes. Read-scoped.
 
         Reuses `health()` / `tools_list()` / `coverage` through the provider's
@@ -1420,11 +1472,12 @@ class FleetService:
         # outbound call like any other; exempting it would make this the one
         # read that can be hammered.
         self.admit(principal)
-        binding = self.config.provider_for(device_ref)
+        binding = self.config.provider_for(device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE,
-                         f"{device_ref} is not an enabled provider on this runtime.")
-        provider = self._require_provider(device_ref)
+                         f"{device_ref} is not an enabled provider for "
+                         f"runtime {runtime!r} on this runtime.")
+        provider = self._require_provider(device_ref, runtime)
         snapshot = getattr(provider, "capability_snapshot", None)
         if snapshot is None:
             return cloudcli_native.capability_snapshot(
@@ -1449,7 +1502,7 @@ class FleetService:
     def _gate_native_write(self, principal: Principal, device_ref: str, binding,
                            native, arguments: dict[str, Any], *,
                            session_ref: str | None, project: str | None,
-                           governance: str) -> None:
+                           governance: str, runtime: str = BASE_RUNTIME) -> None:
         """Route a native write through the SAME floor its Fleet verb uses.
 
         A read returns here untouched. Every other class is refused unless the
@@ -1494,21 +1547,23 @@ class FleetService:
                 self._may_send(principal, key)
             else:
                 self._may_control(principal, key)
-                self._require_operator_verb(principal, device_ref, "control", native)
+                self._require_operator_verb(principal, device_ref, "control", native,
+                                            runtime=runtime)
                 # The model/mode ceiling for a reconfigure is applied in
                 # `native_call`, AFTER the provider is resolved, because it must
                 # read the session's REAL project from the device.
             if governance == cloudcli_native.GOV_NAVIGATE:
-                self._require_operator_verb(principal, device_ref, "navigate", native)
+                self._require_operator_verb(principal, device_ref, "navigate", native,
+                                               runtime=runtime)
             return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)
             # BLOCKER-1 for the project axis: the project the floor passed on is
             # the project that must be minted in.
             self._same_identity(arguments, "project", project_name, native)
-            grant = self._may_create(device_ref, project_name)
+            grant = self._may_create(device_ref, project_name, runtime)
             self._require_operator_verb(principal, device_ref, "create", native,
-                                        project=project_name)
+                                        project=project_name, runtime=runtime)
             # HIGH-3: a caller may not name a model or permission mode the
             # project's grant does not allow — the same ceiling the hand-written
             # `fleet_create_session` applies, reused rather than restated.
@@ -1538,7 +1593,8 @@ class FleetService:
             # addressed to a session rather than to a device.
             self._may_send(principal, key)
             self._native_approval(arguments, native)
-            self._require_operator_verb(principal, device_ref, "approve", native)
+            self._require_operator_verb(principal, device_ref, "approve", native,
+                                            runtime=runtime)
             return
         if governance == cloudcli_native.GOV_NAVIGATE:
             self._require_operator_verb(principal, device_ref, "navigate", native)
@@ -1789,7 +1845,8 @@ class FleetService:
         return project.strip()
 
     def _require_operator_verb(self, principal: Principal, device_ref: str,
-                               verb: str, native, *, project: str | None = None) -> None:
+                               verb: str, native, *, project: str | None = None,
+                               runtime: str = BASE_RUNTIME) -> None:
         """The principal x device x verb grant, on top of the class floor.
 
         The floor (`_may_control` / `_may_create`) answers «may this device be
@@ -1807,7 +1864,7 @@ class FleetService:
                 f"is refused rather than inherited.",
                 device_ref=device_ref, required_verb=verb,
             )
-        verbs = self._operator_grant_verbs(principal, device_ref)
+        verbs = self._operator_grant_verbs(principal, device_ref, runtime)
         if verb not in verbs:
             raise refuse(
                 WRITE_NOT_GRANTED,

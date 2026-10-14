@@ -46,6 +46,7 @@ from ..errors import (
     refuse,
 )
 from ..identity import SessionKey
+from ..runtime_identity import BASE_RUNTIME
 from ..node_protocol import PROTOCOL, PROTOCOL_HEADER, body_digest, sign, split_path_and_query
 from .base import DeviceProvider, ProviderHealth, SessionSummary, summary_from_dict
 
@@ -58,6 +59,19 @@ class FleetNodeProvider(DeviceProvider):
         self.device_ref = binding.device_ref
 
     # -- transport ---------------------------------------------------------
+
+    def _signed_runtime(self) -> str | None:
+        """The runtime to sign under, or `None` for v1.
+
+        The device's own runtime signs EXACTLY as it always has — v1, no runtime
+        in the message — because every connector in the field speaks that
+        version and a machine nobody has touched must keep answering. A second
+        runtime signs v2, which puts the runtime inside the signature so a
+        secret belonging to one runtime cannot produce a request that verifies
+        for another.
+        """
+        runtime = getattr(self.binding, "runtime", BASE_RUNTIME)
+        return None if runtime == BASE_RUNTIME else runtime
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         secret = self.binding.credential()
@@ -73,7 +87,9 @@ class FleetNodeProvider(DeviceProvider):
         # Signing the raw target would make a reordered filter a signature
         # failure, which is a refusal about nothing the caller was authorized to do.
         sign_path, _ = split_path_and_query(path)
-        headers = sign(secret, method=method, path=sign_path, body=body, device_ref=self.device_ref)
+        headers = sign(secret, method=method, path=sign_path, body=body,
+                       device_ref=self.device_ref,
+                       runtime=self._signed_runtime())
         headers["Content-Type"] = "application/json"
         headers["Accept"] = "application/json"
         url = self.binding.endpoint.rstrip("/") + path

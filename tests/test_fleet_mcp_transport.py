@@ -140,10 +140,26 @@ class NodeSignature(unittest.TestCase):
         self.assertEqual(who, self.device)
 
     def test_a_foreign_protocol_is_refused_before_anything_else(self):
-        headers = self._headers(**{np.PROTOCOL_HEADER: "serveros/fleet-node/v2"})
+        headers = self._headers(**{np.PROTOCOL_HEADER: "serveros/fleet-node/v3"})
         with self.assertRaises(np.SignatureError) as caught:
             self._verify(headers=headers)
         self.assertEqual(caught.exception.code, "PROTOCOL_MISMATCH")
+
+    def test_v2_without_a_runtime_is_refused(self):
+        """A v2 request signs the runtime, so one that names none is refused
+        rather than treated as the device's own runtime by default."""
+        headers = self._headers(**{np.PROTOCOL_HEADER: np.PROTOCOL_V2})
+        with self.assertRaises(np.SignatureError) as caught:
+            self._verify(headers=headers)
+        self.assertEqual(caught.exception.code, "MISSING_RUNTIME")
+
+    def test_a_v1_request_cannot_name_a_runtime(self):
+        """The caller cannot self-report an account: v1 signs no runtime, so a
+        runtime header on it is a claim with nothing behind it."""
+        headers = self._headers(**{np.RUNTIME_HEADER: "claude-fjd"})
+        with self.assertRaises(np.SignatureError) as caught:
+            self._verify(headers=headers)
+        self.assertEqual(caught.exception.code, "RUNTIME_NOT_SIGNED")
 
     def test_missing_signature_material_is_refused(self):
         headers = self._headers()
