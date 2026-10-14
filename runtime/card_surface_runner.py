@@ -293,6 +293,19 @@ class ShadowRunner:
         self.period_source = period_source
         self.recipient = verified_recipient(recipient)
         self.test_mark = test_mark
+        #: SINGLE-WRITER, in this process only. A reentrant tick would race the
+        #: pending intent it is halfway through staging, so it is refused.
+        #: THIS IS NOT CROSS-PROCESS MUTUAL EXCLUSION — an atomic file replace is
+        #: not a compare-and-swap, and two processes (a timer and an alert) can
+        #: still interleave. Serialising them belongs to whatever owns the work.
+        self._busy = False
+
+    @property
+    def evidence(self) -> str:
+        """Whose word this runner's receipts are. FAKE senders are `synthetic`."""
+        if isinstance(self.sender, (RecordingSender, PreviewSender)):
+            return surface.EVIDENCE_SYNTHETIC
+        return surface.EVIDENCE_REMOTE
 
     # -- rendering ----------------------------------------------------------
 
@@ -324,31 +337,49 @@ class ShadowRunner:
     # -- the simulated round ---------------------------------------------
 
     def tick(self, *, at, events=(), closing=None, rows=()) -> dict:
-        """One shadow round: LIVE then REPORT, each committing only on a DELIVERED
-        receipt from the injected sender. Returns a masked trace."""
+        """One shadow round, under a single-writer guard. See `_round`."""
+        if self._busy:
+            raise RunnerError(
+                "a tick is already in progress in this process: the surfaces are "
+                "single-writer, and a reentrant call would race the pending intent "
+                "this one is halfway through staging")
+        self._busy = True
+        try:
+            return self._round(at=at, events=events, closing=closing, rows=rows)
+        finally:
+            self._busy = False
+
+    def _round(self, *, at, events=(), closing=None, rows=()) -> dict:
+        """LIVE then REPORT, each committing only on a DELIVERED receipt."""
         trace = {"schema": SCHEMA, "at": at, "live": None, "report": None,
-                 "transport_calls": 0, "store_writes": 0}
+                 "transport_calls": 0, "store_writes": 0,
+                 "evidence": self.evidence}
         model, source_rows = self.model_source(at=at)
         report_rows = list(rows) if rows else source_rows
 
         live = self.store.decide_live(at=at, events=events)
-        trace["live"] = {"action": live["action"], "reasons": live["reasons"],
-                         "slot": live.get("slot"), "events": live.get("events")}
+        trace["live"] = {"action": live["action"], "reasons": live.get("reasons"),
+                         "slot": live.get("slot"), "events": live.get("events"),
+                         "resume": bool(live.get("resume")),
+                         "reason": live.get("reason")}
         if live["action"] in (surface.CREATE, surface.PATCH, surface.SUCCESSOR):
             card = self.render_live(model=model)
-            self.store.stage_live(decision=live, at=at)
+            key = (live.get("idempotency_key")
+                   or _slot_key(live, at, rotations=self._rotations()))
+            self.store.stage_live(decision=live, at=at, idempotency_key=key,
+                                  recipient=self.recipient, payload_digest=_card_sha(card))
             trace["store_writes"] += 1
             if live["action"] == surface.PATCH:
                 receipt = self.sender.update({
                     "message_id": live["remote_id"], "card": card,
                     "sent_at": self._bound_at(), "version": None})
             else:
-                receipt = self.sender.send_card(
-                    card, idempotency_key=_slot_key(live, at, rotations=self._rotations()))
+                receipt = self.sender.send_card(card, idempotency_key=key)
+            self._tag(receipt)
             trace["transport_calls"] += 1
             trace["live"]["receipt"] = _receipt_view(receipt)
             if receipt.get("state") == "DELIVERED":
-                self.store.confirm_live(at=at, receipt=receipt)
+                self.store.confirm_live(at=at, receipt=receipt, evidence=self.evidence)
                 trace["store_writes"] += 1
                 trace["live"]["committed"] = True
             else:
@@ -358,52 +389,73 @@ class ShadowRunner:
                 trace["live"]["pending_retained"] = True
 
         period = self.period_source(at=at)
-        report = self.store.decide_report(period=period, closing=closing)
+        report = self.store.decide_report(period=period, closing=closing, at=at)
         trace["report"] = {"action": report["action"],
-                           "period_ref": report.get("period_ref")}
+                           "period_ref": report.get("period_ref"),
+                           "resume": bool(report.get("resume")),
+                           "reason": report.get("reason")}
         if report["action"] in (surface.CREATE, surface.PATCH, surface.FINAL):
-            view, card = self.render_report(model=model, period=period, rows=report_rows)
             ref = report["period_ref"]
+            view, card = self.render_report(model=model, period=period, rows=report_rows)
+            key = report.get("idempotency_key") or f"card-surface-report-{ref}"
             if report["action"] == surface.CREATE:
-                receipt = self.sender.send_card(
-                    card, idempotency_key=f"card-surface-report-{ref}")
+                # THE INTENT IS PERSISTED BEFORE THE SEND. A process that dies
+                # between the send and the id being recorded must find the intent
+                # on disk and resume the SAME message, never create a second one.
+                self.store.stage_report(period_ref=ref, at=at, idempotency_key=key,
+                                        payload_digest=_card_sha(card),
+                                        label=(period or {}).get("label"),
+                                        day_ref=(period or {}).get("day_ref"))
+                trace["store_writes"] += 1
+                receipt = self.sender.send_card(card, idempotency_key=key)
+                self._tag(receipt)
                 trace["transport_calls"] += 1
                 trace["report"]["receipt"] = _receipt_view(receipt)
-                if receipt.get("state") == "DELIVERED" \
-                        and (receipt.get("provider") or {}).get("remote_id"):
-                    self.store.apply_report(period=period, decision=report, at=at,
-                                            remote_id=receipt["provider"]["remote_id"],
-                                            archive=view)
+                remote_id = (receipt.get("provider") or {}).get("remote_id")
+                if receipt.get("state") == "DELIVERED" and remote_id:
+                    self.store.bind_report(period_ref=ref, at=at, remote_id=remote_id,
+                                           evidence=self.evidence)
                     trace["store_writes"] += 1
                     trace["report"]["committed"] = True
                 else:
                     trace["report"]["committed"] = False
+                    trace["report"]["pending_retained"] = True
             elif report["action"] == surface.PATCH:
-                self.store.apply_report(period=period, decision=report, at=at,
-                                        archive=view)
+                # an OBSERVATION, not a confirmation — the cursor moves on the ack
+                self.store.apply_report(period=period, decision=report, at=at, archive=view)
                 trace["store_writes"] += 1
-                current = self._report_ref(ref)
                 receipt = self.sender.update({
-                    "message_id": current, "card": card, "sent_at": self._report_bound_at(ref),
-                    "version": None})
-                trace["transport_calls"] += 1
-                trace["report"]["receipt"] = _receipt_view(receipt)
-                trace["report"]["committed"] = receipt.get("state") == "DELIVERED"
-            else:  # FINAL — PREPARE, then commit only on an acknowledgement
-                frozen = card_period.frozen_block(
-                    card=card, at=at, period_ref=ref)
-                self.store.apply_report(period=period, decision=report, at=at,
-                                        archive=view, prepared_version=frozen["version"])
-                trace["store_writes"] += 1
-                current = self._report_ref(ref)
-                receipt = self.sender.update({
-                    "message_id": current, "card": card,
-                    "sent_at": self._report_bound_at(ref), "version": frozen["version"]})
+                    "message_id": self._report_ref(ref), "card": card,
+                    "sent_at": self._report_bound_at(ref), "version": None})
+                self._tag(receipt)
                 trace["transport_calls"] += 1
                 trace["report"]["receipt"] = _receipt_view(receipt)
                 if receipt.get("state") == "DELIVERED":
                     try:
-                        self.store.confirm_report(period_ref=ref, at=at, receipt=receipt)
+                        self.store.ack_report_patch(period_ref=ref, at=at, receipt=receipt)
+                        trace["store_writes"] += 1
+                        trace["report"]["committed"] = True
+                    except surface.CardSurfaceError as exc:
+                        trace["report"]["committed"] = False
+                        trace["report"]["refused"] = str(exc)
+                else:
+                    trace["report"]["committed"] = False
+                    trace["report"]["pending_retained"] = True
+            else:  # FINAL — PREPARE, then commit only on an acknowledgement
+                frozen = card_period.frozen_block(card=card, at=at, period_ref=ref)
+                self.store.apply_report(period=period, decision=report, at=at,
+                                        archive=view, prepared_version=frozen["version"])
+                trace["store_writes"] += 1
+                receipt = self.sender.update({
+                    "message_id": self._report_ref(ref), "card": card,
+                    "sent_at": self._report_bound_at(ref), "version": frozen["version"]})
+                self._tag(receipt)
+                trace["transport_calls"] += 1
+                trace["report"]["receipt"] = _receipt_view(receipt)
+                if receipt.get("state") == "DELIVERED":
+                    try:
+                        self.store.confirm_report(period_ref=ref, at=at, receipt=receipt,
+                                                  evidence=self.evidence)
                         trace["store_writes"] += 1
                         trace["report"]["committed"] = True
                     except surface.CardSurfaceError as exc:
@@ -415,6 +467,12 @@ class ShadowRunner:
         return trace
 
     # -- small store accessors ---------------------------------------------
+
+    def _tag(self, receipt) -> dict:
+        """Label a receipt with WHOSE word it is, so no trace can over-claim."""
+        if isinstance(receipt, dict):
+            receipt.setdefault("evidence", self.evidence)
+        return receipt
 
     def _bound_at(self):
         return (self.store.read().get("live") or {}).get("bound_at")

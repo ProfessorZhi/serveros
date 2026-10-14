@@ -272,7 +272,12 @@ class TheReportRound(unittest.TestCase):
         runner = self._runner(sender=sender)
         runner.tick(at=NOW)
         self.assertEqual(self.store.summary()["live"]["remote_id"], LIVE_ID)
-        self.assertEqual(self.store.summary()["reports"], [])   # the report never bound
+        # the report's CREATE was STAGED before the send and never bound: the
+        # durable intent survives, which is what lets a restart resume it
+        rows = self.store.summary()["reports"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["phase"], surface.CREATE_PENDING)
+        self.assertIsNone((self.store.read()["reports"][0]).get("remote_id"))
         before = len([c for c in sender.calls if c.get("remote_id") == LIVE_ID])
         runner.tick(at=_at("17:30"))                            # LIVE still patches
         self.assertGreater(len([c for c in sender.calls
@@ -286,6 +291,156 @@ class TheReportRound(unittest.TestCase):
         trace = runner.tick(at=_at("13:00"))
         self.assertEqual(trace["report"]["action"], surface.FINAL)
         self.assertEqual(trace["report"]["period_ref"], self.MORNING)
+
+
+class TheCrashBoundaries(unittest.TestCase):
+    """Crash-at-boundary and stale-window behaviour (the 2026-10-14 P0 review).
+
+    The through-line: a CREATE that has been STAGED but not acknowledged is a
+    durable state, not an absence. A restart resumes its own intent under the
+    SAME idempotency key; past the send service's window it stops and says so
+    rather than minting a second card.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "cards" / "surfaces.json"
+        self.store = surface.SurfaceStore(self.path)
+        self.model = _model(tokyo=[_reading("内存", "32.6%")])
+
+    def _runner(self, store=None, sender=None):
+        return runner_mod.ShadowRunner(
+            store=store or self.store,
+            sender=sender or runner_mod.RecordingSender(remote_id="om_live"),
+            model_source=_source(self.model),
+            period_source=lambda *, at: _period())
+
+    def test_a_staged_create_reloads_and_resumes_the_same_key(self):
+        bad = runner_mod.RecordingSender(remote_id="om_live", outcome="FAILED",
+                                         fail_first=2)
+        self._runner(sender=bad).tick(at=NOW)          # both stages fail their sends
+        # A RESTART: a brand-new store over the same file must LOAD, not refuse.
+        reopened = surface.SurfaceStore(self.path)
+        self.assertEqual(reopened.read()["live"]["phase"], surface.CREATE_PENDING)
+        decision = reopened.decide_live(at=_at("17:01"))
+        self.assertTrue(decision.get("resume"))
+        self.assertEqual(decision["idempotency_key"], "card-surface-live-create-0")
+        # the resumed send carries the SAME key, so the service dedupes
+        good = runner_mod.RecordingSender(remote_id="om_live")
+        self._runner(store=reopened, sender=good).tick(at=_at("17:01"))
+        self.assertEqual(good.calls[0]["idempotency_key"], "card-surface-live-create-0")
+        self.assertEqual(reopened.summary()["live"]["remote_id"], LIVE_ID)
+
+    def test_a_create_pending_past_the_window_is_not_resent(self):
+        bad = runner_mod.RecordingSender(outcome="FAILED", fail_first=2)
+        self._runner(sender=bad).tick(at=NOW)          # staged at 17:00
+        reopened = surface.SurfaceStore(self.path)
+        decision = reopened.decide_live(at=_at("18:30"))     # 90 min later
+        self.assertEqual(decision["action"], surface.SKIP)
+        self.assertEqual(decision["reason"], surface.NEEDS_RECONCILE)
+        self.assertEqual(reopened.read()["live"]["phase"], surface.NEEDS_RECONCILE)
+        # and a tick sends NOTHING — the same key is no longer deduplicated
+        good = runner_mod.RecordingSender(remote_id="om_live")
+        trace = self._runner(store=reopened, sender=good).tick(at=_at("18:31"))
+        self.assertEqual(trace["transport_calls"], 0)
+        self.assertEqual(good.calls, [])
+
+    def test_a_report_create_staged_before_the_send_resumes_after_a_crash(self):
+        bad = runner_mod.RecordingSender(outcome="FAILED", fail_first=2)
+        self._runner(sender=bad).tick(at=NOW)
+        row = self.store.read()["reports"][0]
+        self.assertEqual(row["phase"], surface.CREATE_PENDING)   # intent on disk
+        self.assertIsNone(row["remote_id"])                      # no id yet
+        # restart: the same intent resumes under the same key and binds
+        reopened = surface.SurfaceStore(self.path)
+        good = runner_mod.RecordingSender(remote_id="om_rep")
+        trace = self._runner(store=reopened, sender=good).tick(at=_at("17:05"))
+        self.assertTrue(trace["report"]["committed"])
+        keys = [c["idempotency_key"] for c in good.calls if c["op"] == "send_card"]
+        self.assertIn("card-surface-report-CN-Test/2026-10-14#morning", keys)
+        self.assertEqual(reopened.summary()["reports"][0]["phase"], surface.LIVE)
+        self.assertTrue(reopened.read()["reports"][0]["remote_id"])
+
+    def test_a_failed_report_patch_does_not_advance_the_confirmed_cursor(self):
+        runner = self._runner()
+        runner.tick(at=NOW)                                   # LIVE + report bound
+        before = self.store.read()["reports"][0]["last_patch_at"]
+        # call 0 = the LIVE heartbeat (succeeds), call 1 = the report patch (fails)
+        runner.sender = runner_mod.RecordingSender(remote_id="om_live-1",
+                                                   outcome="FAILED", fail_calls=(1,))
+        trace = runner.tick(at=_at("17:30"))
+        self.assertTrue(trace["live"]["committed"])
+        self.assertFalse(trace["report"]["committed"])
+        row = self.store.read()["reports"][0]
+        self.assertEqual(row["last_patch_at"], before)        # cursor did NOT move
+        self.assertIsNotNone(row.get("pending_patch"))        # the observation stayed
+
+    def test_an_empty_prepared_version_cannot_freeze_a_report(self):
+        runner = self._runner()
+        runner.tick(at=NOW)
+        ref = "CN-Test/2026-10-14#morning"
+        decision = self.store.decide_report(period=_period(), closing=ref, at=_at("12:00"))
+        self.store.apply_report(period=_period(), decision=decision, at=_at("12:00"))
+        with self.assertRaises(surface.CardSurfaceError):
+            self.store.confirm_report(period_ref=ref, at=_at("12:01"),
+                                      receipt={"state": "DELIVERED",
+                                               "remote_id": self.store.read()["reports"][0]["remote_id"]})
+
+    def test_an_unresolved_pending_is_not_overwritten(self):
+        first = {"action": surface.CREATE, "slot": 1, "events": []}
+        self.store.stage_live(decision=first, at=NOW, idempotency_key="k1",
+                              recipient="user:ou_x")
+        with self.assertRaises(surface.CardSurfaceError):
+            self.store.stage_live(decision=first, at=_at("17:01"), idempotency_key="k2",
+                                  recipient="user:ou_x")
+        # the SAME key is a legitimate retry of the same intent
+        self.store.stage_live(decision=first, at=_at("17:01"), idempotency_key="k1",
+                              recipient="user:ou_x")
+
+    def test_a_reentrant_tick_is_refused(self):
+        runner = self._runner()
+
+        class Reentrant(runner_mod.RecordingSender):
+            def send_card(self, card, **kwargs):
+                runner.tick(at=NOW)                      # re-enter mid-round
+                return super().send_card(card, **kwargs)
+
+        runner.sender = Reentrant(remote_id="om_live")
+        with self.assertRaises(runner_mod.RunnerError):
+            runner.tick(at=NOW)
+        self.assertFalse(runner._busy)                   # the guard released
+
+    def test_a_synthetic_receipt_is_labelled_and_never_remote(self):
+        runner = self._runner()
+        runner.tick(at=NOW)
+        self.assertEqual(self.store.read()["live"]["evidence"],
+                         surface.EVIDENCE_SYNTHETIC)
+        self.assertEqual(runner.evidence, surface.EVIDENCE_SYNTHETIC)
+
+    def test_the_heartbeat_still_behaves_across_the_slot(self):
+        # a regression guard: none of the fail-closed work moved the cadence
+        runner = self._runner()
+        runner.tick(at=NOW)
+        runner.tick(at=_at("17:29"),
+                    events=[{"kind": surface.NEW, "episode": "e1", "version": 1}])
+        before = len([c for c in runner.sender.calls if c.get("remote_id") == LIVE_ID])
+        runner.tick(at=_at("17:30"))
+        after = len([c for c in runner.sender.calls if c.get("remote_id") == LIVE_ID])
+        self.assertEqual(after - before, 1)              # the 17:30 slot still fires
+
+    def test_the_native_card_is_unchanged(self):
+        card = card_period.render_period_card(
+            _model(tokyo=[_reading("CPU", "128 逻辑核"), _reading("内存", "32.6%"),
+                          _reading("交换区", "89.2%"), _reading("磁盘 /", "9.5%")]),
+            test_mark="[灰度测试]")
+        rows = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+        self.assertEqual([len(r["columns"]) for r in rows], [2, 2])
+        tags = []
+        monitor._walk_tags(card["body"], tags)
+        self.assertNotIn("chart", tags)
+        self.assertNotIn("table", tags)
+        self.assertEqual(surface.SURFACES, ("LIVE", "REPORT"))
 
 
 class ItTouchesNothingReal(unittest.TestCase):

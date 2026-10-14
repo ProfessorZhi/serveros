@@ -147,7 +147,8 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
     def _create_live(self):
         decision = self.store.decide_live(at=BOUND_AT)
         self.assertEqual(decision["action"], surface.CREATE)
-        self.store.stage_live(decision=decision, at=BOUND_AT)
+        self.store.stage_live(decision=decision, at=BOUND_AT,
+                              idempotency_key="k-live-create", recipient="user:ou_x")
         self.store.confirm_live(at=BOUND_AT,
                                 receipt={"state": delivery.DELIVERED, "remote_id": LIVE_ID})
 
@@ -162,7 +163,7 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
         self._create_live()
         decision = self.store.decide_live(at=_at("17:30"))
         self.assertEqual(decision["action"], surface.PATCH)
-        self.store.stage_live(decision=decision, at=_at("17:30"))
+        self.store.stage_live(decision=decision, at=_at("17:30"), idempotency_key="k-live-slot", recipient="user:ou_x")
         with self.assertRaises(surface.CardSurfaceError):
             self.store.confirm_live(at=_at("17:30"),
                                     receipt={"state": "FAILED", "remote_id": LIVE_ID})
@@ -177,7 +178,7 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
         self._create_live()
         event = {"kind": surface.NEW, "episode": "z", "version": 1}
         decision = self.store.decide_live(at=_at("17:05"), events=[event])
-        self.store.stage_live(decision=decision, at=_at("17:05"))
+        self.store.stage_live(decision=decision, at=_at("17:05"), idempotency_key="k-live-slot", recipient="user:ou_x")
         with self.assertRaises(surface.CardSurfaceError):
             self.store.confirm_live(at=_at("17:05"),
                                     receipt={"state": "UNKNOWN", "remote_id": LIVE_ID})
@@ -188,7 +189,7 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
     def test_a_receipt_for_another_message_is_refused(self):
         self._create_live()
         decision = self.store.decide_live(at=_at("17:30"))
-        self.store.stage_live(decision=decision, at=_at("17:30"))
+        self.store.stage_live(decision=decision, at=_at("17:30"), idempotency_key="k-live-slot", recipient="user:ou_x")
         with self.assertRaises(surface.CardSurfaceError):
             self.store.confirm_live(at=_at("17:30"),
                                     receipt={"state": delivery.DELIVERED,
@@ -198,7 +199,7 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
         self._create_live()
         decision = self.store.decide_live(
             at=_at("17:30"), events=[{"kind": surface.NEW, "episode": "q", "version": 3}])
-        self.store.stage_live(decision=decision, at=_at("17:30"))
+        self.store.stage_live(decision=decision, at=_at("17:30"), idempotency_key="k-live-slot", recipient="user:ou_x")
         self.store.confirm_live(at=_at("17:30"),
                                 receipt={"state": delivery.DELIVERED, "remote_id": LIVE_ID})
         live = self.store.summary()["live"]
@@ -209,7 +210,7 @@ class TheCursorsMoveOnlyOnAck(unittest.TestCase):
     def test_timeout_replay_targets_the_same_message_and_never_creates_a_second(self):
         self._create_live()
         decision = self.store.decide_live(at=_at("17:30"))
-        self.store.stage_live(decision=decision, at=_at("17:30"))
+        self.store.stage_live(decision=decision, at=_at("17:30"), idempotency_key="k-live-slot", recipient="user:ou_x")
         self.store.fail_live(reason="timeout")
         replay = self.store.decide_live(at=_at("17:31"))
         self.assertEqual(replay["action"], surface.PATCH)
@@ -261,14 +262,17 @@ class TheReportSurface(unittest.TestCase):
 
     def _create_live(self):
         decision = self.store.decide_live(at=BOUND_AT)
-        self.store.stage_live(decision=decision, at=BOUND_AT)
+        self.store.stage_live(decision=decision, at=BOUND_AT,
+                              idempotency_key="k-live-create", recipient="user:ou_x")
         self.store.confirm_live(at=BOUND_AT,
                                 receipt={"state": delivery.DELIVERED, "remote_id": LIVE_ID})
 
     def _open_report(self, period, remote_id="om_report", at=_at("11:00")):
-        decision = self.store.decide_report(period=period)
+        decision = self.store.decide_report(period=period, at=at)
         self.assertEqual(decision["action"], surface.CREATE)
-        self.store.apply_report(period=period, decision=decision, at=at, remote_id=remote_id)
+        ref = period["period_ref"]
+        self.store.stage_report(period_ref=ref, at=at, idempotency_key=f"k-{ref}")
+        self.store.bind_report(period_ref=ref, at=at, remote_id=remote_id)
 
     def test_a_report_has_its_own_message_and_never_the_live_one(self):
         self._open_report(self.morning)
@@ -369,9 +373,12 @@ class TheReportSurface(unittest.TestCase):
         for index in range(surface.REPORT_HOT_CAP + 6):
             period = {"period_ref": f"CN-Test/2026-10-{index:02d}#morning",
                       "day_ref": f"CN-Test/2026-10-{index:02d}", "in_period": True}
-            decision = self.store.decide_report(period=period)
-            self.store.apply_report(period=period, decision=decision,
-                                    at=_at("11:00"), remote_id=f"om_r{index}")
+            decision = self.store.decide_report(period=period, at=_at("11:00"))
+            ref = period["period_ref"]
+            self.store.stage_report(period_ref=ref, at=_at("11:00"),
+                                    idempotency_key=f"k-{ref}")
+            self.store.bind_report(period_ref=ref, at=_at("11:00"),
+                                   remote_id=f"om_r{index}")
             self.store.apply_report(period=period,
                                     decision=self.store.decide_report(period=period,
                                                                       closing=period["period_ref"]),

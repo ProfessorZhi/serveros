@@ -69,6 +69,39 @@ PATCH `card-surface-live-slot-<slot>`、报告 `card-surface-report-<period_ref>
 2. **预览把日历读数当声明**：`read_declaration()` 返回的是**读数**（含 `declaration`），
    `period_at` 要的是里面的**声明**；直传会让每天都变 UNKNOWN，静默丢掉时段身份。
 
+## 5.1 崩溃边界：CREATE 是可恢复状态，不是「没有绑定」（2026-10-14 P0 审查）
+
+- **`CREATE_PENDING` 是持久状态**：`stage_live(CREATE)` 写入的是带
+  `idempotency_key/recipient/payload_digest/slot/at` 的**意图**，没有 `remote_id`。
+  `SurfaceStore._load()` 现在**接受**它（并要求这些字段），而不是拒绝加载；把没有 id
+  的 live 读成「无绑定」正是第二轮卡的来源。
+- **重启复用同一 key**：`decide_live` 对 `CREATE_PENDING` 返回
+  `{action: CREATE, resume: true, idempotency_key: <原 key>}`；超过
+  `IDEMPOTENCY_WINDOW_SECONDS=3600`（与 `message_transport` 一致）或时间读不出来 →
+  **`NEEDS_RECONCILE`，不发**，并把该相位落盘。**不允许靠清空 store 解决。**
+- **未解决的 pending 不被覆盖**：`stage_live` 在已有**不同 key** 的未解决意图时
+  **拒绝**；同 key 视为同一次重试。
+- **REPORT CREATE 先落 intent 再发送**：`stage_report`（无 id、有 key/digest）→ 发送 →
+  `bind_report`（拿到消息 id 才 BOUND）。进程在「已受理、未记 id」之间死掉，重启后按
+  **同一 intent** 恢复；超窗则 `NEEDS_RECONCILE`，不补发。
+- **REPORT PATCH 不再提前记成功**：`apply_report(PATCH)` 只写 `pending_patch`
+  （观察），确认游标 `last_patch_at/archive` **仅在 `ack_report_patch` 收到
+  指向该 message 的 DELIVERED 回执时**前进。
+- **冻结三重硬门禁**：`confirm_report` 要求**非空** `prepared_version`、回执 `version`
+  与之**相等**、且回执 `remote_id`（顶层或 `provider`）**存在并等于**该报告绑定的
+  message。**没有身份的回执不能冻结任何报告**，也不再回退到绑定 id。
+- **证据来源被标注**：每次提交记录 `evidence: synthetic | remote`。**本模块的 fake
+  `DELIVERED` 永远标 `synthetic`**——模拟的「成功」不是飞书受理的证据。
+
+## 5.2 单写者：本进程内成立，跨进程未验证
+
+`ShadowRunner.tick()` 有一个**本进程**的重入守卫：一次 tick 进行中再次调用会抛
+`RunnerError`。这是为了不让一个 half-staged 的意图被另一个调用覆盖。
+
+**这不是跨进程互斥。**`_write()` 是 atomic replace，**不是 compare-and-swap**；一个
+30 分钟 timer 与一个即时告警**仍然可以交错**并各自读到旧状态。真正串行化属于「拥有
+这份工作」的那一层（Work owner 或单进程队列），**本轮未实现、未验证**。
+
 ## 6. 真实只读轨迹（`--preview`，本机采样）
 
 ```

@@ -87,7 +87,19 @@ ACTIONS = (CREATE, PATCH, SUCCESSOR, FINAL, SKIP)
 LIVE_PHASE = "LIVE"
 FINAL_PENDING = "FINAL_PENDING"
 FROZEN = "FROZEN"
-PHASES = (LIVE_PHASE, FINAL_PENDING, FROZEN)
+#: A CREATE whose message id is not yet known. It is a DURABLE state, not an
+#: absence: a restart that read it as «no binding» would send a SECOND live
+#: card, which is the one thing a single-LIVE rule forbids.
+CREATE_PENDING = "CREATE_PENDING"
+#: A pending CREATE (or report) whose idempotency key is past the send service's
+#: window. Re-sending under it is no longer deduplicated, so this state means
+#: «a human or a real readback must decide» — never «send again».
+NEEDS_RECONCILE = "NEEDS_RECONCILE"
+PHASES = (LIVE_PHASE, FINAL_PENDING, FROZEN, CREATE_PENDING, NEEDS_RECONCILE)
+
+#: The send service's idempotency window, matching `message_transport`. Past it
+#: the same key is no longer deduplicated, so a retry is a NEW message.
+IDEMPOTENCY_WINDOW_SECONDS = 3600
 
 CALENDAR_UNKNOWN = "CALENDAR_UNKNOWN"
 ALREADY_FROZEN = "ALREADY_FROZEN"
@@ -96,6 +108,14 @@ NEVER_SENT = "NEVER_SENT"
 PERIOD_ENDED = "PERIOD_ENDED"
 SAME_PERIOD = "SAME_PERIOD"
 UNVERIFIED = "UNVERIFIED"
+RESUME_CREATE_PENDING = "RESUME_CREATE_PENDING"
+PENDING_UNRESOLVED = "PENDING_UNRESOLVED"
+
+#: Whether a receipt came from this process's own fake or from a real remote.
+#: Recorded on every commit so a trace can never read a synthetic `DELIVERED`
+#: as evidence that Feishu accepted anything.
+EVIDENCE_SYNTHETIC = "synthetic"
+EVIDENCE_REMOTE = "remote"
 
 #: How many consumed EVENT keys the hot document keeps. Bounded so a long-lived
 #: LIVE does not grow forever; the oldest keys fall off first, which at worst
@@ -144,6 +164,14 @@ def _moment(value):
         return None
 
 
+def _age_seconds(then, now):
+    """Seconds from `then` to `now`, or None when either cannot be read."""
+    before, after = _moment(then), _moment(now)
+    if before is None or after is None:
+        return None
+    return (after - before).total_seconds()
+
+
 def receipt_remote_id(receipt) -> str:
     """The message a receipt names — from the receipt's TOP level or its provider.
 
@@ -156,6 +184,23 @@ def receipt_remote_id(receipt) -> str:
         return ""
     provider = receipt.get("provider") if isinstance(receipt.get("provider"), dict) else {}
     return str(receipt.get("remote_id") or provider.get("remote_id") or "").strip()
+
+
+def receipt_evidence(receipt) -> str:
+    """WHOSE word a receipt is: this process's own fake, or a real remote.
+
+    An UNLABELLED receipt is the WEAKER claim, never the stronger: a synthetic
+    `DELIVERED` must not be able to read as evidence that Feishu accepted
+    anything, and the safe direction is to under-claim.
+    """
+    if not isinstance(receipt, dict):
+        return EVIDENCE_SYNTHETIC
+    stated = str(receipt.get("evidence") or "").strip()
+    if stated in (EVIDENCE_SYNTHETIC, EVIDENCE_REMOTE):
+        return stated
+    provider = receipt.get("provider") if isinstance(receipt.get("provider"), dict) else {}
+    return (EVIDENCE_REMOTE if str(provider.get("id") or "") == "lark-cli"
+            else EVIDENCE_SYNTHETIC)
 
 
 def regular_slot_id(at, *, slot_seconds: int = SLOT_SECONDS) -> int | None:
@@ -317,18 +362,35 @@ def successor_binding(*, previous, remote_id: str, at: str) -> dict:
 # the REPORT policy — pure
 # ---------------------------------------------------------------------------
 
-def report_decision(*, period, reports, closing=None) -> dict:
+def report_decision(*, period, reports, closing=None, at=None) -> dict:
     """What the REPORT surface does at this instant. PURE.
 
-    A PENDING FINAL IS CLOSED FIRST, then a report whose PERIOD IS NO LONGER
-    CURRENT — including when `now` is outside every period (`in_period: false`,
-    e.g. after midnight), which is exactly when a cross-shift report would
-    otherwise be stranded. Only then does the current period's own report open
-    or update. LIVE is never touched by any branch.
+    The order is: resume an UNBOUND report's own CREATE, then close a PENDING
+    FINAL, then close a report whose PERIOD IS NO LONGER CURRENT — including when
+    `now` is outside every period (`in_period: false`, e.g. after midnight),
+    which is exactly when a cross-shift report would otherwise be stranded. Only
+    then does the current period's own report open or update. LIVE is never
+    touched by any branch.
     """
     rows = [r for r in (reports or []) if isinstance(r, dict) and r.get("period_ref")]
     current = (period or {}).get("period_ref") if (period or {}).get("in_period") else None
 
+    for report in rows:
+        phase = report.get("phase") or LIVE_PHASE
+        if phase in (CREATE_PENDING, NEEDS_RECONCILE):
+            pending = report.get("pending") if isinstance(report.get("pending"), dict) else {}
+            age = _age_seconds(pending.get("at"), at) if at else None
+            if phase == CREATE_PENDING and age is not None \
+                    and age <= IDEMPOTENCY_WINDOW_SECONDS:
+                return {"surface": REPORT, "action": CREATE, "resume": True,
+                        "reason": RESUME_CREATE_PENDING, "period_ref": report["period_ref"],
+                        "idempotency_key": pending.get("idempotency_key"),
+                        "says": ("上一份报告的 CREATE 意图仍在幂等窗口内："
+                                 "用**同一个** key 重发同一条，不新建")}
+            return {"surface": REPORT, "action": SKIP, "reason": NEEDS_RECONCILE,
+                    "period_ref": report["period_ref"],
+                    "says": ("上一份报告的 CREATE 意图已超出幂等窗口（或时间读不出来）："
+                             "**不重发**，需要真实 readback 或人工裁决")}
     for report in rows:
         if (report.get("phase") or LIVE_PHASE) == FINAL_PENDING:
             return {"surface": REPORT, "action": FINAL, "reason": FINAL_PENDING,
@@ -433,13 +495,33 @@ class SurfaceStore:
             raise CardSurfaceError(f"{self.path} is not a card-surface document")
         live = data.get("live")
         if live is not None:
-            if not isinstance(live, dict) or not str(live.get("remote_id") or ""):
-                raise CardSurfaceError(
-                    f"the LIVE binding in {self.path} names no message: a binding "
-                    f"to nothing would let the next patch guess a message")
-            if not str(live.get("bound_at") or ""):
-                raise CardSurfaceError(
-                    f"the LIVE binding in {self.path} has no `bound_at`")
+            if not isinstance(live, dict):
+                raise CardSurfaceError(f"{self.path} has a non-object `live`")
+            phase = live.get("phase") or (LIVE_PHASE if live.get("remote_id")
+                                          else CREATE_PENDING)
+            if phase in (CREATE_PENDING, NEEDS_RECONCILE):
+                # A CREATE whose id is unknown is READABLE, not broken. It must
+                # carry the durable intent, because that is the only thing a
+                # restart can resume from — reading it as «no binding» would
+                # send a second live card.
+                pending = live.get("pending")
+                if not isinstance(pending, dict) or not str(pending.get("idempotency_key") or ""):
+                    raise CardSurfaceError(
+                        f"the LIVE card in {self.path} is {phase!r} with no durable "
+                        f"idempotency key: a restart could only guess, and guessing "
+                        f"is a SECOND live card")
+                if not str(pending.get("recipient") or ""):
+                    raise CardSurfaceError(
+                        f"the LIVE card in {self.path} is {phase!r} and names no "
+                        f"recipient; a resumed send must go to the SAME person")
+            else:
+                if not str(live.get("remote_id") or ""):
+                    raise CardSurfaceError(
+                        f"the LIVE binding in {self.path} names no message: a binding "
+                        f"to nothing would let the next patch guess a message")
+                if not str(live.get("bound_at") or ""):
+                    raise CardSurfaceError(
+                        f"the LIVE binding in {self.path} has no `bound_at`")
         for report in data["reports"]:
             if not isinstance(report, dict) or not report.get("period_ref"):
                 raise CardSurfaceError(
@@ -462,21 +544,77 @@ class SurfaceStore:
 
     def decide_live(self, *, at, events=(), slot_seconds=SLOT_SECONDS,
                     window_days=None) -> dict:
-        live = self._data.get("live")
+        live = self._data.get("live") or {}
+        phase = live.get("phase") or (LIVE_PHASE if live.get("remote_id") else None)
+        if phase in (CREATE_PENDING, NEEDS_RECONCILE):
+            return self._resume_or_reconcile(live=live, at=at, phase=phase)
         binding = None
-        if isinstance(live, dict) and live.get("remote_id"):
+        if live.get("remote_id"):
             binding = {"remote_id": live["remote_id"], "at": live.get("bound_at")}
         return live_decision(now=at, binding=binding, events=events,
-                             live_state=live or {}, slot_seconds=slot_seconds,
+                             live_state=live, slot_seconds=slot_seconds,
                              window_days=window_days)
 
-    def stage_live(self, *, decision: dict, at: str) -> dict:
+    def _resume_or_reconcile(self, *, live: dict, at: str, phase: str) -> dict:
+        """What an UNBOUND live does: resume its own intent, or stop.
+
+        Past the send service's idempotency window the same key is no longer
+        deduplicated, so re-sending is a NEW message. That is not a retry — it is
+        the second live card — so the answer is NEEDS_RECONCILE and nothing is
+        sent. The phase is persisted here so a restart reads the same verdict.
+        """
+        pending = live.get("pending") or {}
+        age = _age_seconds(pending.get("at"), at)
+        base = {"surface": LIVE, "action": SKIP, "message_action": None,
+                "reasons": [], "events": [], "slot": pending.get("slot"),
+                "remote_id": None, "at": at, "coalesced": False,
+                "idempotency_key": pending.get("idempotency_key"),
+                "reasons_blocked": True}
+        if age is None or age > IDEMPOTENCY_WINDOW_SECONDS:
+            if phase != NEEDS_RECONCILE:
+                next_doc = dict(self._data)
+                stuck = dict(live)
+                stuck["phase"] = NEEDS_RECONCILE
+                next_doc["live"] = stuck
+                self._write(next_doc)
+            return dict(base, reason=NEEDS_RECONCILE,
+                        says=("上一轮 CREATE 的意图已超出幂等窗口（或时间读不出来）："
+                              "同 key 重发不再被去重，因此**不重发**。"
+                              "需要真实 readback 或人工裁决"))
+        return {"surface": LIVE, "action": CREATE, "message_action": delivery.NEW_MESSAGE,
+                "reason": RESUME_CREATE_PENDING, "resume": True,
+                "idempotency_key": pending.get("idempotency_key"),
+                "reasons": [RESUME_CREATE_PENDING], "events": [],
+                "slot": pending.get("slot"), "remote_id": None, "at": at,
+                "coalesced": False, "reasons_blocked": False,
+                "says": "上一轮 CREATE 的意图仍在幂等窗口内：用**同一个** key 重发同一条，"
+                        "而不是新建第二条"}
+
+    def mark_needs_reconcile(self, *, at: str, why: str = "") -> dict:
+        """Park the live surface for a human/readback decision. Sends nothing."""
+        next_doc = dict(self._data)
+        live = dict(next_doc.get("live") or {})
+        if not live:
+            raise CardSurfaceError("there is no live surface to park")
+        live["phase"] = NEEDS_RECONCILE
+        live["reconcile_reason"] = str(why or "unspecified")
+        live["reconcile_at"] = str(at)
+        next_doc["live"] = live
+        self._write(next_doc)
+        return {"phase": NEEDS_RECONCILE, "at": at}
+
+    def stage_live(self, *, decision: dict, at: str, idempotency_key=None,
+                   recipient=None, payload_digest=None) -> dict:
         """Record the INTENT to perform this LIVE step. Cursors do not move.
 
-        Staging is separate from committing because a patch that was ATTEMPTED
-        is not a patch that ARRIVED: only `confirm_live`, on a DELIVERED receipt,
-        may consume the slot or the event keys. A staged intent that is never
-        confirmed is simply overwritten by the next one.
+        Staging is separate from committing because a patch that was ATTEMPTED is
+        not a patch that ARRIVED: only `confirm_live`, on a DELIVERED receipt,
+        may consume the slot or the event keys.
+
+        AN UNRESOLVED PENDING IS NEVER OVERWRITTEN. Re-staging under the SAME
+        idempotency key is a legitimate retry of the same intent; re-staging
+        under a DIFFERENT one would silently drop a send that may already be in
+        flight, so it is refused.
         """
         action = (decision or {}).get("action")
         if action not in (CREATE, SUCCESSOR, PATCH, SKIP):
@@ -485,22 +623,50 @@ class SurfaceStore:
         live = dict(next_doc.get("live") or {})
         if action == SKIP:
             return {"staged": False, "decision": decision}
-        live["pending"] = {"action": action, "at": str(at),
-                           "slot": decision.get("slot"),
-                           "event_keys": list(decision.get("events") or []),
-                           "remote_id": decision.get("remote_id"),
-                           "heartbeat": HEARTBEAT in (decision.get("reasons") or [])}
+        key = str(idempotency_key or (decision or {}).get("idempotency_key") or "").strip()
+        if not key:
+            raise CardSurfaceError(
+                f"a {action} must carry a durable idempotency key: it is what a "
+                f"restart resumes from and what the service deduplicates on")
+        held = live.get("pending") if isinstance(live.get("pending"), dict) else None
+        if held and held.get("idempotency_key") and held.get("idempotency_key") != key:
+            raise CardSurfaceError(
+                f"an unresolved {held.get('action')} intent "
+                f"({held.get('idempotency_key')!r}) is still pending; staging "
+                f"{action!r} under {key!r} would drop a send that may be in flight")
+        entry = {"action": action, "at": str(at), "slot": decision.get("slot"),
+                 "event_keys": list(decision.get("events") or []),
+                 "remote_id": decision.get("remote_id"),
+                 "heartbeat": HEARTBEAT in (decision.get("reasons") or []),
+                 "idempotency_key": key,
+                 "recipient": str(recipient or (held or {}).get("recipient") or ""),
+                 "payload_digest": payload_digest}
+        if action == CREATE and not live.get("remote_id"):
+            # the durable CREATE-pending state: readable, resumable, and NOT an
+            # empty live that a restart would read as «create one».
+            live = {"phase": CREATE_PENDING, "pending": entry,
+                    "previous_remote_id": live.get("previous_remote_id"),
+                    "rotations": int(live.get("rotations") or 0),
+                    "consumed_events": dict(live.get("consumed_events") or {}),
+                    "last_delivered_regular_slot": live.get("last_delivered_regular_slot")}
+        else:
+            live["pending"] = entry
         next_doc["live"] = live
         self._write(next_doc)
-        return {"staged": True, "pending": live["pending"], "decision": decision}
+        return {"staged": True, "pending": entry, "decision": decision}
 
-    def confirm_live(self, *, at: str, receipt: dict) -> dict:
+    def confirm_live(self, *, at: str, receipt: dict,
+                     evidence: str = EVIDENCE_SYNTHETIC) -> dict:
         """Commit a staged LIVE step — ONLY on a DELIVERED receipt.
 
         A FAILED / UNSUPPORTED / UNKNOWN receipt, or one naming a DIFFERENT
         message, is refused and the intent stays pending: the slot and the event
         keys are NOT consumed, so the next tick retries the SAME message rather
         than treating a send that may never have arrived as done.
+
+        `evidence` records WHOSE word the receipt is. A synthetic `DELIVERED`
+        from this process's own fake is not evidence that the far end accepted
+        anything, and the state says so.
         """
         live = self._data.get("live") or {}
         pending = live.get("pending")
@@ -529,6 +695,8 @@ class SurfaceStore:
                            "consumed_events": {}, "last_patch_at": at}
             if pending.get("slot") is not None and action == CREATE:
                 current["last_delivered_regular_slot"] = pending["slot"]
+            current["phase"] = LIVE_PHASE
+            current["evidence"] = evidence
         elif action == PATCH:
             target = str(pending.get("remote_id") or "")
             echoed = str(receipt_remote_id(receipt) or target)
@@ -547,6 +715,7 @@ class SurfaceStore:
                     consumed.pop(key, None)
             current["consumed_events"] = consumed
             current["last_patch_at"] = str(at)
+            current["evidence"] = evidence
         else:
             raise CardSurfaceError(f"{action!r} is not a confirmable LIVE step")
         current.pop("pending", None)
@@ -565,9 +734,64 @@ class SurfaceStore:
 
     # -- REPORT -------------------------------------------------------------
 
-    def decide_report(self, *, period, closing=None) -> dict:
+    def decide_report(self, *, period, closing=None, at=None) -> dict:
         return report_decision(period=period, reports=self._data.get("reports") or [],
-                               closing=closing)
+                               closing=closing, at=at)
+
+    def stage_report(self, *, period_ref: str, at: str, idempotency_key: str,
+                     payload_digest=None, label=None, day_ref=None) -> dict:
+        """Persist the INTENT to create a period's report, BEFORE it is sent.
+
+        The row it writes has no message id yet — that is the point: a process
+        that dies between the send and the id being recorded must find the intent
+        on disk and resume the SAME message, not create a second report.
+        """
+        key = str(idempotency_key or "").strip()
+        if not period_ref or not key:
+            raise CardSurfaceError("a report intent needs a period_ref and an idempotency key")
+        next_doc = dict(self._data)
+        reports = [dict(r) for r in next_doc.get("reports") or []]
+        current = next((r for r in reports if r.get("period_ref") == period_ref), None)
+        if current is not None:
+            held = (current.get("pending") or {}).get("idempotency_key")
+            if (current.get("phase") or LIVE_PHASE) == CREATE_PENDING and held == key:
+                return {"staged": True, "idempotent": True, "report": current}
+            raise CardSurfaceError(
+                f"{period_ref} already has a report row ({current.get('phase') or LIVE_PHASE}); "
+                f"staging {key!r} over it would drop a send that may be in flight")
+        row = {"period_ref": period_ref, "phase": CREATE_PENDING, "remote_id": None,
+               "label": label, "day_ref": day_ref, "bound_at": None,
+               "last_patch_at": None, "archive": None, "frozen": None,
+               "prepared_version": None,
+               "pending": {"action": CREATE, "at": str(at),
+                           "idempotency_key": key, "payload_digest": payload_digest}}
+        reports.append(row)
+        next_doc["reports"] = reports
+        self._write(next_doc)
+        return {"staged": True, "report": row}
+
+    def bind_report(self, *, period_ref: str, at: str, remote_id: str,
+                    evidence: str = EVIDENCE_SYNTHETIC) -> dict:
+        """Promote a REPORT CREATE_PENDING to BOUND — only with a real message id."""
+        message_id = str(remote_id or "").strip()
+        if not message_id:
+            raise CardSurfaceError(
+                "a report cannot be bound without a message id; a report bound to "
+                "nothing would be patched by guesswork")
+        next_doc = dict(self._data)
+        reports = [dict(r) for r in next_doc.get("reports") or []]
+        row = next((r for r in reports if r.get("period_ref") == period_ref), None)
+        if row is None:
+            raise CardSurfaceError(f"{period_ref} has no report row to bind")
+        if (row.get("phase") or LIVE_PHASE) not in (CREATE_PENDING, NEEDS_RECONCILE):
+            raise CardSurfaceError(
+                f"{period_ref} is {(row.get('phase') or LIVE_PHASE)!r}, "
+                f"not an unbound report")
+        row.update({"phase": LIVE_PHASE, "remote_id": message_id, "bound_at": str(at),
+                    "last_patch_at": str(at), "pending": None, "evidence": evidence})
+        next_doc["reports"] = reports
+        self._write(next_doc)
+        return {"bound": True, "report": row}
 
     def apply_report(self, *, period, decision: dict, at: str, remote_id=None,
                      archive=None, prepared_version=None) -> dict:
@@ -599,9 +823,12 @@ class SurfaceStore:
             if current is None:
                 raise CardSurfaceError(f"{ref} has no report to {action}")
             if action == PATCH:
-                current["last_patch_at"] = at
-                if archive is not None:
-                    current["archive"] = archive
+                # NOT confirmed here. A patch that was ATTEMPTED is not a patch
+                # that ARRIVED, and a local `last_patch_at` that moved on a
+                # FAILED send would make the next render believe the far end is
+                # showing this version. The observation is kept as PENDING and
+                # only `ack_report_patch` promotes it.
+                current["pending_patch"] = {"at": str(at), "archive": archive}
             elif action == FINAL:
                 current["phase"] = FINAL_PENDING
                 current["archive"] = archive
@@ -615,7 +842,45 @@ class SurfaceStore:
         self._write(next_doc)
         return {"applied": True, "report": current, "at": at}
 
-    def confirm_report(self, *, period_ref: str, at: str, receipt: dict) -> dict:
+    def ack_report_patch(self, *, period_ref: str, at: str, receipt: dict) -> dict:
+        """Promote a PENDING report patch — only on an acknowledgement OF IT.
+
+        Mirrors `confirm_live`: a FAILED / UNKNOWN receipt, or one naming another
+        message, leaves the pending observation in place and the confirmed cursor
+        (`last_patch_at` / `archive`) exactly where it was.
+        """
+        report = next((r for r in self._data.get("reports") or []
+                       if r.get("period_ref") == period_ref), None)
+        if report is None:
+            raise CardSurfaceError(f"{period_ref} has no report to acknowledge")
+        pending = report.get("pending_patch")
+        if not isinstance(pending, dict):
+            raise CardSurfaceError(f"{period_ref} has no pending patch to acknowledge")
+        state = str((receipt or {}).get("state") or "")
+        if state != delivery.DELIVERED:
+            raise CardSurfaceError(
+                f"回执的 state 是 {state!r}，不是 {delivery.DELIVERED!r}：报告的 patch "
+                f"不算已确认，保留 pending，不推进确认游标")
+        bound = str(report.get("remote_id") or "").strip()
+        got_id = receipt_remote_id(receipt)
+        if not got_id or not bound or got_id != bound:
+            raise CardSurfaceError(
+                f"回执命名的消息 {got_id!r} 不是这份报告绑定的 {bound!r}：不推进确认游标")
+        next_doc = dict(self._data)
+        reports = [dict(r) for r in next_doc.get("reports") or []]
+        for item in reports:
+            if item.get("period_ref") == period_ref:
+                item["last_patch_at"] = pending["at"]
+                if pending.get("archive") is not None:
+                    item["archive"] = pending["archive"]
+                item["pending_patch"] = None
+                item["evidence"] = receipt_evidence(receipt)
+        next_doc["reports"] = reports
+        self._write(next_doc)
+        return {"acked": True, "period_ref": period_ref, "at": at}
+
+    def confirm_report(self, *, period_ref: str, at: str, receipt: dict,
+                       evidence: str = EVIDENCE_SYNTHETIC) -> dict:
         """Freeze a REPORT — only on a verified acknowledgement OF THAT REPORT.
 
         Three gates, all required: `state == DELIVERED`; the receipt's `version`
@@ -637,15 +902,27 @@ class SurfaceStore:
             raise CardSurfaceError(
                 f"回执的 state 是 {state!r}，不是 {delivery.DELIVERED!r}：不能据此冻结"
                 f"（失败/超时/未知留在 FINAL_PENDING，重试同一条消息）")
-        prepared = report.get("prepared_version")
-        got_version = (receipt or {}).get("version")
-        if prepared and str(got_version or "") != str(prepared):
+        prepared = str(report.get("prepared_version") or "").strip()
+        if not prepared:
+            # A freeze needs the version its final PATCH went out AS; a report
+            # that names none can be checked against no receipt at all.
+            raise CardSurfaceError(
+                f"{period_ref} 没有 prepared_version：冻结必须对照这份报告最终 PATCH "
+                f"所依据的版本，而它没有，因此不能冻结")
+        got_version = str((receipt or {}).get("version") or "").strip()
+        if got_version != prepared:
             raise CardSurfaceError(
                 f"回执的版本 {got_version!r} 与这份报告准备好的 {prepared!r} 不一致："
                 f"这是一份关于**另一张卡**的证明，不能用来冻结这一张")
-        bound = str(report.get("remote_id") or "")
-        got_id = str(receipt_remote_id(receipt) or bound)
-        if bound and got_id and got_id != bound:
+        bound = str(report.get("remote_id") or "").strip()
+        got_id = receipt_remote_id(receipt)
+        if not got_id:
+            # NO fallback to the bound id: a receipt with no identity is not
+            # evidence about THIS message, it is evidence about nothing.
+            raise CardSurfaceError(
+                "回执没有指名消息（顶层与 provider 都没有 remote_id）：没有身份的回执"
+                "不能冻结任何报告")
+        if not bound or got_id != bound:
             raise CardSurfaceError(
                 f"回执命名的消息 {got_id!r} 不是这份报告绑定的 {bound!r}："
                 f"不能拿另一条消息的回执冻结这份报告")
@@ -655,8 +932,10 @@ class SurfaceStore:
             if item.get("period_ref") == period_ref:
                 item["phase"] = FROZEN
                 item["frozen"] = {"at": str(at), "state": state,
-                                  "remote_id": got_id, "version": got_version}
+                                  "remote_id": got_id, "version": got_version,
+                                  "evidence": evidence}
                 item["pending_at"] = None
+                item["evidence"] = evidence
         next_doc["reports"] = reports
         self._write(next_doc)
         return {"confirmed": True, "period_ref": period_ref, "at": at}
