@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128"
+     role="img" aria-label="ServerOS Fleet Next">
+  <!--
+    Fleet Next icon.
+
+    One hub and three leaves: the shape is the surface's own rule, not a
+    decoration. Every tool this plugin reaches is addressed as
+    `device:<id>` -> runtime -> session, and the read/write split is per
+    device — so the drawing is one centre that routes, and separate nodes
+    that are reached one at a time, never a single undifferentiated cloud.
+
+    Geometry is integer-friendly so the silhouette survives a 32 px render:
+    a 128 px canvas, a 26 px hub, 14 px leaves on a 72 px orbit, 8 px links.
+    Two colours only, so it stays legible in the monochrome list views the
+    connector uses.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3E6FB0"/>
+      <stop offset="100%" stop-color="#1F3A63"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="28" ry="28" fill="url(#bg)"/>
+
+  <g stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" opacity="0.55">
+    <line x1="64" y1="64" x2="64" y2="28"/>
+    <line x1="64" y1="64" x2="32.8" y2="82"/>
+    <line x1="64" y1="64" x2="95.2" y2="82"/>
+  </g>
+
+  <circle cx="64" cy="64" r="26" fill="#FFFFFF"/>
+  <circle cx="64" cy="28" r="14" fill="#FFFFFF"/>
+  <circle cx="32.8" cy="82" r="14" fill="#FFFFFF"/>
+  <circle cx="95.2" cy="82" r="14" fill="#FFFFFF"/>
+
+  <circle cx="64" cy="64" r="11" fill="#1F3A63"/>
+</svg>
