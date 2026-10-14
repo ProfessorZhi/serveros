@@ -1,0 +1,1207 @@
+#!/usr/bin/env python3
+"""§11½ — the period card: one message per period, patched quietly, closed once.
+
+WHY THIS IS NOT `card_day`
+--------------------------
+`card_day` answers «one card per WORKDAY, patched at the hour». Its clock is
+§10's 08:00–20:00 window and its unit is the hour, and both are properties of the
+ROUTINE BROADCAST cadence — the cadence §10 constrains precisely because a
+routine broadcast is a message a person is meant to notice.
+
+This module answers a different question, and the difference is the one the
+2026-10-14 ruling writes down: §10's 08:00–20:00 constrains the routine ACTIVE
+broadcast. It does not constrain resource SAMPLING, and it does not constrain the
+silent in-place PATCH of a card that already exists. So the monitoring surface
+stays up around the clock — 全天候保留完整 V13 LIVE 监控卡 — and what changes
+across a day is only which MESSAGE carries it.
+
+A PERIOD is a named stretch of that surface. The default table, configurable by
+declaration:
+
+    上午 09:00–12:00     下午 12:00–18:00     夜间 18:00–次日 09:00
+    NON_WORKING_DAY      全天 00:00–24:00
+
+The table is a DECLARATION and not a derivation — the rule
+`runtime/recipe-contract.yaml` §7 states for a recipe's period
+(«a loop that picks its own window writes a record about a period nobody asked
+for»). One message is created per period; every later tick patches THAT message
+rather than sending another; at the period's end one FINAL patch writes the
+archive and the card is FROZEN. That is «换班»: the shift changes, the card does
+not multiply.
+
+WHAT A PERIOD TICK DOES, AND WHAT IT REFUSES TO CLAIM
+-----------------------------------------------------
+Within a period a tick every `tick_seconds` (default 600 — ten minutes) patches
+the same message, and a patch is SILENT: the in-place update raises no
+notification. That is the measured fact `runtime/monitoring_policy.py` was
+written around — «a patched message does not raise a new notification» — so
+«夜间不频繁推送» is not a special case here; it is what a patch already is. The
+one message a period may visibly add is the CREATE, and this module does not
+claim otherwise: a first tick that creates a card MAY be a visible message, and
+the ruling says so out loud («新时段卡初建可能有一次可见消息，不可声称静默创建»).
+
+Major incidents do NOT ride this ladder. They keep §12's separate short
+NEW / ESCALATED / RECOVERED notification (`card_delivery`'s per-episode kinds),
+and this LIVE card is preserved beside them rather than replaced by them.
+
+WHAT IT REUSES, SO THAT NOTHING IS WRITTEN TWICE
+------------------------------------------------
+    business_calendar.day   which day this instant is, and on whose authority
+    card_delivery           the version, the receipt, the update window, the
+                            freeze, and `binding_verdict`
+    message_transport       the in-place PATCH (`im messages patch`)
+    card_day                the compact row vocabulary and `timeline`
+    fleet_monitor_card      the V13 three-device card, unchanged
+
+No second delivery ledger is written and no renderer is duplicated: the FINAL
+card is the fleet card with an archive written above it.
+
+WHAT IT WILL NOT DO
+-------------------
+It reads no clock (every instant is a parameter), measures nothing (it is handed
+a model), and sends nothing (it answers; the caller transports). It opens no
+chart: the VChart element and the narrow-screen `column_set` are both still
+unverified against a real client, so `charts_verified` stays False and the
+default card is the text one — «schema 有文档» is not «真机渲染过».
+"""
+from __future__ import annotations
+
+import datetime
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+
+SCHEMA = "serveros/card-period.v1"
+
+CREATE = "CREATE"
+PATCH = "PATCH"
+FINAL = "FINAL"
+SKIP = "SKIP"
+ACTIONS = (CREATE, PATCH, FINAL, SKIP)
+
+#: Why. One per answer, because «SKIP» alone cannot be argued with.
+NEW_PERIOD = "NEW_PERIOD"
+SAME_PERIOD = "SAME_PERIOD"
+PERIOD_ENDED = "PERIOD_ENDED"
+ALREADY_FROZEN = "ALREADY_FROZEN"
+CALENDAR_UNKNOWN = "CALENDAR_UNKNOWN"
+OUT_OF_ORDER = "OUT_OF_ORDER"
+REASONS = (NEW_PERIOD, SAME_PERIOD, PERIOD_ENDED, ALREADY_FROZEN,
+           CALENDAR_UNKNOWN, OUT_OF_ORDER)
+
+#: The day kinds `business_calendar` answers with, and which period table each
+#: one reads. UNKNOWN is deliberately absent: a day nobody can name gets no
+#: period, because a period_ref built from it would be the dedupe key of every
+#: unnamed day at once.
+WORKDAY = "WORKDAY"
+NON_WORKING_DAY = "NON_WORKING_DAY"
+
+#: The table key each day kind reads. The KIND is `business_calendar`'s token
+#: (uppercase, because that is the value `day()` returns and `day_ref`'s kind
+#: travels with); the KEY is the declaration's own spelling, lowercase the way
+#: `business_calendar`'s declaration block writes `workdays`. They are kept
+#: apart so a declaration never has to know a token it does not render.
+DAY_TABLE_KEYS = {WORKDAY: "workday", NON_WORKING_DAY: "non_working_day"}
+
+#: The default period table. A DECLARATION the caller may replace wholesale —
+#: never a derivation this module performs. Times are the calendar's own zone
+#: (`business_calendar.day` already resolved the instant there).
+DEFAULT_TABLE = {
+    "tick_seconds": 600,
+    "workday": (
+        {"name": "morning", "label": "上午", "start": "09:00", "end": "12:00"},
+        {"name": "afternoon", "label": "下午", "start": "12:00", "end": "18:00"},
+        # The night period WRAPS: it ends at 09:00 on the NEXT calendar day.
+        {"name": "night", "label": "夜间", "start": "18:00", "end": "09:00"},
+    ),
+    "non_working_day": (
+        {"name": "all_day", "label": "全天", "start": "00:00", "end": "00:00"},
+    ),
+}
+
+#: The row's whole vocabulary, borrowed from `card_day` where it is the same
+#: question. `tick` is this period's ordinal and not the workday's, so the two
+#: documents cannot be confused by their rows either.
+ROW_FIELDS = ("tick", "hhmm", "local", "verdict", "observation", "sections",
+              "gaps")
+
+
+class CardPeriodError(RuntimeError):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# the modules this one composes
+# ---------------------------------------------------------------------------
+
+def _load(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+calendar = _load("serveros_runtime_business_calendar",
+                 _HERE / "business_calendar.py")
+delivery = _load("serveros_runtime_card_delivery", _HERE / "card_delivery.py")
+day = _load("serveros_runtime_card_day", _HERE / "card_day.py")
+monitor = _load("serveros_runtime_fleet_monitor_card",
+                _HERE / "fleet_monitor_card.py")
+
+
+def _registry():
+    return _load("serveros_runtime_registry", _HERE / "registry.py")
+
+
+def _store_io():
+    # The same atomic write every durable document in this tree uses.
+    return _load("serveros_runtime_agent_control_store",
+                 _HERE / "agent_control_store.py")
+
+
+# ---------------------------------------------------------------------------
+# the period table
+# ---------------------------------------------------------------------------
+
+def _minutes(hhmm) -> int | None:
+    """`"HH:MM"` as minutes past local midnight, or None if it is not one.
+
+    A table entry that cannot be read is refused rather than defaulted: a
+    silent 00:00 would invent a period boundary nobody declared, and every
+    period_ref after it would be filed under the wrong window.
+    """
+    text = str(hhmm or "").strip()
+    if len(text) != 5 or text[2] != ":":
+        return None
+    try:
+        hour, minute = int(text[:2]), int(text[3:])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def table(declaration=None) -> dict:
+    """The period table, with the declaration's entries replacing the defaults.
+
+    `declaration` is an optional `{"tick_seconds": int, "workday": [...],
+    "non_working_day": [...]}` block. Each LIST replaces its default whole
+    rather than merging entry by entry: a table half from the file and half from
+    here is a table neither source states, and a reader comparing the two would
+    find a period neither declared.
+    """
+    out = {"tick_seconds": int(DEFAULT_TABLE["tick_seconds"])}
+    for key in DAY_TABLE_KEYS.values():
+        out[key] = [dict(p) for p in DEFAULT_TABLE[key]]
+    if not isinstance(declaration, dict):
+        return out
+    if declaration.get("tick_seconds") is not None:
+        seconds = declaration["tick_seconds"]
+        if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds <= 0:
+            raise CardPeriodError(
+                f"tick_seconds 必须是正整数秒，而不是 {seconds!r}："
+                f"它决定同一时段内多久 patch 一次同一张卡")
+        out["tick_seconds"] = seconds
+    for key in DAY_TABLE_KEYS.values():
+        if key in declaration and declaration[key] is not None:
+            entries = declaration[key]
+            if not isinstance(entries, list) or not entries:
+                raise CardPeriodError(
+                    f"period table 的 {key} 必须是非空列表，而不是 "
+                    f"{type(entries).__name__}")
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    raise CardPeriodError(
+                        f"{key} 的每个时段都要有 `name`，这一个没有："
+                        f"name 是 period_ref 的一部分，也就是去重键")
+                if _minutes(entry.get("start")) is None \
+                        or _minutes(entry.get("end")) is None:
+                    raise CardPeriodError(
+                        f"{key} 的时段 {entry.get('name')!r} 的 start/end 读不出来"
+                        f"（{entry.get('start')!r} → {entry.get('end')!r}）："
+                        f"需要 \"HH:MM\"")
+            out[key] = [dict(e) for e in entries]
+    return out
+
+
+def _period_ref(day_ref: str, name: str) -> str:
+    """The identity of one period, and the dedupe key of its one message."""
+    return f"{day_ref}#{name}"
+
+
+def _contains(entry: dict, minute: int, *, tail: bool = False) -> tuple[bool, int] | None:
+    """Whether `minute` falls in `entry`, and how far into it (minutes).
+
+    `start == end` is a FULL day, not an empty one — that is how the all-day
+    period is spelled, and reading it as empty would leave a holiday with no
+    period at all and a card nobody opens. A start AFTER the end is a wrap
+    across midnight, which the night period uses.
+
+    `tail` says which side of a wrapping period to look at. A wrapping period
+    belongs to the day it OPENED on, so its early-morning half is the PREVIOUS
+    day's (tail=True) and its late half is its own (tail=False). Without this a
+    02:00 instant would match today's own 18:00→09:00 period and be filed under
+    the wrong day_ref — a second card at every midnight.
+    """
+    start, end = _minutes(entry.get("start")), _minutes(entry.get("end"))
+    if start is None or end is None:
+        return None
+    if start == end:
+        return True, minute
+    if start < end:
+        if start <= minute < end:
+            return True, minute - start
+        return False, 0
+    # wraps midnight
+    if tail:
+        if minute < end:
+            return True, (1440 - start) + minute
+        return False, 0
+    if minute >= start:
+        return True, minute - start
+    return False, 0
+
+
+def period_at(instant, *, declaration=None, table_: dict | None = None) -> dict:
+    """Which period `instant` is in, and under which day's identity.
+
+    The answer is derived from `business_calendar.day`, so the day this period
+    belongs to is the calendar's answer and not a second derivation here. A day
+    whose kind is UNKNOWN gets NO period: naming one would need a day_ref that
+    does not exist, and a period_ref built from `None` would dedupe every
+    unnamed day into one card.
+
+    A wrapping period (the default 夜间, 18:00→09:00) means an instant before the
+    day's first start belongs to the PREVIOUS day's last period — so the
+    previous day is resolved too, and `day_ref` on the answer is that previous
+    day, not today's. That is the whole reason a period_ref names its OWN day.
+    """
+    tbl = table_ or table(declaration)
+    facts = calendar.day(instant, declaration=declaration)
+    base = {
+        "schema": SCHEMA,
+        "at": instant if isinstance(instant, str) else None,
+        "day_ref": facts.get("day_ref"),
+        "day_kind": facts.get("kind"),
+        "timezone": facts.get("timezone"),
+        "local": facts.get("local"),
+        "period_ref": None,
+        "name": None,
+        "label": None,
+        "start": None,
+        "end": None,
+        "tick": None,
+        "tick_seconds": tbl["tick_seconds"],
+        "in_period": False,
+        "reason": None,
+        "says": "",
+    }
+    local = facts.get("local")
+    if facts.get("kind") == "UNKNOWN" or not local:
+        base["reason"] = CALENDAR_UNKNOWN
+        base["says"] = (
+            f"calendar=UNKNOWN（{facts.get('says')}）：不命名时段，也不据此新建"
+            f"或 patch 时段卡；采样与记录照常")
+        return base
+
+    moment = datetime.datetime.fromisoformat(local)
+    minute = moment.hour * 60 + moment.minute
+
+    answer = _locate(facts["kind"], facts["day_ref"], minute, tbl, local=local)
+    if answer is not None:
+        base.update(answer)
+        return base
+
+    # Not inside today's own periods: it is the tail of the previous day's last
+    # period. Resolve the previous day and look for a period that reaches us.
+    prev_instant = moment - datetime.timedelta(days=1)
+    prev = calendar.day(prev_instant.isoformat(), declaration=declaration)
+    if prev.get("kind") in (WORKDAY, NON_WORKING_DAY) and prev.get("day_ref"):
+        for entry in tbl.get(DAY_TABLE_KEYS.get(prev["kind"], ""), []):
+            hit = _contains(entry, minute, tail=True)
+            if hit and hit[0]:
+                base.update(_describe(prev["kind"], prev["day_ref"], entry,
+                                      hit[1], tbl, local=local))
+                return base
+        if prev["kind"] == WORKDAY:
+            base["reason"] = CALENDAR_UNKNOWN
+            base["says"] = (
+                f"{prev['day_ref']} 是工作日，但它最后一个时段没有覆盖 "
+                f"{moment.strftime('%H:%M')}：时段表有缺口，不据此建卡")
+            return base
+    base["reason"] = CALENDAR_UNKNOWN
+    base["says"] = (
+        f"{moment.strftime('%H:%M')} 既不落在当天的任何时段里，前一天的最后一个"
+        f"时段也接不到它：时段表有缺口，不据此建卡")
+    return base
+
+
+def _locate(kind: str, day_ref: str, minute: int, tbl: dict, *,
+            local: str) -> dict | None:
+    for entry in tbl.get(DAY_TABLE_KEYS.get(kind, ""), []):
+        hit = _contains(entry, minute)
+        if hit and hit[0]:
+            return _describe(kind, day_ref, entry, hit[1], tbl, local=local)
+    return None
+
+
+def _describe(kind: str, day_ref: str, entry: dict, into: int, tbl: dict, *,
+              local: str) -> dict:
+    # `into` is minutes past the period's start; `tick_seconds` is seconds, so
+    # the ordinal multiplies back to seconds before dividing. Dividing minutes
+    # by seconds would make every tick inside the first ten minutes «1» and the
+    # cadence a lie.
+    tick = (into * 60) // int(tbl["tick_seconds"]) + 1
+    name = entry["name"]
+    return {
+        "period_ref": _period_ref(day_ref, name),
+        "day_ref": day_ref,
+        "day_kind": kind,
+        "name": name,
+        "label": entry.get("label") or name,
+        "start": entry.get("start"),
+        "end": entry.get("end"),
+        "tick": tick,
+        "tick_seconds": tbl["tick_seconds"],
+        "local": local,
+        "in_period": True,
+        "reason": None,
+        "says": (f"{day_ref} · {entry.get('label') or name} 时段"
+                 f"（{entry.get('start')}–{entry.get('end')}）· "
+                 f"第 {tick} 拍"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# the decision
+# ---------------------------------------------------------------------------
+
+def empty() -> dict:
+    return {"schema": SCHEMA, "open": None, "previous": None}
+
+
+def decide(document: dict, *, period: dict, at: str,
+           closing: str | None = None) -> dict:
+    """What happens to the period card at this instant, and why.
+
+    The answer is a LIST of STEPS because a shift change is two operations and
+    pretending it is one is how a card multiplies: the period that just ended
+    must be FINALed (its archive written, its card frozen) and the period that
+    just began must be CREATEd, and a caller that only ever does one of them
+    either leaves yesterday's card open or opens a second message inside the
+    same period. Most instants answer with one step; a boundary answers with two,
+    in the order they must happen.
+
+    `closing` is how a caller ends a shift EXPLICITLY — «收班 / 结算» — instead
+    of waiting for the next period's first tick to detect the boundary. It names
+    the period_ref to close; the boundary path below is what fires when nobody
+    says so.
+
+    DIRECTION IS CHECKED, NOT ASSUMED. An instant in a period DIFFERENT from the
+    open one is a boundary only when it is LATER than the open period began
+    (`_is_later`). An instant that is EARLIER is a clock that stepped back or a
+    replay, and closing the open period on it would archive a shift that has not
+    ended while patching it would move the card backwards — so it is refused.
+
+    Nothing here reads a clock or writes anything: `at`, `period` and `closing`
+    are arguments, and the document is returned unchanged.
+    """
+    document = document or empty()
+    open_ = document.get("open")
+    open_ref = open_.get("period_ref") if isinstance(open_, dict) else None
+    open_frozen = bool(open_.get("frozen")) if isinstance(open_, dict) else False
+    cur = period if (isinstance(period, dict) and period.get("in_period")) else None
+    cur_ref = cur.get("period_ref") if cur else None
+    steps: list[dict] = []
+
+    # 1. Close the open period when it is ending — because `closing` names it, or
+    #    because this instant belongs to a LATER period.
+    if open_ref and not open_frozen:
+        if closing and closing == open_ref:
+            steps.append(_final_step(open_, open_ref))
+        elif cur is not None and cur_ref != open_ref:
+            if _is_later(at, open_.get("opened_at")):
+                steps.append(_final_step(open_, open_ref))
+            else:
+                return _answer(open_, SKIP, OUT_OF_ORDER, at,
+                               (f"这一拍属于 {cur_ref}，早于当前打开的 {open_ref}"
+                                f"（开始于 {open_.get('opened_at')}）：不据此动"
+                                f"卡片，避免把时钟倒退读成换班"))
+
+    if not cur:
+        if steps:
+            return _answer(open_, FINAL, PERIOD_ENDED, at,
+                           _final_says(open_ref), period_ref=open_ref,
+                           steps=steps)
+        return _answer(open_, SKIP,
+                       (period or {}).get("reason") or CALENDAR_UNKNOWN, at,
+                       (period or {}).get("says")
+                       or "没有可用的时段身份，不动时段卡")
+
+    ref = cur_ref
+
+    if steps and steps[-1]["action"] == FINAL and ref == open_ref:
+        # `closing` closed the very period this instant is in. Reopening it in
+        # the same breath would undo the freeze this call just made.
+        return _answer(open_, FINAL, PERIOD_ENDED, at, _final_says(open_ref),
+                       period_ref=open_ref, steps=steps)
+
+    if ref != open_ref or not open_ref:
+        says = (f"{cur['day_ref']} · {cur['label']} 时段开始"
+                + ("（上一时段已归档）" if steps else "（今天还没有时段卡）")
+                + "：新建一条消息承载它，之后每一拍都 patch 这一条；"
+                  "这一条初建时可能是一次可见消息")
+        steps.append({"action": CREATE, "period_ref": ref, "period": cur,
+                      "reason": NEW_PERIOD, "says": says})
+        return _answer(open_, CREATE, NEW_PERIOD, at, says, period_ref=ref,
+                       steps=steps)
+
+    if open_frozen:
+        return _answer(open_, SKIP, ALREADY_FROZEN, at,
+                       (f"{ref} 已冻结（{open_['frozen'].get('at')}）：不再因"
+                        f"普通采样变化，本次不动它"), period_ref=ref)
+
+    latest = open_.get("latest")
+    if isinstance(latest, dict) and isinstance(latest.get("tick"), int) \
+            and cur["tick"] < latest["tick"]:
+        return _answer(open_, SKIP, OUT_OF_ORDER, at,
+                       (f"这一拍是 {ref} 的第 {cur['tick']} 拍，而卡片已经在第 "
+                        f"{latest['tick']} 拍上：往回的一拍不写，避免时段内出现"
+                        f"倒序"), period_ref=ref)
+
+    # A same-tick replay is a PATCH and not a SKIP: the patch lands on the SAME
+    # message, so it cannot become a second card, and refusing it would make a
+    # timer that fires twice in one slot leave the card a slot behind.
+    says = (f"{ref} 已在（最后更新 {open_.get('updated_at')}，本拍是第 "
+            f"{cur['tick']} 拍）：静默 patch 这一条，不新增聊天记录")
+    steps.append({"action": PATCH, "period_ref": ref, "period": cur,
+                  "reason": SAME_PERIOD, "says": says})
+    return _answer(open_, PATCH, SAME_PERIOD, at, says, period_ref=ref,
+                   steps=steps)
+
+
+def _final_step(open_: dict, open_ref: str) -> dict:
+    return {
+        "action": FINAL, "period_ref": open_ref,
+        "period": {"period_ref": open_ref, "label": open_.get("label"),
+                   "day_ref": open_.get("day_ref")},
+        "reason": PERIOD_ENDED,
+        "says": _final_says(open_ref),
+    }
+
+
+def _final_says(open_ref) -> str:
+    return (f"{open_ref} 时段已结束：本次对这同一条消息做最后一次 patch"
+            f"（总览概括 + 完整时段趋势 + 三设备摘要 + 事故/自愈/未解决交接），"
+            f"随后冻结，不再因普通采样变化")
+
+
+def _answer(open_, action, reason, at, says, *, period_ref=None, steps=None):
+    return {"schema": SCHEMA, "at": at, "steps": list(steps or []),
+            "action": action, "reason": reason, "period_ref": period_ref,
+            "message": _message(open_, action, at), "says": says}
+
+
+def _is_later(at, then) -> bool:
+    """Whether `at` is strictly later than `then`, both ISO instants.
+
+    Unreadable on either side is `False`, and that is the safe direction: the
+    alternative treats an instant nobody could place on a timeline as a boundary
+    and archives a shift on it.
+    """
+    try:
+        now = datetime.datetime.fromisoformat(str(at))
+        was = datetime.datetime.fromisoformat(str(then))
+    except (TypeError, ValueError):
+        return False
+    if now.tzinfo is None or was.tzinfo is None:
+        return False
+    return now > was
+
+
+def _message(open_period, action: str, at: str) -> dict:
+    return message_verdict(action, open_period, at=at)
+
+
+def message_verdict(action: str, open_period, *, at: str) -> dict:
+    """What happens to the MESSAGE carrying the period card, and why.
+
+    The companion of the card decision, never a substitute for it. `PATCH` is
+    answered «patch it» only when a message identity is genuinely in hand AND
+    still inside the service's window — and WHICH of those holds is not decided
+    here: `card_delivery.binding_verdict` answers it once for the day's card,
+    the incident card and this one, and this function asks and then says it in
+    the period's own words. A second reading of the update window would be a
+    second chance to read it wrongly, and the wrong one is the one promising a
+    patch the transport refuses.
+    """
+    window = delivery.update_window_days()
+    verdict = {"action": None, "reason": None, "remote_id": None,
+               "window_days": window, "says": ""}
+
+    if action == SKIP:
+        verdict.update({
+            "action": day.NO_MESSAGE, "reason": day.NOT_ROUTINE,
+            "says": "这一拍不动时段卡，也就没有要发的消息"})
+        return verdict
+
+    if action == CREATE:
+        verdict.update({
+            "action": delivery.NEW_MESSAGE, "reason": delivery.NEVER_SENT,
+            "says": ("本时段还没有承载它的消息：本次新发一条（可能是一次可见"
+                     "消息），从下一拍起都是静默 patch 这一条")})
+        return verdict
+
+    if action == FINAL:
+        # The final patch is still a patch of the SAME message; the archive is
+        # a new BODY, not a second message.
+        binding = open_period.get("message") if isinstance(open_period, dict) else None
+        judged = delivery.binding_verdict(binding, at=at, window_days=window)
+        if judged["reason"] == delivery.IN_HAND:
+            verdict.update({
+                "action": delivery.PATCH_MESSAGE, "reason": delivery.IN_HAND,
+                "remote_id": judged["remote_id"],
+                "says": (f"归档写进同一条消息（在手，{window} 天可改窗口内）："
+                         f"最后一次 patch 这一条，然后冻结")})
+            return verdict
+        verdict.update({
+            "action": delivery.NEW_MESSAGE, "reason": judged["reason"],
+            "remote_id": judged["remote_id"],
+            "says": (f"归档想写回承载时段卡的那条消息，但它读不出来或已超出 "
+                     f"{window} 天可改窗口（{judged['reason']}）：这一份文档"
+                     f"如实说不改发第二条——那会变成第二张卡")})
+        return verdict
+
+    judged = delivery.binding_verdict(
+        open_period.get("message") if isinstance(open_period, dict) else None,
+        at=at, window_days=window)
+    remote_id = judged["remote_id"]
+    if judged["reason"] == delivery.IDENTITY_MISSING:
+        verdict.update({
+            "action": delivery.NEW_MESSAGE,
+            "reason": delivery.IDENTITY_MISSING, "remote_id": remote_id,
+            "says": ("时段卡已在，但没有记下承载它的那条消息，因此无从 patch。"
+                     "这件事只有投递台账知道（`card deliveries`）；"
+                     "发出后用 `card period-announce --message-id` 记下即可")})
+        return verdict
+    if judged["reason"] == delivery.IDENTITY_UNDATED:
+        verdict.update({
+            "action": delivery.NEW_MESSAGE,
+            "reason": delivery.IDENTITY_UNDATED, "remote_id": remote_id,
+            "says": (f"记下了承载时段卡的消息，但它的发出时间（或这一刻）读不出来，"
+                     f"{window} 天可改窗口因此无法判断；不声称可以 patch")})
+        return verdict
+    if judged["reason"] == delivery.IDENTITY_EXPIRED:
+        verdict.update({
+            "action": delivery.NEW_MESSAGE,
+            "reason": delivery.IDENTITY_EXPIRED, "remote_id": remote_id,
+            "says": (f"承载时段卡的消息已发出约 {int(judged['age_days'])} 天，"
+                     f"超过 {window} 天可改窗口，改不动了；只能新发一条，"
+                     f"而那意味着同一时段的第二张卡")})
+        return verdict
+    if judged["reason"] == delivery.IN_HAND:
+        age_days = judged["age_days"]
+        since = (f"发出约 {age_days:.1f} 天" if age_days > 0
+                 else "记下的发出时间不早于这一拍")
+        verdict.update({
+            "action": delivery.PATCH_MESSAGE, "reason": delivery.IN_HAND,
+            "remote_id": remote_id,
+            "says": (f"承载时段卡的消息在手（{since}，在 {window} 天可改窗口内）："
+                     f"静默 patch 这一条，不新发")})
+        return verdict
+    raise CardPeriodError(
+        f"`binding_verdict` answered {judged['reason']!r}, which is not one of "
+        f"the reasons it declares; this verdict has no sentence for it and will "
+        f"not fall through to a patch")
+
+
+# ---------------------------------------------------------------------------
+# the row
+# ---------------------------------------------------------------------------
+
+def row(model: dict, *, period: dict) -> dict:
+    """One tick of the period, as the card will show it.
+
+    Extracted by name, never copied: whatever the model grows cannot arrive
+    here, because there is no field for it. §11's «不复制 PID/code/raw probe» is
+    a property of this function rather than a rule its callers remember.
+    """
+    if not isinstance(period, dict) or not period.get("period_ref") \
+            or not isinstance(period.get("tick"), int):
+        raise CardPeriodError(
+            f"a row needs the period it belongs to: period_ref="
+            f"{period.get('period_ref') if isinstance(period, dict) else None!r}, "
+            f"tick={period.get('tick') if isinstance(period, dict) else None!r}")
+    health = model.get("env_health") or {}
+    sections = model.get("sections") or {}
+    candidate = {
+        "tick": period["tick"],
+        "hhmm": _hhmm(period),
+        "local": period.get("local") or None,
+        "verdict": health.get("verdict"),
+        "observation": health.get("observation"),
+        "sections": {name: (sections.get(name) or {}).get("state")
+                     for name in day.ROW_SECTIONS},
+        "gaps": len(health.get("gaps") or []),
+    }
+    return check_row(candidate)
+
+
+def _hhmm(period: dict) -> str | None:
+    local = period.get("local")
+    if not local:
+        return None
+    moment = datetime.datetime.fromisoformat(local)
+    return moment.strftime("%H:%M")
+
+
+def check_row(candidate: dict) -> dict:
+    """The row's schema, enforced on documents as well as on callers."""
+    if not isinstance(candidate, dict):
+        raise CardPeriodError(f"a row is a JSON object, not {type(candidate).__name__}")
+    extra = [k for k in candidate if k not in ROW_FIELDS]
+    if extra:
+        raise CardPeriodError(
+            f"a period row carries {', '.join(sorted(extra))} — a row keeps "
+            f"{', '.join(ROW_FIELDS)} and nothing else. Machine detail belongs "
+            f"in the observation, which the card links to and does not copy")
+    missing = [k for k in ROW_FIELDS if k not in candidate]
+    if missing:
+        raise CardPeriodError(
+            f"a period row is missing {', '.join(missing)}; an absent value and "
+            f"a value nobody recorded would read the same without it")
+    sections = candidate.get("sections")
+    if not isinstance(sections, dict):
+        raise CardPeriodError("a row's `sections` is an object of state words")
+    strays = [k for k in sections if k not in day.ROW_SECTIONS]
+    if strays:
+        raise CardPeriodError(
+            f"a row's `sections` names {', '.join(sorted(strays))}, which is not "
+            f"one of {', '.join(day.ROW_SECTIONS)}")
+    gaps = candidate.get("gaps")
+    if not isinstance(gaps, int) or isinstance(gaps, bool) or gaps < 0:
+        raise CardPeriodError(
+            f"a row's `gaps` is the count of collection gaps, not {gaps!r}")
+    if not isinstance(candidate.get("tick"), int) or isinstance(candidate["tick"], bool):
+        raise CardPeriodError(f"a row's `tick` is an ordinal, not {candidate.get('tick')!r}")
+    verdict = candidate.get("verdict")
+    if not isinstance(verdict, str) or not verdict:
+        raise CardPeriodError(
+            f"a row leads with the card's verdict and this one has {verdict!r}")
+    return dict(candidate)
+
+
+# ---------------------------------------------------------------------------
+# the write
+# ---------------------------------------------------------------------------
+
+def apply(document: dict, *, step: dict, row_: dict | None = None,
+          at: str | None = None, frozen: dict | None = None,
+          archive: dict | None = None) -> dict:
+    """The document this step produces. Pure: the caller writes it."""
+    act = (step or {}).get("action")
+    stamp = at or (step or {}).get("at")
+    if act not in ACTIONS:
+        raise CardPeriodError(
+            f"{act!r} is not one of {', '.join(ACTIONS)} — an action nobody can "
+            f"name is an action somebody will read as «no change»")
+    next_doc = dict(document or empty())
+    open_ = next_doc.get("open")
+
+    if act == SKIP:
+        if row_ is not None:
+            raise CardPeriodError(
+                "a SKIP carries no row. This instant was decided NOT to update "
+                "the card, and recording what it would have said is how a "
+                "period's rows grow rows it never reported")
+        return next_doc
+
+    if not stamp:
+        raise CardPeriodError("an update needs the instant it happened")
+
+    if act == CREATE:
+        if row_ is None:
+            raise CardPeriodError("a creation needs the row it opens with")
+        if not step.get("period_ref"):
+            raise CardPeriodError("a creation needs the period it belongs to")
+        if isinstance(open_, dict) and open_.get("period_ref") == step["period_ref"]:
+            raise CardPeriodError(
+                f"{step['period_ref']} already has a card. Two creations in one "
+                f"period is the second chat message this module exists to forbid")
+        if isinstance(open_, dict):
+            # The period just closed becomes `previous`, and it carries its
+            # freeze with it — a reader asking «what did the shift hand over»
+            # needs the closed card, not only the open one.
+            next_doc["previous"] = {
+                "period_ref": open_.get("period_ref"),
+                "label": open_.get("label"),
+                "day_ref": open_.get("day_ref"),
+                "opened_at": open_.get("opened_at"),
+                "closed_at": open_.get("frozen", {}).get("at") if
+                isinstance(open_.get("frozen"), dict) else stamp,
+                "ticks": len(open_.get("rows") or []) + (1 if open_.get("latest") else 0),
+                "frozen": open_.get("frozen"),
+                "archive": open_.get("archive"),
+            }
+        period = step.get("period") or {}
+        next_doc["open"] = {
+            "period_ref": step["period_ref"],
+            "label": period.get("label"),
+            "day_ref": period.get("day_ref"),
+            "day_kind": period.get("day_kind"),
+            "start": period.get("start"),
+            "end": period.get("end"),
+            "tick_seconds": period.get("tick_seconds"),
+            "opened_at": stamp,
+            "updated_at": stamp,
+            "latest": check_row(row_),
+            "rows": [],
+            "message": None,
+            "frozen": None,
+            "archive": None,
+        }
+        return next_doc
+
+    if not isinstance(open_, dict) or not open_.get("period_ref"):
+        raise CardPeriodError(
+            f"there is no open card to {act}. A {act} without a card would have "
+            f"to invent one, and every field of it would be invented with it")
+    if open_.get("period_ref") != step.get("period_ref"):
+        raise CardPeriodError(
+            f"the open card belongs to {open_.get('period_ref')} and this {act} "
+            f"is for {step.get('period_ref')}: acting on one period's card with "
+            f"another period's tick is how two shifts become one card")
+
+    if act == PATCH:
+        if row_ is None:
+            raise CardPeriodError("a patch needs the row it is about")
+        latest = open_.get("latest")
+        rows = [check_row(r) for r in (open_.get("rows") or [])]
+        if isinstance(latest, dict) and latest.get("tick") == row_["tick"]:
+            # Same tick, second look: the slot's row is REPLACED, so a period
+            # keeps at most one row per slot.
+            next_open = dict(open_)
+            next_open.update({"latest": check_row(row_), "updated_at": stamp,
+                              "rows": rows})
+            next_doc["open"] = next_open
+            return next_doc
+        if isinstance(latest, dict):
+            rows = (rows + [check_row(latest)])[-_row_ceiling(open_):]
+        next_open = dict(open_)
+        next_open.update({"latest": check_row(row_), "updated_at": stamp,
+                          "rows": rows})
+        next_doc["open"] = next_open
+        return next_doc
+
+    # FINAL
+    if open_.get("frozen"):
+        raise CardPeriodError(
+            f"{open_.get('period_ref')} is already frozen at "
+            f"{open_['frozen'].get('at')}: a second FINAL is a second archive "
+            f"of a shift that has already been handed over")
+    next_open = dict(open_)
+    next_open["updated_at"] = stamp
+    next_open["archive"] = archive if archive is not None else step.get("archive")
+    next_open["frozen"] = frozen or {
+        "kind": delivery.PERIOD,
+        "at": stamp,
+        "version": None,
+        "payload_hash": None,
+    }
+    next_doc["open"] = next_open
+    return next_doc
+
+
+def frozen_block(*, card: dict, at: str, period_ref: str) -> dict:
+    """The `frozen` block a period card's FINAL receipt names.
+
+    The freeze IS `card_delivery.freeze_card`'s, under the `period` kind: the
+    version and the payload hash are that module's, so a receipt filed for a
+    period card has the same shape as one for the day's card and is checked by
+    the same `card_delivery.verify`. A second freeze written here would be a
+    second place «which version went out» is decided, which is the thing the
+    ledger exists to answer once.
+    """
+    return delivery.freeze_card(delivery.PERIOD, card, at=at,
+                                idempotency_key=f"card-period-{period_ref}-{at}")
+
+
+def _row_ceiling(open_: dict) -> int:
+    """How many rows a period keeps.
+
+    Bounded rather than unbounded, for the reason the ledger is: this document
+    is read on a path that runs every ten minutes forever, and a list that only
+    grows is a document that eventually cannot be written atomically. The
+    ceiling is derived from the window it has to hold — a full day of ten-minute
+    ticks — so a shorter tick does not silently evict the morning.
+    """
+    seconds = open_.get("tick_seconds") or DEFAULT_TABLE["tick_seconds"]
+    return max(1, (24 * 3600) // int(seconds))
+
+
+def summary(document: dict | None) -> dict:
+    """What a card renders, and what a command prints."""
+    document = document or empty()
+    open_ = document.get("open")
+    if not isinstance(open_, dict):
+        return {"schema": SCHEMA, "period_ref": None, "ticks": 0, "latest": None,
+                "rows": [], "timeline": [], "message": None, "frozen": None,
+                "previous": document.get("previous"), "archive": None,
+                "says": "还没有任何时段卡"}
+    rows = [check_row(r) for r in (open_.get("rows") or [])]
+    latest = open_.get("latest")
+    all_rows = rows + ([latest] if latest else [])
+    entries = day.timeline(all_rows)
+    frozen = open_.get("frozen")
+    return {
+        "schema": SCHEMA,
+        "period_ref": open_.get("period_ref"),
+        "label": open_.get("label"),
+        "day_ref": open_.get("day_ref"),
+        "kind": open_.get("day_kind"),
+        "tick_seconds": open_.get("tick_seconds"),
+        "ticks": len(all_rows),
+        "opened_at": open_.get("opened_at"),
+        "updated_at": open_.get("updated_at"),
+        "latest": latest,
+        "rows": rows,
+        "timeline": entries,
+        "transitions": sum(1 for e in entries if e["kind"] == "transition"),
+        "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
+        "message": open_.get("message"),
+        "frozen": frozen,
+        "frozen_at": frozen.get("at") if isinstance(frozen, dict) else None,
+        "archive": open_.get("archive"),
+        "previous": document.get("previous"),
+        "says": (f"{open_.get('period_ref')} 已记录 {len(all_rows)} 拍"
+                 + ("（已冻结）" if frozen else "（进行中）")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# the document on disk
+# ---------------------------------------------------------------------------
+
+def period_path(state_path) -> Path:
+    """Where the period card's memory sits, given a state directory."""
+    return Path(state_path).parent.parent / "cards" / "period.json"
+
+
+def default_path() -> Path:
+    """The SAME computation as `period_path`, over the ledger's own anchor."""
+    return period_path(_registry().state_root() / "runtime" / "alerts" / "state.json")
+
+
+class PeriodStore:
+    """The period card, and the ticks it folded. One document, one atomic write.
+
+    An unreadable store is REFUSED rather than replaced: a fresh document would
+    make the same period get a second NEW message, which is the one thing a
+    «one message per period» rule forbids by name.
+    """
+
+    def __init__(self, path) -> None:
+        self.path = Path(path)
+        self._data = self._load()
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return empty()
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise CardPeriodError(
+                f"{self.path} exists and cannot be read ({type(exc).__name__}: "
+                f"{exc}). Refusing to start from an empty period: the same "
+                f"period would get a second NEW message, which is exactly what "
+                f"«一时段一条消息» forbids — losing the memory is not the harm, "
+                f"re-creating the card is.") from exc
+        if not isinstance(data, dict):
+            raise CardPeriodError(f"{self.path} is not a JSON object")
+        open_ = data.get("open")
+        if open_ is not None and not isinstance(open_, dict):
+            raise CardPeriodError(
+                f"{self.path} has an `open` that is {type(open_).__name__}; "
+                f"this document holds at most one open period")
+        if isinstance(open_, dict):
+            if not open_.get("period_ref"):
+                raise CardPeriodError(
+                    f"the open period in {self.path} has no `period_ref`: the "
+                    f"identity is the dedupe key")
+            for item in open_.get("rows") or []:
+                check_row(item)
+            if open_.get("latest") is not None:
+                check_row(open_["latest"])
+            message = open_.get("message")
+            if message is not None and (not isinstance(message, dict)
+                                        or not str(message.get("remote_id") or "")):
+                raise CardPeriodError(
+                    f"the open period in {self.path} has a `message` that names "
+                    f"no message. A binding to nothing would let the next update "
+                    f"patch whichever message it guessed")
+        return data
+
+    def read(self) -> dict:
+        return self._data
+
+    def advance(self, *, period: dict, at: str, row_for=None,
+                finalize=None, closing: str | None = None) -> dict:
+        """Decide this instant, apply every step, and write once.
+
+        Returns the decision with `applied: true` and the resulting summary. A
+        caller that transports must do so BETWEEN reading the decision and this
+        write — but this verb is the one that records the CARD, exactly as
+        `card_day.DayStore.advance` is, and the message binding is recorded
+        separately by `announce` because the id only exists after a send.
+
+        `row_for` is handed each CREATE/PATCH step and returns the row it should
+        record — this store measures nothing, so the readings come from the
+        caller's model. `finalize` is handed each FINAL step and returns
+        `{"archive": ..., "frozen": ...}`. Both are callbacks and not arguments
+        because the row comes from a reading this store does not take and the
+        archive is rendered from the model and the period's rows, which it does
+        not hold. A caller that omits `finalize` still gets a FINAL that records
+        the closure, but the archive and the frozen version are then honestly
+        `None` rather than invented here.
+        """
+        decision = decide(self._data, period=period, at=at, closing=closing)
+        document = self._data
+        for step in decision["steps"]:
+            archive = step.get("archive")
+            frozen = step.get("frozen")
+            row_ = step.get("row_")
+            if row_for is not None and step["action"] in (CREATE, PATCH):
+                row_ = row_for(step)
+            if step["action"] == FINAL and finalize is not None:
+                filled = finalize(step) or {}
+                archive = filled.get("archive", archive)
+                frozen = filled.get("frozen", frozen)
+            document = apply(document, step=step, row_=row_, at=at,
+                             frozen=frozen, archive=archive)
+        if decision["steps"]:
+            _store_io()._atomic_write(self.path, document)
+            self._data = document
+        return {"schema": SCHEMA, "at": at, "applied": bool(decision["steps"]),
+                "decision": decision, "period": summary(self._data)}
+
+    def announce(self, *, remote_id: str, at: str) -> dict:
+        """Record which message carries the open period's card."""
+        message_id = str(remote_id or "").strip()
+        if not message_id:
+            raise CardPeriodError(
+                "an announcement needs the message it is about: recording «a "
+                "message» without an identity is the state this verb ends")
+        if any(c.isspace() for c in message_id):
+            raise CardPeriodError(
+                "a message id is one token, and this one contains whitespace")
+        if message_id.startswith("oc_"):
+            raise CardPeriodError(
+                "that is a chat id, not a message id: `oc_` names a conversation "
+                "and `om_` names one message in it")
+        if not str(at or ""):
+            raise CardPeriodError("an announcement needs the instant it was made")
+        open_ = self._data.get("open")
+        if not isinstance(open_, dict) or not open_.get("period_ref"):
+            raise CardPeriodError(
+                "there is no open period for this message to carry")
+        previous = open_.get("message")
+        held = str(previous.get("remote_id") or "") if isinstance(previous, dict) else ""
+        if not held:
+            change = day.BOUND
+            message = {"remote_id": message_id, "at": str(at)}
+        elif held == message_id:
+            change = day.UNCHANGED
+            message = dict(previous)
+        else:
+            change = day.REBOUND
+            message = {"remote_id": message_id, "at": str(at)}
+        next_doc = dict(self._data)
+        next_doc["open"] = dict(open_)
+        next_doc["open"]["message"] = message
+        _store_io()._atomic_write(self.path, next_doc)
+        self._data = next_doc
+        return {"announced": True, "change": change, "message": message,
+                "period_ref": open_.get("period_ref"), "period": summary(self._data)}
+
+    def summary(self) -> dict:
+        return summary(self._data)
+
+
+# ---------------------------------------------------------------------------
+# the FINAL archive — the view model the last patch renders
+# ---------------------------------------------------------------------------
+
+def archive(model: dict, *, period: dict, rows: list[dict],
+            incidents=(), recoveries=(), unresolved=()) -> dict:
+    """The four blocks a period's final patch carries.
+
+    总览概括 / 完整时段趋势一览 / 三设备摘要 / 事故·自愈·未解决交接. Built here
+    and not in the renderer, for the reason `card_day.summary` gives: a renderer
+    that knew how to read a row would be a second reader of the row schema.
+
+    `incidents`, `recoveries` and `unresolved` are the period's event ledger —
+    the NEW/ESCALATED/RECOVERED facts and the findings still open — handed in by
+    the caller. This function does not read a ledger: the events come from the
+    same source the incident cards do, so «what happened this shift» is answered
+    once.
+    """
+    entries = day.timeline([check_row(r) for r in rows])
+    devices = []
+    for device in (model.get("devices") or []):
+        devices.append(_device_summary(device))
+    return {
+        "schema": SCHEMA,
+        "period_ref": period.get("period_ref"),
+        "label": period.get("label"),
+        "day_ref": period.get("day_ref"),
+        "overview": _overview(model, period, entries),
+        "trend": {
+            "ticks": len(rows),
+            "timeline": entries,
+            "transitions": sum(1 for e in entries if e["kind"] == "transition"),
+            "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
+        },
+        "devices": devices,
+        "handover": {
+            "incidents": [dict(i) for i in incidents],
+            "recoveries": [dict(r) for r in recoveries],
+            "unresolved": [dict(u) for u in unresolved],
+        },
+    }
+
+
+def _overview(model: dict, period: dict, entries: list[dict]) -> dict:
+    devices = model.get("devices") or []
+    attention = model.get("attention") or []
+    return {
+        "devices": len(devices),
+        "attention": len(attention),
+        "verdict": monitor._fleet_verdict(model) if devices else "UNKNOWN",
+        "transitions": sum(1 for e in entries if e["kind"] == "transition"),
+        "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
+        "says": (f"{period.get('day_ref')} · {period.get('label')} 时段结束："
+                 f"{len(devices)} 台设备，{len(attention)} 项需要关注，"
+                 f"时段内 {sum(1 for e in entries if e['kind'] == 'transition')} "
+                 f"处状态变化、{sum(1 for e in entries if e['kind'] == 'gap')} "
+                 f"段未观测"),
+    }
+
+
+def _device_summary(device: dict) -> dict:
+    """One device's line in the final摘要, in the card's own reading shape."""
+    name = device.get("display_name") or device.get("device_ref")
+    return {
+        "device_ref": device.get("device_ref"),
+        "name": name,
+        "reachability": device.get("reachability"),
+        "readings": [monitor.reading_line(r) for r in (device.get("readings") or [])][:6],
+    }
+
+
+def render_archive(view: dict, *, model: dict, rich: bool = False,
+                   charts_verified: bool = False) -> dict:
+    """The period's FINAL card: the fleet card with the archive written above it.
+
+    The V13 three-device information architecture is NOT reproduced here — it is
+    `fleet_monitor_card.render_cardkit`'s output, lifted and shown under a period
+    header. A second renderer of the same three devices would be a second place
+    the layout is decided, and the two would disagree on the card that mattered.
+
+    `charts_verified` stays False. The VChart element and the narrow-screen
+    `column_set` are both still unverified against a real client, so the default
+    is the text card and the archive carries its numbers as words.
+    """
+    if charts_verified:
+        raise CardPeriodError(
+            "charts_verified is not a parameter a caller toggles yet: neither the "
+            "VChart element nor the 390px narrow layout has been accepted on a "
+            "real client, so this renderer refuses to claim a chart was verified")
+    card = monitor.render_cardkit(model, rich=rich, charts_verified=False)
+    card = dict(card)
+    card["header"] = {
+        "template": card.get("header", {}).get("template", "grey"),
+        "title": {"tag": "plain_text",
+                  "content": f"Fleet 监控 · {view.get('label') or '时段'}归档"},
+        "subtitle": {"tag": "plain_text",
+                     "content": f"{view.get('period_ref')} 已冻结"},
+    }
+    elements = [_md(_wrap(render_archive_text(view))), monitor._hr()]
+    card["body"] = {"direction": "vertical",
+                    "elements": elements + list(card["body"]["elements"])}
+    monitor.validate(card)
+    return card
+
+
+def render_archive_text(view: dict) -> str:
+    """The archive's four blocks, as the markdown a person reads."""
+    overview = view.get("overview") or {}
+    trend = view.get("trend") or {}
+    handover = view.get("handover") or {}
+    lines = ["**总览概括**", overview.get("says") or ""]
+    lines += ["", f"**完整时段趋势一览**（{trend.get('ticks')} 拍）"]
+    for entry in (trend.get("timeline") or [])[:12]:
+        lines.append(f"- {entry.get('says')}")
+    if not trend.get("timeline"):
+        lines.append("- 本时段没有记录到任何一拍")
+    lines += ["", f"**三设备摘要**（{len(view.get('devices') or [])}）"]
+    for device in (view.get("devices") or []):
+        head = device.get("name") or device.get("device_ref")
+        state = device.get("reachability") or "UNKNOWN"
+        lines.append(f"- **{head}** · {state}")
+        for reading in (device.get("readings") or [])[:4]:
+            lines.append(f"  - {reading}")
+    lines += ["", "**交接：事故 / 自愈 / 未解决**"]
+    for item in (handover.get("incidents") or []):
+        lines.append(f"- 事故 · {item.get('says') or item.get('episode')}")
+    for item in (handover.get("recoveries") or []):
+        lines.append(f"- 自愈 · {item.get('says') or item.get('episode')}")
+    for item in (handover.get("unresolved") or []):
+        lines.append(f"- 未解决 · {item.get('says') or item.get('key')}")
+    if not (handover.get("incidents") or handover.get("recoveries")
+            or handover.get("unresolved")):
+        lines.append("- 本时段无事故、无自愈动作、无未解决项")
+    return "\n".join(lines)
+
+
+def _md(content: str) -> dict:
+    return monitor._md(content)
+
+
+def _wrap(text: str, *, limit: int = None) -> str:
+    if limit is None:
+        limit = getattr(monitor, "MOBILE_LINE_CHARS", 40)
+    return monitor._wrap_lines(text, limit=limit)
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - hand check
+    """Answer one instant on stdout, for a hand check."""
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--at", default="")
+    parser.add_argument("--declare", default="")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--store", default="")
+    args = parser.parse_args(argv)
+    instant = args.at or datetime.datetime.now(
+        datetime.timezone.utc).astimezone().isoformat()
+    declaration = json.loads(args.declare) if args.declare else None
+    period = period_at(instant, declaration=declaration)
+    store = PeriodStore(args.store or default_path())
+    result = store.advance(period=period, at=instant)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(period["says"])
+        print(result["decision"]["says"])
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
