@@ -1,0 +1,20 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+#
+# The half-hour LIVE heartbeat is DELIBERATELY not enabled: the :00/:30 cadence
+# is a decision an operator makes on a host that has capacity, and this file is
+# the shipped-but-off form of that decision.
+[Unit]
+Description=ServerOS V13 LIVE surface — half-hour heartbeat (DISABLED TEMPLATE)
+Documentation=file:///data/home/vince/workspace/worktrees/serveros/v13-surfaces-integration-20261014/deploy/v13-surfaces/README.md
+
+[Service]
+Type=oneshot
+# The scheduler already fires at :00/:30; the command decides whether the slot
+# has actually moved, so a late or duplicate fire is a no-op rather than a
+# second patch.
+ExecStart=%h/workspace/worktrees/serveros/v13-surfaces-integration-20261014/runtime/surface_cli.py --canary-user-vince --i-understand-this-sends
+# Bounded, in the same shape every other measured run on this host uses.
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=200%
+TimeoutStartSec=300

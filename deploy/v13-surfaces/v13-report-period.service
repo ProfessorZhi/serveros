@@ -1,0 +1,14 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+[Unit]
+Description=ServerOS V13 CORE REPORT surface — period边界 (DISABLED TEMPLATE)
+Documentation=file:///data/home/vince/workspace/worktrees/serveros/v13-surfaces-integration-20261014/deploy/v13-surfaces/README.md
+
+[Service]
+Type=oneshot
+# Fires on period boundaries; the command derives the period from the calendar
+# declaration, so a fire that is not a boundary is a no-op.
+ExecStart=%h/workspace/worktrees/serveros/v13-surfaces-integration-20261014/runtime/surface_cli.py --canary-user-vince --i-understand-this-sends
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=200%
+TimeoutStartSec=300

@@ -1,0 +1,12 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+[Unit]
+Description=ServerOS V13 CORE REPORT at period boundaries (DISABLED TEMPLATE)
+
+[Timer]
+OnCalendar=*-*-* 08,12,18,00:00:00
+Persistent=false
+AccuracySec=60s
+Unit=v13-report-period.service
+
+[Install]
+WantedBy=timers.target

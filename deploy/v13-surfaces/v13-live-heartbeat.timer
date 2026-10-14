@@ -1,0 +1,12 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+[Unit]
+Description=ServerOS V13 LIVE heartbeat at :00/:30 (DISABLED TEMPLATE)
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00
+Persistent=false
+AccuracySec=30s
+Unit=v13-live-heartbeat.service
+
+[Install]
+WantedBy=timers.target
