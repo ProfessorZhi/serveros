@@ -43,6 +43,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -61,17 +62,36 @@ _spec.loader.exec_module(release)
 
 TEMPLATE = RUNTIME / "serveros-wake-parent"
 
-#: A stand-in for `claude`, and the only thing this file needs from it: the argv
-#: it was handed and the stdin that came with it, appended as one JSON line.
-#: Nothing here runs a language model — the question is what the LAUNCHER does
-#: before it execs, and a real session would answer a different one.
+#: A stand-in for `claude`, and what this file needs from it: the argv it was
+#: handed, the stdin that came with it, and the MCP config it was pointed at —
+#: appended as one JSON line. Nothing here runs a language model — the question
+#: is what the LAUNCHER does before it starts anything, and a real session would
+#: answer a different one.
+#:
+#: The config is read HERE, during the run, and not by the test afterwards,
+#: because the launcher's own trap removes it on the way out. That the file is
+#: gone by the time the test looks is asserted separately; that it EXISTED, was
+#: 0600, and held this wake's envelope is only observable from inside the run.
 FAKE_CLAUDE = '''\
 #!/bin/bash
+mcp_file=""; previous=""
+for token in "$@"; do
+  if [ "${previous}" = "--mcp-config" ]; then mcp_file="${token}"; fi
+  previous="${token}"
+done
+mcp_mode="none"; mcp_text=""
+if [ -n "${mcp_file}" ] && [ -f "${mcp_file}" ]; then
+  mcp_mode="$(stat -c '%a' -- "${mcp_file}")"
+  mcp_text="$(cat -- "${mcp_file}")"
+fi
 {
-  printf '{"argv": %s, "stdin": %s, "cwd": %s}\\n' \\
+  printf '{"argv": %s, "stdin": %s, "cwd": %s, "mcp_file": %s, "mcp_mode": %s, "mcp_text": %s}\\n' \\
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")" \\
     "$(cat | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \\
-    "$(python3 -c 'import json,os; print(json.dumps(os.getcwd()))')"
+    "$(python3 -c 'import json,os; print(json.dumps(os.getcwd()))')" \\
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${mcp_file}")" \\
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${mcp_mode}")" \\
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${mcp_text}")"
 } >> "${FAKE_CLAUDE_LOG}"
 exit "${FAKE_CLAUDE_EXIT:-0}"
 '''
@@ -91,21 +111,28 @@ def code_lines(text: str) -> list[str]:
 
 
 def parse_launcher(text: str) -> dict:
-    """The launcher read as what it IS — the exec'd argv — not as prose.
+    """The launcher read as what it IS — the argv it will run — not as prose.
 
     This reads the one command the file ends in, which is the only part of it a
     shell and a reader have to agree about. `test_a_real_wake_starts_a_parent…`
     then executes the rendered artifact and reads the SAME argv out of what it
     actually handed to `claude`, because a parse can only ever confirm that the
     file says what this test expects it to say.
+
+    Until 2026-10-14 this read an `exec` line. It now reads `claude_argv`, the
+    array that line was flattened into, because the launcher no longer `exec`s:
+    the MCP config it hands over lives in a 0600 file, and a process that
+    replaced itself runs no trap — so an `exec`ed launcher would leave that file
+    on disk for the life of the host, which is the opposite of the property the
+    file exists to provide.
     """
     joined = " ".join(line.rstrip("\\").strip() for line in code_lines(text))
     joined = " ".join(joined.split())
-    marker = "exec "
-    start = joined.rindex(marker)
-    argv = shlex.split(joined[start + len(marker):])
-    argv = [tok for tok in argv if tok != "\\"]
-    return {"argv": argv, "binary": argv[0], "flags": argv[1:]}
+    marker = "claude_argv=("
+    start = joined.rindex(marker) + len(marker)
+    end = joined.index(")", start)
+    argv = shlex.split(joined[start:end])
+    return {"argv": argv, "flags": argv}
 
 
 def flag(argv: list[str], name: str):
@@ -175,7 +202,19 @@ class TheLauncherIsAPosture(unittest.TestCase):
             'adapter="@SERVEROS_RUNTIME@/mcp/bin/serveros-continuation-mcp"',
             code_lines(self.text))
         self.assertIn("--mcp-config", self.argv)
-        self.assertEqual(flag(self.argv, "--mcp-config"), "${mcp_config}")
+        # THE VALUE IS A PATH, and that is the whole of issue #171's answer on
+        # this side of the boundary. An inline JSON value puts the config — and
+        # whatever an MCP server entry later comes to hold, an Authorization
+        # header being exactly what one holds — onto a command line every
+        # account on a shared host can read with `ps`. The file it points at is
+        # 0600 in a private directory, and the tests below this one assert both.
+        self.assertEqual(flag(self.argv, "--mcp-config"), "${config_file}")
+        self.assertNotIn("mcpServers", " ".join(self.argv))
+        # The value is a shell variable holding a path, not a document. The
+        # distinction is the whole change: an inline config is a literal here.
+        value = flag(self.argv, "--mcp-config") or ""
+        self.assertTrue(value.startswith("${") and value.endswith("}"),
+                        f"{value!r} is not a variable reference")
 
     def test_the_launcher_never_invokes_serverosctl(self):
         """The route that made Bash necessary, gone from what actually runs.
@@ -330,6 +369,23 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
         (self.base / "mcp" / "bin" / "serveros-continuation-mcp").write_text(
             "#!/bin/bash\nprintf '%s\\n' " + shlex.quote(str(self.parent_dir)) + "\n")
         (self.base / "mcp" / "bin" / "serveros-continuation-mcp").chmod(0o755)
+        # The revision's own preflight, and the contract it reads. `scripts/` is
+        # deliberately NOT here, and its absence is the point: `scripts/build.py`'s
+        # `CORE_MODULES` ships `runtime` and `fleet`, so a guard that reached for
+        # `scripts/scan_secrets.py` would work from a checkout and refuse every
+        # wake on every installed node — the `intake` drop the builder's own
+        # comment records. This fixture is the installed shape, not a convenience.
+        (self.base / "runtime").mkdir()
+        (self.base / "fleet").mkdir()
+        for name in ("launcher_guard.py", "credential_shapes.py"):
+            shutil.copy2(RUNTIME / name, self.base / "runtime" / name)
+        shutil.copy2(REPO / "fleet" / "transport-contract.yaml",
+                     self.base / "fleet" / "transport-contract.yaml")
+        # The launcher makes its MCP config under `${TMPDIR:-/tmp}`, so pointing
+        # TMPDIR at a directory this test owns turns "nothing was left behind"
+        # into an assertion about a directory rather than a guess about `/tmp`.
+        self.scratch = self.base / "scratch-tmp"
+        self.scratch.mkdir()
         self.envelope = self.base / "envelope.json"
         self.envelope.write_text("{}\n")
 
@@ -341,6 +397,7 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
                if k not in ("SERVEROS_CONTINUATION_ENVELOPE",)}
         env["SERVEROS_WAKE_CLAUDE"] = str(self.fake)
         env["FAKE_CLAUDE_LOG"] = str(self.log)
+        env["TMPDIR"] = str(self.scratch)
         if envelope is not ...:
             if envelope is not None:
                 env["SERVEROS_CONTINUATION_ENVELOPE"] = str(envelope)
@@ -350,10 +407,18 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, env=env, timeout=60)
 
-    def started(self) -> list[list[str]]:
+    def records(self) -> list[dict]:
         if not self.log.exists():
             return []
-        return [json.loads(line)["argv"] for line in self.log.read_text().splitlines()]
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def started(self) -> list[list[str]]:
+        return [record["argv"] for record in self.records()]
+
+    def sole_record(self) -> dict:
+        records = self.records()
+        self.assertEqual(len(records), 1, "expected exactly one started client")
+        return records[0]
 
     def test_an_empty_briefing_starts_nothing(self):
         proc = self.run_launcher(briefing="")
@@ -384,24 +449,118 @@ class TheLauncherStartsAParentOnlyWhenThereIsAWakeToCarry(unittest.TestCase):
     def test_a_real_wake_starts_a_parent_holding_this_wake_and_no_shell(self):
         """The positive control, and the whole point of the file.
 
-        If this test is green and the four above are green, then the only way
-        this launcher starts a Parent is with an envelope in hand, a briefing to
-        carry, and a tool list with no code-running entry in it.
+        If this test is green and the refusals above are green, then the only
+        way this launcher starts a Parent is with an envelope in hand, a
+        briefing to carry, and a tool list with no code-running entry in it.
         """
         proc = self.run_launcher(briefing="resume SRV-0001\n")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(self.log.read_text().splitlines()[0])["cwd"], str(self.parent_dir))
-        started = self.started()
-        self.assertEqual(len(started), 1)
-        argv = started[0]
+        record = self.sole_record()
+        self.assertEqual(record["cwd"], str(self.parent_dir))
+        argv = record["argv"]
         self.assertNotIn("Bash", " ".join(argv))
         self.assertIn("resume SRV-0001", argv)
-        config = json.loads(flag(argv, "--mcp-config"))
+        config = json.loads(record["mcp_text"])
         self.assertEqual(
             config["mcpServers"]["continuation"]["env"],
             {"SERVEROS_CONTINUATION_ENVELOPE": str(self.envelope)})
         self.assertTrue(config["mcpServers"]["continuation"]["command"].endswith(
             "/mcp/bin/serveros-continuation-mcp"))
+
+    # -- the config is a private file, and it does not outlive the wake ---------
+
+    def test_the_config_is_a_0600_file_and_never_an_argument(self):
+        """Issue #171, asserted from inside the run.
+
+        0600 rather than merely "not world-readable": this file is what the
+        client reads, and a mode that let another account on this host read it
+        would have moved the leak from `ps` to `cat` rather than closing it.
+        """
+        proc = self.run_launcher()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        record = self.sole_record()
+        self.assertEqual(record["mcp_mode"], "600")
+        self.assertEqual(flag(record["argv"], "--mcp-config"), record["mcp_file"])
+        # Nothing that looks like the config itself is on the command line.
+        self.assertNotIn("{", flag(record["argv"], "--mcp-config") or "")
+
+    def test_nothing_is_left_behind_when_the_wake_ends(self):
+        """Cleanup, and the narrowest claim that can be made about it.
+
+        `TMPDIR` is pointed at a directory this test owns, so "nothing is left"
+        is an assertion about a directory rather than a guess about `/tmp`. Two
+        paths are removed and both were made by this process inside a directory
+        `mktemp -d` created for it alone, which is the whole of the guarantee
+        that it is not deleting anybody else's file.
+        """
+        proc = self.run_launcher()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(list(self.scratch.iterdir()), [],
+                         "the wake left its MCP config behind")
+
+    def test_a_refusal_cleans_up_too(self):
+        """The cleanup is on the way out, and a refusal is a way out."""
+        fake = self.base / ("sk-" + "c" * 40)
+        fake.mkdir()
+        envelope = fake / "envelope.json"
+        envelope.write_text("{}\n")
+        proc = self.run_launcher(envelope=envelope)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(list(self.scratch.iterdir()), [],
+                         "a refused wake left its MCP config behind")
+
+    # -- the preflight ---------------------------------------------------------
+
+    def test_a_credential_shaped_envelope_is_refused_before_anything_starts(self):
+        """The bound, exercised through the real code path with a fake value.
+
+        The value is synthetic and assembled here — a real one is the thing this
+        whole change exists to keep off a command line. What is asserted is the
+        SHAPE of the answer: a rule name, a position, and no value anywhere; and
+        that the client was never started.
+        """
+        fake = self.base / ("sk-" + "c" * 40)
+        fake.mkdir()
+        envelope = fake / "envelope.json"
+        envelope.write_text("{}\n")
+        proc = self.run_launcher(envelope=envelope)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertIn("MCP_CONFIG_CARRIES_CREDENTIAL_SHAPE", proc.stderr)
+        self.assertIn("anthropic-or-openai-key", proc.stderr)
+        self.assertEqual(self.started(), [], "the client was started anyway")
+        # A rule and a position, and never the value.
+        for stream in (proc.stdout, proc.stderr):
+            self.assertNotIn("sk-", stream)
+            self.assertNotIn("c" * 40, stream)
+
+    def test_a_bearer_on_the_briefing_is_refused_and_never_echoed(self):
+        """The other half of the line: the briefing is an argv token too.
+
+        `-p "${briefing}"` is the largest thing on this command line, and a
+        briefing is assembled from records this launcher did not write. A token
+        that reached it would be on the line before any of the checks below.
+        """
+        token = "A1bC2dE3fG4hI5jK"
+        proc = self.run_launcher(briefing="context follows: Bearer " + token + "\n")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("ARGV_CARRIES_CREDENTIAL_SHAPE", proc.stderr)
+        self.assertIn("bearer-credential", proc.stderr)
+        self.assertIn("argv[", proc.stderr)
+        self.assertEqual(self.started(), [], "the client was started anyway")
+        self.assertNotIn(token, proc.stdout + proc.stderr)
+
+    def test_a_revision_without_the_preflight_refuses_rather_than_starts(self):
+        """A bound that can be left out of a revision is not a bound.
+
+        The file is part of the promoted payload, and this asserts the launcher
+        treats its absence as a refusal rather than as a check it can skip.
+        """
+        (self.base / "runtime" / "launcher_guard.py").unlink()
+        proc = self.run_launcher()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("launcher_guard.py", proc.stderr)
+        self.assertEqual(self.started(), [])
 
 
 if __name__ == "__main__":
