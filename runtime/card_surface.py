@@ -144,6 +144,20 @@ def _moment(value):
         return None
 
 
+def receipt_remote_id(receipt) -> str:
+    """The message a receipt names — from the receipt's TOP level or its provider.
+
+    `message_transport` answers with the id under `provider.remote_id`, and a
+    caller may hand in a flattened row where it sits at the top level. Reading
+    only one of the two shapes is how a DELIVERED receipt comes to look like «it
+    named no message», so both are read here and the question is answered once.
+    """
+    if not isinstance(receipt, dict):
+        return ""
+    provider = receipt.get("provider") if isinstance(receipt.get("provider"), dict) else {}
+    return str(receipt.get("remote_id") or provider.get("remote_id") or "").strip()
+
+
 def regular_slot_id(at, *, slot_seconds: int = SLOT_SECONDS) -> int | None:
     """The stable half-hour slot an instant falls in: `utc_epoch // slot_seconds`.
 
@@ -501,7 +515,7 @@ class SurfaceStore:
         next_doc = dict(self._data)
         current = dict(next_doc.get("live") or {})
         if action in (CREATE, SUCCESSOR):
-            remote_id = str((receipt or {}).get("remote_id")
+            remote_id = str(receipt_remote_id(receipt)
                             or pending.get("remote_id") or "").strip()
             if not remote_id:
                 raise CardSurfaceError(
@@ -517,7 +531,7 @@ class SurfaceStore:
                 current["last_delivered_regular_slot"] = pending["slot"]
         elif action == PATCH:
             target = str(pending.get("remote_id") or "")
-            echoed = str((receipt or {}).get("remote_id") or target)
+            echoed = str(receipt_remote_id(receipt) or target)
             if target and echoed and echoed != target:
                 raise CardSurfaceError(
                     f"回执命名的消息 {echoed!r} 不是这次 patch 的目标 {target!r}："
@@ -630,7 +644,7 @@ class SurfaceStore:
                 f"回执的版本 {got_version!r} 与这份报告准备好的 {prepared!r} 不一致："
                 f"这是一份关于**另一张卡**的证明，不能用来冻结这一张")
         bound = str(report.get("remote_id") or "")
-        got_id = str((receipt or {}).get("remote_id") or bound)
+        got_id = str(receipt_remote_id(receipt) or bound)
         if bound and got_id and got_id != bound:
             raise CardSurfaceError(
                 f"回执命名的消息 {got_id!r} 不是这份报告绑定的 {bound!r}："
