@@ -1793,7 +1793,11 @@ short_description: Agent Engineering Workbench for a Linux work node
 #   `abilities/target.py` (−2), plus the two NEW members above, +57766 B in all.
 #   `tests/` is not a member of this composition, so the forty-one test files
 #   (+4210 / −94 lines) that come with this do not move the label.
-cachebuster: srv0005.20261009a
+# `srv0005.20261014a`: one `recommended` member is added --
+# `delivery-pr-report`, whose Skill landed in ability-management and is pinned
+# by `--ability-rev` at build time. No file in this repository's payload moves,
+# so the label moves for the member list, not for a source delta here.
+cachebuster: srv0005.20261014a
 
 skills:
   - name: runtime-management
@@ -1877,4 +1881,19 @@ recommended:
       with `feishu-space-management`, so a node without that grant would carry
       a member it cannot exercise. The status moves because it is now true that
       the registry can resolve it; a status is a claim about the registry, and
+      `build.py` checks it in both directions against the payload.
+  - name: delivery-pr-report
+    source: ability-management
+    status: available
+    reason: >-
+      A thin owned orchestration over members this node already resolves. It
+      carries no payload of its own and no PR-review or report-writing detail:
+      it decides the intent (PR-only / report-only / both), the repo/Item/Run,
+      the evidence and the audience, then hands the PR to the third-party
+      `good-pr`, the report to `feishu-report` and the implementation to
+      `implementation-delivery`, all of which this composition already
+      provides. It stays recommended rather than bundled because a node that
+      never closes a delivery should not carry a router it never calls, and
+      because the three members it routes to are already resolved here rather
+      than duplicated under it. The status is a claim about the registry, and
       `build.py` checks it in both directions against the payload.
