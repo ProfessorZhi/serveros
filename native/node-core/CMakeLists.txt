@@ -42,3 +42,10 @@ endif()
 
 enable_testing()
 add_subdirectory(tests)
+
+# The Native Core supervisor: the resident decision engine that sits above the
+# collector. It links `nodecore` for the JSON writer, and it is a SEPARATE
+# target on purpose — the collector is a read-only one-shot and this is the
+# thing that may ask systemd to act, so a reader can tell at the build graph
+# which binary carries the reachability.
+add_subdirectory(supervisor)

@@ -1,0 +1,132 @@
+# serveros-native-core.service — user unit, TEMPLATE. NOT INSTALLED.
+#
+# This file is a DECLARATION of how the Native Core is meant to be started. It
+# has not been installed on any machine and this round does not install it: the
+# acceptance for that is a separate, explicit authorisation per user, and
+# nothing here should be read as a promise that anything is running.
+#
+# INSTALLING IT DOES NOT START IT. A user unit is only reached at login, or on
+# boot for a user whose admin has enabled lingering — see the linger section at
+# the bottom, which is the part a person has to do themselves.
+#
+# Rendering
+# ---------
+# ExecStart carries `@SERVEROS_NATIVE_CORE_BIN@` and the two environment values
+# carry `@...@` placeholders, rendered by an installer the same way
+# `runtime/serverosd.service` is. The placeholder is deliberately NOT a systemd
+# specifier: systemd expands `%` and `$`, so a `$VAR` here would expand to the
+# empty string when unset and ExecStart would silently become a path that may
+# exist and start the wrong program. `@...@` is inert to systemd, and an
+# unrendered unit fails with the literal path it could not find. A unit that
+# cannot start says so; a unit that starts something else does not.
+#
+# Conventions it follows, and why each one is here
+# ------------------------------------------------
+#
+#   ExecStart is --observe, not --enable-actions
+#       The unit starts the Core in OBSERVE ONLY. Turning on acting is a
+#       separate, deliberate invocation, never something a reboot can switch
+#       on. A unit file that enabled mutation on boot would be a unit file
+#       nobody reviewed at the moment it mattered — the same rule
+#       `runtime/serverosd.service` states for `--enable-reconcile`.
+#
+#   Restart=on-failure, not always
+#       `always` restarts a Core that exited cleanly and deliberately, which
+#       turns "I stopped it" into an incident. `on-failure` restarts it when it
+#       crashed, which is the only case where restarting is a hypothesis worth
+#       testing.
+#
+#   StartLimitIntervalSec / StartLimitBurst live in [Unit], not [Service]
+#       In [Service] systemd logs "Unknown key name" and carries on, so the
+#       crash-loop ceiling this file claims to have would not exist. Measured
+#       and written down in `runtime/serverosd.service`; inherited here rather
+#       than rediscovered.
+#
+#   The Core does NOT restart itself, and this unit is what makes that true
+#       Nothing in the manifest may name this unit, and the Core never asks
+#       systemd for a verb on its own unit id — its lifecycle belongs to
+#       systemd. Two supervisors over one process is the failure this split
+#       exists to prevent (§20: systemd IS the supervisor). A Core that could
+#       restart itself would also be able to restart itself in a loop, which is
+#       the incident, not the recovery.
+#
+#   No path, user or mount isolation — on purpose
+#       `runtime/serverosd.service` measured this: `ReadWritePaths=`,
+#       `ProtectSystem=`, `ProtectHome=` and `PrivateTmp=` each put the unit in
+#       a private mount or user namespace where /proc shows four processes
+#       instead of sixty-three, so a process probe runs, succeeds, finds
+#       nothing, and reports STOPPED. "I cannot see it" must never render the
+#       same as "it is not running". A supervisor whose whole job is to observe
+#       carries no sandbox that blinds it. `NoNewPrivileges=yes` stays: it is
+#       the one that was measured harmless to /proc visibility.
+#
+#   User scope, never system scope
+#       This unit supervises ONE user's services. Two users on one device get
+#       two instances of it with two independent UIDs and two independent state
+#       roots, and neither can see or act on the other's units. A system-scope
+#       version would need root and would be able to name units belonging to
+#       accounts that never authorised it — which the allowlist forbids and the
+#       unit's own scope makes unreachable.
+
+[Unit]
+Description=ServerOS Native Core (thin supervisor; observe-only by default)
+Documentation=file:%h/.serveros/node.yaml
+# Wants, not Requires: if the network is not up, the Core still starts and
+# reports the services it cannot reach. A control plane that refuses to boot
+# because something it observes is down has inverted its own purpose.
+Wants=network-online.target
+After=network-online.target
+
+# A ceiling on the crash loop. systemd's own budget, not the Core's: the Core's
+# recovery budget bounds what it does to OTHER units and says nothing about how
+# often it may be restarted itself.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+
+# The desired-state manifest and the private state root. Both are per user, and
+# both are rendered at install time rather than written into this template: a
+# template naming one user's state root would install a second user's Core
+# writing into the first user's state.
+Environment=SERVEROS_NATIVE_CORE_MANIFEST=@SERVEROS_NATIVE_CORE_MANIFEST@
+Environment=SERVEROS_NATIVE_CORE_STATE=@SERVEROS_NATIVE_CORE_STATE@
+
+# --observe is not a default this file can change later without an edit a
+# reviewer sees. See the note above.
+ExecStart=@SERVEROS_NATIVE_CORE_BIN@ --observe --manifest @SERVEROS_NATIVE_CORE_MANIFEST@
+
+Restart=on-failure
+RestartSec=30
+
+# The Core needs no privilege it does not have as a user, and it upgrades none.
+NoNewPrivileges=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-native-core
+
+[Install]
+WantedBy=default.target
+
+# LINGER — what a person has to do, and what this unit cannot do for them
+# ---------------------------------------------------------------------
+# `WantedBy=default.target` is reached at LOGIN. For the Core to come up at
+# BOOT with nobody logged in, `loginctl enable-linger <user>` must have been run
+# for that account. It is a privileged operation on the account itself, it is
+# per user, and it is NOT something this unit, the Core, or an installer may do
+# silently — enabling linger for an account the owner has not agreed to is
+# making that account run services in the background behind their back.
+#
+# So it is written here, where a reader looking for "why does this not start at
+# boot" will find it, and it is left undone. On this host that command is:
+#
+#     loginctl enable-linger vince      # the OS owner runs this, per user
+#
+# Windows has no equivalent and no equivalent recipe: a Windows service is
+# started by the Service Control Manager, which is a system-scope facility with
+# its own ACL model, its own failure actions and its own per-account security
+# descriptor. It is a SEPARATE design and a separate acceptance (issue #175
+# stage 3), not a translation of this file.
