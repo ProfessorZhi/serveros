@@ -22,11 +22,17 @@ lets one wrapper executable serve every case in
   exit2           a failure on stderr, exit 2
   hang            sleeps far past any test's timeout
   huge            far more bytes than any caller's bound
+  live-now        the fixture, with `observed_at` stamped by THIS child's clock
 
 It ignores the adapter's own flags (`--interval-ms`, `--filesystem`,
 `--interface`, `--compact`) on purpose: they are the adapter's argv contract and
 `test_native_node_core_adapter.py` asserts them directly, where the assertion can
 name the argument instead of a line of output.
+
+`live-now` exists for one property and no other: a caller that reads its clock
+BEFORE running the collector ages a reading the child stamped afterwards, which
+is a reading from the future. The committed fixture lives in 2026-01-01 and
+cannot show that, because its age is positive whichever clock is used.
 """
 from __future__ import annotations
 
@@ -34,6 +40,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 MODE = os.environ.get("SERVEROS_FAKE_NATIVE_MODE", "ok")
@@ -61,6 +68,14 @@ def main() -> int:
         return 0
     if MODE == "huge":
         sys.stdout.write("x" * 500_000)
+        return 0
+
+    if MODE == "live-now":
+        document = json.loads(FIXTURE.read_text())
+        stamped = datetime.now(timezone.utc).isoformat()
+        document["observed_at"] = stamped
+        document["sample_started_at"] = stamped
+        json.dump(document, sys.stdout, sort_keys=True)
         return 0
 
     document = json.loads(FIXTURE.read_text())
