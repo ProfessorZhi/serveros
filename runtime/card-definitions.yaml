@@ -128,6 +128,9 @@ codes:
   MEMORY_PRESSURE_ACTIVE:
     label: 整机内存停顿
     what: 整机有任务等待内存的时间占比达到告警阈值
+  USER_MEMORY_PRESSURE:
+    label: 账户内存占用
+    what: 该账户占用的整机内存达到告警阈值
   DISK_WARNING:
     label: 使用率告警档
     what: 该文件系统使用率进入告警档

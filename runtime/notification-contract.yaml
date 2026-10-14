@@ -651,6 +651,21 @@ alerts:
         # measurement that catches the 2026-09-29 machine is the one that
         # interrupts somebody least.
         MEMORY_PRESSURE_ACTIVE: REVIEW
+        # One ACCOUNT holding the machine, as opposed to the machine being out
+        # of memory. It is `boundary` for the same reason the three host memory
+        # codes above are: the expectation is the threshold itself — no account
+        # is meant to hold half a shared host — and it is REVIEW rather than
+        # WATCH because the 2026-10-14 episode (one uid at 58.7% of 247 GiB for
+        # nineteen hours, swap exhausted, nobody told) is exactly the case a
+        # counted-off-the-face code would have kept counting.
+        #
+        # `consumption` below holds `HIGH_MEMORY_SUSTAINED`, which is graded on
+        # the same kind of number for a PROCESS GROUP, and the two are not the
+        # same finding: that one is a generic default applied to every process
+        # and is nobody's violated expectation, while this one is a share of a
+        # machine somebody else is also using. The boundary between the two
+        # buckets is exactly that sentence.
+        USER_MEMORY_PRESSURE: REVIEW
         # The §17 spellings of the same two facts: `ROOT_FS_PRESSURE` is the
         # root filesystem and `DATA_FS_PRESSURE` is any non-`/` mount, and both
         # are graded against the same `filesystem_percent_high` that

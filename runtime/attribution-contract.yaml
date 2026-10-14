@@ -808,6 +808,53 @@ thresholds:
   # above. A single process over its own budget and a machine out of memory
   # are different findings and only the second one gates admission.
   memory_percent_high: 90.0
+  # The PER-ACCOUNT pair, and the distance they come back by. `memory_percent_high`
+  # above grades the MACHINE — "is this host out of memory" — and 90 is a
+  # near-death reading for it. These grade ONE ACCOUNT on a host shared by
+  # sixteen and answer a different question: "is this account holding the
+  # machine". The bar is far lower because the answer is not about death, it is
+  # about fairness and about what happens next.
+  #
+  # Measured on this host 2026-10-14: `vince` uid 1002 ran
+  # `python -m pytest -q -p no:cacheprovider` as PID 288992 for about nineteen
+  # hours, anon RSS ~145 GiB of 247 GiB total (58.7%), one core saturated, swap
+  # nearly exhausted at 32 GiB, MemAvailable ~37 GiB. Every per-account view of
+  # this node was, correctly, about somebody else, and nothing reported it. A
+  # 90% threshold here would have reported nothing: it would have had to wait
+  # for 222 GiB, and the machine was already thrashing at 145.
+  #
+  # The two tiers are DIFFERENT CLAIMS and not two numbers on one axis:
+  #
+  #   user_memory_percent_high      SUSTAINED. Both samples of one window over
+  #                                 it. A single sample cannot tell a process
+  #                                 that is filling memory from one that was
+  #                                 always that size, and a soft tier that
+  #                                 fired on one sample would fire on every
+  #                                 build and every test run that briefly
+  #                                 touched a large figure.
+  #   user_memory_percent_critical  IMMEDIATE. One reading over it is the claim.
+  #                                 An account holding half the machine does not
+  #                                 need to hold it twice.
+  #
+  # `margin_key()` derives `user_memory_percent_recovery_margin` from EITHER
+  # key — the two are one quantity read at two places on one axis, and they come
+  # back down the same distance. The five points below are the brief's, and a
+  # single distance is what keeps an escalation from being a second place for
+  # the two tiers to disagree about when an account stopped holding the machine.
+  user_memory_percent_high: 30.0
+  user_memory_percent_critical: 50.0
+  user_memory_percent_recovery_margin: 5.0
+  # Per-uid exceptions, keyed by the uid as a string. For the account whose
+  # large memory use IS its job — a build worker, a shared gateway — and for
+  # machines where 30% is not the same number of GiB. Each entry may carry
+  # `percent_high` and `percent_critical`, and an entry that carries neither is
+  # inert rather than wrong: the defaults apply and the entry is a place to
+  # write down that somebody looked.
+  #
+  # Empty here on purpose. A special case hard-coded in the branch above would
+  # be a policy nobody can review; this is the reviewable spelling of the same
+  # thing, and the daemon reads it from this file on every pass.
+  user_memory_per_uid: {}
   # Docker's share of the filesystem its data root lands on. Above this the
   # store is the thing filling the disk, which is a different disposition
   # from "something else here is large".
@@ -897,11 +944,12 @@ thresholds:
   error_repeats_recovery_margin: 2
 
 # ---------------------------------------------------------------------------
-# Resource anomaly codes (§18). Sixteen, and a SECOND vocabulary beside the
+# Resource anomaly codes (§18). Seventeen, and a SECOND vocabulary beside the
 # process-layer `anomalies:` list above. §18 names fifteen; this layer grades
-# those fifteen plus `MEMORY_PRESSURE_ACTIVE`, added for the reason given at its
-# entry — fifteen cannot express the difference between a full machine and a
-# stalled one.
+# those fifteen plus two — `MEMORY_PRESSURE_ACTIVE`, added for the reason given
+# at its entry, and `USER_MEMORY_PRESSURE`, added because §18's memory codes are
+# all about the MACHINE and on a shared host "the machine is at 58%" and "one
+# account is holding 58% of it" are different findings with different readers.
 #
 # Why a second list rather than fifteen more entries above: the list above is
 # the PROCESS layer — a runtime group, a pid tree, a task. This one is the
@@ -1008,6 +1056,42 @@ resource_anomalies:
       rather than `full`: on a shared host one tenant's runtime stalling is
       the fact worth knowing about, and `full` would report that machine as
       quiet.
+  - code: USER_MEMORY_PRESSURE
+    severity: medium
+    implies_stale: false
+    emitted_by: resource_anomaly._user_memory_signals
+    threshold: user_memory_percent_high
+    distinct_from: MEMORY_PRESSURE
+    note: >
+      ONE ACCOUNT is holding this machine's memory, as opposed to the machine
+      being out of it. MEMORY_PRESSURE above is graded on `used_bytes` against
+      total and asks whether there is memory left; this is graded on one uid's
+      summed resident pages against the same total and asks who has it. On a
+      host shared by sixteen accounts the two answers are different readers'
+      business: the first is everybody's, the second is one account's, and a
+      monitoring system that only had the first reported nothing on 2026-10-14
+      while a single process held 145 GiB of 247 for nineteen hours.
+
+      SEVERITY IS PER SIGNAL HERE AND NOT PER CODE, which no other entry in
+      this file is. The two tiers are the same finding about the same subject
+      at two places on one axis, so the second code the disk pair would use
+      would be a second identity, a second register row and a second alert for
+      one account getting worse — `alerting.identity` is code + device +
+      subject_ref, and the brief asks by name for one escalating alert rather
+      than two. `medium` below is the soft tier; the critical tier is emitted
+      at `high` on the same identity and reads as an escalation.
+
+      THE SUBJECT IS `uid:<number>` — the kernel's own number and never a login
+      name, because a name is a string somebody can change and this register
+      outlives the string. `alerting.identity` supplies the device, so one uid
+      on two machines is two alerts and never one.
+
+      permitted_consequence: nothing. §25 forbids acting on a running process,
+      and this code is the case the two forbidden responses in
+      `FORBIDDEN_RESPONSES` name ("high memory => kill"). There is no verb in
+      the module that stops, restarts, signals, reniced or isolates a process,
+      and no entry here grants one. What this code is FOR is telling a person
+      early enough that nothing has to be killed.
   - code: DOCKER_STORAGE_HIGH
     severity: medium
     implies_stale: false

@@ -94,6 +94,29 @@ DEFAULT_THRESHOLDS = {
     # cannot be produced from a single threshold.
     "filesystem_percent_critical": 92.0,
     "memory_percent_high": 90.0,
+    # The PER-ACCOUNT pair, and the two are deliberately far below the 90.0
+    # above. `memory_percent_high` grades the MACHINE and answers "is this host
+    # out of memory", so 90 is a near-death reading. These grade ONE ACCOUNT on
+    # a shared host and answer "is this account holding the machine", which is
+    # a question about fairness and about what happens next: an account at 30%
+    # of a 247 GiB machine is 74 GiB, and one process at 58.7% held this host
+    # for nineteen hours while every per-account view of the node was about
+    # somebody else. A 90% threshold here would have reported nothing at all.
+    #
+    # The two tiers are different claims, not two numbers on one: the soft one
+    # is SUSTAINED — both samples of one window over it — and the critical one
+    # is IMMEDIATE. See `resource_anomaly._user_memory_signals`.
+    "user_memory_percent_high": 30.0,
+    "user_memory_percent_critical": 50.0,
+    # One margin for both tiers, derived from either key by `margin_key()`,
+    # and it is the five percentage points the brief names. A single distance
+    # is what keeps an escalation from being a second place to disagree about
+    # when an account stopped holding the machine.
+    "user_memory_percent_recovery_margin": 5.0,
+    # Per-uid exceptions, keyed by uid as a string: a machine or an account
+    # whose large memory use is its JOB. Empty here and configured in the
+    # contract — a hard-coded special case is a policy nobody can review.
+    "user_memory_per_uid": {},
     "docker_storage_percent_high": 85.0,
     "docker_build_cache_bytes_high": 21474836480,   # 20 GiB
     "container_writable_layer_bytes_high": 1073741824,   # 1 GiB

@@ -1613,26 +1613,35 @@ ANOMALY_INPUTS = ("host", "disk", "docker", "hygiene", "desired", "tunnel")
 
 
 def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
-                     hygiene=None, desired=None, tunnel=None, measured=None,
+                     hygiene=None, desired=None, tunnel=None,
+                     user_memory=None, measured=None,
                      thresholds=None, space: bool = False, now=None,
                      registry_doc=None, probes_host=None,
                      answered_by: str = DEFAULT_MEASURER) -> dict:
-    """§18/§19 — the sixteen resource codes, graded, plus the ones ungraded.
+    """§18/§19 — the seventeen resource codes, graded, plus the ones ungraded.
 
-    Sixteen and not §18's fifteen: `resource_anomaly` grades one code §18 does
-    not name, for the reason its module docstring gives. The count is corrected
-    here rather than left as "fifteen" because this line is the first thing a
-    reader of this function sees, and a count that the return value contradicts
-    is how a reader stops trusting the rest of the paragraph.
+    Seventeen and not §18's fifteen: `resource_anomaly` grades two codes §18
+    does not name, for the reason its module docstring gives. The count is
+    corrected here rather than left as "fifteen" because this line is the first
+    thing a reader of this function sees, and a count that the return value
+    contradicts is how a reader stops trusting the rest of the paragraph.
 
     This function measures NOTHING. Every document below is read from the
     producer that already owns that fact — `inventory.py` for the host, the
-    disk and the four Docker reads; `hygiene.py` for the container
-    classifications; `desired.py` for the declaration comparison;
-    `infrastructure.py` for the tunnels. §28 asks for one producer per fact and
-    this layer is where that is easy to lose: it already imports all four
-    modules, so a re-derivation here would look like a convenience rather than
-    like the second implementation it is.
+    disk, the four Docker reads and the per-account memory inventory;
+    `hygiene.py` for the container classifications; `desired.py` for the
+    declaration comparison; `infrastructure.py` for the tunnels. §28 asks for
+    one producer per fact and this layer is where that is easy to lose: it
+    already imports all four modules, so a re-derivation here would look like a
+    convenience rather than like the second implementation it is.
+
+    `user_memory` is the per-account scan and it is the one input here whose
+    producer costs a second sample window (`users_memory()` reads the machine's
+    processes twice, a window apart, so that "sustained" is a fact rather than
+    an inference — see its docstring). It is gathered ONCE per call, like every
+    other input, and the caller may supply it: the daemon evaluates the alert
+    register on a tick and builds one card, and one account's share of the
+    machine is the same number for both.
 
     `space` is opt-in and stays opt-in, for the reason `docker_observation`
     spells out: one `docker system df` at ~22s against reads that cost under
@@ -1665,10 +1674,17 @@ def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
     supplied = [name for name, value in (
         ("host", host), ("disk", disk), ("docker", docker),
         ("hygiene", hygiene), ("desired", desired), ("tunnel", tunnel),
+        ("user_memory", user_memory),
     ) if value]
 
     disk_document = disk if disk else inv.disk_status()
     host_document = host if host else inv.host_summary()
+    # Read once, here, and handed to the detector as a document. `users_memory`
+    # is the only producer on this path that spends a sample window rather than
+    # a single read, so a card that re-derived it would pay that window twice
+    # for one number -- the defect §28 exists to name, in its most expensive
+    # spelling.
+    user_memory_document = user_memory if user_memory else inv.users_memory()
     docker_document = (docker if docker
                        else _docker_anomaly_inputs(inv, disk_document, space=space))
 
@@ -1707,11 +1723,13 @@ def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
     document = resource_anomaly_mod.detect(
         host=host_document, disk=disk_document, docker=docker_document,
         hygiene=hygiene, desired=desired, tunnel=tunnel,
+        user_memory=user_memory_document,
         thresholds=thresholds, observed_at=_now_iso(), now=now)
 
     gathered = [name for name, value in (
         ("host", host_document), ("disk", disk_document), ("docker", docker_document),
         ("hygiene", hygiene), ("desired", desired), ("tunnel", tunnel),
+        ("user_memory", user_memory_document),
     ) if value]
     return _envelope({
         **document,
@@ -1729,7 +1747,7 @@ def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
         "supported_by_resource_policy": _policy_summary(registry, hygiene),
         "advisory": (
             document["advisory"] + " Every input above was read from the "
-            "producer that owns it, and `gathering` names which of the six "
+            "producer that owns it, and `gathering` names which of the seven "
             "this call reached — a code listed in `codes_not_evaluated` was "
             "not looked for, which is not the same as one that was looked for "
             "and not found"),
