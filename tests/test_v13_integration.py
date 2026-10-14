@@ -41,6 +41,7 @@ surface_cli = _load("serveros_runtime_surface_cli", MODULE_DIR / "surface_cli.py
 surface = _load("serveros_runtime_card_surface", MODULE_DIR / "card_surface.py")
 runner_mod = _load("serveros_runtime_card_surface_runner",
                    MODULE_DIR / "card_surface_runner.py")
+card_period = _load("serveros_runtime_card_period", MODULE_DIR / "card_period.py")
 
 AT = "2026-10-14T17:30:00+08:00"
 
@@ -614,3 +615,158 @@ class TheReportPeriodWindow(unittest.TestCase):
         finally:
             surface_cli._current_period = original
         self.assertFalse(history["available"])
+
+
+class TheFingerprintSeesVisibleContent(unittest.TestCase):
+    """The previous fingerprint compared LAYOUT and missed the CONTENT.
+
+    «内存 32%» where the far end still held «内存 29%» compared EQUAL, so a stale
+    card was reported as verified and the LIVE cursor moved. These tests pin the
+    content-sensitivity and the deliberate tolerance for what the server drops.
+    """
+
+    def _card(self, memory="32%", *, subtitle="18:32 更新 · [灰度测试] · 时段进行中",
+              tip="交换区 89.2%，接近阈值", with_icon=True):
+        header = {"template": "blue",
+                  "title": {"tag": "plain_text", "content": "ServerOS · 节点监控"},
+                  "subtitle": {"tag": "plain_text", "content": subtitle},
+                  "text_tag_list": [{"tag": "text_tag",
+                                     "text": {"tag": "plain_text",
+                                              "content": "1/3 已采集"},
+                                     "color": "blue"}]}
+        if with_icon:
+            header["icon"] = {"tag": "standard_icon", "token": "setting_outlined",
+                              "color": "blue"}
+        return {
+            "schema": "2.0",
+            "config": {"update_multi": True, "width_mode": "default"},
+            "header": header,
+            "body": {"direction": "vertical", "elements": [
+                {"tag": "column_set", "flex_mode": "none", "columns": [
+                    {"tag": "column", "background_style": "grey-50", "elements": [
+                        {"tag": "markdown", "content": f"## {memory}"},
+                        {"tag": "markdown", "content": "内存"}]},
+                    {"tag": "column", "background_style": "yellow-50", "elements": [
+                        {"tag": "markdown", "content": "## 89.2%"},
+                        {"tag": "markdown", "content": "交换区"}]}]},
+                {"tag": "markdown", "content": f"⚠️ {tip}"},
+                {"tag": "div", "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md",
+                                                "content": "**东京**\n有新鲜读数"}}]},
+                {"tag": "collapsible_panel", "element_id": "p1",
+                 "header": {"title": {"tag": "markdown", "content": "**东京 · 有新鲜读数**"}},
+                 "elements": [{"tag": "markdown", "content": "内存 32.6%"}]},
+            ]},
+        }
+
+    def test_a_changed_kpi_text_changes_the_fingerprint(self):
+        self.assertNotEqual(live_sender.card_fingerprint(self._card(memory="32%")),
+                            live_sender.card_fingerprint(self._card(memory="29%")))
+
+    def test_a_changed_alert_line_changes_the_fingerprint(self):
+        self.assertNotEqual(
+            live_sender.card_fingerprint(self._card()),
+            live_sender.card_fingerprint(self._card(tip="交换区 41.0%")))
+
+    def test_a_changed_subtitle_changes_the_fingerprint(self):
+        self.assertNotEqual(live_sender.card_fingerprint(self._card()),
+                            live_sender.card_fingerprint(self._card(subtitle="18:33 更新")))
+
+    def test_a_normalised_icon_and_config_do_not_change_the_fingerprint(self):
+        stripped = self._card(with_icon=False)
+        stripped.pop("config")                    # what the service returns
+        stripped["config"] = {"enable_forward_interaction": False,
+                              "streaming_mode": False, "width_mode": "default"}
+        self.assertEqual(live_sender.card_fingerprint(self._card()),
+                         live_sender.card_fingerprint(stripped))
+
+    def test_a_stale_remote_card_is_refused_by_the_verifying_sender(self):
+        class _Inner:
+            def send_card(self, card, *, idempotency_key, **_):
+                return {"state": "DELIVERED", "evidence": "remote",
+                        "provider": {"remote_id": "om_1"}}
+
+        verifier = live_sender.ReadbackVerifiedSender(
+            _Inner(),
+            readback=lambda mid: {"available": True, "card": self._card(memory="29%")})
+        answer = verifier.send_card(self._card(memory="32%"), idempotency_key="k")
+        self.assertEqual(answer["state"], live_sender.UNKNOWN_PENDING)
+        self.assertIn("结构不一致", answer["why"])
+
+    def test_the_same_card_passes_the_verifying_sender(self):
+        class _Inner:
+            def send_card(self, card, *, idempotency_key, **_):
+                return {"state": "DELIVERED", "evidence": "remote",
+                        "provider": {"remote_id": "om_1"}}
+
+        verifier = live_sender.ReadbackVerifiedSender(
+            _Inner(), readback=lambda mid: {"available": True, "card": self._card()})
+        answer = verifier.send_card(self._card(), idempotency_key="k")
+        self.assertEqual(answer["state"], "DELIVERED")
+        self.assertEqual(answer["evidence"], "remote_verified")
+
+    def test_a_readback_answering_about_another_message_is_refused(self):
+        sender = live_sender.LiveSender(enabled=True, recipient="user:ou_x",
+                                        binding={"recipient": "user:ou_x"})
+        import subprocess as _sp
+        payload = ('{"ok": true, "data": {"items": [{"message_id": "om_other",'
+                   ' "body": {"content": "{}"}}]}}')
+        real = _sp.run
+        try:
+            _sp.run = lambda *a, **k: _sp.CompletedProcess(a, 0, payload, "")
+            result = sender.readback("om_wanted")
+        finally:
+            _sp.run = real
+        self.assertFalse(result["available"])
+        self.assertIn("不是同一条", result["reason"])
+
+
+class TheReportHistoryBlockIsWired(unittest.TestCase):
+    """The journal summary must reach the REPORT CARD, not only the trace."""
+
+    MODEL = {"devices": []}
+
+    def setUp(self):
+        self._work = _test_dir("v13-hist-")
+        self.addCleanup(self._work.cleanup)
+        self.store = surface.SurfaceStore(Path(self._work.name) / "cards" / "surfaces.json")
+
+    def _runner(self, history):
+        return runner_mod.ShadowRunner(
+            store=self.store,
+            sender=runner_mod.RecordingSender(remote_id="om_x"),
+            model_source=lambda *, at: (self.MODEL, []),
+            period_source=lambda *, at: {"period_ref": "P#m", "label": "上午",
+                                         "day_ref": "D", "in_period": True},
+            history=history)
+
+    def _text(self, runner):
+        view, _ = runner.render_report(
+            model=self.MODEL, period={"period_ref": "P#m", "label": "上午"}, rows=[])
+        return card_period.render_archive_text(view)
+
+    def test_the_report_card_carries_the_history_line(self):
+        runner = self._runner(
+            {"available": True, "samples": 3, "expected": 6, "coverage": 0.5,
+             "gaps": 3, "trend": "OK",
+             "axes": {"mem_percent": {"n": 3, "mean": 31.5, "peak": 33.0,
+                                      "peak_at": "11:00"}},
+             "says": "本时段 3/6 个采样点，缺口 3"})
+        text = self._text(runner)
+        self.assertIn("时段采样", text)
+        self.assertIn("mem_percent", text)
+        self.assertIn("均 31.5", text)
+        self.assertIn("峰 33.0", text)
+
+    def test_a_single_sample_says_the_trend_is_insufficient(self):
+        runner = self._runner(
+            {"available": True, "samples": 1, "expected": 6, "coverage": 0.167,
+             "gaps": 5, "trend": "UNKNOWN", "axes": {},
+             "says": "本时段 1/6 个采样点（不足以评价趋势）"})
+        text = self._text(runner)
+        self.assertIn("趋势不足", text)
+
+    def test_an_unwired_history_says_unknown(self):
+        runner = self._runner({"available": False, "reason": "窗口读不出来",
+                               "trend": "UNKNOWN"})
+        self.assertIn("UNKNOWN", self._text(runner))

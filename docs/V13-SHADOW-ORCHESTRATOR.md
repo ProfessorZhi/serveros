@@ -120,6 +120,32 @@ preview @ 2026-10-14T17:30:00+08:00
 - **未验证**：Windows / Dell 一律 UNKNOWN（无采集，不造数）；趋势只有 1 拍 →
   REPORT 标 UNKNOWN 趋势；**chart gate 仍 FALSE**。
 
+## 6.1 可见内容指纹（2026-10-15 最后一项 P0）
+
+`live_sender.card_fingerprint()` 此前只比**结构**（schema / 标题 / tag 序 / 列数），
+所以「内存 32%」与远端仍是「内存 29%」的旧卡**比较相等**，会把陈旧卡报成已核实、
+推进 LIVE 游标、冻结错误的 REPORT。
+
+现在它折叠**读者真正看得到的文字**，按文档顺序：`markdown.content`、
+`div.fields[].text.content`、`plain_text.content`（标题/副标题/面板标题/标签）、
+tag 角色、以及有语义的 `color` / `background_style` / `template`。**按名字排除**
+被服务端归一化/丢弃的字段（`icon`、整个 `config` 含 `update_multi`、`element_id`、
+`margin`/`padding`/`width` 等布局记账）。
+
+`readback()` 另外核对 API 回应的 `message_id` 与请求一致（回应提供时）。
+
+## 6.2 报告历史：**部分接线**（诚实状态）
+
+| 环节 | 状态 |
+|---|---|
+| 只读采样 → typed Journal（slot 去重、有界、0700/0600）| **已接线**（canary 持锁期间 append）|
+| Journal `summary(start,end)` → **CORE REPORT 卡正文**的「时段采样」块 | **已接线**：覆盖率/均值/峰值/峰值时刻；**<2 点写「趋势不足」，不出曲线** |
+| 生产 alert detector → `--events` | **未接通**：`--events` 目前只接受 CLI 人工传入的 JSON，**没有自动读取生产事件源** |
+| VChart 曲线 | **未开**（`charts_verified=False`）|
+
+**因此不得声称「告警即时更新已上线」或「时段均峰已出现在卡上并已在生产运行」** ——
+前者的事件源未接线，后者的展示**代码已接但从未在真实卡上跑过**。
+
 ## 7. 未验证 / BLOCKED（不得声称已上线）
 
 - **CLI/daemon/真实 timer 未接**：没有 `serverosctl surface …` 命令面，没有 30 分钟

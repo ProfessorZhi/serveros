@@ -221,7 +221,14 @@ class LiveSender:
             return {"available": False, "reason": "the service refused the readback",
                     "schema": None, "card": None}
         items = ((answer.get("data") or {}).get("items") or [{}])
-        content = ((items[0].get("body") or {}).get("content") or "")
+        item = items[0] if isinstance(items[0], dict) else {}
+        echoed = str(item.get("message_id") or "").strip()
+        if echoed and echoed != message_id:
+            # The response answered about a DIFFERENT message. Whatever it holds
+            # says nothing about the one we asked after.
+            return {"available": False, "schema": None, "card": None,
+                    "reason": "回执的 message_id 与请求的不是同一条消息"}
+        content = ((item.get("body") or {}).get("content") or "")
         try:
             card = json.loads(content)
         except ValueError:
@@ -234,45 +241,84 @@ class LiveSender:
         return {"available": True, "schema": "2.0", "card": card, "reason": ""}
 
 
-def card_fingerprint(card) -> str:
-    """A structural fingerprint of a Card 2.0 document.
+#: Keys that are NOT part of what a reader sees, or that the far end normalises
+#: away. Excluded BY NAME so the exclusion is auditable rather than a byte
+#: comparison that happens to pass. `icon` and the whole of `config` (including
+#: `update_multi`) were both observed to be dropped/normalised by the service;
+#: `element_id` / `margin` / `width` / `padding` are layout bookkeeping.
+_UNSTABLE_KEYS = frozenset({
+    "icon", "config", "element_id", "margin", "padding", "vertical_spacing",
+    "horizontal_spacing", "text_align", "width", "weight", "border", "expanded",
+    "icon_position", "icon_expanded_angle", "i18n_text_tag_list", "_notice",
+    "schema", "tag", "color", "background_style", "content", "text", "fields",
+    "template", "direction",
+})
 
-    NOT a hash of the bytes: the far end normalises what it stores (`config`,
-    key order, and sometimes an `icon`), so a byte hash would report a mismatch
-    for a card that is the same card. This folds the parts a reader actually
-    sees — schema, header title/template/subtitle, and the ordered tag sequence
-    with the KPI column widths — so «the far end holds a different card» is a
-    claim about the card, not about a serialiser.
+
+def _visible_atoms(node, out: list) -> list:
+    """Every string a reader can SEE, in document order. The fingerprint's core.
+
+    THE POINT: «内存 32%» and «内存 29%» differ in exactly one of these atoms and
+    must produce different fingerprints. A structural fingerprint (tag sequence
+    and column counts) cannot tell them apart, which is how a stale card came to
+    be «verified».
+
+    Each atom is `(role, value)` — role, not raw key, so a server's key
+    reordering changes nothing. `background_style` and `color` are included
+    because they carry meaning (the yellow near-threshold tile), while the keys
+    in `_UNSTABLE_KEYS` are skipped wherever they appear.
+    """
+    if isinstance(node, dict):
+        tag = node.get("tag")
+        if isinstance(tag, str):
+            out.append(("tag", tag))
+            if isinstance(node.get("color"), str):
+                out.append(("color", node["color"]))
+            if isinstance(node.get("background_style"), str):
+                out.append(("bg", node["background_style"]))
+            if isinstance(node.get("template"), str):
+                out.append(("template", node["template"]))
+            if isinstance(node.get("content"), str):
+                out.append(("content", node["content"]))
+            text = node.get("text")
+            if isinstance(text, dict) and isinstance(text.get("content"), str):
+                out.append(("text", text["content"]))
+            for field in node.get("fields") or []:
+                body = field.get("text") if isinstance(field, dict) else None
+                if isinstance(body, dict) and isinstance(body.get("content"), str):
+                    out.append(("field", body["content"]))
+        for key, value in node.items():
+            if key in _UNSTABLE_KEYS:
+                continue
+            _visible_atoms(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _visible_atoms(value, out)
+    return out
+
+
+def card_fingerprint(card) -> str:
+    """A fingerprint of what a reader can SEE on a Card 2.0 document.
+
+    NOT a byte hash: the far end normalises what it stores, so byte equality
+    would report a mismatch for the same card. NOT a structural hash either:
+    that was the previous defect — identical layout with `内存 32%` where the far
+    end still held `内存 29%` compared EQUAL, and a stale card was reported as
+    verified, moving the LIVE cursor and freezing a wrong REPORT.
+
+    So this folds the VISIBLE CONTENT — every `markdown.content`, `div.fields[]`
+    text, `plain_text` (header title/subtitle, panel titles, tags), the tag
+    roles, and the colour/background that carry meaning — in document order,
+    with the normalised-away attributes excluded by name.
     """
     if not isinstance(card, dict):
         return ""
-    header = card.get("header") if isinstance(card.get("header"), dict) else {}
-    tags: list[str] = []
-    columns: list[int] = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            if isinstance(node.get("tag"), str):
-                tags.append(node["tag"])
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(card.get("body"))
-    for element in ((card.get("body") or {}).get("elements") or []):
-        if isinstance(element, dict) and element.get("tag") == "column_set":
-            columns.append(len(element.get("columns") or []))
-    view = {"schema": card.get("schema"),
-            "title": ((header.get("title") or {}).get("content")),
-            "template": header.get("template"),
-            "subtitle": ((header.get("subtitle") or {}).get("content")),
-            "tags": tags, "columns": columns}
+    atoms: list = [("schema", str(card.get("schema") or ""))]
+    _visible_atoms(card.get("header"), atoms)
+    _visible_atoms(card.get("body"), atoms)
     import hashlib as _hashlib
-    return _hashlib.sha256(
-        json.dumps(view, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()[:16]
+    blob = json.dumps(atoms, ensure_ascii=False, separators=(",", ":"))
+    return _hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 class ReadbackVerifiedSender:

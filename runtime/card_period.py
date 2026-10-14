@@ -1305,7 +1305,7 @@ def deploy_readiness() -> dict:
 # ---------------------------------------------------------------------------
 
 def archive(model: dict, *, period: dict, rows: list[dict],
-            incidents=(), recoveries=(), unresolved=()) -> dict:
+            incidents=(), recoveries=(), unresolved=(), history=None) -> dict:
     """The four blocks a period's final patch carries.
 
     总览概括 / 时段趋势 / 三设备摘要 / 事故·自愈·未解决交接. Built here and not
@@ -1333,6 +1333,10 @@ def archive(model: dict, *, period: dict, rows: list[dict],
             "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
         },
         "devices": devices,
+        # The period's SAMPLED history, when the caller has one. A summary, never
+        # a curve: `charts_verified` is still False, and a window with fewer than
+        # two samples says «趋势不足» rather than drawing one.
+        "history": history,
         "handover": {
             "incidents": [dict(i) for i in incidents],
             "recoveries": [dict(r) for r in recoveries],
@@ -1620,6 +1624,23 @@ def _archive_lines(view: dict) -> list[str]:
     for device in (view.get("devices") or []):
         lines.append(f"- {device.get('name') or device.get('device_ref')} · "
                      f"{device.get('reach_word') or '状态未知'}")
+    history = view.get("history")
+    if isinstance(history, dict):
+        if not history.get("available"):
+            lines.append("**时段采样**（历史未接通或窗口不可读：UNKNOWN）")
+        else:
+            axes = history.get("axes") or {}
+            parts = []
+            for name, axis in axes.items():
+                if not axis or axis.get("n") is None or axis.get("mean") is None:
+                    continue
+                parts.append(f"{name} 均 {axis['mean']} · 峰 {axis['peak']}"
+                             + (f"（{axis['peak_at']}）" if axis.get("peak_at") else ""))
+            lines.append(f"**时段采样** {history.get('says') or ''}".rstrip())
+            if parts:
+                lines.append("- " + "；".join(parts))
+            if (history.get("trend") or "UNKNOWN") != "OK":
+                lines.append("- 采样点不足 2 个：**趋势不足**，不出曲线")
     lines.append("**交接 · 事故 / 自愈 / 未解决**")
     incidents = handover.get("incidents") or []
     recoveries = handover.get("recoveries") or []

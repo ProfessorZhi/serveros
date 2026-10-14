@@ -244,11 +244,14 @@ def mode_canary(args) -> dict:
             live.LiveSender(enabled=True), readback=live.LiveSender(
                 enabled=True).readback)
         runner = _make_runner(store=store, sender=sender)
+        # The period's sampled history goes INTO the rendered REPORT, not only
+        # into the trace: a summary the callers never see is not a wired feature.
+        runner.history = _report_history(args, at=_at(args))
         trace = runner.tick(at=_at(args), events=_events(args),
                             closing=getattr(args, "closing", None))
         trace["gate"] = gate
         trace["state"] = str(state)
-        trace["history"] = _report_history(args, at=_at(args))
+        trace["history"] = runner.history
         return trace
     finally:
         lock.release()

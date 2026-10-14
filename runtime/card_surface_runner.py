@@ -314,7 +314,8 @@ class ShadowRunner:
 
     def __init__(self, *, store, sender, model_source, period_source,
                  recipient="user:ou_verified_placeholder",
-                 test_mark="[灰度测试]", declaration=None):
+                 test_mark="[灰度测试]", declaration=None, history=None):
+        self.history = history
         self.store = store
         self.sender = sender
         self.model_source = model_source
@@ -346,7 +347,8 @@ class ShadowRunner:
         return card_period.render_period_card(model, test_mark=self.test_mark)
 
     def render_report(self, *, model, period, rows) -> tuple[dict, dict]:
-        view = card_period.archive(model, period=period, rows=rows)
+        view = card_period.archive(model, period=period, rows=rows,
+                                   history=self.history)
         card = card_period.render_archive(view, model=model, test_mark=self.test_mark)
         return view, card
 

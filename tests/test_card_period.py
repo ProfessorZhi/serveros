@@ -861,7 +861,7 @@ class TheArchiveIsTheFourBlocks(unittest.TestCase):
             unresolved=({"key": "k1", "says": "磁盘待清理"},))
         self.assertEqual(set(view),
                          {"schema", "period_ref", "label", "day_ref", "overview",
-                          "trend", "devices", "handover"})
+                          "trend", "devices", "history", "handover"})
         self.assertGreaterEqual(len(view["devices"]), 1)
         text = card_period.render_archive_text(view)
         for block in ("时段小结", "完整时段趋势一览", "三设备摘要",
