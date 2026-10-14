@@ -300,6 +300,52 @@ def _shm_line(shm) -> str:
                else "UNKNOWN (meminfo did not report Shmem)"))
 
 
+def cmd_journey_walk(args) -> int:
+    """C 线 — 把一份旅程输入走成一条收据链。
+
+    这条命令**不投递**，而这不是留白：`sender` 恒为 `None`，所以一条走到 B10 的旅程
+    得到的是 `PENDING_CONSUMER`——「已经记在 outbox 里，但没有任何消费者来接它」。
+    在这台机器上真实飞书投递不在授权范围内，而一个把「没发」渲染成「发好了」的 CLI
+    正是这个模块全部拒绝行为要防的那件事。投递的四个词由
+    `runtime/report_delivery.py#deliver` 以注入的 sender 在测试里验证。
+
+    它也不自己挑时间、不猜收件人：`--at` 和输入里的 recipient/requested_by/why 都由
+    调用方给。`--worktree` 给的时候才去真实测量工作树的提交窗口；不给就是一处**缺口**，
+    报告会写「没人看过」，而不是「本周期没有提交」。
+    """
+    mod = _load_module_from(REPO_ROOT / "runtime" / "journey.py",
+                            "serveros_runtime_journey")
+    raw = Path(args.input)
+    try:
+        spec = json.loads(raw.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        sys.stderr.write(f"serverosctl: 读不到 {raw}\n")
+        return EXIT_FAULT
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"serverosctl: {raw} 不是一份 JSON：{exc}\n")
+        return EXIT_FAULT
+
+    if getattr(args, "worktree", None):
+        report = _load_module_from(REPO_ROOT / "runtime" / "daily_report.py",
+                                   "serveros_runtime_daily_report")
+        window = report.period_window(spec.get("period"))
+        spec["work_delta"] = report.measure_worktree(
+            Path(args.worktree), window, report.Fallbacks())
+
+    try:
+        record = mod.walk(spec, out_dir=args.out_dir, sender=None, at=args.at)
+    except Exception as exc:
+        # Two modules can refuse here — `journey.Refused` for the seams, and
+        # `daily_report.Refused` for the落盘 boundary `publish` owns. Both mean
+        # "this input must not become this record", and a log should see them
+        # the same way: exit 1 with the reason and nothing half-written.
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
+    emit(record, as_json=args.json, lines=mod.render(record))
+    return EXIT_OK
+
+
 def cmd_report_daily(args) -> int:
     """SYS-23 — one period's real work diff plus Quay's own records.
 
@@ -13062,6 +13108,33 @@ def build_parser() -> argparse.ArgumentParser:
         "the declared document itself, with its content-addressed revision")
     t_contract.add_argument("project")
     t_contract.set_defaults(func=cmd_test_contract)
+
+    journey = sub.add_parser(
+        "journey",
+        help="C 线：一条来源修订走到投递回执，该停下来问人的地方就停下来",
+        **_COMMON)
+    journey_sub = journey.add_subparsers(dest="subcommand", required=True)
+    j_walk = journey_sub.add_parser(
+        "walk",
+        help="走一条旅程：一份 JSON 输入 → 一条收据链（不投递）",
+        parents=[common])
+    j_walk.add_argument(
+        "--input", required=True,
+        help="一份 JSON：observations / goal / sources / acceptance / decision / "
+             "run / period / delivery")
+    j_walk.add_argument(
+        "--out-dir", required=True,
+        help="报告与它的回执落在这里。必须是绝对路径，且不在本仓内——与 "
+             "`report daily --out-dir` 同一条理由")
+    j_walk.add_argument(
+        "--worktree",
+        help="给了就去真实测量这棵树在 period 内的提交；不给就是一处缺口，"
+             "报告会写「没人看过」，而不是「本周期没有提交」")
+    j_walk.add_argument(
+        "--at",
+        help="这一次旅程的时刻。不给则由报告自己报 clock=host——"
+             "一行被默认的时间与一行调用方给的时间，可信度不一样")
+    j_walk.set_defaults(func=cmd_journey_walk)
 
     runtime = sub.add_parser("runtime", help="managed runtimes (§16)", **_COMMON)
     runtime_sub = runtime.add_subparsers(dest="subcommand", required=True)

@@ -1,0 +1,18 @@
+{
+  "_sample": "候选成形，但没有人的决定。预期 stop = NEEDS_HUMAN，且 refs 里没有 work_ref。",
+  "observations": [
+    {
+      "source_id": "feishu:chat:oc_sample",
+      "message_id": "om_sample_0001",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "captured_at": "2026-10-14T10:00:00+09:00",
+      "trust": "authorized-follow"
+    }
+  ],
+  "goal": "把这条消息提到的改动落成一次有测试的交付",
+  "acceptance": [
+    "有一个可核对的 diff",
+    "测试退出码为 0"
+  ],
+  "sources": ["feishu:chat:oc_sample|om_sample_0001"]
+}

@@ -1,0 +1,12 @@
+{
+  "_sample": "一条来源被捕获，没有人提出目标。预期 stop = CAPTURED_ONLY。",
+  "observations": [
+    {
+      "source_id": "feishu:chat:oc_sample",
+      "message_id": "om_sample_0001",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "captured_at": "2026-10-14T10:00:00+09:00",
+      "trust": "authorized-follow"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_sample": "拿一个子任务的 DONE 来当授权。预期：退出码 1，并且拒绝的措辞**具名**说出 child-done 为什么不算。这不是格式错误——它是一个有名字的来源，只是它不产生授权。",
+  "observations": [
+    {
+      "source_id": "feishu:chat:oc_sample",
+      "message_id": "om_sample_0001",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "captured_at": "2026-10-14T10:00:00+09:00",
+      "trust": "authorized-follow"
+    }
+  ],
+  "goal": "把这条消息提到的改动落成一次有测试的交付",
+  "acceptance": ["测试退出码为 0"],
+  "sources": ["feishu:chat:oc_sample|om_sample_0001"],
+  "decision": {
+    "kind": "child-done",
+    "by": "agent:child-42",
+    "at": "2026-10-14T10:05:00+09:00",
+    "for_revision": "c02c82d563f3"
+  }
+}

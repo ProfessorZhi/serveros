@@ -1,0 +1,46 @@
+{
+  "_sample": "决定 + 真实观察 + 报告 + 待发意图。预期 stop = PENDING（没有消费者，所以不投递）。",
+  "observations": [
+    {
+      "source_id": "feishu:chat:oc_sample",
+      "message_id": "om_sample_0001",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "captured_at": "2026-10-14T10:00:00+09:00",
+      "trust": "authorized-follow"
+    }
+  ],
+  "goal": "把这条消息提到的改动落成一次有测试的交付",
+  "acceptance": [
+    "有一个可核对的 diff",
+    "测试退出码为 0"
+  ],
+  "sources": ["feishu:chat:oc_sample|om_sample_0001"],
+  "decision": {
+    "kind": "human",
+    "by": "person:vince",
+    "at": "2026-10-14T10:05:00+09:00",
+    "for_revision": "c02c82d563f3"
+  },
+  "run": {
+    "name": "tiny-tests",
+    "kind": "run",
+    "observed": {
+      "ran": true,
+      "exit_code": 0,
+      "at": "2026-10-14T10:20:00+09:00"
+    }
+  },
+  "period": {
+    "start": "2026-10-14T00:00:00+09:00",
+    "end": "2026-10-14T23:59:59+09:00"
+  },
+  "delivery": {
+    "recipient": "chat:oc_receiver",
+    "requested_by": "person:vince",
+    "why": "验收通过，按约定回报",
+    "authorization": {
+      "authorized": true,
+      "because": "发出前刚刚复查过这一版与这个收件人"
+    }
+  }
+}
