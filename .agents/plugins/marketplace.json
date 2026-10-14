@@ -1,0 +1,20 @@
+{
+  "name": "serveros-plugin-lab",
+  "interface": {
+    "displayName": "ServerOS Plugin Lab"
+  },
+  "plugins": [
+    {
+      "name": "serveros-fleet-zip-lab-20261014",
+      "source": {
+        "source": "local",
+        "path": "./plugins/serveros-fleet-zip-lab-20261014"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
