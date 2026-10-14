@@ -69,6 +69,79 @@ never having started are indistinguishable outside a boot. Dependencies are
 resolved by Kahn's algorithm with a sorted ready set, so the order is
 deterministic and a cycle refuses the **whole** plan rather than half of one.
 
+## The resident loop (`--serve`)
+
+```sh
+serveros-native-core --manifest desired-state.json --serve \
+  --allow-unit serveros-tunnel.service --interval-seconds 60
+```
+
+The first tick happens **immediately**: a Core that came up and reported nothing
+for a whole interval is indistinguishable from one that failed to start. After
+that the schedule is monotonic and deadline-driven, and the loop sleeps in
+bounded slices (200 ms) rather than for the whole interval, so a SIGTERM is
+honoured within a slice instead of up to a minute later.
+
+Four behaviours that are asserted rather than intended:
+
+- **A failing tick does not end the process.** An observation error, a timeout
+  or an exception inside a tick is caught, counted, and survived — the Core keeps
+  watching, and `tick_errors` is what a status reader sees. If the process does
+  end, `Restart=on-failure` on the unit decides what happens next, so there is
+  exactly one supervisor and never two.
+- **A slow tick does not become a backlog.** The next deadline is measured from
+  when the tick FINISHED, so a host that takes two intervals per observation
+  gets fewer ticks rather than the missed ones fired back to back.
+- **A backwards clock is counted, not obeyed.** A clock that steps backwards
+  re-anchors the deadline; it never becomes a burst of ticks until the clock
+  catches up.
+- **A resident pass writes nothing** but its status socket. No state file, no
+  ledger, no directory of its own. That is the property a run beside the
+  production Python `serverosd` needs: the Python daemon owns the health ledger,
+  and a second writer would be a second authority over one account.
+
+## The status socket
+
+```
+$XDG_RUNTIME_DIR/serveros/native-core.<uid>.sock
+```
+
+A UNIX socket, **0600**, in a directory this process creates at **0700** —
+the user's own runtime directory, which is emptied at logout. There is **no
+fallback to `/tmp`**: a predictable path in a world-writable directory is a
+socket any local account can create first, and creating it first is how a
+hijack starts. A missing or relative `XDG_RUNTIME_DIR` is a refusal, not a guess.
+
+```sh
+curl --unix-socket "$XDG_RUNTIME_DIR/serveros/native-core.$(id -u).sock" \
+     http://localhost/status
+```
+
+It answers **one** request — `GET /status` — and refuses everything else
+**without computing the status at all**. That is what makes "it carries out no
+verb" a property rather than a promise, and it is asserted by handing the
+serving function a counting status callback and checking the count is still
+zero after a `POST /v1/restart …` and after a connection from another uid.
+
+`SO_PEERCRED` decides who may be answered, and an **unreadable** credential
+(-1) is refused: "I could not establish who this is" must never resolve to "let
+them in". The mode bit and the kernel-reported identity are two independent
+answers to one question, and the second does not depend on the first being
+right.
+
+The document is built from the snapshot the last **finished** tick left behind,
+so an answer can never be computed against a half-updated observation set —
+one thread serves both, and a tick that has not finished has not replaced it.
+An unmeasured service is `measured: false` with its reason and **no**
+`age_seconds`; a `0` there would be a claim the host cannot support. Nothing in
+it is an argv, a path or a token.
+
+An existing path is **refused and never unlinked**. Unlinking a live daemon's
+socket leaves that daemon listening where nobody can reach it; unlinking a stale
+one is a decision for a person, because a program cannot tell the two apart. On
+a clean exit the socket is unlinked and the descriptor closed, so the next start
+finds the path free rather than needing a manual `rm`.
+
 ## One Core per user, and why Linux needs two here
 
 On this node two people share one physical device — `vince` and `fjd` — with
@@ -148,6 +221,9 @@ BUILD=/data/home/vince/artifacts/work-items/serveros/native-supervisor-v1-202610
 | `test_sup_recovery` | window pruning, the ladder's arithmetic, the breaker opening and closing, round-tripping the persisted state, and that no key or token appears in it |
 | `test_sup_provider` | a **fake `systemctl`** on a temporary path: an argv that is a list with the unit as its own element, refusals that leave no marker file behind, a nonzero exit, a timeout that kills the process group, and an `ActiveState` word this version does not know |
 | `test_sup_receipt` | the receipt parsed back with the component's own strict reader, so "it is valid JSON" is checked by parsing it |
+| `test_sup_status` | the status document parsed back: an unmeasured service is `measured: false` with a reason and **no** `age_seconds`, and no argv, path or token appears anywhere |
+| `test_sup_serve` | the loop driven by an injected clock: two ticks, a stop request honoured between ticks, a failing and a throwing tick survived and counted, an overrunning tick not firing a backlog, a backwards clock counted rather than obeyed, and a 200 ms slice |
+| `test_sup_status_socket` | a **real** socket in a temporary directory with a **real** client: 0600/0700 modes, a peer from another uid refused **before** the status is assembled, an illegal request refused the same way, an over-long request refused, an existing path refused and left untouched, a too-long path refused by name, and a clean shutdown that frees the path |
 
 Every function that could read a clock takes one instead, so no test sleeps and
 no test's answer depends on when it ran. The provider suite is the only one that
@@ -157,10 +233,17 @@ this host's service manager.
 ## Not done, and not claimed
 
 - **Nothing is installed, enabled or running.** The unit is a template. Linger
-  is not enabled. No production service has been touched.
-- **No shadow service loop yet.** The binary runs one pass and exits; there is
-  no resident loop and no IPC status surface. That is the next step, and it is
-  what would make the `--observe` mode a long-running observation.
+  is not enabled. No production service has been touched, and `runtime/daemon.py`
+  is still the only production writer on this node.
+- **The resident Core does not act.** `--serve` and `--enable-actions` are
+  REFUSED together, so the process that is running is the process that watches.
+  Turning acting on for a resident Core is a change of authority and needs its
+  own review, not a flag — and it is the one thing that must not happen while
+  two supervisors could otherwise manage one unit.
+- **No real recovery has been exercised.** The planner produces verbs and the
+  provider can carry them out, but no test and no run in this stage has started
+  or restarted a unit on any machine. Every provider test uses a **fake
+  `systemctl`** in a temporary directory.
 - **No Windows SCM adapter.** A separate design, per the section above.
 - **No signature verification.** The receipt records a digest and the Core holds
   no key; verifying who wrote a manifest needs a key path that does not exist

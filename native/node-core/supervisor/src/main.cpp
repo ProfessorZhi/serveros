@@ -1,24 +1,35 @@
-// serveros-native-core — one pass: read a manifest, plan, and record.
+// serveros-native-core — one pass, or the resident loop.
 //
-// WHAT IT DOES NOT DO, WHICH IS MOST OF THE DESIGN
-// ------------------------------------------------
-// It does not daemonize, does not hold a schedule and does not loop. It runs
-// once and exits — which is what makes it runnable inside an isolated fixture,
-// and what makes "this is what the Core would do" a command rather than a
-// deployment.
+// TWO MODES, ONE DECISION ENGINE
+// ------------------------------
+// Without `--serve` it runs once, prints a receipt and exits. With `--serve` it
+// is the resident Core: it ticks on a monotonic schedule, answers a read-only
+// status socket between ticks, and exits cleanly on SIGTERM/SIGINT.
 //
-// It starts OBSERVE ONLY. `--enable-actions` is the switch, it has no short
-// form, and the unit template never passes it. A reboot cannot turn acting on.
+// WHAT IT STILL DOES NOT DO
+// -------------------------
+// It does not daemonize (systemd is the supervisor), does not restart itself
+// (an exception inside a tick is caught and counted; if the process ends,
+// `Restart=on-failure` decides), and does not fork.
 //
-// In observe mode it writes NOTHING but the receipt on stdout: no state file,
-// no lock, no directory. That is the property a run beside the production
-// Python `serverosd` needs — the Python daemon is the writer, and an observer
-// that also wrote would be a second one.
+// It starts OBSERVE ONLY, in BOTH modes, and `--enable-actions` is refused
+// together with `--serve`: this stage ships a resident Core that WATCHES. The
+// decision engine can already produce the verbs and the planner refuses them
+// per-unit anyway, but a resident process that can act on a fleet is not
+// something to have on by accident while the production Python `serverosd` is
+// still the only writer on this node.
+//
+// A resident pass writes NOTHING but its status socket: no state file, no
+// ledger, no directory of its own beyond the socket's parent. That is the
+// property a run beside `serverosd` needs — the Python daemon owns the health
+// ledger, and a second writer would be a second authority over one account.
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -30,23 +41,33 @@
 #include "supervisor/plan.hpp"
 #include "supervisor/receipt.hpp"
 #include "supervisor/recovery.hpp"
+#include "supervisor/serve.hpp"
+#include "supervisor/status.hpp"
+#include "supervisor/status_socket.hpp"
 #include "supervisor/systemd_user.hpp"
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "0.2.0";
 constexpr const char* kDefaultSystemctl = "/usr/bin/systemctl";
+
+// Set from a signal handler, which may do nothing else. `volatile sig_atomic_t`
+// is the only type a handler is allowed to write.
+volatile sig_atomic_t g_stop_requested = 0;
+
+void on_stop_signal(int) { g_stop_requested = 1; }
 
 void print_usage(std::FILE* out) {
     std::fprintf(out,
                  "serveros-native-core %s\n"
                  "\n"
-                 "One pass: read a desired-state manifest, ask systemd --user what is\n"
-                 "running, decide, and print a receipt. OBSERVE ONLY unless\n"
-                 "--enable-actions is given.\n"
+                 "One pass, or with --serve the resident loop. Reads a desired-state\n"
+                 "manifest, asks systemd --user what is running, decides, and records.\n"
+                 "OBSERVE ONLY in both modes.\n"
                  "\n"
                  "Usage:\n"
                  "  serveros-native-core --manifest FILE [options]\n"
+                 "  serveros-native-core --manifest FILE --serve [options]\n"
                  "\n"
                  "Options:\n"
                  "  --manifest FILE        the desired-state manifest to read (required).\n"
@@ -54,11 +75,22 @@ void print_usage(std::FILE* out) {
                  "                         is permitted unless it is listed here.\n"
                  "  --trigger boot|tick    boot proves absence and uses start_on_boot;\n"
                  "                         tick restarts only a failed unit (default tick).\n"
+                 "                         Ignored by --serve, which is always a tick.\n"
                  "  --state FILE           persisted recovery budget. READ in observe mode\n"
                  "                         and never written there.\n"
                  "  --systemctl PATH       the systemctl to run (default %s).\n"
-                 "  --enable-actions       ACT. Asks systemd for the planned verbs. Never\n"
-                 "                         enabled by the unit template.\n"
+                 "  --serve                run the resident loop: monotonic ticks, a status\n"
+                 "                         socket, and a clean exit on SIGTERM.\n"
+                 "  --interval-seconds N   seconds between ticks in --serve (default 60).\n"
+                 "  --status-socket PATH   where the read-only status socket goes. The\n"
+                 "                         default is $XDG_RUNTIME_DIR/serveros/\n"
+                 "                         native-core.<uid>.sock, and there is no fallback.\n"
+                 "  --no-status-socket     run with no status surface at all. Explicit,\n"
+                 "                         because a resident Core nobody can ask is a\n"
+                 "                         different thing from this one.\n"
+                 "  --max-ticks N          stop after N ticks. For tests; a unit must not\n"
+                 "                         pass it.\n"
+                 "  --enable-actions       ACT. Refused with --serve in this stage.\n"
                  "  --receipt FILE         write the receipt here instead of stdout.\n"
                  "  --version              print the version and exit.\n"
                  "  --help                 print this text and exit.\n",
@@ -75,6 +107,11 @@ std::string iso_now() {
     return std::string(buffer) + "+00:00";
 }
 
+long monotonic_seconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 bool read_file(const std::string& path, std::string& out) {
     std::ifstream stream(path);
     if (!stream.good()) {
@@ -86,6 +123,29 @@ bool read_file(const std::string& path, std::string& out) {
     return true;
 }
 
+void sleep_millis_real(long millis) {
+    if (millis > 0) {
+        ::usleep(static_cast<useconds_t>(millis) * 1000);
+    }
+}
+
+// A status notice for one service, from the observation the tick just took.
+// An unmeasured unit keeps `measured: false` and its reason and NO age.
+nodecore::supervisor::StatusNotice notice_for(const nodecore::supervisor::ServiceDesired& service,
+                                              const nodecore::supervisor::Observed& observed) {
+    nodecore::supervisor::StatusNotice notice;
+    notice.id = service.id;
+    notice.unit = service.unit;
+    notice.desired = nodecore::supervisor::to_word(service.desired);
+    notice.measured = observed.measured;
+    notice.active = nodecore::supervisor::to_word(observed.active);
+    notice.sub_state = observed.sub_state;
+    notice.observed_at = observed.observed_at;
+    notice.age_seconds = observed.age_seconds;
+    notice.reason = observed.reason;
+    return notice;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -93,8 +153,13 @@ int main(int argc, char** argv) {
     std::string state_path;
     std::string receipt_path;
     std::string systemctl_path = kDefaultSystemctl;
+    std::string status_socket_override;
     std::vector<std::string> allowed_units;
     bool act = false;
+    bool serve = false;
+    bool no_status_socket = false;
+    long interval_seconds = 60;
+    long max_ticks = -1;
     nodecore::supervisor::Trigger trigger = nodecore::supervisor::Trigger::Tick;
 
     for (int i = 1; i < argc; ++i) {
@@ -112,6 +177,14 @@ int main(int argc, char** argv) {
             act = true;
             continue;
         }
+        if (flag == "--serve") {
+            serve = true;
+            continue;
+        }
+        if (flag == "--no-status-socket") {
+            no_status_socket = true;
+            continue;
+        }
         if (!has_value) {
             std::fprintf(stderr, "%s needs a value\n", flag.c_str());
             return 2;
@@ -125,6 +198,16 @@ int main(int argc, char** argv) {
             receipt_path = value;
         } else if (flag == "--systemctl") {
             systemctl_path = value;
+        } else if (flag == "--status-socket") {
+            status_socket_override = value;
+        } else if (flag == "--interval-seconds") {
+            interval_seconds = std::strtol(value.c_str(), nullptr, 10);
+            if (interval_seconds < 1) {
+                std::fprintf(stderr, "--interval-seconds must be at least 1\n");
+                return 2;
+            }
+        } else if (flag == "--max-ticks") {
+            max_ticks = std::strtol(value.c_str(), nullptr, 10);
         } else if (flag == "--allow-unit") {
             allowed_units.push_back(value);
         } else if (flag == "--trigger") {
@@ -146,6 +229,24 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--manifest is required\n");
         return 2;
     }
+    if (serve && act) {
+        // Refused rather than silently downgraded: a caller that asked for a
+        // resident, acting Core must be told that this stage does not build one,
+        // not left believing it got it.
+        std::fprintf(stderr,
+                     "--serve and --enable-actions together are refused in this stage: the resident "
+                     "Core observes. A resident process that acts is a change of authority and "
+                     "needs its own review, not a flag\n");
+        return 2;
+    }
+    if (!serve && interval_seconds != 60) {
+        std::fprintf(stderr, "--interval-seconds only applies with --serve\n");
+        return 2;
+    }
+    if (!serve && max_ticks >= 0) {
+        std::fprintf(stderr, "--max-ticks only applies with --serve\n");
+        return 2;
+    }
 
     std::string text;
     if (!read_file(manifest_path, text)) {
@@ -156,7 +257,8 @@ int main(int argc, char** argv) {
     if (!parsed.ok) {
         std::fprintf(stderr, "%s is not a manifest this version reads:\n", manifest_path.c_str());
         for (const nodecore::supervisor::Refusal& refusal : parsed.refusals) {
-            std::fprintf(stderr, "  %s %s: %s\n", refusal.scope.empty() ? "(manifest)" : refusal.scope.c_str(),
+            std::fprintf(stderr, "  %s %s: %s\n",
+                         refusal.scope.empty() ? "(manifest)" : refusal.scope.c_str(),
                          refusal.code.c_str(), refusal.reason.c_str());
         }
         return 2;
@@ -170,8 +272,6 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // Observe mode writes nothing, so it does not even read the budget it would
-    // not be spending.
     nodecore::supervisor::Recovery recovery;
     if (act && !state_path.empty()) {
         std::string state_text;
@@ -179,8 +279,6 @@ int main(int argc, char** argv) {
         const nodecore::supervisor::RecoveryLoaded loaded =
             nodecore::supervisor::load_recovery(present ? &state_text : nullptr);
         if (!loaded.ok) {
-            // A corrupt budget is NOT an empty one: reading it as empty would
-            // reset the count silently, and a budget that resets is not one.
             std::fprintf(stderr, "refusing to act: %s\n", loaded.error.c_str());
             return 2;
         }
@@ -189,69 +287,197 @@ int main(int argc, char** argv) {
 
     nodecore::supervisor::SystemdUserProvider provider(systemctl_path, allowlist.allowlist, &iso_now);
 
-    const std::string started_at = iso_now();
-    nodecore::supervisor::PlanInput input;
-    input.manifest = &manifest;
-    input.trigger = trigger;
-    input.now = static_cast<long>(std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now()));
-    input.allowed_units = allowlist.allowlist.units();
-    input.recovery = act ? &recovery : nullptr;
+    // One unit of work, shared by both modes: read every unit this run is
+    // allowed to name ONCE, decide, and describe. Nothing here writes.
+    const long process_started_monotonic = monotonic_seconds();
+    nodecore::supervisor::StatusSnapshot snapshot;
+    snapshot.mode = "observe-only";
+    snapshot.node = manifest.node;
+    snapshot.principal = manifest.principal;
+    snapshot.pid = static_cast<long>(::getpid());
+    snapshot.started_at = iso_now();
+    snapshot.generation = manifest.generation;
+    snapshot.manifest_schema = manifest.schema;
+    snapshot.manifest_sha256 = manifest.sha256;
 
-    // Every unit the manifest names, read once. A unit outside the allowlist is
-    // never asked about at all — the planner refuses it, and the provider would
-    // refuse it again.
-    for (const nodecore::supervisor::ServiceDesired& service : manifest.services) {
-        if (!allowlist.allowlist.permits(service.unit)) {
-            continue;
-        }
-        const nodecore::supervisor::Observed observed = provider.query(service.unit);
-        input.observed[service.unit] = observed;
-        if (!observed.measured) {
-            std::fprintf(stderr, "not measured: %s (%s)\n", service.unit.c_str(),
-                         observed.reason.c_str());
-        }
-    }
-
-    const nodecore::supervisor::Plan plan = nodecore::supervisor::build_plan(input);
-
+    nodecore::supervisor::Plan last_plan;
     std::vector<nodecore::supervisor::ExecutionResult> executed;
-    if (act && plan.ok) {
-        for (const nodecore::supervisor::Action& action : plan.actions) {
-            nodecore::supervisor::ProviderResult result;
-            if (action.verb == "start") {
-                result = provider.start(action.unit);
-            } else if (action.verb == "restart") {
-                result = provider.restart(action.unit);
-            } else {
-                result = provider.stop(action.unit);
+
+    const auto observe_and_plan = [&](bool allow_execution) -> nodecore::supervisor::TickOutcome {
+        const long tick_started = monotonic_seconds();
+        nodecore::supervisor::PlanInput input;
+        input.manifest = &manifest;
+        input.trigger = trigger;
+        input.now = tick_started;
+        input.allowed_units = allowlist.allowlist.units();
+        input.recovery = (allow_execution && act) ? &recovery : nullptr;
+
+        for (const nodecore::supervisor::ServiceDesired& service : manifest.services) {
+            if (!allowlist.allowlist.permits(service.unit)) {
+                continue;
             }
-            recovery.record_attempt(action.service_id, input.now);
-            if (result.ok) {
-                recovery.record_success(action.service_id);
-            } else {
-                const nodecore::supervisor::ServiceDesired* service = nullptr;
-                for (const auto& candidate : manifest.services) {
-                    if (candidate.id == action.service_id) {
-                        service = &candidate;
+            const nodecore::supervisor::Observed observed = provider.query(service.unit);
+            input.observed[service.unit] = observed;
+            if (!observed.measured) {
+                std::fprintf(stderr, "not measured: %s (%s)\n", service.unit.c_str(),
+                             observed.reason.c_str());
+            }
+        }
+
+        const nodecore::supervisor::Plan plan = nodecore::supervisor::build_plan(input);
+        last_plan = plan;
+
+        if (allow_execution && act && plan.ok) {
+            for (const nodecore::supervisor::Action& action : plan.actions) {
+                nodecore::supervisor::ProviderResult result;
+                if (action.verb == "start") {
+                    result = provider.start(action.unit);
+                } else if (action.verb == "restart") {
+                    result = provider.restart(action.unit);
+                } else {
+                    result = provider.stop(action.unit);
+                }
+                recovery.record_attempt(action.service_id, tick_started);
+                if (!result.ok) {
+                    for (const nodecore::supervisor::ServiceDesired& candidate : manifest.services) {
+                        if (candidate.id == action.service_id) {
+                            recovery.record_failure(action.service_id, candidate.recovery,
+                                                    tick_started);
+                        }
                     }
+                } else {
+                    recovery.record_success(action.service_id);
                 }
-                if (service != nullptr) {
-                    recovery.record_failure(action.service_id, service->recovery, input.now);
-                }
+                executed.push_back(nodecore::supervisor::ExecutionResult{
+                    action.service_id, action.unit, action.verb, result.ok, result.code,
+                    result.reason, result.exit_code});
             }
-            executed.push_back(nodecore::supervisor::ExecutionResult{
-                action.service_id, action.unit, action.verb, result.ok, result.code, result.reason,
-                result.exit_code});
+            if (!state_path.empty()) {
+                std::ofstream state(state_path, std::ios::trunc);
+                state << recovery.to_json() << "\n";
+            }
         }
-        if (!state_path.empty()) {
-            std::ofstream state(state_path, std::ios::trunc);
-            state << recovery.to_json() << "\n";
+
+        snapshot.ticks += 1;
+        snapshot.last_tick_monotonic = tick_started - process_started_monotonic;
+        snapshot.last_tick_duration_seconds =
+            monotonic_seconds() - tick_started;
+        snapshot.uptime_seconds = monotonic_seconds() - process_started_monotonic;
+        snapshot.plan_ok = plan.ok;
+        snapshot.planned_actions = static_cast<long>(plan.actions.size());
+        snapshot.refusals = plan.refusals;
+        snapshot.services.clear();
+        for (const nodecore::supervisor::ServiceDesired& service : manifest.services) {
+            const auto found = input.observed.find(service.unit);
+            const nodecore::supervisor::Observed observed =
+                found != input.observed.end()
+                    ? found->second
+                    : nodecore::supervisor::Observed::unavailable(
+                          service.unit, "this unit is not in the allowlist, so it was not read");
+            snapshot.services.push_back(notice_for(service, observed));
         }
+        return nodecore::supervisor::TickOutcome{};
+    };
+
+    // ------------------------------------------------------------ resident
+
+    if (serve) {
+        // The signal handler is installed before anything is opened, so a
+        // SIGTERM that arrives during startup is not lost and does not leave a
+        // socket behind.
+        struct sigaction action {};
+        action.sa_handler = on_stop_signal;
+        ::sigemptyset(&action.sa_mask);
+        ::sigaction(SIGTERM, &action, nullptr);
+        ::sigaction(SIGINT, &action, nullptr);
+        // A peer that goes away mid-write must not kill the Core.
+        ::signal(SIGPIPE, SIG_IGN);
+
+        int listen_fd = -1;
+        std::string socket_path;
+        if (!no_status_socket) {
+            if (!status_socket_override.empty()) {
+                socket_path = status_socket_override;
+            } else {
+                const char* runtime_dir = ::getenv("XDG_RUNTIME_DIR");
+                const nodecore::supervisor::SocketPath resolved =
+                    nodecore::supervisor::status_socket_path(runtime_dir == nullptr
+                                                                 ? std::string()
+                                                                 : std::string(runtime_dir),
+                                                             static_cast<long>(::getuid()));
+                if (!resolved.ok) {
+                    std::fprintf(stderr, "%s\n", resolved.error.c_str());
+                    return 2;
+                }
+                socket_path = resolved.path;
+            }
+            const nodecore::supervisor::BindOutcome bound =
+                nodecore::supervisor::bind_user_status_socket(socket_path);
+            if (!bound.ok) {
+                // A path that is already there is refused here and NOT removed:
+                // see status_socket.hpp. A resident Core does not take over
+                // another one's endpoint.
+                std::fprintf(stderr, "%s\n", bound.error.c_str());
+                return 2;
+            }
+            listen_fd = bound.fd;
+            std::fprintf(stderr, "status socket: %s\n", socket_path.c_str());
+        } else {
+            std::fprintf(stderr, "status socket: none (--no-status-socket)\n");
+        }
+
+        const long uid = static_cast<long>(::getuid());
+        const auto status_json = [&snapshot] { return build_status_json(snapshot); };
+
+        nodecore::supervisor::ServeHooks hooks;
+        hooks.monotonic_seconds = &monotonic_seconds;
+        hooks.stop_requested = [] { return g_stop_requested != 0; };
+        if (listen_fd >= 0) {
+            // Between ticks the process WAITS on the socket rather than
+            // sleeping, so one thread serves both and no answer can be computed
+            // against a half-updated observation set: a tick that has not
+            // finished has not replaced the snapshot.
+            hooks.sleep_millis = [listen_fd, uid, &status_json](long millis) {
+                nodecore::supervisor::serve_pending_connection(listen_fd, uid, status_json,
+                                                               static_cast<int>(millis), 512, 1000);
+            };
+        } else {
+            hooks.sleep_millis = [](long millis) { sleep_millis_real(millis); };
+        }
+
+        nodecore::supervisor::ServeOptions options;
+        options.tick_seconds = interval_seconds;
+        options.max_ticks = max_ticks;
+
+        const nodecore::supervisor::TickFn tick = [&observe_and_plan] {
+            return observe_and_plan(false);  // resident is ALWAYS observe-only here
+        };
+        const nodecore::supervisor::ServeReport report = nodecore::supervisor::run_serve(
+            options, tick, hooks);
+
+        // Cleanup runs on every exit from the loop, including the one a signal
+        // caused: a Core that stopped is not still listening and its path is
+        // free for the next start.
+        nodecore::supervisor::close_status_socket(listen_fd, socket_path);
+
+        std::fprintf(stderr, "stopped: ticks=%ld errors=%ld stopped_by_request=%d\n", report.ticks,
+                     report.tick_errors, report.stopped_by_request ? 1 : 0);
+        if (!report.ok) {
+            std::fprintf(stderr, "%s\n", report.error.c_str());
+            return 2;
+        }
+        return report.stopped_by_request || report.completed ? 0 : 1;
     }
 
+    // ---------------------------------------------------------- single pass
+
+    const nodecore::supervisor::TickOutcome tick_outcome = observe_and_plan(true);
+    if (!tick_outcome.ok) {
+        std::fprintf(stderr, "%s\n", tick_outcome.error.c_str());
+    }
     const std::string receipt = nodecore::supervisor::build_receipt(
-        manifest, plan, executed, act ? "active" : "observe-only", started_at, iso_now());
+        manifest, last_plan, executed, act ? "active" : "observe-only", snapshot.started_at,
+        iso_now());
 
     if (receipt_path.empty()) {
         std::printf("%s\n", receipt.c_str());
@@ -264,11 +490,7 @@ int main(int argc, char** argv) {
         out << receipt << "\n";
     }
 
-    // Exit 0 when the plan is well formed and nothing failed. A refused plan or
-    // a failed attempt is a non-zero exit, so a caller can gate on it without
-    // parsing the receipt — the receipt is for the person, the code is for the
-    // script.
-    if (!plan.ok) {
+    if (!last_plan.ok) {
         return 3;
     }
     for (const auto& result : executed) {

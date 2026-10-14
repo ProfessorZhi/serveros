@@ -15,6 +15,9 @@ set(supervisor_cases
   test_sup_plan
   test_sup_provider
   test_sup_receipt
+  test_sup_status
+  test_sup_serve
+  test_sup_status_socket
 )
 
 foreach(case IN ITEMS ${supervisor_cases})

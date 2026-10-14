@@ -20,6 +20,9 @@ add_library(nodecore_supervisor STATIC
   src/proc.cpp
   src/systemd_user.cpp
   src/receipt.cpp
+  src/status.cpp
+  src/serve.cpp
+  src/status_socket.cpp
 )
 target_include_directories(nodecore_supervisor PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(nodecore_supervisor PUBLIC nodecore)
