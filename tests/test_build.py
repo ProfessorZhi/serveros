@@ -67,6 +67,13 @@ ABILITY_SKILLS = (
     # landed and the profile moved to `available`, the check fired here first.
     # The fixture was right to fire — it just had to be told the news.
     "document-stewardship",
+    # Same rule, second time. `delivery-pr-report` is the thin orchestration
+    # over members this composition already resolves (`good-pr`, `feishu-report`,
+    # `implementation-delivery`), and the profile marks it `available`, so the
+    # pinned registry this fixture stands in for has to resolve it too. It is
+    # named here rather than left to the pack contract because the claim under
+    # test is the profile's, not the pack's.
+    "delivery-pr-report",
 )
 
 # What `serveros-core` itself composes from ability-management. A subset of the
