@@ -19,7 +19,7 @@ def main() -> None:
     name, version = manifest.get("name", ""), manifest.get("version", "")
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
         raise SystemExit("invalid plugin name")
-    if not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", version):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise SystemExit("invalid semver version")
     files = [p for p in root.rglob("*") if p.is_file()]
     if not any(p.name == "SKILL.md" and "skills" in p.relative_to(root).parts for p in files):
