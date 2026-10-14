@@ -3188,10 +3188,17 @@ def test_an_unmeasured_node_does_not_answer_that_it_has_no_resource_anomalies(
     assert result["coverage"]["graded"] == 0, result["codes_graded"]
     assert result["codes_graded"] == []
     assert result["codes_emitted"] == []
-    # 16 is the size of the fleet this round, and it moved from 15 because
-    # `MEMORY_PRESSURE_ACTIVE` joined `CODES`. Written out rather than read off
-    # the module so that adding a code is a deliberate edit here too.
-    assert len(result["codes_not_evaluated"]) == result["coverage"]["of"] == 16
+    # 17 is the size of the fleet this round, and it moved from 15 because
+    # `MEMORY_PRESSURE_ACTIVE` joined `CODES` and then from 16 because
+    # `USER_MEMORY_PRESSURE` did. Written out rather than read off the module
+    # so that adding a code is a deliberate edit here too.
+    #
+    # The new code needs no fixture change, and that is a property worth
+    # stating rather than a coincidence: `_dead_inventory()` is a real
+    # `Inventory` over a host whose reads all fail, not a double with a fixed
+    # set of methods, so `users_memory()` answers UNAVAILABLE for the same
+    # reason the other five do and the code lands here with its neighbours.
+    assert len(result["codes_not_evaluated"]) == result["coverage"]["of"] == 17
     # Every ungraded code names why, and the reasons are about a provider, not
     # about a threshold: an empty `why` would be the declaration-layer shape of
     # "we did not look" reported as "we looked and found nothing".
