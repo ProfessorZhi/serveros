@@ -762,7 +762,28 @@ class FleetService:
         queried: list[str] = []
         for entry in targets:
             ref = entry.device_ref.ref
-            for one in self._runtimes_for(ref, runtime):
+            selected = self._runtimes_for(ref, runtime)
+            if not selected:
+                # `all` resolved to no runtimes, which happens on a device this
+                # host holds no binding for. Skipped, that device would
+                # contribute neither a row nor an entry, and a caller could not
+                # tell it from one that answered with nothing — the same
+                # silence the per-runtime gap below exists to remove, one level
+                # up. The default selector never lands here: it asks for the
+                # device's own runtime whether or not a binding exists, and
+                # reports the absence as a gap.
+                unreachable.append(
+                    {
+                        "device_ref": ref,
+                        "runtime": None,
+                        "provider_key": ref,
+                        "code": UNKNOWN_DEVICE,
+                        "detail": "this host holds no binding for any runtime "
+                                  "on this device, so `all` had nothing to ask",
+                    }
+                )
+                continue
+            for one in selected:
                 # The ledger key, which is also what the audit records: the bare
                 # device ref for the device's own runtime (unchanged), and
                 # `device:<id>|<tag>` for a second one. One string cannot be two

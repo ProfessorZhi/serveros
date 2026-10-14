@@ -654,6 +654,30 @@ class OneUnreachableRuntimeIsAGapNotAnAbsenceTest(unittest.TestCase):
         self.assertEqual(listing["runtimes"], 2)
         self.assertEqual(listing["unreachable"], [provider_key(DEVICE, SECOND)])
 
+    def test_all_on_a_device_bound_for_nothing_is_reported_not_skipped(self):
+        """The silence one level up. A device this host holds NO binding for
+        contributes no rows under `all` — and if it also contributed no entry, a
+        caller could not tell it from a device that answered with nothing."""
+        h = TwoRuntimes(self.tmp, first=False, second=False)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        self.assertEqual(got["sessions"], [])
+        self.assertEqual(got["runtimes_queried"], [],
+                         "nothing was asked, so nothing may be reported as asked")
+        self.assertEqual(len(got["devices_unreachable"]), 1)
+        gap = got["devices_unreachable"][0]
+        self.assertEqual(gap["device_ref"], DEVICE)
+        self.assertIsNone(gap["runtime"], "no runtime was named, because none is bound")
+        self.assertEqual(gap["provider_key"], DEVICE)
+
+    def test_the_default_still_names_the_runtime_on_a_device_bound_for_nothing(self):
+        """The two selectors differ here, and both are right: the default asks
+        for a runtime by name and reports that there is no route to it, while
+        `all` has no name to report because none is bound."""
+        h = TwoRuntimes(self.tmp, first=False, second=False)
+        got = h.service.list_sessions(h.principal())
+        self.assertEqual(got["runtimes_queried"], [DEVICE])
+        self.assertEqual([g["runtime"] for g in got["devices_unreachable"]], ["claude"])
+
 
 class TheSelectorIsNotATagTest(unittest.TestCase):
     """`all` is a legal provider name, so 'the selectors are not tags' cannot be
