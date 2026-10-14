@@ -85,6 +85,7 @@ import yaml
 from ..errors import BAD_REQUEST, FleetRefusal
 from ..identity import SessionKey
 from ..local_roots import binding_candidates, refusal_if_closed_root
+from ..runtime_identity import BASE_RUNTIME
 from ..node_protocol import (
     PROTOCOL,
     ROUTES,
@@ -186,6 +187,12 @@ class NodeConfig:
     # approval is a person's decision about one request, not a consequence of
     # being allowed to stop a run or send a message. A device that never wrote
     # this word refuses every approval answer, including from the Fleet owner.
+    #: WHICH runtime this connector serves on this machine. A machine can host
+    #: several — different OS accounts, each with its own CloudCLI and its own
+    #: credential — and each runs its OWN connector, bound to its own runtime.
+    #: This is not read off the wire and never taken from a request: it is what
+    #: this process was started as, and it is what a signed request must name.
+    runtime: str = BASE_RUNTIME
     allow_approve: bool = False
     # The mirrored `ui_open_session`: may a caller change what this machine's
     # screen shows? Off by default and separate from control, because navigation
@@ -471,6 +478,31 @@ def _control_sessions(value: Any) -> tuple[str, ...]:
             out.append(name)
     return tuple(out)
 
+def _runtime_tag(value: Any) -> str:
+    """The runtime this connector serves, validated by the addressing authority.
+
+    Defaults to the device's own runtime, so a binding written before a machine
+    could host two means exactly what it meant then. A tag this surface could
+    not address in a session reference is refused here rather than at the first
+    request, because a connector that starts and can never be reached is a
+    failure that looks like silence.
+    """
+    if value is None:
+        return BASE_RUNTIME
+    if not isinstance(value, str) or not value.strip():
+        raise FleetRefusal(
+            BAD_REQUEST,
+            f"`runtime` must be a provider tag, not {type(value).__name__}",
+        )
+    tag = value.strip()
+    try:
+        SessionKey("device:validation", tag, "validation")
+    except ValueError as exc:
+        raise FleetRefusal(BAD_REQUEST, f"`runtime` is not a tag this surface "
+                                        f"can address: {exc}") from None
+    return tag
+
+
 def load_node_config(path: str | Path | None = None) -> NodeConfig:
     if path is None:
         for candidate in DEFAULT_CONFIG_PATHS:
@@ -542,6 +574,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_send_to=tuple(raw.get("allow_send_to") or ()),
         allow_create=allow_create,
         allow_create_projects=allow_create_projects,
+        runtime=_runtime_tag(raw.get("runtime")),
         allow_control=_flag(raw.get("allow_control"), name="allow_control"),
         allow_control_to=_control_sessions(raw.get("allow_control_to")),
         # The two flags that open `approval_answer` and `ui_open_session` on THIS
@@ -637,6 +670,7 @@ class Connector:
                 headers=headers,
                 expected_device_ref=self.config.device_ref,
                 replay=self.replay,
+                expected_runtime=self.config.runtime,
             )
         except SignatureError as exc:
             # 401 is "this connector does not accept you as a peer at all"; 400
