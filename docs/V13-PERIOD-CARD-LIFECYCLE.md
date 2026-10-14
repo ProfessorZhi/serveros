@@ -154,6 +154,38 @@ for»）。默认表：
 `column_set` rich 模式未使用，卡片只用 `markdown`/`hr`/`collapsible_panel`。
 真机效果须由用户再截图确认。
 
+## 4.2 原生 CardKit 2.0 仪表盘（2026-10-14，第二轮 UI 反馈）
+
+用户对 17:55 的截图仍不满意，要求「用飞书卡片自己的构造」做。已按**本地 lark-cli
+实际内置契约**（`lark-cli skills read lark-im/references/card/…`，v1.0.96）把整卡从
+「大段 markdown」改为**原生组件**：
+
+| 位置 | 原生组件 | 依据 |
+|---|---|---|
+| Header | `title` / `subtitle` / `template`(blue) / `icon`(standard_icon `setting_outlined`) / `text_tag_list`(`1/3 已采集`·blue、`2 待接采集`·neutral) | `components/header.md` |
+| 首屏 KPI | **`column_set`(flex_mode:none) ×2**，各 **2 个 `column`**，`background_style` grey-50 / yellow-50（swap≥89%），`padding:12px`，`vertical_spacing:2px`；大数字 `##` + 灰色 `notation` 标签 | `components/column_set.md`、style guide §3 |
+| 覆盖状态 | 原生 **`div.fields`**（`is_short` label/value 对） | `components/div.md`、style guide §7 |
+| 设备正文 | 3 个原生 **`collapsible_panel`**（东京内嵌 2 列一组读数 `column_set` + 服务行；Windows/Dell 仅缺口） | `components/collapsible_panel.md` |
+| FINAL 小结 | 轻背景（grey-50）单位 `column_set`，位于首屏与折叠之间 | style guide §5 |
+| 页脚 | `markdown` notation | — |
+
+**明确拒绝的字段/组件**（不照抄 style guide 的错误示例）：
+
+- **`column.corner_radius`** —— `components/column_set.md` 的 `column` 字段表**没有**它，
+  且它会触发 Card 2.0 `200621 unknown property`（larksuite/cli issue #2371，其
+  style-guide 示例恰好带了这个错字段）。本卡 `column` 只用已证实字段
+  `background_style` / `padding` / `vertical_spacing` / `width` / `weight`。
+- `interactive_container` —— 声明后 `behaviors` 必填，本卡无交互，**不做装饰块**。
+- `chart` / `table` —— 未真机验证，**gated off**；1 次采样不画曲线。
+- `stretch` —— 慎用；KPI 用 `none` + `weighted`（手机按比例压缩、不截值）。
+
+**本卡实测结构**（真实东京数据，48/200 元素、3 个唯一 element_id、6780 字节）：
+`column_set×2(KPI) → markdown(warning) → div(fields) → markdown(gap) → collapsible_panel×3 → markdown(footer)`。
+
+**本地静态有效 ≠ 真机可显示**：`_validate_native` 只校验 schema/tag 词表/element_id/
+200 元素/30KB；**客户端是否真渲染 `column_set` 背景、`div.fields`、`text_tag_list`
+须由用户桌面/手机截图确认**。
+
 ## 5. 明确没做 / 不声称
 
 - **不部署、不启用定时器、不发真实飞书、不读生产 token**；不动 `ops/`、

@@ -69,6 +69,7 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -1522,40 +1523,63 @@ def _gap_lines(model: dict) -> list[str]:
 
 
 def _fold_title(device) -> str:
-    """A fold header that leads with the STATE, in words, never «失联»."""
+    """A fold header that leads with the STATE, in words, never «失联».
+
+    No emoji: the style guide rules decorative icons out of a serious card's
+    titles, and the severity is carried by the words beside the name instead.
+    """
     name = _device_name(device)
     readings = device.get("readings") or []
-    bad = [r for r in readings
+    bad = [str(r.get("severity") or "").upper() for r in readings
            if str(r.get("severity") or "").upper() in ("CRITICAL", "ATTENTION")
            and r.get("state") == monitor.STATE_KNOWN]
-    mark = {"CRITICAL": "🚨", "ATTENTION": "⚠️"}.get(
-        max((str(r.get("severity")).upper() for r in bad), default=""), "")
+    mark = {"CRITICAL": "需处理 · ", "ATTENTION": "需关注 · "}.get(
+        min(bad, key=lambda s: monitor.SEVERITY_RANK.get(s, 9), default=""), "")
     unknowns = sum(1 for r in readings if r.get("state") != monitor.STATE_KNOWN)
     tail = f" · 无法确认 {unknowns}" if unknowns else ""
-    return f"{mark} {name} · {_reach_note(device)}{tail}".strip()
+    return f"{name} · {mark}{_reach_note(device)}{tail}"
 
 
 def _fold_body(device, *, index: int) -> list[dict]:
-    """The full V13 content of one device, inside its fold."""
+    """The full V13 content of one device, inside its fold — as native elements.
+
+    The machine's own readings become a small `column_set` of tiles rather than
+    one run-on markdown line, so a fold opened on a phone shows the numbers the
+    same way the first screen does. A device nobody sampled says so once.
+    """
     ref = device.get("device_ref") or str(index)
     elements = []
     readings = device.get("readings") or []
     if _reach_state(device) != "KNOWN":
-        elements.append(_md("_未获取采样 · 状态未知_（连接器可达 ≠ 资源监测已接入）"))
+        elements.append(_md("<font color='grey'>未获取采样 · 状态未知"
+                            "（连接器可达 ≠ 资源监测已接入）</font>"))
     else:
         known = [r for r in readings
                  if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
-        if known:
-            elements.append(_md(_wrap(" · ".join(
-                f"**{r['label']}** {monitor._value(r)}" for r in known[:6]))))
-    lines = []
-    for r in readings:
-        lines.append(monitor.reading_line(r))
-        trend = monitor._trend_line(r)
-        if trend:
-            lines.append(trend)
-    if lines:
-        elements.append(_md(_wrap("\n".join(lines))))
+        for start in range(0, min(len(known), 4), 2):
+            elements.append({
+                "tag": "column_set", "flex_mode": "none",
+                "horizontal_spacing": "8px", "margin": "0px 0px 8px 0px",
+                "columns": [
+                    {"tag": "column", "width": "weighted", "weight": 1,
+                     "background_style": "grey-50", "padding": "8px",
+                     "vertical_spacing": "2px",
+                     "elements": [
+                         _md(monitor._value(r)),
+                         {"tag": "markdown", "text_size": "notation",
+                          "content": f"<font color='grey'>{r['label']}</font>"},
+                     ]}
+                    for r in known[start:start + 2]
+                ],
+            })
+        lines = []
+        for r in readings:
+            lines.append(monitor.reading_line(r))
+            trend = monitor._trend_line(r)
+            if trend:
+                lines.append(trend)
+        if lines:
+            elements.append(_md("\n".join(lines)))
     accounts = device.get("accounts") or []
     if accounts:
         elements.append(monitor._accounts_panel(ref, accounts))
@@ -1573,60 +1597,335 @@ def _local_hhmm(instant) -> str | None:
     return moment.astimezone().strftime("%H:%M")
 
 
-def _archive_elements(view: dict) -> list[dict]:
-    """The period summary, compact and layered, never a flat markdown dump."""
+def _archive_lines(view: dict) -> list[str]:
+    """The period summary as short markdown lines, for the closure block.
+
+    A TREND NEEDS TWO POINTS. With one sample the line says so out loud rather
+    than printing «完整时段趋势一览» over a single reading, and no chart element
+    is emitted for it — a `chart` over one value is a picture of nothing.
+    """
     overview = view.get("overview") or {}
     trend = view.get("trend") or {}
     handover = view.get("handover") or {}
     ticks = int(trend.get("ticks") or 0)
-    blocks = [f"**时段小结** · {view.get('label') or '时段'}", overview.get("says") or ""]
+    lines = [f"**时段小结** · {view.get('label') or '时段'}", overview.get("says") or ""]
     if ticks < 2:
-        # ONE sample is not a trend and saying «完整时段趋势一览» over it would
-        # be a claim the data cannot support.
-        blocks.append(f"**时段趋势**（仅 {ticks} 次采样，不足以评价趋势）")
+        lines.append(f"**时段趋势**（仅 {ticks} 次采样，不足以评价趋势）")
     else:
-        blocks.append(f"**完整时段趋势一览**（{ticks} 拍 · "
-                      f"{trend.get('transitions')} 处变化）")
-        for entry in (trend.get("timeline") or [])[:12]:
-            blocks.append(f"- {entry.get('says')}")
-    blocks.append(f"**三设备摘要**（{len(view.get('devices') or [])}）")
+        lines.append(f"**完整时段趋势一览**（{ticks} 拍 · "
+                     f"{trend.get('transitions')} 处变化）")
+        for entry in (trend.get("timeline") or [])[:8]:
+            lines.append(f"- {entry.get('says')}")
+    lines.append(f"**三设备摘要**（{len(view.get('devices') or [])}）")
     for device in (view.get("devices") or []):
-        blocks.append(f"- {device.get('name') or device.get('device_ref')} · "
-                      f"{device.get('reach_word') or '状态未知'}")
-    blocks.append("**交接 · 事故 / 自愈 / 未解决**")
+        lines.append(f"- {device.get('name') or device.get('device_ref')} · "
+                     f"{device.get('reach_word') or '状态未知'}")
+    lines.append("**交接 · 事故 / 自愈 / 未解决**")
     incidents = handover.get("incidents") or []
     recoveries = handover.get("recoveries") or []
     unresolved = handover.get("unresolved") or []
     for item in incidents:
-        blocks.append(f"- 事故 · {item.get('says') or item.get('episode') or '（未命名）'}")
+        lines.append(f"- 事故 · {item.get('says') or item.get('episode') or '（未命名）'}")
     for item in recoveries:
-        blocks.append(f"- 自愈 · {item.get('says') or item.get('episode') or '（未命名）'}")
+        lines.append(f"- 自愈 · {item.get('says') or item.get('episode') or '（未命名）'}")
     for item in unresolved:
-        blocks.append(f"- 未解决 · {item.get('says') or item.get('key') or '（未命名）'}")
+        lines.append(f"- 未解决 · {item.get('says') or item.get('key') or '（未命名）'}")
     if not (incidents or recoveries or unresolved):
-        blocks.append("- 本时段未记录事故")
-    return [_md(_wrap("\n".join(blocks)))]
+        lines.append("- 本时段未记录事故")
+    return lines
 
 
 def render_archive_text(view: dict) -> str:
-    """The archive as one block of markdown (the CLI and the tests read this)."""
-    return "\n".join(element["content"] for element in _archive_elements(view))
+    """The archive as plain markdown (the CLI and the tests read this)."""
+    return "\n".join(_archive_lines(view))
+
+
+    return elements
+
+
+# ---------------------------------------------------------------------------
+# the native CardKit 2.0 card — a dashboard, not a markdown blob
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT ONE MARKDOWN BLOB
+# ---------------------------------
+# The previous card was assembled entirely from `markdown` elements. It carried
+# the right facts and still read badly: «some text, then more text» is not a
+# layout — the eye has no entry point, nothing is grouped, and a phone shows a
+# wall of lines. This renderer uses the components the CardKit 2.0 reference
+# documents for the job the card actually has — a data dashboard — and nothing
+# else:
+#
+#     column_set + column   the KPI grid (native 2x2, real tile backgrounds)
+#     div.fields            the per-device coverage pairs (native label/value)
+#     collapsible_panel     the three device bodies, folded
+#     markdown              short captions, the closure block and the footer
+#     header                title / subtitle / text_tag_list / icon
+#
+# WHAT IT REFUSES, ON PURPOSE
+# ---------------------------
+#   * `column.corner_radius` — NOT a field of `column` in the component
+#     reference, and the one that makes Card 2.0 answer `200621 unknown
+#     property` (larksuite/cli issue #2371, whose own style-guide example
+#     carries it). Only the confirmed `background_style` / `padding` /
+#     `vertical_spacing` / `width` / `weight` are used, so a rounded KPI tile is
+#     simply not attempted rather than faked.
+#   * `chart` — gated off. One sample is not a trend and no VChart has been read
+#     on a real client.
+#   * `interactive_container` — its `behaviors` is mandatory when the component
+#     is declared and this card has no interaction, so it is not used as
+#     decoration.
+#   * `table` — root-only and unverified at both widths; not forced in.
+
+#: The component vocabulary this renderer may emit. A tag outside it is refused
+#: before the card is handed to a transport, so an invented tag — which renders
+#: as a blank — cannot ship.
+_NATIVE_TAGS = frozenset({
+    "markdown", "hr", "div", "column_set", "column", "collapsible_panel",
+    "table", "chart", "plain_text", "lark_md", "standard_icon", "text_tag",
+})
+#: `header.template` and `text_tag.color` enumerations, from `components/header.md`.
+_NATIVE_TEMPLATES = ("blue", "wathet", "turquoise", "green", "yellow", "orange",
+                     "red", "carmine", "violet", "purple", "indigo", "grey",
+                     "default")
+_NATIVE_TAG_COLORS = ("neutral", "blue", "turquoise", "lime", "orange", "violet",
+                      "indigo", "wathet", "green", "yellow", "red", "purple",
+                      "carmine")
+#: A token from the CLI's own verified icon list. Chosen rather than composed:
+#: a made-up token renders as nothing.
+_HEADER_ICON = "setting_outlined"
+_NATIVE_MAX_ELEMENTS = 200
+#: The KPI axes the grid shows, in tile order, matched against a reading's own
+#: label. An axis with no reading is simply absent — never a zero.
+_KPI_AXES = ("CPU", "内存", "交换", "磁盘")
+
+
+def _split_value(raw) -> tuple[str, str]:
+    """`33.7%（83.3 GiB / 247.0 GiB）` -> («33.7%», «83.3 GiB / 247.0 GiB»).
+
+    The big number and its caption are separated here rather than at the tile,
+    because «which part is the number» is a property of the reading's own
+    formatting. A value with no leading number (`128 逻辑核`) keeps its whole
+    text as the number and has no caption — and a core COUNT is never rendered
+    as a percentage, because it is not one.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return "—", ""
+    found = re.match(r"^([0-9][0-9.,]*%?)\s*(.*)$", text)
+    if found and found.group(1):
+        return found.group(1), found.group(2).strip("（）() ").strip()
+    return text, ""
+
+
+def _kpi_cell(reading, label) -> dict:
+    """One KPI tile: its value, caption, and the colours it has EARNED."""
+    if reading is None:
+        return {"label": label, "value": "未获取", "note": "",
+                "bg": "grey-50", "color": "grey"}
+    value, note = _split_value(reading.get("value"))
+    color, background = "blue", "grey-50"
+    if label.startswith("交换") and value.endswith("%"):
+        try:
+            if float(value[:-1]) >= _SWAP_NEAR_PERCENT:
+                color, background = "orange", "yellow-50"
+        except ValueError:
+            pass
+    return {"label": label, "value": value, "note": note,
+            "bg": background, "color": color}
+
+
+def _kpi_cells(model: dict) -> list[dict]:
+    """The measured KPIs, in axis order. An axis with no reading is absent."""
+    devices = model.get("devices") or []
+    main = next((d for d in devices if _reach_state(d) == "KNOWN"),
+                devices[0] if devices else None)
+    known = []
+    if main is not None:
+        known = [r for r in (main.get("readings") or [])
+                 if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
+    cells = []
+    for axis in _KPI_AXES:
+        match = next((r for r in known if axis in str(r.get("label") or "")), None)
+        if match is not None:
+            cells.append(_kpi_cell(match, "交换区" if axis == "交换" else axis))
+    return cells
+
+
+def _kpi_tile(cell: dict) -> dict:
+    """One native `column`: a big value over a small grey caption."""
+    return {
+        "tag": "column", "width": "weighted", "weight": 1,
+        "background_style": cell["bg"], "padding": "12px",
+        "vertical_spacing": "2px",
+        "elements": [
+            {"tag": "markdown", "text_align": "center",
+             "content": f"## <font color='{cell['color']}'>{cell['value']}</font>"},
+            {"tag": "markdown", "text_align": "center", "text_size": "notation",
+             "content": f"<font color='grey'>{cell['label']}</font>"},
+        ],
+    }
+
+
+def _kpi_grid(cells: list[dict]) -> list[dict]:
+    """Two tiles per `column_set` — a native 2x2.
+
+    `flex_mode: "none"` is the reference's own recommendation for metric tiles:
+    the columns compress by weight rather than stacking or stretching, so a
+    phone keeps the grid and a long value wraps inside its own tile instead of
+    being clipped.
+    """
+    elements = []
+    for start in range(0, len(cells), 2):
+        elements.append({
+            "tag": "column_set", "flex_mode": "none",
+            "horizontal_spacing": "8px", "margin": "0px 0px 8px 0px",
+            "columns": [_kpi_tile(cell) for cell in cells[start:start + 2]],
+        })
+    return elements
+
+
+def _status_fields(model: dict) -> dict:
+    """Per-device coverage as native `div.fields` label/value pairs.
+
+    Native alignment, not a `column_set` used to fake a field grid — and one
+    line per device, so the coverage is read as a table rather than retold in a
+    paragraph.
+    """
+    fields = []
+    for device in model.get("devices") or []:
+        fields.append({
+            "is_short": True,
+            "text": {"tag": "lark_md",
+                     "content": f"**{_device_name(device)}**\n"
+                                f"<font color='grey'>{_reach_note(device)}</font>"},
+        })
+    return {"tag": "div", "fields": fields, "margin": "0px 0px 8px 0px"}
+
+
+def _native_panel(title: str, elements: list[dict], eid: str) -> dict:
+    """A fold, in the shape the node's live cards already send."""
+    return {
+        "tag": "collapsible_panel",
+        "element_id": eid,
+        "expanded": False,
+        "header": {
+            "title": {"tag": "markdown", "content": f"**{title}**"},
+            "vertical_align": "center",
+            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                     "size": "16px 16px"},
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": "grey", "corner_radius": "5px"},
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        "margin": "0px 0px 8px 0px",
+        "elements": elements,
+    }
+
+
+def _summary_block(archive: dict) -> dict:
+    """The FINAL closure, a light-background block after the first screen."""
+    return {
+        "tag": "column_set", "flex_mode": "none", "margin": "0px 0px 8px 0px",
+        "columns": [{
+            "tag": "column", "width": "weighted", "weight": 1,
+            "background_style": "grey-50", "padding": "12px",
+            "vertical_spacing": "4px",
+            "elements": [_md("\n".join(_archive_lines(archive)))],
+        }],
+    }
+
+
+def _native_header(model: dict, *, archive, test_mark, now_hhmm) -> dict:
+    """Title / subtitle / status tags / icon, within the header contract.
+
+    The title names the PRODUCT. The period identity, the test mark and the
+    sample time are small subtitle text, and the collection state is a
+    `text_tag_list` — no developer identifier and no raw JSON reach the header.
+    """
+    devices = model.get("devices") or []
+    collected = sum(1 for device in devices if _reach_state(device) == "KNOWN")
+    tags = [{"tag": "text_tag",
+             "text": {"tag": "plain_text",
+                      "content": f"{collected}/{len(devices)} 已采集"},
+             "color": "blue" if collected else "neutral"}]
+    pending = len(devices) - collected
+    if pending:
+        tags.append({"tag": "text_tag",
+                     "text": {"tag": "plain_text", "content": f"{pending} 待接采集"},
+                     "color": "neutral"})
+    bits = [b for b in (f"{now_hhmm} 更新" if now_hhmm else None,
+                        str(test_mark) if test_mark else None,
+                        "时段总结" if archive is not None else "时段进行中") if b]
+    return {
+        "template": "red" if _real_critical(model) else "blue",
+        "icon": {"tag": "standard_icon", "token": _HEADER_ICON, "color": "blue"},
+        "title": {"tag": "plain_text", "content": "ServerOS · 节点监控"},
+        "subtitle": {"tag": "plain_text", "content": " · ".join(bits)},
+        "text_tag_list": tags[:3],
+    }
+
+
+def _element_count(node) -> int:
+    if isinstance(node, dict):
+        return (1 if "tag" in node else 0) + sum(_element_count(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(_element_count(v) for v in node)
+    return 0
+
+
+def _validate_native(card: dict) -> dict:
+    """Refuse a native card that breaks a structural rule. Raises, never warns.
+
+    Checks the schema, the component vocabulary, element-id uniqueness and
+    shape, the 200-element ceiling and the serialised size — the same rules
+    `fleet_monitor_card.validate` applies, against THIS renderer's vocabulary
+    (which adds `div` / `text_tag` and drops nothing).
+    """
+    if card.get("schema") != "2.0":
+        raise CardPeriodError(f"schema {card.get('schema')!r} is not '2.0'")
+    unknown = sorted(set(monitor._walk_tags(card, [])) - _NATIVE_TAGS)
+    if unknown:
+        raise CardPeriodError(
+            f"native card emits undeclared tag(s) {unknown}; an invented tag "
+            f"renders as a blank")
+    header = card.get("header") or {}
+    template = header.get("template")
+    if template is not None and template not in _NATIVE_TEMPLATES:
+        raise CardPeriodError(f"header.template {template!r} is not an enumerated colour")
+    for tag in header.get("text_tag_list") or []:
+        if tag.get("color") not in _NATIVE_TAG_COLORS:
+            raise CardPeriodError(f"text_tag colour {tag.get('color')!r} is not enumerated")
+    ids = monitor._walk_element_ids(card, [])
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise CardPeriodError(f"duplicate element_id(s) {duplicates}")
+    for eid in ids:
+        if not isinstance(eid, str) or not monitor._ELEMENT_ID_RE.match(eid) \
+                or len(eid) > monitor.ELEMENT_ID_MAX:
+            raise CardPeriodError(f"element_id {eid!r} is not «字母开头，≤20 字符»")
+    count = _element_count(card.get("body")) + 1  # header counts as one
+    if count > _NATIVE_MAX_ELEMENTS:
+        raise CardPeriodError(f"card has {count} elements, over the {_NATIVE_MAX_ELEMENTS} limit")
+    size = len(json.dumps(card, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    if size > monitor.MAX_CARD_BYTES:
+        raise CardPeriodError(f"card is {size} bytes, over the {monitor.MAX_CARD_BYTES} budget")
+    return card
 
 
 def render_period_card(model: dict, *, archive: dict | None = None,
                        test_mark: str | None = None, rich: bool = False,
                        charts_verified: bool = False) -> dict:
-    """The period card: one clean first screen, LIVE or summarized. PURE.
+    """The period card as a native CardKit 2.0 dashboard. PURE.
 
-    The header is NEUTRAL by default. Red is kept for a genuinely CONFIRMED
-    critical (`_real_critical`) and for nothing else — an unmeasured data source
-    does not paint the card, because «I could not look» is not «it is broken».
-    The title names the product, not the developer: the period identity and the
-    test mark live in the small subtitle, where a grader can still find them.
-
-    `rich` and `charts_verified` both stay OFF. `column_set` and the VChart
-    `chart` are unverified on a real client, so the default card is the one the
-    node already sends: `markdown`, `hr` and `collapsible_panel` only.
+    The header is NEUTRAL by default; red is kept for a genuinely CONFIRMED
+    critical (`_real_critical`) and nothing else, so an unmeasured data source
+    never paints the card. The first screen is a native KPI grid, the coverage
+    pairs, at most one warning and one gap line — then three folds. A `table`
+    and a `chart` are not emitted: neither has been read on a real client, and
+    `charts_verified` is refused rather than trusted.
     """
     if charts_verified:
         raise CardPeriodError(
@@ -1634,57 +1933,52 @@ def render_period_card(model: dict, *, archive: dict | None = None,
             "VChart element nor the 390px narrow layout has been accepted on a "
             "real client, so this renderer refuses to claim a chart was verified")
     devices = model.get("devices") or []
-    elements = []
-    elements.append(_md(_wrap(f"**覆盖** {_coverage_line(model)}")))
-    main = next((d for d in devices if _reach_state(d) == "KNOWN"), devices[0] if devices else None)
-    kpis = _kpi_lines(main) if main else []
-    if kpis:
-        elements.append(_md(_wrap(" · ".join(kpis))))
-    swap = _swap_warning(main) if main else None
-    if swap:
-        elements.append(_md(_wrap(f"⚠️ {swap}")))
-    alerts = _alert_lines(model)
-    if alerts:
-        elements.append(_md(_wrap("**需要关注**\n" + "\n".join(f"- {a}" for a in alerts))))
-    gaps = _gap_lines(model)
-    if gaps:
-        elements.append(_md(_wrap("**数据缺口**\n" + "\n".join(f"- {g}" for g in gaps))))
-    elements.append(_md(_service_line(model)))
-    elements.append(monitor._hr())
-    for index, device in enumerate(devices):
-        fold = monitor._panel(monitor.element_id("dev", device.get("device_ref") or index),
-                              _fold_title(device), [], expanded=False)
-        fold["elements"] = _fold_body(device, index=index)
-        elements.append(fold)
-    if model.get("network"):
-        elements.append(_md(monitor.reading_line(model["network"])))
+    main = next((d for d in devices if _reach_state(d) == "KNOWN"),
+                devices[0] if devices else None)
+    elements: list[dict] = []
+    elements.extend(_kpi_grid(_kpi_cells(model)))
+    warning = _swap_warning(main) if main else None
+    if warning:
+        elements.append({"tag": "markdown", "text_size": "notation",
+                         "margin": "0px 0px 8px 0px", "content": f"⚠️ {warning}"})
+    if devices:
+        elements.append(_status_fields(model))
+    unknown_names = [_device_name(d) for d in devices if _reach_state(d) != "KNOWN"]
+    if unknown_names:
+        elements.append({
+            "tag": "markdown", "text_size": "notation", "margin": "0px 0px 8px 0px",
+            "content": "<font color='grey'>" + "、".join(unknown_names)
+                       + " 未获取资源采样（连接器可达 ≠ 已采集）</font>"})
     if archive is not None:
-        elements.append(monitor._hr())
-        elements.extend(_archive_elements(archive))
-    elements.append(monitor._hr())
-    elements.append(_md("只读 · 本卡不会停止、重启或清理任何东西"
-                        + (" · 灰度测试，非正式播报" if test_mark else "")))
-    bits = [f"{_local_hhmm(model.get('generated_at')) or ''} 更新".strip(),
-            "时段总结" if archive is not None else "时段进行中"]
-    if test_mark:
-        bits.append(str(test_mark))
+        elements.append(_summary_block(archive))
+    for index, device in enumerate(devices):
+        body = _fold_body(device, index=index)
+        if device is main:
+            # Service COUNTS live inside the collected device's own fold, never
+            # as a standalone first-screen line — «服务：未采集» as its own row
+            # was one of the things that made the previous card read badly.
+            body.append({"tag": "markdown", "text_size": "notation",
+                         "content": f"<font color='grey'>{_service_line(model)}</font>"})
+        elements.append(_native_panel(
+            _fold_title(device), body,
+            monitor.element_id("pan", device.get("device_ref") or index)))
+    elements.append({"tag": "markdown", "text_size": "notation",
+                     "content": "<font color='grey'>只读 · 本卡不会停止、重启或清理任何东西"
+                     + (" · 灰度测试，非正式播报" if test_mark else "") + "</font>"})
     card = {
         "schema": "2.0",
         "config": {"update_multi": True, "width_mode": "default"},
-        "header": {
-            "template": "red" if _real_critical(model) else "blue",
-            "title": {"tag": "plain_text", "content": "ServerOS · 设备运行概览"},
-            "subtitle": {"tag": "plain_text", "content": " · ".join(bits)},
-        },
-        "body": {"direction": "vertical", "elements": elements},
+        "header": _native_header(model, archive=archive, test_mark=test_mark,
+                                 now_hhmm=_local_hhmm(model.get("generated_at"))),
+        "body": {"direction": "vertical", "padding": "12px 12px 20px 12px",
+                 "elements": elements},
     }
-    monitor.validate(card)
-    return card
+    return _validate_native(card)
 
 
 def render_archive(view: dict, *, model: dict, rich: bool = False,
                    charts_verified: bool = False, test_mark: str | None = None) -> dict:
-    """The period's FINAL card — the same renderer, with the archive appended.
+    """The period's FINAL card — the same renderer, with the closure block added.
 
     Kept as its own name because callers (and the CLI) ask for «the archive
     card» specifically; it IS `render_period_card`, so a fix to the first screen

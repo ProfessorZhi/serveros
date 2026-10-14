@@ -503,6 +503,14 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
         walk(card["body"])
         return "\n".join(found)
 
+    def _top_elements(self, card):
+        return card["body"]["elements"]
+
+    def _kpi_row_columns(self, card):
+        return [len(e.get("columns") or [])
+                for e in self._top_elements(card)
+                if e.get("tag") == "column_set"]
+
     def _period(self):
         return card_period.period_at(self.NOW, declaration=DECL)
 
@@ -533,7 +541,12 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
 
     def test_no_service_data_is_not_zero_services(self):
         model = self._model(tokyo=[self._reading("CPU", "128")])
-        text = self._body_text(card_period.render_period_card(model))
+        card = card_period.render_period_card(model)
+        # A standalone first-screen 服务 line was one of the things that read
+        # badly; the counts now live inside the collected device's fold.
+        self.assertFalse(any(e.get("tag") == "markdown" and "服务" in str(e.get("content") or "")
+                             for e in self._top_elements(card)))
+        text = self._body_text(card)
         self.assertIn("服务：未采集", text)
         self.assertNotIn("共 0", text)
 
@@ -554,7 +567,7 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
     def test_the_title_names_the_product_and_keeps_the_test_mark_small(self):
         card = card_period.render_period_card(
             self._model(tokyo=[self._reading("CPU", "128")]), test_mark="[灰度测试]")
-        self.assertEqual(card["header"]["title"]["content"], "ServerOS · 设备运行概览")
+        self.assertEqual(card["header"]["title"]["content"], "ServerOS · 节点监控")
         self.assertIn("[灰度测试]", card["header"]["subtitle"]["content"])
         self.assertIn("时段进行中", card["header"]["subtitle"]["content"])
         # The developer identifier must not be anywhere on the card.
@@ -568,23 +581,21 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
         self.assertRegex(subtitle, r"\d{2}:\d{2}")
         self.assertNotIn("T09:40", subtitle)
 
-    def test_the_first_screen_is_coverage_kpi_gaps_then_folds_then_archive(self):
+    def test_the_first_screen_leads_with_the_native_kpi_grid(self):
         period = self._period()
         model = self._model(
             tokyo=[self._reading("CPU", "128 逻辑核"), self._reading("内存", "33.7%")],
             extras=[self._unknown()])
         view = card_period.archive(model, period=period, rows=[self._row(period)])
         card = card_period.render_archive(view, model=model)
-        elements = card["body"]["elements"]
-        self.assertIn("覆盖", elements[0]["content"])
-        panel_at = next(i for i, e in enumerate(elements)
-                        if e.get("tag") == "collapsible_panel")
-        self.assertLess(1, panel_at)
-        archive_at = next(i for i, e in enumerate(elements)
-                          if isinstance(e, dict) and "时段小结" in str(e.get("content") or ""))
-        last_panel = max(i for i, e in enumerate(elements)
-                         if e.get("tag") == "collapsible_panel")
-        self.assertLess(last_panel, archive_at)
+        elements = self._top_elements(card)
+        self.assertEqual(elements[0]["tag"], "column_set")      # KPI first
+        self.assertTrue(any(e.get("tag") == "div" for e in elements))
+        panels = [i for i, e in enumerate(elements) if e.get("tag") == "collapsible_panel"]
+        self.assertTrue(panels)
+        summary = next(i for i, e in enumerate(elements)
+                       if "时段小结" in str(e.get("columns") or ""))
+        self.assertLess(summary, min(panels))                   # closure above the folds
 
     def test_no_recorded_events_says_recorded_not_safe(self):
         period = self._period()
@@ -599,16 +610,79 @@ class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
         text = self._body_text(card_period.render_period_card(model))
         self.assertIn("接近阈值", text)
 
-    def test_the_full_v13_folds_are_kept_and_no_unverified_element_is_used(self):
+    def test_the_card_uses_native_containers_and_no_unverified_element(self):
         model = self._model(tokyo=[self._reading("CPU", "128")],
                             extras=[self._unknown()])
         card = card_period.render_period_card(model)
         tags = []
         monitor._walk_tags(card["body"], tags)
+        self.assertIn("column_set", tags)
         self.assertIn("collapsible_panel", tags)
+        self.assertIn("div", tags)
+        # Gated off / unverified — never used as decoration.
         self.assertNotIn("chart", tags)
-        self.assertNotIn("column_set", tags)
+        self.assertNotIn("table", tags)
+        self.assertNotIn("interactive_container", tags)
         self.assertEqual(card["config"], {"update_multi": True, "width_mode": "default"})
+
+    def test_the_kpi_block_is_a_native_two_column_grid(self):
+        model = self._model(tokyo=[
+            self._reading("CPU", "128 逻辑核"), self._reading("内存", "30.4%"),
+            self._reading("交换区", "89.1%", note="阈值 90.0%"),
+            self._reading("磁盘 /", "9.5%")])
+        card = card_period.render_period_card(model)
+        rows = [e for e in self._top_elements(card) if e.get("tag") == "column_set"]
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertEqual([len(r["columns"]) for r in rows[:2]], [2, 2])
+        tile = rows[0]["columns"][0]
+        self.assertEqual(tile["tag"], "column")
+        self.assertEqual(tile["background_style"], "grey-50")
+        self.assertEqual(tile["padding"], "12px")
+        # A core COUNT is never rendered as a percentage.
+        self.assertNotIn("128%", json.dumps(card, ensure_ascii=False))
+
+    def test_no_column_carries_the_erroneous_corner_radius(self):
+        # larksuite/cli #2371: `column.corner_radius` is not a field of `column`
+        # and makes Card 2.0 answer `200621 unknown property`.
+        card = card_period.render_period_card(
+            self._model(tokyo=[self._reading("CPU", "128")]))
+
+        def walk(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "column":
+                    self.assertNotIn("corner_radius", node)
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(card["body"])
+
+    def test_the_header_wears_an_icon_and_status_tags(self):
+        model = self._model(tokyo=[self._reading("CPU", "128")],
+                            extras=[self._unknown()])
+        header = card_period.render_period_card(model)["header"]
+        self.assertEqual(header["icon"]["tag"], "standard_icon")
+        self.assertTrue(header["icon"]["token"])
+        tags = header["text_tag_list"]
+        self.assertTrue(1 <= len(tags) <= 3)
+        self.assertEqual(tags[0]["tag"], "text_tag")
+        self.assertIn("已采集", tags[0]["text"]["content"])
+
+    def test_the_card_is_a_valid_native_document(self):
+        model = self._model(tokyo=[self._reading("CPU", "128")],
+                            extras=[self._unknown()])
+        card = card_period.render_period_card(model)
+        self.assertEqual(card["schema"], "2.0")
+        ids = []
+        monitor._walk_element_ids(card, ids)
+        self.assertEqual(len(ids), len(set(ids)))
+        for eid in ids:
+            self.assertLessEqual(len(eid), 20)
+            self.assertTrue(eid[:1].isalpha())
+        self.assertLessEqual(card_period._element_count(card["body"]) + 1,
+                             card_period._NATIVE_MAX_ELEMENTS)
 
 
 class TheRowKeepsOnlyWhatItNames(unittest.TestCase):
