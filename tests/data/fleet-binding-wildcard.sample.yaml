@@ -1,0 +1,62 @@
+# The OLD shape of a Fleet binding, before the named-grant migration.
+#
+# This is a FIXTURE. Every value is a placeholder or a path to a file that does
+# not exist here; none of it is a real identifier, endpoint, token or machine.
+# It reproduces only the STRUCTURE the measured live binding has
+# (`fleet/release-plan-owner-grant.md` §1, 2026-10-13):
+#
+#   * three company devices with `allow_send: true` and no create/control flag
+#   * a personal device, which the registry declares `ownership: personal`
+#   * `policy.send_allow: ['*']` with `allow_wildcard_send: true`
+#   * no `policy.operator_grants` at all
+#
+# It exists so the migration preflight can be exercised against a binding that
+# is refused by this branch's loader, without anyone pointing it at a real one.
+schema: serveros/fleet-mcp.local/v1
+
+device_ref: device:tokyo-fleet-host
+
+auth:
+  pat_anchor: ~/.config/serveros-fleet-mcp/pat.token
+  oauth_enabled: true
+
+server:
+  bind: 127.0.0.1
+  port: 3401
+  mcp_path: /mcp
+
+registry_path: fleet/registry.yaml
+
+providers:
+  device:work-fj:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3402
+    credential_anchor: ~/.config/serveros-fleet-mcp/work-fj.secret
+    note: company Windows workstation
+    allow_send: true
+
+  device:tokyo-shared-dev-01:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3403
+    credential_anchor: ~/.config/serveros-fleet-mcp/tokyo-shared-dev-01.secret
+    note: company shared development host
+    allow_send: true
+
+  device:llm-lab-dell:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3404
+    credential_anchor: ~/.config/serveros-fleet-mcp/llm-lab-dell.secret
+    note: company GPU node; the second runtime is not deployed
+    allow_send: true
+
+  device:personal-dell:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3405
+    credential_anchor: ~/.config/serveros-fleet-mcp/personal-dell.secret
+    note: personal machine, in the registry as ownership=personal
+    allow_send: true
+
+policy:
+  send_allow:
+    - "*"
+  allow_wildcard_send: true

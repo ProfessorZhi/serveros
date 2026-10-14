@@ -1,0 +1,51 @@
+# The NEW shape of a Fleet binding, after the named-grant migration.
+#
+# A FIXTURE. The principal below is a placeholder, not a real client id; there
+# is no token, endpoint or machine here. It reproduces the shape the migration
+# aims at, so the preflight can be shown to report a FINISHED migration as
+# finished instead of asking for work that is already done.
+#
+# The shape is the one `fleet/owner-grant-3devices.md` §3 describes: a named
+# `operator_grants` table with the devices written out individually, and no
+# wildcard anywhere.
+schema: serveros/fleet-mcp.local/v1
+
+device_ref: device:tokyo-fleet-host
+
+auth:
+  pat_anchor: ~/.config/serveros-fleet-mcp/pat.token
+  oauth_enabled: true
+  grantable_scopes: [fleet:read, fleet:send]
+
+server:
+  bind: 127.0.0.1
+  port: 3401
+  mcp_path: /mcp
+
+registry_path: fleet/registry.yaml
+
+providers:
+  device:work-fj:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3402
+    credential_anchor: ~/.config/serveros-fleet-mcp/work-fj.secret
+    allow_send: true
+
+  device:tokyo-shared-dev-01:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3403
+    credential_anchor: ~/.config/serveros-fleet-mcp/tokyo-shared-dev-01.secret
+    allow_send: true
+
+  device:llm-lab-dell:
+    kind: fleet-node
+    endpoint: http://127.0.0.1:3404
+    credential_anchor: ~/.config/serveros-fleet-mcp/llm-lab-dell.secret
+    allow_send: true
+
+policy:
+  operator_grants:
+    "<PRINCIPAL>":
+      device:work-fj: [send]
+      device:tokyo-shared-dev-01: [send]
+      device:llm-lab-dell: [send]
