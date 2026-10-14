@@ -36,6 +36,13 @@ or a `mcp.json` anywhere, or an `extensions` block asking for one. The refusal
 is the point: a packaging bug here would put an unreviewed network surface in
 front of a client under a manifest that says "instruction-only".
 
+Read against the specification, `mcp.json` is the specified way to attach a
+server rather than a stray file, so refusing it is the strongest form of the
+claim: this package is instruction-only *and* the one file that would change
+that is blocked at the builder. `MCP-INTEGRATION.md` quotes the rules and names
+what is still UNKNOWN; the manifest cannot carry the binding either, because the
+schema's `additionalProperties: false` rejects `mcpServers` outright.
+
 What ships, and why the member set is a declaration
 ---------------------------------------------------
 The archive contains exactly `plugin.json`, `icon.svg`, `README.md` and
@@ -66,6 +73,21 @@ from pathlib import Path
 
 #: Names that would declare a live MCP/App surface. Their presence makes this
 #: artifact something other than instruction-only, which is a different review.
+#:
+#: The three are not the same kind of thing, and the difference matters to
+#: anyone reading a refusal:
+#:
+#:   `mcp.json`   the Agent Plugins 1.0.0 specification's OWN fixed location for
+#:                a portable MCP binding ("MCP servers — `mcp.json`"). Refusing
+#:                it is not refusing an odd file; it is refusing the specified
+#:                way to attach a server, which is why adding one has to be a
+#:                reviewed change to this list and not a packaging side effect.
+#:   `.mcp.json`  this repository's Claude/Codex convention — `scripts/build.py`
+#:                emits it for the Native plugin, which is a different release.
+#:   `.app.json`  not named by the specification at all. Refused as an
+#:                unlisted component rather than as a known one.
+#:
+#: See `MCP-INTEGRATION.md` for the quoted rules and for what remains UNKNOWN.
 LIVE_SURFACE_NAMES = frozenset({".app.json", ".mcp.json", "mcp.json"})
 
 #: The payload, named exhaustively. The archive is what a client loads, so the

@@ -64,14 +64,25 @@ because it builds into a scratch directory where none of that exists yet.
 
 `icon.svg`, shipped as a file.
 
-The 1.0.0 manifest schema defines **no** `icon` property and sets
-`additionalProperties: false` at the root, so an `icon` key is refused by a
-conforming client. That was read from the published schema, not inferred. The
-icon is therefore declared under the schema's `extensions` namespace
-(`com.serveros.fleet-next.icon`) and shipped as a file, and **whether any client
-reads either declaration is UNVERIFIED.** If the client requires a raster icon
-at a specific size, that is a build step with a pinned renderer and has not been
-done here.
+**Neither the 1.0.0 manifest schema nor the specification defines an icon.**
+The schema's property list is closed (`additionalProperties: false`), so an
+`icon` key is refused by a conforming client; the specification names no icon
+filename, format or dimension anywhere. Both were read from the published
+documents, not inferred. The icon is therefore declared under the schema's
+`extensions` namespace (`com.serveros.fleet-next.icon`) and shipped as a file,
+and **whether any client reads either declaration is UNVERIFIED.** If the client
+requires a raster icon at a specific size, that is a build step with a pinned
+renderer and has not been done here.
+
+## Attaching a live MCP
+
+`MCP-INTEGRATION.md` covers this in full. In short: a portable binding goes in
+a **separate root file, `mcp.json`** — the specification's own fixed location —
+and not in the manifest, which cannot carry it. An OAuth-carrying or app-backed
+binding is not expressible in v1 at all. This package ships neither, and
+`build_zip.py` refuses `mcp.json`, so adding a binding is a reviewed change
+rather than a packaging side effect.
+
 
 ## Updating the same plugin ID
 
