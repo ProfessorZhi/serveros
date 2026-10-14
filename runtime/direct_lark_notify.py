@@ -59,19 +59,23 @@ IDENTITY_ENV = "SERVEROS_ALERT_IDENTITY"
 
 
 def _transport():
-    """`runtime/message_transport.py`, loaded once under the name it is looked
-    up by. Cached BEFORE execution so a caller that pre-registered the module
-    (a test standing in for the CLI) gets the same object and not a second copy
-    — one file under two names is two classes, the hazard the tree's other
-    loaders document."""
-    cached = sys.modules.get("serveros_runtime_message_transport")
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(
-        "serveros_runtime_message_transport", _HERE / "message_transport.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["serveros_runtime_message_transport"] = module
-    spec.loader.exec_module(module)
+    """`runtime/message_transport.py`, registered only when the name is free.
+
+    Read the cache BEFORE writing to it, and write only on the path where the
+    name is still missing — the `sys.modules.get(...)`-then-`is None` shape the
+    tree's own loader gate requires (`tests/test_loader_identity.py`). The reason
+    is the one every sibling loader records: nothing here imports by package
+    name, so `sys.modules` is shared, and a loader that registered
+    unconditionally would take a name another loader already used and leave its
+    readers with two copies of every class in the file.
+    """
+    module = sys.modules.get("serveros_runtime_message_transport")
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "serveros_runtime_message_transport", _HERE / "message_transport.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["serveros_runtime_message_transport"] = module
+        spec.loader.exec_module(module)
     return module
 
 

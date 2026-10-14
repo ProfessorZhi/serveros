@@ -185,14 +185,22 @@ class TheDeliveryWorkerTranslatesWhatTheTransportSaid(unittest.TestCase):
             Path(directory.name) / "state" / "alerts.json")
         self.daemon, self.rpcs = fake_daemon(self.store)
         self._real_ask = cli_mod.ask_daemon
+        self._real_provider = cli_mod._alert_provider
         cli_mod.ask_daemon = self.daemon
         self.addCleanup(self._restore)
         self.alert = self._open()
 
     def _restore(self):
         cli_mod.ask_daemon = self._real_ask
-        if hasattr(cli_mod, "_alert_provider"):
-            del cli_mod._alert_provider
+        # RESTORE the original, do not `del` the attribute. `_alert_provider`
+        # here is a module-level FUNCTION and not a patch on one, so deleting it
+        # does not undo this fixture's shadow — it removes the real function and
+        # leaves an AttributeError for every later caller in the same run. The
+        # bug was latent until a second test in the suite called
+        # `_alert_provider()` after this file had run
+        # (`test_direct_lark_notify.py::AlertProviderSelectionTest`); `del` was
+        # never the right inverse of assigning a module attribute.
+        cli_mod._alert_provider = self._real_provider
 
     def _open(self):
         alerting.evaluate(
