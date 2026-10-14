@@ -10,6 +10,7 @@ which calls are refused, given a session reference and a principal.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -21,13 +22,16 @@ if str(ROOT) not in sys.path:
 
 from fleet_mcp import node_protocol as np                       # noqa: E402
 from fleet_mcp import runtime_identity                           # noqa: E402
+from fleet_mcp import tools as fleet_tools                      # noqa: E402
 from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,   # noqa: E402
                               PolicyBinding, ProviderBinding, ServerBinding,
                               provider_key)
-from fleet_mcp.errors import UNKNOWN_DEVICE, FleetRefusal        # noqa: E402
+from fleet_mcp.errors import (BAD_REQUEST, PROVIDER_UNREACHABLE,   # noqa: E402
+                              UNKNOWN_DEVICE, FleetRefusal, refuse)
 from fleet_mcp.fleet import (SCOPE_READ, SCOPE_SEND, FleetService,   # noqa: E402
                              Principal)
 from fleet_mcp.identity import SessionKey                        # noqa: E402
+from fleet_mcp.providers.base import SessionSummary               # noqa: E402
 
 DEVICE = "device:llm-lab-dell"
 OWNER = "vince"
@@ -52,13 +56,21 @@ def _registry(tmp: Path, owner: str = "company") -> Path:
 
 
 class _Provider:
-    """A device that records what it was asked and which endpoint it is."""
+    """A device that records what it was asked and which endpoint it is.
+
+    `native_ids` is what this runtime will report, and the SAME id under two
+    runtimes is the case the whole scheme exists for — so the default is one
+    shared id and the two runtimes therefore look, to a careless listing, like
+    two rows that ought to be collapsed. They are not, and that is asserted.
+    """
 
     kind = "fleet-node"
 
-    def __init__(self, ref: str, runtime: str):
+    def __init__(self, ref: str, runtime: str, *, native_ids=(UUID,)):
         self.device_ref = ref
         self.runtime = runtime
+        self.native_ids = tuple(native_ids)
+        self.answers = True
         self.calls: list = []
 
     def get_session(self, key):
@@ -70,8 +82,23 @@ class _Provider:
         return {"ok": True, "tool": tool}
 
     def list_sessions(self, *, limit, project=None, state=None):
-        self.calls.append(("list_sessions", limit))
-        return [{"served_by": self.runtime}]
+        self.calls.append(("list_sessions", limit, project, state))
+        if not self.answers:
+            raise refuse(PROVIDER_UNREACHABLE, f"{self.runtime} did not answer")
+        return [self._summary(native_id) for native_id in self.native_ids[:limit]]
+
+    def _summary(self, native_id: str) -> SessionSummary:
+        return SessionSummary(
+            key=SessionKey(self.device_ref, self.runtime, native_id),
+            title=f"{self.runtime}:{native_id}",
+            classification="MANAGED_IDLE",
+            running=False,
+            resident_host=False,
+            host_state=None,
+            lifecycle_mode=None,
+            project_id=None,
+            last_activity={"iso": "2026-10-14T00:00:00Z"},
+        )
 
     def health(self):
         raise AssertionError("not used here")
@@ -81,7 +108,8 @@ class TwoRuntimes:
     """One device, one or two bindings, and the fake providers behind them."""
 
     def __init__(self, tmp: Path, *, owner: str = "company", second: bool = True,
-                 grants=None, enabled_second: bool = True):
+                 grants=None, enabled_second: bool = True, first: bool = True,
+                 first_ids=(UUID,), second_ids=(UUID,)):
         self.tmp = tmp
         first_anchor = tmp / "vince.node-secret"
         first_anchor.write_text("vince-secret", encoding="utf-8")
@@ -89,12 +117,12 @@ class TwoRuntimes:
         second_anchor.write_text("fjd-secret", encoding="utf-8")
         self.registry = _registry(tmp, owner)
 
-        providers = {
-            DEVICE: ProviderBinding(
+        providers = {}
+        if first:
+            providers[DEVICE] = ProviderBinding(
                 device_ref=DEVICE, kind="fleet-node",
                 endpoint="http://127.0.0.1:7301", credential_anchor=first_anchor,
-                runtime="claude", allow_send=True, allow_control=True),
-        }
+                runtime="claude", allow_send=True, allow_control=True)
         if second:
             providers[provider_key(DEVICE, SECOND)] = ProviderBinding(
                 device_ref=DEVICE, kind="fleet-node",
@@ -110,9 +138,11 @@ class TwoRuntimes:
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
         )
 
-        self.first = _Provider(DEVICE, "claude")
-        self.second = _Provider(DEVICE, SECOND) if second else None
-        instances = {provider_key(DEVICE, "claude"): self.first}
+        self.first = _Provider(DEVICE, "claude", native_ids=first_ids) if first else None
+        self.second = _Provider(DEVICE, SECOND, native_ids=second_ids) if second else None
+        instances = {}
+        if first:
+            instances[provider_key(DEVICE, "claude")] = self.first
         if second and enabled_second:
             # A runtime that is not answering has no route: that is what makes
             # it offline rather than silently served by the binding beside it.
@@ -124,6 +154,10 @@ class TwoRuntimes:
     def principal(self, *scopes, name="oauth:test") -> Principal:
         return Principal(name=name, scopes=frozenset(scopes or (SCOPE_READ, SCOPE_SEND)),
                          credential_kind="oauth")
+
+    def rows(self, response: dict, runtime: str | None = None) -> list[dict]:
+        """The rows one runtime's listing contributed, in returned order."""
+        return [r for r in response["sessions"] if runtime is None or r["runtime"] == runtime]
 
 
 class TheSameUuidUnderTwoRuntimesIsTwoSessionsTest(unittest.TestCase):
@@ -409,6 +443,326 @@ class TheServedSurfaceIsUnchangedTest(unittest.TestCase):
             described = h.config.describe()["providers"]
             self.assertEqual(list(described), [DEVICE])
             self.assertEqual(described[DEVICE]["runtime"], "claude")
+
+
+class ListingWalksTheDeviceAndTheRuntimeTest(unittest.TestCase):
+    """`fleet_list_sessions` walks `device × runtime`, not `device`.
+
+    The failure this class exists against: an operator asks for everything on a
+    machine that serves two runtimes and gets one of them, with nothing in the
+    answer saying so. A listing that is silently one runtime short is worse than
+    one that is visibly short, because the second is a fact and the first is a
+    fact wearing the clothes of a complete answer.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_the_default_is_the_devices_own_runtime_and_nothing_else(self):
+        """Every caller written before a device could serve two. The default is
+        not a new behaviour with a compatibility story — it is the old behaviour
+        with a name, and this pins that the second runtime is NOT swept in."""
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal())
+        self.assertEqual(got["total"], 1)
+        self.assertEqual([r["runtime"] for r in got["sessions"]], ["claude"])
+        self.assertEqual(got["runtimes_queried"], [DEVICE])
+        self.assertEqual(h.second.calls, [], "the second runtime was not asked")
+
+    def test_base_spelled_out_is_the_same_as_omitting_it(self):
+        h = TwoRuntimes(self.tmp)
+        omitted = h.service.list_sessions(h.principal())
+        spelled = h.service.list_sessions(h.principal(), runtime="base")
+        self.assertEqual(omitted, spelled)
+
+    def test_all_lists_every_bound_runtime_and_asks_each_one(self):
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        self.assertEqual(got["runtimes_queried"], [DEVICE, provider_key(DEVICE, SECOND)])
+        self.assertEqual(got["sessions_per_runtime"],
+                         {DEVICE: 1, provider_key(DEVICE, SECOND): 1})
+        self.assertEqual([c[0] for c in h.first.calls], ["list_sessions"])
+        self.assertEqual([c[0] for c in h.second.calls], ["list_sessions"])
+
+    def test_the_two_spellings_of_all_select_the_same_set(self):
+        h = TwoRuntimes(self.tmp)
+        self.assertEqual(h.service.list_sessions(h.principal(), runtime="all"),
+                         h.service.list_sessions(h.principal(), runtime="*"))
+
+    def test_a_precise_tag_lists_exactly_that_runtime(self):
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal(), runtime=SECOND)
+        self.assertEqual(got["total"], 1)
+        self.assertEqual(got["runtimes_queried"], [provider_key(DEVICE, SECOND)])
+        self.assertEqual(h.first.calls, [], "the base runtime was not asked")
+
+    def test_every_row_says_which_runtime_it_came_from(self):
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        for row in got["sessions"]:
+            with self.subTest(ref=row["session_ref"]):
+                # `provider` in a session ref IS the runtime tag; `runtime` is the
+                # same fact under a name that cannot be mistaken for the CloudCLI
+                # agent family that `create_session`'s `provider` means.
+                self.assertEqual(row["runtime"], row["provider"])
+                self.assertEqual(SessionKey.parse(row["session_ref"]).provider,
+                                 row["runtime"])
+
+    def test_the_limit_is_per_runtime_not_per_device(self):
+        """A two-runtime machine is two listings, so a `limit` of 1 is not a
+        device-wide budget of 1. Reporting the per-runtime counts is what lets a
+        caller tell a full page from an empty runtime."""
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal(), runtime="all", limit=5)
+        self.assertEqual([c[1] for c in h.first.calls], [5])
+        self.assertEqual([c[1] for c in h.second.calls], [5])
+        self.assertEqual(got["sessions_per_runtime"],
+                         {DEVICE: 1, provider_key(DEVICE, SECOND): 1})
+
+    def test_a_filter_reaches_every_runtime(self):
+        h = TwoRuntimes(self.tmp)
+        h.service.list_sessions(h.principal(), runtime="all", project="p1", state="idle")
+        for provider in (h.first, h.second):
+            with self.subTest(runtime=provider.runtime):
+                self.assertEqual(provider.calls, [("list_sessions", 20, "p1", "idle")])
+
+
+class TheSameUuidUnderTwoRuntimesIsNotADuplicateTest(unittest.TestCase):
+    """Two rows sharing a native id are two sessions, and must not be collapsed.
+
+    Both fake runtimes report the SAME native id, which is the case the triple
+    exists for. A listing that deduplicated on the native id — or on the title,
+    or on anything but the triple — would drop a live session and report the
+    result as complete.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_both_rows_come_back_and_they_are_different_sessions(self):
+        h = TwoRuntimes(self.tmp)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        self.assertEqual(got["total"], 2)
+        self.assertEqual({r["session_ref"] for r in got["sessions"]}, {OWNER_REF, SECOND_REF})
+        self.assertEqual({r["native_session_id"] for r in got["sessions"]}, {UUID})
+        self.assertEqual(len({r["session_ref"] for r in got["sessions"]}), 2)
+
+    def test_each_row_is_controlled_against_its_own_runtime(self):
+        """Cross-UID, fail-closed. A principal granted `send` on the device's own
+        runtime holds nothing on the second: the grant is looked up under the
+        second runtime's own key, finds nothing, and the row says so rather than
+        inheriting the grant beside it."""
+        h = TwoRuntimes(self.tmp, grants={"oauth:test": {DEVICE: ["send"]}})
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        by_ref = {r["session_ref"]: r for r in got["sessions"]}
+        self.assertTrue(by_ref[OWNER_REF]["control_allowed"]["send_allowed"])
+        self.assertFalse(by_ref[SECOND_REF]["control_allowed"]["send_allowed"])
+        self.assertEqual(by_ref[SECOND_REF]["control_allowed"]["operator_grant_verbs"], [])
+
+    def test_a_grant_on_the_second_runtime_does_not_admit_the_first(self):
+        h = TwoRuntimes(self.tmp, grants={
+            "oauth:test": {provider_key(DEVICE, SECOND): ["send"]}})
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        by_ref = {r["session_ref"]: r for r in got["sessions"]}
+        self.assertFalse(by_ref[OWNER_REF]["control_allowed"]["send_allowed"])
+        self.assertTrue(by_ref[SECOND_REF]["control_allowed"]["send_allowed"])
+
+    def test_a_personal_devices_rows_are_admitted_on_neither_runtime(self):
+        h = TwoRuntimes(self.tmp, owner="personal", grants={
+            "oauth:test": {DEVICE: ["send"], provider_key(DEVICE, SECOND): ["send"]}})
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        for row in got["sessions"]:
+            with self.subTest(ref=row["session_ref"]):
+                self.assertFalse(row["control_allowed"]["send_allowed"])
+
+
+class OneUnreachableRuntimeIsAGapNotAnAbsenceTest(unittest.TestCase):
+    """Partial results, stated as partial.
+
+    A runtime that did not answer and a runtime with nothing to report are
+    different facts with different remedies, and a listing that returned `[]` for
+    both would make the first look like the second.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_silent_second_runtime_still_returns_the_first_ones_rows(self):
+        h = TwoRuntimes(self.tmp)
+        h.second.answers = False
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        self.assertEqual([r["runtime"] for r in got["sessions"]], ["claude"])
+        self.assertEqual(got["total"], 1)
+        self.assertEqual(len(got["devices_unreachable"]), 1)
+        self.assertEqual(got["devices_unreachable"][0]["runtime"], SECOND)
+        self.assertEqual(got["devices_unreachable"][0]["code"], PROVIDER_UNREACHABLE)
+
+    def test_the_gap_names_the_runtime_and_not_only_the_device(self):
+        """On a two-runtime machine 'the device is unreachable' cannot be true:
+        one runtime answered. An entry naming only the device would make the two
+        facts indistinguishable, which is the whole failure mode here."""
+        h = TwoRuntimes(self.tmp, second=True, enabled_second=False)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        gap = got["devices_unreachable"][0]
+        self.assertEqual(gap["device_ref"], DEVICE)
+        self.assertEqual(gap["runtime"], SECOND)
+        self.assertEqual(gap["provider_key"], provider_key(DEVICE, SECOND))
+        self.assertEqual(gap["provider_key"], f"{DEVICE}|{SECOND}")
+        self.assertIn("bound", gap["detail"])
+
+    def test_a_disabled_second_runtime_does_not_make_the_listing_a_refusal(self):
+        h = TwoRuntimes(self.tmp, second=True, enabled_second=False)
+        got = h.service.list_sessions(h.principal(), runtime="all")
+        self.assertEqual(got["total"], 1)
+        self.assertEqual(got["sessions"][0]["runtime"], "claude")
+
+    def test_a_legal_tag_with_nothing_behind_it_is_a_gap_not_a_refusal(self):
+        h = TwoRuntimes(self.tmp, second=False)
+        got = h.service.list_sessions(h.principal(), runtime=SECOND)
+        self.assertEqual(got["sessions"], [])
+        self.assertEqual([g["runtime"] for g in got["devices_unreachable"]], [SECOND])
+        self.assertEqual(got["runtimes_queried"], [provider_key(DEVICE, SECOND)])
+
+    def test_the_default_does_not_fall_back_to_the_only_runtime_there_is(self):
+        """A machine whose only binding is the second runtime. The default asks
+        for the device's OWN runtime, finds no route, and says so — it does not
+        quietly answer with the runtime that does exist."""
+        h = TwoRuntimes(self.tmp, first=False, second=True)
+        got = h.service.list_sessions(h.principal())
+        self.assertEqual(got["sessions"], [])
+        self.assertEqual([g["runtime"] for g in got["devices_unreachable"]], ["claude"])
+        self.assertEqual(got["runtimes_queried"], [DEVICE])
+
+    def test_the_audit_record_carries_the_runtime_too(self):
+        h = TwoRuntimes(self.tmp, second=True, enabled_second=False)
+        h.service.list_sessions(h.principal(), runtime="all")
+        records = [json.loads(line) for line in
+                   (self.tmp / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+        listing = [r for r in records if r.get("event") == "fleet.list_sessions"][-1]
+        self.assertEqual(listing["runtimes"], 2)
+        self.assertEqual(listing["unreachable"], [provider_key(DEVICE, SECOND)])
+
+
+class TheSelectorIsNotATagTest(unittest.TestCase):
+    """`all` is a legal provider name, so 'the selectors are not tags' cannot be
+    left to nobody having tried it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_the_selectors_are_reserved_in_the_naming_authority(self):
+        self.assertEqual(runtime_identity.SELECTORS, ("all", "*", "base"))
+        for s in runtime_identity.SELECTORS:
+            with self.subTest(selector=s):
+                self.assertTrue(runtime_identity.is_a_selector(s))
+        for tag in ("claude", "claude-fjd", "claude-all", "all-fjd"):
+            with self.subTest(tag=tag):
+                self.assertFalse(runtime_identity.is_a_selector(tag))
+
+    def test_a_binding_cannot_be_filed_under_a_selector(self):
+        from fleet_mcp.config import load_config
+        for selector in ("all", "base"):
+            with self.subTest(selector=selector):
+                path = self.tmp / f"config-{selector}.yaml"
+                path.write_text(
+                    "providers:\n"
+                    f"  device:llm-lab-dell|{selector}:\n"
+                    "    kind: fleet-node\n"
+                    "    endpoint: http://127.0.0.1:7302\n"
+                    "    credential_anchor: /dev/null\n",
+                    encoding="utf-8")
+                with self.assertRaises(FleetRefusal) as caught:
+                    load_config(path)
+                self.assertEqual(caught.exception.code, BAD_REQUEST)
+
+    def test_an_illegal_runtime_name_is_refused_rather_than_searched_for(self):
+        h = TwoRuntimes(self.tmp)
+        for bad in ("FJD", "claude fjd", "-fjd", "9fjd", ""):
+            with self.subTest(runtime=bad):
+                with self.assertRaises(FleetRefusal) as caught:
+                    h.service.list_sessions(h.principal(), runtime=bad)
+                self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.first.calls, [])
+
+    def test_a_selector_never_reaches_a_provider(self):
+        h = TwoRuntimes(self.tmp)
+        h.service.list_sessions(h.principal(), runtime="all")
+        for provider in (h.first, h.second):
+            for call in provider.calls:
+                with self.subTest(runtime=provider.runtime):
+                    self.assertNotIn(call[0], runtime_identity.SELECTORS)
+
+
+class TheToolSurfaceCarriesTheSelectorTest(unittest.TestCase):
+    """The parameter has to be reachable from the schema or it does not exist."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _tool(self):
+        return next(t for t in fleet_tools.SERVED_TOOLS
+                    if t.name == "fleet_list_sessions")
+
+    def test_runtime_is_declared_and_optional(self):
+        schema = self._tool().input_schema
+        self.assertIn("runtime", schema["properties"])
+        self.assertNotIn("runtime", schema.get("required", []))
+        self.assertIs(schema["additionalProperties"], False)
+
+    def test_the_schema_does_not_call_the_runtime_a_provider_family(self):
+        described = self._tool().input_schema["properties"]["runtime"]["description"]
+        self.assertIn("runtime", described)
+        self.assertIn("agent family", described)
+
+    def _call(self, h: TwoRuntimes, arguments: dict):
+        result = fleet_tools.call_tool(
+            fleet_tools.ToolContext(service=h.service, principal=h.principal()),
+            "fleet_list_sessions", arguments)
+        self.assertIs(result["isError"], False, result.get("structuredContent"))
+        return result["structuredContent"]
+
+    def test_the_handler_forwards_it(self):
+        both = self._call(TwoRuntimes(self.tmp), {"runtime": "all"})
+        self.assertEqual(both["total"], 2)
+        self.assertEqual(sorted(both["sessions_per_runtime"]),
+                         sorted([DEVICE, provider_key(DEVICE, SECOND)]))
+
+    def test_the_default_ask_still_reaches_only_the_base_runtime(self):
+        """Called with no `runtime` at all, which is how every caller that
+        predates this parameter calls it."""
+        h = TwoRuntimes(self.tmp)
+        legacy = self._call(h, {})
+        self.assertEqual(legacy["total"], 1)
+        self.assertEqual([r["runtime"] for r in legacy["sessions"]], ["claude"])
+        self.assertEqual(h.second.calls, [])
+
+    def test_a_bad_selector_comes_back_as_a_typed_refusal_not_a_traceback(self):
+        h = TwoRuntimes(self.tmp)
+        result = fleet_tools.call_tool(
+            fleet_tools.ToolContext(service=h.service, principal=h.principal()),
+            "fleet_list_sessions", {"runtime": "FJD"})
+        self.assertIs(result["isError"], True)
+        self.assertEqual(result["structuredContent"]["code"], BAD_REQUEST)
 
 
 if __name__ == "__main__":
