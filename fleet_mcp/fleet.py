@@ -371,28 +371,39 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
-    def _may_control(self, key: SessionKey) -> None:
+    def _may_control(self, principal: Principal, key: SessionKey) -> None:
         """The single place this runtime decides whether a run may be stopped.
 
-        Two gates, both on this side, and both closed by default:
+        Three gates, all on this side, and all closed by default:
 
         *   **the device**, `allow_control` on its binding — may this runtime
             stop runs on that machine at all;
+        *   **the principal**, the `control` operator grant for this credential
+            on this device — may *this* caller stop anything there;
         *   **the session**, `policy.control_allow` — and, given the first, this
             one run in particular.
 
-        They are separate from the send grants rather than shared with them.
+        The middle gate is what makes a session a caller just created usable
+        without a second, manual edit. Before it, control was granted only by
+        naming each session in `policy.control_allow`, so every newly minted
+        session had to be added there by hand before it could be stopped — which
+        is a floor nobody keeps up, and a floor that is not maintained is one
+        that gets widened to `*` instead. `_operator_grant_verbs` matches the
+        principal, the device and the verb, and returns `()` unless the device is
+        `ownership: company`, so this arm cannot reach a personal machine and a
+        grant written for one is inert. It grants nothing by default: a principal
+        with no entry still holds nothing, and the device flag and the per-session
+        list are both still checked.
+
+        The three are separate from the send grants rather than shared with them.
         Delivering a message and ending the work it started are different
         questions, and an operator who answered the first has not answered the
         second; folding them would make "may write, may not stop" unexpressible.
 
-        **Integration point.** This method is the one seam a device-wide owner
-        grant for control is meant to plug into — a floor that answers "this
-        operator may stop *any* run on this device" would widen the device arm
-        here and leave the session arm alone. It is deliberately one method with
-        one caller so that lands as an edit in a single place rather than as
-        conditions scattered through the verb. Nothing in this revision
-        implements that floor; the node connector has its own, separately.
+        Every control verb on this surface — `fleet_interrupt_session` and the
+        mirrored `session_interrupt` / `session_close` / `session_reconfigure` /
+        `session_background`'s stop branch — reaches this one method, so they
+        cannot disagree about who may stop what.
         """
         binding = self.config.provider_for(key.device_ref)
         if binding is None or not binding.allow_control:
@@ -404,14 +415,44 @@ class FleetService:
                 f"`policy.control_allow` — never by the caller naming a session "
                 f"id, and never as a side effect of the send grants.",
             )
+        if "control" in self._operator_grant_verbs(principal, key.device_ref):
+            self.audit.record_grant(
+                event="fleet.grant",
+                principal=principal.name,
+                device_ref=key.device_ref,
+                verb="control",
+                decision="allowed",
+                grant_reason="operator-grant",
+                session_ref=key.ref,
+            )
+            return
         allow = self.config.policy.control_allow
         if self.config.policy.allow_wildcard_control and "*" in allow:
             return
         if key.ref not in allow:
+            granted_here = (
+                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
+            )
+            if granted_here:
+                self.audit.record_grant(
+                    event="fleet.grant",
+                    principal=principal.name,
+                    device_ref=key.device_ref,
+                    verb="control",
+                    decision="refused",
+                    grant_reason="device-not-eligible",
+                    session_ref=key.ref,
+                )
             raise refuse(
                 APPROVAL_REQUIRED,
-                f"{key.ref} is not in `policy.control_allow`. The device is "
-                f"authorized for control and this session is not.",
+                f"{key.ref} is not in `policy.control_allow`, and "
+                f"{principal.name!r} holds no `control` grant for "
+                f"{key.device_ref}"
+                + (" — the grant the operator wrote for this device does name "
+                   "verbs, but this device is not one the organization owns, so "
+                   "the grant is inert here rather than narrowed."
+                   if granted_here else "")
+                + ". The device is authorized for control and this session is not.",
                 session_ref=key.ref,
                 allowed=sorted(allow),
             )
@@ -906,7 +947,7 @@ class FleetService:
         """
         principal.require(SCOPE_CONTROL)
         self.admit(principal)
-        self._may_control(key)
+        self._may_control(principal, key)
 
         provider = self._require_provider(key.device_ref)
         payload = provider.interrupt(key)
@@ -1452,7 +1493,7 @@ class FleetService:
                 # `send` grant before the `navigate` grant is even consulted.
                 self._may_send(principal, key)
             else:
-                self._may_control(key)
+                self._may_control(principal, key)
                 self._require_operator_verb(principal, device_ref, "control", native)
                 # The model/mode ceiling for a reconfigure is applied in
                 # `native_call`, AFTER the provider is resolved, because it must
@@ -1486,6 +1527,16 @@ class FleetService:
             got = arguments.get("session")
             if got is not None:
                 self._same_identity(arguments, "session", key.native_session_id, native)
+            # The SESSION floor, before the device-level `approve` grant is even
+            # read. Without it the device arm was the whole check: a principal
+            # holding `approve` for a machine could answer an approval raised in
+            # ANY session on it, which on a shared company workstation means
+            # answering someone else's request with a `allow`/`deny` the owner of
+            # that session never gave. It reuses `_may_send` because the question
+            # is the same one — "may this caller address this session on this
+            # device" — and answering a request and sending a message are both
+            # addressed to a session rather than to a device.
+            self._may_send(principal, key)
             self._native_approval(arguments, native)
             self._require_operator_verb(principal, device_ref, "approve", native)
             return
