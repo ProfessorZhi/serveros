@@ -482,12 +482,14 @@ def test_profiles_are_not_required_to_be_isomorphic():
     """
     c = contract("profiles.yaml")
     profiles = c["profiles"]
-    # Four, not three, since `tokyo-shared-dev-01` was enrolled. Written out in
-    # full rather than counted, so that a profile appearing or disappearing
-    # shows up in a diff as a NAME -- a `len(...) == 4` here would report a
-    # substitution as nothing having happened.
+    # Five, not three, since `tokyo-shared-dev-01` and then `llm-lab-dell` were
+    # enrolled. Written out in full rather than counted, so that a profile
+    # appearing or disappearing shows up in a diff as a NAME -- a
+    # `len(...) == 4` here would report a substitution as nothing having
+    # happened.
     assert set(profiles) == {"linux-server", "windows-corporate",
-                             "windows-personal", "linux-shared-multiuser"}
+                             "windows-personal", "linux-shared-multiuser",
+                             "linux-gpu-compute"}
 
     bound = {
         name: {role for role, e in p["paths"].items() if e.get("state", "BOUND") == "BOUND"}

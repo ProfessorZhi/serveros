@@ -2,9 +2,9 @@
 #
 # Why a role vocabulary instead of "the paths we happen to have"
 # --------------------------------------------------------------
-# The three machines are not meant to converge on the same directories. They
-# are meant to converge on the same *questions*: where does source live, where
-# do toolchains live, where does evidence live, what is corporate knowledge.
+# The devices are not meant to converge on the same directories. They are
+# meant to converge on the same *questions*: where does source live, where do
+# toolchains live, where does evidence live, what is corporate knowledge.
 #
 # A profile answers those questions with physical paths that differ per device.
 # Anything that consumes a path asks for the ROLE. Nothing above this layer is
@@ -28,9 +28,11 @@ path_roles:
   # Added when the Agent Runtime contract needed to say where a runtime reads
   # its own configuration without naming a home directory. `~/.claude.json`,
   # `~/.codex/config.toml` and `~/.serveros` are all this role's business, and
-  # three devices have three different answers that are not a matter of taste:
-  # HOME on Linux, %USERPROFILE% on Windows, and on this fleet an actual
-  # difference in where the agent runtimes keep their config.
+  # the devices answer it differently as a fact about them rather than as a
+  # matter of taste: HOME on Linux, %USERPROFILE% on Windows, an actual
+  # difference in where the agent runtimes keep their config, and (since the
+  # Dell LLM Lab host was enrolled) two Linux profiles whose `home` bindings
+  # are `/home/<user>` and `/data/home/<user>` respectively.
   #
   # UNBOUND on both Windows profiles is the honest value and it is a finding,
   # not an omission: nobody has asserted where those machines keep it. A
@@ -65,7 +67,7 @@ path_roles:
   #
   # Declared here but bound on `linux-shared-multiuser` alone, and the asymmetry
   # is the honest shape rather than an omission -- profiles are not required to
-  # be isomorphic. On the other three devices nobody has looked, and this
+  # be isomorphic. On every other device nobody has looked, and this
   # vocabulary has no word for that: UNBOUND would assert the role applies and
   # is a gap, NOT_APPLICABLE would assert it does not apply, and neither has
   # been established there.
@@ -453,6 +455,127 @@ profiles:
           a user's files are. A profile that assumed the usual Linux answer
           would resolve every agent runtime's config root to a directory this
           user does not own.
+
+  # ---------------------------------------------------------------------------
+  # Dell LLM Lab: a company-owned GPU compute and development worker, enrolled
+  # 2026-10-12. Named for its SHAPE and not for the device -- `linux-server` is
+  # the same kind of name, and `fleet/registry.yaml` states the rule it obeys:
+  # a device NAMES a profile and does not carry one inline, so a profile name
+  # may not be a device id.
+  #
+  # Every binding below is `server_local_agent`, and not one of them is
+  # `user_reported`. The distinction is the `rules:` block's, and it is the one
+  # that matters when a value turns out to be wrong: a `user_reported` binding
+  # is a design input nobody has confirmed against the machine, and this
+  # profile holds none of those.
+  #
+  # A BOUND path here means the role resolves. It does not mean the directory
+  # is converged, or private to this user, or shared the way Tokyo's are: this
+  # is one account on a machine in a lab, and the tenancy rules for it belong
+  # to that machine rather than to this layer.
+  #
+  # `scratch` is deliberately ABSENT, and it is the one role this profile does
+  # not list. The declaration of `path_roles.scratch` above records why no
+  # profile binds it except `linux-shared-multiuser`: UNBOUND would assert the
+  # role applies on this machine and is a gap, NOT_APPLICABLE would assert it
+  # does not apply, and nobody has established either one here. Writing a key
+  # would be choosing between two answers on no evidence, and the chosen one
+  # would read exactly like an answer that was looked for and found.
+  #
+  # What this profile does NOT carry: a `volumes:` block, and the omission is
+  # deliberate rather than unfinished. Capacity was measured on this machine,
+  # and a capacity measurement is not a path role -- what holds it for a device
+  # is that device's own host profile, which is where the numbers are. A `'/':`
+  # written here would be a mount layout nobody read, placed in the fleet
+  # authority where the next reader would take it for one somebody did.
+  # ---------------------------------------------------------------------------
+  linux-gpu-compute:
+    device_ref: device:llm-lab-dell
+    platform: linux
+    paths:
+      data_root:
+        state: UNBOUND
+        provenance: server_local_agent
+        note: >-
+          UNBOUND for a structural reason rather than as a gap somebody has yet
+          to close: the roles below do not sit under one root. Source and
+          worktrees resolve under the home directory; toolchains resolve to
+          `~/.local/opt`. Any single value here would make
+          `{DATA_ROOT}/toolchains` resolve to a path that means nothing. The
+          two Windows profiles give this answer for the same reason -- separate
+          volumes there, separate trees here -- reached from the same question
+          rather than copied from them.
+      workspace.src:
+        path: /home/vince/projects
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          The directory source checkouts live in, bound the way
+          `windows-corporate` binds `D:\projects`: the parent, not one
+          checkout. The primary checkout inside it is `llm-lab-dev`. Binding a
+          single repository here would answer "where does source live" with the
+          name of one project, and the next checkout would have no role to
+          resolve through.
+      workspace.worktrees:
+        path: /home/vince/projects/worktrees
+        state: BOUND
+        provenance: server_local_agent
+      artifacts:
+        state: UNBOUND
+        provenance: server_local_agent
+      state:
+        state: UNBOUND
+        provenance: server_local_agent
+      toolchains:
+        path: /home/vince/.local/opt
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          User-level toolchains, under the home directory rather than under a
+          per-host toolchains root. Worth stating out loud because Beijing and
+          Tokyo both bind a `toolchains` directory OUTSIDE the home directory:
+          a reader who assumed the usual shape would resolve this role to a
+          path that does not exist on this machine, and would be right about
+          the pattern and wrong about the device.
+      runtime-assets:
+        state: UNBOUND
+        provenance: server_local_agent
+      downloads:
+        state: UNBOUND
+        provenance: server_local_agent
+      software.gui:
+        state: NOT_APPLICABLE
+        provenance: server_local_agent
+        note: >-
+          NOT_APPLICABLE rather than UNBOUND: this machine's role is a headless
+          compute and development worker, so the role has no meaning on it.
+          This is the same kind of claim `linux-shared-multiuser` makes about
+          itself, and it is falsifiable in the same way -- a desktop session
+          observed on the device would make this line wrong rather than merely
+          old.
+      knowledge.corporate:
+        state: UNBOUND
+        provenance: server_local_agent
+        note: >-
+          UNBOUND, and NOT NOT_APPLICABLE -- the distinction `windows-personal`
+          turns the other way. This device is company-owned and used for
+          company work, so the role plausibly applies and its path is simply
+          not known from here; a personal machine can say the role has no
+          meaning on it at all. Neither answer has been read off this machine,
+          so the one that keeps the question open is the one written down.
+      home:
+        path: /home/vince
+        state: BOUND
+        provenance: server_local_agent
+        note: >-
+          Note that this is `/home/vince`, which is Tokyo's answer inverted.
+          On `linux-shared-multiuser` the human homes are on the 4 TB data
+          volume and `/home/vince` is specifically where a user's files are
+          NOT; here `/home/vince` IS the home. The two Windows profiles say
+          nothing about this role at all -- UNBOUND, which is a gap and not a
+          different value -- so the pair of Linux answers is where this file's
+          point is visible: one role, two unrelated physical paths, and no
+          layer above allowed to know either literal.
 
 rules:
   - "A profile is selected by the device, not by the caller. Asking for a path

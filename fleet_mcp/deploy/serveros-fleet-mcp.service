@@ -1,0 +1,45 @@
+# ServerOS Fleet MCP — the off-host ingress to the fleet.
+#
+# A TEMPLATE, not a unit. @FLEET_MCP_RUNTIME@ and @FLEET_MCP_CONFIG@ are
+# rendered for THIS host by `fleet_mcp/deploy/install.py`. Installing this file
+# with the placeholders still in it produces a unit whose ExecStart names a
+# directory called `@FLEET_MCP_RUNTIME@`; systemd reports that as `203/EXEC`,
+# which is a service that exists and cannot start — harder to notice than one
+# that was never installed.
+
+[Unit]
+Description=ServerOS Fleet MCP (one MCP surface over the whole fleet)
+Documentation=file:@FLEET_MCP_RUNTIME@/fleet/fleet-mcp-contract.yaml
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Pinned rather than inherited: this host's `python3` is resolved through PATH
+# in a login shell, in a tmux session and in a unit with three different
+# answers. The launcher's shebang is `#!/usr/bin/env python3`, and this line is
+# what makes "which python3" a declared fact. PyYAML is the only import the
+# surface needs beyond the standard library, and the system one has it.
+Environment=PATH=/usr/bin:/bin
+ExecStart=@FLEET_MCP_RUNTIME@/fleet_mcp/bin/serveros-fleet-mcp --http --config @FLEET_MCP_CONFIG@
+Restart=on-failure
+RestartSec=30
+
+# No `Protect*`, no `ReadWritePaths=`. The binding, the owner token and the
+# audit log live under %h by design (`fleet_mcp/local_roots.py` refuses
+# `~/.serveros` and names where each one goes), so a sandbox here would hide the
+# files this service exists to read — and `serverosd.service` measured that
+# `ReadWritePaths=` alone puts the unit in a private user namespace and costs
+# visibility while granting nothing. The bound on this process is the credential
+# check in front of every tool, not systemd.
+UMask=0077
+NoNewPrivileges=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-fleet-mcp
+
+[Install]
+WantedBy=default.target

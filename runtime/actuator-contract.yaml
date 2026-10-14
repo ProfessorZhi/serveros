@@ -1569,3 +1569,169 @@ actuators:
       that a declaration layer running behind the code is the pathology.
     sites:
       - {file: context/trust_binding.py, symbols: [_write]}
+
+  # ---------------------------------------------------------------------
+  # The Fleet MCP ingress, which is the newest arrival here and the first
+  # thing in this tree that installs a unit of its own.
+  #
+  # Its subject is not "the product mutates the host" — it is narrower than
+  # that, and the narrowness is the reason these are eight rows and not one.
+  # A deploy tool changes the host on purpose, and every path below is a path
+  # this tool itself authored moments earlier: a staging directory inside its
+  # own composition root, the symlink it is swapping, the unit file it just
+  # rendered. None of them is a path a caller supplied, and the one argument
+  # that IS the operator's (`--runtime-root`) is expanded once, at the top,
+  # in `config`-style code the scanner already covers.
+  # ---------------------------------------------------------------------
+  - id: fleet-mcp-deploy-user-unit-control
+    kind: command_handoff
+    verb: "systemctl <verb>"
+    why: >-
+      `systemctl --user daemon-reload`, `start`, `stop` and
+      `disable --now <unit>`, all through the one `systemctl()` wrapper. It is
+      the installer's only handoff, and it stays inside this account: the
+      `--user` flag is written into the argv rather than passed in, so no
+      argument reaches the system manager, and there is no `systemctl` call
+      anywhere else in `fleet_mcp/`. The verbs are spelled at their call sites
+      inside the same module rather than taken from a variable, so the set is
+      as wide as this file says and no wider.
+
+      The scanner reports this function twice — once as `command_handoff`,
+      because the argv reaches `subprocess.run`, and once as
+      `unresolved_argv`, because the argv was assembled in a local first. That
+      is one capability seen through two of the checker's readings, and both
+      keys are named here deliberately: naming only one would let the other
+      go undeclared the moment the scanner's reading changes, which is the
+      "a declaration that covers a file rather than a site" failure this
+      contract was written against.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [systemctl]}
+      - {file: fleet_mcp/deploy/install.py, symbols: [systemctl],
+         kind: unresolved_argv}
+
+  - id: fleet-mcp-deploy-revision-identity
+    kind: exec
+    verb: git
+    why: >-
+      `git -C <source> rev-parse HEAD`, once per install, to record which
+      revision an artifact was built from. Read-only, and the fact it exists
+      is what makes `install.py status` able to answer "what is running" with
+      a commit rather than with a timestamp. It refuses nothing and changes
+      nothing; when git is absent or the source is not a checkout it returns
+      `None` and the install proceeds, which is the same behaviour a reader
+      would want from a tool run out of a tarball.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [git_revision]}
+
+  - id: fleet-mcp-deploy-symlink-swap
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      The two halves of promoting a revision. `point()` creates a link beside
+      the destination and renames it over, and `install()` does the same for
+      the unit file it just rendered. Renaming rather than unlinking first is
+      the whole point: an `os.replace` onto a symlink replaces the link itself
+      rather than writing through it, and a reader (`systemd`, or the next
+      `status`) therefore never observes a moment in which `current` does not
+      exist. The destination is this composition's own `current`/`previous`
+      link or the unit file this run wrote; the source is a temporary this
+      same function created one statement earlier.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [point]}
+      - {file: fleet_mcp/deploy/install.py, symbols: [install]}
+
+  - id: fleet-mcp-deploy-revision-promotion
+    kind: fs_mutation
+    verb: ".replace()"
+    why: >-
+      `staging.replace(revision_dir)` — the rename that turns a fully written
+      staging tree into `revisions/<label>@<shortrev>`. It is the one line
+      that makes an install atomic with respect to a concurrent reader, and it
+      is why the payload is copied into `revisions/` rather than edited in
+      place. Both paths are inside the composition root the operator named,
+      and the destination does not exist beforehand — a second install of the
+      same label is refused by the revision-directory check above, not
+      silently overwritten here.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [install]}
+
+  - id: fleet-mcp-deploy-stale-link-removal
+    kind: fs_mutation
+    verb: ".unlink()"
+    why: >-
+      Two removes, both of a link this installer made and can name.
+      `point(link, None)` removes a link when it is being cleared, and it
+      checks `is_symlink()` first so the call cannot reach a regular file that
+      happens to sit at that name. `uninstall()` removes the unit file it
+      installed — and it prints the fact when there was nothing there, rather
+      than reporting a removal that did not happen. Neither path can reach a
+      file this tool did not write: the binding, the owner token and the audit
+      log live outside both roots and are named in the closing message
+      precisely so a reader can see they were not touched.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [point]}
+      - {file: fleet_mcp/deploy/install.py, symbols: [uninstall]}
+
+  - id: fleet-mcp-deploy-staging-tree
+    kind: fs_mutation
+    verb: shutil.rmtree
+    why: >-
+      `install()` clears its own staging directory before copying the payload
+      into it, so a half-finished earlier run cannot leave a file behind in
+      the tree that is about to be promoted. `uninstall --purge` removes the
+      composition root — and only then: the default keeps every revision, the
+      flag is named, and the output says which of the two happened. Nothing
+      here walks a caller-supplied path, and neither call reaches the binding
+      root or the state root, which are separately rooted and which the
+      command's own closing line reports as untouched.
+    sites:
+      - {file: fleet_mcp/deploy/install.py, symbols: [install]}
+      - {file: fleet_mcp/deploy/install.py, symbols: [uninstall]}
+
+  - id: fleet-mcp-audit-log-rotation
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      Audit rotation: when the log passes the size the binding names, the file
+      is renamed to `<name>.1` and a fresh one is opened. A rename rather than
+      a truncate, because the alternative loses the records this surface
+      exists to keep — and it never deletes: the rotated file stays where the
+      operator can read it. The path is the binding's own `audit.path`, not a
+      caller's, and the whole rotation is best-effort by construction (an
+      `OSError` is caught), because a full disk must not turn into an outage
+      of the surface that reports outages.
+    sites:
+      - {file: fleet_mcp/audit.py, symbols: [AuditLog._rotate_if_needed]}
+
+  - id: fleet-mcp-oauth-token-mode
+    kind: fs_mutation
+    verb: os.chmod
+    why: >-
+      A narrow, not a widen: the OAuth signing key is created with
+      `os.open(..., 0o600)` and then chmodded to 0600 again, so the file the
+      store reads back is owner-only whatever the umask was. The path is the
+      store's own anchor — the binding says where it is, no request can — and
+      the value never leaves the process. On Windows `os.chmod` can only
+      toggle the read-only bit, and the docstring says so rather than
+      implying a protection this call cannot provide: there the boundary is
+      the ACL on the user profile directory, which is a statement about the
+      host rather than about this line.
+    sites:
+      - {file: fleet_mcp/oauth.py, symbols: [TokenStore._write_private]}
+
+  - id: fleet-mcp-oauth-state-replace
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      The OAuth state file is written beside itself and renamed over, so a
+      reader never sees a half-written one. Two processes touch it — the
+      running surface, and `--revoke-client` run by an operator — and a reader
+      that caught a truncate-in-progress would fall back to "nothing has been
+      revoked", which is the one wrong answer this file can give. The path is
+      the store`s own anchor, derived from the binding and reachable by no
+      request; the target is a fixed sibling name, not a caller`s string. It
+      also strengthens the mode story: the temporary file is created 0600 by
+      the same `_write_private` that owns the mode question, so the rename
+      publishes a file that was never world-readable even for an instant.
+    sites:
+      - {file: fleet_mcp/oauth.py, symbols: [TokenStore._save_state]}
