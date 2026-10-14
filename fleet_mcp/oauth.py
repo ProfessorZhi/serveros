@@ -118,6 +118,11 @@ class RefreshRecord:
     # chain rather than of one token.
     rotated_to: str | None = None
     revoked: bool = False
+    # Which consent proof produced this grant: `None`/absent for the owner-PAT
+    # path, `"feishu"` for a whitelisted identity. Carried across rotation so a
+    # refreshed token keeps its identity rather than silently becoming an
+    # anonymous one — see `_issue`.
+    idp: str | None = None
 
 
 class OAuthError(Exception):
@@ -230,6 +235,7 @@ class TokenStore:
                 resource=row.get("resource"),
                 rotated_to=row.get("rotated_to"),
                 revoked=bool(row.get("revoked")),
+                idp=row.get("idp"),
             )
             for token, row in (raw.get("refresh") or {}).items()
             if isinstance(row, dict)
@@ -255,6 +261,7 @@ class TokenStore:
                     "resource": rec.resource,
                     "rotated_to": rec.rotated_to,
                     "revoked": rec.revoked,
+                    "idp": rec.idp,
                 }
                 for token, rec in self._refresh.items()
             },
@@ -351,7 +358,8 @@ class TokenStore:
     # -- access tokens -----------------------------------------------------
 
     def mint_access_token(self, *, client_id: str, subject: str, scopes: tuple[str, ...],
-                          audience: str, issuer: str | None = None) -> tuple[str, int]:
+                          audience: str, issuer: str | None = None,
+                          idp: str | None = None) -> tuple[str, int]:
         now = int(time.time())
         payload = {
             # `iss` is the authorization server and `aud` is the protected
@@ -368,6 +376,12 @@ class TokenStore:
             "exp": now + self.access_ttl,
             "jti": secrets.token_urlsafe(12),
         }
+        # Only emitted when it says something. The owner-PAT path (and every
+        # token minted before this module existed) has no `idp`, and staying
+        # silent there keeps those tokens byte-identical rather than merely
+        # equivalent.
+        if idp and idp != "oauth":
+            payload["idp"] = idp
         header = {"alg": "HS256", "typ": "at+jwt"}
         signing_input = (
             _b64(json.dumps(header, separators=(",", ":")).encode())
@@ -513,7 +527,8 @@ class TokenStore:
     # -- refresh -----------------------------------------------------------
 
     def mint_refresh_token(self, *, client_id: str, subject: str,
-                           scopes: tuple[str, ...], resource: str | None = None) -> str:
+                           scopes: tuple[str, ...], resource: str | None = None,
+                           idp: str | None = None) -> str:
         token = REFRESH_PREFIX + secrets.token_urlsafe(32)
         with self._lock:
             self._refresh[token] = RefreshRecord(
@@ -522,6 +537,7 @@ class TokenStore:
                 scopes=scopes,
                 expires_at=time.time() + self.refresh_ttl,
                 resource=resource,
+                idp=idp,
             )
             self._save_state()
         return token
@@ -577,6 +593,7 @@ class TokenStore:
                 scopes=record.scopes,
                 expires_at=time.time() + self.refresh_ttl,
                 resource=record.resource,
+                idp=record.idp,
             )
             self._save_state()
         return new_token
@@ -620,7 +637,8 @@ def _validate_redirect_uri(uri: str) -> None:
 
 def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str | None = None,
                  authorize_path: str = "/oauth/authorize",
-                 granted: list[str] | None = None) -> str:
+                 granted: list[str] | None = None,
+                 feishu_start_path: str | None = None) -> str:
     """The form the operator completes. Plain HTML, no script, no external refs.
 
     `granted` names the boxes to render ticked. It is None on the first render,
@@ -668,6 +686,20 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
     error_html = (
         f'<p class="error">{html.escape(error)}</p>' if error else ""
     )
+    # The second proof, offered only where the deployment configured one. The
+    # original request travels in the query again because `/oauth/feishu/start`
+    # re-validates it and then holds it server-side — nothing here is trusted
+    # later just because this page rendered it.
+    feishu_html = ""
+    if feishu_start_path:
+        carry = urlencode({k: v for k, v in params.items() if v})
+        joiner = "&" if "?" in feishu_start_path else "?"
+        feishu_html = (
+            f'<p class="muted">Or, if you are one of the identities the operator '
+            f'registered, <a href="{html.escape(feishu_start_path)}{joiner}'
+            f'{html.escape(carry)}">sign in with Feishu</a> instead of using the '
+            f'owner token.</p>'
+        )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Authorize {html.escape(client.client_name)} · {html.escape(SERVER_NAME)}</title>
@@ -693,6 +725,7 @@ Revoking makes the client's existing access tokens stop working immediately.</p>
  <dt>Requested</dt><dd>{html.escape(requested_note)}</dd>
  <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
 </dl>
+{feishu_html}
 <form method="post" action="{html.escape(authorize_path)}">
  {hidden}
  {''.join(rows)}
@@ -890,6 +923,53 @@ class AuthorizationServer:
             }
         return code, client
 
+    def approve_identity(self, *, params: dict[str, str], identity_key: str,
+                         idp: str = "feishu",
+                         granted: list[str] | None = None) -> tuple[str, RegisteredClient]:
+        """The identity step: mint a code for a *verified* identity, with no PAT.
+
+        This is the consent gate's second proof. Where `approve` requires the
+        owner's personal access token, this one is reached only after the Feishu
+        leg has produced an identity the whitelist admits — and the identity
+        arrives as `identity_key`, built by this server, never from the request.
+
+        What it does not do is grant anything. The scopes are the requested ones
+        bounded by `grantable_scopes`, exactly as `approve` bounds them, and the
+        scope is necessary and never sufficient: whether this identity may touch
+        a device is `policy.operator_grants`, and a fresh identity has no entry
+        there. Signing in and being authorized are different questions, and this
+        function answers only the first.
+        """
+        client = self.validate_authorize(params)
+        if not identity_key:
+            raise OAuthError("access_denied", "no identity was established", status=401)
+        requested = set((params.get("scope") or "").split())
+        granted_set = set(granted) if granted is not None else set(requested)
+        scopes = tuple(sorted(requested & granted_set & set(self.auth.grantable_scopes)))
+        if not scopes:
+            raise OAuthError(
+                "access_denied",
+                "no scope was granted; a token with no scope would let the client "
+                "connect and then fail every call, which is worse than a refusal",
+                status=400,
+            )
+        code = "fac-" + secrets.token_urlsafe(24)
+        with self._lock:
+            self._codes[code] = {
+                "client_id": client.client_id,
+                "redirect_uri": params.get("redirect_uri"),
+                "scopes": scopes,
+                "code_challenge": params.get("code_challenge"),
+                "resource": params.get("resource"),
+                "expires_at": time.time() + AUTH_CODE_TTL,
+                # The two fields that make this a different kind of grant. They
+                # travel with the code into `_token_from_code`, which is where
+                # the token's `sub` and `idp` come from.
+                "subject": identity_key,
+                "idp": idp,
+            }
+        return code, client
+
     def _check_owner(self, presented: str) -> bool:
         expected = self._pat_reader()
         if not expected or not presented:
@@ -922,14 +1002,20 @@ class AuthorizationServer:
             raise OAuthError("invalid_grant", "redirect_uri does not match the authorization request")
         if not _pkce_matches(verifier, record["code_challenge"]):
             raise OAuthError("invalid_grant", "PKCE verification failed")
-        issued = self._issue(client_id=client_id, scopes=record["scopes"], subject="operator",
-                             resource=record.get("resource"))
+        # The subject comes from the code, which is where it was fixed: "operator"
+        # for a PAT approval, the identity key for a Feishu one. Reading it from
+        # the record rather than re-deriving it here is what keeps the two paths
+        # from being interchangeable by accident.
+        subject = record.get("subject") or "operator"
+        idp = record.get("idp")
+        issued = self._issue(client_id=client_id, scopes=record["scopes"], subject=subject,
+                             resource=record.get("resource"), idp=idp)
         # A code exchange issues a refresh chain, which is what makes the short
         # access-token lifetime workable: the caller renews without a second
         # trip through the consent form.
         issued["refresh_token"] = self.store.mint_refresh_token(
-            client_id=client_id, subject="operator", scopes=record["scopes"],
-            resource=record.get("resource"),
+            client_id=client_id, subject=subject, scopes=record["scopes"],
+            resource=record.get("resource"), idp=idp,
         )
         issued["refresh_token_expires_in"] = self.store.refresh_ttl
         return issued
@@ -952,13 +1038,13 @@ class AuthorizationServer:
             scopes = tuple(sorted(requested))
         new_refresh = self.store.rotate_refresh_token(token, record)
         issued = self._issue(client_id=client_id, scopes=scopes, subject=record.subject,
-                             resource=record.resource)
+                             resource=record.resource, idp=record.idp)
         issued["refresh_token"] = new_refresh
         issued["refresh_token_expires_in"] = self.store.refresh_ttl
         return issued
 
     def _issue(self, *, client_id: str, scopes: tuple[str, ...], subject: str,
-               resource: str | None = None) -> dict[str, Any]:
+               resource: str | None = None, idp: str | None = None) -> dict[str, Any]:
         # The audience is always this issuer's one protected resource, never a
         # value the caller supplied. `resource` only carries forward what the
         # approved grant was for; validate_authorize has already refused anything
@@ -966,7 +1052,7 @@ class AuthorizationServer:
         audience = resource or self.resource_url
         access, ttl = self.store.mint_access_token(
             client_id=client_id, subject=subject, scopes=scopes,
-            audience=audience, issuer=self.base_url,
+            audience=audience, issuer=self.base_url, idp=idp,
         )
         return {
             "access_token": access,

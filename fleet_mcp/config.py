@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 
 from .errors import BAD_REQUEST, refuse
+from .feishu_sso import FeishuBinding, FeishuWhitelistEntry
 from .identity import SessionKey
 from .local_roots import binding_candidates, refusal_if_closed_root
 from . import runtime_identity
@@ -161,6 +162,14 @@ class AuthBinding:
     # earlier revision defaulted to all three, which made "create" the thing you
     # got by not thinking about it.)
     grantable_scopes: tuple[str, ...] = DEFAULT_GRANTABLE_SCOPES
+    # The second consent proof: a whitelisted Feishu identity instead of the
+    # owner's PAT. Absent — the default — means this deployment has no Feishu
+    # route at all and the OAuth surface is exactly what it was. It is *not*
+    # enabled by default and is not enabled by writing a half-filled block: an
+    # enabled block with no identity in it is refused at load, because a
+    # deployment that believes SSO works and has nobody who can use it is a
+    # support ticket rather than a configuration.
+    feishu: FeishuBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -363,6 +372,22 @@ class FleetConfig:
                 "read_redact": self.policy.read_redact,
             },
             "grantable_scopes": list(self.auth.grantable_scopes),
+            # The second consent proof, reported as its shape — on or off, which
+            # application, how many identities — and never as the anchor path.
+            # Presence of the anchor is the same fact `credential_anchor_present`
+            # reports for a provider: whether a secret is configured, not where
+            # it is or what it holds.
+            "feishu": (
+                {
+                    "enabled": self.auth.feishu.enabled,
+                    "app_scope": self.auth.feishu.app_scope,
+                    "identities": len(self.auth.feishu.whitelist),
+                    "secret_anchor_present": bool(
+                        self.auth.feishu.secret_anchor and self.auth.feishu.secret_anchor.exists()
+                    ),
+                }
+                if self.auth.feishu is not None else None
+            ),
         }
 
 
@@ -413,6 +438,105 @@ def _grantable_scopes(auth_raw: dict[str, Any]) -> tuple[str, ...]:
             f"does not implement. Known scopes: {list(ALLOWED_SCOPES)}.",
         )
     return declared
+
+
+def _feishu_whitelist(auth_raw: dict[str, Any], app_scope: str) -> tuple[FeishuWhitelistEntry, ...]:
+    """Parse `auth.feishu.whitelist` into entries, or refuse.
+
+    An entry names an identity the operator has *verified* — the tenant it
+    belongs to and its stable user id. `app_scope` may be written per entry to
+    support a second application later; omitted, it is the binding's own.
+
+    What this will not do is invent an identity. There is no default entry, no
+    "the first login becomes the operator" bootstrap, and `user_id: "*"` is not
+    a wildcard — it is a string that will never match a real open_id, which is
+    the honest outcome for an operator who has not yet decided who is allowed in.
+    """
+    raw = (auth_raw.get("feishu") or {}).get("whitelist") or []
+    if isinstance(raw, dict) or not isinstance(raw, (list, tuple)):
+        raise refuse(BAD_REQUEST, "auth.feishu.whitelist must be a list of identity entries")
+    entries: list[FeishuWhitelistEntry] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise refuse(BAD_REQUEST, f"auth.feishu.whitelist[{index}] must be a mapping")
+        tenant = str(item.get("tenant_key") or "").strip()
+        user = str(item.get("user_id") or "").strip()
+        if not tenant or not user:
+            raise refuse(
+                BAD_REQUEST,
+                f"auth.feishu.whitelist[{index}] must name both `tenant_key` and "
+                f"`user_id`; an identity is matched on its tenant as well as its "
+                f"user id, because an open_id is unique within a tenant and not "
+                f"across tenants.",
+            )
+        entry_scope = str(item.get("app_scope") or app_scope).strip()
+        entries.append(FeishuWhitelistEntry(
+            tenant_key=tenant,
+            user_id=user,
+            app_scope=entry_scope,
+            label=str(item.get("label") or "").strip(),
+        ))
+    return tuple(entries)
+
+
+def _feishu_binding(auth_raw: dict[str, Any]) -> FeishuBinding | None:
+    """The Feishu block, or `None` when the deployment did not write one.
+
+    Absent is absent: a deployment with no `auth.feishu` key gets `None`, which
+    every caller reads as "no such route". Present-but-disabled is parsed for
+    completeness but grants nothing. Present-and-enabled must be whole — app id,
+    secret anchor, redirect and at least one identity — or the load is refused.
+    """
+    raw = auth_raw.get("feishu")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise refuse(BAD_REQUEST, "auth.feishu must be a mapping")
+    app_scope = str(raw.get("app_scope") or "").strip()
+    enabled = bool(raw.get("enabled", False))
+    whitelist = _feishu_whitelist(auth_raw, app_scope)
+    secret_anchor = raw.get("secret_anchor")
+    binding = FeishuBinding(
+        enabled=enabled,
+        app_scope=app_scope,
+        app_id=(str(raw["app_id"]).strip() if raw.get("app_id") else None),
+        secret_anchor=(Path(_expand(str(secret_anchor))) if secret_anchor else None),
+        redirect_uri=(str(raw["redirect_uri"]).strip() if raw.get("redirect_uri") else None),
+        base_url=str(raw.get("base_url") or FeishuBinding.base_url),
+        authorize_path=str(raw.get("authorize_path") or FeishuBinding.authorize_path),
+        token_path=str(raw.get("token_path") or FeishuBinding.token_path),
+        userinfo_path=str(raw.get("userinfo_path") or FeishuBinding.userinfo_path),
+        scope=(str(raw["scope"]) if raw.get("scope") else None),
+        whitelist=whitelist,
+    )
+    if not enabled:
+        return binding
+    # Enabled: name every missing piece at once, so the operator fixes the block
+    # in one edit rather than one restart per field.
+    missing = [
+        key for key, value in (("app_scope", binding.app_scope), ("app_id", binding.app_id),
+                               ("secret_anchor", binding.secret_anchor),
+                               ("redirect_uri", binding.redirect_uri))
+        if not value
+    ]
+    if missing:
+        raise refuse(
+            BAD_REQUEST,
+            f"auth.feishu.enabled is true but {sorted(missing)} is unset. A "
+            f"half-configured sign-in is refused rather than attempted: it would "
+            f"fail at the moment a person tried to use it, which is the worst "
+            f"time to find out.",
+        )
+    if not whitelist:
+        raise refuse(
+            BAD_REQUEST,
+            "auth.feishu.enabled is true but `auth.feishu.whitelist` is empty, so "
+            "no identity could ever sign in. Write the identities the operator "
+            "has verified — each one's `tenant_key` and `user_id` — or leave "
+            "`enabled` false. This surface will not admit an identity nobody "
+            "wrote down, and it will not guess which ones are yours.",
+        )
+    return binding
 
 
 def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
@@ -690,6 +814,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
         grantable_scopes=_grantable_scopes(auth_raw),
+        feishu=_feishu_binding(auth_raw),
     )
 
     server_raw = raw.get("server") or {}

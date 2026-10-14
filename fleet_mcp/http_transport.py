@@ -49,6 +49,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .audit import AuditLog
 from .errors import FleetRefusal
+from .feishu_sso import FeishuBroker, SSOError, build_feishu
 from .fleet import Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 from .oauth import (
     ALLOWED_SCOPES,
@@ -83,11 +84,17 @@ class HttpSurface:
         authorize: Callable[[str | None], Principal] | None = None,
         oauth: AuthorizationServer | None = None,
         audit: AuditLog | None = None,
+        feishu: FeishuBroker | None = None,
     ) -> None:
         self.service = service
         self.config = config
         self.oauth = oauth
         self.audit = audit
+        # The Feishu sign-in broker, or `None`. Built from the binding when one
+        # is not supplied, so the two ways of having no Feishu route — no block,
+        # and a disabled block — both arrive here as `None` and both make the
+        # two routes 404 exactly as an unknown path does.
+        self.feishu = feishu if feishu is not None else build_feishu(config)
         self.max_body_bytes = int(getattr(config.server, "max_body_bytes", MAX_BODY_BYTES_DEFAULT))
         self.mcp_path = getattr(config.server, "mcp_path", "/mcp")
         # When the advertised base URL carries a path — the shape a deployment
@@ -148,6 +155,17 @@ class HttpSurface:
             except OAuthError as exc:
                 raise HttpAuthError(exc.description) from None
             scopes = frozenset((claims.get("scope") or "").split())
+            # A token minted through the Feishu broker names the *identity*,
+            # not the client. That is the whole point of the second proof: the
+            # same client can be used by two different people, and
+            # `policy.operator_grants` has to be able to tell them apart.
+            if str(claims.get("idp") or "") == "feishu":
+                subject = str(claims.get("sub") or "")
+                if not subject.startswith("feishu:"):
+                    raise HttpAuthError(
+                        "a Feishu identity token did not carry a Feishu subject"
+                    )
+                return Principal(name=subject, scopes=scopes, credential_kind="feishu")
             return Principal(
                 name=f"oauth:{claims.get('cid', 'unknown')}",
                 scopes=scopes,
@@ -177,6 +195,10 @@ class HttpSurface:
                 return self._oauth_register(method, body)
             if route == "/oauth/authorize":
                 return self._oauth_authorize(method, query, body)
+            if route == "/oauth/feishu/start":
+                return self._oauth_feishu_start(method, query)
+            if route == "/oauth/feishu/callback":
+                return self._oauth_feishu_callback(method, query)
             if route == "/oauth/token":
                 return self._oauth_token(method, body)
             if route == "/oauth/revoke":
@@ -285,8 +307,13 @@ class HttpSurface:
                     error=f"{exc.error}: {exc.description}",
                     authorize_path=authorize_path or "/oauth/authorize",
                 ))
-            return _html(200, consent_page(client=client, params=params,
-                                           authorize_path=authorize_path or "/oauth/authorize"),
+            return _html(200, consent_page(
+                    client=client, params=params,
+                    authorize_path=authorize_path or "/oauth/authorize",
+                    feishu_start_path=(
+                        f"{authorize_path}/oauth/feishu/start"
+                        if self.feishu is not None and self.feishu.enabled else None
+                    )),
                          form_action=_redirect_origin(params.get("redirect_uri", "")))
 
         if method != "POST":
@@ -352,6 +379,109 @@ class HttpSurface:
                               redirect_uri=form.get("redirect_uri"))
         return _redirect(redirect_with_code(
             form["redirect_uri"], code, form.get("state"), issuer=self.oauth.base_url,
+        ))
+
+    def _oauth_feishu_start(self, method: str, query: str) -> tuple[int, dict[str, str], bytes]:
+        """Begin the Feishu leg: validate the request, hold it, redirect.
+
+        The request is validated here exactly as the consent form validates it —
+        a bad `redirect_uri` must be refused before anything is sent anywhere —
+        and then held server-side under an opaque state. The browser carries
+        only that state, so the client, the redirect, the scopes and the PKCE
+        challenge cannot be swapped out mid-flow by whoever holds the link.
+        """
+        if self.oauth is None or self.feishu is None:
+            return _json(404, {"error": "not_found",
+                               "error_description": "no route for '/oauth/feishu/start'"})
+        params = {k: v[0] for k, v in parse_qs(query).items()}
+        try:
+            client = self.oauth.validate_authorize(params)
+        except OAuthError as exc:
+            return _json(exc.status, exc.as_payload())
+        txn = self.feishu.transactions.begin(
+            client_id=client.client_id,
+            redirect_uri=params.get("redirect_uri") or "",
+            code_challenge=params.get("code_challenge") or "",
+            code_challenge_method=params.get("code_challenge_method") or "S256",
+            scopes=tuple(sorted(set((params.get("scope") or "").split()))),
+            resource=(params.get("resource") or "").strip() or None,
+            client_state=params.get("state"),
+        )
+        url = self.feishu.authorize_url(state=txn.feishu_state)
+        if url is None:
+            return _json(404, {"error": "not_found",
+                               "error_description": "Feishu sign-in is not enabled"})
+        if self.audit:
+            self.audit.record("oauth.feishu.start", client_id=client.client_id)
+        return _redirect(url)
+
+    def _oauth_feishu_callback(self, method: str, query: str) -> tuple[int, dict[str, str], bytes]:
+        """Finish the Feishu leg: one use of the state, then a code or an error.
+
+        Every path out of here either redirects to the *registered* redirect_uri
+        with a Fleet code, or redirects an error there — except when the state
+        itself is unknown, in which case there is no trusted redirect to use and
+        the refusal is shown rather than sent.
+        """
+        if self.oauth is None or self.feishu is None:
+            return _json(404, {"error": "not_found",
+                               "error_description": "no route for '/oauth/feishu/callback'"})
+        params = {k: v[0] for k, v in parse_qs(query).items()}
+        state = (params.get("state") or "").strip()
+        if not state:
+            return _json(400, {"error": "invalid_request",
+                               "error_description": "the Feishu callback carried no state, "
+                                                    "so there is no request to complete"})
+        try:
+            txn = self.feishu.transactions.consume(state)
+        except SSOError as exc:
+            # Single use, and a state that is unknown, expired or already spent
+            # is the same answer here. No redirect: this server issued no
+            # redirect_uri for this state, and inventing one would be the
+            # open-redirect this flow is built to avoid.
+            return _json(400, {"error": exc.error, "error_description": exc.description})
+
+        def refuse(error: str, description: str) -> tuple[int, dict[str, str], bytes]:
+            if self.audit:
+                self.audit.record("oauth.feishu.refused", client_id=txn.client_id, error=error)
+            return _redirect(redirect_with_error(
+                txn.redirect_uri, error, description, txn.client_state,
+                issuer=self.oauth.base_url,
+            ))
+
+        if params.get("error"):
+            # The person declined, or Feishu refused before issuing a code.
+            return refuse(params["error"],
+                          params.get("error_description") or "the sign-in was not completed")
+        code = (params.get("code") or "").strip()
+        if not code:
+            return refuse("invalid_request",
+                          "the Feishu callback carried neither a code nor an error")
+        try:
+            identity = self.feishu.exchange_code(code)
+        except SSOError as exc:
+            # The error *name* is safe to send; the description may quote a
+            # payload, so it stays here and only the kind travels.
+            return refuse("server_error", f"the sign-in could not be completed ({exc.error})")
+        verdict = self.feishu.verdict(identity)
+        if not verdict.allowed:
+            return refuse("access_denied", f"this identity is not admitted ({verdict.reason})")
+        try:
+            fleet_code, client = self.oauth.approve_identity(
+                params=txn.authorize_params(), identity_key=identity.key,
+            )
+        except OAuthError as exc:
+            return refuse(exc.error, exc.description)
+        if self.audit:
+            # Recorded under `subject` — the same "who" field `fleet.grant`
+            # records a principal under, and a `REF` in the disclosure table.
+            # A new field name would have to be added to that table or its value
+            # would be withheld, which is the guard `test_fleet_mcp_disclosure`
+            # enforces.
+            self.audit.record("oauth.feishu.approve", client_id=client.client_id,
+                              subject=identity.key)
+        return _redirect(redirect_with_code(
+            txn.redirect_uri, fleet_code, txn.client_state, issuer=self.oauth.base_url,
         ))
 
     def _oauth_token(self, method: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
