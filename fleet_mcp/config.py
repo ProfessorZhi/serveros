@@ -30,6 +30,7 @@ import yaml
 from .errors import BAD_REQUEST, refuse
 from .identity import SessionKey
 from .local_roots import binding_candidates, refusal_if_closed_root
+from . import runtime_identity
 from .runtime_identity import BASE_RUNTIME
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 
@@ -647,6 +648,19 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         runtime = str(field_runtime or keyed_runtime or BASE_RUNTIME)
         if not device_ref.startswith("device:"):
             raise refuse(BAD_REQUEST, f"provider key {ref!r} is not a typed device ref")
+        # A runtime may not be spelled as a query selector. `all` would pass the
+        # provider grammar, so a binding could be filed under a name that every
+        # `runtime: all` listing would then have to guess at — was it the
+        # selector, or the runtime? Refusing it here keeps the two sets disjoint
+        # at the only point where the ambiguity could be introduced, rather than
+        # at the point where it would be consulted.
+        if runtime_identity.is_a_selector(runtime):
+            raise refuse(
+                BAD_REQUEST,
+                f"provider {ref} names runtime {runtime!r}, which is a query "
+                f"selector ({list(runtime_identity.SELECTORS)}) and not a tag. "
+                f"A runtime is named `{BASE_RUNTIME}` or `{BASE_RUNTIME}-<account>`.",
+            )
         # The runtime must be a tag this surface can address in a session ref;
         # the authority for that grammar is `SessionKey`, so it is asked rather
         # than restated here.

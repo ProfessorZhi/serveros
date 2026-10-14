@@ -176,6 +176,13 @@ KIND_BY_FIELD: dict[str, str] = {
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,
+    # How many (device, runtime) pairs a listing walked. A device serving two
+    # runtimes is two of these, and the count is the smallest fact that says
+    # whether a listing was one machine or one machine twice — which is the
+    # question a reader of this log has about a fleet where a machine can serve
+    # more than one runtime. A count, like `devices` beside it, and not a list:
+    # the pairs are already named in `unreachable` where they are the answer.
+    "runtimes": COUNT,
     # The mirrored CloudCLI verb a `mcp.native_call` ran. A NAME from the closed
     # set — never a value the caller typed — so the audit says WHICH verb ran
     # without carrying anything a session held.

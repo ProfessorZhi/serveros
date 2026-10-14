@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
-from . import cloudcli_native
+from . import cloudcli_native, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
 from .runtime_identity import BASE_RUNTIME
@@ -656,6 +656,70 @@ class FleetService:
 
     # -- sessions ----------------------------------------------------------
 
+    def _bound_runtimes(self, device_ref: str) -> tuple[str, ...]:
+        """Every runtime this host holds a BINDING for on one device, base first.
+
+        A binding is not a route. It may be disabled, or its provider may have
+        failed to build, and neither is knowable from the config alone — which is
+        exactly why this reports the binding and `_provider` reports the route.
+        A machine that declares `fjd`'s runtime and whose `fjd` connector is down
+        is a machine with a gap an operator can close, and saying so is more use
+        than a listing that is silently one runtime short.
+
+        Read off the bindings' own `device_ref`/`runtime` fields rather than by
+        splitting keys: `provider_key` is the surface's spelling of the pair, and
+        parsing a spelling back into its parts is how two spellings drift.
+        """
+        owned = [b for b in self.config.providers.values() if b.device_ref == device_ref]
+        others = sorted({b.runtime for b in owned if b.runtime != BASE_RUNTIME})
+        if any(b.runtime == BASE_RUNTIME for b in owned):
+            return (BASE_RUNTIME, *others)
+        return tuple(others)
+
+    def _runtimes_for(self, device_ref: str, runtime: str | None) -> tuple[str, ...]:
+        """Which runtimes one device is queried for, given a selector.
+
+        `None` — the default — is the device's OWN runtime, and only it. That is
+        what every caller written before a device could serve two already meant,
+        so the default is not a new behaviour with a compatibility story; it is
+        the old behaviour with a name.
+
+        The selector cannot be a tag: `config.py` refuses a binding whose runtime
+        is one, so `all` here is never a machine's second runtime that happens to
+        be called `all`.
+        """
+        if runtime is None or runtime == runtime_identity.SELECTOR_BASE:
+            return (BASE_RUNTIME,)
+        if runtime in (runtime_identity.SELECTOR_ALL, runtime_identity.SELECTOR_ANY):
+            return self._bound_runtimes(device_ref)
+        return (runtime,)
+
+    def _validate_runtime_selector(self, runtime: str | None) -> None:
+        """Refuse a malformed selector once, before any device is asked.
+
+        Malformed and unknown are different answers and get different handling. A
+        selector that is not a runtime NAME at all (`FJD`, `claude fjd`) cannot
+        be answered by any device, so it is a BAD_REQUEST raised here. A legal
+        name with nothing behind it (`claude-nobody`) is a per-device gap and is
+        reported as one, because on a fleet of several machines the second is
+        true of some devices and not others.
+
+        The grammar authority is `SessionKey`, so it is asked rather than
+        restated — a second regex is a second answer to the same question.
+        """
+        if runtime is None or runtime_identity.is_a_selector(runtime):
+            return
+        try:
+            SessionKey(self.config.local_device_ref, runtime, "runtime-selector")
+        except ValueError as exc:
+            raise refuse(
+                BAD_REQUEST,
+                f"{runtime!r} is not a runtime name: {exc}. Name one runtime as "
+                f"`{BASE_RUNTIME}` or `{BASE_RUNTIME}-<account>`, or select every "
+                f"runtime on the device with "
+                f"`{runtime_identity.SELECTOR_ALL}`.",
+            ) from None
+
     def list_sessions(
         self,
         principal: Principal,
@@ -665,9 +729,27 @@ class FleetService:
         state: str | None = None,
         limit: int = 20,
         classification: str | None = None,
+        runtime: str | None = None,
     ) -> dict[str, Any]:
+        """Sessions across the fleet, one row per (device, runtime) pair.
+
+        One physical machine can serve more than one runtime — a second OS
+        account with its own CloudCLI — so `device × runtime` is the unit this
+        walks, not `device`. `limit` is per RUNTIME, the same way it was per
+        device when a device was one runtime; a machine with two runtimes returns
+        up to twice as many rows, and `runtimes_queried` and
+        `sessions_per_runtime` say how many were asked and what each answered, so
+        a caller can tell "there are no more" from "the page is full".
+
+        A runtime that did not answer is an entry in `devices_unreachable`, named
+        with its device AND its runtime, and every OTHER runtime's rows are still
+        returned. That is deliberate and it is the whole of the partial-result
+        rule: one runtime being down never hides another's sessions, and never
+        turns into a refusal that would hide the ones that did answer.
+        """
         principal.require(SCOPE_READ)
         self.admit(principal)
+        self._validate_runtime_selector(runtime)
 
         if device:
             resolved = resolve_or_refuse(self.registry, device)
@@ -677,30 +759,56 @@ class FleetService:
 
         sessions: list[dict[str, Any]] = []
         unreachable: list[dict[str, Any]] = []
+        queried: list[str] = []
         for entry in targets:
             ref = entry.device_ref.ref
-            provider = self._provider(ref)
-            if provider is None:
-                unreachable.append(
-                    {
-                        "device_ref": ref,
-                        "code": UNKNOWN_DEVICE,
-                        "detail": "enrolled, but this runtime holds no route to it",
-                    }
-                )
-                continue
-            try:
-                found = provider.list_sessions(limit=limit, project=project, state=state)
-            except Exception as exc:  # noqa: BLE001 - one device's failure is one device's failure
-                code = getattr(exc, "code", "INTERNAL")
-                detail = getattr(exc, "detail", str(exc))
-                unreachable.append({"device_ref": ref, "code": code, "detail": detail})
-                continue
-            for summary in found:
-                row = summary.as_dict()
-                row["device_display_name"] = entry.display_name
-                row["control_allowed"] = self._session_control_state(principal, summary.key)
-                sessions.append(row)
+            for one in self._runtimes_for(ref, runtime):
+                # The ledger key, which is also what the audit records: the bare
+                # device ref for the device's own runtime (unchanged), and
+                # `device:<id>|<tag>` for a second one. One string cannot be two
+                # runtimes' worth of rows.
+                where = provider_key(ref, one)
+                queried.append(where)
+                provider = self._provider(ref, one)
+                if provider is None:
+                    unreachable.append(
+                        {
+                            "device_ref": ref,
+                            "runtime": one,
+                            "provider_key": where,
+                            "code": UNKNOWN_DEVICE,
+                            "detail": "enrolled, and bound, but this runtime holds no route to it",
+                        }
+                    )
+                    continue
+                try:
+                    found = provider.list_sessions(limit=limit, project=project, state=state)
+                except Exception as exc:  # noqa: BLE001 - one runtime's failure is one runtime's failure
+                    code = getattr(exc, "code", "INTERNAL")
+                    detail = getattr(exc, "detail", str(exc))
+                    unreachable.append(
+                        {
+                            "device_ref": ref,
+                            "runtime": one,
+                            "provider_key": where,
+                            "code": code,
+                            "detail": detail,
+                        }
+                    )
+                    continue
+                for summary in found:
+                    row = summary.as_dict()
+                    row["device_display_name"] = entry.display_name
+                    # Said explicitly rather than left implicit in `provider`.
+                    # A session ref's `provider` field IS the runtime tag, but
+                    # `provider` elsewhere on this surface means the CloudCLI
+                    # AGENT FAMILY (`create_session`), and one connector serves
+                    # several. A caller reading `provider` on a row and taking it
+                    # for the agent family would be reading the wrong axis, so the
+                    # runtime is named as itself.
+                    row["runtime"] = summary.key.provider
+                    row["control_allowed"] = self._session_control_state(principal, summary.key)
+                    sessions.append(row)
 
         if classification:
             sessions = [s for s in sessions if s.get("classification") == classification]
@@ -710,13 +818,31 @@ class FleetService:
             "fleet.list_sessions",
             principal=principal.name,
             devices=len(targets),
+            runtimes=len(queried),
             sessions=len(sessions),
-            unreachable=[u["device_ref"] for u in unreachable],
+            unreachable=[u["provider_key"] for u in unreachable],
         )
+        counts: dict[str, int] = {}
+        for row in sessions:
+            key = provider_key(row["device_ref"], row["runtime"])
+            counts[key] = counts.get(key, 0) + 1
         return {
             "sessions": sessions,
             "total": len(sessions),
             "devices_queried": len(targets),
+            # Per RUNTIME, and named by the same ledger key the config files
+            # bindings under, so a caller can tell which machine-and-runtime
+            # answered and which one it is looking at. A device bound for two
+            # runtimes appears twice, once per runtime: the pair is the unit, and
+            # a count of one for a two-runtime device would be the arithmetic
+            # saying the opposite of what happened.
+            "runtimes_queried": queried,
+            "sessions_per_runtime": counts,
+            # Named with their runtime, not their device alone. On a machine
+            # serving two runtimes, "the device is unreachable" is not a thing
+            # that can be true: one runtime answered and the other did not, and
+            # an entry that named only the device would make those two facts
+            # indistinguishable.
             "devices_unreachable": unreachable,
             "classification_legend": {
                 "RUNNING_AGENT": "a run is executing right now",
@@ -726,7 +852,11 @@ class FleetService:
             },
             "identity_note": "a session is addressed by device_ref + provider + "
                              "native_session_id; the native id alone is not an "
-                             "address and the same id can exist on two devices",
+                             "address and the same id can exist on two devices. "
+                             "A row's `runtime` is that `provider`, said plainly: "
+                             "one physical machine can serve several runtimes, "
+                             "and the same native id under two of them is two "
+                             "different sessions, not a duplicate.",
         }
 
     def _session_control_state(self, principal: Principal, key: SessionKey) -> dict[str, Any]:

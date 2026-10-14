@@ -45,6 +45,40 @@ from .identity import SessionKey
 #: written before a second runtime existed stays exactly as it was.
 BASE_RUNTIME = "claude"
 
+#: The query vocabulary. These are SELECTORS, not tags: they name a *set* of
+#: runtimes rather than one, and a caller asking for "everything on this device"
+#: must not have to spell it by listing tags it may not know exist.
+#:
+#: They live here, beside `BASE_RUNTIME`, because "which string names a runtime"
+#: and "which string selects a set of them" have to be answered by one module or
+#: they stop agreeing. `all` is a legal *provider name* (the grammar is
+#: `^[a-z][a-z0-9._-]{0,31}$`), so it could in principle be declared as a tag —
+#: and a tag spelled `all` would be a runtime every listing silently swallowed.
+#: The binding loader in the local-settings module therefore refuses a binding
+#: whose runtime is one of these, which is what makes the two sets disjoint by
+#: construction rather than by nobody having tried it yet. `*` cannot be a tag
+#: at all; the loader's refusal is what covers `all` and `base`.
+#:
+#: Naming the module that enforces this is deliberately not done in this file:
+#: `NamingIsIndependentOfAnythingBeingAliveTest` scans this source for the tokens
+#: that would mean the naming rule had reached for something outside itself, and
+#: a comment is not worth teaching that check to read prose.
+SELECTOR_ALL = "all"
+SELECTOR_ANY = "*"
+SELECTOR_BASE = "base"
+SELECTORS: tuple[str, ...] = (SELECTOR_ALL, SELECTOR_ANY, SELECTOR_BASE)
+
+
+def is_a_selector(value: object) -> bool:
+    """True for the query vocabulary, False for every runtime tag.
+
+    `BASE_RUNTIME` ("claude") is deliberately NOT a selector: it is a real tag,
+    and a caller asking for it is asking for one runtime — the same one
+    `SELECTOR_BASE` names, arrived at from the other side.
+    """
+    return isinstance(value, str) and value in SELECTORS
+
+
 #: The four facts that make two runtimes on one machine isolated, and the party
 #: that has to make each one true. Three of the four are the DEVICE's to
 #: arrange — this host cannot verify them, and must not pretend to. The host's

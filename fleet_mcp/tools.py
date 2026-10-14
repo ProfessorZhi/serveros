@@ -127,6 +127,7 @@ def _list_sessions(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         state=args.get("state"),
         limit=int(args.get("limit", 20)),
         classification=args.get("classification"),
+        runtime=args.get("runtime"),
     )
 
 
@@ -264,7 +265,15 @@ TOOLS: tuple[Tool, ...] = (
             "reports one as running.\n\n"
             "Devices that did not answer are listed separately under "
             "`devices_unreachable` with a code — their sessions are unknown, not "
-            "absent. One unreachable device never hides another device's results."
+            "absent. One unreachable device never hides another device's results, "
+            "and neither does one unreachable runtime on a device that answered.\n\n"
+            "A physical machine can serve more than one runtime — a second OS "
+            "account with its own CloudCLI. `runtime` selects which to list; "
+            "omitting it lists the device's own runtime, as this tool always did. "
+            "Each row carries `runtime`, which is the same thing as the "
+            "`provider` part of its `session_ref` — and NOT the agent family that "
+            "`fleet_create_session`'s `provider` parameter means. The same native "
+            "session id under two runtimes is two different sessions."
         ),
         input_schema={
             "type": "object",
@@ -273,11 +282,24 @@ TOOLS: tuple[Tool, ...] = (
                 "project": _string("Restrict to sessions the provider files under this project id."),
                 "state": _string("Provider-native state filter, passed through unchanged."),
                 "limit": _integer(
-                    "Maximum sessions to request per device.", minimum=1, maximum=200, default=20
+                    "Maximum sessions to request per runtime.", minimum=1, maximum=200, default=20
                 ),
                 "classification": _string(
                     "Post-filter to one classification: RUNNING_AGENT, RESIDENT_HOST, "
                     "MANAGED_IDLE or ARCHIVED."
+                ),
+                "runtime": _string(
+                    "Which runtime on each device to list. Omit, or `base`, for the "
+                    "device's own runtime — the behaviour this tool had before a "
+                    "device could serve two. `all` lists every runtime the host "
+                    "holds a binding for, one entry under `runtimes_queried` each; "
+                    "a specific tag (`claude-fjd`) lists that one. A legal tag with "
+                    "no binding behind it is reported under `devices_unreachable` "
+                    "with its runtime, and the other runtimes' sessions are still "
+                    "returned. A runtime is an OS account's own CloudCLI on a "
+                    "machine — it is NOT the agent family "
+                    "`fleet_create_session`'s `provider` parameter means, which one "
+                    "runtime can serve several of."
                 ),
             },
             "additionalProperties": False,
