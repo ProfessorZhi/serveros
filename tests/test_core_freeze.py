@@ -40,6 +40,25 @@ imports it. It is listed anyway, because leaving it out would make the set
 tracked executable would have to guess which kind this list meant. `test_the
 _unit_starts_the_core` and the closure test in the sibling file carry the claim
 about what actually runs.
+
+WHY THERE IS NOW A SECOND UNIT IN THE TREE
+------------------------------------------
+§C's claim is about the CORE: one resident process, named `serverosd`, and the
+five obvious next daemons refused by name. This gate has always been a name
+list, and this round added a name — on purpose, in its own commit, as a diff.
+
+`fleet_mcp/deploy/serveros-fleet-mcp.service` is the ingress for ONE host's
+external MCP clients (`fleet/fleet-mcp-contract.yaml`); it is a USER unit, so it
+is not even in the same supervisor scope as the node's, and `test_the_ingress_*`
+below holds it to the three properties that keep it from being a second core
+daemon: it starts only the ingress entry point, it lives outside the directory
+the core's units live in, and `plugin/bundle.yaml` — the composition that ships
+to every node — does not name its package. It IS resident, and the gate says so
+rather than pretending a web surface with `Restart=` is a oneshot. What the gate
+refuses is a second thing that can be *down for the node*; what this is, is a
+listener that can be down for one operator's ChatGPT session while the node is
+untouched, which is why it is a fifth set here and not a second entry in
+`RESIDENT_UNITS`.
 """
 from __future__ import annotations
 
@@ -70,6 +89,12 @@ ENTRY_POINTS = {
     # render happens — `tests/test_wake_parent.py` is what reads it, and it fails
     # if the placeholder survived into somewhere it could be started.
     "runtime/serveros-wake-parent",
+    # Not an entry point of the CORE, and listed for the reason the whole set
+    # exists: it is a tracked executable, so leaving it out would make the diff
+    # that added it silent. It is the launcher
+    # `fleet_mcp/deploy/serveros-fleet-mcp.service` starts — one host's
+    # off-host MCP ingress, shipped to no node. See the module docstring.
+    "fleet_mcp/bin/serveros-fleet-mcp",
 }
 
 # The daemon itself. `scripts/release.py` refuses an artifact without this file,
@@ -152,6 +177,24 @@ EVENING_UNITS = {
 # Every unit that is not the resident daemon. Named once so the sub-tests below
 # cannot cover a set somebody added and forgot to wire in.
 NON_RESIDENT_UNITS = (DELIVERY_UNITS | SCHEDULED_UNITS | WAKE_UNITS | EVENING_UNITS)
+
+# A fifth set, and the only one that is RESIDENT without being the core.
+#
+# It is kept out of RESIDENT_UNITS rather than added to it, because the two
+# claims are different: `RESIDENT_UNITS` is "this is the node's process, and it
+# is the only one" — `test_the_unit_starts_the_core_and_nothing_else` reads
+# `next(iter(RESIDENT_UNITS))` and would become a coin flip the moment a second
+# name joined it. This set's claim is the negative one §C actually wants: a
+# resident thing that is not the daemon must start the daemon nowhere, live
+# outside the core's directory, and reach no node.
+#
+# It is IN the tree as a template rather than only rendered by the installer,
+# because a unit that exists only inside a Python string is a unit no reviewer
+# of this repository can read. `fleet_mcp/deploy/install.py` renders it into
+# `~/.config/systemd/user/`; what is installed is that rendering, and the
+# placeholder below is what keeps it from being startable in place.
+INGRESS_ENTRY = "fleet_mcp/bin/serveros-fleet-mcp"  # also in ENTRY_POINTS above
+INGRESS_UNITS = {"fleet_mcp/deploy/serveros-fleet-mcp.service"}
 
 # The daemon may not open a network socket (§W: "serverosd 不做网络调用"). It
 # is checked as an AST property of the daemon's own loader closure rather than
@@ -288,7 +331,12 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         # diff. It has been that diff three times: §W's delivery pair, §9.48's
         # wake pair, and 2026-10-08's `serveros-evening-alignment.{service,timer}`
         # — each one met by declaring the pair, never by widening the assertion.
-        self.assertEqual(_unit_files(), RESIDENT_UNITS | NON_RESIDENT_UNITS)
+        #
+        # A fourth time, and a fifth set: the one unit that is resident without
+        # being the core (`INGRESS_UNITS`). It is named here for the same reason,
+        # so a sixth unit is still a diff rather than a surprise.
+        self.assertEqual(_unit_files(),
+                         RESIDENT_UNITS | NON_RESIDENT_UNITS | INGRESS_UNITS)
 
     def test_every_other_unit_is_provably_not_resident(self):
         """§W: the delivery worker is not a second ServerOS daemon.
@@ -338,6 +386,58 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
                 self.assertNotIn("runtimedirectory", keys, rel)
                 self.assertNotIn("listenstream", keys, rel)
 
+    def test_the_ingress_unit_is_resident_and_starts_only_the_ingress(self):
+        """The honest half first: it IS resident, and the gate says so.
+
+        A web surface systemd restarts is a process with a lifetime nobody
+        chose, and filing it under `NON_RESIDENT_UNITS` so the existing
+        `is_resident` assertions would skip it is exactly the move this file
+        exists to refuse. What §C needs from it is narrower: that it cannot
+        start, or replace, the node.
+        """
+        self.assertTrue(INGRESS_UNITS, "the set is empty; this test would check nothing")
+        for rel in sorted(INGRESS_UNITS):
+            with self.subTest(unit=rel):
+                text = (REPO / rel).read_text(encoding="utf-8")
+                self.assertTrue(is_resident(text), f"{rel} is not written as a resident unit")
+                starts = [v for _, k, v in directives(text) if k == "execstart"]
+                self.assertEqual(len(starts), 1, starts)
+                self.assertIn(INGRESS_ENTRY, starts[0], starts[0])
+                self.assertNotIn(CORE_BINARY, starts[0], starts[0])
+
+    def test_the_ingress_lives_outside_the_core_directory(self):
+        """The accidental-daemon argument, applied to this unit.
+
+        The three non-resident sets live under `runtime/`, beside
+        `serverosd.service`, and the comment on `SCHEDULED_UNITS` says why a
+        gate about the resident surface should still be looking there: "a file
+        next to the daemon's unit is the easiest place to add a second daemon by
+        accident". This one is not in that directory, and `fleet_mcp` is not a
+        core directory — the package is `fleet_mcp`, a near-neighbour of the
+        `fleet` block `bundle.yaml` does ship, and the two are different things.
+        """
+        self.assertNotIn(Path(INGRESS_ENTRY).parts[0], CORE_DIRS)
+        for rel in sorted(INGRESS_UNITS):
+            with self.subTest(unit=rel):
+                self.assertNotIn(Path(rel).parts[0], CORE_DIRS, rel)
+                self.assertNotEqual(Path(rel).parts[0],
+                                    Path(next(iter(RESIDENT_UNITS))).parts[0], rel)
+
+    def test_the_ingress_ships_to_no_node(self):
+        """The composition gate, read rather than paraphrased.
+
+        `plugin/bundle.yaml` is the `serveros-core` composition: the members
+        shipped to every node. This surface is ONE host's ingress, so its name
+        appearing there would put a listener on every node in the fleet — which
+        is the argument `fleet/fleet-mcp-contract.yaml` records under
+        `in_the_core_composition: false`.
+        """
+        text = (REPO / "plugin" / "bundle.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("fleet_mcp", text)
+        for rel in sorted(INGRESS_UNITS):
+            with self.subTest(unit=rel):
+                self.assertNotIn(Path(rel).name.removesuffix(".service"), text)
+
     def test_the_entry_point_set_is_not_empty(self):
         # The positive control. A scanner that returned the empty set would
         # satisfy both assertions above if the constant were ever emptied, and
@@ -346,6 +446,9 @@ class TheResidentSurfaceIsClosed(unittest.TestCase):
         self.assertTrue(ENTRY_POINTS)
         self.assertTrue(DELIVERY_UNITS)
         self.assertTrue(SCHEDULED_UNITS)
+        # The ingress entry point is in the set it is held to, not merely
+        # declared as a constant beside it.
+        self.assertIn(INGRESS_ENTRY, ENTRY_POINTS)
 
     def test_the_unit_starts_the_core_and_nothing_else(self):
         unit = (REPO / next(iter(RESIDENT_UNITS))).read_text()
