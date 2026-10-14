@@ -1555,8 +1555,7 @@ def _fold_body(device, *, index: int) -> list[dict]:
     elements = []
     readings = device.get("readings") or []
     if _reach_state(device) != "KNOWN":
-        elements.append(_md("<font color='grey'>未获取采样 · 状态未知"
-                            "（连接器可达 ≠ 资源监测已接入）</font>"))
+        elements.append(_md("<font color='grey'>未获取采样 · 状态未知</font>"))
     else:
         known = [r for r in readings
                  if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
@@ -1950,13 +1949,26 @@ def _native_header(model: dict, *, archive, test_mark, now_hhmm) -> dict:
         tags.append({"tag": "text_tag",
                      "text": {"tag": "plain_text", "content": f"{pending} 待接采集"},
                      "color": "neutral"})
-    bits = [b for b in (f"{now_hhmm} 更新" if now_hhmm else None,
-                        str(test_mark) if test_mark else None,
-                        "时段总结" if archive is not None else "时段进行中") if b]
+    # TWO IDENTITIES, NOT ONE TITLE WITH A DIFFERENT SUBTITLE. A live card and a
+    # period report are different products, and a reader who opens a report
+    # should not have to read the subtitle to find out which one they are in.
+    if archive is not None:
+        label = str((archive.get("label") or "").strip())
+        window = str((archive.get("period_ref") or "").strip())
+        title = "ServerOS · 核报告"
+        bits = [b for b in (label or None,
+                            window.split("/")[-1] if window else None,
+                            "期末快照",
+                            str(test_mark) if test_mark else None) if b]
+    else:
+        title = "ServerOS · 节点监控"
+        bits = [b for b in (f"{now_hhmm} 更新" if now_hhmm else None,
+                            str(test_mark) if test_mark else None,
+                            "时段进行中") if b]
     return {
         "template": "red" if _real_critical(model) else "blue",
         "icon": {"tag": "standard_icon", "token": _HEADER_ICON, "color": "blue"},
-        "title": {"tag": "plain_text", "content": "ServerOS · 节点监控"},
+        "title": {"tag": "plain_text", "content": title},
         "subtitle": {"tag": "plain_text", "content": " · ".join(bits)},
         "text_tag_list": tags[:3],
     }
@@ -2031,8 +2043,11 @@ def render_period_card(model: dict, *, archive: dict | None = None,
                 devices[0] if devices else None)
     elements: list[dict] = []
     # The component tree, in order, each piece a named helper so LIVE and
-    # ARCHIVED cannot drift: KpiGrid → Warning → SourceCoverage → Gap →
-    # [ArchivePanel] → DevicePanel×N → Footer.
+    # ARCHIVED cannot drift. A REPORT LEADS WITH ITS ARCHIVE — its first screen
+    # is the period's own summary, and the live readings below it are a closing
+    # snapshot, not the point of the card. LIVE is the mirror image.
+    if archive is not None:
+        elements.append(_archive_panel(archive))
     elements.extend(_kpi_grid(_kpi_cells(model)))
     warning = _swap_warning(main) if main else None
     if warning:
@@ -2040,14 +2055,15 @@ def render_period_card(model: dict, *, archive: dict | None = None,
                          "margin": "0px 0px 8px 0px", "content": f"⚠️ {warning}"})
     if devices:
         elements.append(_source_coverage(model))
-    unknown_names = [_device_name(d) for d in devices if _reach_state(d) != "KNOWN"]
-    if unknown_names:
-        elements.append({
-            "tag": "markdown", "text_size": "notation", "margin": "0px 0px 8px 0px",
-            "content": "<font color='grey'>" + "、".join(unknown_names)
-                       + " 未获取资源采样（连接器可达 ≠ 已采集）</font>"})
+    # NOTE: there is deliberately NO second, full-width line naming the
+    # unmeasured devices. `_source_coverage` above already carries each device's
+    # state once, and repeating the names in a run-on sentence is what made a
+    # card that said the same thing three times and overflowed the right edge.
     if archive is not None:
-        elements.append(_archive_panel(archive))
+        # one short, quiet line marking what the readings below are
+        elements.append({"tag": "markdown", "text_size": "notation",
+                         "margin": "0px 0px 8px 0px",
+                         "content": "<font color='grey'>以下为期末资源快照</font>"})
     for index, device in enumerate(devices):
         elements.append(_device_panel(model, device, index, main=main))
     elements.append(_card_footer(test_mark))

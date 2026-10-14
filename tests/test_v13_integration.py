@@ -42,6 +42,8 @@ surface = _load("serveros_runtime_card_surface", MODULE_DIR / "card_surface.py")
 runner_mod = _load("serveros_runtime_card_surface_runner",
                    MODULE_DIR / "card_surface_runner.py")
 card_period = _load("serveros_runtime_card_period", MODULE_DIR / "card_period.py")
+monitor = _load("serveros_runtime_fleet_monitor_card",
+                MODULE_DIR / "fleet_monitor_card.py")
 
 AT = "2026-10-14T17:30:00+08:00"
 
@@ -770,3 +772,156 @@ class TheReportHistoryBlockIsWired(unittest.TestCase):
         runner = self._runner({"available": False, "reason": "窗口读不出来",
                                "trend": "UNKNOWN"})
         self.assertIn("UNKNOWN", self._text(runner))
+
+
+class TheScreenshotRegression(unittest.TestCase):
+    """The 00:01 Feishu screenshot's defects, pinned with its OWN values.
+
+    What the reader saw: `('device:work-fj', 'FJPCOS 工作站')` where a device
+    NAME belonged, the same names repeated in a full-width run-on line, and a
+    report titled as if it were the live card. The `unknown` list below is the
+    exact one the screenshot was produced from.
+    """
+
+    UNKNOWN = [("device:work-fj", "FJPCOS 工作站"),
+               ("device:llm-lab-dell", "A6000 推理机")]
+    NOW = "2026-10-15T00:01:00+08:00"
+
+    def _model(self):
+        devices = [{
+            "device_ref": "device:tokyo-shared-dev-01",
+            "display_name": "东京共享开发机", "platform": "linux",
+            "reachability": {"state": "KNOWN", "observed_at": self.NOW},
+            "readings": [monitor.reading("CPU", "128 逻辑核", observed_at=self.NOW),
+                         monitor.reading("内存", "32.6%", observed_at=self.NOW),
+                         monitor.reading("交换区", "89.2%", note="阈值 90.0%",
+                                         observed_at=self.NOW),
+                         monitor.reading("磁盘 /", "9.5%", observed_at=self.NOW)],
+            "accounts": []}]
+        for ref, name in self.UNKNOWN:
+            devices.append({"device_ref": ref, "display_name": name,
+                            "platform": "unknown",
+                            "reachability": {"state": monitor.STATE_UNKNOWN,
+                                             "reason": "无采集"},
+                            "readings": [], "accounts": []})
+        return monitor.monitor_model(devices=devices, services=(), now=self.NOW)
+
+    def _texts(self, card):
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("content"), str):
+                    found.append(node["content"])
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(card)
+        return found
+
+    def test_the_source_model_carries_real_strings_for_every_device(self):
+        model = self._model()
+        runner_mod.assert_string_devices(model)          # raises otherwise
+        refs = [d["device_ref"] for d in model["devices"]]
+        names = [d["display_name"] for d in model["devices"]]
+        self.assertEqual(len(refs), 3)
+        self.assertEqual(len(set(refs)), 3)              # each device exactly once
+        self.assertEqual(refs, ["device:tokyo-shared-dev-01", "device:work-fj",
+                                "device:llm-lab-dell"])
+        self.assertEqual(names, ["东京共享开发机", "FJPCOS 工作站", "A6000 推理机"])
+        for value in refs + names:
+            self.assertIsInstance(value, str)
+
+    def test_the_peer_list_is_validated_and_the_bug_shape_is_refused(self):
+        self.assertEqual(runner_mod.peer_pairs(self.UNKNOWN), self.UNKNOWN)
+        # the OLD bug: iterating the pairs and using each whole tuple as a ref
+        for bad in ([("device:work-fj",)], ["device:work-fj"],
+                    [("device:work-fj", "")], [("device:work-fj", "a"),
+                                               ("device:work-fj", "b")],
+                    [(("device:x", "y"), "name")], [{"ref": "device:x"}]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(runner_mod.RunnerError):
+                    runner_mod.peer_pairs(bad)
+
+    def test_no_card_prints_a_python_repr_of_a_device(self):
+        model = self._model()
+        report = card_period.archive(model,
+                                     period={"period_ref": "CN-Mainland/2026-10-14#night",
+                                             "label": "夜间", "day_ref": "d"}, rows=[])
+        for name, card in (("LIVE", card_period.render_period_card(model)),
+                           ("REPORT", card_period.render_archive(report, model=model))):
+            with self.subTest(card=name):
+                blob = json.dumps(card, ensure_ascii=False)
+                for token in ("('device:", "【('", "{'state'", "None",
+                              "('device_ref", "tuple"):
+                    self.assertNotIn(token, blob)
+                self.assertIn("FJPCOS 工作站", blob)
+                self.assertIn("A6000 推理机", blob)
+
+    def test_no_second_full_width_run_on_gap_line(self):
+        # the coverage line names each device ONCE; there is no second markdown
+        # element repeating them in a sentence.
+        card = card_period.render_period_card(self._model())
+        texts = self._texts(card["body"])
+        # count elements that name BOTH unknown devices
+        repeated = [t for t in texts
+                    if "FJPCOS 工作站" in t and "A6000 推理机" in t]
+        self.assertEqual(repeated, [])
+
+    def test_the_two_cards_have_distinct_titles_and_first_screens(self):
+        model = self._model()
+        live = card_period.render_period_card(model, test_mark="[灰度测试]")
+        report_view = card_period.archive(
+            model, period={"period_ref": "CN-Mainland/2026-10-14#night",
+                           "label": "夜间", "day_ref": "d"}, rows=[])
+        report = card_period.render_archive(report_view, model=model, test_mark="[灰度测试]")
+        self.assertEqual(live["header"]["title"]["content"], "ServerOS · 节点监控")
+        self.assertEqual(report["header"]["title"]["content"], "ServerOS · 核报告")
+        # the report LEADS with the period archive; the live card leads with KPI
+        self.assertEqual(live["body"]["elements"][0]["tag"], "column_set")
+        self.assertEqual(len(live["body"]["elements"][0]["columns"]), 2)
+        report_top = report["body"]["elements"][0]
+        self.assertIn("时段小结", json.dumps(report_top, ensure_ascii=False))
+        # and the report says what the readings below it are
+        self.assertIn("期末快照", report["header"]["subtitle"]["content"])
+
+    def test_a_single_sample_reports_no_trend(self):
+        model = self._model()
+        view = card_period.archive(model,
+                                   period={"period_ref": "P#m", "label": "上午",
+                                           "day_ref": "d"}, rows=[])
+        text = card_period.render_archive_text(view)
+        self.assertIn("仅 0 次采样", text)
+        self.assertNotIn("完整时段趋势一览", text)
+        self.assertIn("本时段未记录事故", text)     # honest, not «没有事故»
+
+    def test_the_approved_kpi_and_folds_are_untouched(self):
+        card = card_period.render_period_card(self._model())
+        tags = []
+        monitor._walk_tags(card["body"], tags)
+        self.assertEqual(tags.count("collapsible_panel"), 3)      # three folds
+        rows = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+        self.assertEqual([len(r["columns"]) for r in rows], [2, 2])  # 2x2 KPI
+        self.assertNotIn("chart", tags)
+        self.assertNotIn("table", tags)
+        self.assertNotIn("corner_radius",
+                         json.dumps([c for r in rows for c in r["columns"]]))
+
+    def test_no_column_uses_a_fixed_horizontal_width(self):
+        card = card_period.render_period_card(self._model())
+
+        def walk(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "column":
+                    self.assertEqual(node.get("width"), "weighted")
+                    self.assertNotIn("px", str(node.get("width")))
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(card["body"])

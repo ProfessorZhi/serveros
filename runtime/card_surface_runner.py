@@ -221,6 +221,76 @@ class PreviewSender:
 # the sources — injected, never fetched here
 # ---------------------------------------------------------------------------
 
+def peer_pairs(unknown):
+    """Validate the peer list at the SOURCE boundary. FAIL-CLOSED.
+
+    WHY THIS EXISTS: the previous code did `peers = [(ref, None) for ref in
+    unknown]` over a list of `(device_ref, display_name)` PAIRS, so the whole
+    two-tuple became the device reference and the card printed
+    `('device:work-fj', 'FJPCOS 工作站')` at the reader. A device reference is a
+    STRING, and the place to refuse anything else is here — not in a renderer
+    that would have to stringify it.
+
+    Refused by name: a bare string (a name is not a reference), a nested tuple
+    or list, a mapping, an empty or non-string member, and a duplicate
+    reference (two entries under one ref make the name ambiguous and the device
+    appear twice).
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry in unknown or ():
+        if isinstance(entry, str):
+            raise RunnerError(
+                f"a peer must be a `(device_ref, display_name)` pair, got the bare "
+                f"string {entry[:24]!r}: a name is not a device reference")
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            raise RunnerError(
+                f"a peer must be a 2-item `(device_ref, display_name)` pair, got "
+                f"{type(entry).__name__} of shape "
+                f"{len(entry) if hasattr(entry, '__len__') else '?'}")
+        ref, name = entry
+        if not isinstance(ref, str) or not ref.strip():
+            raise RunnerError(
+                f"a peer's device reference must be a non-empty string, got "
+                f"{type(ref).__name__} {ref!r}")
+        if not isinstance(name, str) or not name.strip():
+            raise RunnerError(
+                f"a peer's display name must be a non-empty string, got "
+                f"{type(name).__name__} {name!r}")
+        if ref.strip() in seen:
+            raise RunnerError(
+                f"peer reference {ref.strip()!r} appears twice: two entries under "
+                f"one reference make the name ambiguous and the device appear twice")
+        seen.add(ref.strip())
+        pairs.append((ref.strip(), name.strip()))
+    return pairs
+
+
+def assert_string_devices(model):
+    """Every device in the model must carry STRING identity. Fail-closed.
+
+    The renderer prints `device_ref` and `display_name` straight into the card,
+    so a tuple reaching the model IS the screenshot defect. Checked on the MODEL
+    rather than trusted from the caller, because the model is what the card is
+    built from.
+    """
+    devices = (model or {}).get("devices") or []
+    seen = set()
+    for device in devices:
+        for field in ("device_ref", "display_name"):
+            value = device.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise RunnerError(
+                    f"model device {field} must be a non-empty string, got "
+                    f"{type(value).__name__} — a non-string identity prints as a "
+                    f"Python repr on the card")
+        ref = device["device_ref"]
+        if ref in seen:
+            raise RunnerError(f"model carries device {ref!r} twice")
+        seen.add(ref)
+    return model
+
+
 def local_model_source(declaration=None, *, device_ref="device:tokyo-shared-dev-01",
                        display_name="东京共享开发机", platform="linux",
                        unknown=()):
@@ -232,22 +302,32 @@ def local_model_source(declaration=None, *, device_ref="device:tokyo-shared-dev-
     reads nothing about another account. The returned `rows` is empty for a
     single sample: the report then says the trend is UNKNOWN rather than drawing
     a curve over one point.
+
+    `unknown` is a sequence of `(device_ref, display_name)` pairs and is
+    validated ONCE, here, so an invalid shape fails at construction rather than
+    at a render ten minutes later.
     """
     card_source = _load("serveros_runtime_card_source", _HERE / "card_source.py")
     fleet_source = _load("serveros_runtime_fleet_monitor_source",
                          _HERE / "fleet_monitor_source.py")
+    pairs = peer_pairs(unknown)
+    if not isinstance(device_ref, str) or not device_ref.strip() \
+            or not isinstance(display_name, str) or not display_name.strip():
+        raise RunnerError("the local device needs a string reference and name")
+    if any(ref == device_ref for ref, _ in pairs):
+        raise RunnerError(f"the local device {device_ref!r} is also listed as a peer")
 
     def source(*, at):
         snapshot = _normalise_gaps(card_source.snapshot(card_source.gather(), at=at))
-        peers = [(ref, None) for ref in unknown]
+        peers = [(ref, None) for ref, _name in pairs]
         names = {device_ref: display_name}
         platforms = {device_ref: platform}
-        for ref, peer_name in unknown:
-            names[ref] = peer_name
+        for ref, name in pairs:
+            names[ref] = name
         model = fleet_source.fleet_model(
             snapshots=[(device_ref, snapshot)] + peers, now=at, sample=False,
             names=names, platforms=platforms)
-        return model, []
+        return assert_string_devices(model), []
 
     return source
 
