@@ -320,6 +320,84 @@ class LarkMessageSender:
                              "identity": self.identity,
                              "recipient": self.recipient}}
 
+    def send_text(self, text: str, *, idempotency_key: str) -> dict:
+        """Carry one short sentence to the receiver, as a NEW message.
+
+        This is the notification half of the transport — the shape an alert
+        takes, as opposed to `__call__`'s report. It shares everything that
+        matters with the rest of the class (`run`, the resolved CLI, the
+        identity, the recipient flags, the idempotency ceiling) so there is no
+        second way of talking to the service, and it never patches: a
+        notification that failed is a notification that did not arrive, not a
+        reason to edit some other message.
+
+        `--markdown` rather than `--text`, matching `__call__`: the alert detail
+        is a short block of labelled lines and the CLI's own rule is that
+        structured text takes the Markdown path. What the receiver sees is the
+        service's rendering of the sentence, so the receipt ties to the send and
+        not to a byte comparison of what arrived.
+        """
+        argv = [self.cli, "im", "+messages-send", "--as", self.identity,
+                self.flag, self.value,
+                "--markdown", str(text),
+                "--idempotency-key", str(idempotency_key)[:50],
+                "--format", "json"]
+        answer = run(argv, timeout=self.timeout)
+        remote_id = (answer.get("data") or {}).get("message_id")
+        return {"state": "DELIVERED",
+                "why": ("通道接受了这条消息"
+                        + ("" if remote_id else
+                           "，但回答里没有 message id——消息已受理，只是这个回执"
+                           "指不到具体哪一条")),
+                "provider": {"id": "lark-cli",
+                             "transport": "im +messages-send (markdown)",
+                             "remote_id": remote_id, "identity": self.identity,
+                             "recipient": self.recipient}}
+
+    def send_card(self, card, *, idempotency_key: str) -> dict:
+        """Create ONE interactive card as a new message. The other half of `update`.
+
+        `update` patches a card at a message id; this produces the message id.
+        The two are deliberately kept apart rather than fused into a
+        send-or-patch, because «is there a card to change, or does one have to be
+        created» is `runtime/card_delivery.py`'s decision and not a transport's —
+        a transport that guessed would leave the second card V28 forbids.
+
+        The verb is `im +messages-send` with `--msg-type interactive` and the
+        card as the message content, which is the CLI's own documented way to
+        send a card, and the size ceiling is enforced on exactly the bytes
+        `card_content` produces so a card too large to send is refused here
+        rather than by the service after a partial effect.
+        """
+        content = card_content(card)
+        size, chars = len(content.encode("utf-8")), len(content)
+        if size > CARD_CONTENT_LIMIT_BYTES or chars > CARD_CONTENT_LIMIT_CHARS:
+            return {"state": "FAILED",
+                    "why": (f"要发的卡片内容是 {size} 字节 / {chars} 字符，超过服务"
+                            f"声明的上限（{CARD_CONTENT_LIMIT_BYTES} 字节 或 "
+                            f"{CARD_CONTENT_LIMIT_CHARS} 字符，哪个先到算哪个）。"
+                            f"没有发送任何内容"),
+                    "provider": {"id": "lark-cli",
+                                 "transport": "im +messages-send (interactive)",
+                                 "remote_id": None, "identity": self.identity,
+                                 "recipient": self.recipient}}
+        argv = [self.cli, "im", "+messages-send", "--as", self.identity,
+                self.flag, self.value,
+                "--msg-type", "interactive", "--content", content,
+                "--idempotency-key", str(idempotency_key)[:50],
+                "--format", "json"]
+        answer = run(argv, timeout=self.timeout)
+        remote_id = (answer.get("data") or {}).get("message_id")
+        return {"state": "DELIVERED",
+                "why": ("通道接受了这张卡片"
+                        + ("" if remote_id else
+                           "，但回答里没有 message id——卡片已受理，只是这个回执"
+                           "指不到具体哪一条，下一次改不动它")),
+                "provider": {"id": "lark-cli",
+                             "transport": "im +messages-send (interactive)",
+                             "remote_id": remote_id, "identity": self.identity,
+                             "recipient": self.recipient}}
+
     def reconcile(self, request: dict) -> dict | None:
         """Ask the service whether an interrupted attempt arrived.
 

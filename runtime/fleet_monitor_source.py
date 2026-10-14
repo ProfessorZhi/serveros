@@ -64,6 +64,16 @@ DEVICE_ENTRY_SCHEMA = "serveros/fleet-monitor-device.v1"
 #: native_node_core.py`, PR#161) and the ONLY native document this bridge reads.
 NATIVE_MEASUREMENT_SCHEMA = "serveros/native-node-measurement.v1"
 
+#: The TYPED per-UID summary this bridge accepts, defined HERE and nowhere else.
+#: Issue #167 (per-UID memory alerts) is not merged, so this bridge reads nothing
+#: from that worktree: the shape below is derived from the FIELDS that issue's own
+#: text names — process_count, anonymous_bytes (preferred) over
+#: rss_estimate_bytes, host_mem_total_bytes, host_percent, top_process {pid,comm},
+#: sampled_at and a provenance block — and the id is chosen so that when #167
+#: lands its producer, the field names either match or the seam refuses loudly
+#: rather than silently reading a different shape.
+UID_SUMMARY_SCHEMA = "serveros/uid-resource-summary.v1"
+
 
 class SnapshotRefused(RuntimeError):
     """A document handed to the acceptance seam that this seam cannot accept."""
@@ -430,6 +440,110 @@ def accept_native_measurement(envelope, *, device_ref, now, freshness_bound):
     return entry
 
 
+# ---------------------------------------------------------------------------
+# The per-UID bridge: PR#167's aggregate -> an account entry. Typed, no import
+# ---------------------------------------------------------------------------
+
+class UidSummaryRefused(RuntimeError):
+    """A per-UID summary this bridge cannot accept."""
+
+
+def _gib_from_bytes(value):
+    if value is None:
+        return None
+    try:
+        return round(float(value) / 1024 ** 3, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+#: The three words an account's severity may carry. Anything else is not a
+#: severity this bridge will pass off as one — an unknown word becomes OK-with-
+#: a-reason rather than a colour, because "CRITCAL" read as OK is the quiet half
+#: of the failure and reading it as CRITICAL would false-alarm.
+_SEVERITIES = ("OK", "ATTENTION", "CRITICAL")
+
+
+def accept_uid_summary(document, *, now, freshness_bound, live=False):
+    """A per-UID resource summary -> the account entry the card renders. PURE.
+
+    Reads no file, imports nothing from #167's tree, opens no collector: it takes
+    a PARSED document and returns an account dict, or fails CLOSED to an
+    `account_unobserved` with a reason. `live=True` is the caller asserting this
+    is a reading rather than a fixture; when it is False the account is still
+    returned but the whole card is a sample, exactly as the device bridges work.
+
+    What it will NOT do: invent a threshold, derive a severity, or read a value
+    it was not handed. `warn`/`quota` are passed through only when the document
+    carries them (a missing allowance must render 未定义, never 0), and the
+    severity is the producer's word — this bridge does not decide who is over
+    their line.
+    """
+    if not isinstance(document, dict):
+        raise UidSummaryRefused(
+            f"a summary is an object, got {type(document).__name__}")
+    if document.get("schema") != UID_SUMMARY_SCHEMA:
+        raise UidSummaryRefused(
+            f"schema {document.get('schema')!r} is not {UID_SUMMARY_SCHEMA!r}")
+    provenance = document.get("provenance")
+    if not isinstance(provenance, dict) or not isinstance(provenance.get("live"), bool):
+        raise UidSummaryRefused(
+            "provenance.live is not stated as a boolean; whether these facts are "
+            "a reading of a host or a fixture is not optional")
+    uid = document.get("uid")
+    if not isinstance(uid, int) or isinstance(uid, bool):
+        raise UidSummaryRefused(
+            f"uid {uid!r} is not an integer; an account is identified by a kernel "
+            "UID and not by a name")
+    display_name = document.get("display_name")
+    sampled_at = document.get("sampled_at")
+    when, clock = monitor._parse(sampled_at), monitor._parse(now)
+    if when is None or clock is None:
+        return monitor.account_unobserved(
+            uid=uid, display_name=display_name,
+            reason=f"sampled_at {sampled_at!r} 或当前时间不可解析，无法判定新鲜度")
+
+    age = (clock - when).total_seconds()
+    stale = age > freshness_bound
+    # `anonymous_bytes` is preferred because it excludes shared pages; `rss_…` is
+    # the documented fallback and is explicitly an estimate, never a PSS claim.
+    anonymous = document.get("anonymous_bytes")
+    used_bytes = anonymous if anonymous is not None else document.get("rss_estimate_bytes")
+    if used_bytes is None and document.get("cpu_cores") is None:
+        return monitor.account_unobserved(
+            uid=uid, display_name=display_name,
+            reason="既没有内存读数也没有 CPU 读数，这个账户没有被测量")
+    quota = document.get("quota") or {}
+    warn = document.get("warn") or {}
+    severity = str(document.get("severity") or "OK").upper()
+    if severity not in _SEVERITIES:
+        severity = "OK"
+    trend = [v for v in (document.get("trend") or [])
+             if isinstance(v, (int, float))]
+    if stale:
+        base = monitor.account(
+            uid=uid, display_name=display_name, observed_at=sampled_at,
+            cpu_used=document.get("cpu_cores"),
+            cpu_quota=quota.get("cpu_cores"), cpu_warn=warn.get("cpu_cores"),
+            ram_used_gib=_gib_from_bytes(used_bytes),
+            ram_quota_gib=_gib_from_bytes(quota.get("ram_bytes")),
+            ram_warn_gib=_gib_from_bytes(warn.get("ram_bytes")),
+            severity=severity, trend=trend,
+            source=provenance.get("collector"))
+        base["state"] = monitor.STATE_STALE
+        base["reason"] = (f"最后观测 {sampled_at} 距今 {int(age // 60)} 分钟，超过"
+                          f"新鲜度上限 {freshness_bound // 60} 分钟")
+        return base
+    return monitor.account(
+        uid=uid, display_name=display_name, observed_at=sampled_at,
+        cpu_used=document.get("cpu_cores"),
+        cpu_quota=quota.get("cpu_cores"), cpu_warn=warn.get("cpu_cores"),
+        ram_used_gib=_gib_from_bytes(used_bytes),
+        ram_quota_gib=_gib_from_bytes(quota.get("ram_bytes")),
+        ram_warn_gib=_gib_from_bytes(warn.get("ram_bytes")),
+        severity=severity, trend=trend, source=provenance.get("collector"))
+
+
 def device_from_snapshot(device_ref, snapshot, *, display_name=None,
                          platform=None, stale_after_s=None):
     """One device entry, from a `card_source.snapshot()` reading.
@@ -470,7 +584,7 @@ def device_from_snapshot(device_ref, snapshot, *, display_name=None,
 def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
                 refresh_seconds=monitor.DEFAULT_REFRESH_S,
                 stale_after_s=monitor.DEFAULT_STALE_AFTER_S,
-                names=None, platforms=None):
+                names=None, platforms=None, accounts=None):
     """Compose many devices' snapshots into the monitor view model. Read-only.
 
     `snapshots` is a list of `(device_ref, snapshot)` pairs. A device whose
@@ -478,9 +592,16 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
     dropped — the same distinction `fleet/view.py` draws between "nobody looked"
     and "looked, found none", applied to a device this adapter was handed
     nothing for.
+
+    `accounts` maps a `device_ref` to that device's per-UID account entries (see
+    `accept_uid_summary`). It is a separate argument rather than part of the
+    snapshot because the two come from different producers — the host reading
+    from one, the UID aggregate from the #167 collector — and a device can have
+    one without the other.
     """
     names = names or {}
     platforms = platforms or {}
+    accounts = accounts or {}
     devices = []
     for device_ref, snapshot in snapshots:
         if snapshot is None:
@@ -491,11 +612,14 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
                 "reachability": {"state": monitor.STATE_UNKNOWN,
                                  "reason": "该设备没有可用的采集结果"},
                 "readings": [],
+                "accounts": list(accounts.get(device_ref) or []),
             })
             continue
-        devices.append(device_from_snapshot(
+        entry = device_from_snapshot(
             device_ref, snapshot, display_name=names.get(device_ref),
-            platform=platforms.get(device_ref)))
+            platform=platforms.get(device_ref))
+        entry["accounts"] = list(accounts.get(device_ref) or [])
+        devices.append(entry)
     model = monitor.monitor_model(
         devices=devices, services=services, network=network, now=now,
         sample=sample, refresh_seconds=refresh_seconds,

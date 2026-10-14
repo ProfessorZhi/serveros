@@ -5332,7 +5332,31 @@ def _alert_provider():
     command. That is the same rule the daemon follows from the other side: the
     surface that decides what is true never depends on the surface that
     delivers, or neither can answer when the other is broken.
+
+    WHICH PROVIDER, AND WHY IT IS A CHOICE RATHER THAN A REPLACEMENT
+    ----------------------------------------------------------------
+    When `SERVEROS_ALERT_RECIPIENT` names a destination (`user:<open_id>` or
+    `chat:<chat_id>`), the OUTBOUND hop is carried by
+    `runtime/direct_lark_notify.py` over the already-authenticated `lark-cli`
+    that the node's status card and alert digest already send through. That
+    provider declares `human.notification.transport` SUPPORTED, so
+    `runtime/notifications.py#deliver` actually calls it and an alert reaches a
+    person.
+
+    Without it, the BotMux provider is used exactly as before. That provider is
+    NOT removed and NOT deprecated here: its `notify` reports UNKNOWN (an
+    unaddressed trigger is a synthetic session, not a conversation), and its
+    INBOUND half — who a message is from, and whether an approval is bound to a
+    request — is the only verified human-identity surface this node has.
+    Retiring it is a separate decision with a separate precondition (a Feishu
+    callback whose signature can be verified), and this function deliberately
+    keeps it constructible so that nothing here forecloses it.
     """
+    recipient = str(os.environ.get("SERVEROS_ALERT_RECIPIENT") or "").strip()
+    if recipient:
+        module = _load_module_from(_HERE / "direct_lark_notify.py",
+                                   "serveros_direct_lark_notify")
+        return module.DirectLarkHumanNotifyProvider.from_env()
     path = _HERE.parent / "mcp" / "human_control.py"
     module = _load_module_from(path, "serveros_human_control")
     return module.BotMuxHumanControlProvider()

@@ -257,7 +257,14 @@ def a_card(**over):
     return payload
 
 
-SENT_AT = "2026-09-26T09:00:00+08:00"
+#: The card's send time, anchored to the RUN rather than written as a fixed date.
+#: The patch window is 14 days wide and measured against the clock, so an
+#: absolute timestamp silently expires: 2026-09-26 was comfortably inside the
+#: window when this line was written and is months outside it now, which turned
+#: every assertion below red for a reason none of them is about. Relative to now
+#: by an hour, the tests measure the window rule and not how old the file is.
+SENT_AT = (datetime.datetime.now(datetime.timezone.utc)
+           - datetime.timedelta(hours=1)).isoformat()
 
 
 def an_update(**over):

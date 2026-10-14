@@ -85,10 +85,25 @@ CGROUP_ATTRIBUTION = "cgroup"
 #: The element tags this renderer may emit, and nothing else. `validate` walks a
 #: rendered card and refuses a tag outside this set — inventing a plausible tag
 #: is how a card renders as a blank rectangle in a conversation nobody watches.
+#:
+#: Every tag here is a DOCUMENTED CardKit 2.0 component (`chart` is `图表`, the
+#: others are `markdown`/`hr`/`collapsible_panel`/`column_set`), read from the
+#: SDK's own bundled component reference rather than guessed. `validate`'s job is
+#: now to keep the card inside that reference, not just inside a list.
 VOCABULARY = frozenset({
     "markdown", "hr", "collapsible_panel", "column_set", "column", "chart",
     "plain_text", "standard_icon",
 })
+
+#: The one rule every CardKit 2.0 component reference states for `element_id`:
+#: «唯一标识，字母开头 ≤20 字符» — a letter first, at most twenty characters. A
+#: longer id, or one that starts with a digit, is not a smaller mistake than the
+#: wrong tag: the renderer has been emitting `dev-device-tokyo-shared-dev-01-fold`
+#: (31 chars) since before this rule was written down here, and `validate` now
+#: refuses it rather than shipping a field the client may drop or truncate into a
+#: collision.
+ELEMENT_ID_MAX = 20
+_ELEMENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 #: One vocabulary for the four summary states, copied from `runtime/cards.py`'s
 #: own declaration rather than re-derived: the first time the two spellings
@@ -214,6 +229,100 @@ def share_reading(value, *, attribution, observed_at, note="cgroup 归因",
         return None
     return reading(label, value, note=note, observed_at=observed_at,
                    kind="host-share", scope=CGROUP_ATTRIBUTION)
+
+
+# ---------------------------------------------------------------------------
+# The account — one UID's use of THIS device (the V13 "user area")
+# ---------------------------------------------------------------------------
+#
+# V13 puts a per-UID block in each device's own section: how much CPU and RAM one
+# account is using, the SUGGESTED allowance for it, and the soft warning line.
+# Two sentences this block must never say, and the shapes that keep them unsaid:
+#
+#   "this is a hard cgroup limit"  — a quota here is a SUGGESTION, not a kernel
+#                                    cap; nothing on this card throttles anyone.
+#                                    `QUOTA_NOTE` is spelled on every account
+#                                    line and the field is named `quota`, never
+#                                    `limit`.
+#   "here is what they ran"        — only uid, an optional display name and the
+#                                    two usage atoms cross the boundary. No argv,
+#                                    no cwd, no env, no open file. `validate_model`
+#                                    refuses an account carrying any of them, so
+#                                    the privacy rule is enforced where the data
+#                                    is built rather than promised in prose.
+
+ACCOUNT = "account"
+UID_SCOPE = "uid"
+QUOTA_NOTE = "额度/警戒线为建议软线，非 cgroup 硬限制；本卡不限制、不结束任何进程"
+
+#: Field names an account may NOT carry, because each is a door onto another
+#: person's files, command line or secrets. A card that leaked one of these would
+#: be reading an account, not measuring it.
+ACCOUNT_FORBIDDEN_FIELDS = (
+    "argv", "cmdline", "environ", "env", "cwd", "open_files", "prompt",
+    "token", "secret", "password",
+)
+
+
+def account(*, uid, observed_at, display_name=None, cpu_used=None, cpu_quota=None,
+            cpu_warn=None, ram_used_gib=None, ram_quota_gib=None, ram_warn_gib=None,
+            severity="OK", trend=(), note=QUOTA_NOTE, source=None):
+    """One account's resource use on this device. PURE.
+
+    `cpu_*` are cores; `ram_*_gib` are GiB. `used` is what is measured now, the
+    `quota` is the SUGGESTED allowance and `warn` the soft warning line — a
+    missing value stays `None` and renders as 未定义 rather than as `0`, so an
+    unset allowance never reads as "no allowance".
+    """
+    label = f"账户 {display_name or ('uid=' + str(uid))}"
+    return {
+        "kind": ACCOUNT, "uid": uid, "display_name": display_name, "label": label,
+        "cpu": {"used": cpu_used, "quota": cpu_quota, "warn": cpu_warn},
+        "ram": {"used": ram_used_gib, "quota": ram_quota_gib, "warn": ram_warn_gib},
+        "state": STATE_KNOWN, "reason": None, "severity": severity,
+        "observed_at": observed_at, "trend": list(trend), "scope": UID_SCOPE,
+        "note": note, "source": source,
+    }
+
+
+def account_unobserved(*, uid, reason, display_name=None):
+    """An account the reader could not establish. A reason, and NO numbers.
+
+    The same rule as `unobserved`: "we did not measure this account" is only
+    useful with the cause, and a quota of `0` beside it would be read as a
+    configured limit rather than an absent one.
+    """
+    label = f"账户 {display_name or ('uid=' + str(uid))}"
+    return {
+        "kind": ACCOUNT, "uid": uid, "display_name": display_name, "label": label,
+        "cpu": {"used": None, "quota": None, "warn": None},
+        "ram": {"used": None, "quota": None, "warn": None},
+        "state": STATE_UNKNOWN, "reason": reason, "severity": None,
+        "observed_at": None, "trend": [], "scope": UID_SCOPE,
+        "note": QUOTA_NOTE, "source": None,
+    }
+
+
+def _account_staleness(acct, now_dt, stale_after_s):
+    """The account twin of `_staleness`, applying the same two rules.
+
+    A KNOWN account with no parseable observation becomes UNKNOWN; one older
+    than the bound becomes STALE with its last numbers kept. Applied in the model
+    step so the rule lives in one place per shape rather than in two.
+    """
+    if acct.get("state") != STATE_KNOWN:
+        return acct
+    when = _parse(acct.get("observed_at"))
+    if when is None:
+        out = dict(acct)
+        out.update({"state": STATE_UNKNOWN, "reason": "账户读数没有可解析的观测时间"})
+        return out
+    if (now_dt - when).total_seconds() > stale_after_s:
+        out = dict(acct)
+        out.update({"state": STATE_STALE,
+                    "reason": f"最后观测 {acct['observed_at']} 已过期"})
+        return out
+    return acct
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +457,20 @@ def _attention(devices, services):
                             + (f"（{r['note']}）" if r.get("note") else ""),
                     "_order": (SEVERITY_RANK[sev], index, r_index),
                 })
+        # An account over its soft warning line is a finding like any other: the
+        # whole point of the per-UID block is that a runaway account reaches the
+        # top of the card without anybody opening a fold. Ordered after the
+        # device's own readings so a host-level fault still leads.
+        for a_index, a in enumerate(device.get("accounts") or []):
+            sev = str(a.get("severity") or "OK").upper()
+            if sev in ("CRITICAL", "ATTENTION") and a.get("state") == STATE_KNOWN:
+                found.append({
+                    "scope": "account", "device_ref": ref, "severity": sev,
+                    "text": f"{device.get('display_name') or ref} · {a['label']}："
+                            f"{_account_numbers(a)}",
+                    "_order": (SEVERITY_RANK[sev], index,
+                               len(device.get("readings") or []) + a_index),
+                })
     for s_index, service in enumerate(services):
         state = str(service.get("state") or "").upper()
         if state in ("CRITICAL", "ATTENTION"):
@@ -381,12 +504,15 @@ def monitor_model(*, devices, services=(), network=None, now, sample=False,
     for device in devices:
         readings = [_staleness(r, now_dt, stale_after_s)
                     for r in (device.get("readings") or [])]
+        accounts = [_account_staleness(a, now_dt, stale_after_s)
+                    for a in (device.get("accounts") or [])]
         entry = {
             "device_ref": device.get("device_ref"),
             "display_name": device.get("display_name") or device.get("device_ref"),
             "platform": device.get("platform") or "未知",
             "reachability": _reachability(device, now_dt, stale_after_s),
             "readings": readings,
+            "accounts": accounts,
         }
         # A bridge may attach what it knows about the SOURCE of these readings
         # (a native measurement's `live`/`replayed`). Carried through untouched
@@ -493,7 +619,10 @@ def _panel(element_id, title, blocks, *, expanded=False):
         "border": {"color": "grey", "corner_radius": "5px"},
         "padding": "8px 8px 8px 8px",
         "vertical_spacing": "8px",
-        "elements": [_md("\n".join(blocks))],
+        # Wrapped here as well as in the device body: a fold's content is still
+        # read on a phone, and the 390px budget is the renderer's rule rather
+        # than a caller's — see `_wrap_lines`.
+        "elements": [_md(_wrap_lines("\n".join(blocks)))],
     }
 
 
@@ -514,27 +643,32 @@ def _column_set(element_id, cells):
     }
 
 
-def _chart(element_id, *, title, points, axis_label="值"):
+def _chart(eid, *, title, points):
     """A trend chart. GATED — see `render_cardkit`'s `charts_verified`.
 
-    The `chart` element's exact schema is NOT verified against the SDK in this
-    repository, so this builder is only ever reached when a caller declares
-    `charts_verified=True`. Until that declaration is backed by a real client
-    reading a real card, a trend renders as a text line instead (see
-    `_trend_line`), and the gate is the honest default rather than an invented
-    schema shipped because it looked plausible.
+    The shape is taken from the SDK's own component reference for `chart`
+    (VChart): the series lives INSIDE `chart_spec.data.values`, with `xField` /
+    `yField` naming the axis fields. An earlier revision put `data` as a SIBLING
+    of `chart_spec` — the shape a plausible-looking guess produces, and one the
+    reference does not describe. Correcting it here does NOT open the gate: the
+    schema being documented is not the same as a real client rendering a real
+    card, and the reference itself warns that some VChart properties fail on
+    mobile. So `charts_verified` stays the caller's explicit declaration.
+
+    `eid` must already satisfy the `element_id` contract; the `chart` reference
+    restates the same «letter first, ≤ 20 chars» rule as every other component.
     """
     return {
         "tag": "chart",
-        "element_id": element_id,
+        "element_id": eid,
         "chart_spec": {
             "type": "line",
             "title": {"text": title},
+            "data": {"values": [{"x": str(i), "y": float(v)}
+                                for i, v in enumerate(points)]},
             "xField": "x",
             "yField": "y",
-            "axis": {"y": {"title": {"text": axis_label}}},
         },
-        "data": [{"x": str(i), "y": float(v)} for i, v in enumerate(points)],
     }
 
 
@@ -547,6 +681,83 @@ def _trend_line(r):
     span = (high - low) or 1.0
     spark = "".join(blocks[min(7, int((v - low) / span * 7))] for v in points)
     return f"趋势 {r['label']} {spark} （{points[0]:g}→{points[-1]:g}）"
+
+
+def _num(value, unit=""):
+    """A number a person reads, or 未定义 — never `0` for "not configured"."""
+    if value is None:
+        return "未定义"
+    try:
+        return f"{float(value):.1f}{unit}"
+    except (TypeError, ValueError):
+        return f"{value}{unit}"
+
+
+def _account_numbers(a):
+    """CPU and RAM as used/allowance, the pair the user asked to see."""
+    cpu, ram = a.get("cpu") or {}, a.get("ram") or {}
+    return (f"CPU {_num(cpu.get('used'))}/{_num(cpu.get('quota'))} 核"
+            f" · 内存 {_num(ram.get('used'))}/{_num(ram.get('quota'))} GiB")
+
+
+def account_line(a):
+    """One account as the ONE sentence its state earns. No colour, no guess.
+
+    The single place 无法确认 / 已过期 / the used-vs-allowance pair is spelled for
+    an account, so the three can never drift — the same discipline `reading_line`
+    keeps for an ordinary reading.
+    """
+    if a.get("state") == STATE_UNKNOWN:
+        return f"**{a['label']}** 无法确认（{a.get('reason') or '原因未记录'}）"
+    if a.get("state") == STATE_STALE:
+        return (f"**{a['label']}** 已过期 — 最后 {_account_numbers(a)}"
+                f"（{a.get('observed_at') or '时间未知'}）")
+    cpu, ram = a.get("cpu") or {}, a.get("ram") or {}
+    warn = []
+    if cpu.get("warn") is not None:
+        warn.append(f"CPU {_num(cpu.get('warn'))} 核")
+    if ram.get("warn") is not None:
+        warn.append(f"内存 {_num(ram.get('warn'))} GiB")
+    # Two lines, and the split is a 390px decision: the used/allowance pair is
+    # what the user asked to see first, and the soft warning line is context for
+    # it. Joining them ran to 71 characters and wrapped mid-number on a phone.
+    line = f"**{a['label']}** · {_account_numbers(a)}"
+    if warn:
+        line += f"\n警戒线 {'、'.join(warn)}（软线）"
+    return line
+
+
+def _account_order(a):
+    """Most severe first, then most RAM used. The ranking, as a sort key.
+
+    `severity` leads because the card is read top-down and a flagged account must
+    beat an unflagged one that merely holds more memory; the RAM figure breaks
+    ties so the order is deterministic and a largest-first reading the user asked
+    for falls out of the same key.
+    """
+    rank = SEVERITY_RANK.get(str(a.get("severity") or "OK").upper(), 9)
+    used = (a.get("ram") or {}).get("used")
+    try:
+        weight = -float(used)
+    except (TypeError, ValueError):
+        weight = 0.0
+    return (rank, weight, str(a.get("uid")))
+
+
+def _accounts_panel(ref, accounts):
+    """The device's user area: one line per account, inside a fold.
+
+    Collapsed by default. A reader who wants the machine's totals should not
+    have to scroll past every account, and «管理员折叠的多用户排名» is exactly a
+    fold whose ORDER is the ranking — `_account_order` puts the most severe and
+    then the largest account first. The soft-line caveat is spelled once, at the
+    foot, so it cannot be read off an individual row as a hard limit.
+    """
+    ordered = sorted(accounts, key=_account_order)
+    blocks = [account_line(a) for a in ordered]
+    blocks.append(f"_共 {len(accounts)} 个账户 · {QUOTA_NOTE}_")
+    return _panel(element_id("acct", ref), f"账户用量（{len(accounts)}）",
+                  blocks, expanded=False)
 
 
 def _device_title(device):
@@ -565,7 +776,6 @@ def _device_title(device):
 
 def _device_elements(device, *, rich, charts_verified, index):
     ref = device.get("device_ref") or str(index)
-    slug = _slug(ref)
     elements = []
     readings = device.get("readings") or []
     known = [r for r in readings
@@ -573,7 +783,7 @@ def _device_elements(device, *, rich, charts_verified, index):
     if known and rich:
         cells = [f"**{r['label']}**\n{_value(r)}"
                  + (f"\n{r['note']}" if r.get("note") else "") for r in known[:4]]
-        elements.append(_column_set(f"dev-{slug}-face", cells))
+        elements.append(_column_set(element_id("face", ref), cells))
     elif known:
         # The safe variant: the same readings as ONE markdown line, built from
         # `markdown`, which every card this node sends already uses.
@@ -588,28 +798,37 @@ def _device_elements(device, *, rich, charts_verified, index):
             lines.append(trend)
     if lines:
         elements.append(_md(_wrap_lines("\n".join(lines))))
+    # The account (per-UID) area, unique to this card: the device's own user
+    # block plus, when a caller supplies them, the other accounts as a fold. It
+    # is placed AFTER the machine's own readings because it is a slice OF them,
+    # and it never replaces the three blocks.
+    accounts = device.get("accounts") or []
+    if accounts:
+        elements.append(_accounts_panel(ref, accounts))
     if rich and charts_verified:
         for r in readings:
             if len(r.get("trend") or []) >= 2:
-                elements.append(_chart(f"dev-{slug}-trend-{_slug(r['label'])}",
+                elements.append(_chart(element_id("trend", ref, r["label"]),
                                        title=f"{device['display_name']} {r['label']}",
                                        points=r["trend"]))
     return elements
 
 
-def _slug(text):
-    """A stable, collision-safe id fragment from any label.
+def element_id(prefix, *parts):
+    """A CardKit 2.0 `element_id`: starts with a letter, ≤ 20 characters.
 
-    A CJK label has no ASCII to keep, so the cleaned form is empty and two
-    different labels ("内存", "磁盘 /") would both fall back to the same word —
-    which is how two elements share an `element_id`. The fallback is therefore a
-    digest of the ORIGINAL text, so distinct labels stay distinct and the same
-    label stays stable across renders.
+    The component reference states this bound for every element, so it is built
+    here rather than assembled ad hoc at each call site — the shape that produced
+    a 31-character id before. `parts` are folded into a digest, so two different
+    element identities never collide and the same identity is byte-stable across
+    renders (which the determinism test relies on). Two labels that differ only
+    in CJK are two identities here for the same reason: there is no ASCII to
+    keep, so identity comes from the digest and never from a cleaned-up word.
     """
-    cleaned = re.sub(r"[^0-9a-zA-Z]+", "-", str(text)).strip("-")
-    if cleaned:
-        return cleaned
-    return "u" + hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:8]
+    head = re.sub(r"[^A-Za-z]", "", str(prefix))[:1] or "e"
+    digest = hashlib.sha1("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
+    # "<letter><8 hex>-<8 hex>" = 18 chars: letter-first, well inside the 20 ceiling.
+    return f"{head}{digest[:8]}-{digest[8:16]}"
 
 
 def _summary_line(model):
@@ -707,7 +926,7 @@ def render_cardkit(model, *, rich=False, charts_verified=False):
 
     elements.append(_hr())
     for index, device in enumerate(model["devices"]):
-        fold = _panel(f"dev-{_slug(device.get('device_ref') or index)}-fold",
+        fold = _panel(element_id("dev", device.get("device_ref") or index),
                       _device_title(device), [], expanded=False)
         fold["elements"] = _device_elements(
             device, rich=rich, charts_verified=charts_verified, index=index)
@@ -723,7 +942,12 @@ def render_cardkit(model, *, rich=False, charts_verified=False):
 
     card = {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True},
+        # CardKit 2.0 `config`, per the SDK's own reference: `update_multi` is
+        # the shared-card flag and v2 «仅支持 true» (this is what makes the
+        # message patchable in place, which is the whole point of the update
+        # cadence) and `width_mode: "default"` is the ≤600px reading rather than
+        # the 1.0 `wide_screen_mode` spelling this renderer used to carry.
+        "config": {"update_multi": True, "width_mode": "default"},
         "header": {
             "template": _TEMPLATES.get(verdict, "grey"),
             "title": {"tag": "plain_text", "content": title},
@@ -783,6 +1007,16 @@ def validate(card):
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         raise MonitorCardError(f"duplicate element_id(s) {duplicates}")
+    # The component reference states one rule for every `element_id`: letter
+    # first, ≤ 20 characters. Checked here rather than trusted to each call site,
+    # because the failure it prevents — a truncated id colliding with another —
+    # is invisible in a conversation and only shows up as the wrong fold opening.
+    for eid in ids:
+        if not isinstance(eid, str) or not _ELEMENT_ID_RE.match(eid) \
+                or len(eid) > ELEMENT_ID_MAX:
+            raise MonitorCardError(
+                f"element_id {eid!r} is not «字母开头，≤{ELEMENT_ID_MAX} 字符»; the "
+                f"CardKit 2.0 reference sets that bound for every component")
     blob = json.dumps(card, ensure_ascii=False, sort_keys=True).encode("utf-8")
     if len(blob) > MAX_CARD_BYTES:
         raise MonitorCardError(
@@ -817,4 +1051,30 @@ def validate_model(model):
                     f"attribution {r.get('scope')!r}, not "
                     f"{CGROUP_ATTRIBUTION!r}; a share nobody attributed is not "
                     "this user's share")
+        for a in device.get("accounts") or []:
+            # The privacy boundary, enforced where the data is built: no argv,
+            # no cwd, no environment, no secret. A card that carried one would be
+            # reading the account rather than measuring it.
+            leaked = [k for k in ACCOUNT_FORBIDDEN_FIELDS if k in a]
+            if leaked:
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} carries forbidden field(s) "
+                    f"{leaked}; a UID block may name a uid, a display name and its "
+                    "CPU/RAM figures, and nothing that could carry another "
+                    "person's command line, environment or secrets")
+            if not isinstance(a.get("uid"), int) or isinstance(a.get("uid"), bool):
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} has uid {a.get('uid')!r}; an "
+                    "account is identified by a kernel UID and not by a name")
+            if a.get("kind") != ACCOUNT:
+                raise MonitorCardError(
+                    f"account entry {a.get('label')!r} has kind {a.get('kind')!r}")
+            if a.get("state") == STATE_KNOWN and not a.get("observed_at"):
+                raise MonitorCardError(
+                    f"KNOWN account {a.get('label')!r} has no observed_at; a "
+                    "measurement without provenance is not a measurement")
+            if a.get("state") in (STATE_UNKNOWN, STATE_STALE) and not a.get("reason"):
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} is {a.get('state')} with no "
+                    "reason; an unestablished fact must say why")
     return model

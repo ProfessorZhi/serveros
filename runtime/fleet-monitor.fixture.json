@@ -1,5 +1,5 @@
 {
-  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. The refs are the fleet's; the values are illustrative. Note what is ABSENT: Windows and the A6000 carry NO egress-quota reading, because the user confirmed a quota for Tokyo only and an unconfirmed quota must not be invented. Tokyo's share carries attribution=cgroup, the only attribution under which a host share is shown.",
+  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. The card covers the THREE authorised company devices only — Tokyo (device:tokyo-shared-dev-01), the FJPCOS Windows workstation (device:work-fj) and the A6000 inference box (device:llm-lab-dell). The personal Windows machine (device:personal-dell) is deliberately ABSENT: it is not a company monitoring target, and a private machine shown beside these is the mistake this note exists to prevent. Also ABSENT: an egress-quota reading on Windows and the A6000, because the user confirmed a quota for Tokyo only and an unconfirmed quota must not be invented. Tokyo's share carries attribution=cgroup, the only attribution under which a host share is shown. Each device carries an `accounts` list: the per-UID CPU/RAM block V13 puts in the device's user area. The `quota`/`warn` figures are SUGGESTED soft lines, never cgroup limits — see the QUOTA_NOTE the renderer appends to the fold.",
   "now": "2026-10-13T06:00:00Z",
   "sample": true,
   "stale_after_s": 1800,
@@ -18,11 +18,19 @@
         {"kind": "reading", "label": "磁盘忙碌度", "value": 6, "unit": "%", "note": "iostat 15s 平均", "state": "KNOWN", "observed_at": "2026-10-13T05:00:00Z", "severity": "OK", "trend": []},
         {"kind": "network", "label": "公网出向", "value": 4.1, "unit": "Mbps", "note": "", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "public", "trend": []},
         {"kind": "network", "label": "公网出口配额", "value": 100, "unit": "Mbps", "note": "用户已确认", "state": "KNOWN", "observed_at": "2026-10-13T05:58:00Z", "severity": "OK", "scope": "public", "trend": []}
+      ],
+      "accounts": [
+        {"kind": "account", "uid": 1000, "display_name": "vince", "label": "账户 vince",
+         "cpu": {"used": 3.2, "quota": 8.0, "warn": 6.0},
+         "ram": {"used": 12.0, "quota": 32.0, "warn": 28.0},
+         "state": "KNOWN", "reason": null, "severity": "OK",
+         "observed_at": "2026-10-13T05:58:00Z", "trend": [10.1, 10.8, 11.5, 11.9, 12.0],
+         "scope": "uid", "note": "额度与警戒线均为建议软线，不是 cgroup 硬限制；本卡不限制、不结束任何进程", "source": "fixture"}
       ]
     },
     {
-      "device_ref": "device:personal-dell",
-      "display_name": "Windows 工作站",
+      "device_ref": "device:work-fj",
+      "display_name": "FJPCOS 工作站",
       "platform": "windows",
       "reachability": {"state": "KNOWN", "observed_at": "2026-10-13T05:57:00Z"},
       "readings": [
@@ -32,6 +40,14 @@
         {"kind": "reading", "label": "磁盘 D:", "value": 55, "unit": "%", "note": "可用 1.6 TiB", "state": "KNOWN", "observed_at": "2026-10-13T05:57:00Z", "severity": "OK", "trend": []},
         {"kind": "reading", "label": "活动 Agent 数", "value": 2, "note": "会话表实测", "state": "KNOWN", "observed_at": "2026-10-13T05:57:00Z", "severity": "OK", "trend": []},
         {"kind": "network", "label": "网络总流量（口径未区分）", "value": 23.5, "unit": "Mbps", "note": "", "state": "KNOWN", "observed_at": "2026-10-13T05:57:00Z", "severity": "OK", "scope": "undifferentiated", "trend": []}
+      ],
+      "accounts": [
+        {"kind": "account", "uid": 1001, "display_name": "fj", "label": "账户 fj",
+         "cpu": {"used": 3.1, "quota": 4.0, "warn": 3.0},
+         "ram": {"used": 14.6, "quota": 16.0, "warn": 14.0},
+         "state": "KNOWN", "reason": null, "severity": "ATTENTION",
+         "observed_at": "2026-10-13T05:57:00Z", "trend": [8.0, 9.5, 11.0, 13.2, 14.6],
+         "scope": "uid", "note": "额度与警戒线均为建议软线，不是 cgroup 硬限制；本卡不限制、不结束任何进程", "source": "fixture"}
       ]
     },
     {
@@ -47,14 +63,15 @@
         {"kind": "reading", "label": "GPU 温度", "value": 68, "unit": "°C", "note": "阈值 83°C", "state": "KNOWN", "observed_at": "2026-10-13T05:59:00Z", "severity": "OK", "trend": []},
         {"kind": "reading", "label": "模型盘", "value": 61, "unit": "%", "note": "可用 780 GiB", "state": "KNOWN", "observed_at": "2026-10-13T05:59:00Z", "severity": "OK", "trend": []},
         {"kind": "reading", "label": "当前推理服务", "value": "vllm·qwen-7b", "note": "端口 8000 健康", "state": "KNOWN", "observed_at": "2026-10-13T05:59:00Z", "severity": "OK", "trend": []}
+      ],
+      "accounts": [
+        {"kind": "account", "uid": 1000, "display_name": "vince", "label": "账户 vince",
+         "cpu": {"used": 1.4, "quota": 8.0, "warn": 6.0},
+         "ram": {"used": 6.2, "quota": 32.0, "warn": 28.0},
+         "state": "KNOWN", "reason": null, "severity": "OK",
+         "observed_at": "2026-10-13T05:59:00Z", "trend": [4.0, 4.8, 5.5, 6.0, 6.2],
+         "scope": "uid", "note": "额度与警戒线均为建议软线，不是 cgroup 硬限制；本卡不限制、不结束任何进程", "source": "fixture"}
       ]
-    },
-    {
-      "device_ref": "device:work-fj",
-      "display_name": "办公笔记本",
-      "platform": "windows",
-      "reachability": {"state": "UNKNOWN", "reason": "没有传输层报告该设备的可达性"},
-      "readings": []
     }
   ],
   "services": [

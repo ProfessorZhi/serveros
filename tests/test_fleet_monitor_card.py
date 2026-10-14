@@ -337,9 +337,17 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(any("磁盘 C:" in a["text"] for a in model["attention"]))
         # The unsplit Windows total is present and not called 公网.
         win = next(d for d in model["devices"]
-                   if d["device_ref"] == "device:personal-dell")
+                   if d["device_ref"] == "device:work-fj")
         net = next(r for r in win["readings"] if r["kind"] == "network")
         self.assertNotIn("公网", net["label"])
+
+    def test_fixture_covers_exactly_the_three_company_devices(self):
+        # The personal Windows machine must not be a monitoring sample: a private
+        # host shown beside the company three is the leak this pins shut.
+        model = source.model_from_fixture()
+        refs = sorted(d["device_ref"] for d in model["devices"])
+        self.assertEqual(refs, ["device:llm-lab-dell", "device:tokyo-shared-dev-01",
+                                "device:work-fj"])
 
 
 class Phase2Test(unittest.TestCase):
@@ -390,7 +398,7 @@ class Phase2Test(unittest.TestCase):
             return [r for r in device["readings"] if r["label"] == "公网出口配额"]
 
         self.assertEqual(len(quotas("device:tokyo-shared-dev-01")), 1)
-        self.assertEqual(quotas("device:personal-dell"), [])
+        self.assertEqual(quotas("device:work-fj"), [])
         self.assertEqual(quotas("device:llm-lab-dell"), [])
 
     def test_host_share_needs_cgroup_attribution(self):
