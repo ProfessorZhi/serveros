@@ -129,6 +129,33 @@ before they are written. Nothing in a receipt is a credential.
 | 124 | the unit hit `RuntimeMaxSec` |
 | 137 | OOM-killed or signal-terminated |
 
+## Running these tests
+
+This repository has no CI configuration (`.github/` does not exist), so the
+check that matters is the one an operator runs. It is the same shape the runner
+enforces, applied by hand:
+
+```
+cd <a worktree> && ( ulimit -v 8000000; timeout 300 \
+  <toolchains>/serveros-test/bin/pytest \
+  tests/test_constrained_runner.py tests/test_constrained_runner_contract.py \
+  -q -p no:cacheprovider )
+```
+
+Explicit `tests/` paths, an isolated worktree, and an outer `timeout` plus a
+memory cap — never a bare `python -m pytest` from a home directory. The suite
+itself allocates nothing large: every policy branch is driven through a fake
+systemd, and the one test that talks to the kernel runs `/bin/sh -c "sleep 0.5"`
+under a 32 MiB cap, reads the cgroup files back, and stops. It skips when the
+user manager is absent, and it can be disabled outright with
+`SERVEROS_CONSTRAINED_RUNNER_NO_SYSTEMD=1`.
+
+Once the runner is in use, the whole suite can be run through it:
+
+```
+serverosctl test run --worktree <worktree> --all --reason "<why>"
+```
+
 ## The Windows FJPCOS → Tokyo caller
 
 The launcher that starts tests over `ssh` is **not** part of this repository —
