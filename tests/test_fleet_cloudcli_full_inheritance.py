@@ -27,7 +27,7 @@ import unittest
 from pathlib import Path
 
 from fleet_mcp import cloudcli_native, node_protocol, tools as tools_mod
-from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,
+from fleet_mcp.config import (AuditBinding, AuthBinding, CreateGrant, FleetConfig,
                               PolicyBinding, ProviderBinding, ServerBinding)
 from fleet_mcp.errors import (APPROVAL_REQUIRED, BAD_REQUEST, BAD_SESSION_REF,
                               PROVIDER_UNREACHABLE, RATE_LIMITED, SCOPE_DENIED,
@@ -394,13 +394,48 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(h.providers[TOKYO].calls,
                          [("session_send", {"session": "s1", "message": "hi"})])
 
-    def test_interrupt_refused_when_not_in_control_allow(self):
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("control",)}})
+    def test_interrupt_refused_when_neither_the_list_nor_a_grant_admits(self):
+        """The session arm and the grant arm are both closed here.
+
+        The device is control-enabled (the harness sets `allow_control: true`),
+        and neither `policy.control_allow` nor an operator grant names this
+        session, so the run may not be stopped.
+        """
+        h = Harness(self.tmp)                      # no grant, no control_allow
         with self.assertRaises(FleetRefusal) as caught:
             h.call("session_interrupt", args={"session": "s1"},
                    session_ref=ref(TOKYO, "s1"),
                    principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
-        # device allow_control is on, but the SESSION is not in control_allow.
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_control_grant_admits_a_session_the_list_never_named(self):
+        """The point of the grant arm, and the reason it exists.
+
+        A session minted after the last edit to `control_allow` is controllable
+        without a second, manual edit to a file on another machine. Before this
+        arm, every newly created session had to be added to `control_allow` by
+        hand before it could be stopped — a floor nobody keeps up, and one that
+        gets widened to `*` instead.
+        """
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("control",)}})
+        result = h.call("session_interrupt", args={"session": "brand-new"},
+                        session_ref=ref(TOKYO, "brand-new"),
+                        principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
+        self.assertEqual(result["tool"], "session_interrupt")
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
+                         ["session_interrupt"])
+
+    def test_a_control_grant_on_a_personal_device_is_inert(self):
+        """`_operator_grant_verbs` returns `()` unless the device is
+        `ownership: company`, so the grant arm cannot widen onto a machine the
+        organization does not own — the same rule the send arm already had."""
+        h = Harness(self.tmp, owner="personal",
+                    grants={OAUTH: {TOKYO: ("control",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_interrupt", args={"session": "s1"},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
         self.assertEqual(h.providers[TOKYO].calls, [])
 
@@ -455,21 +490,34 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "tool": "session_create"})
 
     def test_approval_answer_needs_the_approve_scope_then_a_grant_then_a_choice(self):
+        # The session floor is satisfied for `h` so the cases below reach the
+        # gates they are about; case 2 uses its own harness to show the floor
+        # refusing first.
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("approve",)}})
         # 1. no `fleet:approve` scope -> refused at the scope gate.
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("approve",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer", args={"requestId": "r1", "allow": True},
+                   principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL))
+        self.assertEqual(caught.exception.code, SCOPE_DENIED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer", args={"requestId": "r1", "allow": True},
                    principal=h.principal(SCOPE_READ, SCOPE_SEND, SCOPE_CONTROL))
         self.assertEqual(caught.exception.code, SCOPE_DENIED)
         self.assertEqual(h.providers[TOKYO].calls, [])
         # 2. scope present, no operator grant -> refused at the grant gate.
+        #    The SESSION floor is closed here too (no `send_allow`, no grant), so
+        #    that arm refuses first: an approval is answered for one session, and
+        #    a caller with no reach into that session is refused before the
+        #    device-level grant is read at all.
         ungranted = Harness(self.tmp, grants={})
         with self.assertRaises(FleetRefusal) as caught:
             ungranted.call("approval_answer",
                            args={"requestId": "r1", "allow": True},
                            session_ref=ref(TOKYO, "s1"),
                            principal=ungranted.principal(SCOPE_READ, SCOPE_APPROVE))
-        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
         self.assertEqual(ungranted.providers[TOKYO].calls, [])
         # 3. granted, but no requestId -> refused (an answer to nothing).
         with self.assertRaises(FleetRefusal) as caught:
@@ -510,7 +558,9 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(h.providers[TOKYO].calls, [])
 
     def test_a_request_id_the_device_does_not_enumerate_is_refused(self):
-        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ("approve",)}})
+        # The session floor is satisfied, so the ownership read is what refuses.
+        h = Harness(self.tmp, send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("approve",)}})
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer",
                    args={"requestId": "someone-elses", "allow": True},
@@ -1818,6 +1868,218 @@ class AdvertisedSchemaInvariantTest(unittest.TestCase):
                                  recorded.get("additionalProperties", True))
                 self.assertEqual(sorted(advertised.get("properties") or {}),
                                  sorted(recorded.get("properties") or {}))
+
+
+class ApprovalSessionFloorTest(unittest.TestCase):
+    """An approval is answered for ONE session, and the device arm is not enough.
+
+    Before this floor the `approve` branch checked the requestId, the device and
+    the device-level `approve` grant — and nothing about the session beyond its
+    address. A principal holding `approve` for a machine could therefore answer
+    an approval raised in ANY session on it, which on a shared company
+    workstation means answering a request whose owner never gave that decision.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _h(self, **over):
+        return Harness(self.tmp, **over)
+
+    def test_a_device_wide_approve_grant_does_not_reach_another_session(self):
+        """The reported defect, as a test: the grant names the device, the floor
+        names the session, and the session is the one that decides."""
+        h = self._h(send_allow=(ref(TOKYO, "mine"),),
+                    grants={OAUTH: {TOKYO: ("approve",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer",
+                   args={"requestId": "r1", "allow": True},
+                   session_ref=ref(TOKYO, "someone-elses"),
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_the_same_grant_does_answer_its_own_session(self):
+        h = self._h(send_allow=(ref(TOKYO, "mine"),),
+                    grants={OAUTH: {TOKYO: ("approve",)}})
+        got = h.call("approval_answer",
+                     args={"requestId": "r1", "allow": True},
+                     session_ref=ref(TOKYO, "mine"),
+                     principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(got["ok"], True)
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
+                         ["approvals_list", "approval_answer"])
+
+    def test_no_reach_into_the_session_refuses_before_the_grant_is_read(self):
+        """No `send_allow`, no send grant: the session arm refuses first."""
+        h = self._h(grants={OAUTH: {TOKYO: ("approve",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer",
+                   args={"requestId": "r1", "allow": True},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_the_human_decision_is_still_required_and_still_a_boolean(self):
+        """The floor was ADDED; the allow/deny requirement is unchanged."""
+        h = self._h(send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("approve", "send")}})
+        for bad in ({}, {"requestId": "r1"}, {"requestId": "r1", "allow": "yes"},
+                    {"requestId": "r1", "allow": 1}):
+            with self.subTest(args=bad):
+                with self.assertRaises(FleetRefusal) as caught:
+                    h.call("approval_answer", args=bad,
+                           session_ref=ref(TOKYO, "s1"),
+                           principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+                self.assertEqual(caught.exception.code, BAD_REQUEST)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_personal_device_cannot_be_approved_on_either_way(self):
+        """The device-level grant is inert on a machine the organization does
+        not own, so the `approve` operator verb refuses — and the session floor
+        would have refused it too had the grant been read first."""
+        h = self._h(owner="personal", send_allow=(ref(TOKYO, "s1"),),
+                    grants={OAUTH: {TOKYO: ("approve", "send")}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("approval_answer",
+                   args={"requestId": "r1", "allow": True},
+                   session_ref=ref(TOKYO, "s1"),
+                   principal=h.principal(SCOPE_READ, SCOPE_APPROVE))
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+
+class CreateAuthorizationMatrixTest(unittest.TestCase):
+    """Creation needs four host gates together, and each one alone is not enough.
+
+    `OAuth fleet:create` scope, a `create` operator grant for this principal on
+    this device, the provider's own `allow_create`, and the project named in
+    `policy.create_allow`. The two device-side gates (`Node.allow_create` and
+    `Node.allow_create_projects`) live on the connector and are covered by
+    `tests/test_fleet_mcp_node.py`; these are the four this side owns.
+    """
+
+    PROJECT = "p-1"
+    GRANT = {PROJECT: CreateGrant(permission_modes=("default",), models=())}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _call(self, h):
+        return h.call("session_create", args={"project": self.PROJECT},
+                      project=self.PROJECT,
+                      principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+
+    def test_all_four_together_admit(self):
+        h = Harness(self.tmp, create_allow=dict(self.GRANT),
+                    allow_create=True, grants={OAUTH: {TOKYO: ("create",)}})
+        self.assertEqual(self._call(h)["tool"], "session_create")
+        self.assertEqual([c[0] for c in h.providers[TOKYO].calls], ["session_create"])
+
+    def test_without_the_scope_it_is_refused(self):
+        h = Harness(self.tmp, create_allow=dict(self.GRANT), allow_create=True,
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create", args={"project": self.PROJECT},
+                   project=self.PROJECT,
+                   principal=h.principal(SCOPE_READ))
+        self.assertEqual(caught.exception.code, SCOPE_DENIED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_without_the_operator_grant_it_is_refused(self):
+        h = Harness(self.tmp, create_allow=dict(self.GRANT), allow_create=True,
+                    grants={})
+        with self.assertRaises(FleetRefusal) as caught:
+            self._call(h)
+        self.assertEqual(caught.exception.code, WRITE_NOT_GRANTED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_without_the_device_flag_it_is_refused(self):
+        h = Harness(self.tmp, create_allow=dict(self.GRANT), allow_create=False,
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            self._call(h)
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_project_outside_the_allowlist_is_refused(self):
+        h = Harness(self.tmp, create_allow={"some-other": CreateGrant()},
+                    allow_create=True, grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            self._call(h)
+        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_permission_mode_the_project_does_not_allow_is_refused(self):
+        """`bypassPermissions` is not reachable by naming it: the project's own
+        `permission_modes` decides, and this project allows only `default`."""
+        h = Harness(self.tmp, create_allow=dict(self.GRANT), allow_create=True,
+                    grants={OAUTH: {TOKYO: ("create",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.call("session_create",
+                   args={"project": self.PROJECT, "permissionMode": "bypassPermissions"},
+                   project=self.PROJECT,
+                   principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertIn("bypassPermissions", str(caught.exception.detail)
+                      + str(getattr(caught.exception, "detail", "")))
+        self.assertEqual(h.providers[TOKYO].calls, [])
+
+    def test_a_project_that_names_bypass_permissions_does_allow_it(self):
+        """The other direction, so the ceiling is a ceiling and not a blanket
+        ban: a project whose operator wrote the mode admits it."""
+        h = Harness(self.tmp,
+                    create_allow={self.PROJECT: CreateGrant(
+                        permission_modes=("bypassPermissions",))},
+                    allow_create=True, grants={OAUTH: {TOKYO: ("create",)}})
+        got = h.call("session_create",
+                     args={"project": self.PROJECT, "permissionMode": "bypassPermissions"},
+                     project=self.PROJECT,
+                     principal=h.principal(SCOPE_READ, SCOPE_CREATE))
+        self.assertEqual(got["tool"], "session_create")
+
+
+class ListToolsResultShapeTest(unittest.TestCase):
+    """`tools/list` answers with the keys the spec defines, and no others.
+
+    The result used to carry a top-level `ttl: 0`. `ttl` is a field of the TASK
+    schemas, not of `ListToolsResult`, whose own keys are `tools` (required),
+    `nextCursor` and `_meta`. The official SDK parses this result with
+    `z.core.$strip`, so a conformant client dropped the key and never read the
+    "do not cache" hint it was meant to carry — which is exactly why removing it
+    cannot change what a conformant client does, and why a client that validated
+    strictly was the only one it could have hurt.
+    """
+
+    #: The keys `ListToolsResult` declares, from the MCP SDK's own schema.
+    ALLOWED = {"tools", "nextCursor", "_meta"}
+
+    def _result(self):
+        from fleet_mcp import server as srv
+        handler = next(c for n, c in vars(srv).items()
+                       if isinstance(c, type) and hasattr(c, "_dispatch"))
+        return handler(lambda: None).handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})["result"]
+
+    def test_the_result_carries_only_spec_keys(self):
+        result = self._result()
+        self.assertEqual(set(result) - self.ALLOWED, set())
+
+    def test_the_result_still_carries_every_served_tool(self):
+        from fleet_mcp import tools as tools_mod
+        result = self._result()
+        self.assertEqual(len(result["tools"]), len(tools_mod.SERVED_TOOLS))
+
+    def test_the_cache_hint_is_gone_from_the_wire(self):
+        self.assertNotIn("ttl", self._result())
 
 
 if __name__ == "__main__":

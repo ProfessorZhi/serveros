@@ -91,10 +91,17 @@ class McpServer:
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {
-                "tools": [tool.as_mcp() for tool in SERVED_TOOLS],
-                "ttl": 0,  # static surface: no cached list can go stale
-            }
+            # `tools` and, optionally, `nextCursor`. Nothing else: the earlier
+            # shape carried a top-level `ttl: 0` meaning "do not cache this",
+            # which is not a field of `ListToolsResult` at all — `ttl` belongs
+            # to the TASK schemas (`TaskCreationParamsSchema`). The official SDK
+            # parses this result with `z.core.$strip`, so a conformant client
+            # discarded the key on arrival and never saw the hint; a client that
+            # validated the result strictly could have rejected it instead. Since
+            # nothing that conforms ever read it, removing it changes no
+            # conformant client's behaviour and stops the surface advertising a
+            # field the spec does not define.
+            return {"tools": [tool.as_mcp() for tool in SERVED_TOOLS]}
         if method == "tools/call":
             return self._tools_call(params)
         if method == "resources/list":
