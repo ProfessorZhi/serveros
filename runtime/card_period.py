@@ -1307,9 +1307,9 @@ def archive(model: dict, *, period: dict, rows: list[dict],
             incidents=(), recoveries=(), unresolved=()) -> dict:
     """The four blocks a period's final patch carries.
 
-    总览概括 / 完整时段趋势一览 / 三设备摘要 / 事故·自愈·未解决交接. Built here
-    and not in the renderer, for the reason `card_day.summary` gives: a renderer
-    that knew how to read a row would be a second reader of the row schema.
+    总览概括 / 时段趋势 / 三设备摘要 / 事故·自愈·未解决交接. Built here and not
+    in the renderer, for the reason `card_day.summary` gives: a renderer that
+    knew how to read a row would be a second reader of the row schema.
 
     `incidents`, `recoveries` and `unresolved` are the period's event ledger —
     the NEW/ESCALATED/RECOVERED facts and the findings still open — handed in by
@@ -1318,9 +1318,7 @@ def archive(model: dict, *, period: dict, rows: list[dict],
     once.
     """
     entries = day.timeline([check_row(r) for r in rows])
-    devices = []
-    for device in (model.get("devices") or []):
-        devices.append(_device_summary(device))
+    devices = [_device_summary(device) for device in (model.get("devices") or [])]
     return {
         "schema": SCHEMA,
         "period_ref": period.get("period_ref"),
@@ -1344,15 +1342,14 @@ def archive(model: dict, *, period: dict, rows: list[dict],
 
 def _overview(model: dict, period: dict, entries: list[dict]) -> dict:
     devices = model.get("devices") or []
-    attention = model.get("attention") or []
     return {
         "devices": len(devices),
-        "attention": len(attention),
+        "attention": len(_alert_lines(model)),
         "verdict": monitor._fleet_verdict(model) if devices else "UNKNOWN",
         "transitions": sum(1 for e in entries if e["kind"] == "transition"),
         "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
         "says": (f"{period.get('day_ref')} · {period.get('label')} 时段结束："
-                 f"{len(devices)} 台设备，{len(attention)} 项需要关注，"
+                 f"{len(devices)} 台设备，{len(_alert_lines(model))} 项需要关注，"
                  f"时段内 {sum(1 for e in entries if e['kind'] == 'transition')} "
                  f"处状态变化、{sum(1 for e in entries if e['kind'] == 'gap')} "
                  f"段未观测"),
@@ -1360,79 +1357,342 @@ def _overview(model: dict, period: dict, entries: list[dict]) -> dict:
 
 
 def _device_summary(device: dict) -> dict:
-    """One device's line in the final摘要, in the card's own reading shape."""
-    name = device.get("display_name") or device.get("device_ref")
+    """One device's line in the final 摘要, as TYPED words.
+
+    `reach` is three letters and `reach_word` is the phrase a person reads. The
+    reachability MAPPING never travels: the card this module used to emit
+    carried `{'state': 'KNOWN', 'reason': None, 'observed_at': ...}` straight
+    into the body, because this dict was handed to a formatter that stringified
+    it. A shape a formatter can leak is a shape this layer does not return.
+    """
     return {
         "device_ref": device.get("device_ref"),
-        "name": name,
-        "reachability": device.get("reachability"),
-        "readings": [monitor.reading_line(r) for r in (device.get("readings") or [])][:6],
+        "name": device.get("display_name") or device.get("device_ref"),
+        "reach": _reach_state(device),
+        "reach_word": _reach_note(device),
+        "readings": [monitor.reading_line(r)
+                     for r in (device.get("readings") or [])][:6],
     }
 
 
-def render_archive(view: dict, *, model: dict, rich: bool = False,
-                   charts_verified: bool = False) -> dict:
-    """The period's FINAL card: the fleet card with the archive written above it.
+# ---------------------------------------------------------------------------
+# the presentation layer — TYPED, and it can only speak in words
+# ---------------------------------------------------------------------------
+#
+# EVERY value that reaches a card body comes through one of these functions.
+# The rule they enforce is the one the 2026-10-14 review found broken: no raw
+# `dict`, no `None`, no internal key and no Python quote may reach the markdown.
+# The failure they prevent is concrete — the previous card body contained
+# `{'state': 'KNOWN', 'reason': None, 'observed_at': '...'}` — and the way they
+# prevent it is that a caller wanting a word receives a word, so the mapping
+# object has no path to the body at all.
 
-    The V13 three-device information architecture is NOT reproduced here — it is
-    `fleet_monitor_card.render_cardkit`'s output, lifted and shown under a period
-    header. A second renderer of the same three devices would be a second place
-    the layout is decided, and the two would disagree on the card that mattered.
+_REACH_WORDS = {"KNOWN": "有新鲜读数", "STALE": "可达性过期", "UNKNOWN": "未获取采样"}
+#: Labels the tokyo KPI row prefers, in this order, from the readings that
+#: actually arrived. A label with no reading is simply absent — never a zero.
+_KPI_ORDER = ("CPU", "内存", "交换", "磁盘")
+#: The swap reading above this percent gets its own tight line. It does NOT
+#: colour the header: a swap near its soft line is worth a look, not an incident.
+_SWAP_NEAR_PERCENT = 89.0
 
-    `charts_verified` stays False. The VChart element and the narrow-screen
-    `column_set` are both still unverified against a real client, so the default
-    is the text card and the archive carries its numbers as words.
+
+def _reach_state(device) -> str:
+    """A device's reachability as one of THREE words. Never the mapping."""
+    reach = device.get("reachability") if isinstance(device, dict) else None
+    state = str(reach.get("state") or "").upper() if isinstance(reach, dict) else ""
+    return state if state in _REACH_WORDS else "UNKNOWN"
+
+
+def _reach_note(device) -> str:
+    """The reachability phrase a person reads. Never `None`, never a key."""
+    state = _reach_state(device)
+    if state == "KNOWN":
+        return "有新鲜读数"
+    if state == "STALE":
+        return "可达性过期"
+    # An unreached device means the CONNECTOR did not reach it; it does NOT mean
+    # the device is offline. Fleet reachability is not resource-monitoring
+    # coverage, and «失联» would say the second thing while meaning the first.
+    return "未获取采样 · 状态未知"
+
+
+def _device_name(device) -> str:
+    return str(device.get("display_name") or device.get("device_ref") or "设备")
+
+
+def _coverage_line(model: dict) -> str:
+    return " · ".join(f"{_device_name(d)} {_reach_note(d)}"
+                      for d in (model.get("devices") or []))
+
+
+def _service_line(model: dict) -> str:
+    """Service COUNTS, but only when they were actually collected.
+
+    `共 0` from a pass that never read a service list is not «there are zero
+    services» — it is «nobody looked». The two are reported differently here
+    for the same reason `reading_line` refuses to render an unread reading as
+    a zero.
+    """
+    services = (model.get("summary") or {}).get("services") or {}
+    if int(services.get("total") or 0) <= 0:
+        return "服务：未采集"
+    return (f"服务 共 {services['total']} · 正常 {services['ok']} · 需关注 "
+            f"{services['attention']} · 需处理 {services['critical']} · 无法确认 "
+            f"{services['unknown']}")
+
+
+def _kpi_lines(device) -> list[str]:
+    """Two to four of the device's REAL readings, formatted with their units."""
+    known = [r for r in (device.get("readings") or [])
+             if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
+    picked, used = [], set()
+    for want in _KPI_ORDER:
+        for r in known:
+            if id(r) in used:
+                continue
+            if want in str(r.get("label") or ""):
+                picked.append(r)
+                used.add(id(r))
+                break
+    if not picked:
+        picked = known[:4]
+    return [f"**{r['label']}** {monitor._value(r)}" for r in picked[:4]]
+
+
+def _swap_warning(device) -> str | None:
+    """A tight line when swap sits near its soft threshold. No colour, no alarm."""
+    for r in device.get("readings") or []:
+        if "交换" not in str(r.get("label") or "") \
+                or r.get("state") != monitor.STATE_KNOWN:
+            continue
+        value = str(r.get("value") or "")
+        if not value.endswith("%"):
+            continue
+        try:
+            percent = float(value[:-1])
+        except ValueError:
+            continue
+        if percent >= _SWAP_NEAR_PERCENT:
+            note = r.get("note") or ""
+            return f"{r['label']} {value}" + (f"，接近阈值（{note}）" if note else "，接近阈值")
+    return None
+
+
+def _alert_lines(model: dict) -> list[str]:
+    """REAL findings only — a reading at ATTENTION/CRITICAL that was READ.
+
+    A device nobody sampled is NOT an alert: it is a data gap, and it is listed
+    as one below. Conflating the two is what made «Windows 未获取采样» paint the
+    whole card red, which is the false severity the review named.
+    """
+    out = []
+    for device in model.get("devices") or []:
+        for r in device.get("readings") or []:
+            severity = str(r.get("severity") or "OK").upper()
+            if severity in ("ATTENTION", "CRITICAL") \
+                    and r.get("state") == monitor.STATE_KNOWN:
+                out.append(f"{_device_name(device)} · {r['label']}："
+                           f"{monitor._value(r)}"
+                           + (f"（{r['note']}）" if r.get("note") else ""))
+    return out
+
+
+def _real_critical(model: dict) -> bool:
+    """Whether a genuinely CONFIRMED critical exists. The only red trigger."""
+    for device in model.get("devices") or []:
+        for r in device.get("readings") or []:
+            if str(r.get("severity") or "").upper() == "CRITICAL" \
+                    and r.get("state") == monitor.STATE_KNOWN:
+                return True
+    services = (model.get("summary") or {}).get("services") or {}
+    return int(services.get("critical") or 0) > 0
+
+
+def _gap_lines(model: dict) -> list[str]:
+    gaps = []
+    for device in model.get("devices") or []:
+        if _reach_state(device) != "KNOWN":
+            gaps.append(f"{_device_name(device)}：未获取采样（状态未知）")
+            continue
+        unknown = [r for r in device.get("readings") or []
+                   if r.get("state") != monitor.STATE_KNOWN]
+        if unknown:
+            gaps.append(f"{_device_name(device)}：{len(unknown)} 项未读到")
+    return gaps
+
+
+def _fold_title(device) -> str:
+    """A fold header that leads with the STATE, in words, never «失联»."""
+    name = _device_name(device)
+    readings = device.get("readings") or []
+    bad = [r for r in readings
+           if str(r.get("severity") or "").upper() in ("CRITICAL", "ATTENTION")
+           and r.get("state") == monitor.STATE_KNOWN]
+    mark = {"CRITICAL": "🚨", "ATTENTION": "⚠️"}.get(
+        max((str(r.get("severity")).upper() for r in bad), default=""), "")
+    unknowns = sum(1 for r in readings if r.get("state") != monitor.STATE_KNOWN)
+    tail = f" · 无法确认 {unknowns}" if unknowns else ""
+    return f"{mark} {name} · {_reach_note(device)}{tail}".strip()
+
+
+def _fold_body(device, *, index: int) -> list[dict]:
+    """The full V13 content of one device, inside its fold."""
+    ref = device.get("device_ref") or str(index)
+    elements = []
+    readings = device.get("readings") or []
+    if _reach_state(device) != "KNOWN":
+        elements.append(_md("_未获取采样 · 状态未知_（连接器可达 ≠ 资源监测已接入）"))
+    else:
+        known = [r for r in readings
+                 if r.get("state") == monitor.STATE_KNOWN and r.get("value") is not None]
+        if known:
+            elements.append(_md(_wrap(" · ".join(
+                f"**{r['label']}** {monitor._value(r)}" for r in known[:6]))))
+    lines = []
+    for r in readings:
+        lines.append(monitor.reading_line(r))
+        trend = monitor._trend_line(r)
+        if trend:
+            lines.append(trend)
+    if lines:
+        elements.append(_md(_wrap("\n".join(lines))))
+    accounts = device.get("accounts") or []
+    if accounts:
+        elements.append(monitor._accounts_panel(ref, accounts))
+    return elements
+
+
+def _local_hhmm(instant) -> str | None:
+    """`17:42` in the reader's own zone. The card never shows a long ISO."""
+    try:
+        moment = datetime.datetime.fromisoformat(str(instant))
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return moment.astimezone().strftime("%H:%M")
+
+
+def _archive_elements(view: dict) -> list[dict]:
+    """The period summary, compact and layered, never a flat markdown dump."""
+    overview = view.get("overview") or {}
+    trend = view.get("trend") or {}
+    handover = view.get("handover") or {}
+    ticks = int(trend.get("ticks") or 0)
+    blocks = [f"**时段小结** · {view.get('label') or '时段'}", overview.get("says") or ""]
+    if ticks < 2:
+        # ONE sample is not a trend and saying «完整时段趋势一览» over it would
+        # be a claim the data cannot support.
+        blocks.append(f"**时段趋势**（仅 {ticks} 次采样，不足以评价趋势）")
+    else:
+        blocks.append(f"**完整时段趋势一览**（{ticks} 拍 · "
+                      f"{trend.get('transitions')} 处变化）")
+        for entry in (trend.get("timeline") or [])[:12]:
+            blocks.append(f"- {entry.get('says')}")
+    blocks.append(f"**三设备摘要**（{len(view.get('devices') or [])}）")
+    for device in (view.get("devices") or []):
+        blocks.append(f"- {device.get('name') or device.get('device_ref')} · "
+                      f"{device.get('reach_word') or '状态未知'}")
+    blocks.append("**交接 · 事故 / 自愈 / 未解决**")
+    incidents = handover.get("incidents") or []
+    recoveries = handover.get("recoveries") or []
+    unresolved = handover.get("unresolved") or []
+    for item in incidents:
+        blocks.append(f"- 事故 · {item.get('says') or item.get('episode') or '（未命名）'}")
+    for item in recoveries:
+        blocks.append(f"- 自愈 · {item.get('says') or item.get('episode') or '（未命名）'}")
+    for item in unresolved:
+        blocks.append(f"- 未解决 · {item.get('says') or item.get('key') or '（未命名）'}")
+    if not (incidents or recoveries or unresolved):
+        blocks.append("- 本时段未记录事故")
+    return [_md(_wrap("\n".join(blocks)))]
+
+
+def render_archive_text(view: dict) -> str:
+    """The archive as one block of markdown (the CLI and the tests read this)."""
+    return "\n".join(element["content"] for element in _archive_elements(view))
+
+
+def render_period_card(model: dict, *, archive: dict | None = None,
+                       test_mark: str | None = None, rich: bool = False,
+                       charts_verified: bool = False) -> dict:
+    """The period card: one clean first screen, LIVE or summarized. PURE.
+
+    The header is NEUTRAL by default. Red is kept for a genuinely CONFIRMED
+    critical (`_real_critical`) and for nothing else — an unmeasured data source
+    does not paint the card, because «I could not look» is not «it is broken».
+    The title names the product, not the developer: the period identity and the
+    test mark live in the small subtitle, where a grader can still find them.
+
+    `rich` and `charts_verified` both stay OFF. `column_set` and the VChart
+    `chart` are unverified on a real client, so the default card is the one the
+    node already sends: `markdown`, `hr` and `collapsible_panel` only.
     """
     if charts_verified:
         raise CardPeriodError(
             "charts_verified is not a parameter a caller toggles yet: neither the "
             "VChart element nor the 390px narrow layout has been accepted on a "
             "real client, so this renderer refuses to claim a chart was verified")
-    card = monitor.render_cardkit(model, rich=rich, charts_verified=False)
-    card = dict(card)
-    card["header"] = {
-        "template": card.get("header", {}).get("template", "grey"),
-        "title": {"tag": "plain_text",
-                  "content": f"Fleet 监控 · {view.get('label') or '时段'}归档"},
-        "subtitle": {"tag": "plain_text",
-                     "content": f"{view.get('period_ref')} 已冻结"},
+    devices = model.get("devices") or []
+    elements = []
+    elements.append(_md(_wrap(f"**覆盖** {_coverage_line(model)}")))
+    main = next((d for d in devices if _reach_state(d) == "KNOWN"), devices[0] if devices else None)
+    kpis = _kpi_lines(main) if main else []
+    if kpis:
+        elements.append(_md(_wrap(" · ".join(kpis))))
+    swap = _swap_warning(main) if main else None
+    if swap:
+        elements.append(_md(_wrap(f"⚠️ {swap}")))
+    alerts = _alert_lines(model)
+    if alerts:
+        elements.append(_md(_wrap("**需要关注**\n" + "\n".join(f"- {a}" for a in alerts))))
+    gaps = _gap_lines(model)
+    if gaps:
+        elements.append(_md(_wrap("**数据缺口**\n" + "\n".join(f"- {g}" for g in gaps))))
+    elements.append(_md(_service_line(model)))
+    elements.append(monitor._hr())
+    for index, device in enumerate(devices):
+        fold = monitor._panel(monitor.element_id("dev", device.get("device_ref") or index),
+                              _fold_title(device), [], expanded=False)
+        fold["elements"] = _fold_body(device, index=index)
+        elements.append(fold)
+    if model.get("network"):
+        elements.append(_md(monitor.reading_line(model["network"])))
+    if archive is not None:
+        elements.append(monitor._hr())
+        elements.extend(_archive_elements(archive))
+    elements.append(monitor._hr())
+    elements.append(_md("只读 · 本卡不会停止、重启或清理任何东西"
+                        + (" · 灰度测试，非正式播报" if test_mark else "")))
+    bits = [f"{_local_hhmm(model.get('generated_at')) or ''} 更新".strip(),
+            "时段总结" if archive is not None else "时段进行中"]
+    if test_mark:
+        bits.append(str(test_mark))
+    card = {
+        "schema": "2.0",
+        "config": {"update_multi": True, "width_mode": "default"},
+        "header": {
+            "template": "red" if _real_critical(model) else "blue",
+            "title": {"tag": "plain_text", "content": "ServerOS · 设备运行概览"},
+            "subtitle": {"tag": "plain_text", "content": " · ".join(bits)},
+        },
+        "body": {"direction": "vertical", "elements": elements},
     }
-    elements = [_md(_wrap(render_archive_text(view))), monitor._hr()]
-    card["body"] = {"direction": "vertical",
-                    "elements": elements + list(card["body"]["elements"])}
     monitor.validate(card)
     return card
 
 
-def render_archive_text(view: dict) -> str:
-    """The archive's four blocks, as the markdown a person reads."""
-    overview = view.get("overview") or {}
-    trend = view.get("trend") or {}
-    handover = view.get("handover") or {}
-    lines = ["**总览概括**", overview.get("says") or ""]
-    lines += ["", f"**完整时段趋势一览**（{trend.get('ticks')} 拍）"]
-    for entry in (trend.get("timeline") or [])[:12]:
-        lines.append(f"- {entry.get('says')}")
-    if not trend.get("timeline"):
-        lines.append("- 本时段没有记录到任何一拍")
-    lines += ["", f"**三设备摘要**（{len(view.get('devices') or [])}）"]
-    for device in (view.get("devices") or []):
-        head = device.get("name") or device.get("device_ref")
-        state = device.get("reachability") or "UNKNOWN"
-        lines.append(f"- **{head}** · {state}")
-        for reading in (device.get("readings") or [])[:4]:
-            lines.append(f"  - {reading}")
-    lines += ["", "**交接：事故 / 自愈 / 未解决**"]
-    for item in (handover.get("incidents") or []):
-        lines.append(f"- 事故 · {item.get('says') or item.get('episode')}")
-    for item in (handover.get("recoveries") or []):
-        lines.append(f"- 自愈 · {item.get('says') or item.get('episode')}")
-    for item in (handover.get("unresolved") or []):
-        lines.append(f"- 未解决 · {item.get('says') or item.get('key')}")
-    if not (handover.get("incidents") or handover.get("recoveries")
-            or handover.get("unresolved")):
-        lines.append("- 本时段无事故、无自愈动作、无未解决项")
-    return "\n".join(lines)
+def render_archive(view: dict, *, model: dict, rich: bool = False,
+                   charts_verified: bool = False, test_mark: str | None = None) -> dict:
+    """The period's FINAL card — the same renderer, with the archive appended.
+
+    Kept as its own name because callers (and the CLI) ask for «the archive
+    card» specifically; it IS `render_period_card`, so a fix to the first screen
+    fixes both and the LIVE card can never look different from the FINAL one by
+    accident.
+    """
+    return render_period_card(model, archive=view, test_mark=test_mark,
+                              rich=rich, charts_verified=charts_verified)
 
 
 def _md(content: str) -> dict:

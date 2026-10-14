@@ -47,6 +47,8 @@ card_period = _load("serveros_runtime_card_period", ROOT / "runtime" / "card_per
 card_delivery = _load("serveros_runtime_card_delivery",
                       ROOT / "runtime" / "card_delivery.py")
 card_day = _load("serveros_runtime_card_day", ROOT / "runtime" / "card_day.py")
+monitor = _load("serveros_runtime_fleet_monitor_card",
+                ROOT / "runtime" / "fleet_monitor_card.py")
 source = _load("serveros_runtime_fleet_monitor_source",
                ROOT / "runtime" / "fleet_monitor_source.py")
 
@@ -454,6 +456,161 @@ class TheRemoteAckGate(unittest.TestCase):
         self.assertTrue(ready["unverified"])
 
 
+class ThePresentationLayerUsesOnlyWords(unittest.TestCase):
+    """The 2026-10-14 screenshot regressions, each pinned by an assertion.
+
+    Every case here failed on the card the user actually saw. They are written
+    against the RENDERED card body — the markdown a person reads — because that
+    is where the defects were visible, and a test that only looks at the view
+    model would not have caught a `{'state': ...}` leaking into the markdown.
+    """
+
+    NOW = "2026-10-14T09:40:00+08:00"
+
+    def _reading(self, label, value, *, unit="", note="", severity="OK"):
+        return monitor.reading(label, value, unit=unit, note=note,
+                               observed_at=self.NOW, severity=severity)
+
+    def _unknown(self, ref="device:work-fj", name="FJPCOS 工作站"):
+        return {"device_ref": ref, "display_name": name, "platform": "windows",
+                "reachability": {"state": monitor.STATE_UNKNOWN,
+                                 "reason": "该设备没有可用的采集结果"},
+                "readings": [], "accounts": []}
+
+    def _model(self, *, tokyo=(), extras=(), services=()):
+        devices = [{
+            "device_ref": "device:tokyo-shared-dev-01",
+            "display_name": "东京共享开发机", "platform": "linux",
+            "reachability": {"state": monitor.STATE_KNOWN, "observed_at": self.NOW},
+            "readings": list(tokyo), "accounts": [],
+        }] + list(extras)
+        return monitor.monitor_model(devices=devices, services=list(services),
+                                     now=self.NOW)
+
+    def _body_text(self, card):
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("content"), str):
+                    found.append(node["content"])
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(card["body"])
+        return "\n".join(found)
+
+    def _period(self):
+        return card_period.period_at(self.NOW, declaration=DECL)
+
+    def _row(self, period):
+        return card_period.row(MODEL, period=period)
+
+    def test_nothing_leaks_a_mapping_none_or_a_key_into_the_body(self):
+        model = self._model(tokyo=[self._reading("CPU", "128 逻辑核")],
+                            extras=[self._unknown()])
+        text = self._body_text(card_period.render_period_card(model))
+        for bad in ("{'", "}", "None", "observed_at", "'state'", "'reason'"):
+            self.assertNotIn(bad, text, f"card body leaked {bad!r}")
+
+    def test_an_unmeasured_device_is_not_called_lost(self):
+        model = self._model(tokyo=[self._reading("CPU", "128 逻辑核")],
+                            extras=[self._unknown(), self._unknown("device:llm-lab-dell", "A6000 推理机")])
+        text = self._body_text(card_period.render_period_card(model))
+        self.assertIn("未获取采样", text)
+        self.assertNotIn("失联", text)
+
+    def test_a_single_sample_is_not_called_a_trend(self):
+        period = self._period()
+        view = card_period.archive(self._model(tokyo=[self._reading("CPU", "128")]),
+                                   period=period, rows=[self._row(period)])
+        text = card_period.render_archive_text(view)
+        self.assertIn("仅 1 次采样，不足以评价趋势", text)
+        self.assertNotIn("完整时段趋势一览", text)
+
+    def test_no_service_data_is_not_zero_services(self):
+        model = self._model(tokyo=[self._reading("CPU", "128")])
+        text = self._body_text(card_period.render_period_card(model))
+        self.assertIn("服务：未采集", text)
+        self.assertNotIn("共 0", text)
+
+    def test_unknown_sources_do_not_paint_the_card_red(self):
+        # Two unmeasured devices and a near-threshold swap — and still no red,
+        # because none of it is a CONFIRMED critical.
+        model = self._model(
+            tokyo=[self._reading("交换区", "89.4%", note="阈值 90.0%",
+                                 severity="ATTENTION")],
+            extras=[self._unknown(), self._unknown("device:llm-lab-dell", "A6000 推理机")])
+        card = card_period.render_period_card(model)
+        self.assertEqual(card["header"]["template"], "blue")
+
+    def test_a_confirmed_critical_is_red(self):
+        model = self._model(tokyo=[self._reading("磁盘", "100%", severity="CRITICAL")])
+        self.assertEqual(card_period.render_period_card(model)["header"]["template"], "red")
+
+    def test_the_title_names_the_product_and_keeps_the_test_mark_small(self):
+        card = card_period.render_period_card(
+            self._model(tokyo=[self._reading("CPU", "128")]), test_mark="[灰度测试]")
+        self.assertEqual(card["header"]["title"]["content"], "ServerOS · 设备运行概览")
+        self.assertIn("[灰度测试]", card["header"]["subtitle"]["content"])
+        self.assertIn("时段进行中", card["header"]["subtitle"]["content"])
+        # The developer identifier must not be anywhere on the card.
+        blob = json.dumps(card, ensure_ascii=False)
+        self.assertNotIn("gray/", blob)
+        self.assertNotIn("#demo", blob)
+
+    def test_the_header_shows_local_time_not_a_long_iso(self):
+        card = card_period.render_period_card(self._model(tokyo=[self._reading("CPU", "128")]))
+        subtitle = card["header"]["subtitle"]["content"]
+        self.assertRegex(subtitle, r"\d{2}:\d{2}")
+        self.assertNotIn("T09:40", subtitle)
+
+    def test_the_first_screen_is_coverage_kpi_gaps_then_folds_then_archive(self):
+        period = self._period()
+        model = self._model(
+            tokyo=[self._reading("CPU", "128 逻辑核"), self._reading("内存", "33.7%")],
+            extras=[self._unknown()])
+        view = card_period.archive(model, period=period, rows=[self._row(period)])
+        card = card_period.render_archive(view, model=model)
+        elements = card["body"]["elements"]
+        self.assertIn("覆盖", elements[0]["content"])
+        panel_at = next(i for i, e in enumerate(elements)
+                        if e.get("tag") == "collapsible_panel")
+        self.assertLess(1, panel_at)
+        archive_at = next(i for i, e in enumerate(elements)
+                          if isinstance(e, dict) and "时段小结" in str(e.get("content") or ""))
+        last_panel = max(i for i, e in enumerate(elements)
+                         if e.get("tag") == "collapsible_panel")
+        self.assertLess(last_panel, archive_at)
+
+    def test_no_recorded_events_says_recorded_not_safe(self):
+        period = self._period()
+        view = card_period.archive(self._model(tokyo=[self._reading("CPU", "128")]),
+                                   period=period, rows=[self._row(period)])
+        text = card_period.render_archive_text(view)
+        self.assertIn("本时段未记录事故", text)
+        self.assertNotIn("无事故", text)
+
+    def test_swap_near_threshold_gets_one_tight_line(self):
+        model = self._model(tokyo=[self._reading("交换区", "89.4%", note="阈值 90.0%")])
+        text = self._body_text(card_period.render_period_card(model))
+        self.assertIn("接近阈值", text)
+
+    def test_the_full_v13_folds_are_kept_and_no_unverified_element_is_used(self):
+        model = self._model(tokyo=[self._reading("CPU", "128")],
+                            extras=[self._unknown()])
+        card = card_period.render_period_card(model)
+        tags = []
+        monitor._walk_tags(card["body"], tags)
+        self.assertIn("collapsible_panel", tags)
+        self.assertNotIn("chart", tags)
+        self.assertNotIn("column_set", tags)
+        self.assertEqual(card["config"], {"update_multi": True, "width_mode": "default"})
+
+
 class TheRowKeepsOnlyWhatItNames(unittest.TestCase):
     def test_a_row_carries_the_closed_set(self):
         period = card_period.period_at("2026-10-14T09:30:00+08:00", declaration=DECL)
@@ -494,8 +651,8 @@ class TheArchiveIsTheFourBlocks(unittest.TestCase):
                           "trend", "devices", "handover"})
         self.assertGreaterEqual(len(view["devices"]), 1)
         text = card_period.render_archive_text(view)
-        for block in ("总览概括", "完整时段趋势一览", "三设备摘要",
-                      "交接：事故 / 自愈 / 未解决"):
+        for block in ("时段小结", "完整时段趋势一览", "三设备摘要",
+                      "交接 · 事故 / 自愈 / 未解决"):
             self.assertIn(block, text)
         self.assertIn("内存压力", text)
         self.assertIn("磁盘待清理", text)

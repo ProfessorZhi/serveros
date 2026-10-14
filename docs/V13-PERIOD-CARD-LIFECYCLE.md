@@ -130,6 +130,30 @@ for»）。默认表：
 渲染**不复制 V13 布局**：FINAL 卡是 `fleet_monitor_card.render_cardkit` 的输出
 被抬起，归档写在它上方。同一三设备的第二个渲染器会是与它分歧的第二个布局权威。
 
+## 4.1 UI 修订（2026-10-14，按用户真机截图反馈）
+
+用户看到首版灰度归档卡的截图后评价「有点丑」，并逐条指出问题。改动**全部收敛在
+`runtime/card_period.py` 的展示层**（新增 `_reach_*` / `_kpi_lines` / `_swap_warning`
+/ `_alert_lines` / `_gap_lines` / `_fold_*` / `_coverage_line` / `_service_line`
+与统一入口 `render_period_card`），**未改 #181 的 `fleet_monitor_card.py`**：
+
+| 截图问题 | 根因 | 现状 |
+|---|---|---|
+| 标题整片红 + 写开发身份 `【…TEST/GRAY】…gray/2026-10-14#demo 已冻结` | header 继承舰队卡模板；且 `_attention` 把「未获取采样」的设备判为 **CRITICAL** | 标题 `ServerOS · 设备运行概览`；`[灰度测试]`/时段身份/`时段总结` 降入**小号副标题**；配色**中性蓝**，**只有 `_real_critical`（真实已读的 CRITICAL 读数或服务）才红** |
+| `三设备摘要` 直接渲染 Python dict：`{'state':'KNOWN','reason':None,...}` | 展示层把 `reachability` **整个映射**交给 formatter | 新增**类型化** `_reach_state` / `_reach_note`（三词：有新鲜读数 / 可达性过期 / 未获取采样·状态未知）；`_device_summary` 只返回 `reach` + `reach_word` **字符串**；**映射无任何路径进入正文** |
+| 正文乱序、首屏是趋势再是长设备列表、重复 | 归档块拼在舰队卡**上方**再叠整卡 | 单一 `render_period_card` 重建首屏：①覆盖 ②KPI ③需要关注+数据缺口 ④三设备短摘要+折叠（保留完整 V13 内容）⑤归档+交接 |
+| Windows/Dell 被称「失联」 | `_attention`/`_device_title` 用「失联」 | 一律 **`未获取采样 · 状态未知`**（连接器可达 ≠ 资源监测已接入） |
+| `服务共0` 可能其实是未采集 | 摘要直接印计数 | `total<=0` → **`服务：未采集`**，不印 `共 0` |
+| 1 拍却写「完整时段趋势一览」/「0 状态变化=无故障」 | 固定文案 | ticks<2 → **`时段趋势（仅 N 次采样，不足以评价趋势）`**；无事件写 **`本时段未记录事故`**（不写「无事故」） |
+| 时间显示长 ISO | header 直接印 ISO | `_local_hhmm` → 本地 **`17:xx`** |
+| swap 逼近阈值无提示 | 无 | `_swap_warning` 给一条紧凑线（≥89%，不染红） |
+
+**灰度卡与正式产品 UI 的差距（明确）**：本轮卡是**灰度测试卡**，副标题显式带
+`[灰度测试]`、页脚写「灰度测试，非正式播报」；正式产品的标题/页脚措辞、是否保留该
+标记、以及**真机窄屏（390px）观感**均**未经验收**——`charts_verified=False` 保持关闭，
+`column_set` rich 模式未使用，卡片只用 `markdown`/`hr`/`collapsible_panel`。
+真机效果须由用户再截图确认。
+
 ## 5. 明确没做 / 不声称
 
 - **不部署、不启用定时器、不发真实飞书、不读生产 token**；不动 `ops/`、
