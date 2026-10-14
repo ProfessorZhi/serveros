@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "serveros-fleet-example",
+  "version": "0.1.0",
+  "description": "Fleet Next — cloud-side Skills that route a ChatGPT request to an authorized ServerOS device, runtime and Session and report what was actually accepted. Instruction-only: this package declares no MCP server, carries no credentials and grants no device access.",
+  "author": {
+    "name": "ProfessorZhi"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ProfessorZhi/serveros",
+  "repository": "https://github.com/ProfessorZhi/serveros",
+  "keywords": [
+    "serveros",
+    "fleet",
+    "agent-collaboration",
+    "ability-routing",
+    "thin-skill"
+  ],
+  "extensions": {
+    "com.serveros.fleet-next": {
+      "icon": "icon.svg",
+      "kind": "instruction-only",
+      "declaresMcpServer": false,
+      "source": "integrations/chatgpt-fleet-next",
+      "note": "The 1.0.0 manifest schema defines no icon property and forbids additional ones, so the icon is declared here and shipped as a file. Whether any client reads this key is UNVERIFIED."
+    }
+  }
+}
