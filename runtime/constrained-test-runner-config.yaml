@@ -1,0 +1,138 @@
+# §169 · the operating envelope for the remote test runner, and its read
+# interface to the §167 per-uid memory alerting.
+#
+# What this file is
+# -----------------
+# Two things, and they are deliberately in one place because they are one
+# decision. The first is the envelope a managed test run is placed inside: the
+# numbers `runtime/constrained_runner.py` asks systemd for, and the ceiling an
+# operator may raise them to. The second is what the §167 per-uid memory
+# detector is allowed to read to tell a run that already carried a cap from an
+# unexplained number.
+#
+# What this file is NOT
+# ---------------------
+# It is not a second alerting system, and it declares no threshold and no
+# notification path. §167 owns the per-uid measurement (`runtime/inventory.py`
+# `user_summary`), the detector (`runtime/anomaly.py`) and the delivery
+# (`runtime/alerting.py`), and the brief for #167 says so in as many words.
+# Nothing here fires. The linkage below is one direction only: §167 may read
+# the run index to attribute a number it has already measured, and a run that
+# was capped is still reported by §167 as the memory it used — a cap is a
+# promise about the maximum, and the measurement is the fact about the actual.
+#
+# The envelope is enforced by the kernel, never by the caller
+# ----------------------------------------------------------
+# Every number below becomes a property on a systemd *user* transient service
+# and is then read back from `/sys/fs/cgroup/.../{memory.max,memory.high,
+# cpu.max,pids.max}` while the unit is alive. A run whose limit did not reach
+# the kernel is a failure even when the tests passed. This is the whole
+# difference from the launcher that produced PID 288992: that one bounded the
+# `ssh` client and trusted a remote `trap EXIT`, and neither could outlive the
+# session the process had already left.
+schema: serveros/constrained-test-runner-config.v1
+
+# The profiles, as `runtime/constrained_runner.py::PROFILES` states them. The
+# test `tests/test_constrained_runner_contract.py` compares the two, so a
+# number changed in one place and not the other is a red suite rather than a
+# doc that is quietly wrong.
+profiles:
+  default:
+    memory_high_gib: 3
+    memory_max_gib: 4
+    cpu_quota_percent: 400
+    runtime_max_sec: 600
+    tasks_max: 2048
+    needs_grant: false
+  large-8:
+    memory_high_gib: 6
+    memory_max_gib: 8
+    cpu_quota_percent: 400
+    runtime_max_sec: 1800
+    tasks_max: 4096
+    needs_grant: true
+  large-16:
+    memory_high_gib: 12
+    memory_max_gib: 16
+    cpu_quota_percent: 400
+    runtime_max_sec: 1800
+    tasks_max: 8192
+    needs_grant: true
+
+# Raising the envelope past `default` is a decision with a name attached. The
+# grant is the flag on the command, and the reason text is recorded in the
+# receipt beside it, so "why did this run get 16 GiB" is answerable from the
+# evidence rather than from a shell history.
+escalation:
+  grant_flag: "--authorized"
+  reason_flag: "--reason"
+  ceiling_memory_gib: 16
+  ceiling_runtime_sec: 1800
+
+# Statements that are structural rather than numeric, kept here so that a
+# reader of the numbers above can see what the envelope refuses to do.
+never:
+  - statement: >
+      a MemoryMax, MemoryHigh, CPUQuota or RuntimeMaxSec on `user.slice` or
+      `root.slice`
+    why: >
+      those slices carry every other account on a shared host, so a cap there
+      answers one runaway by turning it into everyone's problem. The runner
+      only ever writes properties onto a unit it named itself.
+  - statement: the caller's environment inside the unit
+    why: >
+      systemd starts the service from the user manager's environment, so a
+      token, a cookie or a credential in the caller's process cannot reach the
+      payload or the receipt. The receipt records the command line, the limits
+      and the outcome, and never an environment.
+  - statement: a fallback to an unbounded run
+    why: >
+      when the user manager is absent, or the memory controller is not
+      delegated to it, the answer is a refusal that launches nothing. The
+      alternative to a bounded run is not an unbounded run.
+  - statement: a bare `python -m pytest` from a home directory
+    why: >
+      `pytest.ini` declares `testpaths = tests`, and that only takes effect
+      from a repository root. From a home directory pytest collects the whole
+      tree below it, which is the incident. A run must name a git worktree root
+      and explicit paths under `tests/`, or pass `--all` on purpose.
+
+# Where a run's evidence lands, and what a reader may count on finding there.
+evidence:
+  default_dir: "{ARTIFACTS_ROOT}/skills/constrained-test-runner/runs"
+  per_run:
+    receipt: "<dir>/<run-id>/receipt.json"
+    stdout: "<dir>/<run-id>/stdout.log"
+    stderr: "<dir>/<run-id>/stderr.log"
+  index: "<dir>/index.jsonl"
+  replay_safe_identity: >
+    the receipt's main_process carries (pid, starttime, cgroup). The pid alone
+    is reused by the kernel and the cgroup path alone is reused by the next
+    run's unit name; the pair of pid and the /proc starttime tick is what a
+    reader can replay against the process table later and get one answer.
+  scrubbed: >
+    the launch argv and the --reason text are passed through a secret scrubber
+    before they are written. Nothing in a receipt is a credential.
+
+# The §167 read interface. One direction: §167 reads this, and this reads
+# nothing of §167's.
+alerting_linkage:
+  measured_by: "runtime/inventory.py::user_summary (per-uid, #167)"
+  detected_by: "runtime/anomaly.py (per-uid thresholds, #167)"
+  delivered_by: "runtime/alerting.py + the existing serveros-alert-sync.timer (#167)"
+  produced_by_this_runner: "index.jsonl, one line per run"
+  shared_subject: "uid:<n>"
+  fields:
+    subject: "the kernel uid the run belonged to, as §167 keys its alerts"
+    device_ref: "the device the run happened on, or null when unstated"
+    unit: "the transient unit's name, so a run is findable in systemd too"
+    cap_bytes: "the MemoryMax the run declared — the maximum it could use"
+    peak_bytes: "the highest MemoryPeak systemd observed for the unit"
+    outcome: "success / timeout / oom-kill / signal / exit-code / unknown"
+    exit_code: "what the caller saw"
+    ts: "when the run finished"
+  rule: >
+    A run that appears in index.jsonl has a declared cap; its memory is
+    attributed rather than unexplained. A per-uid number that no run explains
+    is exactly what §167 exists to raise, and this file adds attribution to it
+    without changing when or whether §167 speaks.
