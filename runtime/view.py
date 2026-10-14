@@ -1609,7 +1609,8 @@ def _protection_union(by_identity: dict[str, dict]):
 # on its own. A literal for the same reason `HYGIENE_INPUTS` is one: the answer
 # is printed, and a report that reached five of six inputs without saying so is
 # read as one that found nothing in the sixth.
-ANOMALY_INPUTS = ("host", "disk", "docker", "hygiene", "desired", "tunnel")
+ANOMALY_INPUTS = ("host", "disk", "docker", "hygiene", "desired", "tunnel",
+                  "user_memory")
 
 
 def resource_anomaly(*, inventory=None, host=None, disk=None, docker=None,
