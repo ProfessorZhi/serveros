@@ -173,6 +173,17 @@ KIND_BY_FIELD: dict[str, str] = {
     "client_name": WITHHELD,  # a client's own free text
     "scope": SCOPE,
     "grant_type": CODE,
+    # The RFC error code of a refused `/oauth/register` — `invalid_redirect_uri`,
+    # `invalid_client_metadata`. A `code` and not `withheld`, for the same reason
+    # `grant_reason` below is: the value is written by this surface from a closed
+    # set (the RFC 6749 / 7591 error names), so it can be recorded, and it is the
+    # field the refusal body already returns — recording it tells an operator why
+    # a client was turned away without telling anyone something the client does
+    # not already hold. What must never be recorded is the free text beside it:
+    # `error_description` quotes the caller's own input back (for a bad redirect
+    # it holds the redirect_uri), and a caller that passes a description under
+    # this name loses it to the `code` shape rather than parking it in the log.
+    "error": CODE,
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,

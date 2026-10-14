@@ -533,6 +533,33 @@ class TheKindTableIsTheAllowlist(unittest.TestCase):
                 self.assertEqual(projected[name], disclosure.OMITTED_MARK)
                 self.assertEqual(withheld, 1)
 
+    def test_the_register_refusal_error_is_kept_as_its_code_and_nothing_else(self):
+        """The one field added for a refused registration: the OAuth error code.
+
+        A code is a closed word (`invalid_redirect_uri`), so it can be recorded
+        and cannot carry anything. The `error_description` beside it in the
+        response is free text and embeds what the caller sent — for this very
+        refusal it quotes the redirect_uri — so the same name fed a description
+        has to lose it.
+        """
+        self.assertEqual(disclosure.KIND_BY_FIELD["error"], disclosure.CODE)
+        projected, withheld = disclosure.project_record(
+            {"event": "oauth.register.refused", "error": "invalid_redirect_uri"})
+        self.assertEqual(projected["error"], "invalid_redirect_uri")
+        self.assertEqual(withheld, 0)
+        self.assertNotIn("withheld", projected)
+
+        for description in (
+            "redirect_uri 'http://leak.example/cb' must be https, or http on loopback",
+            "only public clients (token_endpoint_auth_method: none) are accepted; "
+            "a confidential client on a self-hosted server would need a secret",
+            f"Bearer {a_secret()}",
+        ):
+            with self.subTest(description=description[:24]):
+                dropped, count = disclosure.project_record({"event": "e", "error": description})
+                self.assertEqual(dropped["error"], disclosure.OMITTED_MARK)
+                self.assertEqual(count, 1)
+
     def test_an_unknown_kind_sends_nothing(self):
         """A half-finished edit to the table — a name given a kind this module
         has no branch for — loses the field rather than passing it."""

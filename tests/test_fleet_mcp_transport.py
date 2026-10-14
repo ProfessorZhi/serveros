@@ -13,6 +13,7 @@ import inspect
 import io
 import json
 import re
+import secrets
 import socket
 import sys
 import tempfile
@@ -1157,3 +1158,173 @@ class ConsentFormCspTest(unittest.TestCase):
         _, plain, _ = _html(200, "x")
         self.assertIn("form-action 'self'", plain["Content-Security-Policy"])
         self.assertNotIn("app.example", plain["Content-Security-Policy"])
+
+
+class ARefusedRegistrationIsAuditedByItsCode(_HttpHarness):
+    """A 400 from `/oauth/register` left no trace anywhere.
+
+    The refusal body is answered and dropped, and the audit recorded only
+    successes, so the one event that needed explaining afterwards — a client
+    whose registration the server would not take — produced nothing an operator
+    could read. These tests hold the replacement to both halves at once: the
+    error **code** is kept, and **nothing else about the request is**.
+
+    The code is not new information to the caller — it is the same field the
+    refusal body already returns — so recording it discloses nothing to the
+    party that caused it. What it must not do is keep the description beside
+    it, which quotes the caller's own input, or any other part of the request.
+    """
+
+    def _audit_path(self) -> Path:
+        return Path(self._tmp.name) / "audit.jsonl"
+
+    def _records(self, event: str) -> list[dict]:
+        path = self._audit_path()
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if row.get("event") == event:
+                    out.append(row)
+        return out
+
+    def _raw_audit(self) -> str:
+        path = self._audit_path()
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def _register(self, body: dict, *, user_agent: str | None = None):
+        headers = {"User-Agent": user_agent} if user_agent else None
+        return self.client.request("POST", "/oauth/register",
+                                   body=json.dumps(body).encode(), headers=headers)
+
+    # -- the refusal is now visible ---------------------------------------
+
+    def test_a_refused_registration_records_its_error_code(self):
+        before = len(self._records("oauth.register.refused"))
+        status, _, body = self._register(
+            {"client_name": "c", "redirect_uris": ["http://evil.example/steal"]})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "invalid_redirect_uri")
+
+        refused = self._records("oauth.register.refused")
+        self.assertEqual(len(refused), before + 1)
+        self.assertEqual(refused[-1]["error"], "invalid_redirect_uri")
+
+    def test_each_refusal_class_records_its_own_code(self):
+        """The code is what tells the classes apart, so it is worth pinning."""
+        self._register({"client_name": "c", "redirect_uris": [CHATGPT_REDIRECT],
+                        "token_endpoint_auth_method": "client_secret_basic"})
+        self.assertEqual(self._records("oauth.register.refused")[-1]["error"],
+                         "invalid_client_metadata")
+
+    def test_a_body_that_is_not_json_is_audited_by_the_same_rule(self):
+        """`_json_body` refuses before `register()` is reached; it is the same
+        endpoint failing for a reason an operator would want to see."""
+        before = len(self._records("oauth.register.refused"))
+        status, _, body = self.client.request(
+            "POST", "/oauth/register", body=b"<html>not json</html>")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "invalid_client_metadata")
+        refused = self._records("oauth.register.refused")
+        self.assertEqual(len(refused), before + 1)
+        self.assertEqual(refused[-1]["error"], "invalid_client_metadata")
+
+    def test_a_successful_registration_records_no_refusal(self):
+        before = len(self._records("oauth.register.refused"))
+        status, _, body = self._register(
+            {"client_name": "ok", "redirect_uris": [CHATGPT_REDIRECT]})
+        self.assertEqual(status, 201, body)
+        self.assertEqual(len(self._records("oauth.register.refused")), before)
+
+    # -- and it is the whole of what is kept ------------------------------
+
+    def test_the_record_has_the_code_and_no_other_key(self):
+        self._register({"client_name": "c", "redirect_uris": ["http://evil.example/steal"]})
+        refused = self._records("oauth.register.refused")
+        self.assertTrue(refused, "a refused registration wrote no record at all")
+        for record in refused:
+            with self.subTest(record=sorted(record)):
+                self.assertEqual(set(record) - {"withheld"}, {"ts", "event", "error"})
+
+    def test_nothing_the_caller_sent_reaches_the_audit(self):
+        """One canary placed in every field a request carries.
+
+        The redirect_uri is the pointed case: the refusal *description* quotes
+        it back, so a record built from the description rather than from the
+        code would carry it straight into the log.
+        """
+        canary = "LEAKCANARY" + secrets.token_hex(8)
+        status, _, body = self._register(
+            {"client_name": canary,
+             "redirect_uris": [f"http://{canary.lower()}.invalid/cb?code={canary}"]},
+            user_agent=canary + "UA")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "invalid_redirect_uri")
+
+        # The response still names the caller's own input — unchanged behaviour.
+        self.assertIn(canary, body.decode())
+
+        # A negative assertion has to say something was written, or it passes by
+        # measuring an empty file.
+        self.assertTrue(self._records("oauth.register.refused"))
+        raw = self._raw_audit()
+        for needle in (canary, canary.lower(), canary + "UA", "must be https",
+                       "connector_platform_oauth_redirect"):
+            with self.subTest(needle=needle[:20]):
+                self.assertNotIn(needle, raw)
+
+    def test_a_confidential_clients_auth_method_is_not_recorded(self):
+        """The other refusal class, with its own caller-supplied value."""
+        self._register({"client_name": "c", "redirect_uris": [CHATGPT_REDIRECT],
+                        "token_endpoint_auth_method": "client_secret_basic"})
+        self.assertTrue(self._records("oauth.register.refused"))
+        raw = self._raw_audit()
+        for needle in ("client_secret_basic", CHATGPT_REDIRECT):
+            with self.subTest(needle=needle[:20]):
+                self.assertNotIn(needle, raw)
+
+    def test_the_refusal_response_content_is_unchanged(self):
+        """The audit is added beside the response, not to it."""
+        status, _, body = self._register(
+            {"client_name": "c", "redirect_uris": ["http://evil.example/steal"]})
+        self.assertEqual(status, 400)
+        payload = json.loads(body)
+        self.assertEqual(set(payload), {"error", "error_description"})
+        self.assertEqual(payload["error"], "invalid_redirect_uri")
+        self.assertIn("evil.example", payload["error_description"])
+
+
+class ARefusedRegistrationWithoutAnAudit(unittest.TestCase):
+    """With the audit off the refusal still answers exactly as it did.
+
+    The record is written *before* the error is re-raised, so this is the test
+    that a missing audit binding is a missing line rather than a 500.
+    """
+
+    def test_the_refusal_is_a_400_with_the_same_body_and_no_crash(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        pat = root / "owner-pat"
+        pat.write_text("owner-pat-value\n", encoding="utf-8")
+        base = "http://127.0.0.1:1"
+        config = FleetConfig(
+            source=None, local_device_ref=WINDOWS, providers={},
+            auth=AuthBinding(pat_anchor=pat, access_token_ttl=3600, refresh_token_ttl=3600),
+            server=ServerBinding(bind="127.0.0.1", port=1, public_base_url=base),
+            policy=PolicyBinding(), audit=None,
+        )
+        service = FleetService(config, providers={})
+        oauth = build_oauth(config, base_url=base, store_root=root / "oauth")
+        surface = HttpSurface(service=service, config=config, oauth=oauth, audit=None)
+
+        status, _, body = surface.handle(
+            "POST", "/oauth/register", "",
+            {"content-type": "application/json"},
+            json.dumps({"client_name": "c",
+                        "redirect_uris": ["http://evil.example/steal"]}).encode(),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "invalid_redirect_uri")
