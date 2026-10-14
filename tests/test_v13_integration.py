@@ -44,6 +44,18 @@ runner_mod = _load("serveros_runtime_card_surface_runner",
 
 AT = "2026-10-14T17:30:00+08:00"
 
+
+def _test_dir(prefix):
+    """A test-owned directory under this user's `.cache`.
+
+    `dir=` makes the stdlib create it; the context manager removes EXACTLY what
+    it created. Nothing here composes a path it then deletes by hand, so there
+    is no expression a later edit can loosen into «remove the shared root».
+    """
+    cache = Path(os.path.expanduser("~")) / ".cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=cache)
+
 _HOLD = (
     "import importlib.util,sys,time\n"
     "spec=importlib.util.spec_from_file_location('l', sys.argv[1])\n"
@@ -139,7 +151,8 @@ class TheRealSenderSeam(unittest.TestCase):
         for bad in ("ou_bare", "chat:oc_x", ""):
             with self.subTest(bad=bad):
                 with self.assertRaises(live_sender.LiveSenderError):
-                    live_sender.LiveSender(enabled=True, recipient=bad)
+                    live_sender.LiveSender(enabled=True, recipient=bad,
+                                           binding={"recipient": "user:ou_owner"})
 
     def test_a_delivered_without_a_message_id_is_not_a_confirmed_identity(self):
         answer = live_sender.LiveSender._classify(
@@ -148,12 +161,14 @@ class TheRealSenderSeam(unittest.TestCase):
         self.assertEqual(answer["evidence"], "remote")
 
     def test_a_readback_of_a_non_message_is_refused(self):
-        sender = live_sender.LiveSender(enabled=True, recipient="user:ou_x")
+        sender = live_sender.LiveSender(enabled=True, recipient="user:ou_x",
+                                        binding={"recipient": "user:ou_x"})
         with self.assertRaises(live_sender.LiveSenderError):
             sender.readback("oc_conversation")
 
     def test_an_unreadable_or_legacy_readback_is_unknown_not_ok(self):
-        sender = live_sender.LiveSender(enabled=True, recipient="user:ou_x")
+        sender = live_sender.LiveSender(enabled=True, recipient="user:ou_x",
+                                        binding={"recipient": "user:ou_x"})
         sender.cli = "/bin/echo"                     # emits nothing usable
 
         class _Done:
@@ -310,3 +325,292 @@ class TheManagedCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCanaryEntry(unittest.TestCase):
+    """A real mode must not be reachable by accident. Each guard is asserted."""
+
+    def _args(self, **over):
+        base = {"i_understand_this_sends": True, "state": "", "at": AT,
+                "events": "", "closing": ""}
+        base.update(over)
+        return type("A", (), base)()
+
+    def _clean_gate(self):
+        original = surface_cli.load_gate
+        surface_cli.load_gate = lambda **k: {"ok": True, "why": "",
+                                             "load_per_cpu": 0.1, "swap_used": 0.1}
+        self.addCleanup(lambda: setattr(surface_cli, "load_gate", original))
+
+    def test_a_real_mode_without_an_explicit_state_is_refused(self):
+        with self.assertRaises(surface_cli.PreflightRefused):
+            surface_cli.validated_state("")
+
+    def test_a_relative_state_is_refused(self):
+        with self.assertRaises(surface_cli.PreflightRefused):
+            surface_cli.validated_state("cards/surfaces.json")
+
+    def test_a_state_outside_this_users_home_is_refused(self):
+        with self.assertRaises(surface_cli.PreflightRefused):
+            surface_cli.validated_state("/tmp/somewhere-else/surfaces.json")
+
+    def test_an_absolute_home_state_is_accepted(self):
+        # `validated_state` chmods the state's PARENT, so the parent must be a
+        # test-owned directory and never a shared root like `~/.cache`.
+        with _test_dir("v13-state-") as work:
+            candidate = Path(work) / "cards" / "surfaces.json"
+            accepted = surface_cli.validated_state(str(candidate))
+            self.assertTrue(accepted.is_absolute())
+            self.assertEqual(accepted.parent.resolve(),
+                             (Path(work) / "cards").resolve())
+
+    def test_canary_without_state_is_refused_even_on_a_clean_host(self):
+        self._clean_gate()
+        with self.assertRaises(surface_cli.PreflightRefused):
+            surface_cli.mode_canary(self._args(state=""))
+
+    def test_two_real_runs_on_one_state_cannot_both_hold_it(self):
+        # The directory is created BY THE STDLIB and removed BY THE STDLIB. The
+        # assertions below pin what it is, so a later edit cannot make the
+        # cleanup point at `.cache` itself.
+        with _test_dir("v13-lock-") as work:
+            parent = Path(work)
+            self.assertTrue(parent.name.startswith("v13-lock-"))
+            self.assertEqual(parent.parent.resolve(),
+                             (Path(os.path.expanduser("~")) / ".cache").resolve())
+            self.assertNotEqual(parent.resolve(), Path(os.path.expanduser("~")).resolve())
+            state = str(parent / "cards" / "surfaces.json")
+            held = surface_lock.SurfaceLock(
+                surface_lock.lock_path(state, surface="surfaces"))
+            self.assertTrue(held.acquire())
+            self._clean_gate()
+            try:
+                result = surface_cli.mode_canary(self._args(state=state))
+            finally:
+                held.release()
+            self.assertFalse(result["sent"])
+            self.assertEqual(result["blocked"], "BUSY")
+
+    def test_canary_still_refuses_on_a_dangerous_host(self):
+        original = surface_cli.load_gate
+        surface_cli.load_gate = lambda **k: {"ok": False, "why": "injected",
+                                             "load_per_cpu": 9.0, "swap_used": 0.99}
+        try:
+            result = surface_cli.mode_canary(self._args(state="/home/x/s.json"))
+        finally:
+            surface_cli.load_gate = original
+        self.assertEqual(result["blocked"], "PREFLIGHT")
+
+
+class TheOwnerBindingIsMandatory(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = Path(self.tmp.name) / "alignment.env"
+        self.config.write_text(
+            "cli_aa08005233f91bcd ou_8fe4ed0b562dc89a883d43f0778061e5\n",
+            encoding="utf-8")
+        self.credentials = Path(self.tmp.name) / "lark-cli"
+        self.credentials.mkdir()
+        self._credential("cli_aa08005233f91bcd",
+                         "ou_8fe4ed0b562dc89a883d43f0778061e5")
+
+    def _credential(self, app, user):
+        for stale in self.credentials.glob("*.enc"):
+            stale.unlink()
+        (self.credentials / f"{app}_{user}.enc").write_text("x", encoding="utf-8")
+
+    def _binding(self):
+        return live_sender.owner_binding(config_path=self.config,
+                                         credential_dir=self.credentials)
+
+    def test_all_three_facts_must_agree(self):
+        binding = self._binding()
+        self.assertEqual(binding["app_id"], "cli_aa08005233f91bcd")
+        self.assertEqual(binding["recipient"],
+                         "user:ou_8fe4ed0b562dc89a883d43f0778061e5")
+
+    def test_a_config_with_no_app_is_refused(self):
+        self.config.write_text("ou_8fe4ed0b562dc89a883d43f0778061e5\n", encoding="utf-8")
+        with self.assertRaises(live_sender.LiveSenderError):
+            self._binding()
+
+    def test_a_config_with_no_owner_is_refused(self):
+        self.config.write_text("cli_aa08005233f91bcd\n", encoding="utf-8")
+        with self.assertRaises(live_sender.LiveSenderError):
+            self._binding()
+
+    def test_a_missing_credential_is_refused(self):
+        for stale in self.credentials.glob("*.enc"):
+            stale.unlink()
+        with self.assertRaises(live_sender.LiveSenderError):
+            self._binding()
+
+    def test_a_credential_for_another_user_is_refused(self):
+        self._credential("cli_aa08005233f91bcd",
+                         "ou_00000000000000000000000000000000")
+        with self.assertRaises(live_sender.LiveSenderError):
+            self._binding()
+
+    def test_a_credential_for_another_app_is_refused(self):
+        self._credential("cli_aa0fffffffffff",
+                         "ou_8fe4ed0b562dc89a883d43f0778061e5")
+        with self.assertRaises(live_sender.LiveSenderError):
+            self._binding()
+
+    def test_a_caller_cannot_name_its_own_recipient(self):
+        binding = self._binding()
+        with self.assertRaises(live_sender.LiveSenderError):
+            live_sender.LiveSender(enabled=True, recipient="user:ou_someone_else",
+                                   binding=binding)
+        self.assertEqual(
+            live_sender.LiveSender(enabled=True, recipient=binding["recipient"],
+                                   binding=binding).recipient,
+            binding["recipient"])
+
+
+class TheReadbackVerifiedSender(unittest.TestCase):
+    CARD = {"schema": "2.0",
+            "header": {"template": "blue",
+                       "title": {"tag": "plain_text", "content": "ServerOS · 节点监控"}},
+            "body": {"elements": [
+                {"tag": "column_set", "columns": [{"tag": "column"}, {"tag": "column"}]},
+                {"tag": "collapsible_panel"},
+            ]}}
+
+    class _Inner:
+        def __init__(self, *, state="DELIVERED", remote_id="om_1"):
+            self.state, self.remote_id = state, remote_id
+            self.calls = []
+
+        def send_card(self, card, *, idempotency_key, **_):
+            self.calls.append(("send_card", idempotency_key))
+            return {"state": self.state, "evidence": "remote",
+                    "provider": {"remote_id": self.remote_id,
+                                 "transport": "im +messages-send (interactive)"}}
+
+        def update(self, request):
+            self.calls.append(("update", request.get("message_id")))
+            return {"state": self.state, "evidence": "remote",
+                    "provider": {"remote_id": self.remote_id,
+                                 "transport": "im messages patch"}}
+
+    def test_a_matching_readback_is_the_only_path_to_remote_verified(self):
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(), readback=lambda mid: {"available": True, "card": self.CARD})
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], "DELIVERED")
+        self.assertEqual(answer["evidence"], "remote_verified")
+
+    def test_a_self_report_with_no_readback_is_unknown_pending(self):
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(), readback=lambda mid: {"available": False,
+                                                 "reason": "legacy projection"})
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], live_sender.UNKNOWN_PENDING)
+        self.assertNotEqual(answer["evidence"], "remote_verified")
+
+    def test_a_remote_card_that_differs_is_unknown_pending(self):
+        other = dict(self.CARD, header={"template": "red",
+                                        "title": {"tag": "plain_text", "content": "别的卡"}})
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(), readback=lambda mid: {"available": True, "card": other})
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], live_sender.UNKNOWN_PENDING)
+        self.assertIn("结构不一致", answer["why"])
+
+    def test_a_receipt_naming_another_message_is_unknown_pending(self):
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(remote_id="om_other"),
+            readback=lambda mid: {"available": True, "card": self.CARD})
+        answer = verifier.update({"message_id": "om_target", "card": self.CARD})
+        self.assertEqual(answer["state"], live_sender.UNKNOWN_PENDING)
+
+    def test_a_delivered_with_no_message_id_is_unverified(self):
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(remote_id=None),
+            readback=lambda mid: {"available": True, "card": self.CARD})
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], live_sender.DELIVERED_UNVERIFIED)
+
+    def test_a_readback_that_raises_is_unknown_pending(self):
+        def explode(mid):
+            raise RuntimeError("network down")
+        verifier = live_sender.ReadbackVerifiedSender(self._Inner(), readback=explode)
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], live_sender.UNKNOWN_PENDING)
+
+    def test_a_failed_send_is_not_upgraded_by_the_wrapper(self):
+        verifier = live_sender.ReadbackVerifiedSender(
+            self._Inner(state="FAILED"),
+            readback=lambda mid: {"available": True, "card": self.CARD})
+        answer = verifier.send_card(self.CARD, idempotency_key="k")
+        self.assertEqual(answer["state"], "FAILED")
+
+
+class TheDeployedTemplatesAreStaticContract(unittest.TestCase):
+    def setUp(self):
+        self.directory = ROOT / "deploy" / "v13-surfaces"
+
+    def _text(self, name):
+        return (self.directory / name).read_text(encoding="utf-8")
+
+    def test_every_unit_is_a_disabled_template(self):
+        for name in ("v13-live-heartbeat.service", "v13-live-heartbeat.timer",
+                     "v13-report-period.service", "v13-report-period.timer"):
+            self.assertIn("DISABLED TEMPLATE", self._text(name))
+
+    def test_no_exec_start_points_into_a_worktree(self):
+        for name in ("v13-live-heartbeat.service", "v13-report-period.service"):
+            text = self._text(name)
+            self.assertNotIn("/worktrees/", text)
+            self.assertIn(".local/lib/serveros-v13-surfaces", text)
+
+    def test_the_two_services_call_distinct_modes(self):
+        live, report = (self._text("v13-live-heartbeat.service"),
+                        self._text("v13-report-period.service"))
+        self.assertIn("--live-heartbeat", live)
+        self.assertNotIn("--report-period", live)
+        self.assertIn("--report-period", report)
+        self.assertNotIn("--live-heartbeat", report)
+
+    def test_every_exec_start_is_explicit_about_consent_and_state(self):
+        for name in ("v13-live-heartbeat.service", "v13-report-period.service"):
+            text = self._text(name)
+            self.assertIn("--i-understand-this-sends", text)
+            self.assertIn("--state ", text)
+
+    def test_no_v13_unit_is_loaded_on_this_host(self):
+        listing = subprocess.run(["systemctl", "--user", "list-units", "--all"],
+                                 capture_output=True, text=True, timeout=60,
+                                 check=False).stdout
+        self.assertNotIn("v13-live-heartbeat", listing)
+        self.assertNotIn("v13-report-period", listing)
+
+
+class TheReportPeriodWindow(unittest.TestCase):
+    def setUp(self):
+        self._work = _test_dir("v13-report-")
+        self.addCleanup(self._work.cleanup)
+        self.state = str(Path(self._work.name) / "cards" / "surfaces.json")
+
+    def test_a_window_that_cannot_be_read_is_unknown(self):
+        args = type("A", (), {"state": self.state})()
+        original = surface_cli._current_period
+        surface_cli._current_period = lambda at: {"period_ref": None, "in_period": False}
+        try:
+            history = surface_cli._report_history(args, at=AT)
+        finally:
+            surface_cli._current_period = original
+        self.assertFalse(history["available"])
+        self.assertEqual(history["trend"], "UNKNOWN")
+
+    def test_a_period_without_a_window_is_unknown(self):
+        args = type("A", (), {"state": self.state})()
+        original = surface_cli._current_period
+        surface_cli._current_period = lambda at: {"period_ref": "P#x", "in_period": True}
+        try:
+            history = surface_cli._report_history(args, at=AT)
+        finally:
+            surface_cli._current_period = original
+        self.assertFalse(history["available"])

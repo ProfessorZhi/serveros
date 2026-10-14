@@ -48,7 +48,13 @@ RECIPIENT_PREFIX = "user:"
 #: An outcome that means «the service said yes but named no message» — a state
 #: that must never be read as «we have a message to patch».
 DELIVERED_UNVERIFIED = "DELIVERED_UNVERIFIED"
+#: «We asked the far end and the answer did not match what we sent» — the cursor
+#: must not move, and nothing may be re-created on the strength of it.
+UNKNOWN_PENDING = "UNKNOWN_PENDING"
 WAITING_READBACK = "WAITING_READBACK"
+#: The only evidence word that a REAL send may carry: a receipt whose claim was
+#: checked against the card the far end actually stores.
+REMOTE_VERIFIED = "remote_verified"
 
 
 class LiveSenderError(RuntimeError):
@@ -59,73 +65,101 @@ class LiveSenderDisabled(LiveSenderError):
     """Raised when a real send is attempted without the explicit switch."""
 
 
-def _owner_open_id(config_path: Path) -> str:
+def _declared_app(text: str) -> str:
+    found = re.search(r"cli_[a-z0-9]{10,}", text or "")
+    return found.group(0) if found else ""
+
+
+def _stored_credential(credential_dir: Path) -> tuple[str, str]:
+    """`(app_id, owner_open_id)` from the stored credential, or `('', '')`.
+
+    The credential file name carries BOTH facts, and BOTH are returned: taking
+    only the app — or only the alphabetically first file — is how a cross-check
+    comes to pass while pointing at somebody else's account.
+    """
+    try:
+        names = sorted(os.listdir(credential_dir))
+    except OSError:
+        return "", ""
+    for name in names:
+        match = re.match(r"(cli_[a-z0-9]+)_(ou_[a-z0-9]+)\.enc$", name)
+        if match:
+            return match.group(1), match.group(2)
+    return "", ""
+
+
+def owner_binding(*, config_path=None, credential_dir=None) -> dict:
+    """The verified `(app_id, owner_open_id)` — and it takes ALL of them.
+
+    THREE local facts must be present and agree before a recipient exists at
+    all: the app the config declares, the app the stored credential belongs to,
+    and the USER that credential belongs to. Any one missing, or any
+    disagreement, is a refusal — because «one of them was absent, so we let it
+    through» is exactly how a send reaches an account nobody named.
+    """
+    config_path = Path(config_path or DEFAULT_CONFIG)
+    credential_dir = Path(credential_dir or DEFAULT_CREDENTIAL_DIR)
     try:
         text = config_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LiveSenderError(f"owner config is unreadable ({exc.__class__.__name__})")
+    declared = _declared_app(text)
+    if not declared:
+        raise LiveSenderError(
+            "the config declares no app id: refusing, because a recipient read "
+            "from a config that does not name its app could belong to any app")
     found = re.search(r"ou_[A-Za-z0-9]{10,}", text)
     if not found:
         raise LiveSenderError(
-            f"no owner open_id is declared in {config_path}: this module will not "
-            f"guess a recipient, and a guess is not recallable")
-    return found.group(0)
-
-
-def _stored_credential_app(credential_dir: Path) -> str:
-    """The app id the stored `lark-cli` credential belongs to, or ''."""
-    try:
-        names = os.listdir(credential_dir)
-    except OSError:
-        return ""
-    for name in sorted(names):
-        match = re.match(r"(cli_[a-z0-9]+)_ou_[a-z0-9]+\.enc$", name)
-        if match:
-            return match.group(1)
-    return ""
+            "the config declares no owner open_id: this module will not guess a "
+            "recipient, and a guess is not recallable")
+    owner_open_id = found.group(0)
+    credential_app, credential_user = _stored_credential(credential_dir)
+    if not credential_app or not credential_user:
+        raise LiveSenderError(
+            f"no `lark-cli` credential naming BOTH an app and a user was found in "
+            f"{credential_dir}: without one there is nothing to cross-check against")
+    if credential_app != declared:
+        raise LiveSenderError(
+            "the declared app and the stored credential belong to DIFFERENT apps")
+    if credential_user != owner_open_id:
+        raise LiveSenderError(
+            "the stored credential belongs to a DIFFERENT user than the config "
+            "declares: refusing to pick one, because a send would then reach "
+            "whoever that mismatch happens to name")
+    return {"app_id": declared, "open_id": owner_open_id,
+            "recipient": RECIPIENT_PREFIX + owner_open_id}
 
 
 def owner_recipient(*, config_path=None, credential_dir=None) -> str:
-    """`user:<owner open_id>` from THIS user's declared, cross-checked binding.
-
-    Two independent local facts must agree before a recipient is returned: the
-    open_id the config declares, and the app the stored credential belongs to
-    (the same app the declaration names). A mismatch means the binding moved
-    under us and the answer is a refusal, not a preference.
-    """
-    config_path = Path(config_path or DEFAULT_CONFIG)
-    credential_dir = Path(credential_dir or DEFAULT_CREDENTIAL_DIR)
-    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-    open_id = _owner_open_id(config_path)
-    declared = re.search(r"cli_[a-z0-9]{10,}", text)
-    declared_app = declared.group(0) if declared else None
-    stored_app = _stored_credential_app(credential_dir)
-    if declared_app and stored_app and declared_app != stored_app:
-        raise LiveSenderError(
-            "the declared app and the stored credential belong to DIFFERENT apps: "
-            "refusing to pick one, because the recipient would then be whoever "
-            "that mismatch happens to name")
-    return RECIPIENT_PREFIX + open_id
+    """`user:<owner open_id>` from the verified binding. See `owner_binding`."""
+    return owner_binding(config_path=config_path,
+                         credential_dir=credential_dir)["recipient"]
 
 
 class LiveSender:
     """`message_transport.LarkMessageSender`, enabled explicitly or not at all."""
 
-    def __init__(self, *, enabled: bool = False, recipient=None,
+    def __init__(self, *, enabled: bool = False, recipient=None, binding=None,
                  cli: str = LARK_CLI, timeout: int = 120):
         if not enabled:
             raise LiveSenderDisabled(
                 "the real sender is OFF by default. Enabling it is a deliberate act "
                 "(`enabled=True`) taken after the canary mode is entered, never a "
                 "default some caller inherits")
+        self.binding = binding or owner_binding()
+        verified = str(self.binding.get("recipient") or "")
         if recipient is None:
-            recipient = owner_recipient()
-        if not str(recipient).startswith(RECIPIENT_PREFIX):
+            recipient = verified
+        # A CALLER MAY NOT NAME ITS OWN RECIPIENT. Passing one is allowed only so
+        # a test can hand in an injected binding; it must still EQUAL the verified
+        # one, because «set the recipient to whatever you like» is the whole
+        # failure this binding exists to prevent.
+        if str(recipient) != verified:
             raise LiveSenderError(
-                f"the recipient must be `{RECIPIENT_PREFIX}<open_id>`; got "
-                f"{str(recipient)[:8]!r}… — a bare id could be a chat, and a report "
-                f"in a group cannot be recalled")
-        self.recipient = recipient
+                "the recipient does not equal the verified owner binding: a caller "
+                "cannot redirect this sender, and a bare id could be a chat")
+        self.recipient = verified
         self.cli = cli
         self.timeout = timeout
 
@@ -198,6 +232,113 @@ class LiveSender:
             return {"available": False, "schema": card.get("schema"), "card": None,
                     "reason": "the far end stored a card that is not schema 2.0"}
         return {"available": True, "schema": "2.0", "card": card, "reason": ""}
+
+
+def card_fingerprint(card) -> str:
+    """A structural fingerprint of a Card 2.0 document.
+
+    NOT a hash of the bytes: the far end normalises what it stores (`config`,
+    key order, and sometimes an `icon`), so a byte hash would report a mismatch
+    for a card that is the same card. This folds the parts a reader actually
+    sees — schema, header title/template/subtitle, and the ordered tag sequence
+    with the KPI column widths — so «the far end holds a different card» is a
+    claim about the card, not about a serialiser.
+    """
+    if not isinstance(card, dict):
+        return ""
+    header = card.get("header") if isinstance(card.get("header"), dict) else {}
+    tags: list[str] = []
+    columns: list[int] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("tag"), str):
+                tags.append(node["tag"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(card.get("body"))
+    for element in ((card.get("body") or {}).get("elements") or []):
+        if isinstance(element, dict) and element.get("tag") == "column_set":
+            columns.append(len(element.get("columns") or []))
+    view = {"schema": card.get("schema"),
+            "title": ((header.get("title") or {}).get("content")),
+            "template": header.get("template"),
+            "subtitle": ((header.get("subtitle") or {}).get("content")),
+            "tags": tags, "columns": columns}
+    import hashlib as _hashlib
+    return _hashlib.sha256(
+        json.dumps(view, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+class ReadbackVerifiedSender:
+    """A sender whose acknowledgements are checked against the FAR END.
+
+    `send_card`/`update` are delegated, and then the message is READ BACK. A
+    receipt only becomes `DELIVERED` + `remote_verified` when the far end's own
+    Card 2.0 fingerprint equals the card this call handed over AND the id is the
+    one the call aimed at. Anything else — a mismatched card, a wrong message, a
+    refusal, a timeout, a message the API will not hand back — is
+    `UNKNOWN_PENDING`: the caller must leave its cursors alone and retry the SAME
+    message rather than treat a self-report as a confirmation.
+    """
+
+    def __init__(self, inner, *, readback, verify: bool = True):
+        self.inner = inner
+        self._readback = readback
+        self.verify = verify
+
+    def send_card(self, card, *, idempotency_key: str, **_):
+        answer = self.inner.send_card(card, idempotency_key=idempotency_key)
+        return self._confirm(answer, card, expect_id=None)
+
+    def update(self, request: dict):
+        answer = self.inner.update(request)
+        return self._confirm(answer, request.get("card"),
+                             expect_id=request.get("message_id"))
+
+    def _confirm(self, answer: dict, card, *, expect_id):
+        out = dict(answer or {})
+        out["evidence"] = "remote"
+        provider = out.get("provider") or {}
+        if out.get("state") != "DELIVERED":
+            return out
+        remote_id = str(provider.get("remote_id") or "").strip()
+        if not remote_id:
+            out["state"] = DELIVERED_UNVERIFIED
+            out["why"] = "传输说已送达但没有回消息 id：无法核对，按未确认处理"
+            return out
+        if expect_id and remote_id != str(expect_id):
+            out["state"] = UNKNOWN_PENDING
+            out["why"] = "回执指向的消息不是本次 patch 的目标：不推进游标"
+            return out
+        if not self.verify:
+            out["state"] = WAITING_READBACK
+            out["why"] = "未启用 readback 核对：停在 WAITING_READBACK，不推进游标"
+            return out
+        try:
+            read = self._readback(remote_id)
+        except Exception as exc:                       # noqa: BLE001 - any failure
+            out["state"] = UNKNOWN_PENDING             # is «we could not check»
+            out["why"] = f"readback 失败（{exc.__class__.__name__}）：不推进游标"
+            return out
+        if not isinstance(read, dict) or not read.get("available"):
+            out["state"] = UNKNOWN_PENDING
+            out["why"] = ("远端读回不可用或不是 Card 2.0："
+                          + str((read or {}).get("reason") or "unknown"))
+            return out
+        if card_fingerprint(read.get("card")) != card_fingerprint(card):
+            out["state"] = UNKNOWN_PENDING
+            out["why"] = "远端持有的卡片与本次提交的结构不一致：不推进游标"
+            return out
+        out["state"] = "DELIVERED"
+        out["evidence"] = REMOTE_VERIFIED
+        out["verified_message_id"] = remote_id
+        return out
 
 
 def _load_transport():

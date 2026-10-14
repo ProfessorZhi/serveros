@@ -116,6 +116,9 @@ PENDING_UNRESOLVED = "PENDING_UNRESOLVED"
 #: as evidence that Feishu accepted anything.
 EVIDENCE_SYNTHETIC = "synthetic"
 EVIDENCE_REMOTE = "remote"
+#: A remote receipt whose claim was checked against the card the far end
+#: actually stores. The ONLY evidence word a real send may commit on.
+EVIDENCE_REMOTE_VERIFIED = "remote_verified"
 
 #: How many consumed EVENT keys the hot document keeps. Bounded so a long-lived
 #: LIVE does not grow forever; the oldest keys fall off first, which at worst
@@ -196,7 +199,7 @@ def receipt_evidence(receipt) -> str:
     if not isinstance(receipt, dict):
         return EVIDENCE_SYNTHETIC
     stated = str(receipt.get("evidence") or "").strip()
-    if stated in (EVIDENCE_SYNTHETIC, EVIDENCE_REMOTE):
+    if stated in (EVIDENCE_SYNTHETIC, EVIDENCE_REMOTE, EVIDENCE_REMOTE_VERIFIED):
         return stated
     provider = receipt.get("provider") if isinstance(receipt.get("provider"), dict) else {}
     return (EVIDENCE_REMOTE if str(provider.get("id") or "") == "lark-cli"

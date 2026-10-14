@@ -164,39 +164,115 @@ def mode_dry_run(args) -> dict:
         return trace
 
 
+def validated_state(raw) -> Path:
+    """The ONE canonical store path a real run may touch, or a refusal.
+
+    There is no default. A real mode that picked a path for itself would have
+    two timers writing two documents, and the lock derived from one of them would
+    guard nothing. So the path is REQUIRED, must be absolute, and must live under
+    this user's own home — the three things that make «owner-private» checkable.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise PreflightRefused(
+            "a real mode REQUIRES an explicit `--state <abs path>`: without it the "
+            "store path is a guess, and a lock derived from a guess guards nothing")
+    state = Path(text)
+    if not state.is_absolute():
+        raise PreflightRefused(f"--state must be an absolute path, got {text!r}")
+    home = Path(os.path.expanduser("~")).resolve()
+    try:
+        state.resolve().relative_to(home)
+    except ValueError:
+        raise PreflightRefused(
+            f"--state must live under this user's home ({home}); got {text!r}")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(state.parent, 0o700)
+    except OSError:
+        pass
+    return state
+
+
+def _report_history(args, *, at) -> dict:
+    """The journal's summary for the current period, or an explicit UNKNOWN.
+
+    If the period's window cannot be read there is no summary to show, and the
+    answer says so rather than rendering an empty-looking «history».
+    """
+    state = validated_state(args.state)
+    period = _current_period(at)
+    start, end = (period or {}).get("start"), (period or {}).get("end")
+    if not (period or {}).get("in_period") or not start or not end:
+        return {"available": False, "reason": "时段窗口读不出来", "trend": "UNKNOWN"}
+    journal = journal_mod.Journal(journal_mod.journal_path(state))
+    summary = journal.summary(start=start, end=end)
+    return {"available": True, **summary}
+
+
 def mode_canary(args) -> dict:
-    """The real one. Explicit flag + preflight + the verified owner recipient."""
+    """The real one: explicit flag + preflight + ONE canonical lock + readback.
+
+    The lock is taken on the CANONICAL STORE and covers the whole LIVE + REPORT
+    tick — one writer for one `surfaces.json`, because both surfaces write the
+    same document. A canary that only locked one surface while the report patched
+    the same file would have a lock that guards nothing.
+    """
     if not args.i_understand_this_sends:
         raise PreflightRefused(
-            "--canary-user-vince also needs --i-understand-this-sends; a mode that "
+            "a real mode also needs --i-understand-this-sends; a mode that "
             "delivers to a person is entered on purpose or not at all")
     gate = load_gate()
     if not gate["ok"]:
         return {"schema": "serveros/surface-cli.v1", "mode": "canary",
                 "sent": False, "blocked": "PREFLIGHT", "gate": gate,
                 "says": f"预检拒绝：{gate['why']}"}
-    live = _load("serveros_runtime_live_sender", _HERE / "live_sender.py")
-    recipient = live.owner_recipient()
-    store = surface.SurfaceStore(args.state or surface.default_path())
-    journal = journal_mod.Journal(journal_mod.journal_path(args.state or
-                                                           surface.default_path()))
-    lock = None
-    if args.state:
-        lock_mod = _load("serveros_runtime_surface_lock", _HERE / "surface_lock.py")
-        lock = lock_mod.SurfaceLock(lock_mod.lock_path(args.state, surface="live"))
-        if not lock.acquire():
-            return {"schema": "serveros/surface-cli.v1", "mode": "canary",
-                    "sent": False, "blocked": "BUSY", "gate": gate,
-                    "says": "另一个进程正持有 LIVE 的独占锁：本次不发送"}
+    state = validated_state(args.state)
+    lock_mod = _load("serveros_runtime_surface_lock", _HERE / "surface_lock.py")
+    lock = lock_mod.SurfaceLock(lock_mod.lock_path(state, surface="surfaces"))
+    if not lock.acquire():
+        return {"schema": "serveros/surface-cli.v1", "mode": "canary",
+                "sent": False, "blocked": "BUSY", "gate": gate,
+                "says": "另一个进程正持有该 store 的独占锁：本次不做任何真实操作"}
     try:
-        sender = live.LiveSender(enabled=True, recipient=recipient)
+        live = _load("serveros_runtime_live_sender", _HERE / "live_sender.py")
+        store = surface.SurfaceStore(state)
+        # A real sample, taken read-only and typed, WHILE the lock is held, so
+        # the journal has the same single writer as the surfaces document.
+        _record_sample(args, state=state, at=_at(args))
+        sender = live.ReadbackVerifiedSender(
+            live.LiveSender(enabled=True), readback=live.LiveSender(
+                enabled=True).readback)
         runner = _make_runner(store=store, sender=sender)
-        trace = runner.tick(at=_at(args), events=_events(args))
+        trace = runner.tick(at=_at(args), events=_events(args),
+                            closing=getattr(args, "closing", None))
         trace["gate"] = gate
+        trace["state"] = str(state)
+        trace["history"] = _report_history(args, at=_at(args))
         return trace
     finally:
-        if lock is not None:
-            lock.release()
+        lock.release()
+
+
+def _record_sample(args, *, state, at) -> dict:
+    """Append one typed sample from a READ-ONLY local gather.
+
+    `observed_at` and `provenance` must be real; a reading without them is not
+    written, because a sample whose time nobody recorded cannot say anything
+    about a period.
+    """
+    try:
+        card_source = _load("serveros_runtime_card_source", _HERE / "card_source.py")
+        snapshot = card_source.snapshot(card_source.gather(), at=at)
+        journal = journal_mod.Journal(journal_mod.journal_path(state))
+        sample = journal_mod.sample_from_readings(
+            (snapshot.get("host") or {}).get("metrics") and
+            [{"label": cell.get("label"), "value": cell.get("value"), "state": "KNOWN"}
+             for cell in ((snapshot.get("host") or {}).get("metrics") or [])] or [],
+            at=at, provenance="read-only local gather (card_source.snapshot)")
+        return journal.append(sample)
+    except Exception as exc:                                    # noqa: BLE001
+        return {"appended": False, "reason": exc.__class__.__name__}
 
 
 def _events(args) -> list[dict]:
@@ -217,15 +293,20 @@ def main(argv=None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument("--canary-user-vince", action="store_true")
+    # The two REAL modes are DISTINCT on purpose: a heartbeat and a period
+    # boundary are different cadences, and one CLI that ran either was a template
+    # two timers could both call for the same effect.
+    mode.add_argument("--live-heartbeat", action="store_true")
+    mode.add_argument("--report-period", action="store_true")
     parser.add_argument("--i-understand-this-sends", action="store_true")
     parser.add_argument("--at", default="")
     parser.add_argument("--events", default="")
     parser.add_argument("--state", default="")
+    parser.add_argument("--closing", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.canary_user_vince:
+    if args.live_heartbeat or args.report_period:
         try:
             result = mode_canary(args)
         except PreflightRefused as exc:
@@ -236,10 +317,7 @@ def main(argv=None) -> int:
     else:
         result = mode_preview(args)
 
-    if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-    else:
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
 
 

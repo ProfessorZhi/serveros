@@ -238,7 +238,7 @@ def local_model_source(declaration=None, *, device_ref="device:tokyo-shared-dev-
                          _HERE / "fleet_monitor_source.py")
 
     def source(*, at):
-        snapshot = card_source.snapshot(card_source.gather(), at=at)
+        snapshot = _normalise_gaps(card_source.snapshot(card_source.gather(), at=at))
         peers = [(ref, None) for ref in unknown]
         names = {device_ref: display_name}
         platforms = {device_ref: platform}
@@ -250,6 +250,34 @@ def local_model_source(declaration=None, *, device_ref="device:tokyo-shared-dev-
         return model, []
 
     return source
+
+
+def _normalise_gaps(snapshot):
+    """Make `card_source.snapshot()`'s gaps readable by `fleet_monitor_source`.
+
+    A REAL SHAPE MISMATCH, found by running the read-only path on a busy host:
+    `card_source.snapshot` renders its top-level `gaps` as ONE SENTENCE per gap
+    (`"...未读到：<why>"`), while `fleet_monitor_source.device_from_snapshot`
+    reads them as `{"read", "why"}` mappings. With no gaps the two agree by
+    accident; the first failed read makes the adapter raise `AttributeError`.
+
+    It is normalised HERE rather than in either module because both are other
+    owners' contracts: a string gap is a true statement and so is a mapping, and
+    this adapter is the one place that knows it is joining the two. The sentence
+    is kept as the `why`, so a reader still sees the cause the gather wrote.
+    """
+    gaps = snapshot.get("gaps") if isinstance(snapshot, dict) else None
+    if not isinstance(gaps, list):
+        return snapshot
+    fixed = []
+    for gap in gaps:
+        if isinstance(gap, dict):
+            fixed.append(gap)
+        elif isinstance(gap, str):
+            fixed.append({"read": "", "why": gap})
+    out = dict(snapshot)
+    out["gaps"] = fixed
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +330,12 @@ class ShadowRunner:
 
     @property
     def evidence(self) -> str:
-        """Whose word this runner's receipts are. FAKE senders are `synthetic`."""
+        """Whose word this runner's receipts are. FAKE senders are `synthetic`.
+
+        Note what this CANNOT say: `remote`. A real send is only ever
+        `remote_verified`, and only a readback-verifying sender can produce that
+        word — so this reports the WEAKER claim for anything not known to be fake.
+        """
         if isinstance(self.sender, (RecordingSender, PreviewSender)):
             return surface.EVIDENCE_SYNTHETIC
         return surface.EVIDENCE_REMOTE
@@ -379,7 +412,8 @@ class ShadowRunner:
             trace["transport_calls"] += 1
             trace["live"]["receipt"] = _receipt_view(receipt)
             if receipt.get("state") == "DELIVERED":
-                self.store.confirm_live(at=at, receipt=receipt, evidence=self.evidence)
+                self.store.confirm_live(at=at, receipt=receipt,
+                                        evidence=surface.receipt_evidence(receipt))
                 trace["store_writes"] += 1
                 trace["live"]["committed"] = True
             else:
@@ -455,7 +489,7 @@ class ShadowRunner:
                 if receipt.get("state") == "DELIVERED":
                     try:
                         self.store.confirm_report(period_ref=ref, at=at, receipt=receipt,
-                                                  evidence=self.evidence)
+                                                  evidence=surface.receipt_evidence(receipt))
                         trace["store_writes"] += 1
                         trace["report"]["committed"] = True
                     except surface.CardSurfaceError as exc:

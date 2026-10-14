@@ -31,7 +31,15 @@ release candidate 一起交付的**未启用**模板，供人评审后手工安�
 
 ## 安装（人工，逐步）
 
+**两个模板的 `ExecStart` 指向稳定安装路径 `%h/.local/lib/serveros-v13-surfaces/`，
+不是临时 worktree。** 该路径不存在时 `ConditionPathExists` 会让 unit 直接不跑。
+
 ```bash
+# 0) 把 CLI 与它加载的 runtime 模块装到稳定路径，并给启动器执行位
+mkdir -p ~/.local/lib/serveros-v13-surfaces
+cp -r runtime ~/.local/lib/serveros-v13-surfaces/
+cp runtime/surface_cli.py ~/.local/lib/serveros-v13-surfaces/surface_cli.py
+chmod 0755 ~/.local/lib/serveros-v13-surfaces/surface_cli.py
 # 1) 复制模板到用户 unit 目录（不 enable）
 mkdir -p ~/.config/systemd/user
 cp deploy/v13-surfaces/*.service deploy/v13-surfaces/*.timer ~/.config/systemd/user/
@@ -40,6 +48,19 @@ systemctl --user daemon-reload
 # 3) 显式 enable —— 这一步就是「批准上线」，本轮未做
 # systemctl --user enable --now v13-live-heartbeat.timer v13-report-period.timer
 ```
+
+两个 timer 调用的是**不同 mode**（`--live-heartbeat` / `--report-period`），
+都**必须**带显式 `--state`；任一 mode 缺 `--state`、缺
+`--i-understand-this-sends`、或拿不到 store 上的跨进程锁，都**直接拒绝**。
+
+## 报告边界（需要人工核对，**未自动化**）
+
+`v13-report-period.timer` 的 `OnCalendar` 是**默认时段表**的边界
+（09:00 / 12:00 / 18:00）。真实的时段边界由**日历声明**决定，运行时的
+`--report-period` 会向 `business_calendar` 询问并封存「已不属于当前时段」的报告，
+所以**即使 timer 边界与声明不一致，报告也不会错封**——但会**错过或延后**归档。
+上线前请核对：`python3 -c "…card_period.period_at…"` 的边界与本 timer 一致。
+**这一步没有自动化测试覆盖。**
 
 ## 回滚
 
@@ -57,6 +78,9 @@ systemctl --user daemon-reload
 ## 仍未验证（不得当成已完成）
 
 - **每半小时自动更新 / 告警即时 PATCH 的真实运行**：离线成立，**真机常驻未启用**。
+- **报告边界与 timer 的一致性**：**未自动化**，需上线前人工核对（见上）。
+- **`--report-period` 与 `--live-heartbeat` 的真实并发**：两者抢同一把 store 锁，
+  离线测过；**真实 timer 下未验证**。
 - **跨进程互斥**：`flock` 已实现并测过两进程竞争；但**未在真实 timer 下长期验证**。
 - **真实 readback 匹配**：代码存在（`live_sender.readback`），**未对真实消息跑过**。
 - **图表**：`charts_verified=False`，未开。

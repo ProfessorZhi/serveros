@@ -3,6 +3,8 @@
 Description=ServerOS V13 LIVE heartbeat at :00/:30 (DISABLED TEMPLATE)
 
 [Timer]
+# :00 and :30 because the cadence key is a half-hour SLOT; a fire that finds the
+# slot unmoved is a no-op rather than a second patch.
 OnCalendar=*-*-* *:00,30:00
 Persistent=false
 AccuracySec=30s
