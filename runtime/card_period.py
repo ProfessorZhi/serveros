@@ -87,10 +87,31 @@ NEW_PERIOD = "NEW_PERIOD"
 SAME_PERIOD = "SAME_PERIOD"
 PERIOD_ENDED = "PERIOD_ENDED"
 ALREADY_FROZEN = "ALREADY_FROZEN"
+FINAL_UNCONFIRMED = "FINAL_UNCONFIRMED"
 CALENDAR_UNKNOWN = "CALENDAR_UNKNOWN"
 OUT_OF_ORDER = "OUT_OF_ORDER"
 REASONS = (NEW_PERIOD, SAME_PERIOD, PERIOD_ENDED, ALREADY_FROZEN,
-           CALENDAR_UNKNOWN, OUT_OF_ORDER)
+           FINAL_UNCONFIRMED, CALENDAR_UNKNOWN, OUT_OF_ORDER)
+
+#: The three phases an open period can be in, and WHY THE FIRST TWO ARE NOT THE
+#: THIRD. `FINAL` prepares an archive and asks the transport to PATCH it; it does
+#: NOT make the card frozen, because this module cannot know the far end accepted
+#: it. Writing «frozen» on the strength of having *attempted* the patch is the
+#: failure the 2026-10-14 review names: a 429/timeout leaves the card unfrozen at
+#: the far end, the next tick reads ALREADY_FROZEN and refuses to retry, and the
+#: boundary opens a successor over an archive that never landed.
+#:
+#:     LIVE           the period is running; ticks PATCH it silently
+#:     FINAL_PENDING  the final archive is prepared and its PATCH was attempted,
+#:                    but no verified acknowledgement has arrived; a later tick
+#:                    RETRIES the same message_id and never opens a successor
+#:     FROZEN         a verified acknowledgement (a DELIVERED `card_delivery`
+#:                    receipt for this version) was recorded; only now may the
+#:                    next period CREATE its own message
+LIVE = "LIVE"
+FINAL_PENDING = "FINAL_PENDING"
+FROZEN = "FROZEN"
+PHASES = (LIVE, FINAL_PENDING, FROZEN)
 
 #: The day kinds `business_calendar` answers with, and which period table each
 #: one reads. UNKNOWN is deliberately absent: a day nobody can name gets no
@@ -387,28 +408,70 @@ def empty() -> dict:
     return {"schema": SCHEMA, "open": None, "previous": None}
 
 
+def _phase(open_) -> str:
+    """Which phase an open period is in.
+
+    A document written before `phase` existed carries `frozen` and no `phase`;
+    it is read as FROZEN — the strongest reading, and the one its own `frozen`
+    block already claims. Reading a frozen card as LIVE would let the next tick
+    PATCH a card somebody has already archived.
+    """
+    if not isinstance(open_, dict):
+        return LIVE
+    phase = open_.get("phase")
+    if phase in PHASES:
+        return phase
+    return FROZEN if open_.get("frozen") else LIVE
+
+
+def _attempts(open_) -> int:
+    pending = open_.get("pending") if isinstance(open_, dict) else None
+    return int(pending.get("attempts") or 0) if isinstance(pending, dict) else 0
+
+
+def _is_later(at, then) -> bool:
+    """Whether `at` is strictly later than `then`, both ISO instants.
+
+    Unreadable on either side is `False`, and that is the safe direction: the
+    alternative treats an instant nobody could place on a timeline as a boundary
+    and archives a shift on it.
+    """
+    try:
+        now = datetime.datetime.fromisoformat(str(at))
+        was = datetime.datetime.fromisoformat(str(then))
+    except (TypeError, ValueError):
+        return False
+    if now.tzinfo is None or was.tzinfo is None:
+        return False
+    return now > was
+
+
 def decide(document: dict, *, period: dict, at: str,
            closing: str | None = None) -> dict:
     """What happens to the period card at this instant, and why.
 
     The answer is a LIST of STEPS because a shift change is two operations and
     pretending it is one is how a card multiplies: the period that just ended
-    must be FINALed (its archive written, its card frozen) and the period that
-    just began must be CREATEd, and a caller that only ever does one of them
-    either leaves yesterday's card open or opens a second message inside the
-    same period. Most instants answer with one step; a boundary answers with two,
-    in the order they must happen.
+    must have its archive patched in and the period that just began must be
+    CREATEd. But the two happen at DIFFERENT INSTANTS now, because the freeze is
+    no longer this function's to make — `FINAL` only PREPARES, and a successor is
+    opened only after a verified acknowledgement (`PeriodStore.confirm`).
+
+    A PENDING FINAL IS THE ONLY THING THIS INSTANT MAY DO. While an archive is
+    prepared but unconfirmed, EVERY tick retries the SAME message: the same
+    period's later tick, and the first tick of the NEXT period, both answer
+    FINAL. It never PATCHes live again and it never opens a successor — a
+    successor opened over an archive that has not landed is the second card this
+    module exists to forbid.
 
     `closing` is how a caller ends a shift EXPLICITLY — «收班 / 结算» — instead
-    of waiting for the next period's first tick to detect the boundary. It names
-    the period_ref to close; the boundary path below is what fires when nobody
-    says so.
+    of waiting for the next period's first tick to detect the boundary.
 
     DIRECTION IS CHECKED, NOT ASSUMED. An instant in a period DIFFERENT from the
     open one is a boundary only when it is LATER than the open period began
     (`_is_later`). An instant that is EARLIER is a clock that stepped back or a
     replay, and closing the open period on it would archive a shift that has not
-    ended while patching it would move the card backwards — so it is refused.
+    ended — so it is refused.
 
     Nothing here reads a clock or writes anything: `at`, `period` and `closing`
     are arguments, and the document is returned unchanged.
@@ -416,14 +479,25 @@ def decide(document: dict, *, period: dict, at: str,
     document = document or empty()
     open_ = document.get("open")
     open_ref = open_.get("period_ref") if isinstance(open_, dict) else None
-    open_frozen = bool(open_.get("frozen")) if isinstance(open_, dict) else False
+    phase = _phase(open_)
     cur = period if (isinstance(period, dict) and period.get("in_period")) else None
     cur_ref = cur.get("period_ref") if cur else None
+
+    # 0. An unconfirmed final blocks everything else. It is checked FIRST and
+    #    returns on its own, so no branch below can open a successor beside it.
+    if open_ref and phase == FINAL_PENDING:
+        return _answer(open_, FINAL, FINAL_UNCONFIRMED, at,
+                       (f"{open_ref} 的最终归档已准备好，但还没有被远端确认"
+                        f"（已尝试 {_attempts(open_)} 次）：本次只重试同一条 "
+                        f"message_id，不新建消息，也不开新时段"),
+                       period_ref=open_ref,
+                       steps=[_final_step(open_, open_ref, retry=True)])
+
     steps: list[dict] = []
 
-    # 1. Close the open period when it is ending — because `closing` names it, or
-    #    because this instant belongs to a LATER period.
-    if open_ref and not open_frozen:
+    # 1. Prepare the final when the period is ending. Only a LIVE period has
+    #    anything to end; a FROZEN one is already archived.
+    if open_ref and phase == LIVE:
         if closing and closing == open_ref:
             steps.append(_final_step(open_, open_ref))
         elif cur is not None and cur_ref != open_ref:
@@ -435,11 +509,15 @@ def decide(document: dict, *, period: dict, at: str,
                                 f"（开始于 {open_.get('opened_at')}）：不据此动"
                                 f"卡片，避免把时钟倒退读成换班"))
 
+    # A FINAL prepared this instant is the WHOLE answer. The successor waits for
+    # the acknowledgement, so no branch below may add a CREATE beside it — and
+    # DISCARDING the step here is what would make a boundary look like a no-op
+    # while the successor guard below silently swallowed it.
+    if steps:
+        return _answer(open_, FINAL, PERIOD_ENDED, at, _final_says(open_ref),
+                       period_ref=open_ref, steps=steps)
+
     if not cur:
-        if steps:
-            return _answer(open_, FINAL, PERIOD_ENDED, at,
-                           _final_says(open_ref), period_ref=open_ref,
-                           steps=steps)
         return _answer(open_, SKIP,
                        (period or {}).get("reason") or CALENDAR_UNKNOWN, at,
                        (period or {}).get("says")
@@ -447,15 +525,17 @@ def decide(document: dict, *, period: dict, at: str,
 
     ref = cur_ref
 
-    if steps and steps[-1]["action"] == FINAL and ref == open_ref:
-        # `closing` closed the very period this instant is in. Reopening it in
-        # the same breath would undo the freeze this call just made.
-        return _answer(open_, FINAL, PERIOD_ENDED, at, _final_says(open_ref),
-                       period_ref=open_ref, steps=steps)
-
     if ref != open_ref or not open_ref:
+        # A successor may open ONLY on a FROZEN predecessor. A FINAL_PENDING one
+        # already returned at step 0; this guard covers a document whose phase
+        # reached here by another route.
+        if open_ref and phase != FROZEN:
+            return _answer(open_, SKIP, FINAL_UNCONFIRMED, at,
+                           (f"{open_ref} 的归档尚未确认冻结：不在此新建下一时段，"
+                            f"避免在一份还没落地的归档之上再开一张卡"),
+                           period_ref=open_ref)
         says = (f"{cur['day_ref']} · {cur['label']} 时段开始"
-                + ("（上一时段已归档）" if steps else "（今天还没有时段卡）")
+                + ("（上一时段已归档并冻结）" if steps else "（今天还没有时段卡）")
                 + "：新建一条消息承载它，之后每一拍都 patch 这一条；"
                   "这一条初建时可能是一次可见消息")
         steps.append({"action": CREATE, "period_ref": ref, "period": cur,
@@ -463,10 +543,11 @@ def decide(document: dict, *, period: dict, at: str,
         return _answer(open_, CREATE, NEW_PERIOD, at, says, period_ref=ref,
                        steps=steps)
 
-    if open_frozen:
+    if phase == FROZEN:
+        frozen_at = (open_.get("frozen") or {}).get("at")
         return _answer(open_, SKIP, ALREADY_FROZEN, at,
-                       (f"{ref} 已冻结（{open_['frozen'].get('at')}）：不再因"
-                        f"普通采样变化，本次不动它"), period_ref=ref)
+                       (f"{ref} 已冻结（{frozen_at}）：不再因普通采样变化，"
+                        f"本次不动它"), period_ref=ref)
 
     latest = open_.get("latest")
     if isinstance(latest, dict) and isinstance(latest.get("tick"), int) \
@@ -487,12 +568,13 @@ def decide(document: dict, *, period: dict, at: str,
                    steps=steps)
 
 
-def _final_step(open_: dict, open_ref: str) -> dict:
+def _final_step(open_: dict, open_ref: str, *, retry: bool = False) -> dict:
     return {
         "action": FINAL, "period_ref": open_ref,
         "period": {"period_ref": open_ref, "label": open_.get("label"),
                    "day_ref": open_.get("day_ref")},
-        "reason": PERIOD_ENDED,
+        "reason": FINAL_UNCONFIRMED if retry else PERIOD_ENDED,
+        "retry": bool(retry),
         "says": _final_says(open_ref),
     }
 
@@ -507,23 +589,6 @@ def _answer(open_, action, reason, at, says, *, period_ref=None, steps=None):
     return {"schema": SCHEMA, "at": at, "steps": list(steps or []),
             "action": action, "reason": reason, "period_ref": period_ref,
             "message": _message(open_, action, at), "says": says}
-
-
-def _is_later(at, then) -> bool:
-    """Whether `at` is strictly later than `then`, both ISO instants.
-
-    Unreadable on either side is `False`, and that is the safe direction: the
-    alternative treats an instant nobody could place on a timeline as a boundary
-    and archives a shift on it.
-    """
-    try:
-        now = datetime.datetime.fromisoformat(str(at))
-        was = datetime.datetime.fromisoformat(str(then))
-    except (TypeError, ValueError):
-        return False
-    if now.tzinfo is None or was.tzinfo is None:
-        return False
-    return now > was
 
 
 def _message(open_period, action: str, at: str) -> dict:
@@ -735,6 +800,16 @@ def apply(document: dict, *, step: dict, row_: dict | None = None,
             raise CardPeriodError(
                 f"{step['period_ref']} already has a card. Two creations in one "
                 f"period is the second chat message this module exists to forbid")
+        if isinstance(open_, dict) and _phase(open_) != FROZEN:
+            # The load-bearing guard the 2026-10-14 review asked for: a successor
+            # must not open over a predecessor whose archive has not been
+            # confirmed at the far end. Opening one there is a second card.
+            raise CardPeriodError(
+                f"the open period {open_.get('period_ref')} is "
+                f"{_phase(open_)!r}, not {FROZEN!r}: a successor must not open "
+                f"before the predecessor's archive is confirmed at the far end. "
+                f"Record the acknowledgement (`confirm`) — or leave the final "
+                f"pending and retry the same message — instead of opening one")
         if isinstance(open_, dict):
             # The period just closed becomes `previous`, and it carries its
             # freeze with it — a reader asking «what did the shift hand over»
@@ -764,7 +839,10 @@ def apply(document: dict, *, step: dict, row_: dict | None = None,
             "latest": check_row(row_),
             "rows": [],
             "message": None,
+            "phase": LIVE,
+            "pending": None,
             "frozen": None,
+            "confirmed": None,
             "archive": None,
         }
         return next_doc
@@ -800,20 +878,41 @@ def apply(document: dict, *, step: dict, row_: dict | None = None,
         next_doc["open"] = next_open
         return next_doc
 
-    # FINAL
-    if open_.get("frozen"):
+    # FINAL — PREPARE. It does NOT freeze: freezing is `confirm`'s, and
+    # `confirm` runs only on a verified remote acknowledgement. Writing `frozen`
+    # here would be the failure the review names — a 429/timeout leaves the card
+    # unfrozen at the far end while this document says it was archived.
+    if _phase(open_) == FROZEN:
         raise CardPeriodError(
             f"{open_.get('period_ref')} is already frozen at "
-            f"{open_['frozen'].get('at')}: a second FINAL is a second archive "
-            f"of a shift that has already been handed over")
-    next_open = dict(open_)
-    next_open["updated_at"] = stamp
-    next_open["archive"] = archive if archive is not None else step.get("archive")
-    next_open["frozen"] = frozen or {
+            f"{(open_.get('frozen') or {}).get('at')}: a second FINAL is a second "
+            f"archive of a shift that has already been handed over")
+    previous_pending = (open_.get("pending")
+                        if isinstance(open_.get("pending"), dict) else {})
+    prepared = frozen or previous_pending.get("frozen") or {
         "kind": delivery.PERIOD,
         "at": stamp,
         "version": None,
         "payload_hash": None,
+    }
+    held_id = previous_pending.get("remote_id")
+    if not held_id and isinstance(open_.get("message"), dict):
+        held_id = open_["message"].get("remote_id")
+    chosen_archive = archive if archive is not None else step.get("archive")
+    next_open = dict(open_)
+    next_open["phase"] = FINAL_PENDING
+    next_open["updated_at"] = stamp
+    next_open["archive"] = (chosen_archive if chosen_archive is not None
+                            else open_.get("archive"))
+    # The confirmed block stays None until `confirm`: having PREPARED an archive
+    # is not having delivered one.
+    next_open["frozen"] = None
+    next_open["pending"] = {
+        "prepared_at": previous_pending.get("prepared_at") or stamp,
+        "frozen": prepared,
+        "remote_id": held_id,
+        "attempts": int(previous_pending.get("attempts") or 0) + 1,
+        "last_attempt_at": stamp,
     }
     next_doc["open"] = next_open
     return next_doc
@@ -852,7 +951,8 @@ def summary(document: dict | None) -> dict:
     open_ = document.get("open")
     if not isinstance(open_, dict):
         return {"schema": SCHEMA, "period_ref": None, "ticks": 0, "latest": None,
-                "rows": [], "timeline": [], "message": None, "frozen": None,
+                "rows": [], "timeline": [], "message": None, "phase": None,
+                "pending": None, "confirmed": None, "frozen": None,
                 "previous": document.get("previous"), "archive": None,
                 "says": "还没有任何时段卡"}
     rows = [check_row(r) for r in (open_.get("rows") or [])]
@@ -860,6 +960,14 @@ def summary(document: dict | None) -> dict:
     all_rows = rows + ([latest] if latest else [])
     entries = day.timeline(all_rows)
     frozen = open_.get("frozen")
+    phase = _phase(open_)
+    pending = open_.get("pending") if isinstance(open_.get("pending"), dict) else None
+    if phase == FROZEN:
+        state_word = "（已冻结·远端已确认）"
+    elif phase == FINAL_PENDING:
+        state_word = f"（最终归档待确认·已尝试 {_attempts(open_)} 次）"
+    else:
+        state_word = "（进行中）"
     return {
         "schema": SCHEMA,
         "period_ref": open_.get("period_ref"),
@@ -876,12 +984,18 @@ def summary(document: dict | None) -> dict:
         "transitions": sum(1 for e in entries if e["kind"] == "transition"),
         "unobserved": sum(1 for e in entries if e["kind"] == "gap"),
         "message": open_.get("message"),
+        # The phase is the load-bearing field: FROZEN means a verified remote
+        # acknowledgement was recorded, and nothing else does. `frozen` is set
+        # only in that phase, so a reader that only looks at `frozen` cannot be
+        # misled into reading a prepared-but-unconfirmed archive as delivered.
+        "phase": phase,
+        "pending": pending,
+        "confirmed": open_.get("confirmed"),
         "frozen": frozen,
         "frozen_at": frozen.get("at") if isinstance(frozen, dict) else None,
         "archive": open_.get("archive"),
         "previous": document.get("previous"),
-        "says": (f"{open_.get('period_ref')} 已记录 {len(all_rows)} 拍"
-                 + ("（已冻结）" if frozen else "（进行中）")),
+        "says": (f"{open_.get('period_ref')} 已记录 {len(all_rows)} 拍" + state_word),
     }
 
 
@@ -935,6 +1049,13 @@ class PeriodStore:
                 raise CardPeriodError(
                     f"the open period in {self.path} has no `period_ref`: the "
                     f"identity is the dedupe key")
+            phase = open_.get("phase")
+            if phase is not None and phase not in PHASES:
+                raise CardPeriodError(
+                    f"the open period in {self.path} is in phase {phase!r}, which "
+                    f"is not one of {', '.join(PHASES)}. A phase nobody can name "
+                    f"is a phase this store would have to guess about, and the "
+                    f"guess decides whether a frozen card is patched again")
             for item in open_.get("rows") or []:
                 check_row(item)
             if open_.get("latest") is not None:
@@ -946,6 +1067,20 @@ class PeriodStore:
                     f"the open period in {self.path} has a `message` that names "
                     f"no message. A binding to nothing would let the next update "
                     f"patch whichever message it guessed")
+            pending = open_.get("pending")
+            if pending is not None:
+                if _phase(open_) != FINAL_PENDING:
+                    raise CardPeriodError(
+                        f"the open period in {self.path} carries a `pending` while "
+                        f"its phase is {_phase(open_)!r}: a pending final is the "
+                        f"state of {FINAL_PENDING!r} and nothing else")
+                if not isinstance(pending, dict) or not str(
+                        (pending.get("frozen") or {}).get("version") or ""):
+                    raise CardPeriodError(
+                        f"the open period in {self.path} has a pending final with "
+                        f"no prepared version. Without it a restart could not ask "
+                        f"the delivery ledger whether the archive landed, and the "
+                        f"only way forward would be a second message")
         return data
 
     def read(self) -> dict:
@@ -955,21 +1090,25 @@ class PeriodStore:
                 finalize=None, closing: str | None = None) -> dict:
         """Decide this instant, apply every step, and write once.
 
-        Returns the decision with `applied: true` and the resulting summary. A
-        caller that transports must do so BETWEEN reading the decision and this
-        write — but this verb is the one that records the CARD, exactly as
-        `card_day.DayStore.advance` is, and the message binding is recorded
-        separately by `announce` because the id only exists after a send.
+        Returns the decision with `applied: true` and the resulting summary. This
+        verb records the LOCAL state — the card, its rows, and a PREPARED final —
+        and it is deliberately NOT the thing that declares a shift archived:
+        a FINAL step here moves the period to `FINAL_PENDING` and nothing more.
+        The far end's acceptance is recorded separately, by `confirm`, on a
+        verified `card_delivery` receipt. A caller that skips `confirm` leaves the
+        period pending, which is the point: an unconfirmed archive must not let a
+        successor open.
 
         `row_for` is handed each CREATE/PATCH step and returns the row it should
         record — this store measures nothing, so the readings come from the
         caller's model. `finalize` is handed each FINAL step and returns
-        `{"archive": ..., "frozen": ...}`. Both are callbacks and not arguments
-        because the row comes from a reading this store does not take and the
-        archive is rendered from the model and the period's rows, which it does
-        not hold. A caller that omits `finalize` still gets a FINAL that records
-        the closure, but the archive and the frozen version are then honestly
-        `None` rather than invented here.
+        `{"archive": ..., "frozen": ...}`, the PREPARED archive and the version
+        its PATCH will carry. Both are callbacks and not arguments because the row
+        comes from a reading this store does not take and the archive is rendered
+        from the model and the period's rows, which it does not hold. A caller
+        that omits `finalize` still gets a FINAL that records the preparation, but
+        the archive and the prepared version are then honestly `None` rather than
+        invented here.
         """
         decision = decide(self._data, period=period, at=at, closing=closing)
         document = self._data
@@ -1030,8 +1169,134 @@ class PeriodStore:
         return {"announced": True, "change": change, "message": message,
                 "period_ref": open_.get("period_ref"), "period": summary(self._data)}
 
+    def confirm(self, *, at: str, receipt: dict) -> dict:
+        """Commit the freeze — but ONLY on a verified remote acknowledgement.
+
+        This is the second half of the split the 2026-10-14 review asked for:
+        `FINAL` prepares an archive and asks the transport to PATCH it, and THIS
+        records that the far end accepted it. Until it runs the period stays
+        `FINAL_PENDING`, every tick retries the same message, and no successor
+        opens.
+
+        `receipt` is a `card_delivery` receipt row for the `period` kind. It is
+        accepted only when its `state` is DELIVERED and its `version` matches the
+        version the pending final prepared. A receipt for a DIFFERENT version is
+        a proof about a different card, and freezing on it would freeze an
+        archive nobody sent.
+        """
+        open_ = self._data.get("open")
+        if not isinstance(open_, dict):
+            raise CardPeriodError("there is no open period to confirm")
+        phase = _phase(open_)
+        if phase == FROZEN:
+            raise CardPeriodError(
+                f"{open_.get('period_ref')} is already frozen at "
+                f"{(open_.get('frozen') or {}).get('at')}")
+        if phase != FINAL_PENDING:
+            raise CardPeriodError(
+                f"{open_.get('period_ref')} is {phase!r}: there is no pending final "
+                f"to confirm. A confirmation is about an archive that was PREPARED "
+                f"and sent, not about a live period")
+        state = str((receipt or {}).get("state") or "")
+        if state != delivery.DELIVERED:
+            raise CardPeriodError(
+                f"远端回执的 state 是 {state!r}，不是 {delivery.DELIVERED!r}："
+                f"不能据此冻结。失败 / 超时 / 未知都必须留在 {FINAL_PENDING}，"
+                f"由下一拍重试同一条消息")
+        pending = open_.get("pending") or {}
+        prepared = pending.get("frozen") or {}
+        version = str(prepared.get("version") or "")
+        if not version:
+            raise CardPeriodError(
+                "the pending final names no prepared version, so there is nothing a "
+                "receipt could be checked against")
+        receipt_version = str((receipt or {}).get("version") or "")
+        if receipt_version and receipt_version != version:
+            raise CardPeriodError(
+                f"回执命名的版本 {receipt_version!r} 与准备好的 {version!r} 不同："
+                f"这是一份关于另一张卡的证明，不能用来冻结这一张")
+        remote_id = str((receipt or {}).get("remote_id")
+                        or pending.get("remote_id") or "")
+        if not remote_id:
+            raise CardPeriodError(
+                "the receipt names no message id and the pending final has none: a "
+                "freeze that cannot say which message carries the archive is a "
+                "freeze nobody can follow")
+        next_doc = dict(self._data)
+        next_open = dict(open_)
+        frozen = dict(prepared)
+        frozen["at"] = str(at)
+        next_open.update({
+            "phase": FROZEN,
+            "frozen": frozen,
+            "confirmed": {"at": str(at), "state": state, "version": version,
+                          "remote_id": remote_id},
+            "pending": None,
+            "updated_at": str(at),
+        })
+        next_doc["open"] = next_open
+        _store_io()._atomic_write(self.path, next_doc)
+        self._data = next_doc
+        return {"confirmed": True, "period_ref": open_.get("period_ref"),
+                "frozen": frozen, "period": summary(self._data)}
+
+    def reconcile_pending(self, *, ledger, at: str) -> dict:
+        """After a restart, ask the delivery ledger whether the archive landed.
+
+        The RESTART path, and the reason no second delivery ledger exists: the
+        INTENT is here (`open.pending`) and the RECEIPT is in `card_delivery` —
+        this asks that ledger rather than keeping one of its own. A DELIVERED
+        receipt for the pending version CONFIRMS the freeze; anything else
+        (FAILED, UNKNOWN, a different version, no receipt at all) leaves the final
+        pending and the caller retries the same message.
+        """
+        open_ = self._data.get("open")
+        if not isinstance(open_, dict) or _phase(open_) != FINAL_PENDING:
+            return {"reconciled": True, "outcome": "NOT_PENDING",
+                    "period_ref": (open_.get("period_ref")
+                                   if isinstance(open_, dict) else None)}
+        pending = open_.get("pending") or {}
+        version = str((pending.get("frozen") or {}).get("version") or "")
+        rows = [r for r in ledger.entries(delivery.PERIOD)
+                if isinstance(r, dict) and str(r.get("version") or "") == version]
+        row = rows[-1] if rows else None
+        if row is not None and row.get("state") == delivery.DELIVERED:
+            result = self.confirm(at=at, receipt=row)
+            return {"reconciled": True, "outcome": "CONFIRMED", **result}
+        return {"reconciled": True, "outcome": "RETRY",
+                "period_ref": open_.get("period_ref"),
+                "receipt_state": (row or {}).get("state"),
+                "says": ("投递台账里没有这一版的 DELIVERED 回执：最终归档仍未确认，"
+                         "下一拍重试同一条 message_id，不新建消息")}
+
     def summary(self) -> dict:
         return summary(self._data)
+
+
+def deploy_readiness() -> dict:
+    """Whether this module may be pointed at a live Feishu surface. It may not.
+
+    A RETURN VALUE rather than a docstring sentence, because a caller can branch
+    on it. What is missing is not code here but EVIDENCE: no real `im messages
+    patch` round-trip has been run, so «the far end accepted the archive» rests
+    on the transport's own report with nothing independent to check it against.
+    That is exactly the class of claim the 2026-10-14 review forbids marking
+    deployable, and `PeriodStore` is a PLANNER plus a local state machine — it is
+    not, on its own, proof that a shift was archived at the far end.
+    """
+    return {
+        "ready": False,
+        "reason": ("远端 ACK 未经真机验证：本模块只接受一个 DELIVERED 回执作为冻结"
+                   "依据，而该回执尚未在真实飞书上往返验证；也没有独立的 readback "
+                   "可用。因此 `PeriodStore` 是计划器 + 本地状态机，"
+                   "不能单独声称「时段已在远端归档」"),
+        "unverified": [
+            "真实 Feishu `im messages patch` 的最终归档往返（CREATE/PATCH/FINAL）",
+            "失败 / 429 / 超时下同一 message_id 的真实重试落地",
+            "重启后 `reconcile_pending` 对真实 `card_delivery` 台账的读取",
+            "CardKit 2.0 窄屏渲染（chart gate 仍关）",
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -172,35 +172,68 @@ class TheLifecycle(unittest.TestCase):
         self.assertEqual(second["period"]["message"]["remote_id"], "om_alpha")
         self.assertEqual(second["period"]["ticks"], 2)
 
-    def test_the_boundary_closes_the_old_shift_and_opens_the_new_one(self):
+    def _finalize_at(self, at):
+        """The PREPARED archive and version a FINAL step carries."""
+        def finalize(step):
+            shown = self.store.summary()
+            rows = shown["rows"] + ([shown["latest"]] if shown["latest"] else [])
+            view = card_period.archive(self.model, period=step["period"], rows=rows)
+            card = card_period.render_archive(view, model=self.model)
+            return {"archive": view,
+                    "frozen": card_period.frozen_block(
+                        card=card, at=at, period_ref=step["period_ref"])}
+        return finalize
+
+    def test_the_boundary_prepares_the_final_and_waits_for_the_ack(self):
         at = "2026-10-14T11:50:00+08:00"
         _periods(self.store, at, self._row_for)
         self.store.announce(remote_id="om_morning", at=at)
 
-        def finalize(step):
-            rows = self.store.summary()["rows"]
-            rows = rows + [self.store.summary()["latest"]]
-            view = card_period.archive(self.model, period=step["period"],
-                                       rows=rows)
-            card = card_period.render_archive(view, model=self.model)
-            return {"archive": view,
-                    "frozen": card_period.frozen_block(
-                        card=card, at="2026-10-14T12:00:00+08:00",
-                        period_ref=step["period_ref"])}
-
-        at2 = "2026-10-14T12:00:00+08:00"
-        answer = self.store.advance(
-            period=card_period.period_at(at2, declaration=DECL), at=at2,
-            row_for=self._row_for, finalize=finalize)
-        # Two steps, and in this order: the morning shift's archive must be
-        # written while its rows are still correct, before the afternoon opens.
-        self.assertEqual([s["action"] for s in answer["decision"]["steps"]],
-                         [card_period.FINAL, card_period.CREATE])
+        boundary = "2026-10-14T12:00:00+08:00"
+        first = self.store.advance(
+            period=card_period.period_at(boundary, declaration=DECL), at=boundary,
+            row_for=self._row_for, finalize=self._finalize_at(boundary))
+        # ONE step: the final is PREPARED. No successor opens, because the
+        # archive has not been confirmed at the far end.
+        self.assertEqual([s["action"] for s in first["decision"]["steps"]],
+                         [card_period.FINAL])
         doc = self.store.read()
-        self.assertEqual(doc["previous"]["period_ref"], "CN-Test/2026-10-14#morning")
-        self.assertIsNotNone(doc["previous"]["frozen"])
-        self.assertEqual(doc["previous"]["frozen"]["kind"], card_delivery.PERIOD)
-        self.assertEqual(doc["open"]["period_ref"], "CN-Test/2026-10-14#afternoon")
+        self.assertEqual(doc["open"]["period_ref"], "CN-Test/2026-10-14#morning")
+        self.assertEqual(card_period._phase(doc["open"]), card_period.FINAL_PENDING)
+        self.assertIsNone(doc["open"]["frozen"])
+        self.assertIsNone(doc.get("previous"))
+
+        # A tick in the NEXT period only RETRIES the same message.
+        later = "2026-10-14T12:10:00+08:00"
+        second = self.store.advance(
+            period=card_period.period_at(later, declaration=DECL), at=later,
+            row_for=self._row_for, finalize=self._finalize_at(later))
+        self.assertEqual(second["decision"]["action"], card_period.FINAL)
+        self.assertEqual(second["decision"]["reason"],
+                         card_period.FINAL_UNCONFIRMED)
+        self.assertEqual(second["decision"]["message"]["remote_id"], "om_morning")
+        self.assertEqual(self.store.summary()["pending"]["attempts"], 2)
+
+        # The acknowledgement arrives → the freeze is committed.
+        version = self.store.summary()["pending"]["frozen"]["version"]
+        self.store.confirm(at=later, receipt={"kind": card_delivery.PERIOD,
+                                              "state": card_delivery.DELIVERED,
+                                              "version": version,
+                                              "remote_id": "om_morning"})
+        self.assertEqual(card_period._phase(self.store.read()["open"]),
+                         card_period.FROZEN)
+
+        # Only NOW does the successor open.
+        opened = "2026-10-14T12:20:00+08:00"
+        third = self.store.advance(
+            period=card_period.period_at(opened, declaration=DECL), at=opened,
+            row_for=self._row_for)
+        self.assertEqual(third["decision"]["action"], card_period.CREATE)
+        self.assertEqual(third["period"]["period_ref"],
+                         "CN-Test/2026-10-14#afternoon")
+        self.assertEqual(self.store.read()["previous"]["period_ref"],
+                         "CN-Test/2026-10-14#morning")
+        self.assertIsNotNone(self.store.read()["previous"]["frozen"])
 
     def test_a_frozen_period_is_not_patched_again(self):
         at = "2026-10-14T09:30:00+08:00"
@@ -211,12 +244,13 @@ class TheLifecycle(unittest.TestCase):
         # next period's first tick to detect the boundary.
         closed = self.store.advance(
             period=card_period.period_at(at, declaration=DECL), at=at,
-            row_for=self._row_for, closing=ref,
-            finalize=lambda step: {"frozen": {"kind": card_delivery.PERIOD,
-                                              "at": at, "version": "v",
-                                              "payload_hash": "h"}},
-        )
+            row_for=self._row_for, closing=ref, finalize=self._finalize_at(at))
         self.assertEqual(closed["decision"]["action"], card_period.FINAL)
+        version = self.store.summary()["pending"]["frozen"]["version"]
+        self.store.confirm(at=at, receipt={"kind": card_delivery.PERIOD,
+                                           "state": card_delivery.DELIVERED,
+                                           "version": version,
+                                           "remote_id": "om_a"})
         replay = self.store.advance(
             period=card_period.period_at(at, declaration=DECL), at=at,
             row_for=self._row_for)
@@ -258,6 +292,166 @@ class TheLifecycle(unittest.TestCase):
         _periods(self.store, at, self._row_for)
         with self.assertRaises(card_period.CardPeriodError):
             self.store.announce(remote_id="oc_conversation", at=at)
+
+
+class TheRemoteAckGate(unittest.TestCase):
+    """The 2026-10-14 review's gate: NO freeze before a verified remote ACK.
+
+    The failure this class exists against is a local `apply(FINAL)` that writes
+    `frozen` on the strength of having ATTEMPTED the final patch: a 429 / timeout
+    at the far end then meets a card that says it was archived, the next tick
+    reads ALREADY_FROZEN and refuses to retry, and the boundary opens a successor
+    over an archive that never landed. Every test here drives that path with a
+    fake transport (a receipt handed in, or a `card_delivery` ledger row) — no
+    real Feishu message is sent, and no clock is read.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = card_period.PeriodStore(
+            Path(self.tmp.name) / "cards" / "period.json")
+        self.ledger = card_delivery.CardLedger(
+            Path(self.tmp.name) / "cards" / "delivery.json")
+        self.model = source.model_from_fixture()
+
+    def _row_for(self, step):
+        return card_period.row(MODEL, period=step["period"])
+
+    def _finalize_at(self, at):
+        def finalize(step):
+            shown = self.store.summary()
+            rows = shown["rows"] + ([shown["latest"]] if shown["latest"] else [])
+            view = card_period.archive(self.model, period=step["period"], rows=rows)
+            card = card_period.render_archive(view, model=self.model)
+            return {"archive": view,
+                    "frozen": card_period.frozen_block(
+                        card=card, at=at, period_ref=step["period_ref"])}
+        return finalize
+
+    def _prepare_final(self, at="2026-10-14T11:50:00+08:00"):
+        _periods(self.store, at, self._row_for)
+        self.store.announce(remote_id="om_shift", at=at)
+        ref = card_period.period_at(at, declaration=DECL)["period_ref"]
+        return self.store.advance(
+            period=card_period.period_at(at, declaration=DECL), at=at,
+            row_for=self._row_for, closing=ref, finalize=self._finalize_at(at))
+
+    def test_a_failed_or_unknown_receipt_never_freezes(self):
+        self._prepare_final()
+        version = self.store.summary()["pending"]["frozen"]["version"]
+        for bad in card_delivery.OUTCOMES[1:]:  # FAILED / UNSUPPORTED / UNKNOWN
+            with self.subTest(state=bad):
+                with self.assertRaises(card_period.CardPeriodError):
+                    self.store.confirm(
+                        at="2026-10-14T11:55:00+08:00",
+                        receipt={"state": bad, "version": version,
+                                 "remote_id": "om_shift"})
+                self.assertEqual(card_period._phase(self.store.read()["open"]),
+                                 card_period.FINAL_PENDING)
+                self.assertIsNone(self.store.read()["open"]["frozen"])
+
+    def test_a_receipt_for_another_version_is_refused(self):
+        self._prepare_final()
+        with self.assertRaises(card_period.CardPeriodError):
+            self.store.confirm(at="2026-10-14T11:55:00+08:00",
+                               receipt={"state": card_delivery.DELIVERED,
+                                        "version": "period@someone-else",
+                                        "remote_id": "om_shift"})
+
+    def test_confirm_without_a_prepared_final_is_refused(self):
+        at = "2026-10-14T09:30:00+08:00"
+        _periods(self.store, at, self._row_for)
+        with self.assertRaises(card_period.CardPeriodError):
+            self.store.confirm(at=at, receipt={"state": card_delivery.DELIVERED,
+                                               "version": "x", "remote_id": "om"})
+
+    def test_a_retry_reuses_the_same_message_id(self):
+        self._prepare_final()
+        later = "2026-10-14T11:58:00+08:00"
+        r = self.store.advance(
+            period=card_period.period_at(later, declaration=DECL), at=later,
+            row_for=self._row_for, finalize=self._finalize_at(later))
+        self.assertEqual(r["decision"]["message"]["action"],
+                         card_delivery.PATCH_MESSAGE)
+        self.assertEqual(r["decision"]["message"]["remote_id"], "om_shift")
+        self.assertEqual(self.store.summary()["pending"]["remote_id"], "om_shift")
+        # ONE message the whole period, CREATE through the retry.
+        self.assertEqual(self.store.summary()["message"]["remote_id"], "om_shift")
+
+    def test_restart_reconciles_against_the_delivery_ledger(self):
+        self._prepare_final()
+        version = self.store.summary()["pending"]["frozen"]["version"]
+        # 1. No receipt at all → not confirmed; retry.
+        first = self.store.reconcile_pending(ledger=self.ledger,
+                                             at="2026-10-14T12:01:00+08:00")
+        self.assertEqual(first["outcome"], "RETRY")
+        self.assertEqual(card_period._phase(self.store.read()["open"]),
+                         card_period.FINAL_PENDING)
+        # 2. A FAILED receipt is not a confirmation either.
+        self.ledger.record("period", at="2026-10-14T11:55:00+08:00", state="FAILED",
+                           version=version, remote_id="om_shift", reason="429")
+        second = self.store.reconcile_pending(ledger=self.ledger,
+                                              at="2026-10-14T12:02:00+08:00")
+        self.assertEqual(second["outcome"], "RETRY")
+        self.assertIsNone(self.store.read()["open"]["frozen"])
+        # 3. A DELIVERED receipt for THIS version confirms the freeze.
+        self.ledger.record("period", at="2026-10-14T12:03:00+08:00",
+                           state="DELIVERED", version=version,
+                           remote_id="om_shift")
+        third = self.store.reconcile_pending(ledger=self.ledger,
+                                             at="2026-10-14T12:03:00+08:00")
+        self.assertEqual(third["outcome"], "CONFIRMED")
+        self.assertEqual(card_period._phase(self.store.read()["open"]),
+                         card_period.FROZEN)
+        # The restart path kept ONE ledger: nothing was written by this module.
+        self.assertEqual(len(self.ledger.entries("period")), 2)
+
+    def test_reconcile_when_not_pending_is_a_no_op(self):
+        at = "2026-10-14T09:30:00+08:00"
+        _periods(self.store, at, self._row_for)
+        r = self.store.reconcile_pending(ledger=self.ledger, at=at)
+        self.assertEqual(r["outcome"], "NOT_PENDING")
+
+    def test_a_successor_is_refused_at_the_write_layer_over_a_pending_final(self):
+        self._prepare_final()
+        nxt = card_period.period_at("2026-10-14T12:00:00+08:00", declaration=DECL)
+        with self.assertRaises(card_period.CardPeriodError):
+            card_period.apply(self.store.read(),
+                              step={"action": card_period.CREATE,
+                                    "period_ref": nxt["period_ref"], "period": nxt},
+                              row_=card_period.row(MODEL, period=nxt),
+                              at="2026-10-14T12:00:00+08:00")
+
+    def test_a_pending_final_outranks_a_later_period_tick(self):
+        # HANDOVER ORDER: a tick well into the NEXT period still only retries —
+        # it never opens the next card while the archive is unconfirmed.
+        self._prepare_final()
+        much_later = "2026-10-14T15:00:00+08:00"
+        r = self.store.advance(
+            period=card_period.period_at(much_later, declaration=DECL),
+            at=much_later, row_for=self._row_for,
+            finalize=self._finalize_at(much_later))
+        self.assertEqual(r["decision"]["reason"], card_period.FINAL_UNCONFIRMED)
+        self.assertEqual(self.store.read()["open"]["period_ref"],
+                         "CN-Test/2026-10-14#morning")
+
+    def test_an_unconfirmed_store_is_refused_on_reload(self):
+        # A pending final with no prepared version cannot be reconciled after a
+        # restart, so the store refuses it rather than opening a second message.
+        self._prepare_final()
+        doc = self.store.read()
+        doc["open"]["pending"]["frozen"] = {"kind": card_delivery.PERIOD,
+                                            "at": "x", "version": None,
+                                            "payload_hash": None}
+        Path(self.store.path).write_text(json.dumps(doc), encoding="utf-8")
+        with self.assertRaises(card_period.CardPeriodError):
+            card_period.PeriodStore(self.store.path)
+
+    def test_deploy_readiness_is_not_ready(self):
+        ready = card_period.deploy_readiness()
+        self.assertFalse(ready["ready"])
+        self.assertTrue(ready["unverified"])
 
 
 class TheRowKeepsOnlyWhatItNames(unittest.TestCase):

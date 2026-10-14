@@ -59,11 +59,34 @@ for»）。默认表：
 2. **PATCH** 时段内后续每一拍：**静默** patch 同一 `message_id`。patch 不触发
    新通知（这是 `monitoring_policy` 立身的那条实测事实），所以「夜间不频繁推送」
    不是特例，它就是 patch 本身。
-3. **FINAL** 时段结束：对这**同一条消息**做最后一次 patch，写入归档
-   （见 §4），随后**冻结**。边界拍会一次给出 `[FINAL(旧), CREATE(新)]` 两步，
-   顺序固定——归档必须在旧时段的行还是旧的时被写。
+3. **FINAL = PREPARE（准备），不是冻结。** 时段结束（边界拍或收班）时，本模块
+   把这**同一条消息**的最终归档准备好、算出将要发出的版本，把时段置为
+   **`FINAL_PENDING`**，**然后等**。边界拍**只给一步 `[FINAL]`**——继任时段要等
+   归档被远端确认之后才开（见 §2.1）。
 4. **收班（`closing=`）**：调用方也可显式结束一个时段，而不等下一时段的首拍来
    探测边界。
+
+### 2.1 回执门禁：先确认，再冻结，再换班（2026-10-14 review）
+
+`schema` 里的 `open.phase` 三态，**这是本模块最要紧的字段**：
+
+| phase | 含义 | `frozen` |
+|---|---|---|
+| `LIVE` | 时段进行中，拍子静默 patch | `None` |
+| `FINAL_PENDING` | 归档**已准备并已尝试发送**，但**没有**任何经核验的回执 | `None` |
+| `FROZEN` | 已记录一条**DELIVERED** 的 `card_delivery` 回执（版本匹配） | 已设 |
+
+- **`apply(FINAL)` 不写 `frozen`。** 只有 `PeriodStore.confirm(receipt=…)` 会在
+  回执 `state == DELIVERED` **且版本与准备好的版本一致**时提交冻结。FAILED /
+  UNSUPPORTED / UNKNOWN / 版本不符 / 无 message id，一律 `raise`，时段留在
+  `FINAL_PENDING`。
+- **`FINAL_PENDING` 独占每一拍**：同一时段的后续拍、以及**下一时段的首拍**，都只
+  **重试同一条 `message_id`**（`reason=FINAL_UNCONFIRMED`），绝不新发、绝不开新
+  时段。`apply(CREATE)` 在写层再挡一次：前一时段非 `FROZEN` 即拒绝。
+- **重启对账**：`PeriodStore.reconcile_pending(ledger=…)` 拿**既有**
+  `card_delivery` 台账（`kind="period"`，按版本匹配）判断归档是否落地 —— 意图在
+  `open.pending`，回执在 `card_delivery`，**不建第二套 delivery 账本**。
+- `deploy_readiness()` 恒返回 `{"ready": False}`：见 §7。
 
 **幂等 / 防重复消息**：
 
@@ -76,6 +99,8 @@ for»）。默认表：
 - 传输侧重试走 `message_transport.LarkMessageSender.reconcile`（幂等键去重），
   本模块不实现第二套重试。
 - 不可读的 store **拒绝而非重建**：重建会让同一时段拿到第二条 NEW 消息。
+- **`FINAL_PENDING` 且无准备版本的 store 在加载时即拒**：没有版本，重启后无法向
+  台账对账，唯一出路就是第二条消息。
 
 ## 3. 复用了什么（不新写第二套）
 
@@ -112,31 +137,51 @@ for»）。默认表：
 - **不声称图表已投产**：`render_archive(charts_verified=True)` 直接拒绝——
   VChart 元素与 390px 窄屏 `column_set` 都**未在真机验收**，默认卡是文本卡。
 - **不声称初始创建是静默的**：见 §2.1。
+- **不声称可上线**：`card_period.deploy_readiness()` 恒返回 `{"ready": False}`
+  并列出未验证项——见 §7。`PeriodStore` 是**计划器 + 本地状态机**，它**不**
+  单独证明「时段已在远端归档」。
 - **不声称 §10 已被改写**：见 §0。
-- 未动 PR #160 / #161 / #172 / #180 各自的工作树；`card_day` 的既有行为未改。
+- 未动 PR #160 / #161 / #172 / #180 各自的工作树；`card_day` 的既有行为未改；
+  **不创建平行消息账本**（`period` kind 落在既有 `card_delivery` 台账）。
 
 ## 6. 证据
 
-- `tests/test_card_period.py`（新，21 用例）：时段切分（含跨夜回指前一天、
-  节假日全天、UNKNOWN 不给段）、10 分钟 tick 序号、首拍 CREATE / 后续 PATCH
-  同一消息、边界两步 `[FINAL, CREATE]` 与冻结、收班后 `ALREADY_FROZEN`、
-  重放不新发、陈旧拍 `OUT_OF_ORDER`、store 不可读即拒、announce 的
-  BOUND/UNCHANGED/REBOUND、row 闭集拒绝机器细节、归档四块、`update_multi`
-  契约、无 chart 元素、表可替换与表错即拒。
+- `tests/test_card_period.py`（新，31 用例 + 6 subtests）：
+  - 时段切分（跨夜回指前一天、节假日全天、UNKNOWN 不给段）、10 分钟 tick 序号；
+  - 首拍 CREATE / 后续 PATCH 同一消息、重放不新发、陈旧拍 `OUT_OF_ORDER`；
+  - **回执门禁（`TheRemoteAckGate`）**：FAILED / UNSUPPORTED / UNKNOWN 回执
+    绝不冻结；版本不符 / 未准备先确认均拒；重试**复用同一 `message_id`**；
+    重启 `reconcile_pending` 对**既有 `card_delivery` 台账**判 RETRY→CONFIRMED
+    （并断言该台账只有 2 行，本模块没写第二条账）；写层拒绝在 `FINAL_PENDING`
+    之上开继任；更晚的下一时段拍仍只重试（换班顺序）；`FINAL_PENDING` 且无准备
+    版本的 store 加载即拒；`deploy_readiness()` 非 ready；
+  - 归档四块、`update_multi` 契约、**无 chart 元素**、表可替换与表错即拒。
 - `tests/test_card_delivery.py`（改）：`KINDS` 断言补 `period`。
-- 相邻套件回归：`test_card_delivery` / `test_card_day` / `test_business_calendar`
-  / `test_message_transport` / `test_fleet_monitor_card` / `test_fleet_monitor_uid`
-  / `test_card_period` 合计 **372 passed**（`ulimit -v 8GiB`、`timeout`）。
+- 相邻套件回归：`test_card_period` / `test_card_delivery` / `test_card_day` /
+  `test_business_calendar` / `test_message_transport` / `test_fleet_monitor_card`
+  / `test_fleet_monitor_uid` / `test_architecture_check` /
+  `test_declared_implementations` = **432 passed**（内核限额：
+  `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=200%`）。
 - 运行方式见 `memory/serveros-pytest-invocation-rule`：显式 `tests/test_*.py`
-  + `timeout` + `ulimit`，不裸跑。
+  + `timeout` + `ulimit`/cgroup，不裸跑。
 
-## 7. 未验证项（明确 UNKNOWN）
+## 7. 未验证项（**精确范围**：remote proof 仍 UNKNOWN）
 
-- **无真实飞书收发**：全部 fake / 确定性时钟 / `model_from_fixture()`；没有
-  真机上的 CREATE/PATCH/FINAL 往返。
+**这一节是 review 明确要求的「不能宣称可上线」的准确边界。**
+
+- **远端 ACK 未经真机验证**（**唯一**的冻结依据是一件未经往返核验的回执）：本模块
+  只接受 `state == DELIVERED` 的回执来提交冻结，而该回执**只**来自
+  `message_transport` 对 `lark-cli im messages patch` 自述的转述，
+  **没有任何独立的 readback** 去核对它。因此：`confirm()` 的**门禁逻辑**是
+  经过测试的（失败/超时/版本不符都不冻结），但「这件回执是否真的等于飞书接受了
+  这一版」**仍是 UNKNOWN**。这正是 `deploy_readiness()` 返回 `ready: False` 的
+  原因，也是本模块**不被登记为可上线**的原因。
+- **无真实飞书收发**：全部 fake / 确定性时钟 / `model_from_fixture()`；没有真机上的
+  CREATE / PATCH / FINAL 往返，也没有真实的 429 / 超时 / 断网重试。
+- **重启对账只用离线台账**：`reconcile_pending` 的测试喂的是**构造出的**
+  `card_delivery` 台账，不是一次真实崩溃后由真 daemon 写下的台账。
 - **无真机渲染**：CardKit 2.0 的 `column_set` 与 VChart 未在手机窄屏验收。
-- **未接生产定时器**：本模块还没有被任何 `ops/` timer 调用；把它接进
-  `serverosctl` 与生产 timer 是**另一个**决策，需要先过 §CANARY 门禁（见
-  `docs/NATIVE-CORE-V13-SEAM-AND-CANARY-GATE.md`）。
-- **未接 C++ Core**：时段卡的采样目前来自 Python 只读 adapter；C++ 采集器的
-  `native-node-measurement.v1` 接缝见同文档 §2。
+- **未接生产定时器 / 未接 C++ Core**：把本模块接进 `serverosctl` 与生产 timer、
+  或接上 C++ 采集器的 `native-node-measurement.v1` 接缝（见
+  `docs/NATIVE-CORE-V13-SEAM-AND-CANARY-GATE.md`），是**另一个**决策，且必须先过
+  该文档的 canary 门禁。
