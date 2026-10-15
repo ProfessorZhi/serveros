@@ -17,13 +17,29 @@
     "operator-skills"
   ],
   "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "ServerOS Fleet",
+        "shortDescription": "Reach an authorized ServerOS device and its Claude/Codex sessions.",
+        "longDescription": "Discover the enrolled devices and the Linux accounts behind them, reuse a session that already holds the context, create one only inside an owner-approved project and runtime, and accept a delegated result only from evidence that was read back.",
+        "developerName": "ProfessorZhi",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://github.com/ProfessorZhi/serveros",
+        "composerIcon": "./assets/composerIcon.png",
+        "logo": "./assets/logo.png"
+      },
+      "note": "The two icon paths are the OpenAI-supported presentation slots and point at the same files `brand-assets.lock.json` pins by SHA-256. Declaring them is not a claim that a client renders them: rendering is a client behaviour and has not been observed. There is deliberately no `onboardingSkill` here — its shape is not established by anything this repository has read, and an extra release precondition that is merely optional is one the release would carry for no verified benefit. See `docs/` and the README."
+    },
     "com.serveros.fleet-ingress": {
       "kind": "portable-mcp-and-skills",
       "bindingFile": "mcp.json",
       "transport": "streamable-http",
-      "composerIcon": "./assets/composerIcon.png",
-      "logo": "./assets/logo.png",
-      "note": "The 1.0.0 manifest schema defines no icon and no inline MCP configuration (additionalProperties: false), so the two icon slots are declared here and shipped as files. The MCP binding is the separate root file the specification fixes for it — `mcp.json` — and the manifest cannot carry one. Whether any client reads this extensions block is UNVERIFIED."
+      "source": "integrations/fleet-v1-first-install",
+      "note": "Provenance for this repository's own tooling. It carries no presentation field on purpose: `com.openai.interface` above is the namespace the client is documented to read, and a second copy of the icon paths here would be a second answer to one question."
     }
   }
 }
