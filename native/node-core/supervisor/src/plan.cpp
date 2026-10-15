@@ -113,6 +113,30 @@ Plan build_plan(const PlanInput& input) {
     plan.observe_only = manifest.observe_only;
     plan.trigger = input.trigger;
 
+    if (manifest.generation < input.applied_generation) {
+        // EPOCH FENCE. Older than something already applied ⇒ the WHOLE
+        // document is refused, not merely the services that differ. A manifest
+        // that went backwards is not a newer statement about the fleet with a
+        // few stale rows in it; it is an older statement, and carrying out any
+        // part of it acts on a decision that has been superseded. Refusing
+        // service-by-service would also make the outcome depend on which rows a
+        // backup happened to contain.
+        //
+        // `plan.ok` stays TRUE: this is a plan (a reviewed refusal), the same
+        // reading the per-service refusals above already use. A caller that
+        // could not tell «I considered it and declined» from «there is no plan»
+        // would have to refuse both.
+        plan.refusals.push_back(
+            {"", "STALE_GENERATION",
+             "this manifest is generation " + std::to_string(manifest.generation) +
+                 " and generation " + std::to_string(input.applied_generation) +
+                 " has already been applied. A manifest older than one the Core has acted on is a "
+                 "document that came back from somewhere — a restore, a copy, a stale checkout — "
+                 "and carrying it out would re-authorise a plan that has been superseded. No "
+                 "actions are planned from it"});
+        return plan;
+    }
+
     const Ordering ordering = topological_order(manifest);
     plan.order = ordering.order;
     if (!ordering.cyclic.empty()) {

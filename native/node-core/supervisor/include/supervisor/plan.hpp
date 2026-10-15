@@ -63,6 +63,22 @@ struct PlanInput {
     std::map<std::string, Observed> observed;
     Trigger trigger = Trigger::Tick;
     long now = 0;
+    // The highest generation this Core has already acted on, or -1 for "none
+    // seen yet". A manifest whose own `generation` is BELOW this is refused.
+    //
+    // `model.hpp` already states the rule — "a manifest that is older than one
+    // it has already applied is refused — a file that was restored from a
+    // backup must not silently re-authorise yesterday's plan" — and this field
+    // is where that rule is ENFORCED. Until it existed the counter was parsed,
+    // carried into the plan and printed in every receipt, and never once
+    // compared: «recorded» read as «enforced».
+    //
+    // The default of -1 is the permissive-by-omission direction ONLY for a
+    // caller that has genuinely never applied anything; a caller that HAS acted
+    // and does not pass this number gets no fence at all, which is why the
+    // resident loop is expected to persist and pass it (see
+    // `contract/generation-fence.v1.md`).
+    long applied_generation = -1;
     // The exact unit ids the provider will accept. Empty means nothing may be
     // acted on, which is the safe reading for a caller that forgot to say.
     std::vector<std::string> allowed_units;
