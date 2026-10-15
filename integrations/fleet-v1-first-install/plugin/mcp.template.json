@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "A TEMPLATE, not a binding. The builder substitutes NEXT_MCP_URL and writes",
+    "`mcp.json` into the staging tree; this file is never shipped and the",
+    "builder refuses to ship anything named `mcp.json` that came from source.",
+    "That is what keeps a placeholder URL from being mistaken for a real one:",
+    "there is no committed file whose contents could be loaded as a binding.",
+    "See `build_first_install.py`, which refuses to emit an archive at all",
+    "unless the substituted URL came with a separate live observation."
+  ],
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "serveros-fleet": {
+      "type": "streamable-http",
+      "url": "{{NEXT_MCP_URL}}"
+    }
+  }
+}
