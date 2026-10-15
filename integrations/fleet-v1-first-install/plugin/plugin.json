@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "serveros-fleet-ingress",
+  "version": "1.0.0",
+  "description": "ServerOS Fleet — reach an authorized Linux device and its Claude/Codex sessions through the Fleet ingress MCP server. Carries a remote streamable-HTTP MCP binding and the operator Skills that teach an assistant to discover a real device, reuse an idle session before creating one, and accept only evidence it actually read.",
+  "author": {
+    "name": "ProfessorZhi"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ProfessorZhi/serveros",
+  "repository": "https://github.com/ProfessorZhi/serveros",
+  "keywords": [
+    "serveros",
+    "fleet",
+    "mcp",
+    "remote-session",
+    "operator-skills"
+  ],
+  "extensions": {
+    "com.serveros.fleet-ingress": {
+      "kind": "portable-mcp-and-skills",
+      "bindingFile": "mcp.json",
+      "transport": "streamable-http",
+      "composerIcon": "./assets/composerIcon.png",
+      "logo": "./assets/logo.png",
+      "note": "The 1.0.0 manifest schema defines no icon and no inline MCP configuration (additionalProperties: false), so the two icon slots are declared here and shipped as files. The MCP binding is the separate root file the specification fixes for it — `mcp.json` — and the manifest cannot carry one. Whether any client reads this extensions block is UNVERIFIED."
+    }
+  }
+}
