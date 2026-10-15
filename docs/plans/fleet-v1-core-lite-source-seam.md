@@ -58,6 +58,41 @@ without an authenticated route — which is the thing this module refuses. The
 seam is delivered so that the day a provider can state a route, the change is
 one constructor argument and no contract edit.
 
+## The provider's own note is never published
+
+`CoreLiteRoute.detail` exists so a provider has somewhere to write a diagnostic
+for its **own logs**. This module drops it at the boundary in every branch, and
+four tests put a distinct canary in it — one each for `VERIFIED`,
+`UNAUTHENTICATED`, `DEVICE_MISMATCH` and `NO_DOCUMENT` — and require zero bytes
+of any of them to appear in the summary.
+
+An earlier revision published it verbatim in every branch, which made the
+summary a **second channel beside the document reader, with none of that
+reader's projection**. A provider is free to put an access-token fragment, a
+URL, a private path or an argv into a diagnostic; the document projector does
+not protect that channel because it is not the document.
+
+The rule the fix follows: **every value in the public `route` block is authored
+here or drawn from a closed set.** `state` is one of `ROUTE_STATES`, `reason` is
+one of this module's own sentences, `device_ref` is the trusted argument, and
+`failure` — the one place an external name appears — is drawn from
+`SAFE_FAILURE_NAMES`, a closed list of builtin exception class names. A source
+that raised `type("https://host/?token=…", (Exception,), {})` gets `"Exception"`,
+because a class name is a string its author chose.
+
+Two further boundary checks come from the same reading — a route is adapter
+input, so its types are checked rather than coerced:
+
+- `authenticated` must be a real `bool`. `"yes"`, `1`, `[1]` and `{}` are all
+  refused, because honouring a truthy value would let a provider authenticate
+  itself by spelling.
+- `device_ref` must be a non-empty `str`. Anything else is refused rather than
+  compared, so a malformed route cannot land in the `DEVICE_MISMATCH` branch by
+  accident and be reported as a mismatch it never claimed.
+
+The summary is **built**, never copied, so a `CoreLiteRoute` subclass carrying
+extra attributes cannot ride along; a test asserts exactly that.
+
 ## What a source must never be
 
 The protocol takes one argument — the device the caller already has a route to —

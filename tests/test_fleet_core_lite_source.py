@@ -124,7 +124,7 @@ class NoSourceMeansNoReadingTest(unittest.TestCase):
         summary = admit(FakeSource(raises=RuntimeError("boom")))
         self.assertEqual(summary["route"]["state"], "SOURCE_FAILED")
         self.assertEqual(summary["connected"], "UNKNOWN")
-        self.assertEqual(summary["route"]["detail"], "RuntimeError")
+        self.assertEqual(summary["route"]["failure"], "RuntimeError")
         self.assertNotEqual(summary["connected"], "NOT_CONNECTED")
 
 
@@ -361,6 +361,135 @@ class FleetSurfaceIsUnchangedTest(unittest.TestCase):
             self.assertEqual(summary["principal"]["expected"], "fjd")
             self.assertEqual(summary["principal"]["state"], "MISMATCH")
             self.assertEqual(summary["connected"], "NOT_CONNECTED")
+
+
+
+class ProviderDiagnosticsAreNeverPublishedTest(unittest.TestCase):
+    """A distinct canary in the provider's own note, one per outcome.
+
+    `CoreLiteRoute.detail` is where a provider puts a diagnostic for its own
+    logs — an access-token fragment, a URL, a local path, an argv. An earlier
+    revision published it verbatim in EVERY branch, which made the summary a
+    second channel beside the document reader, with none of that reader's
+    projection. These four tests are the ones that would have caught it.
+    """
+
+    CANARIES = {
+        "VERIFIED": "canary-verified-11111111",
+        "UNAUTHENTICATED": "canary-unauth-22222222",
+        "DEVICE_MISMATCH": "canary-mismatch-33333333",
+        "NO_DOCUMENT": "canary-nodoc-44444444",
+    }
+
+    def _summaries(self) -> dict:
+        def route(outcome, **over):
+            return src.CoreLiteRoute(
+                device_ref=over.pop("device_ref", DEVICE),
+                authenticated=over.pop("authenticated",
+                                       outcome != "UNAUTHENTICATED"),
+                detail=self.CANARIES[outcome])
+        return {
+            "VERIFIED": admit(FakeSource(route=route("VERIFIED"))),
+            "UNAUTHENTICATED": admit(FakeSource(
+                route=route("UNAUTHENTICATED", authenticated=False))),
+            "DEVICE_MISMATCH": admit(FakeSource(
+                route=route("DEVICE_MISMATCH", device_ref=OTHER))),
+            "NO_DOCUMENT": admit(FakeSource(
+                document_value=None, route=route("NO_DOCUMENT"))),
+        }
+
+    def test_each_outcome_is_actually_reached(self):
+        """Both halves: the canary tests are worthless if a branch never runs."""
+        got = {k: v["route"]["state"] for k, v in self._summaries().items()}
+        self.assertEqual(got, {"VERIFIED": "VERIFIED",
+                               "UNAUTHENTICATED": "UNAUTHENTICATED",
+                               "DEVICE_MISMATCH": "DEVICE_MISMATCH",
+                               "NO_DOCUMENT": "NO_DOCUMENT"})
+
+    def test_not_one_canary_byte_is_emitted_in_any_outcome(self):
+        summaries = self._summaries()
+        for outcome, summary in summaries.items():
+            text = json.dumps(summary, sort_keys=True)
+            for other, canary in self.CANARIES.items():
+                with self.subTest(outcome=outcome, canary=other):
+                    self.assertNotIn(canary, text)
+
+    def test_the_route_block_carries_no_provider_authored_string(self):
+        """Every value in `route` is one this module wrote."""
+        for outcome, summary in self._summaries().items():
+            with self.subTest(outcome=outcome):
+                self.assertEqual(sorted(summary["route"]),
+                                 ["authenticated", "device_ref", "failure",
+                                  "reason", "state"])
+                self.assertNotIn("detail", summary["route"])
+                self.assertTrue(isinstance(summary["route"]["authenticated"], bool))
+                self.assertIn(summary["route"]["state"], src.ROUTE_STATES)
+                if summary["route"]["reason"] is not None:
+                    self.assertIn(summary["route"]["reason"],
+                                  {v for v in _authored_reasons()})
+
+    def test_a_subclass_cannot_smuggle_text_through_extra_attributes(self):
+        """The summary is BUILT, not copied, so extra fields cannot ride along."""
+        class Sneaky(src.CoreLiteRoute):
+            pass
+        route = Sneaky(device_ref=DEVICE, authenticated=True,
+                       detail=self.CANARIES["VERIFIED"])
+        object.__setattr__(route, "url", "https://host/?token=canary-extra-99999999")
+        summary = admit(FakeSource(route=route))
+        text = json.dumps(summary, sort_keys=True)
+        self.assertNotIn("canary-extra-99999999", text)
+        self.assertNotIn("https://host/", text)
+
+
+def _authored_reasons() -> set:
+    """Every refusal sentence this module can write, read off its source.
+
+    Used to assert that whatever lands in `route.reason` is one of ours rather
+    than something a provider chose.
+    """
+    import re
+    text = (ROOT / "fleet_mcp" / "core_lite_source.py").read_text(encoding="utf-8")
+    return set(re.findall(r'reason="([^"]+)"', text))
+
+
+class TheRouteIsAnAdapterBoundaryTest(unittest.TestCase):
+    def test_a_truthy_string_is_not_an_authenticated_route(self):
+        """`authenticated="yes"` is a string its author chose, not a claim."""
+        summary = admit(FakeSource(route=src.CoreLiteRoute(
+            device_ref=DEVICE, authenticated="yes")))
+        self.assertEqual(summary["route"]["state"], "UNAUTHENTICATED")
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["route"]["authenticated"])
+
+    def test_every_truthy_non_boolean_is_refused(self):
+        for value in ("yes", "true", "1", 1, [1], {"a": 1}, object()):
+            with self.subTest(value=repr(value)):
+                summary = admit(FakeSource(route=src.CoreLiteRoute(
+                    device_ref=DEVICE, authenticated=value)))
+                self.assertEqual(summary["route"]["state"], "UNAUTHENTICATED")
+                self.assertFalse(summary["route"]["authenticated"])
+
+    def test_a_non_string_device_ref_is_refused(self):
+        for value in (None, 42, ["device:x"], {"ref": "device:x"}):
+            with self.subTest(value=repr(value)):
+                summary = admit(FakeSource(route=src.CoreLiteRoute(
+                    device_ref=value, authenticated=True)))
+                self.assertEqual(summary["route"]["state"], "UNAUTHENTICATED")
+
+    def test_the_exception_name_is_reported_only_from_a_closed_set(self):
+        """A class is free to be called anything, including a URL."""
+        weird = type("https://host/?token=canary-excname-55555555",
+                     (Exception,), {})
+        summary = admit(FakeSource(raises=weird("x")))
+        self.assertEqual(summary["route"]["state"], "SOURCE_FAILED")
+        self.assertEqual(summary["route"]["failure"], "Exception")
+        self.assertNotIn("canary-excname-55555555", json.dumps(summary))
+
+    def test_a_recognised_exception_name_is_still_reported(self):
+        """The closed set keeps its diagnostic value for genuine builtins."""
+        summary = admit(FakeSource(raises=TimeoutError("slow")))
+        self.assertEqual(summary["route"]["failure"], "TimeoutError")
+        self.assertIn("TimeoutError", src.SAFE_FAILURE_NAMES)
 
 
 class TheSeamStaysNarrowTest(unittest.TestCase):
