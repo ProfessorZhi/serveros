@@ -313,11 +313,20 @@ class FleetService:
 
     def _may_send(self, principal: Principal, key: SessionKey) -> None:
         binding = self.config.provider_for(key.device_ref, key.provider)
-        if binding is None or not binding.allow_send:
+        if binding is None:
+            # No binding is not "not authorized", it is "not reachable" — the
+            # distinction `_require_provider` draws in its own words, and the one
+            # `_may_create` already defers to. Asking it here also keeps the two
+            # answers apart: "there is a route here and you were not given it"
+            # tells the caller the profile is real, which a caller probing a tag
+            # is not necessarily entitled to learn, while `UNKNOWN_DEVICE` says
+            # nothing about whether this tag was ever bound.
+            self._require_provider(key.device_ref, key.provider)
+        if not binding.allow_send:
             raise refuse(
                 APPROVAL_REQUIRED,
-                f"{key.device_ref} is not authorized for control from this "
-                f"runtime. Control is granted per device in the local binding "
+                f"{key.device_ref} is not authorized to send on this runtime. "
+                f"Sending is granted per device in the local binding "
                 f"(`allow_send: true`), and per session in `policy.send_allow` "
                 f"— never by the caller naming a session id.",
             )
@@ -437,7 +446,13 @@ class FleetService:
         cannot disagree about who may stop what.
         """
         binding = self.config.provider_for(key.device_ref, key.provider)
-        if binding is None or not binding.allow_control:
+        if binding is None:
+            # The same line `_may_send` draws: a runtime with no binding has no
+            # route, which is unreachable rather than unauthorized, and an
+            # answer that named a withheld grant would confirm the profile for a
+            # caller who may not be entitled to know it is there.
+            self._require_provider(key.device_ref, key.provider)
+        if not binding.allow_control:
             raise refuse(
                 APPROVAL_REQUIRED,
                 f"{key.device_ref} is not authorized for control from this "
