@@ -235,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("Next binding differs from reviewed proposal")
             if info["port"] == old["port"]:
                 raise Refused("Next would reuse V1's local listening port")
+            if not args.no_start and not mod.wait_for_health(old["probe"], 3.0):
+                raise Refused("V1 health unavailable before Next start; do not risk cutover")
 
         # Every destructive operation is addressed to the Next unit ONLY.
         # The wrapper does not grant OAuth, register a plugin or change V1.
@@ -245,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
                 # Stopping the new canary is allowed: NEVER stop/restart V1 here.
                 mod.systemctl("stop", UNIT, check=False)
                 raise Refused("Next stopped: cgroup readback failed: " + ", ".join(faults))
+            if not mod.wait_for_health(old["probe"], 3.0):
+                mod.systemctl("stop", UNIT, check=False)
+                raise Refused("V1 health unavailable after Next launch; Next stopped")
         return result
     except Refused as exc:
         print(json.dumps({"decision": "BLOCKED", "reason": str(exc),
