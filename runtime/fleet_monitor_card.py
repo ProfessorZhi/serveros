@@ -439,7 +439,8 @@ def _attention(devices, services):
     found = []
     for index, device in enumerate(devices):
         ref = device.get("device_ref")
-        if device["reachability"]["state"] != STATE_KNOWN:
+        if device["reachability"]["state"] != STATE_KNOWN \
+                and device.get("observed_ever", True):
             found.append({
                 "scope": "device", "device_ref": ref, "severity": "CRITICAL",
                 "text": f"{device.get('display_name') or ref}："
@@ -513,6 +514,14 @@ def monitor_model(*, devices, services=(), network=None, now, sample=False,
             "reachability": _reachability(device, now_dt, stale_after_s),
             "readings": readings,
             "accounts": accounts,
+            # NEVER-SEEN vs WENT-SILENT. A declared device that has never had a
+            # provider is a COVERAGE GAP, not an outage: it renders grey and
+            # UNCONFIRMED rather than raising the red an unreachable-but-known
+            # machine raises. The default is True so a caller that says nothing
+            # keeps §1's existing «a device this runtime could not reach is a
+            # finding» behaviour; only the inventory builder marks a device it
+            # has never once observed.
+            "observed_ever": device.get("observed_ever", True),
         }
         # A bridge may attach what it knows about the SOURCE of these readings
         # (a native measurement's `live`/`replayed`). Carried through untouched
@@ -764,6 +773,9 @@ def _device_title(device):
     """A fold header that says the state, not just the name."""
     reach = device["reachability"]["state"]
     word = {"KNOWN": "可达", "STALE": "可达性过期"}.get(reach, "失联")
+    if reach != STATE_KNOWN and not device.get("observed_ever", True):
+        # Never had a provider is not "went silent"; the header says which.
+        word = "尚未接入"
     readings = device.get("readings") or []
     bad = [r for r in readings
            if str(r.get("severity") or "").upper() in ("CRITICAL", "ATTENTION")]
@@ -870,7 +882,10 @@ def _fleet_verdict(model):
         return "ATTENTION"
     # Every service OK but something unmeasured is NOT OK: rule 1 says an
     # unmeasured reading may not be rounded to a healthy one. STALE counts with
-    # UNKNOWN here — a health word nobody re-read is not a health word.
+    # UNKNOWN here — a health word nobody re-read is not a health word. A device
+    # that has NEVER been observed counts here too and not as a CRITICAL outage:
+    # a machine with no provider is a gap in coverage, and rendering it red
+    # forever would teach a reader to ignore the red that matters.
     if (services["unknown"] or services["stale"]
             or model["summary"]["devices"]["unreached"]):
         return "UNCONFIRMED"

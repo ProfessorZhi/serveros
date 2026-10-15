@@ -148,9 +148,11 @@ class TransportTest(unittest.TestCase):
         got = plan.apply_plan(
             plan.plan_update(last=sent("A", at=T0), card=card("B"), at=T2,
                              window_days=WINDOW),
-            card("B"), at=T2, transport=mock)
+            card("B"), at=T2, transport=mock, gate=plan.open_gate())
         self.assertEqual(got["state"], "DELIVERED")
-        self.assertTrue(got["remote_id"].startswith("om_mock"))
+        # A PATCH answers with the message it patched — not a new id. A mock
+        # that minted one would model the second card V28 forbids.
+        self.assertEqual(got["remote_id"], "om_aaa0001")
         self.assertEqual(len(mock.calls), 1)
         self.assertEqual(mock.calls[0]["action"], plan.PATCH_MESSAGE)
 
@@ -166,8 +168,18 @@ class TransportTest(unittest.TestCase):
     def test_apply_without_a_transport_uses_the_mock(self):
         got = plan.apply_plan(
             plan.plan_update(last=None, card=card("A"), at=T0, window_days=WINDOW),
-            card("A"), at=T0)
+            card("A"), at=T0, gate=plan.open_gate())
         self.assertTrue(got["remote_id"].startswith("om_mock"))
+
+    def test_a_send_without_a_gate_is_refused_and_makes_no_call(self):
+        mock = plan.MockTransport()
+        got = plan.apply_plan(
+            plan.plan_update(last=None, card=card("A"), at=T0, window_days=WINDOW),
+            card("A"), at=T0, transport=mock)
+        self.assertEqual(got["state"], plan.REFUSED)
+        self.assertEqual(got["reason"], plan.GATE_REQUIRED)
+        self.assertEqual(mock.calls, [], "a refusal must not reach the transport")
+        self.assertIsNone(got["receipt"], "a refused send has no receipt")
 
 
 class LifecycleTest(unittest.TestCase):
@@ -182,7 +194,8 @@ class LifecycleTest(unittest.TestCase):
             body = "A" if tick == T1 else "B" if tick == T2 else "A"
             p = plan.plan_update(last=state["last"], card=card(body), at=tick,
                                  cadence_seconds=600, window_days=WINDOW)
-            receipt = plan.apply_plan(p, card(body), at=tick, transport=mock)
+            receipt = plan.apply_plan(p, card(body), at=tick, transport=mock,
+                                      gate=plan.open_gate())
             results.append((tick, p["action"], p["reason"]))
             if p["send"]:
                 state["last"] = {"version": p["version"], "at": tick,
