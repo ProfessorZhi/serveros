@@ -565,10 +565,10 @@ The two failures #198 carried (`test_fleet_next_dual_stack_preflight`,
 
 | | state |
 |---|---|
-| **C · plugin #204** | **NOT integrated.** Its `extensions.com.openai.interface` and `mcpServers.<name>.extensions.com.openai.auth` fields are wrong and it is with the Dell C lane. Integrating it now would put a manifest nobody has reviewed into the candidate. |
+| **C · plugin #204** | **integrated** — merged `--no-ff`, history kept. Its `extensions["com.openai"]["interface"]` and `mcpServers.<name>.extensions["com.openai"]["auth"]` shapes were checked against the published specification and match it. One correction followed as its own commit: the asset lock allowed a non-square `logo`, and the documented rule names logos. See §15 |
 | **the approved logo bytes** | **not in this repository.** The conversation's asset pack has not been transferred; a synthetic fixture is NOT a brand asset and the overlay reports `NEEDS_ASSET`. |
 | **`instance_id`** | a **local declaration**. Nothing signs it and no remote incarnation is read back, so it is not fencing. **Node signed incarnation is an open protocol item**, not a passing test. |
-| **the three pytest suites E did not run on Dell** | **UNKNOWN** — E's report named them; this run is the first time some of them executed here. |
+| **the three pytest suites E did not run on Dell** | **resolved** — `test_fleet_contract`, `test_fleet_transport` and `test_fleet_controller` were run here and pass. Dell's UNKNOWN is closed by running them, not by assuming they would. |
 | **real accounts** | **not logged in.** `fjd`, official Claude and MarketOps are unconnected. No host has been changed. |
 
 ### S3 pre-launch checklist — what was observed, read-only
@@ -714,3 +714,112 @@ Nothing here installs a Linux or Windows Core, switches users, reads `fjd`'s
 private files, writes `fjd`'s home, or retires the legacy connector. Those are
 owner acts in the sequence above, and a document recording scope is not a
 receipt for any of them.
+
+---
+
+## 15 · Two designs for one axis, and which one this candidate carries
+
+Two branches solved "one OS account, several runtimes" independently. They are
+**mutually exclusive**, so exactly one may be in the candidate — merging both
+would be two answers to one question, and the address is the answer.
+
+| | **A · this candidate** (`23668db`, Lane B) | **Windows B** (`291e0ec`) |
+|---|---|---|
+| axes | `family` × `account` × **`profile`** | `family` × `principal` × `auth_profile` × **`instance`** |
+| what is in the **tag** | the **profile** | the **instance**, and never the profile |
+| the incarnation | a **sidecar** on the binding, explicitly out of the ref | an **axis of the identity**, and therefore inside the ref |
+| collisions | refused as a **set** (`runtime_tags_are_distinct`) | not checked |
+
+**Verdict: this candidate keeps its own, and Windows B's axis model is not
+merged.** Two reasons, both read from the code rather than from the prose:
+
+1. **Its profile does not reach the address.** `_tag` builds
+   `[family, slug(principal)]` and appends `instance` only when it is not
+   `base` — `auth_profile` is never used. So
+   `auth_profile="official"` and `auth_profile="marketops"` on one base instance
+   both derive `claude-vince`: **two credential profiles, one address**, which is
+   the exact failure its own design note says it exists to close. It also
+   qualifies the device's own account by principal, so the owner's profile tag
+   becomes `claude-vince` rather than a name about the profile.
+2. **Its incarnation reaches the address.** Putting `instance` in the tag puts
+   it in the session ref's middle segment, which re-addresses every live session
+   on every restart and every credential rotation. An earlier review of this
+   very axis ruled that out, and this candidate's sidecar is the shape that
+   satisfies it.
+
+**What Windows B has that is worth keeping, separately.** Its `OwnerGrant` — a
+local record of *who* asserted that a runtime instance exists, when, and where
+the assertion is written, with a revocation path — is orthogonal to naming and
+would strengthen this candidate's declarations. It is **not** taken here: it is
+a new concept with its own review, and taking one idea out of a rejected model
+without re-reviewing it is how a rejected model gets in through the side door.
+
+## 16 · The first-install ZIP, and why it cannot be built yet
+
+**`SOURCE_READY` / `FINAL_ZIP_BLOCKED`.** The source is integrated and its
+builder is real; the artifact it would produce cannot be produced, and no
+substitute is claimed.
+
+A shipped ZIP must contain **all** of: `plugin.json`, a real remote `mcp.json`,
+the **5 Skills**, and the **approved PNGs**. Today:
+
+| member | state |
+|---|---|
+| `plugin.json` | present; its presentation fields verified against the specification |
+| the 5 Skills | present |
+| `mcp.json` | a **template** with `{{NEXT_MCP_URL}}`. There is no Next HTTPS origin, so there is no real URL to substitute — a filled-in guess would be an invented endpoint |
+| the approved PNGs | **not in this repository.** The digests are recorded; the bytes are not here |
+
+**Neither the instruction-only lab nor a synthetic fixture may stand in.** The
+lab is instruction-only by construction and refuses the very files this package
+requires; a fixture is not a brand asset. A ZIP assembled from either would
+install something that is not this product.
+
+## 17 · Updated gates for Core-Lite (#206) and the fjd migration (#207)
+
+Both proceed on their own branches. Their gates are recorded here so the
+acceptance matrix stays the single place they are read from; **neither is merged
+by this candidate**.
+
+**#206 — Core-Lite**
+
+- installs as the **managed UID**, observe-only, and **never** as a second writer
+  on a unit the Python daemon owns;
+- a Windows adapter is its **own design**, and native parity needs a real Windows
+  test environment — until then that gate is **UNKNOWN**;
+- acceptance is a **read-only** reading per device: metrics present, freshness
+  present, UNKNOWN where unavailable, and **no action** anywhere;
+- bounded self-healing is **V2** and is not a V1 exit criterion.
+
+**#207 — the fjd migration**
+
+- `fjd` logs in as themselves, in their own workspace; nothing is copied from
+  `vince` and nothing of theirs is read;
+- the git-only rule holds: repositories, branches and unpublished commits, plus
+  owner-selected credential-free templates — no `.ssh`, `.claude`, `.codex`,
+  OAuth or Tailscale state, node secrets, CloudCLI credentials, sockets or live
+  session databases;
+- `linger` is enabled by the account owner with the controlled method;
+- Dell's required runtime is `claude-fjd`, the legacy `claude` ref keeps its
+  meaning, and retiring the old connector is `vince`'s owner's act **after** fjd
+  passes;
+- until then Dell is **one legacy runtime plus one undeployed target**, which is
+  what §4 shows and what no document should upgrade to "migrated".
+
+## 18 · What a customer still has to do, in order
+
+Nothing below is an agent action. They are listed because "the source is
+integrated" is not "you can install it".
+
+1. **Owner**: browser login and MFA for the new, independent Tailscale node, and
+   its Funnel approval.
+2. **Owner**: a real FQDN for the Next ingress, so a real `mcp.json` URL exists.
+3. **Owner**: register the Next App and its Plugin ID.
+4. **Owner**: the approved brand PNGs transferred in, matching the recorded
+   digests.
+5. **Operator**: build the ZIP, which now has every member it needs, and install
+   it once under that Plugin ID.
+6. **Owner**: the Feishu app-2 callback pointed at that FQDN.
+
+Until step 4 the ZIP is `FINAL_ZIP_BLOCKED`, and this candidate says so rather
+than shipping a placeholder that looks installable.
