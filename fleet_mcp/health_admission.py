@@ -56,6 +56,8 @@ def assess(snapshot, *, now=None):
         if h is None:
             reasons.append('no host observation')
         else:
+            if h.get('reachable') is not True:
+                reasons.append('host not confirmed reachable')
             ts = h.get('sampled_at')
             if h.get('source') != 'LIVE' or not _valid_float(ts) or not 0 <= now-ts <= MAX_AGE_S:
                 reasons.append('host telemetry missing or stale')
@@ -70,6 +72,8 @@ def assess(snapshot, *, now=None):
                 reasons.append('blocked queue too large')
         if row.get('source') != 'LIVE' or row.get('owner_approved') is not True:
             reasons.append('runtime not owner-verified')
+        if row.get('reachable') is not True:
+            reasons.append('runtime not confirmed reachable')
         rts = row.get('sampled_at')
         if not _valid_float(rts) or not 0 <= now-rts <= MAX_AGE_S:
             reasons.append('runtime observation stale')
