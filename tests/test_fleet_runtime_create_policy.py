@@ -218,6 +218,34 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
                 arguments={"project": PROJECT}, project=PROJECT, runtime=SECOND)
         self.assertEqual(self.h.second_provider.calls, [])
 
+    def test_reconfigure_cannot_widen_to_a_model_allowed_only_globally(self):
+        self.configure()
+        rule = self.h.config.policy.runtime_create_defaults[KEY][PROJECT]
+        narrow = replace(rule, allowed_models=(M[0],),
+                         allowed_permission_modes=("default",),
+                         default_permission_mode="default")
+        self.h.config = replace(self.h.config, policy=replace(
+            self.h.config.policy,
+            runtime_create_defaults={KEY: {PROJECT: narrow}}))
+        self.h.service.config = self.h.config
+        provider = SimpleNamespace(native_call=lambda *a, **kw: {"projectId": PROJECT})
+        native = SimpleNamespace(namespaced="fleet_cloudcli_session_reconfigure")
+        session_ref = DEVICE + "|" + SECOND + "|native-reconfigured"
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service._native_reconfigure_ceiling(
+                provider, DEVICE, session_ref, PROJECT, {"model": M[1]}, native)
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+
+    def test_reconfigure_does_not_set_unmentioned_permission_mode(self):
+        self.configure()
+        provider = SimpleNamespace(native_call=lambda *a, **kw: {"projectId": PROJECT})
+        native = SimpleNamespace(namespaced="fleet_cloudcli_session_reconfigure")
+        arguments = {"model": M[0]}
+        self.h.service._native_reconfigure_ceiling(
+            provider, DEVICE, DEVICE + "|" + SECOND + "|native-ok",
+            PROJECT, arguments, native)
+        self.assertEqual(arguments, {"model": M[0]})
+
     def test_unconfigured_base_runtime_retains_legacy_defaults(self):
         self.configure()
         out = self.h.create()
