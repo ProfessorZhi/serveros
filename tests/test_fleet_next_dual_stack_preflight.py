@@ -99,6 +99,32 @@ class OfflineDoubleStackSafety(unittest.TestCase):
         p["next"]["public_mcp_url"] = "https://old.example.invalid/mcp/"
         self.assertTrue(any("same published endpoint" in x for x in blockers(p)))
 
+    def test_bootstrap_staging_can_precede_plugin_registration(self):
+        p = proposal()
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        self.assertEqual(gate.evaluate(p)["decision"], "BLOCKED")
+        preview = gate.evaluate(p, bootstrap=True)
+        self.assertEqual(preview["decision"], "BOOTSTRAP_PLAN_READY")
+        self.assertEqual(preview["mode"], "NEXT_ONLY_BOOTSTRAP")
+        self.assertEqual(preview["writes"], [])
+        self.assertEqual(preview["executes"], [])
+
+    def test_bootstrap_still_requires_real_owner_and_v1_separation(self):
+        p = proposal()
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        p["attestations"]["next_owner_binding_reviewed"] = False
+        p["next"]["runtime_root"] = p["v1"]["runtime_root"]
+        v = gate.evaluate(p, bootstrap=True)
+        self.assertEqual(v["decision"], "BLOCKED")
+        self.assertTrue(any("next_owner_binding_reviewed" in s for s in v["blockers"]))
+        self.assertTrue(any("runtime_root: overlaps" in s for s in v["blockers"]))
+
+    def test_bootstrap_cannot_be_recovery_at_the_same_time(self):
+        p = proposal()
+        self.assertEqual(gate.evaluate(p, bootstrap=True, recovery=True)["decision"], "BLOCKED")
+
     def test_same_plugin_id_is_refused(self):
         p = proposal()
         p["next"]["plugin_id"] = p["v1"]["plugin_id"]
