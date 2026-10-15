@@ -158,3 +158,73 @@ optional. Those are this repository's own release rules, and they are stricter
 than the format on purpose: a package built here is meant to be releasable and
 reviewable, and a version that cannot be ordered is neither. Recorded so the
 difference is not mistaken for a conformance claim.
+
+## The forms, and what each one's provenance actually is
+
+Several file layouts are called "the plugin manifest" in conversation. They are
+not the same thing, they do not come from the same authority, and two of them
+have no authority at all — so they are listed separately, with the source this
+repository actually has for each.
+
+| form | defined by | lives | what this repository's evidence is | status |
+|---|---|---|---|---|
+| `.claude-plugin/plugin.json` | the layout `scripts/build.py` emits for Claude | inside the **Native** artifact | `build.py::claude_plugin_manifest`; `release.py`'s `REQUIRED_MEMBERS[PLUGIN]` names it | real — **for `hwz-server-os`, not for this package** |
+| `.claude-plugin/marketplace.json` | same | inside | `build.py::claude_marketplace_manifest` | real, same artefact |
+| `.codex-plugin/plugin.json` | **not established by this repository** | inside | `build.py::codex_plugin_manifest` *generates* it; `docs/claude-codex-parity.md` states a generated manifest is not installation proof, and that a `.codex-plugin` directory is not a supported format merely because `.claude-plugin` exists | **generated; client support UNKNOWN** |
+| `.mcp.json` / `.codex-mcp.json` | this repository's own convention | package root | `build.py` emits them only when the bundle declares servers | real — for the **Native** plugin |
+| `mcp.json` | **Agent Plugins 1.0.0 specification** | package root | quoted from the specification above | **specified; deliberately not shipped here** |
+| `.app.json` | **UNKNOWN — no source** | — | appears **nowhere** in this repository except this file, `PACKAGING.md`, and the two tests beside them | **UNKNOWN; not a name anyone here identified** |
+
+Two consequences worth stating plainly:
+
+- **`.app.json` is the weakest entry and it used to be asserted more strongly
+  than it deserves.** The earlier wording implied a name that had been looked
+  up and found absent from the specification. The accurate statement is
+  narrower: it is not in the Agent Plugins 1.0.0 specification, and there is no
+  independent source anywhere in this repository for what reads it. It is
+  refused as an *unlisted* component — which is a sound rule — and not because
+  anyone established what it is. The builder's comment now says exactly that.
+- **The Native layout is refused by directory, not by filename.** A file inside
+  `.claude-plugin/` is called `plugin.json`, which is in neither
+  `LIVE_SURFACE_NAMES` nor the payload allowlist, so a tree that grew a second
+  copy of the Native artifact would have built clean and shipped as though
+  nothing had happened. `GENERATED_LAYOUT_DIRS` closes that: the layout is
+  refused wherever it sits, and the refusal names the directory.
+
+Refusing that layout is a claim about **this artifact** — that it is not the
+Native plugin. It is **not** a claim about either client's supported
+installation format, and `docs/claude-codex-parity.md` is the reason the
+distinction is drawn here rather than left to the reader.
+
+## Human binding checklist (nothing below is automated)
+
+Every item is a step a person takes, outside this repository, with the client's
+own interface. None of them is discharged by anything in this package, and a
+green build says nothing about any of them.
+
+1. **Establish the packaging mode before writing a manifest.** App-backed or
+   portable is a decision the client's documentation makes, not this
+   repository: v1 defines no OAuth and no credential reference, so whichever
+   path is chosen, the credential side is the client's. If the mode cannot be
+   established from documentation, stop here — **BLOCKED**, not guessed.
+2. **Fix the plugin identity.** Choose the plugin ID and keep it across
+   releases; a new ID is a new plugin, not an update.
+3. **Decide the binding, if any.** A portable binding is a root `mcp.json`,
+   `type: streamable-http`, and an `https://` URL because the host is not
+   loopback. Adding it means editing `LIVE_SURFACE_NAMES`' rule in
+   `build_zip.py` in the same change — a refusal that can be bypassed by not
+   editing the code is not a gate.
+4. **Confirm both `blocked_on` decisions** in `fleet/fleet-mcp-contract.yaml`:
+   `public_exposure_decision` and `chatgpt_oauth_consent`. Both are the
+   operator's; an agent may not close either.
+5. **Refresh the tool list and prove it changed.** Record the client's tool list
+   before and after the surface revision moves. A list that did not change is
+   not evidence that it refreshed.
+6. **Record what was actually observed**, in the client's words, including
+   failures. `PACKAGING.md`'s six gates stay NOT EXERCISED until a person has
+   run them; nothing in this repository may tick them.
+
+The ZIP Lab in PR #185 measured a private plugin being updated in place under
+one client's Plugin Creator. That is a measurement of **that** flow, and it is
+not evidence for any item above: it did not carry an MCP binding, did not
+authorize a client, and did not list tools from a live server.

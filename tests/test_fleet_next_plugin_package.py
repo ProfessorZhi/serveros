@@ -204,6 +204,42 @@ class ThisIsNotTheNativeServerOSPlugin(unittest.TestCase):
             bz.collect(package.root)
         self.assertIn("mcpServers", str(caught.exception))
 
+    def test_the_native_generated_layout_is_refused_by_directory(self):
+        """The filename rule cannot see these, so the directory has to be one.
+
+        A member of `.claude-plugin/` is named `plugin.json` — not in
+        `LIVE_SURFACE_NAMES`, and not in the payload allowlist — so before this
+        rule a tree that grew a second copy of the Native artifact would have
+        built clean and shipped as though nothing had happened. Tested at the
+        root and nested, because the audit runs over the whole tree.
+        """
+        for layout in bz.GENERATED_LAYOUT_DIRS:
+            for at in (layout, f"skills/fleet-ability-routing/{layout}"):
+                with self.subTest(layout=at):
+                    package = _TempPackage(self)
+                    (package.root / at).mkdir(parents=True, exist_ok=True)
+                    (package.root / at / "plugin.json").write_text("{}", encoding="utf-8")
+                    with self.assertRaises(bz.Refused) as caught:
+                        bz.collect(package.root)
+                    self.assertIn("generated plugin layout", str(caught.exception))
+
+    def test_the_layout_rule_names_what_the_native_build_actually_writes(self):
+        # Pinned to the two directories `scripts/build.py` emits and
+        # `scripts/release.py` names in `REQUIRED_MEMBERS[PLUGIN]`, so widening
+        # this tuple is a deliberate diff rather than a drift away from the
+        # artifact the rule exists to keep out of this package.
+        self.assertEqual(set(bz.GENERATED_LAYOUT_DIRS),
+                         {".claude-plugin", ".codex-plugin"})
+
+    def test_the_clean_package_is_not_caught_by_the_layout_rule(self):
+        # Positive control. A gate that refuses everything would pass the three
+        # tests above and tell you nothing.
+        package = _TempPackage(self)
+        members = [p.relative_to(package.root).as_posix()
+                   for p in bz.collect(package.root)]
+        self.assertIn("plugin.json", members)
+        self.assertEqual(len(members), 6)
+
 
 class TheSkillSourceIsComplete(unittest.TestCase):
 

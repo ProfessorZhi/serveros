@@ -84,11 +84,36 @@ from pathlib import Path
 #:                reviewed change to this list and not a packaging side effect.
 #:   `.mcp.json`  this repository's Claude/Codex convention — `scripts/build.py`
 #:                emits it for the Native plugin, which is a different release.
-#:   `.app.json`  not named by the specification at all. Refused as an
-#:                unlisted component rather than as a known one.
+#:   `.app.json`  PROVENANCE UNKNOWN, and recorded as unknown rather than as a
+#:                name someone identified. It is not in the Agent Plugins 1.0.0
+#:                specification, and it appears NOWHERE in this repository
+#:                except this file and the notes and test written beside it —
+#:                there is no independent source here for what, if anything,
+#:                reads it. It is refused as an unlisted component, not as a
+#:                known one.
 #:
 #: See `MCP-INTEGRATION.md` for the quoted rules and for what remains UNKNOWN.
 LIVE_SURFACE_NAMES = frozenset({".app.json", ".mcp.json", "mcp.json"})
+
+#: The generated manifest layout of the NATIVE plugin. `scripts/build.py` writes
+#: both of these into the `hwz-server-os` artifact, and `scripts/release.py`'s
+#: `REQUIRED_MEMBERS[PLUGIN]` names exactly `.claude-plugin/plugin.json` and
+#: `.codex-plugin/plugin.json` as the members that make an artifact a plugin.
+#:
+#: They need their own rule because the one above cannot see them. A file inside
+#: them is called `plugin.json`, which is NOT in `LIVE_SURFACE_NAMES`, so the
+#: filename test misses it — and the payload allowlist would then drop the whole
+#: layout in silence. That is the same unfalsifiable refusal the `mcp.json` rule
+#: exists to prevent, one level up: what gets dropped here is a directory rather
+#: than a file, and a package that grew a second copy of the Native artifact
+#: would build clean. Refusing by directory makes it a failed build instead.
+#:
+#: `docs/claude-codex-parity.md` supplies the other half of the reason and the
+#: limit of the claim: "Do not assume a .codex-plugin directory is a supported
+#: installation format solely because .claude-plugin exists." Refusing this
+#: layout asserts what THIS artifact is not. It asserts nothing about what
+#: either client supports, and nothing here should be read as such evidence.
+GENERATED_LAYOUT_DIRS = (".claude-plugin", ".codex-plugin")
 
 #: The payload, named exhaustively. The archive is what a client loads, so the
 #: member set is a DECLARATION, not a consequence of what happens to be on disk.
@@ -187,6 +212,20 @@ def audit(root: Path) -> None:
             f"refusing to package a live MCP/App surface ({live}). This release is "
             f"instruction-only; a connector surface is a separate review (#186)."
         )
+
+    layouts = sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                     if p.is_dir() and p.name in GENERATED_LAYOUT_DIRS)
+    if layouts:
+        raise Refused(
+            f"refusing to package a generated plugin layout ({layouts}). Those "
+            f"directories are how the Native `hwz-server-os` artifact is composed "
+            f"(scripts/build.py), and shipping them inside this instruction-only "
+            f"package is the confusion #186 forbids. Their member is named "
+            f"`plugin.json`, which is not in LIVE_SURFACE_NAMES — so the check "
+            f"above misses them and the payload allowlist would have dropped them "
+            f"in silence."
+        )
+
     declared = manifest_live_surface(root)
     if declared:
         raise Refused(f"plugin.json declares a live MCP surface: {declared}")
