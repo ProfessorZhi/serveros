@@ -126,6 +126,19 @@ def evaluate(proposal: object, *, recovery: bool = False) -> dict:
         if a and b and _overlap(a, b):
             problems.append(f"next.{key}: overlaps V1")
 
+    # A different field name does not mean a different isolation boundary:
+    # e.g. Next's runtime tree must not be nested inside V1's OAuth state.
+    for next_key in PATH_FIELDS:
+        next_path = _path(nxt.get(next_key))
+        if next_path is None:
+            continue
+        for old_key in PATH_FIELDS:
+            if old_key == next_key:
+                continue  # already checked above
+            old_path = _path(v1.get(old_key))
+            if old_path and _overlap(next_path, old_path):
+                problems.append(f"next.{next_key}: overlaps V1.{old_key}")
+
     if not recovery:
         a_bind = _listen(v1.get("local_listen"), "v1.local_listen", problems)
         b_bind = _listen(nxt.get("local_listen"), "next.local_listen", problems)
