@@ -95,6 +95,29 @@ ENTRY_POINTS = {
     # `fleet_mcp/deploy/serveros-fleet-mcp.service` starts — one host's
     # off-host MCP ingress, shipped to no node. See the module docstring.
     "fleet_mcp/bin/serveros-fleet-mcp",
+    # The five POSIX node-onboarding scripts (added by `667fefe`, PR #149).
+    # They are declared here, not exempted: the gate reads the INDEX for mode
+    # 100755, so each one is on the surface whether or not this list mentions
+    # it, and leaving them out is what makes a diff silent. They are not entry
+    # points of the core and not resident — `start-connector.sh` and
+    # `start-tunnel.sh` are the `ExecStart=` of the two per-device USER unit
+    # templates beside them, which is exactly why they carry the bit, and the
+    # other three are run by an operator joining or leaving a machine.
+    #
+    # They are also the reason the sentence above about `bin/` is loose: the
+    # predicate is "tracked executable", not "tracked executable in a
+    # particular directory", and these live under `fleet_mcp/node/`.
+    #
+    # The Windows half — `install.ps1`, `start-connector.ps1`,
+    # `start-tunnel.ps1`, `uninstall.ps1` — is deliberately NOT here. PowerShell
+    # scripts are tracked at mode 100644, so they are not tracked executables
+    # and this gate does not see them; listing them would name files the
+    # predicate can never return.
+    "fleet_mcp/node/install.sh",
+    "fleet_mcp/node/start-connector.sh",
+    "fleet_mcp/node/start-tunnel.sh",
+    "fleet_mcp/node/stop.sh",
+    "fleet_mcp/node/uninstall.sh",
 }
 
 # The daemon itself. `scripts/release.py` refuses an artifact without this file,
