@@ -162,6 +162,44 @@ class OfflineDoubleStackSafety(unittest.TestCase):
             # an executable process check is optional, with no external imports.
             self.assertEqual(gate.evaluate(json.loads(path.read_text()))["decision"], "BLOCKED")
 
+    def test_emergency_recovery_ignores_revoked_oauth_and_missing_plugin(self):
+        p = proposal()
+        p["next"]["plugin_id"] = None
+        p["next"]["public_mcp_url"] = None
+        p["limits"] = None
+        p["attestations"] = None
+        report = gate.evaluate(p, recovery=True)
+        self.assertEqual(report["decision"], "RECOVERY_PLAN_READY")
+        self.assertEqual(report["mode"], "RECOVERY_ONLY")
+        self.assertEqual(report["writes"], [])
+        self.assertEqual(report["executes"], [])
+
+    def test_recovery_still_refuses_a_v1_unit_or_filesystem_collision(self):
+        p = proposal()
+        p["next"]["plugin_id"] = None
+        p["attestations"] = {}
+        p["next"]["service_unit"] = gate.V1_UNIT
+        p["next"]["config_path"] = p["v1"]["runtime_root"] + "/bad.yaml"
+        report = gate.evaluate(p, recovery=True)
+        self.assertEqual(report["decision"], "BLOCKED")
+        self.assertTrue(any("Next unit" in x for x in report["blockers"]))
+        self.assertTrue(any("overlaps V1.runtime_root" in x for x in report["blockers"]))
+
+    def test_all_cross_field_v1_next_path_collisions_are_rejected(self):
+        for target in gate.PATH_FIELDS:
+            for source in gate.PATH_FIELDS:
+                if target == source:
+                    continue
+                with self.subTest(next_field=target, v1_field=source):
+                    p = proposal()
+                    p["next"][target] = p["v1"][source] + "/nested"
+                    report = gate.evaluate(p)
+                    self.assertEqual(report["decision"], "BLOCKED")
+                    self.assertTrue(any(
+                        "next." + target + ": overlaps V1." + source in x
+                        for x in report["blockers"]), report["blockers"])
+
+
 
 if __name__ == "__main__":
     unittest.main()
