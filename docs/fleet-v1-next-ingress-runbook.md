@@ -92,6 +92,16 @@ authorized by this document.
 
 ### Rungs 0–1 → `STAGED_NO_START`
 
+At this point the **new node is not registered**, so its real public FQDN
+does not exist yet. The reviewed dual-stack proposal must explicitly set
+`next.public_mcp_url: null` and may set `next.plugin_id: null` for the
+**non-starting `stage` command only**. `null` means *unassigned*, not a
+fictional or healthy endpoint; omitting the URL field, supplying a malformed
+URL, or reusing the V1 endpoint is still refused. `install` still requires
+a distinct HTTPS `/mcp` URL and a real registered Plugin ID. The stage gate
+also retains its V1 identity, owner binding review, rollback readiness, path,
+port, resource budget and Next-only unit checks. No consent is inferred from
+the proposal or this document.
 ```bash
 python3 -I fleet_mcp/deploy/next_install.py stage \
         --proposal <dual-stack.json> --no-start      # add --execute --owner-approved to act
