@@ -95,8 +95,14 @@ def _overlap(first: str, second: str) -> bool:
             or second.startswith(first + "/"))
 
 
-def evaluate(proposal: object) -> dict:
-    """Return an audit-friendly decision; never performs an effect."""
+def evaluate(proposal: object, *, recovery: bool = False) -> dict:
+    """Validate install or an emergency Next-only inspection/rollback.
+
+    Recovery may remain possible when the Next OAuth client has been revoked,
+    the plugin was uninstalled, or a limit changed. The caller still has to
+    name the fixed Next unit and prove filesystem isolation from V1. This is
+    not authority to act; the separate installer requires explicit approval.
+    """
     problems: list[str] = []
     root = _shape(proposal, TOP_FIELDS, "proposal", problems)
     if root.get("schema") != SCHEMA:
@@ -120,52 +126,53 @@ def evaluate(proposal: object) -> dict:
         if a and b and _overlap(a, b):
             problems.append(f"next.{key}: overlaps V1")
 
-    a_bind = _listen(v1.get("local_listen"), "v1.local_listen", problems)
-    b_bind = _listen(nxt.get("local_listen"), "next.local_listen", problems)
-    if b_bind and b_bind[0] not in {"127.0.0.1", "::1"}:
-        problems.append("next.local_listen: must bind loopback only")
-    if a_bind and b_bind and a_bind[1] == b_bind[1] and (
-        a_bind[0] == b_bind[0] or a_bind[0] in {"0.0.0.0", "::"}
-        or b_bind[0] in {"0.0.0.0", "::"}
-    ):
-        problems.append("next.local_listen: conflicts with V1 listening port")
+    if not recovery:
+        a_bind = _listen(v1.get("local_listen"), "v1.local_listen", problems)
+        b_bind = _listen(nxt.get("local_listen"), "next.local_listen", problems)
+        if b_bind and b_bind[0] not in {"127.0.0.1", "::1"}:
+            problems.append("next.local_listen: must bind loopback only")
+        if a_bind and b_bind and a_bind[1] == b_bind[1] and (
+            a_bind[0] == b_bind[0] or a_bind[0] in {"0.0.0.0", "::"}
+            or b_bind[0] in {"0.0.0.0", "::"}
+        ):
+            problems.append("next.local_listen: conflicts with V1 listening port")
 
-    a_url, b_url = _url(v1.get("public_mcp_url")), _url(nxt.get("public_mcp_url"))
-    if a_url is None:
-        problems.append("v1.public_mcp_url: verified HTTPS /mcp URL required")
-    if b_url is None:
-        problems.append("next.public_mcp_url: dedicated HTTPS /mcp URL required")
-    if a_url and b_url and a_url == b_url:
-        problems.append("next.public_mcp_url: same published endpoint as V1")
-    for name, url in (("v1", a_url), ("next", b_url)):
-        if url and not url[3].endswith("/mcp"):
-            problems.append(f"{name}.public_mcp_url: endpoint path must end in /mcp")
+        a_url, b_url = _url(v1.get("public_mcp_url")), _url(nxt.get("public_mcp_url"))
+        if a_url is None:
+            problems.append("v1.public_mcp_url: verified HTTPS /mcp URL required")
+        if b_url is None:
+            problems.append("next.public_mcp_url: dedicated HTTPS /mcp URL required")
+        if a_url and b_url and a_url == b_url:
+            problems.append("next.public_mcp_url: same published endpoint as V1")
+        for name, url in (("v1", a_url), ("next", b_url)):
+            if url and not url[3].endswith("/mcp"):
+                problems.append(f"{name}.public_mcp_url: endpoint path must end in /mcp")
 
-    for label, item in (("v1", v1), ("next", nxt)):
-        pid = item.get("plugin_id")
-        if not isinstance(pid, str) or not pid.strip():
-            problems.append(f"{label}.plugin_id: actual installed/registered ID required")
-        elif not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", pid):
-            problems.append(f"{label}.plugin_id: malformed")
-    if nxt.get("plugin_id") and nxt.get("plugin_id") == v1.get("plugin_id"):
-        problems.append("next.plugin_id: must differ from V1 during dual-stack period")
+        for label, item in (("v1", v1), ("next", nxt)):
+            pid = item.get("plugin_id")
+            if not isinstance(pid, str) or not pid.strip():
+                problems.append(f"{label}.plugin_id: actual installed/registered ID required")
+            elif not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", pid):
+                problems.append(f"{label}.plugin_id: malformed")
+        if nxt.get("plugin_id") and nxt.get("plugin_id") == v1.get("plugin_id"):
+            problems.append("next.plugin_id: must differ from V1 during dual-stack period")
 
-    for key, (minimum, maximum) in LIMITS.items():
-        val = limits.get(key)
-        if isinstance(val, bool) or not isinstance(val, int) or not minimum <= val <= maximum:
-            problems.append(f"limits.{key}: must be integer {minimum}..{maximum}")
-    if limits.get("memory_swap_max_mib") != 0:
-        problems.append("limits.memory_swap_max_mib: canary must not consume global swap")
-    for key in sorted(ATTEST_FIELDS):
-        if attest.get(key) is not True:
-            problems.append(f"attestations.{key}: owner/readback confirmation missing")
+        for key, (minimum, maximum) in LIMITS.items():
+            val = limits.get(key)
+            if isinstance(val, bool) or not isinstance(val, int) or not minimum <= val <= maximum:
+                problems.append(f"limits.{key}: must be integer {minimum}..{maximum}")
+        if limits.get("memory_swap_max_mib") != 0:
+            problems.append("limits.memory_swap_max_mib: canary must not consume global swap")
+        for key in sorted(ATTEST_FIELDS):
+            if attest.get(key) is not True:
+                problems.append(f"attestations.{key}: owner/readback confirmation missing")
 
     # Deliberately no threshold on SwapUsed percentage: it is an inventory
     # counter, not a measurement of live thrashing.  Live safety checks are
     # mandatory on the actual host, and this offline gate does not invent them.
     return {
         "schema": SCHEMA,
-        "decision": "PRECHECK_READY_FOR_HUMAN_CANARY" if not problems else "BLOCKED",
+        "decision": ("RECOVERY_PLAN_READY" if recovery else "PRECHECK_READY_FOR_HUMAN_CANARY") if not problems else "BLOCKED",
         "blockers": sorted(set(problems)),
         "writes": [],
         "executes": [],
@@ -179,6 +186,7 @@ def evaluate(proposal: object) -> dict:
             "Exactly one next service instance; no concurrent model/CC stress tests",
             "Next tool discovery, OAuth, one read-only device request, and rollback checked",
         ],
+        "mode": "RECOVERY_ONLY" if recovery else "INSTALL_PRECHECK",
         "note": "This is dry-run metadata, never an authorization or a launch.",
     }
 
