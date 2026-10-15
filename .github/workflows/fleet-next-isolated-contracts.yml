@@ -27,13 +27,31 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Prepare test log
+        run: mkdir -p test-output
       - name: Check Python syntax
+        shell: bash
         run: |
-          python3 -m py_compile fleet_mcp/deploy/next_dual_stack_preflight.py
-          python3 -m py_compile fleet_mcp/deploy/next_install.py
-          python3 -m py_compile tests/test_fleet_next_install.py
-          python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
+          set -o pipefail
+          {
+            python3 -m py_compile fleet_mcp/deploy/next_dual_stack_preflight.py
+            python3 -m py_compile fleet_mcp/deploy/next_install.py
+            python3 -m py_compile tests/test_fleet_next_install.py
+            python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
+          } 2>&1 | tee test-output/compile.log
       - name: Run dual-stack isolation tests offline
+        shell: bash
         run: |
-          python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
-          python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
+          set -o pipefail
+          {
+            python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
+          } 2>&1 | tee test-output/tests.log
+      - name: Preserve bounded offline test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-next-test-output
+          path: test-output/*.log
+          retention-days: 2
+          if-no-files-found: warn
