@@ -6,6 +6,20 @@
 // has no flag that could make it act — the only way to make it do something else
 // would be to add one, and that would be a different review.
 //
+// WHAT IT DELIBERATELY HAS NO FLAG FOR
+// ------------------------------------
+// There is no `--device-ref`: a caller able to name the device could make the
+// status report `MATCHED` by typing the profile's own string, which is not
+// evidence of anything. The device reference comes from this host's declaration
+// file, read out of the home directory the USER DATABASE records for this
+// account (never `$HOME`, which a caller controls), and it is stamped
+// `LOCAL_DECLARATION` — this account's claim about itself, which is still not
+// the same as an authenticated attestation, and `live` stays false for it.
+//
+// There is no `--observed-at`: a caller able to stamp a time could make a
+// week-old document look current. The time in the document is the source
+// snapshot's own, and `freshness` is stated as `NOT_ASSERTED`.
+//
 // EXIT CODE
 // ---------
 //   0  a status document was printed. This includes `live: false`: a refusal to
@@ -15,7 +29,6 @@
 //      profile the reader refuses). The reason goes to stderr, and no document
 //      is printed, because half a status is worse than none.
 #include <cstdio>
-#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -28,17 +41,18 @@ namespace {
 
 void print_usage(std::FILE* out) {
     std::fprintf(out,
-                 "usage: core-lite-status --profile PATH [--snapshot PATH] [--observed-at TIME]\n"
+                 "usage: core-lite-status --profile PATH [--snapshot PATH]\n"
                  "\n"
                  "  --profile PATH      a serveros/core-lite-profile.v1 document (required)\n"
                  "  --snapshot PATH     a serveros/node-resource-snapshot.v1 document to read\n"
                  "                      readings from. Without it, every granted observation is\n"
                  "                      reported UNAVAILABLE with the reason why.\n"
-                 "  --observed-at TIME  ISO-8601 UTC stamped into the document\n"
-                 "  --device-ref REF    the managed Node identity, when it is known\n"
-                 "                      independently of this node's declaration file\n"
                  "\n"
-                 "Reads only. Never acts, never writes, never reaches the network.\n");
+                 "Reads only. Never acts, never writes, never reaches the network.\n"
+                 "\n"
+                 "The device reference and the observation time are NOT arguments: the first\n"
+                 "comes from this host's declaration file, the second from the snapshot's own\n"
+                 "stamp. See the comment at the top of this file for why.\n");
 }
 
 bool read_file(const std::string& path, std::string& out) {
@@ -55,8 +69,9 @@ bool read_file(const std::string& path, std::string& out) {
     return true;
 }
 
-//: The declaration a device writes about itself. Kept in one place so the CLI
-//: and any future caller agree on the path.
+//: The declaration a device writes about itself, relative to its OWN home as the
+//: user database records it. Kept in one place so the CLI and any future caller
+//: agree on the path.
 constexpr const char* kDeviceDeclarationRelpath = ".config/serveros/node-identity";
 
 }  // namespace
@@ -64,8 +79,6 @@ constexpr const char* kDeviceDeclarationRelpath = ".config/serveros/node-identit
 int main(int argc, char** argv) {
     std::string profile_path;
     std::string snapshot_path;
-    std::string observed_at;
-    std::string device_ref_override;
 
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index];
@@ -73,8 +86,7 @@ int main(int argc, char** argv) {
             print_usage(stdout);
             return 0;
         }
-        const bool wants_value = (arg == "--profile" || arg == "--snapshot" ||
-                                  arg == "--observed-at" || arg == "--device-ref");
+        const bool wants_value = (arg == "--profile" || arg == "--snapshot");
         if (wants_value && index + 1 >= argc) {
             std::fprintf(stderr, "%s needs a value\n", arg.c_str());
             return 1;
@@ -83,10 +95,6 @@ int main(int argc, char** argv) {
             profile_path = argv[++index];
         } else if (arg == "--snapshot") {
             snapshot_path = argv[++index];
-        } else if (arg == "--observed-at") {
-            observed_at = argv[++index];
-        } else if (arg == "--device-ref") {
-            device_ref_override = argv[++index];
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
             print_usage(stderr);
@@ -116,7 +124,6 @@ int main(int argc, char** argv) {
 
     nodecore::corelite::StatusInput input;
     input.profile = &profile;
-    input.observed_at = observed_at;
     // Linux can read every observation this stage names; the psi family is not
     // special-cased here because the ADAPTER is what knows no block exists for
     // it yet, and it says NOT_IMPLEMENTED rather than the platform saying
@@ -130,16 +137,12 @@ int main(int argc, char** argv) {
     input.principal_known = os_identity.known;
     input.principal_observed = os_identity.user;
 
-    if (!device_ref_override.empty()) {
-        input.device_ref_known = true;
-        input.device_ref_observed = device_ref_override;
-    } else {
-        const char* home = std::getenv("HOME");
-        const auto node_identity = nodecore::corelite::managed_node_identity(
-            home == nullptr ? "" : home, kDeviceDeclarationRelpath);
-        input.device_ref_known = node_identity.known;
-        input.device_ref_observed = node_identity.device_ref;
-    }
+    // The home comes from the user database, not from the environment.
+    const auto node_identity =
+        nodecore::corelite::managed_node_identity(os_identity, kDeviceDeclarationRelpath);
+    input.device_ref_known = node_identity.known;
+    input.device_ref_observed = node_identity.device_ref;
+    input.device_ref_basis = node_identity.basis;
 
     if (!snapshot_path.empty()) {
         std::string snapshot_text;
@@ -148,11 +151,15 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::string error;
-        input.readings = nodecore::corelite::readings_from_snapshot(profile, snapshot_text, error);
+        auto readings = nodecore::corelite::readings_from_snapshot(profile, snapshot_text, error);
         if (!error.empty()) {
             std::fprintf(stderr, "the snapshot could not be read: %s\n", error.c_str());
             return 1;
         }
+        input.readings = std::move(readings.readings);
+        // The source's OWN sample time. There is no flag that sets this, because
+        // a caller who could set it could make an old document look new.
+        input.source_observed_at = readings.observed_at;
     }
 
     const auto outcome = nodecore::corelite::build_status(input);
@@ -161,8 +168,18 @@ int main(int argc, char** argv) {
                      outcome.refusal_reason.c_str());
         return 1;
     }
+
     // stdout is the document and nothing else, so a caller can pipe it straight
-    // into a JSON reader.
+    // into a JSON reader. The one thing an operator needs that the document
+    // states but a skim would miss — WHY it is not live — goes to stderr.
+    if (!outcome.live) {
+        std::fprintf(stderr,
+                     "note: live is false. device_identity.basis=%s; %s\n",
+                     outcome.device.basis.c_str(),
+                     outcome.device.reason.empty()
+                         ? "the device identity was not established by an authenticated route"
+                         : outcome.device.reason.c_str());
+    }
     std::fputs(outcome.json.c_str(), stdout);
     std::fputc('\n', stdout);
     return 0;

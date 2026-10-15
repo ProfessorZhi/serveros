@@ -48,8 +48,8 @@ vocabularies, named refusals, never a half-built document.
 | layer | status | evidence |
 |---|---|---|
 | **Source** | **REAL** | the reader, the status builder, the runtime identity readback and the Linux adapter — compiled by `cmake --build` over `native/node-core` with GNU 13.3, `-std=c++20 -Wall -Wextra -Wpedantic`, **zero warnings** |
-| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **18/18 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **56 checks**, `core_lite_readings` **123 checks** (127 with a live snapshot), all 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
-| **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice (`--interval-ms 300`) into `node-resource-snapshot.v1`; the adapter read it and the status reported `cpu.used_percent 9.1` and `memory.used_percent 31.4` **from those real counters**, with the other six grants `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/FLEET-V1-CORE-LITE/20261015-core-lite-status/` |
+| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **18/18 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **99 checks**, `core_lite_readings` **182 checks** (190 with a live snapshot), all 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
+| **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice (`--interval-ms 300`) into `node-resource-snapshot.v1`; the projection read it and the status reported `cpu {"used_percent": 9.1}` and `memory {total/available/free_bytes, used_percent: 31.4}` **from those real counters**, plus `storage.readonly` as `ROLE_FS` + byte counts. The other grants are `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/FLEET-V1-CORE-LITE/20261015-core-lite-status/` |
 | **RealUserStaged** | **NOT DONE — BLOCKED** | no unit installed, none enabled, no linger. The Tokyo account would need the owner to install it; **Dell's `fjd` is not this account and only `fjd` may install there** |
 | **Running** | **NOT DONE — BLOCKED** | nothing has ever executed on a real host. No `systemd --user` unit for Core-Lite exists yet |
 
@@ -112,12 +112,13 @@ message already sent.
   clean. The plain `cmake -S native/node-core -B build` in §4 is the command an
   ordinary host runs, and it is the one that was exercised.
 - **`supervisor/src` on the include path**: `core-lite` includes the supervisor's
-  private `json_detail.hpp` — the one strict JSON reader in this repository —
-  via a `PRIVATE` include of `../supervisor/src`. The structural fix belongs to
-  the supervisor's review (publish it as
-  `supervisor/include/supervisor/json_reader.hpp`), not to this one. Recorded
-  rather than hidden, because before this branch the documented CMake path did
-  not build at all and that is exactly what the missing include was hiding.
+  private `json_detail.hpp` — the one strict JSON reader in this repository, and
+  the one that reads an untrusted snapshot as input — via a `PRIVATE` include of
+  `../supervisor/src`. The structural fix belongs to the supervisor's review
+  (publish it as `supervisor/include/supervisor/json_reader.hpp`), not to this
+  one. Recorded rather than hidden, because before this branch the documented
+  CMake path did not build at all and that is exactly what the missing include
+  was hiding.
 - **No unit, anywhere**: not installed, not enabled, not started, no linger.
 - **Dell `fjd`**: this account has no permission there. The profile is a
   **declaration awaiting `fjd`'s own authorisation**.
@@ -157,3 +158,60 @@ order, because the dependency is real and order is part of the fix.
 **Core-Lite does not link `nodecore_supervisor` twice, and does not re-implement
 `valid_unit_id`.** One function decides what a unit id is, one reader decides
 what JSON is, and both are the supervisor's.
+
+## 9. The trust boundary: what a caller and an input may NOT do
+
+A status document is read by people who are not on this host. Two P0 findings on
+this branch were both about the same mistake in different clothes — letting
+something that is not evidence produce a claim.
+
+**A caller cannot name the device.** `core-lite-status` has **no `--device-ref`**
+(and no `--observed-at`). It had one; a caller who typed the profile's own node
+string got `device_identity MATCHED` and `live: true`, having supplied both sides
+of the comparison. The device reference now comes only from this host's
+declaration file, read out of the home directory **the user database records**
+(`getpwuid_r`'s `pw_dir`, never `$HOME`), with every path component `lstat`ed:
+no symlink at any level, each component owned by this uid, none writable by group
+or other, the file a regular file of bounded size. An identity that was never
+established has no home this program may read.
+
+**And a local declaration is still not an attestation.** It is stamped
+`LOCAL_DECLARATION` — this account's claim about itself — and `live` requires
+`basis: ATTESTED`, which nothing in V1 can produce. So **`live` is false for
+every document this program emits today**, and the document says why in
+`device_identity.basis` rather than leaving a reader to guess. A Fleet consumer
+that needs to know which device this really is must get that through its own
+authenticated route. `principal_identity` is different and IS `ATTESTED`: this
+process read its own account straight from the OS.
+
+**An input cannot smuggle a key.** The Linux adapter no longer forwards the
+collector's blocks. It PROJECTS them — names every field it emits, and can only
+emit what it names:
+
+| observation | projected | never forwarded |
+|---|---|---|
+| `cpu` | `used_percent` (0..100) | `counters`, `busy_jiffies`, `total_jiffies`, `sample_seconds`, `state` |
+| `memory` | `total_bytes`, `available_bytes`, `free_bytes`, `used_percent` (0..100) | `scope`, `source` |
+| `storage.readonly` | per role: `role`, `total_bytes`, `available_bytes`, `used_bytes`; and per role: `read_bytes`, `write_bytes` | `path`, `mount_point`, `source`, `fstype`, `inodes`, the device name (`vda2`) |
+
+A filter has to recognise what to remove and is wrong the first time something
+new appears; a projection can only emit what it was written to emit. The role
+name — the one free-text field — is allowed through only when it matches
+`[A-Za-z0-9_-]{1,32}`. A block that is PRESENT but incomplete, out of range
+(`used_percent: 340`), or carrying a byte count written as a real is
+`UNAVAILABLE` / `NO_SOURCE`: **no partial value is ever published**, because
+three of four memory numbers is a value a reader will do arithmetic on and get
+wrong. `Reading::value` is a `Json` the adapter builds key by key, not a text
+fragment re-parsed before emission — the round trip that let a forged `token`
+travel from a document into a status is gone from the type, not filtered out.
+
+**Freshness is not asserted.** `observed_at` is the SOURCE snapshot's own sample
+time, copied; it is never this process's clock and never a caller's string. The
+document carries `"freshness": "NOT_ASSERTED"`, because deciding a reading is
+stale needs a clock and a policy that belong to a trusted Node or Fleet reader,
+not to the document's opinion of itself.
+
+The forgery tests are the ones that hold this: `tests/test_collector_readings.cpp`
+poisons the real fixture with `token`, `argv` and a `config_path`, runs the whole
+chain, and asserts none of them reach the document — and separately asserts the
+collector's OWN `path` / `mount_point` fields do not either.

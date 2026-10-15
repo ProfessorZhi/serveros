@@ -11,12 +11,10 @@
 #include <vector>
 
 #include "nodecore/json.hpp"
-#include "json_bridge.hpp"
 
 namespace nodecore::corelite {
 
 using nodecore::Json;
-using detail::to_nodecore;
 
 namespace {
 
@@ -32,6 +30,11 @@ bool is_psi(const std::string& name) { return starts_with(name, "psi."); }
 void emit_identity(Json& root, const std::string& key, const IdentityVerdict& verdict) {
     Json row = Json::object();
     row.set("state", Json::string(verdict.state));
+    // Stated BEFORE the values, because it is what decides whether the values
+    // mean anything: a MATCHED that came from a caller's argument and a MATCHED
+    // that came from an authenticated route are the same word and are not the
+    // same fact.
+    row.set("basis", Json::string(verdict.basis));
     row.set("claimed", Json::string(verdict.claimed));
     if (!verdict.observed.empty()) {
         row.set("observed", Json::string(verdict.observed));
@@ -47,6 +50,16 @@ void emit_identity(Json& root, const std::string& key, const IdentityVerdict& ve
 bool known_reason(const std::string& reason) {
     for (const char* candidate : kReasons) {
         if (reason == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool known_basis(const std::string& basis) {
+    for (const char* candidate :
+         {kBasisAttested, kBasisLocalDeclaration, kBasisCallerSupplied, kBasisNone}) {
+        if (basis == candidate) {
             return true;
         }
     }
@@ -82,7 +95,11 @@ StatusOutcome build_status(const StatusInput& input) {
             "the OS could not establish which account this process runs as; a Core that cannot "
             "name its own user must not report readings under a claimed one";
     } else if (input.principal_observed == profile.principal) {
+        // The account this process runs as, read from the OS by this process.
+        // That is as attested as an identity gets, and it is the only verdict
+        // here that may be.
         principal.state = kMatched;
+        principal.basis = kBasisAttested;
     } else {
         principal.state = kMismatched;
         principal.reason =
@@ -92,18 +109,35 @@ StatusOutcome build_status(const StatusInput& input) {
             "another's";
     }
 
-    // DEVICE. MATCHED only on a known Node identity that equals the claim. JSON
-    // cannot make a device healthy by asserting it.
+    // DEVICE. A MATCH says the device reference the runtime obtained equals the
+    // one the profile claims. It does NOT say the device reference is TRUE — that
+    // depends entirely on `basis`, and only an ATTESTED one is evidence.
     IdentityVerdict device;
     device.claimed = profile.node;
     device.observed = input.device_ref_observed;
+    device.basis = known_basis(input.device_ref_basis) ? input.device_ref_basis : kBasisNone;
     if (!input.device_ref_known) {
         device.state = kUnknown;
+        device.basis = kBasisNone;
         device.reason =
             "the managed Node identity was not established; a profile must not claim a device's "
             "health from its own text";
     } else if (input.device_ref_observed == profile.node) {
         device.state = kMatched;
+        if (device.basis == kBasisNone || device.basis == kBasisCallerSupplied) {
+            // A caller-supplied string that happens to equal the profile is the
+            // case this whole field exists for: the caller chose both sides of
+            // the comparison, so it proves nothing. Reported as MATCHED with the
+            // basis that says so, and it can never reach `live`.
+            device.reason =
+                "this value was supplied by the caller, which chose both sides of the comparison, "
+                "so it is not evidence of which device this is";
+        } else if (device.basis == kBasisLocalDeclaration) {
+            device.reason =
+                "this value came from a file on this host, written by this account. That is a "
+                "claim the account makes about itself, not an independent statement about which "
+                "device this is";
+        }
     } else {
         device.state = kMismatched;
         device.reason = "the managed Node identity is \"" + input.device_ref_observed +
@@ -119,15 +153,27 @@ StatusOutcome build_status(const StatusInput& input) {
     // Written down, never inferred: a client that had to guess whether the Core
     // is willing to act would guess wrong.
     root.set("mode", Json::string("observe-only"));
-    if (!input.observed_at.empty()) {
-        root.set("observed_at", Json::string(input.observed_at));
+    if (!input.source_observed_at.empty()) {
+        // The SOURCE's sample time, copied. Not this process's clock, and not a
+        // caller's string — see `StatusInput::source_observed_at`.
+        root.set("observed_at", Json::string(input.source_observed_at));
     }
+    // Says out loud what the document does NOT know. Without this a reader sees a
+    // timestamp and supplies its own meaning for it, and «the source stamped
+    // this» silently becomes «this is current».
+    root.set("freshness", Json::string(kFreshnessNotAsserted));
     emit_identity(root, "principal_identity", principal);
     emit_identity(root, "device_identity", device);
 
     outcome.principal = principal;
     outcome.device = device;
-    outcome.live = (principal.state == kMatched && device.state == kMatched);
+    // BOTH must match, and the device half must be ATTESTED. Today nothing in
+    // this stage can attest a device reference, so this is false for every
+    // document this program produces. That is the honest state of the world:
+    // the readings are this account's, and which DEVICE they are of is a claim
+    // the account makes about itself.
+    outcome.live = (principal.state == kMatched && device.state == kMatched &&
+                    device.basis == kBasisAttested);
     root.set("live", Json::boolean(outcome.live));
 
     // ---- the observations ---------------------------------------------
@@ -189,7 +235,7 @@ StatusOutcome build_status(const StatusInput& input) {
                 if (!found->source.empty()) {
                     row.set("source", Json::string(found->source));
                 }
-            } else if (found->value_json.empty()) {
+            } else if (!found->has_value) {
                 // PRESENT with no value is not a reading. Reported as NO_SOURCE
                 // rather than as an empty value, so nothing downstream renders a
                 // blank where a number was promised.
@@ -197,23 +243,14 @@ StatusOutcome build_status(const StatusInput& input) {
                 row.set("reason", Json::string("NO_SOURCE"));
                 row.set("source", Json::string(found->source));
             } else {
-                // The value fragment is PARSED with the supervisor's own reader
-                // rather than spliced in as text: a fragment that is not JSON
-                // must not become a document nobody can read.
-                nodecore::supervisor::detail::Json parsed;
-                std::string error;
-                nodecore::supervisor::detail::Reader reader(found->value_json);
-                if (!reader.parse(parsed, error)) {
-                    row.set("state", Json::string("UNAVAILABLE"));
-                    row.set("reason", Json::string("NO_SOURCE"));
-                    row.set("source", Json::string(found->source));
-                } else {
-                    row.set("state", Json::string("PRESENT"));
-                    row.set("value", to_nodecore(parsed));
-                    row.set("source", Json::string(found->source));
-                    if (!found->observed_at.empty()) {
-                        row.set("observed_at", Json::string(found->observed_at));
-                    }
+                row.set("state", Json::string("PRESENT"));
+                // Copied from a `Json` the adapter BUILT key by key. There is no
+                // text on this path, so there is nothing on this path that a
+                // fragment could be spliced into.
+                row.set("value", found->value);
+                row.set("source", Json::string(found->source));
+                if (!found->observed_at.empty()) {
+                    row.set("observed_at", Json::string(found->observed_at));
                 }
             }
             observations.push(row);

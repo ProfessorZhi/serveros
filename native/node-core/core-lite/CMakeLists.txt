@@ -14,15 +14,16 @@
 add_library(core_lite_profile STATIC
   src/profile.cpp
   # The status builder. It writes with `nodecore::Json` — the collector's own
-  # writer — and reads value fragments with the supervisor's reader. The bridge
-  # between the two types lives in `src/json_bridge.hpp`, inside this component.
+  # writer — and carries values as `Json`, never as text: there is no round trip
+  # through a string for an untrusted document to ride in on.
   src/status.cpp
   # The runtime identity readback, apart from the parser because a parser that
   # called `getuid()` would only be testable on the host it was written on.
   src/identity.cpp
-  # The Linux adapter: a `node-resource-snapshot.v1` mapped to readings. It reads
-  # the collector's document rather than `/proc`, so the numbers a Fleet reader
-  # sees here are the collector's own.
+  # The Linux adapter: a `node-resource-snapshot.v1` PROJECTED onto the reviewed
+  # fields. It reads the collector's document rather than `/proc`, so the numbers
+  # a Fleet reader sees here are the collector's own — and it names every field it
+  # emits, so a key nobody named cannot reach the status.
   src/collector_readings.cpp
 )
 target_include_directories(core_lite_profile PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -73,6 +74,10 @@ add_test(NAME core_lite_shipped_profiles
 # The status contract and the runtime identity readback.
 add_executable(test_core_lite_status tests/test_status.cpp)
 target_link_libraries(test_core_lite_status PRIVATE core_lite_profile)
+# The status tests re-read the produced document with the component's own reader,
+# so an assertion is about the DOCUMENT and not about the writer's spacing.
+target_include_directories(test_core_lite_status PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
 add_test(NAME core_lite_status COMMAND test_core_lite_status)
 
 # The Linux adapter, against the snapshot the repository already ships. The test

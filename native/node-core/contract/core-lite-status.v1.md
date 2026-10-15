@@ -25,8 +25,11 @@ zero.
   "generation": 1,
   "mode": "observe-only",
   "observed_at": "2026-10-15T15:15:00+00:00",
-  "principal_identity": { "state": "MATCHED", "claimed": "vince", "observed": "vince" },
-  "device_identity":    { "state": "UNKNOWN", "claimed": "device:tokyo-shared-dev-01",
+  "freshness": "NOT_ASSERTED",
+  "principal_identity": { "state": "MATCHED", "basis": "ATTESTED",
+                          "claimed": "vince", "observed": "vince" },
+  "device_identity":    { "state": "UNKNOWN", "basis": "NONE",
+                          "claimed": "device:tokyo-shared-dev-01",
                           "reason": "the managed Node identity was not established; a profile must not claim a device's health from its own text" },
   "live": false,
   "observations": [
@@ -49,8 +52,10 @@ order, and must not depend on a member being present: **absent is not a value**.
 | an observation the profile did not grant **does not appear** | not `UNAVAILABLE`, not `null`, not an empty string. A present-but-blank field reads as «measured nothing», which is a different claim, and its mere presence discloses that the capability exists |
 | a fact nobody measured is `UNAVAILABLE` + a `reason` | **never `0`, never `null`** — the collector's own invariant (`node-resource-snapshot.v1`), inherited rather than restated |
 | `reason` comes from a CLOSED set | a typo must not become a new vocabulary word a Fleet reader has never seen. An unrecognised reason is reported as `NO_SOURCE` |
-| `live` requires BOTH identity verdicts to be `MATCHED` | JSON cannot make a device healthy by asserting it |
-| no `argv`, no environment, no token, no credential, no config path | the builder never opens a file; values are handed in opaquely |
+| `live` requires the principal to `MATCH` **and** the device to `MATCH` on an `ATTESTED` basis | a string a caller typed, or a file the account wrote about itself, is a claim and not evidence. JSON cannot make a device healthy by asserting it |
+| an identity carries the `basis` it was obtained on | `MATCHED` from an argument and `MATCHED` from an authenticated route are the same word and are not the same fact |
+| `freshness` is `NOT_ASSERTED` | the builder has no clock it trusts. `observed_at` is the SOURCE's stamp, copied — never a clock read here and never a caller's string |
+| no `argv`, no environment, no token, no credential, no config path, no raw device name | the builder never opens a file, and a reading's value is a `Json` the ADAPTER built key by key — not a text fragment re-parsed before emission. There is no round trip through a string for an untrusted document to ride in on |
 
 The closed `reason` set:
 
@@ -58,7 +63,7 @@ The closed `reason` set:
 |---|---|---|
 | `UNSUPPORTED_PLATFORM` | this platform cannot provide it, **ever** | the design — a different OS |
 | `NOT_IMPLEMENTED` | the platform could, but no collector exists **yet** | the backlog — a missing program |
-| `NO_SOURCE` | the adapter was asked and had nothing | the host — a failed read |
+| `NO_SOURCE` | the adapter was asked and had nothing usable | the host — a failed read, or a block that did not survive the projection |
 | `STALE` | a reading exists but is past its freshness bound | the clock — a producer that stopped |
 | `IDENTITY_UNKNOWN` | could not establish which account this is | the environment |
 
@@ -81,10 +86,32 @@ Two verdicts, each `MATCHED` / `MISMATCH` / `UNKNOWN`:
   read from this node's own declaration. An absent declaration is `UNKNOWN`, not
   a default device id.
 
+Every verdict also carries a **`basis`**, which is what decides whether the
+verdict means anything:
+
+| basis | is | may support `live` |
+|---|---|---|
+| `ATTESTED` | an answer that came back over an authenticated route this process did not author | **yes**, and it is the only one |
+| `LOCAL_DECLARATION` | a file on this host, written by this account about itself | no |
+| `CALLER_SUPPLIED` | an argument | no |
+| `NONE` | nothing was established | no |
+
+`principal_identity` is `ATTESTED`: this process read its own account from the
+OS. **Nothing in V1 can attest a device reference**, so `live` is `false` for
+every document this program emits today — deliberately, and stated in
+`device_identity.basis` rather than left for a reader to infer. A consumer that
+needs to know which device this really is must establish that through its own
+authenticated route; this document does not claim it, and a Fleet reader that
+trusts this output for device identity is trusting the wrong thing.
+
+A device verdict of `MATCHED` with a basis of `LOCAL_DECLARATION` is still worth
+reporting — it says the account's own declaration agrees with the profile — but
+it is the account agreeing with itself.
+
 **`live` means the identity is established. It does NOT mean healthy.** A Core
-whose identity matched and which then measured nothing is `live: true` with every
-observation `UNAVAILABLE`. Those are two different questions and the document
-keeps them apart on purpose.
+whose identity was attested and which then measured nothing is `live: true` with
+every observation `UNAVAILABLE`. Those are two different questions and the
+document keeps them apart on purpose.
 
 Deliberate consequence, pinned by a test
 (`test_an_unknown_device_still_reports_this_accounts_readings`): when the
@@ -112,6 +139,25 @@ percentage is, and the two would drift the first time one of them learned about 
 new counter.
 
 Measured today, against the collector this repository ships:
+
+**The blocks are PROJECTED, not forwarded.** A snapshot is input — it arrives as
+a file and a file can be edited — so every field a status carries is named by the
+adapter, and nothing unnamed can appear. A filter has to recognise what to
+remove and is wrong the first time something new appears; a projection can only
+emit what it was written to emit.
+
+| observation | projected (and nothing else) | never forwarded |
+|---|---|---|
+| `cpu` | `used_percent`, 0..100 | `counters`, `busy_jiffies`, `total_jiffies`, `sample_seconds`, `state` |
+| `memory` | `total_bytes`, `available_bytes`, `free_bytes`, `used_percent` (0..100) | `scope`, `source` |
+| `storage.readonly` | per filesystem role: `role`, `total_bytes`, `available_bytes`, `used_bytes`; per device role: `role`, `read_bytes`, `write_bytes` | `path`, `mount_point`, `source`, `fstype`, `inodes`, and the device NAME (`vda2`) — a raw hardware identifier the role already replaces |
+
+The role name is the one free-text field, so it is allowed through only when it
+matches `[A-Za-z0-9_-]{1,32}`, and at most 64 rows per block. A block that is
+PRESENT but incomplete, out of range, or malformed — a percentage of 340, a byte
+count written as `1.5`, one unusable row — makes the WHOLE reading
+`UNAVAILABLE` / `NO_SOURCE`. No partial value is ever published: three of four
+memory numbers is a value a reader will do arithmetic on and get wrong.
 
 | observation | on Linux | why |
 |---|---|---|
@@ -151,9 +197,29 @@ field exists to prevent.
 cmake -S native/node-core -B build/node-core && cmake --build build/node-core
 build/node-core/core-lite/core-lite-status \
     --profile native/node-core/core-lite/profiles/tokyo-node.profile.json \
-    --snapshot /tmp/live-snapshot.json \
-    --observed-at "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    --snapshot /tmp/live-snapshot.json
 ```
+
+There are exactly two arguments. **There is no `--device-ref` and no
+`--observed-at`**, and their absence is the point: a caller who could name the
+device could make the status report `MATCHED` by typing the profile's own string,
+and a caller who could stamp a time could make a week-old document look current.
+Both flags existed on the first revision of this branch and both were removed.
+
+The device reference comes from this host's declaration at
+`<pw_dir>/.config/serveros/node-identity` — the home **the user database
+records**, never `$HOME`, because an environment variable is something the
+caller of a program controls. Every component of that path is `lstat`ed: no
+symlink at any level, each owned by this uid, none writable by group or other,
+the file a regular file no larger than a one-line reference. A failure at any of
+those is `UNKNOWN` with the reason, never a default device id.
+
+What that does NOT defeat, stated plainly: an attacker who is already this
+account can edit the file between the check and the read, and can do anything
+else in the account too. What the checks stop is a REDIRECTION this program
+would otherwise follow — an environment variable naming the home, a symlink in
+the path, another user's file, a world-writable declaration. Those are the cases
+where a program ends up reporting a fact about somewhere else.
 
 Exit `0` means a document was printed — **including `live: false`**, because a
 refusal to claim an identity is a result and not a program failure. Exit `1`
