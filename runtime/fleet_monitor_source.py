@@ -50,6 +50,10 @@ def _load(name: str, path: Path):
 
 card_source = _load("serveros_card_source", _HERE / "card_source.py")
 monitor = _load("serveros_fleet_monitor_card", _HERE / "fleet_monitor_card.py")
+# The audience RULE and its signed verdict, under the one name both this module
+# and `fleet_monitor_plan` load it by — so a verdict issued here is the very same
+# type the sender checks, and not a second copy that would silently not match.
+fleet_audience = _load("serveros_fleet_audience", _HERE / "fleet_audience.py")
 
 #: The schema of the DEVICE ENTRY this module assembles — the shape
 #: `monitor.monitor_model` consumes. It is deliberately NOT
@@ -589,9 +593,10 @@ EXPECTED_DEVICES = (
 
 AUDIENCE_SCHEMA = "serveros/fleet-audience.v1"
 
-#: Recipient kinds, spelled the way `runtime/message_transport.py`'s flags are
-#: so a destination names the same thing on both sides of the hop.
-RECIPIENT_KINDS = ("user", "chat")
+#: Recipient kinds, borrowed from `fleet_audience` rather than respelled: the
+#: transport's flags, the parser's vocabulary and the policy's keys must name the
+#: same two things, and a second literal is a second place they can drift.
+RECIPIENT_KINDS = fleet_audience.RECIPIENT_KINDS
 
 
 def expected_devices():
@@ -599,40 +604,41 @@ def expected_devices():
     return [dict(entry) for entry in EXPECTED_DEVICES]
 
 
-class AudienceRefused(RuntimeError):
-    """A policy document or a destination this module cannot accept."""
-
-
-def parse_audience(recipient) -> tuple[str, str]:
-    """`user:<open_id>` / `chat:<chat_id>` -> `(kind, value)`.
-
-    Restated here rather than imported from `runtime/message_transport.py`
-    because this module's header says it composes readings and reaches no
-    transport; a source module that imported the transport would be a second
-    place a send could start from. A test binds the two spellings.
-    """
-    kind, separator, value = str(recipient or "").partition(":")
-    if not separator or kind not in RECIPIENT_KINDS or not value:
-        raise AudienceRefused(
-            f"接收人必须写成 user:<open_id> 或 chat:<chat_id>，收到的是 "
-            f"{recipient!r}；不加前缀就等于让这里替调用方猜，而猜错的后果是"
-            f"把一台机器的读数发给了不该看到它的人")
-    return kind, value
+# The rule itself and the SIGNED VERDICT live in `runtime/fleet_audience.py` — a
+# pure module this file and the planner both load under one name. What stays HERE
+# is the policy: which device a recipient may be shown, evaluated over the
+# inventory. What lives there is the verdict: the typed, signed answer a send is
+# allowed to depend on, because a boolean a caller writes is not evidence that
+# anybody checked.
+AudienceVerdict = fleet_audience.AudienceVerdict
+AudienceRefused = fleet_audience.AudienceRefused
+parse_audience = fleet_audience.parse_recipient
+device_set_signature = fleet_audience.device_set_signature
+preview_gate = fleet_audience.preview_gate
 
 
 class AudiencePolicy:
-    """Which device a given recipient may be shown. device × recipient.
+    """Which device a given recipient may be shown. device × recipient, CLOSED.
 
     `devices` maps a `device_ref` to `{"visibility": corporate|private,
-    "grants": [recipient, …]}`. The default an unlisted device gets is
-    `private` with no grants — the CLOSED direction, so a device added to the
-    fleet without a policy entry is withheld until somebody says who may see it
-    rather than published until somebody says who may not.
+    "grants": [recipient, …]}`; `approved_corporate` is the list of recipients
+    somebody has explicitly approved for the company's own machines.
+
+    NOTHING IS VISIBLE BY DEFAULT, AND «CORPORATE» IS NOT «PUBLIC». An earlier
+    version answered `True` for every corporate device no matter who asked, so
+    any unknown user or channel received the company's readings — a default that
+    published to everyone and left the policy to say who may NOT look. Now a
+    corporate device is visible only to a recipient that is named either in
+    `approved_corporate` or by that device's own grant. A PRIVATE device
+    consults ONLY its grants and never the corporate list: being approved for
+    the company's machines says nothing at all about somebody's own laptop, and
+    that inference is the one this class exists to make impossible.
     """
 
-    def __init__(self, *, devices=None, grants=None):
+    def __init__(self, *, devices=None, grants=None, approved_corporate=None):
         self.devices = {str(k): dict(v or {}) for k, v in (devices or {}).items()}
         self.grants = {str(k): set(v or []) for k, v in (grants or {}).items()}
+        self.approved_corporate = {str(r) for r in (approved_corporate or ())}
 
     def visibility(self, device_ref: str) -> str:
         entry = self.devices.get(str(device_ref)) or {}
@@ -645,31 +651,30 @@ class AudiencePolicy:
         return named | set(self.grants.get(str(device_ref)) or set())
 
     def allows(self, recipient: str, device_ref: str) -> bool:
-        """May `recipient` be shown `device_ref`? Corporate yes, private by grant.
-
-        A CORPORATE device needs no grant: it is the company's, and a company
-        channel is the audience it was bought for. A PRIVATE device is the
-        reverse — no grant, no row — and the grant names the recipient
-        EXACTLY (`user:ou_…`), so "one person's laptop" cannot leak into "the
-        whole channel" by a policy that was written with the kind in mind and
-        not the person.
-        """
-        if self.visibility(device_ref) == VISIBILITY_CORPORATE:
-            return True
+        """May `recipient` be shown `device_ref`? Default DENIAL, both kinds."""
         try:
-            parse_audience(recipient)
+            fleet_audience.parse_recipient(recipient)
         except AudienceRefused:
             return False
+        if self.visibility(device_ref) == VISIBILITY_CORPORATE:
+            return (str(recipient) in self.approved_corporate
+                    or str(recipient) in self._granted(device_ref))
         return str(recipient) in self._granted(device_ref)
 
     def visible(self, recipient: str, device_refs) -> dict:
+        """The model builder's view. NO recipient is echoed back in the answer.
+
+        The refusal sentence names a COUNT and the KIND, never the destination:
+        an unvalidated string that lands on a card or in a log is the leak this
+        function must not be the door for.
+        """
         allowed, denied = [], []
         for ref in device_refs:
             (allowed if self.allows(recipient, ref) else denied).append(ref)
-        return {"audience": recipient, "allowed": allowed, "denied": denied,
-                "ok": not denied,
+        return {"audience_kind": fleet_audience.recipient_kind(recipient),
+                "allowed": allowed, "denied": denied, "ok": not denied,
                 "reason": (None if not denied else
-                           f"{len(denied)} 台设备未被授权给 {recipient}")}
+                           f"{len(denied)} 台设备未被授权给该收件人")}
 
 
 def load_audience_policy(document) -> AudiencePolicy:
@@ -692,39 +697,61 @@ def load_audience_policy(document) -> AudiencePolicy:
                 f"an unknown word is refused rather than read as the open one")
         for grant in entry.get("grants") or []:
             parse_audience(grant)
-    return AudiencePolicy(devices=devices, grants=document.get("grants"))
+    approved = document.get("approved_corporate") or []
+    if not isinstance(approved, list):
+        raise AudienceRefused("`approved_corporate` must be a list of recipients")
+    for recipient in approved:
+        parse_audience(recipient)
+    return AudiencePolicy(devices=devices, grants=document.get("grants"),
+                          approved_corporate=approved)
 
 
-def default_policy(*, devices=None) -> AudiencePolicy:
-    """The policy the inventory implies: corporate open, private by grant only."""
+def default_policy(*, devices=None, approved_corporate=None) -> AudiencePolicy:
+    """The policy the inventory implies. NOTHING is approved unless it is named.
+
+    `approved_corporate` has no default of its own, and that is the point: a
+    company channel is an approval somebody MAKES, and a policy that shipped one
+    would be a policy that published to a destination nobody wrote down.
+    """
     entries = {}
     for entry in (devices if devices is not None else expected_devices()):
         entries[entry["device_ref"]] = {
             "visibility": entry.get("visibility") or VISIBILITY_PRIVATE,
             "grants": list(entry.get("grants") or []),
         }
-    return AudiencePolicy(devices=entries)
+    return AudiencePolicy(devices=entries, approved_corporate=approved_corporate)
 
 
 def audience_policy_document(policy: AudiencePolicy) -> dict:
     """The policy as the document `load_audience_policy` reads. Round-trips."""
     return {"schema": AUDIENCE_SCHEMA,
+            "approved_corporate": sorted(policy.approved_corporate),
             "devices": {ref: {"visibility": policy.visibility(ref),
                               "grants": sorted(policy._granted(ref))}
                         for ref in policy.devices}}
 
 
-def authorize_devices(device_refs, *, audience, policy) -> dict:
+def authorize_devices(device_refs, *, audience, policy,
+                      card_signature=None) -> AudienceVerdict:
     """May this audience be shown these devices? The send-side gate.
 
-    The SAME `AudiencePolicy.allows` the model builder uses, called with the
-    device list a card actually carries. Two callers, one rule — a UI that hid a
-    row and a gate that checked a different list would be two rules, and the
-    gate is the one that has to hold when somebody assembles a card by hand.
+    Returns a SIGNED `AudienceVerdict` — the only thing `apply_plan` accepts —
+    carrying the recipient, the device SET (plus its signature) and, when the
+    caller supplies it, the canonical hash of the card being authorized. The
+    SAME `AudiencePolicy.allows` the model builder uses answers here, so a UI
+    that hid a row and a gate that checked a different list cannot disagree.
     """
     if policy is None:
         policy = default_policy()
-    return policy.visible(str(audience), list(device_refs))
+    if not isinstance(policy, AudiencePolicy):
+        policy = load_audience_policy(policy)
+    refs = [str(r) for r in (device_refs or ())]
+    allowed = [r for r in refs if policy.allows(audience, r)]
+    denied = [r for r in refs if r not in allowed]
+    return fleet_audience.issue_verdict(
+        audience=str(audience), device_refs=refs, allowed=allowed, denied=denied,
+        issuer=fleet_audience.ISSUER_POLICY, card_signature=card_signature,
+        reason=(None if not denied else f"{len(denied)} 台设备未被授权给该收件人"))
 
 
 def _as_policy(policy, *, declared=None) -> AudiencePolicy:
@@ -735,7 +762,7 @@ def _as_policy(policy, *, declared=None) -> AudiencePolicy:
     return load_audience_policy(policy)
 
 
-def apply_audience(devices, *, audience, policy=None, declared=None) -> tuple:
+def apply_audience(devices, *, audience=None, policy=None, declared=None) -> tuple:
     """`(visible_devices, withheld_count)` for one audience. The ONE filter.
 
     Both `fleet_model`, which builds a card, and anything else that needs the
@@ -1058,7 +1085,11 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
         sample=sample, refresh_seconds=refresh_seconds,
         stale_after_s=stale_after_s)
     if audience is not None:
-        model["audience"] = {"recipient": str(audience), "withheld": withheld}
+        # The KIND and the count, never the destination. A raw recipient that
+        # reached the model would reach anything that dumps the model, and it is
+        # an unvalidated string we have established nothing about.
+        model["audience"] = {"withheld": withheld,
+                             "kind": fleet_audience.recipient_kind(audience)}
     monitor.validate_model(model)
     return model
 
@@ -1100,7 +1131,11 @@ def model_from_fixture(path=None, *, audience=None, policy=None):
         network=fixture["network"], now=fixture["now"], sample=True,
         stale_after_s=fixture["stale_after_s"])
     if audience is not None:
-        model["audience"] = {"recipient": str(audience), "withheld": withheld}
+        # The KIND and the count, never the destination. A raw recipient that
+        # reached the model would reach anything that dumps the model, and it is
+        # an unvalidated string we have established nothing about.
+        model["audience"] = {"withheld": withheld,
+                             "kind": fleet_audience.recipient_kind(audience)}
     monitor.validate_model(model)
     return model
 

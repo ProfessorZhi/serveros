@@ -1,115 +1,107 @@
-# Fleet 卡：覆盖、观众门、三时段趋势（issue #170 · 承接 PR#181）
+# Fleet 卡：覆盖、观众门、三时段趋势（issue #170 · 承接 PR#181/#218）
 
 本文件记录这一支（`feat/fleet-coverage-audience-gate-20261016`，stacked on PR#181 的
-`4535dca`）做了什么。**只做开发**：不部署、不 enabled 定时器、不发真实飞书、不注册
-个人节点、不改生产。真实私有数据不会进公司群——这条由代码在发送前强制，不是文档承诺。
+`4535dca`）做了什么，以及**第一次交付被审查打回后的修正**。**只做开发**：不部署、
+不 enabled 定时器、不发真实飞书、不注册个人节点、不改生产。
 
-## 0. 纠正的上一版错误：省略 ≠ 覆盖
+## 0. 纠正"省略 ≠ 覆盖"（沿用）
 
-PR#181 的 fixture **故意省掉了 `device:personal-dell`**。那是错的：把一台设备从卡上
-拿掉，和"这台设备不该给人看"是两件事，省掉之后那张卡在"机器掉线"时反而更安静——而
-安静正是它最该出声的时候。本分支改为：
+PR#181 的 fixture 曾故意省掉 `device:personal-dell`。那是错的：把一台设备从卡上拿掉，
+和"这台设备不该给人看"是两件事——省掉之后那张卡在机器掉线时反而更安静。现在：
 
-- **覆盖是声明出来的，不是发现出来的**：`fleet_monitor_source.EXPECTED_DEVICES` 声明
-  要带哪些设备，**每一条都成为卡上的一行**，无论有没有采集结果。没有 provider 的设备
-  以 UNKNOWN 出现，绝不省略、绝不编造数字。
-- **谁看得到，是观众门的事**，不是 UI 的事（见 §2）。
+- **覆盖由 `EXPECTED_DEVICES` 声明**，每条都成卡上一行（无 provider 也成行、UNKNOWN、
+  不编数字）；
+- **谁看得到由观众门决定**。
 
-## 1. 期望设备清单与"从未接入 vs 曾失联"
+清单：`device:tokyo-shared-dev-01`(corporate) / `device:llm-lab-dell`(corporate) /
+`device:personal-dell`(**private，目前无 Fleet provider**) / `device:work-fj`(corporate，可选第四)。
 
-`EXPECTED_DEVICES`（`runtime/fleet_monitor_source.py`）：
+## 1. 从未接入 vs 曾失联
 
-| device_ref | 说明 | visibility | required |
-|---|---|---|---|
-| `device:tokyo-shared-dev-01` | 东京共享开发机 | corporate | 是 |
-| `device:llm-lab-dell` | A6000 推理机 | corporate | 是 |
-| `device:personal-dell` | DellPCOS（个人机，**目前无 Fleet provider**） | private | 是 |
-| `device:work-fj` | FJPCOS 工作站（可选第四台） | corporate | 否 |
+- **从未接入**（`observed_ever=False`）：覆盖缺口 → 表头「尚未接入」、判词
+  **UNCONFIRMED（灰）**，不进"需要关注"；
+- **曾可达现失联**：保持 PR#160 的 **CRITICAL 红**。
 
-个人机目前没有 provider，所以它的行走 **UNKNOWN 且 `observed_ever: False`**——这是
-真话，不是编的。
+## 2. 观众门：默认拒绝 + 签名判决（本次修正的核心）
 
-**两种 UNKNOWN 不是同一件事**，卡上分开表达（`runtime/fleet_monitor_card.py`）：
+### 2.1 第一次错在哪
 
-- **从未接入**（`observed_ever: False`）：覆盖缺口 → 表头「尚未接入」，判词
-  **UNCONFIRMED（灰）**，不进"需要关注"。一台还没有 provider 的机器不该把卡永久变红。
-- **曾可达、现在失联**（`observed_ever` 缺省即 True）：这是 PR#160 既有的发现规则，
-  **保持为 CRITICAL 红**。
+审查指出的两条，都是**门禁被设计成了可选**：
 
-这条区分是必需的：把"没有 provider"也渲染成红色事故，会训练读卡的人忽略真正的那次红。
+1. `open_gate()` 返回 `{"ok": True}`，`apply_plan(..., gate=open_gate())` 配任意
+   transport 就能绕过收件人检查——**一个调用方自己写的布尔，不是"有人检查过"的证据**。
+2. `AudiencePolicy.allows()` 对 `visibility=corporate` 无条件返回 `True`，任何未知
+   user/chat 都拿到公司设备读数——**默认发布给所有人，再由策略说谁不能看**。
 
-## 2. 观众门：device × recipient，默认关闭
+### 2.2 现在的形状
 
-`AudiencePolicy`（`runtime/fleet_monitor_source.py`）：
+**A. 策略默认拒绝（`runtime/fleet_monitor_source.py`）**
 
-- **corporate 设备**：对公司收件人默认可见（它是公司的机器）；
-- **private 设备**：**只有**一条显式的 `device × recipient` 授权指名了**这个**收件人，
-  才可见。`chat:` 群和别的 `user:` 都拿不到。
-- **未在策略里出现的设备 = private 无授权**（关闭方向），所以新加入的设备默认**扣下**，
-  直到有人写明谁可以看，而不是默认**发布**到有人写明谁不能看。
+- corporate 设备只对**显式列在 `approved_corporate` 的收件人**、或**该设备自己的
+  `device×recipient` 授权**可见；其余一律不可见。
+- private 设备**只看自己的授权**，**永不**参考 corporate 名单：被批准看公司机器，
+  对"某人的私人笔记本"不构成任何结论——这条推断必须不存在。
+- 策略里没出现的设备 = private 无授权（关闭方向）。
 
-策略本身是一份 `serveros/fleet-audience.v1` 文档，由 `load_audience_policy` 读入；
-`default_policy` 从清单推出默认策略，`audience_policy_document` 把它写回成文档（可往返）。
+**B. 判决是签名类型，不是布尔（`runtime/fleet_audience.py`，纯模块）**
 
-**门在两处、同一条规则**（`authorize_devices` 是唯一判据）：
+- `AudienceVerdict` 是 frozen dataclass，字段含**收件人**、**设备集合**（及
+  `device_signature`）、`ok/denied`、`issuer`、**canonical card hash**，以及一个用
+  **每进程随机 HMAC 密钥**签出的 `mac`；`__post_init__` 校验签名，**手搓的实例在构造处
+  就被拒**。
+- 唯一构造器 `issue_verdict`；两个生产者：`authorize_devices`（策略判决）与
+  `preview_gate`（本地预览）。
+- 该模块被 `fleet_monitor_source` 与 `fleet_monitor_plan` **以同名单例加载**，所以
+  签出的判决就是发送方 `isinstance` 检查的那个类型。
 
-1. **建模型时**（`fleet_model` / `model_from_fixture` 的 `apply_audience`）：被拒的设备从
-   模型里**移除**——卡上物理上没有这一行，不是把它藏起来。卡上只记一个**被扣下的台数**
-   （`audience.withheld`），**不记名字**，因为在公司卡上写名字本身就是泄漏。
-2. **发送前**（`fleet_monitor_plan.apply_plan`）：**没有 verdict 就拒绝发送**
-   （`GATE_REQUIRED`），verdict 说不行也拒绝（`AUDIENCE_DENIED`）。拒绝时**不触碰
-   transport、不产生任何送达收据**（`receipt` 为 `None`、`remote_id` 为 `None`）。
+**C. 发送前 `apply_plan` 逐项核对（`runtime/fleet_monitor_plan.py`）**
 
-第 2 条是关键：只做隐藏的 UI 是 UI，不是边界；有人手工拼一张带私有设备的卡时，拦住他的
-是发送门。而且"被拒"与"发了但失败"是两种不同的记录——前者**没有回执**，后者才是一条
-投递记录。把前者也记成后者，就抹掉了这个区别。
+按顺序：**类型**（非 `AudienceVerdict` 一律 `VERDICT_UNTRUSTED`，字典/字符串/None 都拒）
+→ **`ok`**（否则 `AUDIENCE_DENIED`）→ **收件人**（判决的 audience 必须等于本次发送的收件人，
+取自参数或 transport 自身，不符 `AUDIENCE_MISMATCH`）→ **设备集合**（调用方声明清单的
+`device_set_signature` 不符则 `DEVICE_MISMATCH`）→ **卡绑定**：真实 transport 必须是
+`policy` 签发（`preview` 一律 `PREVIEW_ONLY`）且 `mac` 绑定的 **canonical card hash
+等于这张卡**（不符 `VERDICT_MISMATCH`）。
 
-## 3. 三时段趋势归档
+于是：**preview 只能用于内存 mock**（`type(transport) is MockTransport`，不是
+`isinstance`——子类覆写 `send` 就是真 transport）；**为别的卡/别的设备清单/别的收件人
+签发的判决都不能用**。所有拒绝都**不触碰 transport、不产生任何送达收据**
+（`receipt`/`remote_id` 为 `None`）：被拒 ≠ 发了但失败。
 
-`TrendArchive`（`runtime/fleet_monitor_source.py`）：按 `(device_ref, label)` 存**带时间戳的、
-已授权的**样本，按三个 daypart 分桶：`morning`(05–12) / `afternoon`(12–18) / `night`(18–05)，
-**按样本自己的偏移**判断（东京的傍晚不是 UTC 的傍晚）。
+`open_gate()` **已删除**（不是改名）：它的语义就是"任何调用方都能花在真实发送上的
+`ok=True`"。
 
-拒收（`TrendSampleRefused`）：没有可解析 `observed_at`、`observed_at` 缺席、
-`attributed is not True`、值不是数字、缺 `device_ref`/`label`、以及携带
-`argv/cmdline/environ/cwd/prompt/token/…` 之一的样本。**不做假数据**：没有时间戳的
-样本不会被安上一个时间。
+### 2.3 不回显收件人
 
-- 主 V13 卡与"人类小时摘要"读**同一份样本、同一个仓**（`device_from_archive`），所以两个
-  面不会对同一个趋势各说各话——第二个仓就是第二个状态权威，那正是禁止的东西。
-- 归档**只记测量**，不决定什么该发；它是 `card_delivery` 账本的**趋势孪生**（同样的
-  单写者 + 整文档写），**没有**账本那种权威。
-- 路径 `trend_archive_path(state_path)` 与送达账本同目录。
+`parse_recipient` 的拒绝句**不再包含收到的原文**（未校验的、可能形似 token 的标识会被
+日志和卡片原样复制，而它正是我们还没对之建立任何结论的东西）；`AudiencePolicy.visible()`
+的拒绝句只给**台数与 kind**；模型的 `audience` 字段只留 `{"withheld": n, "kind": …}`，
+**不含收件人**。
 
-## 4. 复用、不新增
+## 3. 三时段趋势归档（不变）
 
-- 卡片仍是 #160/#181 的 CardKit 2.0 渲染器；`config.update_multi`、`element_id` 契约、
-  390px 预算、`chart` 门**都不变**。
-- 投递仍走 `runtime/message_transport.py`（send/patch）、`runtime/card_delivery.py`
-  （frozen payload、14 天窗口、successor、回执状态）。每 600s 对**同一条** `remote_id`
-  PATCH；超窗 successor；幂等键；失败不记 DELIVERED。
-- **没有**第二个 renderer、队列或状态权威。
+`TrendArchive` 按 `(device,label)` 存**带时间戳、已 attributed** 的样本，按样本自身偏移
+分 `morning/afternoon/night`。**拒收**：无时间戳 / 未 attributed / 非数字 / 缺字段 /
+携带 `argv·environ·cwd·prompt·token` 等私密字段——**不造数据**。主 V13 卡与人类小时摘要
+读**同一份样本**（`device_from_archive`）。没有第二个 renderer/队列/状态权威。
 
-## 5. 明确没做 / 不声称
+## 4. 明确没做 / 不声称
 
-- 不部署、不 enabled timer、不发真实飞书、不注册个人节点（无 owner 目的地授权）。
-- 不向公司群发任何个人数据：由 §2 的门在发送前拦住。
-- `chart` 门仍关闭；`column_set`/手机窄屏真机验收仍未做。
-- 三时段归档是**测量仓**；真机上尚未有真实样本接入（缺 provider 的设备 UNKNOWN 是真话）。
+不部署、不 enabled timer、不发真实飞书、不注册个人节点。`chart` 门仍关闭；
+`column_set`/手机窄屏真机验收仍未做。**没有任何生产 Feishu sender 经过端到端验收**
+（见 PR 描述"未验收"一节）；本分支不运行真实 lark-cli。
 
-## 6. 证据
+## 5. 证据
 
-- `tests/test_fleet_coverage_audience.py`（新，**51 例**）：覆盖（全清单成行、无 provider
-  仍成行、未声明设备被追加不丢）、从未接入=灰 UNCONFIRMED / 曾失联=红、观众策略
-  （corporate 开放 / private 需授权 / 未列出默认关闭 / 文档往返 / 坏词被拒）、
-  发送门（无 verdict 即拒、被拒无收据且不触碰 transport、允许才送达、模型与门同一条规则）、
-  daypart（三时段、按自身偏移、坏时间无 daypart）、趋势归档（拒假样本、拒私密字段、
-  三桶分离、落盘往返、不可读文件不替换）、渲染卡（2.0 + update_multi、390px、element_id、
-  公司卡不含私有设备）、mock 投递（同 id PATCH、未变不重复、超窗 successor、失败不记 DELIVERED）。
-- `runtime/fleet-monitor-card.fixture.json`（新）：公司观众的渲染卡 JSON，可直接读。
-- `tests/test_fleet_monitor_plan.py`（改）：`apply_plan` 现在需要 gate；`MockTransport`
-  对 PATCH 回显被改的消息 id（原实现给 patch 新造 id，等于模拟第二张卡的缺陷）。
-- `tests/test_fleet_monitor_card.py`（改）：fixture 覆盖全清单（4 台），个人机 UNKNOWN 行。
+- `tests/test_fleet_coverage_audience.py`：覆盖 / 从未接入=灰 vs 曾失联=红 / 策略
+  （**默认拒绝**、未批准 chat 拒、未知收件人拒、grant 精确、corporate 不反推 private、
+  文档往返、坏词拒）/ **门禁负例**（字典 OK 拒、字符串/None/对象拒、手搓 verdict 在构造处
+  拒、preview 对真 transport 拒、别的收件人拒、别的卡拒、别的设备集合拒、无卡绑定拒、
+  未批准收件人拒、私人设备对公司群拒）/ 允许的发送带收据 / **不回显收件人** / daypart /
+  趋势归档 / 渲染卡 / mock PATCH 同 id·超窗 successor·失败不记 DELIVERED。
+- `runtime/fleet-monitor-card.fixture.json`：公司观众的渲染卡 JSON。
+- `tests/test_fleet_monitor_plan.py`：`preview_gate`；无 authorization → `VERDICT_UNTRUSTED`。
+- `tests/test_fleet_monitor_card.py`：fixture 覆盖全清单（4 台），个人机 UNKNOWN 行。
 
-运行方式见 `memory/serveros-pytest-invocation-rule`；本机资源受限时用有界 scope
-（MemoryMax 1G / Swap 0 / CPU 25% / Tasks 64 + timeout）。
+运行方式见 `memory/serveros-pytest-invocation-rule`；本机共享压力下用有界 scope
+（MemoryMax 1G / SwapMax 0 / CPUQuota 25% / TasksMax 64 + timeout）。

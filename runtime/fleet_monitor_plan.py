@@ -41,6 +41,19 @@ verdict: the enforcement lives at the one place a send starts from, not in a
 renderer that hid a row. A refusal touches no transport and produces no receipt,
 which is what keeps «we declined to send this» distinct from «we sent it and it
 failed» — the second is a delivery record and the first must not be one.
+
+AND THE VERDICT IS A SIGNED TYPE, NOT A BOOLEAN
+-----------------------------------------------
+The first version accepted a plain `{"ok": True}` dictionary, which made this
+whole section a suggestion: any caller could mint the word «yes», hand it in
+beside a real transport, and put a private machine's row in a company channel.
+So `apply_plan` now requires an `AudienceVerdict` — a typed, HMAC-signed
+instance from `runtime/fleet_audience.py` — and checks it against the send it is
+about to make: the RECIPIENT it was issued for, the DEVICE SET it covers, and
+(for a real transport) the CANONICAL HASH OF THIS CARD. A verdict for another
+recipient, another device list, or another card is refused, and a `preview`
+verdict — the local-render one — is accepted only for the in-memory mock.
+Nothing a caller merely writes can stand in for a decision somebody made.
 """
 from __future__ import annotations
 
@@ -65,6 +78,12 @@ def _load(name: str, path: Path):
 
 
 card_delivery = _load("serveros_runtime_card_delivery", _HERE / "card_delivery.py")
+# The signed verdict and its preview form. Loaded under the SAME name
+# `fleet_monitor_source` uses, so a verdict issued there is this module's type
+# and `isinstance` answers True about it — one file under two names is two
+# classes, the hazard the tree's other loaders document.
+fleet_audience = _load("serveros_fleet_audience", _HERE / "fleet_audience.py")
+preview_gate = fleet_audience.preview_gate
 
 CARD_KEY = "fleet-monitor"
 NORMAL_REFRESH_S = 600
@@ -91,6 +110,18 @@ REFUSED = "REFUSED"
 #: No audience verdict was established, so there is no answer to «may this
 #: recipient be shown these devices». A send is refused rather than assumed.
 GATE_REQUIRED = "GATE_REQUIRED"
+#: What was handed in is not a signed `AudienceVerdict`. A boolean a caller
+#: writes — `{"ok": True}` and friends — is not evidence that anybody checked.
+VERDICT_UNTRUSTED = "VERDICT_UNTRUSTED"
+#: The verdict is real but is about something else: a different card, or a
+#: device set other than the one the card carries.
+VERDICT_MISMATCH = "VERDICT_MISMATCH"
+#: A `preview` verdict — the local-render one — was offered to a real transport.
+PREVIEW_ONLY = "PREVIEW_ONLY"
+#: The verdict names a different recipient than the one being sent to.
+AUDIENCE_MISMATCH = "AUDIENCE_MISMATCH"
+#: The device set the caller declares is not the one the verdict was issued over.
+DEVICE_MISMATCH = "DEVICE_MISMATCH"
 #: The audience verdict said no. The device list the card carries is not this
 #: recipient's to see.
 AUDIENCE_DENIED = "AUDIENCE_DENIED"
@@ -223,20 +254,8 @@ class MockTransport:
                 "remote_id": f"{self.prefix}{len(self.calls):04d}"}
 
 
-def open_gate(device_refs=(), *, audience=None) -> dict:
-    """An explicit «no restriction» verdict, said out loud rather than omitted.
-
-    The shape `apply_plan` expects, for the case where the caller genuinely has
-    no audience rule (a local preview, a fixture). It is a value a caller has to
-    WRITE, which is the point: `apply_plan` refuses a send with no gate, so
-    "nobody checked" is never the default and can never be mistaken for
-    "everybody is allowed".
-    """
-    return {"ok": True, "audience": audience, "allowed": list(device_refs),
-            "denied": [], "reason": None}
-
-
-def apply_plan(plan, card, *, at, transport=None, gate=None) -> dict:
+def apply_plan(plan, card, *, at, transport=None, authorization=None,
+               recipient=None, device_refs=None) -> dict:
     """Carry out a plan against a transport, defaulting to the mock.
 
     The ONLY place a send could happen. With the default transport it cannot:
@@ -245,36 +264,83 @@ def apply_plan(plan, card, *, at, transport=None, gate=None) -> dict:
     message id the send produced — but filing it is the ledger owner's job and
     not this module's.
 
-    THE GATE IS CHECKED HERE, BEFORE THE TRANSPORT, and a send without one is
-    refused. `gate` is a verdict from `fleet_monitor_source.authorize_devices`
-    (or `open_gate` for an explicit «no restriction»): the module that KNOWS who
-    may see which device answers, and this one — the only place a send starts
-    from — refuses to act without that answer. Two things follow, and both are
-    the reason this is a gate and not a UI:
+    THE AUTHORIZATION IS CHECKED HERE, BEFORE THE TRANSPORT, and it must be a
+    signed `AudienceVerdict` — never a dictionary and never a bare `ok`. The
+    checks, in the order they are made, and each one a thing the earlier version
+    did NOT do:
 
-      * a denied send does not reach the transport at all, so a private device's
-        row cannot leave this machine because somebody assembled a card by hand;
-      * a refusal carries NO RECEIPT (`receipt` is `None`, `remote_id` is
-        `None`), so nothing downstream can file a delivery for a card that was
-        never sent. «Refused» and «attempted and failed» are different rows, and
-        a refusal that produced a receipt would erase the difference.
+      0. the type: a dict, a string, or anything hand-written is refused. A
+         boolean a caller writes is not evidence that anybody checked;
+      1. the answer: `ok` must be True, and a denial names how many devices;
+      2. the RECIPIENT: the verdict must name the recipient being sent to (read
+         from `recipient`, or from the transport's own `recipient` when it has
+         one), so a verdict for one destination cannot be spent on another;
+      3. the DEVICE SET: when the caller declares the card's device list, its
+         canonical signature must be the one the verdict was issued over;
+      4. the CARD, for a real transport: the verdict's canonical card hash must
+         be this card's, and its issuer must be `policy`. A `preview` verdict —
+         for local rendering — is accepted ONLY by the in-memory mock, so the
+         old `open_gate()` «ok for everything» can no longer authorize a real
+         send; it was removed rather than renamed.
+
+    Every refusal returns NO RECEIPT (`receipt`/`remote_id` are `None`) and
+    touches no transport, which keeps «we declined to send this» distinct from
+    «we sent it and it failed» — the second is a delivery record, the first must
+    not be one.
     """
     transport = transport if transport is not None else MockTransport()
+    # Exact type, not `isinstance`: a subclass that overrides `send` is a real
+    # transport wearing the mock's name, and must face the real checks.
+    real = type(transport) is not MockTransport
     if not plan["send"]:
         return {"state": "NOOP", "action": plan["action"], "reason": plan["reason"],
                 "version": plan["version"], "remote_id": None, "at": at,
                 "receipt": None, "denied": []}
-    if gate is None:
-        return _refused(plan, at, GATE_REQUIRED,
-                        "没有 audience 判决就发送：这台（或这群）收件人是否该看到这张卡上"
-                        "列出的设备无从判断。发送被拒，没有触碰 transport，也没有产生任何"
-                        "送达收据——「没检查过」不能默认成「谁都可以看」")
-    if not gate.get("ok", False):
-        denied = list(gate.get("denied") or [])
+
+    if not isinstance(authorization, fleet_audience.AudienceVerdict):
+        return _refused(plan, at, VERDICT_UNTRUSTED,
+                        "发送前必须给出一份由 authorize_devices 签发的 AudienceVerdict；"
+                        "收到的不是这个类型。用自己写的 ok=True 字典来满足门禁，等于把"
+                        "门禁变成建议——一台私有设备的读数会因此进到公司频道，这正是它"
+                        "必须是一个签名类型而不是一个布尔的原因")
+    if not authorization.ok:
         return _refused(plan, at, AUDIENCE_DENIED,
-                        f"收件人 {gate.get('audience')!r} 未被授权看到 {len(denied)} 台"
-                        f"设备中的读数。发送被拒，没有触碰 transport，也没有产生任何送达"
-                        f"收据", denied=denied)
+                        f"该收件人未被授权看到 {len(authorization.denied)} 台设备中的读数。"
+                        f"发送被拒，没有触碰 transport，也没有产生任何送达收据",
+                        denied=authorization.denied)
+
+    target = str(recipient) if recipient is not None else None
+    if target is None:
+        transport_recipient = getattr(transport, "recipient", None)
+        target = str(transport_recipient) if transport_recipient is not None else None
+    if target is not None and str(authorization.audience) != target:
+        return _refused(plan, at, AUDIENCE_MISMATCH,
+                        "这份判决是为另一个收件人签发的：判决与本次发送的收件人不是同一个，"
+                        "拒绝发送")
+
+    if device_refs is not None and (
+            fleet_audience.device_set_signature(device_refs)
+            != authorization.device_signature):
+        return _refused(plan, at, DEVICE_MISMATCH,
+                        "调用方声明的设备清单与判决签发时的设备清单不一致：拒绝发送")
+
+    card_signature = freeze(card)["payload_hash"]
+    if real:
+        if authorization.issuer != fleet_audience.ISSUER_POLICY:
+            return _refused(plan, at, PREVIEW_ONLY,
+                            "preview 判决只能用于本地 mock 预览，不能用于真实 transport："
+                            "预览没有对任何收件人做授权，把它当许可就是没有授权")
+        if authorization.card_signature != card_signature:
+            return _refused(plan, at, VERDICT_MISMATCH,
+                            "判决的 canonical card hash 与要发送的这张卡不一致：一份为别的"
+                            "卡（或别的设备清单）签发的判决不能用来发这一张——否则把私有"
+                            "设备行加回卡上就绕过了判决")
+    elif authorization.card_signature is not None \
+            and authorization.card_signature != card_signature:
+        # Even against the mock, a policy verdict must be about THIS card.
+        return _refused(plan, at, VERDICT_MISMATCH,
+                        "判决绑定的卡与本次发送的卡不是同一张：拒绝")
+
     result = transport.send(card=card, action=plan["action"],
                             version=plan["version"],
                             remote_id=plan.get("remote_id"))
