@@ -128,6 +128,25 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertIn('UNIT_NAME = "serveros-fleet-mcp.service"', shared)
         self.assertIn('UNIT_TEMPLATE = "fleet_mcp/deploy/serveros-fleet-mcp.service"', shared)
 
+    def test_effective_cgroup_limits_are_checked_on_actual_service(self):
+        class FakeMod:
+            def systemctl(self, *args, **kw):
+                return type("Result", (), {"returncode": 0, "stdout": (
+                    "MemoryMax=1610612736\nMemorySwapMax=0\nTasksMax=96\n"
+                    "CPUQuotaPerSecUSec=400ms\n")})()
+        self.assertEqual(next_install._effective_limit_errors(FakeMod()), [])
+
+    def test_missing_live_swap_cap_is_not_reported_as_healthy(self):
+        class FakeMod:
+            def systemctl(self, *args, **kw):
+                return type("Result", (), {"returncode": 0, "stdout": (
+                    "MemoryMax=1610612736\nMemorySwapMax=infinity\nTasksMax=96\n"
+                    "CPUQuotaPerSecUSec=infinity\n")})()
+        failures = next_install._effective_limit_errors(FakeMod())
+        self.assertTrue(any("MemorySwapMax" in f for f in failures))
+        self.assertTrue(any("CPUQuotaPerSecUSec" in f for f in failures))
+
+
 
 if __name__ == "__main__":
     unittest.main()
