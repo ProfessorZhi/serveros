@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--owner-approved", action="store_true")
     p.add_argument("--health-timeout", type=float, default=20.0)
     args = p.parse_args(argv)
+    effect_started = False
     if args.health_timeout <= 0 or args.health_timeout > 60:
         p.error("--health-timeout must be within (0, 60]")
     try:
@@ -291,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         # The wrapper does not grant OAuth, register a plugin or change V1.
         root = Path(nxt["runtime_root"])
         prior = (mod.read_link(root / "current"), mod.read_link(root / "previous"))
+        effect_started = True  # no longer a dry-run, even if the install fails
         try:
             result = mod.main(args_list)
         except SystemExit as exc:
@@ -310,8 +312,17 @@ def main(argv: list[str] | None = None) -> int:
                                         "V1 /health unavailable after Next launch")
         return result
     except Refused as exc:
-        print(json.dumps({"decision": "BLOCKED", "reason": str(exc),
-                          "writes": [], "executes": []}, sort_keys=True))
+        # Never report writes=[] after attempting an install/restart and
+        # perhaps a Next-only rollback. The outcome may be partial/unknown.
+        print(json.dumps({
+            "decision": "BLOCKED",
+            "reason": str(exc),
+            "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_started
+                             else "NO_SYSTEM_ACTION_STARTED"),
+            "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_started else []),
+            "executes": ([UNIT] if effect_started else []),
+            "v1_action": False,
+        }, sort_keys=True))
         return 2
 
 
