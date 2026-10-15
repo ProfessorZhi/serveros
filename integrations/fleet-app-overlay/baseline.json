@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "The identity an overlay may NOT move. `build_overlay.py` refuses a source",
+    "that changes any pinned field, because changing one of these is a different",
+    "plugin wearing this one's release slot, not an update to it.",
+    "",
+    "A null means NOT PINNED — we do not know the value, and a guess written",
+    "here would be a check that passes for the wrong reason. Fill a null in from",
+    "the plugin you actually own before relying on it.",
+    "",
+    "`version` is the floor: an overlay must advance on it. It is set to 0.0.0",
+    "because the current released version has not been read back from the",
+    "Creator here; set it to the release you are updating FROM before the first",
+    "real build, or an overlay that repeats the live version would be accepted.",
+    "",
+    "The plugin id is an IDENTIFIER the operator supplied for this offline",
+    "contract. It is not a credential, and nothing here creates, updates,",
+    "rolls back or uninstalls a plugin."
+  ],
+  "plugin_id": "plugin_asdk_app_6ace0c9c0dfc81918ed5f0fac18182b6",
+  "displayName": "ServerOS Fleet",
+  "compatDisplayName": "ServerOS Fleet",
+  "apps": "./.app.json",
+  "name": null,
+  "version": "0.0.0"
+}

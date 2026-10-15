@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "serveros-fleet",
+  "version": "0.1.1",
+  "description": "SYNTHETIC FIXTURE \u2014 not a real plugin, not a real app binding.",
+  "extensions": {
+    "com.openai": {
+      "displayName": "ServerOS Fleet",
+      "shortDescription": "Fleet overlay fixture",
+      "composerIcon": "./assets/composerIcon.png",
+      "logo": "./assets/logo.png",
+      "apps": "./.app.json"
+    }
+  }
+}
