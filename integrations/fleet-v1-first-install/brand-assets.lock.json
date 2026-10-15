@@ -23,5 +23,6 @@
       "note": "the documented rule is 'Icons and logos must be square and at least 48 by 48 pixels' — it names logos explicitly, so the same requirement as the composer avatar. An earlier revision allowed a non-square logo on the reasoning that 'a logo is often a wordmark'; that was a preference wearing a rule's clothes, and the approved asset is 1024x1024, so the allowance bought nothing and would have accepted a shape the portal refuses. A wordmark that cannot be square needs a different flow, not a weaker check."
     }
   ],
-  "on_absent_or_mismatched": "MISSING_BRAND_ASSET"
+  "on_absent": "MISSING_BRAND_ASSET",
+  "on_mismatched": "BRAND_ASSET_MISMATCH"
 }
