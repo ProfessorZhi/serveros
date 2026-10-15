@@ -39,6 +39,35 @@ A connected device whose every observation is `UNAVAILABLE` is a normal result.
 Established identity and healthy readings are different questions, and the
 source contract separates them deliberately.
 
+## Two things a refusal must reach, or it is only a note
+
+**The closed discriminators are gates, not annotations.** `schema`, `mode` and
+`platform` are each checked against a closed set (`MODES = {observe-only}`,
+`PLATFORMS = {linux, windows}`), and a failure forces `NOT_CONNECTED`
+regardless of how well everything else matched. This matters because the other
+way is invisible: a document carrying a foreign schema, a matching device, a
+matching principal and a fresh stamp previously produced `CONNECTED` with the
+source's own `live` accepted — the refusal was recorded and the verdict ignored
+it. A refusal that does not reach the verdict is a note, not a gate.
+
+**No untrusted string rides out through the metadata.** `source.schema`,
+`source.mode`, `source.platform`, `device.declared` and `principal.declared`
+each carry either a *recognised constant* or the *trusted value they were
+compared against* — never the document's own text. On a mismatch the field is
+`null` and the state says `MISMATCH`; the claimed string would add nothing an
+operator needs and everything a smuggler wants. The same rule reaches the
+refusals: an unknown member's NAME is not written into `where`, because
+`{"<canary>": 1}` would otherwise smuggle its key out through the very record
+saying the key was dropped. Dropped members are counted, not named.
+
+One echo remains, and it is the source contract's own decision rather than a
+gap here: `storage.readonly` rows carry a `role`, the contract's single
+free-text field, admitted only when it matches `[A-Za-z0-9_-]{1,32}`. That
+bound excludes separators, so it cannot carry a path or an argv fragment — but
+it does admit a 32-character token-shaped string. Constraining it further would
+mean inventing a role vocabulary the contract does not define, so it is recorded
+here as an open question for whoever first wires a real provider.
+
 ## Where each question is verified — the layer that owns it
 
 | question | verified by | this module's part |

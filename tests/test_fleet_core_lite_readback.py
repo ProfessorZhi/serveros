@@ -83,19 +83,33 @@ class IdentityIsTakenFromTheRouteAndNotTheDocumentTest(unittest.TestCase):
         """Device spoof: the summary keeps the route's device, not the claim."""
         summary = read(doc(node="device:llm-lab-dell"))
         self.assertEqual(summary["device_ref"], DEVICE)
-        self.assertEqual(summary["device"]["declared"], "device:llm-lab-dell")
         self.assertEqual(summary["device"]["state"], "MISMATCH")
         self.assertEqual(summary["connected"], "NOT_CONNECTED")
         self.assertIn("DEVICE_MISMATCH", refusals(summary))
         # ...and the readings it carried do NOT become this device's.
         self.assertEqual(summary["live"]["accepted"], False)
 
+    def test_a_spoofed_device_name_is_not_echoed_at_all(self):
+        """`MISMATCH` is the report; the claimed string is not carried out.
+
+        The state says a mismatch happened, which is everything an operator
+        needs. Echoing the claim as well would make the summary a channel the
+        document writes into.
+        """
+        summary = read(doc(node="canary-device-DEADBEEF"))
+        self.assertIsNone(summary["device"]["declared"])
+        self.assertNotIn("canary-device-DEADBEEF", repr(summary))
+
     def test_a_document_naming_another_principal_is_refused(self):
         summary = read(doc(principal="fjd"))
-        self.assertEqual(summary["principal"]["declared"], "fjd")
         self.assertEqual(summary["principal"]["state"], "MISMATCH")
         self.assertEqual(summary["connected"], "NOT_CONNECTED")
         self.assertIn("PRINCIPAL_MISMATCH", refusals(summary))
+
+    def test_a_spoofed_principal_name_is_not_echoed_at_all(self):
+        summary = read(doc(principal="canary-principal-DEADBEEF"))
+        self.assertIsNone(summary["principal"]["declared"])
+        self.assertNotIn("canary-principal-DEADBEEF", repr(summary))
 
     def test_an_absent_binding_account_is_unknown_and_never_matched(self):
         """No owner truth on the Fleet side means no verdict, not a pass."""
@@ -401,6 +415,152 @@ class NothingUntrustedRidesOutTest(unittest.TestCase):
                 summary = read(value)
                 self.assertEqual(summary["connected"], "UNKNOWN")
                 self.assertEqual(summary["live"]["accepted"], False)
+
+
+class TheClosedDiscriminatorsFailTheWholeReadbackClosedTest(unittest.TestCase):
+    """A refusal that does not reach the verdict is a note, not a gate.
+
+    Each case below is otherwise PERFECT: a verified route, a device and
+    principal that match, a fresh stamp, and `live: true`. Only the one
+    discriminator is wrong — which is exactly the shape that used to come back
+    `CONNECTED` with the source's own `live` accepted.
+    """
+
+    def test_a_foreign_schema_on_a_perfect_route_is_never_connected(self):
+        summary = read(doc(schema="serveros/other-thing.v9"))
+        self.assertNotEqual(summary["connected"], "CONNECTED")
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["live"]["accepted"])
+        self.assertIn("UNKNOWN_SCHEMA", refusals(summary))
+
+    def test_an_acting_mode_on_a_perfect_route_is_never_connected(self):
+        """V1 has no acting mode; a document claiming one is not this reading."""
+        summary = read(doc(mode="observe-and-act"))
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["live"]["accepted"])
+        self.assertIn("UNKNOWN_MODE", refusals(summary))
+
+    def test_a_missing_mode_is_refused(self):
+        summary = read(doc(mode=None))
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["live"]["accepted"])
+
+    def test_an_unrecognised_platform_is_refused(self):
+        summary = read(doc(platform="plan9"))
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["live"]["accepted"])
+        self.assertIn("UNKNOWN_PLATFORM", refusals(summary))
+
+    def test_the_recognised_values_are_the_only_ones_that_pass(self):
+        """Both halves, so the closed sets are gates rather than decorations."""
+        for schema in (rb.SOURCE_SCHEMA,):
+            for mode in sorted(rb.MODES):
+                for platform in sorted(rb.PLATFORMS):
+                    with self.subTest(schema=schema, mode=mode, platform=platform):
+                        summary = read(doc(schema=schema, mode=mode,
+                                           platform=platform))
+                        self.assertEqual(summary["connected"], "CONNECTED")
+                        self.assertTrue(summary["live"]["accepted"])
+        self.assertEqual(rb.MODES, {"observe-only"})
+        self.assertEqual(rb.PLATFORMS, {"linux", "windows"})
+
+
+class NoUntrustedStringRidesOutThroughTheMetadataTest(unittest.TestCase):
+    """Five metadata fields, five distinct canaries, zero leakage.
+
+    Every one of these used to be echoed verbatim, so a document could park a
+    token, a credential path or an argv fragment in `platform` and have it ride
+    out through the summary while the value projector closed the observations.
+    """
+
+    CANARIES = {
+        "schema": "canary-schema-AAAAAAAA",
+        "mode": "canary-mode-BBBBBBBB",
+        "platform": "canary-platform-CCCCCCCC",
+        "node": "canary-device-DDDDDDDD",
+        "principal": "canary-principal-EEEEEEEE",
+    }
+
+    def test_not_one_canary_survives_into_the_summary(self):
+        summary = read(doc(
+            schema=self.CANARIES["schema"],
+            mode=self.CANARIES["mode"],
+            platform=self.CANARIES["platform"],
+            node=self.CANARIES["node"],
+            principal=self.CANARIES["principal"],
+        ))
+        rendered = repr(summary)
+        for field, canary in self.CANARIES.items():
+            with self.subTest(field=field):
+                self.assertNotIn(canary, rendered)
+        # And each is reported as an unrecognised/mismatched thing instead.
+        self.assertIsNone(summary["source"]["schema"])
+        self.assertIsNone(summary["source"]["mode"])
+        self.assertIsNone(summary["source"]["platform"])
+        self.assertIsNone(summary["device"]["declared"])
+        self.assertIsNone(summary["principal"]["declared"])
+        self.assertEqual(summary["device"]["state"], "MISMATCH")
+        self.assertEqual(summary["principal"]["state"], "MISMATCH")
+        self.assertEqual(summary["connected"], "NOT_CONNECTED")
+        self.assertFalse(summary["live"]["accepted"])
+
+    def test_a_canary_in_an_unknown_member_name_is_not_echoed(self):
+        """The refusal's `where` is part of the summary too.
+
+        `{"<canary>": 1}` would otherwise smuggle its own KEY out through the
+        very record saying the key was dropped.
+        """
+        document = doc()
+        document["canary-toplevel-FFFFFFFF"] = 1
+        document["observations"][0]["value"]["canary-valuekey-GGGGGGGG"] = 1
+        document["observations"][0]["canary-rowkey-HHHHHHHH"] = 1
+        summary = read(document)
+        rendered = repr(summary)
+        for canary in ("canary-toplevel-FFFFFFFF", "canary-valuekey-GGGGGGGG",
+                       "canary-rowkey-HHHHHHHH"):
+            with self.subTest(canary=canary):
+                self.assertNotIn(canary, rendered)
+        self.assertIn("UNKNOWN_FIELD", refusals(summary))
+
+    def test_a_canary_in_a_storage_row_key_is_not_echoed(self):
+        summary = read(doc(observations=[
+            {"name": "storage.readonly", "state": "PRESENT",
+             "value": {"rows": [{"role": "root", "total_bytes": 1,
+                                 "canary-rowkey-IIIIIIII": 1}]}}]))
+        self.assertNotIn("canary-rowkey-IIIIIIII", repr(summary))
+
+    def test_an_unknown_observation_name_is_not_echoed(self):
+        summary = read(doc(observations=[
+            {"name": "canary-obsname-JJJJJJJJ", "state": "PRESENT"}]))
+        self.assertNotIn("canary-obsname-JJJJJJJJ", repr(summary))
+
+    def test_a_canary_in_a_reason_is_not_echoed(self):
+        summary = read(doc(observations=[
+            {"name": "swap", "state": "UNAVAILABLE",
+             "reason": "canary-reason-KKKKKKKK"}]))
+        self.assertNotIn("canary-reason-KKKKKKKK", repr(summary))
+        self.assertEqual(summary["observations"]["swap"]["reason"], "NO_SOURCE")
+
+    def test_a_canary_in_a_device_identity_basis_is_not_echoed(self):
+        document = doc()
+        document["device_identity"] = {"state": "MATCHED",
+                                       "basis": "canary-basis-LLLLLLLL"}
+        document["principal_identity"] = {"state": "MATCHED",
+                                          "basis": "canary-basis-MMMMMMMM"}
+        summary = read(document)
+        self.assertNotIn("canary-basis-LLLLLLLL", repr(summary))
+        self.assertNotIn("canary-basis-MMMMMMMM", repr(summary))
+        self.assertIsNone(summary["source"]["declared_device_basis"])
+        self.assertIsNone(summary["principal"]["basis"])
+
+    def test_the_recognised_values_are_what_gets_carried_out(self):
+        """Not nothing: the point is that only recognised values come through."""
+        summary = read(doc())
+        self.assertEqual(summary["source"]["schema"], rb.SOURCE_SCHEMA)
+        self.assertEqual(summary["source"]["mode"], "observe-only")
+        self.assertEqual(summary["source"]["platform"], "linux")
+        self.assertEqual(summary["device"]["declared"], DEVICE)
+        self.assertEqual(summary["principal"]["declared"], ACCOUNT)
 
 
 class TheReaderStaysPureTest(unittest.TestCase):

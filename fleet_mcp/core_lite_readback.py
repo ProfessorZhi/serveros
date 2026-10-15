@@ -56,6 +56,20 @@ from typing import Any
 READBACK_SCHEMA = "serveros/fleet-core-lite-readback.v1"
 SOURCE_SCHEMA = "serveros/core-lite-status.v1"
 
+#: Closed sets for the three document-level discriminators. Each is a value the
+#: reader must RECOGNISE rather than a string it may pass along: a summary that
+#: echoes whatever `mode` a document declared has handed an untrusted string a
+#: seat in Fleet's own output, which is the same channel the value projector
+#: exists to close.
+MODES = frozenset({"observe-only"})
+PLATFORMS = frozenset({"linux", "windows"})
+
+#: What is written in a refusal's `where` when the offending member's own NAME
+#: came from the document. The name is not echoed: a refusal is part of the
+#: public summary, and `{"<canary>": 1}` would otherwise smuggle its key out
+#: through the very record that says the key was dropped.
+UNNAMED = "<unnamed>"
+
 #: Closed, and copied from the source contract rather than invented. An
 #: unrecognised reason is reported as NO_SOURCE — "the adapter was asked and had
 #: nothing usable" — which is true of a reason nobody can interpret.
@@ -256,9 +270,13 @@ def normalize_observations(
             continue
         seen.add(name)
 
-        for extra in sorted(set(row) - _OBSERVATION_MEMBERS):
-            sink.append(Refusal("UNKNOWN_FIELD", f"{where}.{extra}",
-                                "not a member this reader carries"))
+        dropped = len(set(row) - _OBSERVATION_MEMBERS)
+        if dropped:
+            # Counted, never named: the names are the document's, and this
+            # record is part of a summary another surface displays.
+            sink.append(Refusal("UNKNOWN_FIELD", where,
+                                f"{dropped} member(s) this reader does not "
+                                f"carry were dropped"))
 
         state = row.get("state")
         if state not in OBSERVATION_STATES:
@@ -291,10 +309,13 @@ def normalize_observations(
         kept: dict[str, Any] = {}
         for key in sorted(value):
             if key not in allowed:
-                sink.append(Refusal("UNKNOWN_FIELD", f"{where}.value.{key}",
-                                    "not a key this reader carries"))
                 continue
             kept[key] = value[key]
+        dropped = len(set(value) - allowed)
+        if dropped:
+            sink.append(Refusal("UNKNOWN_FIELD", f"{where}.value",
+                                f"{dropped} key(s) this reader does not carry "
+                                f"were dropped"))
 
         if name == "storage.readonly":
             kept, detail = _normalize_storage(kept, where, sink)
@@ -357,19 +378,24 @@ def _normalize_storage(
             return None, "a storage row has no admissible role"
         entry: dict[str, Any] = {"role": role}
         numerics = 0
+        unknown = 0
         for key in sorted(row):
             if key == "role":
                 continue
             if key not in STORAGE_ROW_KEYS:
-                sink.append(Refusal("UNKNOWN_FIELD", f"{spot}.{key}",
-                                    "not a key this reader carries"))
+                unknown += 1
                 continue
             if not _bytes_ok(row[key]):
+                # The key here is one this reader names, so it may be said.
                 sink.append(Refusal("MALFORMED_VALUE", f"{spot}.{key}",
                                     "not a non-negative integer"))
                 return None, "a storage row carries a malformed byte count"
             entry[key] = row[key]
             numerics += 1
+        if unknown:
+            sink.append(Refusal("UNKNOWN_FIELD", spot,
+                                f"{unknown} key(s) this reader does not carry "
+                                f"were dropped"))
         if not numerics:
             sink.append(Refusal("MALFORMED_VALUE", spot,
                                 "row carries no byte counts"))
@@ -424,14 +450,35 @@ def readback(
                                  "not a JSON object").as_dict()],
         }
 
-    for extra in sorted(set(document) - _DOCUMENT_MEMBERS):
-        refusals.append(Refusal("UNKNOWN_FIELD", extra,
-                                "not a member this reader carries"))
+    dropped = len(set(document) - _DOCUMENT_MEMBERS)
+    if dropped:
+        refusals.append(Refusal("UNKNOWN_FIELD", "document",
+                                f"{dropped} member(s) this reader does not "
+                                f"carry were dropped"))
 
+    # --- the three closed discriminators. Each must be RECOGNISED, and a
+    # failure here fails the whole readback closed: a payload that is not the
+    # document this reader reads, or that declares a mode V1 does not have, is
+    # not this device's reading, whatever else it got right.
     source_schema = document.get("schema")
-    if source_schema != SOURCE_SCHEMA:
+    schema_ok = source_schema == SOURCE_SCHEMA
+    if not schema_ok:
         refusals.append(Refusal("UNKNOWN_SCHEMA", "schema",
                                 "not the source contract this reader reads"))
+
+    source_mode = document.get("mode")
+    mode_ok = isinstance(source_mode, str) and source_mode in MODES
+    if not mode_ok:
+        # V1 has no acting mode, and a reader that had to infer whether the
+        # Core is willing to act would infer wrong.
+        refusals.append(Refusal("UNKNOWN_MODE", "mode",
+                                "not a mode this reader recognises"))
+
+    source_platform = document.get("platform")
+    platform_ok = isinstance(source_platform, str) and source_platform in PLATFORMS
+    if not platform_ok:
+        refusals.append(Refusal("UNKNOWN_PLATFORM", "platform",
+                                "not a platform this reader recognises"))
 
     # --- device: the document may declare one; only the route establishes it.
     declared_node = document.get("node")
@@ -498,9 +545,16 @@ def readback(
     # --- the verdict. Identity is the ONLY thing that can raise it, and the
     # document contributes nothing to it: a device reference cannot be attested
     # in V1, so the adapter's route report is the whole of the evidence.
-    if device_state == "MISMATCH" or principal_state == "MISMATCH":
+    #
+    # The schema/mode/platform gates are checked here rather than left as
+    # refusals alone. A refusal that does not reach the verdict is a note, not a
+    # gate: a document could carry a foreign schema, match every string, and
+    # still be published as CONNECTED with the source's own `live` accepted.
+    if not verified_route:
         connected = "NOT_CONNECTED"
-    elif not verified_route:
+    elif not (schema_ok and mode_ok and platform_ok):
+        connected = "NOT_CONNECTED"
+    elif device_state == "MISMATCH" or principal_state == "MISMATCH":
         connected = "NOT_CONNECTED"
     elif device_state != "MATCHED" or principal_state != "MATCHED":
         connected = "UNKNOWN"
@@ -511,13 +565,13 @@ def readback(
 
     claimed_live = document.get("live")
     claimed_live = claimed_live if isinstance(claimed_live, bool) else False
-    if connected != "CONNECTED":
+    if connected == "NOT_CONNECTED":
         accepted = False
-        why = {
-            "NOT_CONNECTED": "no verified route, or the document disagrees "
-                             "with the route this reader holds",
-            "UNKNOWN": "the identity or the time could not be established",
-        }[connected]
+        why = ("no verified route, or the document is not one this reader may "
+               "report as this device's reading")
+    elif connected == "UNKNOWN":
+        accepted = False
+        why = "the identity or the time could not be established"
     elif not claimed_live:
         # The source is entitled to withhold `live`; accepting it is not this
         # reader's to do, but neither is overriding it upwards.
@@ -533,17 +587,27 @@ def readback(
     return {
         "schema": READBACK_SCHEMA,
         "device_ref": expected_device_ref,
+        # Every free-text member below is either a RECOGNISED constant or the
+        # trusted value it was compared against. None of them echoes a string
+        # the document chose: a token, a path or an argv fragment parked in
+        # `platform` would otherwise ride out through the metadata while the
+        # value projector was busy closing the observations.
         "source": {
-            "schema": source_schema if isinstance(source_schema, str) else None,
+            "schema": SOURCE_SCHEMA if schema_ok else None,
             "verified_route": bool(verified_route),
             "received_at": received_at.isoformat(),
-            "mode": document.get("mode") if isinstance(document.get("mode"), str) else None,
-            "platform": (document.get("platform")
-                         if isinstance(document.get("platform"), str) else None),
+            "mode": source_mode if mode_ok else None,
+            "platform": source_platform if platform_ok else None,
             "declared_device_basis": declared_basis,
         },
-        "device": {"declared": declared_node, "state": device_state},
-        "principal": {"declared": declared_principal, "expected": binding_account,
+        # `declared` carries the TRUSTED value when the two agreed, and null
+        # when they did not. The state already says a mismatch happened; the
+        # claimed string would add nothing an operator needs and everything a
+        # smuggler wants.
+        "device": {"declared": expected_device_ref if device_state == "MATCHED" else None,
+                   "state": device_state},
+        "principal": {"declared": binding_account if principal_state == "MATCHED" else None,
+                      "expected": binding_account,
                       "state": principal_state,
                       "basis": _principal_basis(document)},
         "connected": connected,
