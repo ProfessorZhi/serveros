@@ -1,0 +1,36 @@
+{
+  "schema": "serveros/fleet-next-tailscale-ingress.v1",
+  "existing": {
+    "node_name": "EXISTING_NODE_NAME",
+    "state_dir": "/var/lib/tailscale",
+    "socket": "/run/tailscale/tailscaled.sock",
+    "service_unit": "tailscaled.service",
+    "funnel_target_port": 8401
+  },
+  "next": {
+    "node_name": "EXISTING_NODE_NAME-next",
+    "state_dir": "/home/EXAMPLE/.local/state/fleet-next-tailscale",
+    "socket": "/home/EXAMPLE/.local/state/fleet-next-tailscale/tailscaled.sock",
+    "service_unit": "fleet-next-tailscaled.service",
+    "tailnet_host": "fleet-next-example.ts.net",
+    "funnel_target_port": 3411,
+    "local_listen": {"host": "127.0.0.1", "port": 3411},
+    "issuer": "https://fleet-next-example.ts.net"
+  },
+  "routes": {
+    "health": "/health",
+    "mcp": "/mcp",
+    "oauth_protected_resource": "/.well-known/oauth-protected-resource",
+    "oauth_authorization_server": "/.well-known/oauth-authorization-server",
+    "feishu_callback": "/oauth/feishu/callback"
+  },
+  "state": {
+    "staged": false,
+    "node_registered": false,
+    "owner_login_attested": false,
+    "https_live": false,
+    "mcp_live": false,
+    "feishu_authenticated": false,
+    "chatgpt_installed": false
+  }
+}
