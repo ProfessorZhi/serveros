@@ -1,0 +1,139 @@
+{
+  "_comment": [
+    "A positive control for fleet_mcp.release_evidence, not a real receipt.",
+    "Every receipt_ref below is a placeholder path: this file proves the GATE",
+    "accepts a well-formed manifest, and proves nothing about any machine.",
+    "The two runtimes are deliberately different shapes -- the Claude runtime",
+    "exercises every provider-gated operation, and the Codex runtime declares",
+    "three of them UNSUPPORTED with their own capability receipts, which the",
+    "gate accepts only because they are promised nowhere. See",
+    "docs/fleet-next-evidence-gate.md."
+  ],
+  "schema": "serveros/fleet-next-release-evidence/v1",
+  "identity": {
+    "v1_plugin_id": "plugins-fleet-v1-7c1a9",
+    "next_plugin_id": "plugins-fleet-next-2b90e",
+    "next_release_id": "release-candidate-20261015-1",
+    "next_backend_sha": "5c9f1ab34d",
+    "v1_mcp_url": "https://fleet-v1.example.invalid/mcp",
+    "next_mcp_url": "https://fleet-next.example.invalid/mcp"
+  },
+  "tool_surface": {
+    "observed_tools": [
+      "fleet_list_devices", "fleet_status", "fleet_list_sessions", "fleet_read_session",
+      "fleet_send_session", "fleet_create_session", "fleet_interrupt_session",
+      "fleet_resume_session", "fleet_get_run",
+      "cloudcli_session_list", "cloudcli_session_read", "cloudcli_session_send",
+      "cloudcli_session_create", "cloudcli_session_interrupt", "cloudcli_session_resume",
+      "cloudcli_session_get", "cloudcli_session_close", "cloudcli_session_reconfigure",
+      "cloudcli_session_approval", "cloudcli_run_get", "cloudcli_run_list",
+      "cloudcli_project_list", "cloudcli_project_get", "cloudcli_project_create",
+      "cloudcli_agent_list", "cloudcli_agent_get", "cloudcli_agent_start",
+      "cloudcli_agent_stop", "cloudcli_agent_status", "cloudcli_model_list",
+      "cloudcli_health", "fleet_discover", "fleet_capabilities"
+    ],
+    "authorized_scopes": [
+      "fleet:read", "fleet:send", "fleet:create",
+      "fleet:control", "fleet:approve", "fleet:navigate"
+    ]
+  },
+  "checks": {
+    "full_regression": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/full_regression"},
+    "next_service_cgroup_readback": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/next_service_cgroup_readback"},
+    "v1_health_before": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/v1_health_before"},
+    "v1_health_after": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/v1_health_after"},
+    "next_health": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/next_health"},
+    "next_only_rollback": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/next_only_rollback"},
+    "public_https": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/public_https"},
+    "oauth_discovery": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/oauth_discovery"},
+    "oauth_dcr_pkce": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/oauth_dcr_pkce"},
+    "feishu_login": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/feishu_login"},
+    "oauth_refresh": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/oauth_refresh"},
+    "oauth_revocation": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/oauth_revocation"},
+    "scope_grants_and_refusals": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/scope_grants_and_refusals"},
+    "all_tools_discovered_and_exercised": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/all_tools_discovered_and_exercised"},
+    "mcp_skills_first_install": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/mcp_skills_first_install"},
+    "approved_avatar_rendered": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/approved_avatar_rendered"},
+    "same_plugin_id_zip_update": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/same_plugin_id_zip_update"},
+    "backend_upgrade_without_plugin_reinstall": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/backend_upgrade_without_plugin_reinstall"},
+    "psi_and_resource_caps": {"result": "PASS", "provenance": "LIVE", "receipt_ref": "evidence/checks/psi_and_resource_caps"}
+  },
+  "required_runtimes": [
+    {
+      "device": "device:tokyo-llm-lab",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "claude-vince-main",
+      "family": "claude",
+      "credential_instance": "cc-vince-primary",
+      "kind": "cloudcli-deepseek",
+      "projects": ["proj-lab-notes"]
+    },
+    {
+      "device": "device:tokyo-llm-lab",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "codex-vince-main",
+      "family": "codex",
+      "credential_instance": "codex-vince-native",
+      "kind": "codex",
+      "projects": ["proj-lab-notes"]
+    }
+  ],
+  "observed_runtimes": [
+    {
+      "device": "device:tokyo-llm-lab",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "claude-vince-main",
+      "family": "claude",
+      "credential_instance": "cc-vince-primary",
+      "kind": "cloudcli-deepseek",
+      "owner_verified": true,
+      "auth_isolated": true,
+      "reachable": true,
+      "provenance": "LIVE",
+      "receipt_ref": "evidence/runtime/claude-vince-main",
+      "effective_model": "deepseek-v4-flash-vision-anthropic",
+      "effective_permission_mode": "bypassPermissions",
+      "projects": ["proj-lab-notes"],
+      "lifecycle": {
+        "list": "PASS", "read": "PASS", "create": "PASS", "send": "PASS",
+        "get_run": "PASS", "interrupt": "PASS", "resume": "PASS",
+        "recover_after_disconnect": "PASS",
+        "approval": "PASS", "reconfigure": "PASS", "close": "PASS"
+      }
+    },
+    {
+      "device": "device:tokyo-llm-lab",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "codex-vince-main",
+      "family": "codex",
+      "credential_instance": "codex-vince-native",
+      "kind": "codex",
+      "owner_verified": true,
+      "auth_isolated": true,
+      "reachable": true,
+      "provenance": "LIVE",
+      "receipt_ref": "evidence/runtime/codex-vince-main",
+      "effective_model": "codex-native-owner-verified",
+      "effective_permission_mode": "workspace-write",
+      "provider": "codex-native",
+      "provider_verified": true,
+      "provider_receipt_ref": "evidence/provider/codex-vince-native",
+      "projects": ["proj-lab-notes"],
+      "lifecycle": {
+        "list": "PASS", "read": "PASS", "create": "PASS", "send": "PASS",
+        "get_run": "PASS", "interrupt": "PASS", "resume": "PASS",
+        "recover_after_disconnect": "PASS",
+        "approval": "UNSUPPORTED", "reconfigure": "UNSUPPORTED", "close": "UNSUPPORTED"
+      },
+      "capability_unsupported": {
+        "approval": "evidence/capability/codex-approval-absent",
+        "reconfigure": "evidence/capability/codex-reconfigure-absent",
+        "close": "evidence/capability/codex-close-absent"
+      }
+    }
+  ]
+}
