@@ -612,6 +612,246 @@ class NoUntrustedStringRidesOutThroughTheMetadataTest(unittest.TestCase):
         self.assertEqual(summary["principal"]["declared"], ACCOUNT)
 
 
+
+class TheRealServicesShapeIsReadTest(unittest.TestCase):
+    """The service rows `native/node-core` PR #217 actually emits.
+
+    Transcribed from `core-lite/src/service_readings.cpp` (the row builder and
+    the state table) rather than from prose. Until #217 landed a real producer,
+    this reader declared `services` with an empty value map — so a genuine
+    service reading came back PRESENT with an EMPTY value: success-shaped, and
+    silently empty. That is the failure these tests exist to keep visible.
+    """
+
+    #: The producer's own `kServiceStates` minus `UNKNOWN`, which it refuses
+    #: rather than publishes, plus the row-level `UNAVAILABLE` marker.
+    STATES = ("ACTIVE", "INACTIVE", "FAILED", "ACTIVATING", "DEACTIVATING",
+              "NOT_INSTALLED", "UNAVAILABLE")
+
+    ROWS = [
+        {"id": "fleet-node", "unit": "serveros-fleet-node.service",
+         "state": "ACTIVE", "sub_state": "running",
+         "observed_at": "2026-10-16T01:00:00+00:00", "age_seconds": 3,
+         "source": "systemd-user"},
+        {"id": "other-node", "unit": "serveros-other-node.service",
+         "state": "INACTIVE", "sub_state": "dead", "age_seconds": 900,
+         "source": "systemd-user"},
+        {"id": "not-there", "unit": "serveros-absent.service",
+         "state": "NOT_INSTALLED", "source": "systemd-user"},
+    ]
+
+    def document(self, rows=None, **over) -> dict:
+        document = doc()
+        document["observations"] = [
+            {"name": "services", "state": "PRESENT", "completeness": "COMPLETE",
+             "source": "nodecore/NodeResourceSnapshot v1",
+             "value": {"services": rows if rows is not None else self.ROWS}},
+        ]
+        document.update(over)
+        return document
+
+    def services(self, document) -> dict:
+        return read(document)["observations"]["services"]
+
+    def test_a_real_services_value_is_read_and_not_dropped(self):
+        row = self.services(self.document())
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["completeness"], "COMPLETE")
+        self.assertEqual([r["id"] for r in row["value"]["services"]],
+                         ["fleet-node", "other-node", "not-there"])
+        self.assertEqual(row["value"]["services"][0]["unit"],
+                         "serveros-fleet-node.service")
+
+    def test_every_state_word_survives_exactly(self):
+        rows = []
+        for i, word in enumerate(self.STATES):
+            row = {"id": f"s{i}", "unit": f"unit-{i}.service", "state": word}
+            if word == "UNAVAILABLE":
+                # The producer's marker always carries the closed reason with it.
+                row["reason"] = "NO_SOURCE"
+            rows.append(row)
+        row = self.services(self.document(rows))
+        self.assertEqual([r["state"] for r in row["value"]["services"]],
+                         list(self.STATES))
+
+    def test_not_installed_is_not_inactive(self):
+        """The distinction the producer added a word for."""
+        rows = [{"id": "a", "unit": "a.service", "state": "NOT_INSTALLED"},
+                {"id": "b", "unit": "b.service", "state": "INACTIVE"}]
+        got = self.services(self.document(rows))["value"]["services"]
+        self.assertEqual(got[0]["state"], "NOT_INSTALLED")
+        self.assertEqual(got[1]["state"], "INACTIVE")
+        self.assertNotEqual(got[0]["state"], got[1]["state"])
+
+    def test_the_unknown_state_word_the_producer_refuses_is_refused(self):
+        """`UNKNOWN` is in the producer's table and never in its output."""
+        rows = [{"id": "a", "unit": "a.service", "state": "UNKNOWN"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_a_missing_state_is_refused(self):
+        rows = [{"id": "a", "unit": "a.service"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_an_inline_unreadable_row_makes_the_reading_partial(self):
+        """One service readable and another not is exactly the PARTIAL case."""
+        rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                 "observed_at": "2026-10-16T01:00:00+00:00", "age_seconds": 1,
+                 "source": "systemd-user"},
+                {"id": "b", "unit": "b.service", "state": "UNAVAILABLE",
+                 "reason": "NO_SOURCE"}]
+        row = self.services(self.document(rows))
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self.assertEqual(row["value"]["services"][1],
+                         {"id": "b", "unit": "b.service", "state": "UNAVAILABLE",
+                          "reason": "NO_SOURCE"})
+        # The unreadable row carries nothing else — no stamp for a reading that
+        # was never taken.
+        self.assertNotIn("age_seconds", row["value"]["services"][1])
+
+    def test_a_claim_of_complete_over_a_partial_list_is_not_believed(self):
+        rows = [{"id": "a", "unit": "a.service", "state": "UNAVAILABLE",
+                 "reason": "NO_SOURCE"}]
+        document = self.document(rows)
+        row = self.services(document)
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self.assertIn("COMPLETENESS_MISMATCH", refusals(read(document)))
+
+    def test_an_unreadable_row_must_carry_a_closed_reason(self):
+        rows = [{"id": "a", "unit": "a.service", "state": "UNAVAILABLE"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+        rows = [{"id": "a", "unit": "a.service", "state": "UNAVAILABLE",
+                 "reason": "because the sky is blue"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_an_empty_list_is_a_reading_and_means_this_account_runs_none(self):
+        """Distinct from the observation being absent, and from UNAVAILABLE."""
+        row = self.services(self.document([]))
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["completeness"], "COMPLETE")
+        self.assertEqual(row["value"], {"services": []})
+
+    def test_the_observation_level_unavailable_is_not_an_empty_list(self):
+        """Declared, and none of it is this account's — a different answer."""
+        document = doc(observations=[
+            {"name": "services", "state": "UNAVAILABLE",
+             "reason": "IDENTITY_UNKNOWN"}])
+        row = self.services(document)
+        self.assertEqual(row["state"], "UNAVAILABLE")
+        self.assertEqual(row["reason"], "IDENTITY_UNKNOWN")
+        self.assertNotIn("value", row)
+        self.assertNotEqual(row.get("value"), {"services": []})
+
+    def test_a_cross_account_service_list_that_reads_as_unavailable(self):
+        document = doc(observations=[
+            {"name": "services", "state": "UNAVAILABLE", "reason": "NO_SOURCE"}])
+        row = self.services(document)
+        self.assertEqual(row["reason"], "NO_SOURCE")
+        self.assertNotEqual(row["state"], "PRESENT")
+
+    def test_a_duplicated_service_id_is_refused(self):
+        """Two rows with one id is one of them unreachable."""
+        rows = [{"id": "same", "unit": "a.service", "state": "ACTIVE"},
+                {"id": "same", "unit": "b.service", "state": "INACTIVE"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_a_malicious_id_is_refused(self):
+        for bad in ("../../etc/passwd", "a b", "a\u0000b", "a/b", "-x" * 40,
+                    "id;rm -rf /", ""):
+            with self.subTest(bad=bad):
+                rows = [{"id": bad, "unit": "a.service", "state": "ACTIVE"}]
+                self.assertEqual(self.services(self.document(rows))["state"],
+                                 "UNAVAILABLE")
+
+    def test_a_malicious_unit_is_refused(self):
+        for bad in ("../../etc/passwd", "/bin/sh.service", "a.service-evil",
+                    "a b.service", "a;b.service", "a.service ",
+                    "x" * 130 + ".service", ".service", "a..b.service",
+                    "a.service\u0000"):
+            with self.subTest(bad=bad):
+                rows = [{"id": "a", "unit": bad, "state": "ACTIVE"}]
+                self.assertEqual(self.services(self.document(rows))["state"],
+                                 "UNAVAILABLE")
+
+    def test_the_accepted_unit_shape_is_the_producers_own_rule(self):
+        for good in ("a.service", "serveros-fleet-node.service",
+                     "a@b.service", "a_b-c.d:e.service"):
+            with self.subTest(good=good):
+                rows = [{"id": "a", "unit": good, "state": "ACTIVE"}]
+                self.assertEqual(self.services(self.document(rows))["state"],
+                                 "PRESENT")
+
+    def test_sub_state_is_not_carried(self):
+        """It is `SubState=` copied out of `systemctl show` — free text."""
+        row = self.services(self.document())["value"]["services"][0]
+        self.assertNotIn("sub_state", row)
+        self.assertEqual(sorted(row), ["age_seconds", "id", "observed_at",
+                                       "source", "state", "unit"])
+
+    def test_an_unknown_source_word_is_refused(self):
+        rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                 "source": "/usr/bin/systemctl"}]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_age_seconds_must_be_a_non_negative_integer(self):
+        for bad in (-1, 1.5, True, "3", None):
+            with self.subTest(bad=bad):
+                rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                         "age_seconds": bad}]
+                row = self.services(self.document(rows))
+                if bad is None:
+                    self.assertEqual(row["state"], "PRESENT")
+                else:
+                    self.assertEqual(row["state"], "UNAVAILABLE")
+
+    def test_observed_at_must_be_an_absolute_timestamp(self):
+        for bad in ("2026-10-16T01:00:00", "yesterday", "", 12345):
+            with self.subTest(bad=bad):
+                rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                         "observed_at": bad}]
+                self.assertEqual(self.services(self.document(rows))["state"],
+                                 "UNAVAILABLE")
+
+    def test_too_many_rows_makes_the_reading_unavailable(self):
+        rows = [{"id": f"s{i}", "unit": f"u{i}.service", "state": "ACTIVE"}
+                for i in range(rb.MAX_SERVICE_ROWS + 1)]
+        self.assertEqual(self.services(self.document(rows))["state"], "UNAVAILABLE")
+
+    def test_the_row_bound_is_the_one_the_producer_uses(self):
+        self.assertEqual(rb.MAX_SERVICE_ROWS, 64)
+        rows = [{"id": f"s{i}", "unit": f"u{i}.service", "state": "ACTIVE"}
+                for i in range(rb.MAX_SERVICE_ROWS)]
+        self.assertEqual(self.services(self.document(rows))["state"], "PRESENT")
+
+    def test_extra_fields_on_a_row_are_dropped_without_leaking(self):
+        canary = "canary-service-77777777"
+        rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                 canary: 1, "token": canary, "argv": [canary, "--auth-key", canary]}]
+        summary = read(self.document(rows))
+        text = repr(summary)
+        self.assertNotIn(canary, text)
+        self.assertNotIn("--auth-key", text)
+        self.assertIn("UNKNOWN_FIELD", refusals(summary))
+        self.assertEqual(summary["observations"]["services"]["state"], "PRESENT")
+
+    def test_a_canary_in_sub_state_is_not_carried(self):
+        canary = "canary-substate-88888888"
+        rows = [{"id": "a", "unit": "a.service", "state": "ACTIVE",
+                 "sub_state": canary}]
+        summary = read(self.document(rows))
+        self.assertNotIn(canary, repr(summary))
+        self.assertEqual(summary["observations"]["services"]["state"], "PRESENT")
+
+    def test_a_service_reading_does_not_raise_the_observation_ceiling(self):
+        """A stale sample does not become a connected device."""
+        stale = self.document(rows=self.ROWS, observed_at=stamp(-3600))
+        summary = read(stale)
+        self.assertEqual(summary["connected"], "UNKNOWN")
+        self.assertEqual(summary["observations"]["services"]["state"], "PRESENT")
+        unverified = read(self.document(), verified_route=False)
+        self.assertEqual(unverified["connected"], "NOT_CONNECTED")
+
+
 class TheReaderStaysPureTest(unittest.TestCase):
     def test_no_source_is_wired_means_unknown_and_not_healthy(self):
         summary = rb.unconnected_summary(expected_device_ref=DEVICE,

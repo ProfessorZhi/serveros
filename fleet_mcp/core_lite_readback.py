@@ -111,10 +111,48 @@ OBSERVATION_VALUE_KEYS: dict[str, dict[str, str]] = {
     "psi.memory": {"some": "psi_line", "full": "psi_line"},
     "psi.io": {"some": "psi_line", "full": "psi_line"},
     "storage.readonly": {"filesystems": "fs_block", "disk_io": "disk_block"},
-    "services": {},
+    # The native adapter answers `services` with one object holding a list of
+    # rows. Leaving this map empty — which this reader did until PR #217 landed
+    # a real producer — made a genuine service reading look like PRESENT with an
+    # empty value: success-shaped, and silently empty.
+    "services": {"services": "service_rows"},
     "connector": {},
     "gpu.readonly": {},
 }
+
+#: The words one service row's `state` may hold. Closed, and copied from the
+#: native adapter's own `kServiceStates` with `UNKNOWN` deliberately EXCLUDED:
+#: that adapter refuses `UNKNOWN` rather than publishing it ("a measured reading
+#: never carries this word"), so a document carrying one is not its output.
+#: `NOT_INSTALLED` is here and is NOT a synonym for `INACTIVE`: a unit name
+#: systemd cannot find is a different fact from a unit that is present and
+#: stopped, and collapsing them reports an installed-but-stopped service for a
+#: service that is not installed at all.
+SERVICE_ROW_STATES = frozenset({
+    "ACTIVE", "INACTIVE", "FAILED", "ACTIVATING", "DEACTIVATING",
+    "NOT_INSTALLED", "UNAVAILABLE",
+})
+
+#: What a service row may carry. An unreadable row is the producer's in-place
+#: marker (`state: UNAVAILABLE` + `reason`) and carries NOTHING else — no
+#: `observed_at` for a reading that was never taken.
+SERVICE_ROW_KEYS = frozenset({"id", "unit", "state", "reason", "observed_at",
+                              "age_seconds", "source"})
+
+#: Fields the native producer emits that this reader deliberately does NOT carry.
+#: `sub_state` is `SubState=` copied verbatim out of `systemctl show` — free text
+#: this reader has no closed vocabulary for, so it is dropped rather than
+#: bounded-and-hoped. Named here so dropping it is a decision on the page rather
+#: than a gap someone finds later.
+SERVICE_UNPROJECTED_KEYS = frozenset({"sub_state"})
+
+#: The only `source` the native adapter writes. A closed set of one: a document
+#: claiming another source is not that producer's output.
+SERVICE_SOURCES = frozenset({"systemd-user"})
+
+#: Rows per observation, matching the bound the native adapter applies to every
+#: other block it projects.
+MAX_SERVICE_ROWS = 64
 
 #: The three PSI windows. All three keys are always written by the producer; one
 #: that is unreadable is an explicit marker in place, never an omitted key.
@@ -275,6 +313,110 @@ def _scalar(kind: str, node: Any) -> tuple[str, Any]:
     return _BAD, None
 
 
+def _unit_id_ok(unit: Any) -> bool:
+    """The supervisor's `valid_unit_id`, restated rather than invented.
+
+    Length 9..128, ends in `.service`, no `..`, first character alphanumeric,
+    every character alphanumeric or one of `_ . @ : -`. That set is what makes a
+    path, a traversal and a shell metacharacter unrepresentable, which is the
+    property the producer's reader relies on — so this is the same rule, not a
+    second and more permissive one.
+    """
+    if not isinstance(unit, str) or not 9 <= len(unit) <= 128:
+        return False
+    if not unit.endswith(".service") or ".." in unit:
+        return False
+    if not (unit[0].isascii() and unit[0].isalnum()):
+        return False
+    return all(c.isascii() and (c.isalnum() or c in "_.@:-") for c in unit)
+
+
+def _service_id_ok(value: Any) -> bool:
+    """A service id: the same character class as a unit stem, bounded.
+
+    The producer's profile reader does not shape-check `id` at all, so this is
+    the one place a service name could carry something else. Bounding it to the
+    characters a unit may already use keeps it from being a second, looser
+    allowance for arbitrary text.
+    """
+    return (isinstance(value, str) and 1 <= len(value) <= 64
+            and all(c.isascii() and (c.isalnum() or c in "_.@:-") for c in value))
+
+
+def _service_rows(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any]:
+    """`services`: one list of rows, all-or-nothing like every other block.
+
+    A row this reader cannot validate is not a row it may skip — the producer's
+    own rule for its tables is that one unusable row makes the whole aggregate
+    unusable, "because silently skipping it would report a machine with fewer
+    filesystems than it has". A service list is the same claim about a machine.
+    """
+    unknown = set(value) - {"services"}
+    if unknown:
+        sink.append(Refusal("UNKNOWN_FIELD", "services.value",
+                            f"{len(unknown)} key(s) this reader does not carry "
+                            f"were dropped"))
+    rows = value.get("services")
+    if not isinstance(rows, list) or len(rows) > MAX_SERVICE_ROWS:
+        return _BAD, None
+
+    clean: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    measured = 0
+    all_measured = True
+    for row in rows:
+        if not isinstance(row, dict):
+            return _BAD, None
+        dropped = len(set(row) - SERVICE_ROW_KEYS - SERVICE_UNPROJECTED_KEYS)
+        if dropped:
+            sink.append(Refusal("UNKNOWN_FIELD", "services.value.row",
+                                f"{dropped} key(s) this reader does not carry "
+                                f"were dropped"))
+        ident, unit, state = row.get("id"), row.get("unit"), row.get("state")
+        if not _service_id_ok(ident) or not _unit_id_ok(unit):
+            return _BAD, None
+        if state not in SERVICE_ROW_STATES:
+            return _BAD, None
+        # A duplicated id is a document disagreeing with itself about which
+        # service is which, and the producer's own reader refuses it for the
+        # same reason: two rows with one id is one of them unreachable.
+        if ident in seen:
+            return _BAD, None
+        seen.add(ident)
+
+        entry: dict[str, Any] = {"id": ident, "unit": unit, "state": state}
+        if state == "UNAVAILABLE":
+            reason = row.get("reason")
+            if reason not in REASONS:
+                return _BAD, None
+            entry["reason"] = reason
+            all_measured = False
+            clean.append(entry)
+            continue
+
+        measured += 1
+        age = row.get("age_seconds")
+        if age is not None:
+            # A bool is an int in Python and an age of `True` is not an age.
+            if not _bytes_ok(age):
+                return _BAD, None
+            entry["age_seconds"] = age
+        stamp = row.get("observed_at")
+        if stamp is not None:
+            # Only an absolute timestamp; a zoneless one is a local convention,
+            # and carrying it would invite a reader to place it somewhere.
+            if _as_iso(stamp) is None:
+                return _BAD, None
+            entry["observed_at"] = stamp
+        source = row.get("source")
+        if source is not None:
+            if source not in SERVICE_SOURCES:
+                return _BAD, None
+            entry["source"] = source
+        clean.append(entry)
+    return _OK, (clean, all_measured)
+
+
 def _reason_of(node: dict[str, Any]) -> str:
     """The closed reason for an in-place marker, or NO_SOURCE.
 
@@ -430,6 +572,16 @@ def _project_value(name: str, value: dict[str, Any], sink: list[Refusal]
         # all-or-nothing and never carries an in-place marker, so a storage
         # reading is COMPLETE whenever it exists at all.
         return state, projected, True
+
+    if name == "services":
+        state, payload = _service_rows(value, sink)
+        if state != _OK:
+            # An empty list is a READING — "this account runs no services" — and
+            # is deliberately not the same answer as a list this reader could
+            # not validate, which is no reading at all.
+            return _BAD, None, False
+        rows, all_measured = payload
+        return _OK, {"services": rows}, all_measured
 
     out: dict[str, Any] = {}
     measured = 0
@@ -849,6 +1001,11 @@ __all__ = [
     "FILESYSTEM_ROW_KEYS",
     "DISK_ROW_KEYS",
     "INLINE_UNAVAILABLE_OBSERVATIONS",
+    "SERVICE_ROW_STATES",
+    "SERVICE_ROW_KEYS",
+    "SERVICE_UNPROJECTED_KEYS",
+    "SERVICE_SOURCES",
+    "MAX_SERVICE_ROWS",
     "COMPLETENESS_WORDS",
     "K_BYTES",
     "K_RATE",

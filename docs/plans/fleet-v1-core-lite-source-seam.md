@@ -93,6 +93,60 @@ input, so its types are checked rather than coerced:
 The summary is **built**, never copied, so a `CoreLiteRoute` subclass carrying
 extra attributes cannot ride along; a test asserts exactly that.
 
+## The reader's `services` projection (producer contract #217)
+
+`native/node-core` PR #217 added a real `services` observation, and this
+reader's map declared it with an **empty value shape**. The result was the worst
+kind of failure: a genuine service reading came back `PRESENT` with an empty
+`value` — success-shaped, and silently empty. Nothing failed; the data was just
+gone.
+
+Aligned to `core-lite/src/service_readings.cpp` rather than to prose:
+
+```json
+{"services": [{"id": "fleet-node", "unit": "serveros-fleet-node.service",
+               "state": "NOT_INSTALLED", "sub_state": "dead",
+               "observed_at": "...", "age_seconds": 0, "source": "systemd-user"}]}
+```
+
+**What is carried.** `id` (bounded to the same character class a unit stem may
+use, ≤64), `unit` (the supervisor's own `valid_unit_id` rule restated — length
+9..128, ends `.service`, no `..`, first character alphanumeric, characters
+alphanumeric or `_ . @ : -`), `state`, and optionally `observed_at` (must be an
+absolute timestamp), `age_seconds` (a non-negative integer — a bool is not one)
+and `source`.
+
+**`state` is closed**, and `NOT_INSTALLED` is in it. It is **not** a synonym for
+`INACTIVE`: a unit name systemd cannot find is a different fact from a unit that
+is present and stopped, and collapsing them reports an installed-but-stopped
+service for one that is not installed at all. `UNKNOWN` is deliberately
+*excluded*: it is in the producer's own state table and its projection refuses
+it, so a document carrying one is not that producer's output.
+
+**What is dropped, and why.** `sub_state` is `SubState=` copied verbatim out of
+`systemctl show` — free text with no closed vocabulary this reader can verify,
+so it is dropped rather than bounded-and-hoped. `source` is carried only when it
+is `systemd-user`, the single value the adapter writes.
+
+**An empty list is a reading.** `{"services": []}` with `COMPLETE` means this
+account runs none, and is deliberately distinct from the observation being
+`UNAVAILABLE` (`IDENTITY_UNKNOWN` when services are declared but none belongs to
+this account, `NO_SOURCE` when every declared service was unreadable). The three
+must not render the same way.
+
+**`PARTIAL` follows the producer's own rule**: at least one row is an in-place
+`{"state": "UNAVAILABLE", "reason": ...}` marker. Such a row carries nothing
+else — no stamp for a reading that was never taken — and a claimed `COMPLETE`
+over a list containing one is not believed.
+
+**A duplicated `id` fails the whole reading**, as does any row this reader
+cannot validate: the producer's own rule for its tables is that one unusable row
+makes the whole aggregate unusable, because skipping it would report a machine
+with fewer services than it has.
+
+The same 64-row bound applies, and the whole block is projected — a token, path,
+argv or cookie in an extension field is counted and dropped, never carried.
+
 ## What a source must never be
 
 The protocol takes one argument — the device the caller already has a route to —
