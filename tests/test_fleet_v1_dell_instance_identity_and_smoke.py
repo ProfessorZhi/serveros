@@ -49,63 +49,66 @@ OTHER_REF = f"{DEVICE}|{OTHER_RUNTIME}|{UUID}"
 PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9._-]{0,31}$")
 
 
-#: A characterisation of a CURRENT GAP is not a release invariant, and the
-#: difference has to be enforced rather than described. These three assert that
-#: something is ABSENT — no instance field on a binding, no way to tell a
-#: restart from its predecessor, a key with exactly one separator. Left green
-#: they read as "this is how it should be", and the moment Lane B gives one OS
-#: UID its several credential profiles, the correct change turns them red and
-#: the cheapest way back to green is to keep the gap.
-#:
-#: So they are skipped with this reason instead of deleted: the measurements
-#: stay readable, they stop counting toward a release, and the rewrite they are
-#: waiting for is named. When B lands, each becomes a POSITIVE test — two
-#: profiles under one UID get two distinct stable tags, a restart is
-#: distinguishable from its predecessor, and a stale binding is refused — and
-#: the skip comes off in the same change that makes it pass.
-CONTRACT_PENDING_REWRITE = (
-    "CONTRACT_PENDING_REWRITE: describes a gap, not an invariant. Lane B "
-    "introduces an independent, stable runtime selector per credential profile "
-    "under one OS UID, plus an instance/incarnation kept OUT of the session ref "
-    "(`device|<tag>|<native id>` stays three segments). Rewrite each of these as "
-    "positive behaviour once that lands; do not restore the gap to make them "
-    "green."
-)
+class TheBindingNamesAnAccountAndAnInstanceTest(unittest.TestCase):
+    """MIGRATED FROM A GAP CHARACTERISATION — the skip came off in the change
+    that made it pass, which is what its own note said would happen.
 
+    It used to be `TheBindingNamesAnAccountAndNotAnInstanceTest`, skipped under
+    `CONTRACT_PENDING_REWRITE`, asserting that a binding had NO instance field
+    and that two successive instances of one account were indistinguishable.
+    Both were measurements of a gap, and both are now false: Lane B added
+    `account`, `profile` and `instance_id` to the binding.
 
-@unittest.skip(CONTRACT_PENDING_REWRITE)
-class TheBindingNamesAnAccountAndNotAnInstanceTest(unittest.TestCase):
-    """OBSERVED GAP — the input to the binding advice in the readiness doc.
-
-    Skipped, not removed. See `CONTRACT_PENDING_REWRITE` for why a green here
-    would be worse than a skip.
+    Rewritten rather than deleted, and rewritten POSITIVELY. Keeping the old
+    assertions as invariants would have made the correct change fail, and the
+    cheapest way back to green would have been to restore the gap.
     """
 
-    def test_a_binding_has_no_persisted_instance_field(self):
-        fields = {f.name for f in dataclasses.fields(ProviderBinding)}
-        for absent in ("instance_id", "runtime_instance", "instance",
-                       "generation", "boot_id", "started_at"):
-            with self.subTest(field=absent):
-                self.assertNotIn(absent, fields)
+    def _binding(self, **kw) -> ProviderBinding:
+        base = dict(device_ref=DEVICE, kind="fleet-node",
+                    endpoint="http://127.0.0.1:7302",
+                    credential_anchor=Path("/nonexistent/secret"),
+                    runtime=OTHER_RUNTIME)
+        base.update(kw)
+        return ProviderBinding(**base)
 
-    def test_two_successive_instances_of_one_account_are_indistinguishable(self):
-        """The gap stated as a measurement: build the same binding twice, as a
-        restart would, and there is nothing in the result that differs."""
-        with tempfile.TemporaryDirectory() as d:
-            tmp = Path(d)
-            anchor = tmp / "fjd.node-secret"
-            anchor.write_text("same-secret", encoding="utf-8")
-            make = lambda: ProviderBinding(              # noqa: E731
-                device_ref=DEVICE, kind="fleet-node",
-                endpoint="http://127.0.0.1:7302", credential_anchor=anchor,
-                runtime=OTHER_RUNTIME)
-            self.assertEqual(make(), make())
-            self.assertEqual(provider_key(make().device_ref, make().runtime),
-                             provider_key(DEVICE, OTHER_RUNTIME))
+    def test_a_binding_can_declare_its_account_profile_and_incarnation(self):
+        binding = self._binding(account="fjd", profile="marketops",
+                                instance_id="prov-2")
+        self.assertEqual(binding.account, "fjd")
+        self.assertEqual(binding.profile, "marketops")
+        self.assertEqual(binding.instance_id, "prov-2")
 
-    def test_the_binding_key_carries_the_device_and_the_account_only(self):
-        self.assertEqual(provider_key(DEVICE, OTHER_RUNTIME), OTHER_REF.rsplit("|", 1)[0])
-        self.assertEqual(provider_key(DEVICE, OTHER_RUNTIME).count("|"), 1)
+    def test_the_fields_are_present_on_the_type_now(self):
+        """The old test asserted these names were ABSENT. Inverted, because the
+        absence was the gap."""
+        names = {f.name for f in dataclasses.fields(ProviderBinding)}
+        for present in ("account", "profile", "instance_id", "family"):
+            with self.subTest(field=present):
+                self.assertIn(present, names)
+
+    def test_naming_an_incarnation_grants_nothing(self):
+        """It is a declaration on a local file — not a credential, not an
+        authorization, and not evidence that any process is alive."""
+        binding = self._binding(account="fjd", profile="marketops",
+                                instance_id="prov-2")
+        self.assertFalse(binding.allow_send)
+        self.assertFalse(binding.allow_create)
+        self.assertFalse(binding.allow_control)
+
+    def test_two_incarnations_of_one_account_are_distinguishable(self):
+        """The measurement the old test made, inverted: two provisionings of one
+        account, and the declarations now differ."""
+        self.assertNotEqual(self._binding(instance_id="prov-1"),
+                            self._binding(instance_id="prov-2"))
+
+    def test_the_incarnation_stays_out_of_the_session_ref(self):
+        """The ref is still three segments — `device|<tag>|<native id>`. An
+        incarnation in the address would re-address every live session on every
+        restart and every credential rotation."""
+        self.assertEqual(OTHER_REF.count("|"), 2)
+        self.assertEqual(provider_key(DEVICE, OTHER_RUNTIME),
+                         OTHER_REF.rsplit("|", 1)[0])
 
 
 class TheSessionRefMustNotChangeTest(unittest.TestCase):
