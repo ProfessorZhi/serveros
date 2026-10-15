@@ -1774,6 +1774,28 @@ class FleetService:
             grant = self._may_create(device_ref, project_name, runtime)
             self._require_operator_verb(principal, device_ref, "create", native,
                                         project=project_name, runtime=runtime)
+            # The CloudCLI *native mirror* must apply the SAME owner-approved
+            # per-runtime defaults as fleet_create_session. Without this, the
+            # caller could bypass the configured default by choosing the
+            # mirrored session_create tool with omitted model/permissionMode.
+            runtime_rule = self.config.policy.runtime_create_defaults.get(
+                provider_key(device_ref, runtime), {}).get(project_name)
+            if runtime_rule is not None:
+                try:
+                    resolved_model, resolved_mode = runtime_rule.resolve(
+                        family=arguments.get("provider") or "claude",
+                        model=arguments.get("model"),
+                        permission_mode=arguments.get("permissionMode"))
+                except PolicyError as exc:
+                    raise refuse(
+                        WRITE_NOT_GRANTED,
+                        f"native session_create denied by selected runtime/project: {exc}",
+                        device_ref=device_ref, runtime=runtime, project=project_name,
+                    ) from None
+                if resolved_model is not None:
+                    arguments["model"] = resolved_model
+                if resolved_mode is not None:
+                    arguments["permissionMode"] = resolved_mode
             # HIGH-3: a caller may not name a model or permission mode the
             # project's grant does not allow — the same ceiling the hand-written
             # `fleet_create_session` applies, reused rather than restated.
