@@ -130,7 +130,7 @@ class Fixture:
                  "square_required": True},
                 {"slot": "logo", "shipped_path": "assets/logo.png",
                  "expected_sha256": hashlib.sha256(logo_data).hexdigest(),
-                 "square_required": False},
+                 "square_required": True},
             ],
         }
         self.observation = self.root / "observation.json"
@@ -322,14 +322,31 @@ class TheApprovedAssetOrNothing(unittest.TestCase):
         f.lock["slots"][0]["expected_sha256"] = hashlib.sha256(data).hexdigest()
         refusal = f.refusal()
         self.assertEqual(refusal.status, builder.BRAND_ASSET_MISMATCH)
-        self.assertIn("square slot", refusal.detail)
+        self.assertIn("required to be square", refusal.detail)
 
-    def test_a_logo_may_keep_its_aspect_ratio(self) -> None:
+    def test_a_logo_must_be_square_too(self) -> None:
+        """Was `test_a_logo_may_keep_its_aspect_ratio`, which asserted the
+        opposite.
+
+        The documented rule is "Icons and logos must be square and at least 48 by
+        48 pixels" — it names logos explicitly, so the listing logo is held to
+        the same shape as the composer avatar. Allowing a wordmark here was a
+        preference wearing a rule's clothes, and it bought nothing: the approved
+        asset is 1024x1024.
+        """
         f = Fixture(logo=1024)
         self.addCleanup(f.close)
         data = make_png(1024, 256)
         f.assets.joinpath("logo.png").write_bytes(data)
         f.lock["slots"][1]["expected_sha256"] = hashlib.sha256(data).hexdigest()
+        refusal = f.refusal()
+        self.assertEqual(refusal.status, builder.BRAND_ASSET_MISMATCH)
+        self.assertIn("required to be square", refusal.detail)
+
+    def test_a_square_logo_builds(self) -> None:
+        """The positive control: the rule refuses a shape, not the slot."""
+        f = Fixture(logo=1024)
+        self.addCleanup(f.close)
         self.assertEqual(f.build()["assets"]["logo"]["width"], 1024)
 
     def test_a_tiny_asset_is_refused(self) -> None:

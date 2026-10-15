@@ -810,9 +810,13 @@ def check_assets(root: Path, lock: dict) -> dict:
                           f"{slot['shipped_path']} is {width}x{height}, below "
                           f"{ICON_MIN_PIXELS}x{ICON_MIN_PIXELS}")
         if slot.get("square_required") and width != height:
+            # The message names the rule rather than one slot's reason: the
+            # documented requirement is "Icons and logos must be square and at
+            # least 48 by 48 pixels", and it applies to the listing logo as much
+            # as to the composer avatar.
             raise Refused(BRAND_ASSET_MISMATCH,
-                          f"{slot['shipped_path']} is {width}x{height}; a composer "
-                          f"avatar is drawn into a square slot")
+                          f"{slot['shipped_path']} is {width}x{height}; icons and "
+                          f"logos are required to be square")
         report[name] = {"sha256": actual, "width": width, "height": height,
                         "bytes": len(data)}
     return report
