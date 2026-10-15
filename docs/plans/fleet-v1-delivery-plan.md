@@ -88,12 +88,23 @@ not to finish someone else's branch.
 | **S0 · plans and contracts** | nothing | this document exists and the entry link points at it |
 | **S1 · lanes land** | S0 | B–F each have a reviewed tip on their own branch |
 | **S2 · offline integration** | S1 | the lanes merge into one candidate **in an integration worktree**, and the offline suites pass |
-| **S3 · independent public route** | S2 + owner approval | a Next-only HTTPS base is **provisioned and observed reachable**, separate from V1's |
-| **S4 · Next-only canary** | S3 + a green resource gate | one bounded Next service runs, with V1 health checked before and after |
+| **S3a · route provisioned** | S2 + owner approval | the Next-only HTTPS **endpoint exists** — DNS, certificate and tunnel configuration are in place and verifiable — while **the backend behind it is deliberately not yet live** |
+| **S3b · backend live** | S3a | the Next service is running and bound to that endpoint's local target |
+| **S4 · canary verified through the real route** | S3b + a green resource gate | over the **real HTTPS route**: OAuth discovery answers, `/health` answers, and the tool list reads back — with V1 health checked before and after, and V1 untouched |
 | **S5 · client install** | S4 + owner action | the plugin is installed once, under its own Plugin ID |
 
-S2 is a merge, not a deployment. S3 and S5 are **owner actions on external
-systems**, and a plan may not stand in for either.
+**Why S3 splits, and what it avoids.** A single "S3: route reachable" step
+ordered before the service exists is a circular gate: an endpoint whose backend
+is not running cannot answer `/health`, so the route could never be declared
+reachable and S4 would never be permitted to start the thing that would make it
+reachable. Provisioning and liveness are therefore separate facts with separate
+owners of proof — the endpoint is a configuration fact, and the answers it gives
+are a runtime fact, measured in S4 **after** the service starts. A route that
+resolves but has no live backend is `ENDPOINT_PROVISIONED / BACKEND_NOT_LIVE`,
+which is a stage, not a failure.
+
+S2 is a merge, not a deployment. S3a, S5 and everything beyond are **owner
+actions on external systems**, and a plan may not stand in for any of them.
 
 ---
 
@@ -103,13 +114,46 @@ Every runtime is one credential instance. Two CC configurations in one OS
 account are **two runtimes**, which is why the key is a stable runtime id and not
 a username.
 
-| runtime | device | family | state today | what closes it |
+**Two questions are asked of every device, and the answers are independent.**
+"Can the legacy Fleet reach it today?" and "is the new Next node bound on it?"
+are different facts, and an earlier revision of this table ran them together —
+it called the Tokyo deployment "live, 7 tools served" and the other two "not
+deployed", which reads as a statement about the devices when it was a statement
+about one old release.
+
+| runtime | device | family | **legacy V1 field (live)** | **new Next node/binding** |
 |---|---|---|---|---|
-| `device:tokyo-shared-dev-01\|claude` | Tokyo (company) | claude | **live** — V1 running, 7 tools served | already deployed; the 33-tool surface is a Next-side change |
-| `device:work-fj\|claude` | FJPCOS (company, Windows) | claude | **not deployed** — connector/binding not proven present | Windows-side onboarding, executed on that machine |
-| `device:llm-lab-dell\|claude` | Dell (company) | claude | **not deployed** — `README.linux.md`: "not enrolled by any of this" | owner-approved enrolment |
-| `device:llm-lab-dell\|claude-fjd` | Dell (company) | claude | **not deployed** — the second account's isolation facts are owned by the device, not the host | owner login as that account |
-| **Codex** (any device) | — | codex | **UNKNOWN** — the registry declares `claude-code` only | **live capability discovery plus an explicit commitment**; a framework's ability to carry Codex is not evidence that any machine runs it |
+| `device:tokyo-shared-dev-01\|claude` | Tokyo (company) | claude | reachable + authorized | **not deployed** |
+| `device:work-fj\|claude` | FJPCOS (company, Windows) | claude | reachable + authorized | **not deployed** |
+| `device:llm-lab-dell\|claude` | Dell (company) | claude | reachable + authorized | **not deployed** |
+| `device:llm-lab-dell\|claude-fjd` | Dell (company) | claude | **UNKNOWN** — no observation names this second account | **not deployed** |
+| **Codex** (any device) | — | codex | registry declares `claude-code` only | **UNKNOWN** |
+
+**How the left column was read.** It is an **operator-reported live reading**
+taken today through the legacy Fleet 0.1.0 `fleet_status`: all three company
+providers answer **reachable + authorized**, and each reports **22 native
+capabilities**. The ChatGPT-facing surface shows **9 Fleet tools and 4 scopes**.
+It is recorded as reported rather than re-measured, because verifying it would
+need a live credential and this document is produced without one.
+
+**How the right column was read**, and it was measured here: the Next unit is
+`LoadState=not-found` on this host, nothing listens on the candidate ports, and
+no independent public route exists. The two columns disagree on purpose —
+Tokyo's legacy field being live says nothing about a Next node, and Windows and
+Dell being reachable in the legacy field is **not** a new-version deployment
+either.
+
+Three readings this table refuses to make:
+
+- **7 tools is a historical snapshot, not today's number.** It came from a
+  2026-10-13 measurement of the then-current V1 and is not restated as live.
+- **A reachable provider is not a deployed new version.** The old field's
+  authorization is authority the old release already had.
+- **A historical Codex session is not a working `create`.** Finding a session in
+  a listing is evidence that something once existed; it is not evidence that
+  `create` succeeds now. Codex stays UNKNOWN until **live capability discovery
+  plus an explicit commitment** — a framework's ability to carry Codex is not
+  evidence that any machine runs it.
 
 Devices the registry declares `ownership: personal` are out of scope by rule, not
 by omission: `GRANT_ELIGIBLE_OWNERSHIP` admits `company` and nothing else.
@@ -152,16 +196,39 @@ Recorded so a reviewer can point at a line rather than argue about intent:
   Feishu, operating a tunnel or installing a plugin are owner actions with their
   own approvals.
 
-**Reviewed 2026-10-15, result: no such block exists today.** #198's staging,
-installer and unit carry no V2 concept (`openagents`, `federation`, role teams
-and delegation match nothing in them), and its preflight deliberately relaxes —
-recovery ignores both limits and attestations so that a revoked OAuth client
-cannot prevent an operator from restoring the Next-only service. #199's evidence
-gate is the opposite of a V2 blocker: its required runtime set is **dynamic and
-owner-authored** ("Runtime count is not hardcoded"), its Codex-on-Dell sentence
-is a non-falsification rule rather than a requirement, and it refuses to call
-its own output `PRODUCTION_READY`. Recorded as a checked absence, not as a fix
-that was needed.
+**Partly reviewed 2026-10-15 — one half is a checked absence, the other is an
+open risk that Lane F must clear.**
+
+*Checked and absent.* #198's staging, installer and unit carry no V2 concept
+(`openagents`, `federation`, role teams and delegation match nothing in them),
+and its preflight deliberately relaxes rather than tightens — recovery ignores
+both limits and attestations, so a revoked OAuth client cannot prevent an
+operator from restoring the Next-only service.
+
+*Checked and NOT cleared — the claim that there is no V2 block is withdrawn.*
+#199's evidence gate is not V2-shaped in its runtime set: that set is dynamic and
+owner-authored ("Runtime count is not hardcoded"), and its Codex-on-Dell sentence
+is a non-falsification rule rather than a requirement. But two of its demands are
+**strict enough to block V1 permanently**, which is the risk, and an earlier
+revision of this section read only for V2 vocabulary and so missed it:
+
+- **Every required runtime must report all ten lifecycle operations `PASS`** —
+  `list`, `read`, `create`, `send`, `interrupt`, `reconfigure`, **`approval`**,
+  **`close`**, **`resume`**, **`recover_after_disconnect`**. This repository's own
+  contract already records that Fleet has **no `close` verb**
+  (`fleet/owner-grant-3devices.md` G3) and lists session-lifecycle entries under
+  `not_implemented`. If any CloudCLI or Codex provider cannot perform one of
+  these, that instance can never pass and V1 is blocked by a rule that no work
+  can satisfy.
+- **A blanket `real_time_monitoring` check** sits in the release list alongside
+  the release's own checks. A monitoring capability deciding a V1 release is the
+  shape of a V2 requirement reaching backwards.
+
+**Status: PENDING INDEPENDENT QA — do not read this as "no V2 block".** The
+question for Lane F is whether each listed operation is (a) genuinely required
+for V1, (b) actually performable by every provider V1 declares, and (c) fail-
+closed without becoming unsatisfiable. Until Lane F answers, the honest state is
+*unverified*, not *absent*.
 
 ---
 
@@ -243,11 +310,16 @@ artifacts are the rollback.
 
 ## 10 · Ownership of the remaining gates
 
-| gate | owner | why it cannot be an agent |
+| gate | who | state |
 |---|---|---|
-| creating the Next App / Plugin ID | **account owner** | it is an external registration |
-| logging into the official Claude and MarketOps accounts | **account owner** | credentials are never copied or shared |
+| **the new Next ingress and its own Tailscale node** | — | **already authorised in this session.** The exposure itself is in scope; only the account-owner's interactive SSO/MFA step remains a human call |
+| creating the Next App / Plugin ID | **account owner** | external registration; one-click consent is the owner's |
+| logging into the official Claude and MarketOps accounts | **account owner** | credentials are never copied, shared or agent-held |
 | changing Feishu app 2's redirect list | **account owner** | a production console change |
-| provisioning a Next-only public route | **owner + user approval** | off-host exposure |
-| the first client install | **user** | it happens in their client |
+| the first client install | **user** | it happens in their client, once |
 | production deployment | **separate approval** | not covered by this plan |
+
+The split is between **authorisation to work** and **an owner's own account
+action**. Ordinary repository, staging and canary work on the Next lane does not
+need to be re-approved; what stops at a human is anything that needs that
+person's identity — an interactive login, a one-click consent, a console edit.
