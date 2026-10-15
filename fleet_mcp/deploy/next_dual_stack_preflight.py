@@ -110,8 +110,13 @@ def evaluate(proposal: object, *, recovery: bool = False) -> dict:
 
     v1 = _shape(root.get("v1"), IDENTITY_FIELDS, "v1", problems)
     nxt = _shape(root.get("next"), IDENTITY_FIELDS, "next", problems)
-    limits = _shape(root.get("limits"), LIMIT_FIELDS, "limits", problems)
-    attest = _shape(root.get("attestations"), ATTEST_FIELDS, "attestations", problems)
+    # A failing / revoked OAuth client and a damaged release plan must not
+    # prevent an operator from inspecting or restoring the *Next-only* service.
+    # Their install attestation is deliberately irrelevant during recovery.
+    limits = (_shape(root.get("limits"), LIMIT_FIELDS, "limits", problems)
+              if not recovery else {})
+    attest = (_shape(root.get("attestations"), ATTEST_FIELDS, "attestations", problems)
+              if not recovery else {})
 
     if v1.get("service_unit") != V1_UNIT:
         problems.append("v1.service_unit: expected observed V1 unit")
