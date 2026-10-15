@@ -49,8 +49,37 @@ OTHER_REF = f"{DEVICE}|{OTHER_RUNTIME}|{UUID}"
 PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9._-]{0,31}$")
 
 
+#: A characterisation of a CURRENT GAP is not a release invariant, and the
+#: difference has to be enforced rather than described. These three assert that
+#: something is ABSENT — no instance field on a binding, no way to tell a
+#: restart from its predecessor, a key with exactly one separator. Left green
+#: they read as "this is how it should be", and the moment Lane B gives one OS
+#: UID its several credential profiles, the correct change turns them red and
+#: the cheapest way back to green is to keep the gap.
+#:
+#: So they are skipped with this reason instead of deleted: the measurements
+#: stay readable, they stop counting toward a release, and the rewrite they are
+#: waiting for is named. When B lands, each becomes a POSITIVE test — two
+#: profiles under one UID get two distinct stable tags, a restart is
+#: distinguishable from its predecessor, and a stale binding is refused — and
+#: the skip comes off in the same change that makes it pass.
+CONTRACT_PENDING_REWRITE = (
+    "CONTRACT_PENDING_REWRITE: describes a gap, not an invariant. Lane B "
+    "introduces an independent, stable runtime selector per credential profile "
+    "under one OS UID, plus an instance/incarnation kept OUT of the session ref "
+    "(`device|<tag>|<native id>` stays three segments). Rewrite each of these as "
+    "positive behaviour once that lands; do not restore the gap to make them "
+    "green."
+)
+
+
+@unittest.skip(CONTRACT_PENDING_REWRITE)
 class TheBindingNamesAnAccountAndNotAnInstanceTest(unittest.TestCase):
-    """OBSERVED GAP — the input to the binding advice in the readiness doc."""
+    """OBSERVED GAP — the input to the binding advice in the readiness doc.
+
+    Skipped, not removed. See `CONTRACT_PENDING_REWRITE` for why a green here
+    would be worse than a skip.
+    """
 
     def test_a_binding_has_no_persisted_instance_field(self):
         fields = {f.name for f in dataclasses.fields(ProviderBinding)}
