@@ -143,6 +143,38 @@ def _load_legacy_installer():
     return mod
 
 
+def _effective_limit_errors(mod) -> list[str]:
+    """Inspect live systemd values. A template alone cannot prove isolation."""
+    info = mod.systemctl(
+        "show", UNIT, "-p", "MemoryMax", "-p", "MemorySwapMax",
+        "-p", "TasksMax", "-p", "CPUQuotaPerSecUSec", check=False)
+    if info.returncode != 0:
+        return ["systemd limits could not be read back"]
+    props = dict(line.split("=", 1) for line in info.stdout.splitlines() if "=" in line)
+    problems = []
+    for key, wanted in (
+        ("MemoryMax", BUDGET["memory_max_mib"] * 1024 * 1024),
+        ("MemorySwapMax", 0),
+        ("TasksMax", BUDGET["tasks_max"]),
+    ):
+        try:
+            if int(props.get(key, "")) != wanted:
+                problems.append(key + " not enforced")
+        except ValueError:
+            problems.append(key + " unavailable")
+    # systemd normally reports CPUQuotaPerSecUSec as e.g. 400ms.
+    quota = props.get("CPUQuotaPerSecUSec", "")
+    matched = re.fullmatch(r"(\d+)(us|ms|s)", quota.strip())
+    if not matched:
+        problems.append("CPUQuotaPerSecUSec unavailable")
+    else:
+        num = int(matched.group(1))
+        micros = num * {"us": 1, "ms": 1000, "s": 1000000}[matched.group(2)]
+        if micros != BUDGET["cpu_quota_pct"] * 10000:
+            problems.append("CPUQuotaPerSecUSec not enforced")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("command", choices=("install", "status", "rollback", "uninstall"))
@@ -191,17 +223,29 @@ def main(argv: list[str] | None = None) -> int:
             if args.no_start:
                 args_list.append("--no-start")
 
-            # The binding must agree with the reviewed proposal's local port.
+            # The Next and V1 binding files must be ACTUALLY distinct today,
+            # not merely separate addresses typed into a JSON proposal.
+            old = mod.binding(Path(proposal["v1"]["config_path"]))
             info = mod.binding(Path(nxt["config_path"]))
-            observed_port = info["port"]
-            if observed_port != nxt["local_listen"]["port"]:
-                raise Refused("Next binding port differs from reviewed proposal")
-            if info["bind"] != nxt["local_listen"]["host"]:
-                raise Refused("Next binding address differs from reviewed proposal")
+            if (old["port"] != proposal["v1"]["local_listen"]["port"]
+                    or old["bind"] != proposal["v1"]["local_listen"]["host"]):
+                raise Refused("live V1 binding differs from reviewed proposal")
+            if (info["port"] != nxt["local_listen"]["port"]
+                    or info["bind"] != nxt["local_listen"]["host"]):
+                raise Refused("Next binding differs from reviewed proposal")
+            if info["port"] == old["port"]:
+                raise Refused("Next would reuse V1's local listening port")
 
         # Every destructive operation is addressed to the Next unit ONLY.
         # The wrapper does not grant OAuth, register a plugin or change V1.
-        return mod.main(args_list)
+        result = mod.main(args_list)
+        if args.command == "install" and not args.no_start and result == 0:
+            faults = _effective_limit_errors(mod)
+            if faults:
+                # Stopping the new canary is allowed: NEVER stop/restart V1 here.
+                mod.systemctl("stop", UNIT, check=False)
+                raise Refused("Next stopped: cgroup readback failed: " + ", ".join(faults))
+        return result
     except Refused as exc:
         print(json.dumps({"decision": "BLOCKED", "reason": str(exc),
                           "writes": [], "executes": []}, sort_keys=True))
