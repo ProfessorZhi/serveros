@@ -104,7 +104,10 @@ def plan(proposal: dict, command: str) -> dict:
         "limits": dict(BUDGET) if not recovery else None,
         "writes": [], "executes": [],
         "requires": [
-            "Next owner authorization and distinct real App/Plugin registration",
+            ("Owner-reviewed Next-only binding; public URL and Plugin ID may "
+             "remain unassigned only for this non-starting bootstrap stage"
+             if bootstrap else
+             "Next owner authorization and distinct real App/Plugin registration"),
             "Short live memory-PSI/swap-IO probe before Next start",
             "systemctl --user show confirms effective cgroup limits after start",
             "V1 /health remains healthy throughout canary and Next-only rollback",
