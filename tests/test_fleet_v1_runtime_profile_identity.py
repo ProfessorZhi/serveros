@@ -215,32 +215,14 @@ class AProfileIsANameAndNotAnAuthorization(unittest.TestCase):
 class TheLoaderRefusesDuplicatedDeclarations(unittest.TestCase):
     """Set-level rules, which a single binding cannot answer about itself."""
 
-    def _load(self, providers_yaml: str):
-        from fleet_mcp.config import load_config
-        tmp = Path(tempfile.mkdtemp())
-        (tmp / "anchor").write_text("secret", encoding="utf-8")
-        path = tmp / "fleet-mcp.local.yaml"
-        path.write_text(
-            "schema: serveros/fleet-mcp.local/v1\n"
-            f"device_ref: {DEVICE}\n" + providers_yaml, encoding="utf-8")
-        return load_config(path)
+    def _load(self, providers_yaml: str, *, default_account: str | None = OWNER):
+        return _load_binding(providers_yaml, default_account=default_account)
 
     def _entry(self, provider_key_str: str, **kw) -> str:
-        """One `providers:` entry. The KEY is a device ref, optionally carrying
-        the runtime after a bar — the loader reads the tag from there, not from
-        the bare runtime name."""
-        lines = [f"  {provider_key_str}:",
-                 "    kind: fleet-node",
-                 f"    endpoint: {kw.get('endpoint', 'http://127.0.0.1:7301')}",
-                 f"    credential_anchor: {kw.get('anchor', '/nonexistent/a')}"]
-        for key in ("account", "profile", "instance_id"):
-            if key in kw:
-                lines.append(f"    {key}: {kw[key]}")
-        return "\n".join(lines) + "\n"
+        return _entry(provider_key_str, **kw)
 
     def _key(self, profile: str | None) -> str:
-        return provider_key(DEVICE, ri.runtime_tag(OWNER, device_owner=OWNER,
-                                                   profile=profile))
+        return _profile_key(profile)
 
     def test_a_duplicated_incarnation_label_is_refused(self):
         body = ("providers:\n"
@@ -250,13 +232,19 @@ class TheLoaderRefusesDuplicatedDeclarations(unittest.TestCase):
             self._load(body)
         self.assertIn("same instance_id", caught.exception.detail)
 
-    def test_a_duplicated_account_profile_pair_is_refused(self):
+    def test_an_alias_is_caught_by_the_tag_and_not_by_a_pair_check(self):
+        """An earlier revision had a duplicate-account/profile guard. The tag
+        check made it unreachable — a tag IS the derivation, so two entries
+        claiming one identity are two spellings of one dictionary key that YAML
+        has already collapsed — and it was removed rather than left reading as
+        coverage. An alias is caught here instead: the same identity, filed
+        under a tag it does not derive."""
         body = ("providers:\n"
-                + self._entry(self._key(None), account=OWNER, profile=OFFICIAL)
-                + self._entry(self._key(GENERAL), account=OWNER, profile=OFFICIAL))
+                + self._entry(self._key(OFFICIAL), account=OWNER, profile=OFFICIAL)
+                + self._entry(self._key(MARKETOPS), account=OWNER, profile=OFFICIAL))
         with self.assertRaises(FleetRefusal) as caught:
             self._load(body)
-        self.assertIn("account/profile", caught.exception.detail)
+        self.assertIn("derives", caught.exception.detail)
 
     def test_distinct_profiles_on_one_device_load_cleanly(self):
         body = ("providers:\n"
@@ -273,6 +261,134 @@ class TheLoaderRefusesDuplicatedDeclarations(unittest.TestCase):
                 # …and the other two are NOT what this tag reaches.
                 for other in (p for p in (GENERAL, OFFICIAL, MARKETOPS) if p != profile):
                     self.assertNotEqual(self._key(other), key)
+
+
+def _entry(provider_key_str: str, **kw) -> str:
+    """One `providers:` entry. The KEY is a device ref, optionally carrying the
+    runtime after a bar — the loader reads the tag from there, not from the bare
+    runtime name."""
+    lines = [f"  {provider_key_str}:",
+             "    kind: fleet-node",
+             f"    endpoint: {kw.get('endpoint', 'http://127.0.0.1:7301')}",
+             f"    credential_anchor: {kw.get('anchor', '/nonexistent/a')}"]
+    for key in ("account", "profile", "family", "instance_id"):
+        if key in kw:
+            lines.append(f"    {key}: {kw[key]}")
+    return "\n".join(lines) + "\n"
+
+
+def _profile_key(profile: str | None) -> str:
+    return provider_key(DEVICE, ri.runtime_tag(OWNER, device_owner=OWNER,
+                                               profile=profile))
+
+
+def _load_binding(providers_yaml: str, *, default_account: str | None = OWNER,
+                  device: str = DEVICE):
+    from fleet_mcp.config import load_config
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "anchor").write_text("secret", encoding="utf-8")
+    path = tmp / "fleet-mcp.local.yaml"
+    head = f"schema: serveros/fleet-mcp.local/v1\ndevice_ref: {device}\n"
+    if default_account is not None:
+        # Quoted, because an unquoted empty scalar is YAML null — which means
+        # "not stated" to the loader, not "stated as empty". A test that meant
+        # to exercise a blank name has to say so in the file's own terms.
+        head += f'device_default_account: "{default_account}"\n'
+    path.write_text(head + providers_yaml, encoding="utf-8")
+    return load_config(path)
+
+
+class TheDeclaredIdentityMustDeriveTheTag(unittest.TestCase):
+    """A binding's own declaration has to agree with the name it is filed under.
+
+    The tag is read from the key and used for routing; the declaration is what
+    the OPERATOR reads. Nothing compared the two, so a binding could be reached
+    as one runtime while describing another — which across accounts is a
+    mis-route rather than a typo. The authority is `runtime_tag`, so the check
+    is its output against the key rather than a second statement of the rule.
+
+    The legacy shape is the thing not to break: a binding that declares none of
+    these axes still loads exactly as it did, because there is nothing to check
+    it against and refusing it would turn a working deployment into an outage.
+    """
+
+    def test_a_declaration_that_does_not_derive_its_own_tag_is_refused(self):
+        # Filed under the official profile's tag, describing somebody else.
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), account=OTHER, profile=MARKETOPS)
+        with self.assertRaises(FleetRefusal) as caught:
+            _load_binding(body)
+        self.assertIn("derives", caught.exception.detail)
+
+    def test_the_right_tag_with_the_wrong_profile_is_refused(self):
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), account=OWNER, profile=MARKETOPS)
+        with self.assertRaises(FleetRefusal):
+            _load_binding(body)
+
+    def test_the_right_tag_with_the_wrong_account_is_refused(self):
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), account=OTHER, profile=OFFICIAL)
+        with self.assertRaises(FleetRefusal):
+            _load_binding(body)
+
+    def test_a_family_that_disagrees_with_the_name_is_refused(self):
+        # The family is DECLARED, not read off the tag. A binding named for the
+        # base family that claims to serve Codex is the collapse the axis exists
+        # to prevent.
+        body = "providers:\n" + _entry(
+            _profile_key(GENERAL), account=OWNER, profile=GENERAL, family="codex")
+        with self.assertRaises(FleetRefusal) as caught:
+            _load_binding(body)
+        self.assertIn("derives", str(caught.exception.detail))
+
+    def test_the_codex_family_derives_a_codex_tag(self):
+        tag = ri.runtime_tag(OWNER, device_owner=OWNER, profile=GENERAL,
+                             family="codex")
+        body = "providers:\n" + _entry(
+            provider_key(DEVICE, tag), account=OWNER, profile=GENERAL, family="codex")
+        config = _load_binding(body)
+        self.assertIn(provider_key(DEVICE, tag), config.providers)
+
+    def test_a_declared_identity_without_a_device_owner_is_refused(self):
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), account=OWNER, profile=OFFICIAL)
+        with self.assertRaises(FleetRefusal) as caught:
+            _load_binding(body, default_account=None)
+        self.assertIn("device_default_account", caught.exception.detail)
+
+    def test_a_profile_without_an_account_is_refused(self):
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), profile=OFFICIAL)
+        with self.assertRaises(FleetRefusal) as caught:
+            _load_binding(body)
+        self.assertIn("no `account`", caught.exception.detail)
+
+    def test_the_declared_identity_loads_when_it_derives_the_tag(self):
+        body = "providers:\n" + _entry(
+            _profile_key(OFFICIAL), account=OWNER, profile=OFFICIAL)
+        config = _load_binding(body)
+        self.assertEqual(config.providers[_profile_key(OFFICIAL)].profile, OFFICIAL)
+        self.assertEqual(config.device_default_account, OWNER)
+
+    def test_a_legacy_binding_declaring_no_axes_still_loads(self):
+        """The migration guarantee. `claude` and `claude-fjd` written before the
+        axes existed are untouched — there is no declaration to disagree with,
+        and refusing them would be an outage in exchange for nothing."""
+        body = ("providers:\n"
+                + _entry(provider_key(DEVICE, "claude"))
+                + _entry(provider_key(DEVICE, "claude-fjd"), endpoint="http://127.0.0.1:7302",
+                         anchor="/nonexistent/b"))
+        config = _load_binding(body, default_account=None)
+        self.assertEqual(len(config.providers), 2)
+        self.assertIsNone(config.providers[provider_key(DEVICE, "claude")].profile)
+        self.assertEqual(config.providers[provider_key(DEVICE, "claude")].family, "claude")
+
+    def test_a_bad_device_default_account_is_refused(self):
+        for bad in ("", "   ", "all"):
+            with self.subTest(value=bad):
+                with self.assertRaises(FleetRefusal):
+                    _load_binding("providers: {}\n", default_account=bad)
 
 
 if __name__ == "__main__":

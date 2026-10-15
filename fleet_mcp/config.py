@@ -141,6 +141,12 @@ class ProviderBinding:
     profile: str | None = None
     #: Which OS account owns this runtime. Naming only, for the same reason.
     account: str | None = None
+    #: Which KIND of agent this runtime serves. A second naming axis, and it is
+    #: declared rather than read off the tag: inferring it from the spelling is
+    #: how a Claude binding ends up claiming a Codex runtime, and the loader
+    #: checks that the declared axes actually derive the tag, so a family that
+    #: disagrees with the name is refused instead of believed.
+    family: str = BASE_RUNTIME
     #: An owner-authored incarnation label: which provisioning of this profile
     #: the operator meant. Its purpose is to let a declaration say "the second
     #: time this account was set up", so two declarations can be told apart.
@@ -157,6 +163,12 @@ class ProviderBinding:
         """Shape only. Whether a declared runtime EXISTS is not a question a
         single binding can answer, and set-level questions are asked where the
         whole set is visible."""
+        if self.family not in runtime_identity.FAMILIES:
+            raise ValueError(
+                f"family {self.family!r} is not one this surface names; it is "
+                f"one of {list(runtime_identity.FAMILIES)}. A family is the "
+                f"KIND of agent, not a model and not an account."
+            )
         for name, value in (("account", self.account), ("profile", self.profile),
                             ("instance_id", self.instance_id)):
             if value is None:
@@ -357,6 +369,17 @@ class FleetConfig:
     policy: PolicyBinding = field(default_factory=PolicyBinding)
     audit: AuditBinding | None = None
     registry_path: Path | None = None
+    #: Which OS account on this device is the device's OWN — the one the bare
+    #: runtime tag belongs to. It is authored by the operator, never inferred:
+    #: a hostname, a login name or a path all happen to be right until the day
+    #: one of them is not, and a guessed owner silently re-labels every runtime
+    #: that was derived from it.
+    #:
+    #: Absent means the device's own account is not established, and a binding
+    #: that DECLARES an account or a profile is then refused rather than checked
+    #: against a guess. A binding that declares neither is unaffected, which is
+    #: what keeps a binding written before these axes existed loading as it did.
+    device_default_account: str | None = None
 
     def provider_for(self, device_ref: str,
                      runtime: str = BASE_RUNTIME) -> ProviderBinding | None:
@@ -791,6 +814,22 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             "`device_ref` must name this host with a typed ref (`device:<id>`)",
         )
 
+    # Read before the providers, because a binding's declared identity is
+    # checked against it. Never defaulted from a hostname, a login name or a
+    # path: those are right until the day they are not, and being wrong here
+    # re-labels every runtime derived from the wrong owner.
+    device_default_account = raw.get("device_default_account")
+    if device_default_account is not None:
+        if (not isinstance(device_default_account, str)
+                or not device_default_account.strip()
+                or runtime_identity.is_a_selector(device_default_account)):
+            raise refuse(
+                BAD_REQUEST,
+                "`device_default_account` must name the OS account this device's "
+                "OWN runtime belongs to — a non-empty name that is not the query "
+                "vocabulary. It is authored, not discovered.",
+            )
+
     providers: dict[str, ProviderBinding] = {}
     for ref, entry in (raw.get("providers") or {}).items():
         if not isinstance(entry, dict):
@@ -849,6 +888,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             allow_control=bool(entry.get("allow_control", False)),
             account=entry.get("account"),
             profile=entry.get("profile"),
+            family=str(entry.get("family", BASE_RUNTIME)),
             instance_id=entry.get("instance_id"),
         )
 
@@ -857,9 +897,48 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
     # here is a declaration that says two things about one runtime, and the
     # silent resolutions — first wins, last wins — differ only in which of the
     # two the operator will be surprised by.
-    _accounts_seen: dict[tuple[str, str | None, str | None], str] = {}
     _instances_seen: dict[str, str] = {}
     for _key, _binding in providers.items():
+        # The tag is not taken on trust. A binding may be filed under any valid
+        # provider name, so a declaration that disagrees with its own key would
+        # leave the operator reading one identity while the router uses another —
+        # and across accounts that is a mis-route, not a typo. `runtime_tag` is
+        # the one naming authority, so the check is its output against the key
+        # rather than a second restatement of the rule.
+        _declares_identity = (_binding.account is not None
+                              or _binding.profile is not None
+                              or _binding.family != BASE_RUNTIME)
+        if _declares_identity:
+            if device_default_account is None:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"provider {_key} declares an account, profile or family, but "
+                    f"this binding does not say which OS account is the device's "
+                    f"OWN (`device_default_account`). Without it the tag cannot be "
+                    f"checked against the declaration, and guessing an owner from "
+                    f"the host would re-label every runtime derived from it.",
+                )
+            if _binding.account is None:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"provider {_key} declares a profile but no `account`. Which "
+                    f"OS account a runtime belongs to is half of what its tag "
+                    f"encodes, so it is stated rather than left to the tag.",
+                )
+            _expected = runtime_identity.runtime_tag(
+                _binding.account, device_owner=device_default_account,
+                profile=_binding.profile, family=_binding.family)
+            if _binding.runtime != _expected:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"provider {_key} is filed under runtime "
+                    f"{_binding.runtime!r}, but its own declaration "
+                    f"(account={_binding.account!r}, profile={_binding.profile!r}, "
+                    f"family={_binding.family!r}) derives {_expected!r}. One tag "
+                    f"addresses one runtime, so the declaration and the key must "
+                    f"agree; this is refused rather than routed by the tag while "
+                    f"the operator reads the declaration.",
+                )
         if _binding.instance_id is not None:
             prior = _instances_seen.get(_binding.instance_id)
             if prior is not None and prior != _key:
@@ -871,19 +950,13 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                     f"refused rather than resolved by declaration order.",
                 )
             _instances_seen[_binding.instance_id] = _key
-        if _binding.profile is None and _binding.account is None:
-            continue
-        identity = (_binding.device_ref, _binding.account, _binding.profile)
-        prior = _accounts_seen.get(identity)
-        if prior is not None and prior != _key:
-            raise refuse(
-                BAD_REQUEST,
-                f"two bindings on {_binding.device_ref} declare the same "
-                f"account/profile ({_binding.account!r}, {_binding.profile!r}) "
-                f"— {prior} and {_key}. Two tags cannot both be that one "
-                f"runtime, so this is refused rather than routed by order.",
-            )
-        _accounts_seen[identity] = _key
+        # A duplicate account/profile pair is deliberately NOT checked for,
+        # because the check above makes it unreachable: the tag must equal what
+        # the declaration derives, and a tag is one dictionary key, so two
+        # entries deriving one identity are two spellings of one key that YAML
+        # has already collapsed. A check that cannot fire is not a guard, it is
+        # a comment with a traceback attached — and it would read as coverage
+        # nobody has.
 
     auth_raw = raw.get("auth") or {}
     auth = AuthBinding(
@@ -1016,4 +1089,5 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         policy=policy,
         audit=audit,
         registry_path=registry_path,
+        device_default_account=device_default_account,
     )
