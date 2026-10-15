@@ -1,0 +1,100 @@
+{
+  "schema": "serveros/fleet-v1-dell-fjd-cutover/v1",
+  "device_ref": "device:llm-lab-dell",
+  "source": {
+    "os_user": "vince",
+    "uid": 1002,
+    "home": "/home/vince"
+  },
+  "target": {
+    "os_user": "fjd",
+    "uid": 1000,
+    "home": "/home/operator"
+  },
+  "owner_authorization": {
+    "fjd_owner_confirmed": false,
+    "confirmed_by": null,
+    "evidence": null
+  },
+  "assets": [
+    {
+      "id": "serveros-git-source",
+      "class": "A",
+      "path": "/home/vince/projects/fleet-v1-fjd-cutover-20261015",
+      "note": "pushed source; fjd clones it from the remote with its OWN git credential, it is not copied"
+    },
+    {
+      "id": "dell-e2e-tests",
+      "class": "A",
+      "path": "/home/vince/projects/fleet-v1-dell-e2e-20261015",
+      "note": "pushed branch feat/fleet-v1-dell-runtime-e2e-20261015 at 1243f2d"
+    },
+    {
+      "id": "runtime-identity-poc-wip",
+      "class": "B",
+      "path": "/home/vince/projects/fleet-runtime-identity",
+      "note": "local repo, no remote, 583ae9a. vince commits or writes a credential-free patch first; it does NOT get copied"
+    },
+    {
+      "id": "fjd-node-bootstrap-script",
+      "class": "B",
+      "path": "/home/vince/projects/fjd-node-staging",
+      "note": "local repo, no remote, 8b1fbc4. Same treatment as the WIP above"
+    },
+    {
+      "id": "credential-free-binding-template",
+      "class": "C",
+      "path": "/home/vince/projects/fjd-node-staging/staging/fjd-node-plan",
+      "note": "paths only, no secret values; owner-approved narrow check"
+    },
+    {
+      "id": "vince-ssh-material",
+      "class": "D",
+      "path": "/home/vince/.ssh",
+      "note": "never migrated; fjd uses its own key, generated under its own account"
+    },
+    {
+      "id": "vince-gh-config",
+      "class": "D",
+      "path": "/home/vince/.config/gh",
+      "note": "never migrated; a github token copied across accounts is one identity in two places"
+    },
+    {
+      "id": "vince-cloudcli-auth",
+      "class": "D",
+      "path": "/home/vince/.cloudcli",
+      "note": "never migrated; fjd authenticates its own CloudCLI"
+    },
+    {
+      "id": "vince-fleet-node-secret",
+      "class": "D",
+      "path": "/home/vince/.local/state/serveros-fleet-node",
+      "note": "never migrated; the per-runtime node secret is issued to fjd's own runtime"
+    },
+    {
+      "id": "strata-production",
+      "class": "E",
+      "path": "/opt/strata",
+      "note": "in place. Owned by fjd, serving production. Not moved, not restarted, not scanned by this plan"
+    },
+    {
+      "id": "legacy-vince-connector",
+      "class": "F",
+      "path": "/home/vince/.config/serveros-fleet-mcp",
+      "note": "legacy binding kept for reference during transition; retired only by owner approval after fjd verifies"
+    }
+  ],
+  "session_refs": {
+    "legacy_base_tag": "claude",
+    "legacy_base_owner": "vince",
+    "next_runtime_tags": ["claude-fjd"],
+    "remap_legacy_tag": null
+  },
+  "runtime_requirements": {
+    "required_runtimes": ["claude-fjd"],
+    "preferred_runtime": "claude-fjd",
+    "preferred_runtime_is_ux_only": true,
+    "multi_account_capable": true,
+    "device_default_account": null
+  }
+}
