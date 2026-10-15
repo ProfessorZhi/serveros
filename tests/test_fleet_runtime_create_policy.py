@@ -189,6 +189,35 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
             self.h.create(runtime=SECOND, provider="codex")
         self.assertEqual(self.h.second_provider.calls, [])
 
+    def test_native_cloudcli_session_create_uses_same_runtime_defaults(self):
+        self.configure()
+        self.h.service.native_call(
+            self.h.principal(), device_ref=DEVICE, native_tool="session_create",
+            arguments={"project": PROJECT}, project=PROJECT, runtime=SECOND)
+        self.assertEqual(self.h.owner_provider.calls, [])
+        name, kwargs = self.h.second_provider.calls[0]
+        self.assertEqual(name, "session_create")
+        self.assertEqual(kwargs["model"], M[0])
+        self.assertEqual(kwargs["permissionMode"], "bypassPermissions")
+
+    def test_native_create_wrong_family_is_refused_without_provider_call(self):
+        self.configure()
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service.native_call(
+                self.h.principal(), device_ref=DEVICE, native_tool="session_create",
+                arguments={"project": PROJECT, "provider": "codex"},
+                project=PROJECT, runtime=SECOND)
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+        self.assertEqual(self.h.second_provider.calls, [])
+
+    def test_native_create_respects_own_operator_grant(self):
+        self.configure(owner=False)
+        with self.assertRaises(FleetRefusal):
+            self.h.service.native_call(
+                self.h.principal(), device_ref=DEVICE, native_tool="session_create",
+                arguments={"project": PROJECT}, project=PROJECT, runtime=SECOND)
+        self.assertEqual(self.h.second_provider.calls, [])
+
     def test_unconfigured_base_runtime_retains_legacy_defaults(self):
         self.configure()
         out = self.h.create()
