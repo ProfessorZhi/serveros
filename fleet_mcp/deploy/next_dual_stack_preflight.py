@@ -159,10 +159,20 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
         ):
             problems.append("next.local_listen: conflicts with V1 listening port")
 
-        a_url, b_url = _url(v1.get("public_mcp_url")), _url(nxt.get("public_mcp_url"))
+        a_url = _url(v1.get("public_mcp_url"))
+        b_url = _url(nxt.get("public_mcp_url"))
+        # Bootstrap only stages isolated bytes, with the Next service stopped.
+        # Requiring a live Next URL before its separate node is registered
+        # creates a circular dependency. Explicit null means UNASSIGNED, not
+        # a fabricated hostname. Missing/invalid URLs still fail closed, and
+        # a real install always requires its dedicated HTTPS /mcp endpoint.
+        next_public_unassigned = (
+            bootstrap and "public_mcp_url" in nxt
+            and nxt["public_mcp_url"] is None
+        )
         if a_url is None:
             problems.append("v1.public_mcp_url: verified HTTPS /mcp URL required")
-        if b_url is None:
+        if b_url is None and not next_public_unassigned:
             problems.append("next.public_mcp_url: dedicated HTTPS /mcp URL required")
         if a_url and b_url and a_url == b_url:
             problems.append("next.public_mcp_url: same published endpoint as V1")
