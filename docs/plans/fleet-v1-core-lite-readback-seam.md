@@ -83,6 +83,48 @@ walks the module's syntax tree and asserts the imports and calls that would let
 it — so a later change that tries to grow an egress fails a test rather than a
 review.
 
+## The value shapes are the producer's, checked against its source
+
+The first revision of this reader guessed. It expected a flat `some_avg10` /
+`full_avg10`, a storage `value.rows` list, and `swap.used_percent`. The Linux
+adapter in `native/node-core` emits none of those, and the failure was silent in
+the worst way: its own tests stayed green while every real reading would have
+been dropped as `UNAVAILABLE`. What the producer actually writes:
+
+| observation | value |
+|---|---|
+| `cpu` | `{"used_percent"}` |
+| `memory` | `{"total_bytes", "available_bytes", "free_bytes", "used_percent"}` |
+| `swap` | `{"total_bytes", "free_bytes", "used_bytes", "pages_in_per_second", "pages_out_per_second"}` — the STOCK and the FLOW, and deliberately **no** `used_percent` |
+| `psi.<resource>` | `{"some": {avg10, avg60, avg300}, "full": {…}}` |
+| `storage.readonly` | `{"filesystems": {"roles": [...]}, "disk_io": {"roles": [...]}}` |
+
+Each shape is now pinned by a fixture transcribed from the producer's own test
+expectations rather than from its prose — the two disagreed once already, which
+is how this was found.
+
+**Three rules follow from those shapes, and each has its own test:**
+
+1. **An in-place marker is not a zero.** A field the producer could not measure
+   is `{"state": "UNAVAILABLE", "reason": …}` where the number would have been,
+   and it stays that way in the summary. `pages_out_per_second: 0.0` is a
+   *measured* zero — no page moved in a measurable window — and lives in the
+   same document as an unmeasurable interval without either being mistaken for
+   the other.
+2. **`completeness` is checked against the value, not believed.** The producer
+   sets `COMPLETE` when every projected field is a number and `PARTIAL` when one
+   is a marker. A document is free to write any word it likes, so this reader
+   derives the word from what it actually projected and records a
+   `COMPLETENESS_MISMATCH` when they disagree. The derived word is what is
+   published; a wrong `COMPLETE` can never make an absent field look measured.
+3. **`cpu` and `memory` are all-or-nothing.** They are the two observations the
+   producer projects whole, so a marker where their number belongs is a document
+   this reader does not recognise — not a partial reading to be published.
+
+An earlier assertion in this repository's own tests claimed a two-of-four memory
+value was `PRESENT`. That was wrong, and the contract says so: three of four
+memory numbers is a value a reader will do arithmetic on and get wrong.
+
 ## Why the FleetService constructor is NOT wired in this PR
 
 The obvious next step is an explicitly injected `core_lite_source` callable on

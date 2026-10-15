@@ -13,6 +13,7 @@ and the document's own fields are reported as *declarations to compare*.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import sys
 import unittest
@@ -268,22 +269,37 @@ class ObservationsAreProjectedNotForwardedTest(unittest.TestCase):
                          "UNAVAILABLE")
 
     def test_a_partial_reading_is_all_or_nothing(self):
-        """Three of four memory numbers must not be published for arithmetic."""
+        """Three of four memory numbers must not be published for arithmetic.
+
+        `cpu` and `memory` are the two observations the native adapter projects
+        all-or-nothing: it either has every field or it has no reading. So a
+        value carrying two of four is not a short reading, it is a document this
+        reader does not recognise — and it must not be published as a whole one.
+        """
         whole = read(doc(observations=[
-            {"name": "memory", "state": "PRESENT",
+            {"name": "memory", "state": "PRESENT", "completeness": "COMPLETE",
              "value": {"total_bytes": 1000, "available_bytes": 400,
                        "free_bytes": 300, "used_percent": 60}}]))
         self.assertEqual(whole["observations"]["memory"]["state"], "PRESENT")
-        partial = read(doc(observations=[
-            {"name": "memory", "state": "PRESENT",
-             "value": {"total_bytes": 1000, "available_bytes": 400}}]))
-        self.assertEqual(partial["observations"]["memory"]["state"], "PRESENT")
-        broken = read(doc(observations=[
-            {"name": "memory", "state": "PRESENT",
-             "value": {"total_bytes": 1000, "available_bytes": 400,
-                       "free_bytes": 300, "used_percent": 900}}]))
-        self.assertEqual(broken["observations"]["memory"]["state"],
-                         "UNAVAILABLE")
+        for value in ({"total_bytes": 1000, "available_bytes": 400},
+                      {"total_bytes": 1000, "available_bytes": 400,
+                       "free_bytes": 300},
+                      {"total_bytes": 1000, "available_bytes": 400,
+                       "free_bytes": 300, "used_percent": 900}):
+            with self.subTest(value=value):
+                summary = read(doc(observations=[
+                    {"name": "memory", "state": "PRESENT",
+                     "completeness": "COMPLETE", "value": value}]))
+                self.assertEqual(summary["observations"]["memory"]["state"],
+                                 "UNAVAILABLE")
+
+    def test_cpu_and_memory_may_not_carry_an_in_place_marker(self):
+        """Only swap and psi.* do that; a marker here is a shape we do not know."""
+        summary = read(doc(observations=[
+            {"name": "cpu", "state": "PRESENT", "completeness": "PARTIAL",
+             "value": {"used_percent": {"state": "UNAVAILABLE",
+                                        "reason": "NO_SOURCE"}}}]))
+        self.assertEqual(summary["observations"]["cpu"]["state"], "UNAVAILABLE")
 
     def test_an_unavailable_reading_keeps_its_closed_reason(self):
         summary = read(doc(observations=[
@@ -346,36 +362,69 @@ class StorageRowsAreBoundedAndRoleCheckedTest(unittest.TestCase):
     def test_a_valid_role_row_survives(self):
         summary = read(doc(observations=[
             {"name": "storage.readonly", "state": "PRESENT",
-             "value": {"rows": [{"role": "root", "total_bytes": 10,
-                                 "available_bytes": 4, "used_bytes": 6}]}}]))
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": [
+                 {"role": "root", "total_bytes": 10,
+                  "available_bytes": 4, "used_bytes": 6}]}}}]))
         row = summary["observations"]["storage.readonly"]
         self.assertEqual(row["state"], "PRESENT")
-        self.assertEqual(row["value"]["rows"][0]["role"], "root")
+        self.assertEqual(row["value"]["filesystems"]["roles"][0]["role"], "root")
+
+    def test_both_storage_blocks_survive_together(self):
+        summary = read(doc(observations=[
+            {"name": "storage.readonly", "state": "PRESENT",
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": [
+                          {"role": "root", "total_bytes": 10,
+                           "available_bytes": 4, "used_bytes": 6}]},
+                       "disk_io": {"roles": [
+                          {"role": "root", "read_bytes": 1, "write_bytes": 2}]}}}]))
+        row = summary["observations"]["storage.readonly"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(sorted(row["value"]), ["disk_io", "filesystems"])
 
     def test_a_device_name_role_is_refused(self):
         """`vda2` is a raw hardware identifier the role exists to replace."""
         summary = read(doc(observations=[
             {"name": "storage.readonly", "state": "PRESENT",
-             "value": {"rows": [{"role": "/dev/vda2", "total_bytes": 10}]}}]))
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": [
+                 {"role": "/dev/vda2", "total_bytes": 10,
+                  "available_bytes": 4, "used_bytes": 6}]}}}]))
         self.assertEqual(summary["observations"]["storage.readonly"]["state"],
                          "UNAVAILABLE")
 
     def test_a_path_key_in_a_storage_row_is_stripped(self):
+        """The keys the producer never forwards cannot survive a round trip."""
         summary = read(doc(observations=[
             {"name": "storage.readonly", "state": "PRESENT",
-             "value": {"rows": [{"role": "root", "total_bytes": 10,
-                                 "mount_point": "/", "path": "/dev/vda2"}]}}]))
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": [
+                 {"role": "root", "total_bytes": 10, "available_bytes": 4,
+                  "used_bytes": 6, "mount_point": "/", "path": "/dev/vda2"}]}}}]))
         row = summary["observations"]["storage.readonly"]
         self.assertEqual(row["state"], "PRESENT")
-        self.assertNotIn("mount_point", row["value"]["rows"][0])
+        self.assertNotIn("mount_point", row["value"]["filesystems"]["roles"][0])
+        self.assertNotIn("path", row["value"]["filesystems"]["roles"][0])
         self.assertIn("UNKNOWN_FIELD", refusals(summary))
 
-    def test_too_many_rows_makes_the_block_unavailable(self):
-        rows = [{"role": f"r{i}", "total_bytes": 1}
-                for i in range(rb.MAX_STORAGE_ROWS + 1)]
+    def test_a_row_missing_a_byte_count_makes_the_block_unavailable(self):
+        """A partial row is a row the producer would have dropped whole."""
         summary = read(doc(observations=[
             {"name": "storage.readonly", "state": "PRESENT",
-             "value": {"rows": rows}}]))
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": [
+                 {"role": "root", "total_bytes": 10}]}}}]))
+        self.assertEqual(summary["observations"]["storage.readonly"]["state"],
+                         "UNAVAILABLE")
+
+    def test_too_many_rows_makes_the_block_unavailable(self):
+        rows = [{"role": f"r{i}", "total_bytes": 1, "available_bytes": 1,
+                 "used_bytes": 1} for i in range(rb.MAX_STORAGE_ROWS + 1)]
+        summary = read(doc(observations=[
+            {"name": "storage.readonly", "state": "PRESENT",
+             "completeness": "COMPLETE",
+             "value": {"filesystems": {"roles": rows}}}]))
         self.assertEqual(summary["observations"]["storage.readonly"]["state"],
                          "UNAVAILABLE")
 
@@ -660,6 +709,345 @@ class NoFleetSurfaceIsTouchedTest(unittest.TestCase):
         for name in rb.__all__:
             with self.subTest(name=name):
                 self.assertNotIn(name, ("fleet_", "tool", "mcp"))
+
+
+
+class TheRealNativeProducerShapeIsReadTest(unittest.TestCase):
+    """A document with the exact shapes `native/node-core` PR #215 emits.
+
+    Transcribed from the producer's own test expectations
+    (`core-lite/tests/test_collector_readings.cpp`) rather than from its prose,
+    because the prose and the code disagreed about `swap` and `psi.*` once
+    already: this reader's first revision expected a flat `some_avg10` and a
+    storage `rows` list, and would have dropped every real reading as
+    UNAVAILABLE while its own tests stayed green.
+
+    If the producer changes shape again, THIS is the class that should fail.
+    """
+
+    #: The Core-Lite value shapes, key for key, as the Linux adapter writes them.
+    OBSERVATIONS = [
+        {"name": "cpu", "state": "PRESENT", "completeness": "COMPLETE",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"used_percent": 6.5}},
+        {"name": "memory", "state": "PRESENT", "completeness": "COMPLETE",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"total_bytes": 270449774592, "available_bytes": 178577321984,
+                   "free_bytes": 71849877504, "used_percent": 29.9}},
+        {"name": "storage.readonly", "state": "PRESENT",
+         "completeness": "COMPLETE",
+         "value": {"filesystems": {"roles": [
+                      {"role": "root", "total_bytes": 500000000000,
+                       "available_bytes": 100000000000, "used_bytes": 400000000000},
+                      {"role": "data", "total_bytes": 4000000000000,
+                       "available_bytes": 3000000000000, "used_bytes": 1000000000000}]},
+                   "disk_io": {"roles": [
+                      {"role": "root", "read_bytes": 111, "write_bytes": 222}]}}},
+        {"name": "swap", "state": "PRESENT", "completeness": "COMPLETE",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"total_bytes": 34359734272, "free_bytes": 5210218496,
+                   "used_bytes": 29149515776,
+                   "pages_in_per_second": 17.5, "pages_out_per_second": 22.5}},
+        {"name": "psi.cpu", "state": "PRESENT", "completeness": "COMPLETE",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"some": {"avg10": 0.93, "avg60": 4.86, "avg300": 5.69},
+                   "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0}}},
+        {"name": "psi.memory", "state": "PRESENT", "completeness": "COMPLETE",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"some": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0},
+                   "full": {"avg10": 0.0, "avg60": 0.0, "avg300": 0.0}}},
+        # The one PARTIAL reading: `some` measured, `full` an explicit marker.
+        {"name": "psi.io", "state": "PRESENT", "completeness": "PARTIAL",
+         "source": "nodecore/NodeResourceSnapshot v1",
+         "value": {"some": {"avg10": 0.61, "avg60": 0.22, "avg300": 0.67},
+                   "full": {"state": "UNAVAILABLE", "reason": "NO_SOURCE"}}},
+        {"name": "services", "state": "UNAVAILABLE", "reason": "NOT_IMPLEMENTED"},
+        {"name": "connector", "state": "UNAVAILABLE", "reason": "NOT_IMPLEMENTED"},
+        {"name": "gpu.readonly", "state": "UNAVAILABLE", "reason": "NOT_IMPLEMENTED"},
+    ]
+
+    def document(self, **over) -> dict:
+        base = doc()
+        base["device_identity"] = {
+            "state": "UNKNOWN", "basis": "NONE", "claimed": DEVICE,
+            "reason": "the managed Node identity was not established"}
+        # The producer is honest here: it cannot attest a device, so it says so.
+        base["live"] = False
+        # DEEP, not shallow: a `dict(row)` copy still shares each row's
+        # `value`, so one test's hostile injection would rewrite the fixture
+        # for every test that ran after it.
+        base["observations"] = copy.deepcopy(self.OBSERVATIONS)
+        base.update(over)
+        return base
+
+    def test_the_real_document_is_read_and_not_dropped(self):
+        summary = read(self.document())
+        self.assertEqual(summary["connected"], "CONNECTED")
+        self.assertEqual(summary["freshness"]["state"], "FRESH")
+        # The producer declined to claim `live`; the reader does not overrule it.
+        self.assertFalse(summary["live"]["claimed"])
+        self.assertFalse(summary["live"]["accepted"])
+        for name in ("cpu", "memory", "storage.readonly", "swap", "psi.cpu",
+                     "psi.memory", "psi.io"):
+            with self.subTest(observation=name):
+                self.assertEqual(summary["observations"][name]["state"], "PRESENT")
+        for name in ("services", "connector", "gpu.readonly"):
+            with self.subTest(observation=name):
+                row = summary["observations"][name]
+                self.assertEqual(row["state"], "UNAVAILABLE")
+                self.assertEqual(row["reason"], "NOT_IMPLEMENTED")
+
+    def test_the_swap_rates_survive_and_are_not_percentages(self):
+        row = read(self.document())["observations"]["swap"]
+        self.assertEqual(row["completeness"], "COMPLETE")
+        self.assertEqual(row["value"]["pages_out_per_second"], 22.5)
+        self.assertEqual(row["value"]["total_bytes"], 34359734272)
+        # `used_percent` is deliberately absent from the producer's projection.
+        self.assertNotIn("used_percent", row["value"])
+
+    def test_a_measured_zero_rate_is_not_an_absence(self):
+        """`0.0` pages out and "the interval was not measurable" differ."""
+        document = self.document()
+        for row in document["observations"]:
+            if row["name"] == "swap":
+                row["value"]["pages_out_per_second"] = 0.0
+        summary = read(document)
+        row = summary["observations"]["swap"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["value"]["pages_out_per_second"], 0.0)
+        self.assertEqual(row["completeness"], "COMPLETE")
+
+    def test_the_partial_psi_reading_keeps_its_measured_half(self):
+        row = read(self.document())["observations"]["psi.io"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self.assertEqual(row["value"]["some"]["avg10"], 0.61)
+        # The absent line says so where it sits, and is not rendered as zero.
+        self.assertEqual(row["value"]["full"],
+                         {"state": "UNAVAILABLE", "reason": "NO_SOURCE"})
+
+    def test_a_claimed_complete_over_a_partial_value_is_not_believed(self):
+        """The word is checked against the value rather than carried."""
+        document = self.document()
+        for row in document["observations"]:
+            if row["name"] == "psi.io":
+                row["completeness"] = "COMPLETE"
+        summary = read(document)
+        row = summary["observations"]["psi.io"]
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self.assertIn("COMPLETENESS_MISMATCH", refusals(summary))
+
+    def test_a_claimed_partial_over_a_complete_value_is_not_believed(self):
+        document = self.document()
+        for row in document["observations"]:
+            if row["name"] == "cpu":
+                row["completeness"] = "PARTIAL"
+        summary = read(document)
+        self.assertEqual(summary["observations"]["cpu"]["completeness"], "COMPLETE")
+        self.assertIn("COMPLETENESS_MISMATCH", refusals(summary))
+
+    def test_storage_is_two_role_blocks_and_no_paths(self):
+        row = read(self.document())["observations"]["storage.readonly"]
+        self.assertEqual(sorted(row["value"]), ["disk_io", "filesystems"])
+        self.assertEqual(row["value"]["filesystems"]["roles"][0]["role"], "root")
+        rendered = repr(row)
+        for leaked in ("/dev/", "/data", "mount_point", "fstype", "inodes"):
+            with self.subTest(leaked=leaked):
+                self.assertNotIn(leaked, rendered)
+
+    def test_storage_with_only_one_block_is_still_a_reading(self):
+        """Either block may be absent; the producer says so itself."""
+        document = self.document()
+        for row in document["observations"]:
+            if row["name"] == "storage.readonly":
+                del row["value"]["disk_io"]
+        summary = read(document)
+        row = summary["observations"]["storage.readonly"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(sorted(row["value"]), ["filesystems"])
+
+
+class HostileValuesInsideTheRealShapeTest(unittest.TestCase):
+    """Every nesting level the real shape introduced is a place to hide a string."""
+
+    CANARY = "canary-NESTED-12345678"
+
+    def _document_with(self, mutate) -> dict:
+        document = TheRealNativeProducerShapeIsReadTest().document()
+        mutate(document)
+        return document
+
+    def _assert_no_echo(self, summary):
+        self.assertNotIn(self.CANARY, repr(summary))
+        for item in summary["refusals"]:
+            self.assertNotIn(self.CANARY, item["note"])
+            self.assertNotIn(self.CANARY, item["where"])
+
+    def test_a_canary_in_a_psi_window_is_refused(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "psi.cpu":
+                    row["value"]["some"]["avg10"] = self.CANARY
+        summary = read(self._document_with(mutate))
+        self.assertEqual(summary["observations"]["psi.cpu"]["state"], "UNAVAILABLE")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_as_a_whole_psi_line_is_refused(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "psi.cpu":
+                    row["value"]["some"] = self.CANARY
+        summary = read(self._document_with(mutate))
+        self.assertEqual(summary["observations"]["psi.cpu"]["state"], "UNAVAILABLE")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_in_a_psi_reason_becomes_no_source(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "psi.io":
+                    row["value"]["full"]["reason"] = self.CANARY
+        summary = read(self._document_with(mutate))
+        row = summary["observations"]["psi.io"]
+        self.assertEqual(row["value"]["full"]["reason"], "NO_SOURCE")
+        self._assert_no_echo(summary)
+
+    def test_a_swap_field_the_producer_could_not_measure_is_not_a_zero(self):
+        """The stock and the flow each carry their own absence in place."""
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "swap":
+                    row["value"]["used_bytes"] = {"state": "UNAVAILABLE",
+                                                  "reason": "NO_SOURCE"}
+                    row["completeness"] = "PARTIAL"
+        summary = read(self._document_with(mutate))
+        row = summary["observations"]["swap"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self.assertEqual(row["value"]["used_bytes"],
+                         {"state": "UNAVAILABLE", "reason": "NO_SOURCE"})
+        self.assertNotEqual(row["value"]["used_bytes"], 0)
+        # The measured half is still there.
+        self.assertEqual(row["value"]["pages_out_per_second"], 22.5)
+
+    def test_a_canary_in_a_per_window_reason_becomes_no_source(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "psi.cpu":
+                    row["value"]["some"]["avg300"] = {"state": "UNAVAILABLE",
+                                                      "reason": self.CANARY}
+        summary = read(self._document_with(mutate))
+        row = summary["observations"]["psi.cpu"]
+        self.assertEqual(row["value"]["some"]["avg300"]["reason"], "NO_SOURCE")
+        self.assertEqual(row["completeness"], "PARTIAL")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_in_a_swap_marker_reason_becomes_no_source(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "swap":
+                    row["value"]["used_bytes"] = {"state": "UNAVAILABLE",
+                                                  "reason": self.CANARY}
+        summary = read(self._document_with(mutate))
+        row = summary["observations"]["swap"]
+        self.assertEqual(row["value"]["used_bytes"]["reason"], "NO_SOURCE")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_in_a_swap_rate_is_refused(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "swap":
+                    row["value"]["pages_out_per_second"] = self.CANARY
+        summary = read(self._document_with(mutate))
+        self.assertEqual(summary["observations"]["swap"]["state"], "UNAVAILABLE")
+        self._assert_no_echo(summary)
+
+    def test_a_path_shaped_storage_role_is_refused(self):
+        """A role is the contract's one free-text field, and a path is not a role."""
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "storage.readonly":
+                    row["value"]["filesystems"]["roles"][0]["role"] = "/dev/vda2"
+        summary = read(self._document_with(mutate))
+        self.assertEqual(
+            summary["observations"]["storage.readonly"]["state"], "UNAVAILABLE")
+        self.assertNotIn("/dev/vda2", repr(summary))
+
+    def test_a_role_shaped_string_is_the_contracts_own_bounded_echo(self):
+        """The ONE echo this reader has, recorded rather than left implicit.
+
+        `role` is the source contract's single free-text field, and it is
+        admitted when it matches `[A-Za-z0-9_-]{1,32}`. That bound excludes
+        separators, so it cannot carry a path or an argv fragment — but it does
+        admit a token-shaped string, and this reader does not invent a role
+        vocabulary the contract never defined to close the last 32 characters.
+
+        Asserted as ECHOED, so that tightening it later is a change this test
+        reports rather than a silent narrowing someone discovers in production.
+        """
+        role_shaped = "Abc012_-" * 4          # 32 chars, matches the rule exactly
+        self.assertEqual(len(role_shaped), 32)
+
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "storage.readonly":
+                    row["value"]["filesystems"]["roles"][0]["role"] = role_shaped
+        summary = read(self._document_with(mutate))
+        row = summary["observations"]["storage.readonly"]
+        self.assertEqual(row["state"], "PRESENT")
+        self.assertEqual(row["value"]["filesystems"]["roles"][0]["role"], role_shaped)
+        # And a 33rd character is over the bound, so the row is refused.
+        def mutate_long(document):
+            for row in document["observations"]:
+                if row["name"] == "storage.readonly":
+                    row["value"]["filesystems"]["roles"][0]["role"] = role_shaped + "X"
+        over = read(self._document_with(mutate_long))
+        self.assertEqual(over["observations"]["storage.readonly"]["state"],
+                         "UNAVAILABLE")
+
+    def test_a_canary_as_a_key_inside_a_psi_line_is_not_echoed(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "psi.cpu":
+                    row["value"]["some"][self.CANARY] = 1
+        summary = read(self._document_with(mutate))
+        self.assertEqual(summary["observations"]["psi.cpu"]["state"], "PRESENT")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_as_a_key_inside_a_storage_row_is_not_echoed(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "storage.readonly":
+                    row["value"]["filesystems"]["roles"][0][self.CANARY] = 1
+        summary = read(self._document_with(mutate))
+        self.assertEqual(
+            summary["observations"]["storage.readonly"]["state"], "PRESENT")
+        self._assert_no_echo(summary)
+
+    def test_a_canary_as_a_storage_block_name_is_not_echoed(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "storage.readonly":
+                    row["value"][self.CANARY] = {"roles": []}
+        summary = read(self._document_with(mutate))
+        self._assert_no_echo(summary)
+
+    def test_a_canary_as_a_swap_key_is_not_echoed(self):
+        def mutate(document):
+            for row in document["observations"]:
+                if row["name"] == "swap":
+                    row["value"][self.CANARY] = 1
+        summary = read(self._document_with(mutate))
+        self.assertEqual(summary["observations"]["swap"]["state"], "PRESENT")
+        self._assert_no_echo(summary)
+
+    def test_the_whole_real_document_with_canaries_everywhere_leaks_nothing(self):
+        def mutate(document):
+            for row in document["observations"]:
+                row[self.CANARY] = 1
+                if isinstance(row.get("value"), dict):
+                    row["value"][self.CANARY] = 1
+        summary = read(self._document_with(mutate))
+        self._assert_no_echo(summary)
 
 
 if __name__ == "__main__":

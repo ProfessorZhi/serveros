@@ -80,49 +80,72 @@ REASONS = frozenset({
 
 OBSERVATION_STATES = frozenset({"PRESENT", "UNAVAILABLE"})
 
-#: The observation names the source contract defines, and — for each — the value
-#: keys this reader is willing to carry. Both lists are closed. `services`,
-#: `connector` and `gpu.readonly` carry no numeric value in the contract, so
-#: their permitted key set is empty: the row's STATE is the whole reading.
-OBSERVATION_VALUE_KEYS: dict[str, frozenset[str]] = {
-    "cpu": frozenset({"used_percent"}),
-    "memory": frozenset({"total_bytes", "available_bytes", "free_bytes",
-                         "used_percent"}),
-    # No swap block exists in the source collector yet, so this is the smallest
-    # set consistent with the vocabulary the contract already uses for memory.
-    # Anything else is stripped and recorded, not forwarded.
-    "swap": frozenset({"total_bytes", "used_bytes", "free_bytes",
-                       "used_percent"}),
-    "psi.cpu": frozenset({"some_avg10", "full_avg10"}),
-    "psi.memory": frozenset({"some_avg10", "full_avg10"}),
-    "psi.io": frozenset({"some_avg10", "full_avg10"}),
-    # The one block whose value is a LIST. Its row keys are checked separately,
-    # per row, because a role is per filesystem and not per reading.
-    "storage.readonly": frozenset({"rows"}),
-    "services": frozenset(),
-    "connector": frozenset(),
-    "gpu.readonly": frozenset(),
+#: Scalar KINDS a projected leaf may be. Each is its own check because the
+#: producer applies a different one to each, and collapsing them is how a byte
+#: count ends up validated as a percentage.
+K_BYTES = "bytes"      # non-negative integer; a real is refused, not rounded
+K_RATE = "rate"        # non-negative finite number — 0 is a MEASURED zero
+K_PERCENT = "percent"  # a share of wall-clock time, so [0, 100]
+K_ROLE = "role"        # the contract's one free-text field, tightly bounded
+
+#: The shape of one observation's value, as the native producer actually emits
+#: it. Closed: a key not named here cannot appear in a summary. `services`,
+#: `connector` and `gpu.readonly` carry no value in the contract, so their map
+#: is empty — the row's STATE is the whole reading.
+#:
+#: Note what changed from the first revision of this reader: the shapes below
+#: are the ones the Linux adapter in `native/node-core` really writes, confirmed
+#: against its source, not the ones a reader might have guessed. `swap` carries
+#: paging RATES and no `used_percent`; `psi.*` nests `some`/`full`; storage is
+#: two role blocks rather than one row list.
+OBSERVATION_VALUE_KEYS: dict[str, dict[str, str]] = {
+    "cpu": {"used_percent": K_PERCENT},
+    "memory": {"total_bytes": K_BYTES, "available_bytes": K_BYTES,
+               "free_bytes": K_BYTES, "used_percent": K_PERCENT},
+    # The STOCK (bytes in use) and the FLOW (pages per second). The producer
+    # deliberately withholds `used_percent` here: it is the field most likely to
+    # be mistaken for a paging signal, and the two rates answer that question.
+    "swap": {"total_bytes": K_BYTES, "free_bytes": K_BYTES, "used_bytes": K_BYTES,
+             "pages_in_per_second": K_RATE, "pages_out_per_second": K_RATE},
+    "psi.cpu": {"some": "psi_line", "full": "psi_line"},
+    "psi.memory": {"some": "psi_line", "full": "psi_line"},
+    "psi.io": {"some": "psi_line", "full": "psi_line"},
+    "storage.readonly": {"filesystems": "fs_block", "disk_io": "disk_block"},
+    "services": {},
+    "connector": {},
+    "gpu.readonly": {},
 }
 
-#: What one `storage.readonly` row may carry. `path`, `mount_point`, `fstype`,
-#: `inodes` and the raw device name are deliberately absent: the role replaces
-#: the device name, and the rest are the collector's business, not a reader's.
-STORAGE_ROW_KEYS = frozenset({"role", "total_bytes", "available_bytes",
-                              "used_bytes", "read_bytes", "write_bytes"})
+#: The three PSI windows. All three keys are always written by the producer; one
+#: that is unreadable is an explicit marker in place, never an omitted key.
+PSI_WINDOWS = ("avg10", "avg60", "avg300")
+
+#: `storage.readonly` is two independent role blocks. Either may be absent — the
+#: collector may have one and not the other — and at most 64 rows each.
+STORAGE_BLOCK_KEYS = frozenset({"filesystems", "disk_io"})
+FILESYSTEM_ROW_KEYS = frozenset({"role", "total_bytes", "available_bytes",
+                                 "used_bytes"})
+DISK_ROW_KEYS = frozenset({"role", "read_bytes", "write_bytes"})
+
+#: Observations whose value may carry the producer's in-place UNAVAILABLE marker
+#: (`{"state": "UNAVAILABLE", "reason": ...}`) where a number would otherwise go.
+#: `cpu` and `memory` are absent on purpose: the native adapter projects them
+#: all-or-nothing, so a marker there is a document this reader does not know.
+INLINE_UNAVAILABLE_OBSERVATIONS = frozenset({"swap", "psi.cpu", "psi.memory",
+                                             "psi.io"})
+
+#: What a partly-measured reading says about itself.
+COMPLETENESS_WORDS = frozenset({"COMPLETE", "PARTIAL"})
 
 #: The only top-level members carried out of an observation row.
 _OBSERVATION_MEMBERS = frozenset({"name", "state", "reason", "source",
-                                  "observed_at", "value"})
+                                  "observed_at", "value", "completeness"})
 
 #: The only top-level members carried out of the document itself.
 _DOCUMENT_MEMBERS = frozenset({"schema", "node", "principal", "platform",
                                "generation", "mode", "observed_at", "freshness",
                                "principal_identity", "device_identity", "live",
                                "observations"})
-
-_BYTES_KEYS = frozenset({"total_bytes", "available_bytes", "free_bytes",
-                         "used_bytes", "read_bytes", "write_bytes"})
-_PERCENT_KEYS = frozenset({"used_percent", "some_avg10", "full_avg10"})
 
 #: A role is the one free-text field in the contract, so it is the one that has
 #: to be constrained rather than trusted.
@@ -160,6 +183,9 @@ class _ObservationOut:
     reason: str | None = None
     note: str | None = None
     value: dict[str, Any] = field(default_factory=dict)
+    #: Only on a PRESENT reading, and only ever the word DERIVED from the value
+    #: this reader actually projected — never the document's own claim.
+    completeness: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"state": self.state}
@@ -167,6 +193,8 @@ class _ObservationOut:
             out["reason"] = self.reason
         else:
             out["value"] = dict(self.value)
+            if self.completeness:
+                out["completeness"] = self.completeness
         if self.note:
             out["note"] = self.note
         return out
@@ -195,6 +223,21 @@ def _bytes_ok(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _rate_ok(value: Any) -> bool:
+    """A paging rate. Zero here is a measured zero, not an absence.
+
+    "no page moved in a measurable window" and "the interval was not measurable"
+    are different statements, and the producer keeps them apart by writing `0`
+    for the first and a marker for the second. So a non-negative finite number
+    is accepted as-is.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if math.isnan(value) or math.isinf(value):
+        return False
+    return value >= 0
+
+
 def _percent_ok(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
@@ -203,40 +246,250 @@ def _percent_ok(value: Any) -> bool:
     return 0 <= value <= 100
 
 
-def _validate_numbers(name: str, value: dict[str, Any],
-                      refusals: list[Refusal]) -> bool:
-    """Whether every numeric in one observation's value is usable.
+def _is_inline_unavailable(node: Any) -> bool:
+    """The producer's in-place marker for one field it could not measure.
 
-    The source contract's rule, inherited rather than softened: a block that is
-    PRESENT but out of range or malformed makes the WHOLE reading unusable.
-    Three of four memory numbers is a value a reader will do arithmetic on and
-    get wrong, so no partial value is published.
+    Recognised by the `state` word alone, and only ever *inside* a PRESENT
+    value. Its `reason` is validated separately: the adapter writes its own
+    closed word there, never the collector's prose, and a reader that echoed
+    whatever it found would hand the producer a channel.
     """
-    ok = True
-    for key, item in value.items():
-        if key in _BYTES_KEYS:
-            if not _bytes_ok(item):
-                refusals.append(Refusal(
-                    "MALFORMED_VALUE", f"{name}.{key}",
-                    "not a non-negative integer"))
-                ok = False
-        elif key in _PERCENT_KEYS:
-            if not _percent_ok(item):
-                refusals.append(Refusal(
-                    "MALFORMED_VALUE", f"{name}.{key}",
-                    "not a percentage in 0..100"))
-                ok = False
-    return ok
+    return isinstance(node, dict) and node.get("state") == "UNAVAILABLE"
+
+
+#: The three answers a scalar leaf can give. `UNAVAILABLE` is a legitimate
+#: reading of "not measured" in the places the producer allows it, and is never
+#: folded into a number — least of all into zero, which is a measurement.
+_OK, _UNAVAIL, _BAD = "ok", "unavailable", "bad"
+
+
+def _scalar(kind: str, node: Any) -> tuple[str, Any]:
+    if _is_inline_unavailable(node):
+        return _UNAVAIL, None
+    if kind == K_BYTES:
+        return (_OK, node) if _bytes_ok(node) else (_BAD, None)
+    if kind == K_RATE:
+        return (_OK, node) if _rate_ok(node) else (_BAD, None)
+    if kind == K_PERCENT:
+        return (_OK, node) if _percent_ok(node) else (_BAD, None)
+    return _BAD, None
+
+
+def _reason_of(node: dict[str, Any]) -> str:
+    """The closed reason for an in-place marker, or NO_SOURCE.
+
+    A reason outside the contract's closed set is reported as NO_SOURCE rather
+    than carried: a typo must not become a vocabulary word no reader was taught,
+    and an echoed string would be one.
+    """
+    reason = node.get("reason")
+    return reason if reason in REASONS else "NO_SOURCE"
+
+
+def _marker(node: dict[str, Any]) -> dict[str, str]:
+    """The marker as this reader re-emits it: closed shape, closed reason."""
+    return {"state": "UNAVAILABLE", "reason": _reason_of(node)}
+
+
+def _psi_line(node: Any, sink: list[Refusal], label: str) -> tuple[str, Any]:
+    """One `some`/`full` line: three windows, each a percent or a marker.
+
+    Returns `(_OK, (windows, all_measured))`, `(_UNAVAIL, None)` when the whole
+    line is the producer's marker, or `(_BAD, None)` when it is not a shape this
+    reader knows. A line whose three windows are all markers is the producer's
+    own "not a reading", so it becomes one here too.
+    """
+    if _is_inline_unavailable(node):
+        return _UNAVAIL, None
+    if not isinstance(node, dict):
+        return _BAD, None
+    extra = set(node) - set(PSI_WINDOWS)
+    if extra:
+        # `total_microseconds` is deliberately not projected by the producer, and
+        # anything else here is a document that is not its output. Counted and
+        # dropped at every level, never named and never carried.
+        sink.append(Refusal("UNKNOWN_FIELD", f"psi.{label}",
+                            f"{len(extra)} key(s) this reader does not carry "
+                            f"were dropped"))
+    windows: dict[str, Any] = {}
+    measured = 0
+    all_measured = True
+    for window in PSI_WINDOWS:
+        if window not in node:
+            # The producer always writes all three keys; one absent means this
+            # is not the document this reader was written for.
+            return _BAD, None
+        state, value = _scalar(K_PERCENT, node[window])
+        if state == _OK:
+            windows[window] = value
+            measured += 1
+        elif state == _UNAVAIL:
+            windows[window] = _marker(node[window])
+            all_measured = False
+        else:
+            return _BAD, None
+    if not measured:
+        return _UNAVAIL, None
+    return _OK, (windows, all_measured)
+
+
+def _role_rows(node: Any, allow: frozenset[str], need_bytes: int,
+               sink: list[Refusal], label: str) -> tuple[str, Any]:
+    """One `{"roles": [...]}` block of role rows.
+
+    The producer drops a whole block when any single row fails to project —
+    "silently skipping it would report a machine with fewer filesystems than it
+    has" — so a row this reader cannot validate is not a row it may skip either.
+    """
+    if _is_inline_unavailable(node):
+        return _UNAVAIL, None
+    if not isinstance(node, dict) or set(node) != {"roles"}:
+        return _BAD, None
+    rows = node["roles"]
+    if not isinstance(rows, list) or len(rows) > MAX_STORAGE_ROWS:
+        return _BAD, None
+    if not rows:
+        return _BAD, None
+    clean: list[dict[str, Any]] = []
+    unknown = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            return _BAD, None
+        role = row.get("role")
+        if not isinstance(role, str) or not _ROLE.match(role):
+            return _BAD, None
+        entry: dict[str, Any] = {"role": role}
+        measured = 0
+        for key, value in row.items():
+            if key == "role":
+                continue
+            if key not in allow:
+                # `path`, `mount_point`, `source`, `fstype`, `inodes` and the raw
+                # device name live here in a document that is not the producer's
+                # projection. Dropped and counted, never named and never carried.
+                unknown += 1
+                continue
+            if not _bytes_ok(value):
+                return _BAD, None
+            entry[key] = value
+            measured += 1
+        if measured < need_bytes:
+            return _BAD, None
+        clean.append(entry)
+    if unknown:
+        sink.append(Refusal("UNKNOWN_FIELD", f"storage.readonly.{label}",
+                            f"{unknown} key(s) this reader does not carry were "
+                            f"dropped"))
+    return _OK, clean
+
+
+def _storage_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any]:
+    """`storage.readonly`: two independent role blocks, either one optional."""
+    unknown = set(value) - STORAGE_BLOCK_KEYS
+    if unknown:
+        sink.append(Refusal("UNKNOWN_FIELD", "storage.readonly.value",
+                            f"{len(unknown)} key(s) this reader does not carry "
+                            f"were dropped"))
+    out: dict[str, Any] = {}
+    bad = False
+    # A filesystem row must carry all three byte counts; a disk row must carry
+    # both. Anything less is a partial row, which the producer never writes.
+    for key, allow, need in (("filesystems", FILESYSTEM_ROW_KEYS, 3),
+                             ("disk_io", DISK_ROW_KEYS, 2)):
+        if key not in value:
+            continue
+        state, rows = _role_rows(value[key], allow, need, sink, key)
+        if state == _OK:
+            out[key] = {"roles": rows}
+        elif state == _UNAVAIL:
+            bad = True
+        else:
+            # A malformed row is not skipped; the reading it belonged to is.
+            sink.append(Refusal("MALFORMED_VALUE", f"storage.readonly.{key}",
+                                "a role row did not survive validation"))
+            bad = True
+    if bad:
+        return _BAD, None
+    if not out:
+        return _BAD, None
+    return _OK, out
+
+
+def _project_value(name: str, value: dict[str, Any], sink: list[Refusal]
+                   ) -> tuple[str, Any, bool]:
+    """Project one PRESENT value. Returns (state, value, all_measured)."""
+    spec = OBSERVATION_VALUE_KEYS[name]
+    unknown = set(value) - set(spec)
+    if unknown:
+        sink.append(Refusal("UNKNOWN_FIELD", f"{name}.value",
+                            f"{len(unknown)} key(s) this reader does not carry "
+                            f"were dropped"))
+    if name == "storage.readonly":
+        state, projected = _storage_value(value, sink)
+        # The native adapter assembles storage from two blocks that are each
+        # all-or-nothing and never carries an in-place marker, so a storage
+        # reading is COMPLETE whenever it exists at all.
+        return state, projected, True
+
+    out: dict[str, Any] = {}
+    measured = 0
+    all_measured = True
+    allow_inline = name in INLINE_UNAVAILABLE_OBSERVATIONS
+    for key, kind in spec.items():
+        if key not in value:
+            return _BAD, None, False
+        if kind in ("psi_line",):
+            state, payload = _psi_line(value[key], sink, key)
+            if state == _OK:
+                windows, line_complete = payload
+                out[key] = windows
+                measured += 1
+                all_measured = all_measured and line_complete
+            elif state == _UNAVAIL and key == "full":
+                # `full` is the line a kernel may legitimately not provide. The
+                # producer states that absence in place, and so does this.
+                out[key] = _marker(value[key])
+                all_measured = False
+            elif state == _UNAVAIL and key == "some":
+                # "`some` is the line every kernel that has PSI at all
+                # provides. Without it there is no reading here, whatever
+                # `full` said." The producer refuses the whole observation, and
+                # so does this reader.
+                return _BAD, None, False
+            else:
+                return _BAD, None, False
+            continue
+
+        state, scalar = _scalar(kind, value[key])
+        if state == _OK:
+            out[key] = scalar
+            measured += 1
+        elif state == _UNAVAIL and allow_inline:
+            out[key] = _marker(value[key])
+            all_measured = False
+        else:
+            # A number that is out of range or malformed, or an in-place marker
+            # where the producer never writes one. The contract's rule: the
+            # WHOLE reading becomes UNAVAILABLE, because three of four memory
+            # numbers is a value a reader will do arithmetic on and get wrong.
+            if state == _BAD:
+                sink.append(Refusal("MALFORMED_VALUE", f"{name}.{key}",
+                                    "not a value this reader can carry"))
+            return _BAD, None, False
+
+    if not measured:
+        return _BAD, None, False
+    return _OK, out, all_measured
 
 
 def normalize_observations(
     document: object, *, refusals: list[Refusal] | None = None
 ) -> dict[str, _ObservationOut]:
-    """Project the document's observation rows onto the keys this reader knows.
+    """Project the document's observation rows onto the shapes this reader knows.
 
     Returns one entry per observation name the document declares. Names outside
-    the contract's closed set are dropped and recorded; duplicates collapse to
-    a single UNAVAILABLE row, because two rows for one name is a document
+    the contract's closed set are dropped and recorded; duplicates collapse to a
+    single UNAVAILABLE row, because two rows for one name is a document
     disagreeing with itself and picking either would be inventing an answer.
     """
     out: dict[str, _ObservationOut] = {}
@@ -245,8 +498,7 @@ def normalize_observations(
     if rows is None:
         return out
     if not isinstance(rows, list):
-        sink.append(Refusal("MALFORMED_DOCUMENT", "observations",
-                            "not a list"))
+        sink.append(Refusal("MALFORMED_DOCUMENT", "observations", "not a list"))
         return out
 
     seen: set[str] = set()
@@ -261,8 +513,6 @@ def normalize_observations(
                                 "name is not in the source contract"))
             continue
         if name in seen:
-            # First sighting keeps the name so the summary still reports the
-            # observation; the duplicate is what is refused.
             out[name] = _ObservationOut("UNAVAILABLE", "NO_SOURCE",
                                         "the document declared this name twice")
             sink.append(Refusal("DUPLICATE_OBSERVATION", where,
@@ -289,8 +539,6 @@ def normalize_observations(
         if state == "UNAVAILABLE":
             reason = row.get("reason")
             if reason not in REASONS:
-                # A typo must not become a new vocabulary word. The contract
-                # says an unrecognised reason is reported as NO_SOURCE.
                 sink.append(Refusal("UNKNOWN_REASON", f"{where}.reason",
                                     "not in the source contract's closed set"))
                 reason = "NO_SOURCE"
@@ -305,105 +553,30 @@ def normalize_observations(
                                 "not an object"))
             continue
 
-        allowed = OBSERVATION_VALUE_KEYS[name]
-        kept: dict[str, Any] = {}
-        for key in sorted(value):
-            if key not in allowed:
-                continue
-            kept[key] = value[key]
-        dropped = len(set(value) - allowed)
-        if dropped:
-            sink.append(Refusal("UNKNOWN_FIELD", f"{where}.value",
-                                f"{dropped} key(s) this reader does not carry "
-                                f"were dropped"))
-
-        if name == "storage.readonly":
-            kept, detail = _normalize_storage(kept, where, sink)
-            if kept is None:
-                out[name] = _ObservationOut("UNAVAILABLE", "NO_SOURCE", detail)
-                continue
-            out[name] = _ObservationOut("PRESENT", None, None, {"rows": kept})
-            continue
-
-        if not allowed:
-            # The contract defines no value for this observation; PRESENT with
-            # a payload is a document saying more than the vocabulary allows.
-            if kept:
-                out[name] = _ObservationOut(
-                    "UNAVAILABLE", "NO_SOURCE",
-                    "PRESENT carries a value the contract does not define")
-                continue
-            out[name] = _ObservationOut("PRESENT", None, None, {})
-            continue
-
-        if not kept:
-            out[name] = _ObservationOut("UNAVAILABLE", "NO_SOURCE",
-                                        "PRESENT without any value")
-            continue
-        if not _validate_numbers(name, kept, sink):
+        verdict, projected, all_measured = _project_value(name, value, sink)
+        if verdict != _OK:
             out[name] = _ObservationOut("UNAVAILABLE", "NO_SOURCE",
                                         "a value was out of range or malformed")
             continue
-        out[name] = _ObservationOut("PRESENT", None, None, kept)
+
+        # `completeness` is CHECKED against the value rather than believed. The
+        # producer's word is a summary of what it just built; a document is free
+        # to write any word it likes, and the one thing a reader must never do
+        # is let a wrong COMPLETE make an absent field look measured.
+        declared = row.get("completeness")
+        derived = "COMPLETE" if all_measured else "PARTIAL"
+        if declared is None:
+            sink.append(Refusal("MISSING_COMPLETENESS", f"{where}.completeness",
+                                "a PRESENT reading must state its completeness"))
+        elif declared not in COMPLETENESS_WORDS:
+            sink.append(Refusal("UNKNOWN_COMPLETENESS", f"{where}.completeness",
+                                "not COMPLETE or PARTIAL"))
+        elif declared != derived:
+            sink.append(Refusal("COMPLETENESS_MISMATCH", f"{where}.completeness",
+                                "disagrees with what the value actually holds"))
+        out[name] = _ObservationOut("PRESENT", None, None, projected,
+                                    completeness=derived)
     return out
-
-
-def _normalize_storage(
-    value: dict[str, Any], where: str, sink: list[Refusal]
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """The one block that is a list of rows, so it is validated as one."""
-    rows = value.get("rows")
-    if not isinstance(rows, list):
-        # `storage.readonly` is the only shape the contract defines for this
-        # observation, and it is a list. A dict here means the document is not
-        # the document this reader was written for.
-        sink.append(Refusal("MALFORMED_VALUE", f"{where}.value",
-                            "storage.readonly is not a list of rows"))
-        return None, "storage.readonly is not a list of rows"
-    if len(rows) > MAX_STORAGE_ROWS:
-        sink.append(Refusal("MALFORMED_VALUE", f"{where}.value",
-                            f"more than {MAX_STORAGE_ROWS} rows"))
-        return None, "storage.readonly exceeds the row bound"
-
-    clean: list[dict[str, Any]] = []
-    for index, row in enumerate(rows):
-        spot = f"{where}.value.rows[{index}]"
-        if not isinstance(row, dict):
-            sink.append(Refusal("MALFORMED_VALUE", spot, "not an object"))
-            return None, "a storage row is not an object"
-        role = row.get("role")
-        if not isinstance(role, str) or not _ROLE.match(role):
-            sink.append(Refusal("MALFORMED_VALUE", f"{spot}.role",
-                                "not a role the contract admits"))
-            return None, "a storage row has no admissible role"
-        entry: dict[str, Any] = {"role": role}
-        numerics = 0
-        unknown = 0
-        for key in sorted(row):
-            if key == "role":
-                continue
-            if key not in STORAGE_ROW_KEYS:
-                unknown += 1
-                continue
-            if not _bytes_ok(row[key]):
-                # The key here is one this reader names, so it may be said.
-                sink.append(Refusal("MALFORMED_VALUE", f"{spot}.{key}",
-                                    "not a non-negative integer"))
-                return None, "a storage row carries a malformed byte count"
-            entry[key] = row[key]
-            numerics += 1
-        if unknown:
-            sink.append(Refusal("UNKNOWN_FIELD", spot,
-                                f"{unknown} key(s) this reader does not carry "
-                                f"were dropped"))
-        if not numerics:
-            sink.append(Refusal("MALFORMED_VALUE", spot,
-                                "row carries no byte counts"))
-            return None, "a storage row carries no byte counts"
-        clean.append(entry)
-    if not clean:
-        return None, "storage.readonly declared no rows"
-    return clean, None
 
 
 def readback(
@@ -671,7 +844,16 @@ __all__ = [
     "REASONS",
     "OBSERVATION_STATES",
     "OBSERVATION_VALUE_KEYS",
-    "STORAGE_ROW_KEYS",
+    "PSI_WINDOWS",
+    "STORAGE_BLOCK_KEYS",
+    "FILESYSTEM_ROW_KEYS",
+    "DISK_ROW_KEYS",
+    "INLINE_UNAVAILABLE_OBSERVATIONS",
+    "COMPLETENESS_WORDS",
+    "K_BYTES",
+    "K_RATE",
+    "K_PERCENT",
+    "K_ROLE",
     "MAX_STORAGE_ROWS",
     "Refusal",
     "normalize_observations",
