@@ -36,6 +36,7 @@ from . import cloudcli_native, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
 from .runtime_identity import BASE_RUNTIME
+from .runtime_create_policy import PolicyError
 from .errors import (
     APPROVAL_REQUIRED,
     BAD_REQUEST,
@@ -1254,6 +1255,32 @@ class FleetService:
         # returns its session, so a revoked grant would keep answering for as
         # long as the key was retried.
         grant = self._may_create(device_ref, project, runtime)
+        # Owner-approved defaults are addressed by the EXACT bound runtime and
+        # project. No global default, fallback account, or operator-provided
+        # endpoint is permitted. Existing installations with no policy keep the
+        # provider's own default behavior byte-for-byte.
+        runtime_rule = self.config.policy.runtime_create_defaults.get(
+            provider_key(device_ref, runtime), {}).get(project)
+        if runtime_rule is not None:
+            # A broad OAuth create scope is insufficient to request the
+            # elevated/default mode of an independently managed account.
+            if "create" not in self._operator_grant_verbs(principal, device_ref, runtime):
+                raise refuse(
+                    APPROVAL_REQUIRED,
+                    "this caller has no create operator grant for the selected "
+                    "runtime/project; project and OAuth scope alone do not "
+                    "authorize another account",
+                    device_ref=device_ref, runtime=runtime, project=project,
+                )
+            try:
+                model, permission_mode = runtime_rule.resolve(
+                    family=provider, model=model, permission_mode=permission_mode)
+            except PolicyError as exc:
+                raise refuse(
+                    WRITE_NOT_GRANTED,
+                    f"selected runtime/project denies the requested session defaults: {exc}",
+                    device_ref=device_ref, runtime=runtime, project=project,
+                ) from None
         self._may_name_mode_and_model(
             device_ref, project, grant, model=model, permission_mode=permission_mode
         )
