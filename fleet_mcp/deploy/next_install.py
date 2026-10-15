@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,6 +33,17 @@ from fleet_mcp.deploy import next_dual_stack_preflight as gate
 UNIT = gate.NEXT_UNIT
 TEMPLATE = "fleet_mcp/deploy/serveros-fleet-example-mcp.service"
 COMPOSITION = "ingress-next"
+
+#: Commands that publish a Next revision WITHOUT starting it. Both are
+#: unpublished bootstrap: they may leave the public URL and Plugin ID
+#: unassigned, and both always pass `--no-start` down to the shared installer.
+#: `refresh-stage` differs from `stage` in exactly one place — which revision
+#: root it accepts. `stage` demands an EMPTY one; `refresh-stage` demands a
+#: POPULATED one and refuses to run at all when the Next unit is not inactive.
+#: Keeping them separate is what leaves `stage`'s first-install semantics
+#: unchanged rather than subtly widened by a flag.
+STAGING_COMMANDS = ("stage", "refresh-stage")
+
 BUDGET = {
     "memory_max_mib": 1536,
     "memory_swap_max_mib": 0,
@@ -61,7 +73,8 @@ def plan(proposal: dict, command: str) -> dict:
                 "blockers": ["Next uninstall requires separate reviewed retirement"],
                 "writes": [], "executes": []}
     recovery = command in ("rollback", "status")
-    bootstrap = command == "stage"
+    bootstrap = command in STAGING_COMMANDS
+    refresh = command == "refresh-stage"
     preflight = gate.evaluate(proposal, recovery=recovery, bootstrap=bootstrap)
     ready = ("RECOVERY_PLAN_READY" if recovery else
              "BOOTSTRAP_PLAN_READY" if bootstrap else "PRECHECK_READY_FOR_HUMAN_CANARY")
@@ -96,6 +109,7 @@ def plan(proposal: dict, command: str) -> dict:
     return {
         "decision": "DRY_RUN_READY",
         "mode": "NEXT_ONLY_RECOVERY" if recovery else
+                "NEXT_ONLY_REFRESH_STAGE_NO_START" if refresh else
                 "NEXT_ONLY_STAGE_NO_START" if bootstrap else "NEXT_CANARY_INSTALL",
         "command": command,
         "unit": UNIT,
@@ -108,7 +122,12 @@ def plan(proposal: dict, command: str) -> dict:
              "remain unassigned only for this non-starting bootstrap stage"
              if bootstrap else
              "Next owner authorization and distinct real App/Plugin registration"),
-            "Short live memory-PSI/swap-IO probe before Next start",
+            ("An INACTIVE and DISABLED Next unit, a clean `--source`, and a "
+             "revision that differs from the one `current` already names; an "
+             "explicit `--revision` must restate the clean HEAD byte-for-byte; "
+             "the revision being replaced is kept as `previous`"
+             if refresh else
+             "Short live memory-PSI/swap-IO probe before Next start"),
             "systemctl --user show confirms effective cgroup limits after start",
             "V1 /health remains healthy throughout canary and Next-only rollback",
         ],
@@ -189,6 +208,98 @@ def _effective_limit_errors(mod) -> list[str]:
         if micros != BUDGET["cpu_quota_pct"] * 10000:
             problems.append("CPUQuotaPerSecUSec not enforced")
     return problems
+
+
+def _git(source: Path, *args: str) -> str | None:
+    """Read-only git query. `None` means the question could not be answered.
+
+    An empty string is a real answer — `status --porcelain` on a clean tree
+    prints nothing — so the two are kept distinct rather than collapsed.
+    """
+    try:
+        done = subprocess.run(["git", "-C", str(source), *args],
+                              capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return done.stdout
+
+
+def _source_state(source: str) -> tuple[str | None, str | None]:
+    """The revision a refresh would publish, or why the source is untrustworthy.
+
+    Two refusals here, and both are about the same thing: a revision name is a
+    claim about bytes. If the tree has uncommitted edits, the bytes copied into
+    the revision directory are not the bytes `HEAD` names. If another git
+    process holds the index, the tree is mid-write and can change under the
+    copy. Either way the artifact would carry a SHA it does not honestly stand
+    for, so this refuses rather than publishing a revision that lies.
+    """
+    path = Path(source)
+    if not path.is_dir():
+        return None, f"--source is not a directory: {source}"
+    revision = _git(path, "rev-parse", "HEAD")
+    if not revision or not revision.strip():
+        return None, f"cannot read a git revision from {source}"
+    dirty = _git(path, "status", "--porcelain")
+    if dirty is None:
+        return None, f"cannot read the working-tree state of {source}"
+    if dirty.strip():
+        count = len(dirty.splitlines())
+        return None, (f"--source has {count} uncommitted path(s); a staged "
+                      f"revision would carry a SHA those bytes do not match")
+    gitdir = _git(path, "rev-parse", "--absolute-git-dir")
+    if gitdir and gitdir.strip():
+        lock = Path(gitdir.strip()) / "index.lock"
+        if lock.exists():
+            return None, (f"another git process holds {lock}; the tree can "
+                          f"change during the copy")
+    return revision.strip(), None
+
+
+def _next_unit_state(mod) -> tuple[str | None, str | None]:
+    """The Next unit's activation AND enablement state, or why it may not be refreshed.
+
+    Two facts are required and they are different facts; neither implies the
+    other.
+
+    `is-active` must be `inactive`. `active` is refused because repointing a
+    running service's revision without restarting it is the one change a
+    non-starting flow must never make. `failed` is refused for a different
+    reason: a unit that already tried and did not come up is a fact an operator
+    has to read, and silently repointing it would overwrite the evidence.
+
+    `is-enabled` must be `disabled`. This is NOT implied by `inactive` — a unit
+    can be inactive and enabled at the same time — and the account that runs
+    Next has `Linger=yes`, so an ENABLED unit is started by the user manager at
+    boot/login with no further approval. Repointing it would therefore run the
+    moved revision the next time the manager restarts, which is exactly the
+    activation this non-starting flow exists to avoid.
+
+    Anything unreadable, and anything that is not the exact expected string, is
+    refused: an unknown state is not a safe one, and this guard fails closed.
+    """
+    try:
+        result = mod.systemctl("is-active", UNIT, check=False)
+    except (OSError, RuntimeError) as exc:
+        return None, ("Next unit state could not be read ("
+                      + type(exc).__name__ + "); refusing to refresh blind")
+    state = (result.stdout or "").strip()
+    if state != "inactive":
+        return None, (f"Next unit is {state or 'unknown'!r}, not 'inactive'; "
+                      f"only an inactive Next may be refreshed without starting it")
+    try:
+        enabled = mod.systemctl("is-enabled", UNIT, check=False)
+    except (OSError, RuntimeError) as exc:
+        return None, ("Next unit enablement could not be read ("
+                      + type(exc).__name__ + "); refusing to refresh blind")
+    enablement = (enabled.stdout or "").strip()
+    if enablement != "disabled":
+        return None, (
+            f"Next unit is {enablement or 'unknown'!r}, not 'disabled'; an "
+            f"enabled unit is started by the user manager at boot/login "
+            f"(Linger is on for this account), so the repointed revision would "
+            f"run without a separate activation approval")
+    return state, None
 
 
 def one_receipt(text: str) -> tuple[dict | None, str | None]:
@@ -287,7 +398,9 @@ def _restore_failed_install(mod, root: Path, before: tuple, reason: str,
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("command", choices=("stage", "install", "status", "rollback", "uninstall"))
+    p.add_argument("command",
+                   choices=("stage", "refresh-stage", "install", "status",
+                            "rollback", "uninstall"))
     p.add_argument("--proposal", required=True, help="non-secret, freshly reviewed JSON")
     p.add_argument("--source", default=str(_ROOT))
     p.add_argument("--revision")
@@ -323,17 +436,20 @@ def main(argv: list[str] | None = None) -> int:
         mod = _load_legacy_installer()
         nxt = proposal["next"]
         runtime_root = str(Path(nxt["runtime_root"]).parent)
-        args_list = ["install" if args.command == "stage" else args.command,
+        args_list = ["install" if args.command in STAGING_COMMANDS else args.command,
                      "--runtime-root", runtime_root,
                      "--composition", COMPOSITION, "--config", nxt["config_path"],
                      "--health-timeout", str(args.health_timeout)]
-        if args.command in ("stage", "install"):
+        if args.command in STAGING_COMMANDS or args.command == "install":
             args_list.extend(["--source", args.source])
             if args.revision:
                 args_list.extend(["--revision", args.revision])
             if args.label:
                 args_list.extend(["--label", args.label])
-            if args.no_start or args.command == "stage":
+            # `--force` is never passed, so the shared installer's own
+            # immutability rule stands: a revision directory that already
+            # exists is refused rather than replaced.
+            if args.no_start or args.command in STAGING_COMMANDS:
                 args_list.append("--no-start")
 
             # The Next and V1 binding files must be ACTUALLY distinct today,
@@ -358,6 +474,45 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stage" and prior[0] is not None:
             raise Refused("bootstrap stage requires an empty Next revision root; "
                           "do not repoint an existing Next instance")
+        if args.command == "refresh-stage":
+            # A refresh is the ONE flow that deliberately moves `current`, so
+            # every guard that makes that safe is checked here, before any
+            # write: nothing above this line has touched the system.
+            if prior[0] is None:
+                raise Refused(
+                    "refresh-stage requires an existing Next revision; the "
+                    "revision root is empty — use `stage` for the first one")
+            state, problem = _next_unit_state(mod)
+            if problem:
+                raise Refused(problem)
+            revision, problem = _source_state(args.source)
+            if problem:
+                raise Refused(problem)
+            # An explicit `--revision` may only RESTATE the revision the clean
+            # source actually is. It is not an override: a caller-chosen SHA
+            # would stamp these bytes with a name `HEAD` does not give them,
+            # which is the one thing a revision name must never do. A mismatch
+            # is refused rather than silently ignored — ignoring it would
+            # publish a revision under a name the caller did not ask for.
+            if args.revision and args.revision != revision:
+                # Both values are printed in full: a short SHA is refused, and
+                # truncating them would print two identical strings for a
+                # refusal that is precisely about them not being identical.
+                raise Refused(
+                    f"--revision {args.revision!r} is not the clean source's HEAD "
+                    f"{revision!r}; an explicit --revision may only restate HEAD "
+                    f"byte-for-byte, so a short or different SHA is refused")
+            # `install.py` derives the revision the same way; mirroring it is
+            # what makes this a statement about the revision that will actually
+            # be written rather than about a different one.
+            target = revision
+            current_rev = prior[0].name.rsplit("@", 1)[-1]
+            if target[:7] == current_rev:
+                raise Refused(
+                    f"the revision named for staging ({target[:7]}) is already "
+                    f"`current`; a refresh must name a different revision — "
+                    f"re-pointing to the same one would consume `previous` "
+                    f"without changing what runs")
         effect_started = True  # no longer a dry-run, even if the install fails
         # The legacy installer's own stdout is CAPTURED, not forwarded. It
         # prints one JSON receipt per successful operation and the wrapper
@@ -370,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
             with contextlib.redirect_stdout(captured):
                 result = mod.main(args_list)
         except SystemExit:
-            if args.command in ("stage", "install"):
+            if args.command in STAGING_COMMANDS or args.command == "install":
                 payload, problem = one_receipt(captured.getvalue())
                 if payload is not None:
                     detail = (f" The installer's own receipt said started="
@@ -384,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                     "installer exited nonzero; status must be inspected." + detail,
                     effect_attempted=True)
             raise
-        if args.command in ("stage", "install") and result != 0:
+        if (args.command in STAGING_COMMANDS or args.command == "install") and result != 0:
             _restore_failed_install(mod, root, prior, "installer returned nonzero",
                                     effect_attempted=True)
         if args.command == "install" and not args.no_start:
@@ -415,6 +570,10 @@ def main(argv: list[str] | None = None) -> int:
                 "receipt": None,
             }, indent=2, sort_keys=True))
             return 4
+        # Read the revision pointers back rather than trusting the installer's
+        # description of them: `previous` holding the OLD `current` is the
+        # whole rollback story, and it is a filesystem fact, not a promise.
+        after = (mod.read_link(root / "current"), mod.read_link(root / "previous"))
         print(json.dumps({
             "decision": "EXECUTED",
             "command": args.command,
@@ -426,6 +585,9 @@ def main(argv: list[str] | None = None) -> int:
             "started": payload.get("started"),
             "health": payload.get("health"),
             "unit_path": payload.get("unit_path"),
+            "revision": payload.get("revision"),
+            "current": str(after[0]) if after[0] else None,
+            "previous": str(after[1]) if after[1] else None,
             "receipt": payload,
         }, indent=2, sort_keys=True))
         return result
