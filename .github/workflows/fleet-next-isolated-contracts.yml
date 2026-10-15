@@ -19,6 +19,14 @@ on:
 permissions:
   contents: read
 jobs:
+  runner-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Confirm the hosted runner can start
+        run: |
+          python3 --version
+          printf 'runner started; no repository secrets or runtime operations used\n'
   offline-unit-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 5
