@@ -49,3 +49,8 @@ add_subdirectory(tests)
 # thing that may ask systemd to act, so a reader can tell at the build graph
 # which binary carries the reachability.
 add_subdirectory(supervisor)
+
+# Core-Lite: the per-user READ-ONLY observation profile. Added AFTER
+# `supervisor` because it links `nodecore_supervisor` (for `valid_unit_id`) and
+# the shared JSON reader — order is a dependency here, not a preference.
+add_subdirectory(core-lite)

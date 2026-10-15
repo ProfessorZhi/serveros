@@ -47,8 +47,9 @@ vocabularies, named refusals, never a half-built document.
 
 | layer | status | evidence |
 |---|---|---|
-| **Source** | **REAL** | `src/profile.cpp` + `include/corelite/profile.hpp` compiled by `g++ 13.3 -std=c++20 -Wall -Wextra -Wpedantic`, **zero warnings** |
-| **Test** | **REAL, EXECUTED** | `tests/test_profile.cpp` → **46 checks, 0 failures**, including both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25%` |
+| **Source** | **REAL** | the reader, the status builder, the runtime identity readback and the Linux adapter — compiled by `cmake --build` over `native/node-core` with GNU 13.3, `-std=c++20 -Wall -Wextra -Wpedantic`, **zero warnings** |
+| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **18/18 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **56 checks**, `core_lite_readings` **123 checks** (127 with a live snapshot), all 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
+| **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice (`--interval-ms 300`) into `node-resource-snapshot.v1`; the adapter read it and the status reported `cpu.used_percent 9.1` and `memory.used_percent 31.4` **from those real counters**, with the other six grants `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/FLEET-V1-CORE-LITE/20261015-core-lite-status/` |
 | **RealUserStaged** | **NOT DONE — BLOCKED** | no unit installed, none enabled, no linger. The Tokyo account would need the owner to install it; **Dell's `fjd` is not this account and only `fjd` may install there** |
 | **Running** | **NOT DONE — BLOCKED** | nothing has ever executed on a real host. No `systemd --user` unit for Core-Lite exists yet |
 
@@ -62,10 +63,12 @@ they say nothing about a deployment, and nothing here may be reported as
 The steps below are what an owner would run on their OWN account.
 
 ```bash
-# 0) build (needs cmake; NOT present on the Tokyo host today — see §6)
-cmake -S native/node-core/core-lite -B build/core-lite && cmake --build build/core-lite
+# 0) build from the node-core ROOT. `-S native/node-core/core-lite` does NOT
+#    configure: that file is a subdirectory, and it links `nodecore_supervisor`,
+#    which a standalone scope never defines. See §8.
+cmake -S native/node-core -B build/node-core && cmake --build build/node-core
 # 1) install to a stable path, NOT a worktree
-install -D -m 0755 build/core-lite/core-lite-profile-check \
+install -D -m 0755 build/node-core/core-lite/core-lite-profile-check \
         ~/.local/lib/serveros-core-lite/core-lite-profile-check
 # 2) validate the profile BEFORE anything is installed
 ~/.local/lib/serveros-core-lite/core-lite-profile-check \
@@ -103,14 +106,24 @@ message already sent.
 
 ## 6. What is BLOCKED, stated plainly
 
-- **No compile via CMake on this host**: `cmake` is not installed. The tests
-  above were built with a direct `g++` invocation over the same sources, which
-  is why the Test layer is real — but `core-lite/CMakeLists.txt` has never been
-  configured here.
+- **CMake**: `cmake` is not on `PATH` on this host. It IS available at
+  `TOOLCHAINS_ROOT/cmake-native`, whose launcher needs `PYTHONPATH` pointed at
+  its own root; configure and build were run that way and the whole project built
+  clean. The plain `cmake -S native/node-core -B build` in §4 is the command an
+  ordinary host runs, and it is the one that was exercised.
+- **`supervisor/src` on the include path**: `core-lite` includes the supervisor's
+  private `json_detail.hpp` — the one strict JSON reader in this repository —
+  via a `PRIVATE` include of `../supervisor/src`. The structural fix belongs to
+  the supervisor's review (publish it as
+  `supervisor/include/supervisor/json_reader.hpp`), not to this one. Recorded
+  rather than hidden, because before this branch the documented CMake path did
+  not build at all and that is exactly what the missing include was hiding.
 - **No unit, anywhere**: not installed, not enabled, not started, no linger.
 - **Dell `fjd`**: this account has no permission there. The profile is a
   **declaration awaiting `fjd`'s own authorisation**.
-- **PSI on Windows**: impossible; reported UNAVAILABLE at runtime, never zero.
+- **PSI on Windows**: impossible; reported `UNAVAILABLE` / `UNSUPPORTED_PLATFORM`,
+  never zero — and deliberately a different reason word from the `NOT_IMPLEMENTED`
+  that a Linux host reports for the same family today (`contract/core-lite-status.v1.md` §3).
 - **Cross-UID reads**: only the owning UID's Node adapter may return a
   de-identified summary. Tokyo does **not** read Dell's private UNIX socket.
 - **Fleet integration**: **out of scope for this branch**. `fleet_mcp/fleet.py`
@@ -125,3 +138,22 @@ message already sent.
 equivalent in this tree, and nothing here may be reported as «installed on
 Windows». See `windows/README.md` for the contract a Windows adapter must meet
 and what is UNKNOWN about it.
+
+## 8. The status contract, and the build topology that was broken
+
+`contract/core-lite-status.v1.md` is the cross-platform read-only status every
+Core-Lite reports — one document Tokyo, FJ Windows and Dell can all be described
+by. `src/status.cpp` builds it, `src/status_main.cpp` is the `core-lite-status`
+front door, and `src/collector_readings.cpp` is the Linux adapter that answers it
+from the collector's own snapshot.
+
+`CMakeLists.txt` in this directory **used to be a standalone project**: it called
+`project()`, linked `nodecore_supervisor` and could not configure on its own,
+while nothing reached it from the root either — so the documented build command
+in §4 was one nobody could have run. It is now a subdirectory: the root
+`native/node-core/CMakeLists.txt` adds `supervisor` and then `core-lite`, in that
+order, because the dependency is real and order is part of the fix.
+
+**Core-Lite does not link `nodecore_supervisor` twice, and does not re-implement
+`valid_unit_id`.** One function decides what a unit id is, one reader decides
+what JSON is, and both are the supervisor's.
