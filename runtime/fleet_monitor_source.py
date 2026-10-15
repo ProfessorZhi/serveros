@@ -544,6 +544,406 @@ def accept_uid_summary(document, *, now, freshness_bound, live=False):
         severity=severity, trend=trend, source=provenance.get("collector"))
 
 
+# ---------------------------------------------------------------------------
+# The expected-device inventory, and the audience it is shown to
+# ---------------------------------------------------------------------------
+#
+# COVERAGE IS A PROPERTY OF THE DECLARATION, NOT OF WHAT ANSWERED.
+#
+# `EXPECTED_DEVICES` is the list of machines this product intends to carry, and
+# every entry becomes a ROW on the card whether or not anything was collected
+# for it. A device nobody could reach renders UNKNOWN; it is never dropped. That
+# is the whole point: a monitor that silently omits the machine that is down
+# reports an all-clear, and the omission is invisible precisely when it matters.
+#
+# VISIBILITY, and why the list carries it. Two of these devices are the
+# company's and two are people's own laptops. A corporate shared channel must
+# never receive a private machine's readings, and a private machine's data is
+# released only to a recipient an EXPLICIT device×recipient grant names. The
+# rule is enforced in two places on purpose — where the model is built (so the
+# card physically lacks the row) and immediately before a send (so a caller who
+# assembled a card by hand still cannot post it) — because a UI that merely
+# hides a row is a UI, not a boundary.
+
+VISIBILITY_CORPORATE = "corporate"
+VISIBILITY_PRIVATE = "private"
+VISIBILITIES = (VISIBILITY_CORPORATE, VISIBILITY_PRIVATE)
+
+#: device:llm-lab-dell (A6000) and device:tokyo-shared-dev-01 are the company's.
+#: device:personal-dell is a person's own Windows laptop and has NO Fleet
+#: provider, so its row is truthfully UNKNOWN until one exists — an UNKNOWN row
+#: is the honest answer, and dropping the device instead was the earlier
+#: mistake this list corrects. device:work-fj (FJPCOS) is carried as an optional
+#: fourth; `required` is what separates "we expect this" from "we expect this
+#: and its absence is a gap".
+EXPECTED_DEVICES = (
+    {"device_ref": "device:tokyo-shared-dev-01", "display_name": "东京共享开发机",
+     "platform": "linux", "visibility": VISIBILITY_CORPORATE, "required": True},
+    {"device_ref": "device:llm-lab-dell", "display_name": "A6000 推理机",
+     "platform": "linux", "visibility": VISIBILITY_CORPORATE, "required": True},
+    {"device_ref": "device:personal-dell", "display_name": "DellPCOS（个人机）",
+     "platform": "windows", "visibility": VISIBILITY_PRIVATE, "required": True},
+    {"device_ref": "device:work-fj", "display_name": "FJPCOS 工作站",
+     "platform": "windows", "visibility": VISIBILITY_CORPORATE, "required": False},
+)
+
+AUDIENCE_SCHEMA = "serveros/fleet-audience.v1"
+
+#: Recipient kinds, spelled the way `runtime/message_transport.py`'s flags are
+#: so a destination names the same thing on both sides of the hop.
+RECIPIENT_KINDS = ("user", "chat")
+
+
+def expected_devices():
+    """The declared inventory, copied so a caller cannot mutate the constant."""
+    return [dict(entry) for entry in EXPECTED_DEVICES]
+
+
+class AudienceRefused(RuntimeError):
+    """A policy document or a destination this module cannot accept."""
+
+
+def parse_audience(recipient) -> tuple[str, str]:
+    """`user:<open_id>` / `chat:<chat_id>` -> `(kind, value)`.
+
+    Restated here rather than imported from `runtime/message_transport.py`
+    because this module's header says it composes readings and reaches no
+    transport; a source module that imported the transport would be a second
+    place a send could start from. A test binds the two spellings.
+    """
+    kind, separator, value = str(recipient or "").partition(":")
+    if not separator or kind not in RECIPIENT_KINDS or not value:
+        raise AudienceRefused(
+            f"接收人必须写成 user:<open_id> 或 chat:<chat_id>，收到的是 "
+            f"{recipient!r}；不加前缀就等于让这里替调用方猜，而猜错的后果是"
+            f"把一台机器的读数发给了不该看到它的人")
+    return kind, value
+
+
+class AudiencePolicy:
+    """Which device a given recipient may be shown. device × recipient.
+
+    `devices` maps a `device_ref` to `{"visibility": corporate|private,
+    "grants": [recipient, …]}`. The default an unlisted device gets is
+    `private` with no grants — the CLOSED direction, so a device added to the
+    fleet without a policy entry is withheld until somebody says who may see it
+    rather than published until somebody says who may not.
+    """
+
+    def __init__(self, *, devices=None, grants=None):
+        self.devices = {str(k): dict(v or {}) for k, v in (devices or {}).items()}
+        self.grants = {str(k): set(v or []) for k, v in (grants or {}).items()}
+
+    def visibility(self, device_ref: str) -> str:
+        entry = self.devices.get(str(device_ref)) or {}
+        vis = str(entry.get("visibility") or VISIBILITY_PRIVATE)
+        return vis if vis in VISIBILITIES else VISIBILITY_PRIVATE
+
+    def _granted(self, device_ref: str) -> set:
+        entry = self.devices.get(str(device_ref)) or {}
+        named = set(entry.get("grants") or [])
+        return named | set(self.grants.get(str(device_ref)) or set())
+
+    def allows(self, recipient: str, device_ref: str) -> bool:
+        """May `recipient` be shown `device_ref`? Corporate yes, private by grant.
+
+        A CORPORATE device needs no grant: it is the company's, and a company
+        channel is the audience it was bought for. A PRIVATE device is the
+        reverse — no grant, no row — and the grant names the recipient
+        EXACTLY (`user:ou_…`), so "one person's laptop" cannot leak into "the
+        whole channel" by a policy that was written with the kind in mind and
+        not the person.
+        """
+        if self.visibility(device_ref) == VISIBILITY_CORPORATE:
+            return True
+        try:
+            parse_audience(recipient)
+        except AudienceRefused:
+            return False
+        return str(recipient) in self._granted(device_ref)
+
+    def visible(self, recipient: str, device_refs) -> dict:
+        allowed, denied = [], []
+        for ref in device_refs:
+            (allowed if self.allows(recipient, ref) else denied).append(ref)
+        return {"audience": recipient, "allowed": allowed, "denied": denied,
+                "ok": not denied,
+                "reason": (None if not denied else
+                           f"{len(denied)} 台设备未被授权给 {recipient}")}
+
+
+def load_audience_policy(document) -> AudiencePolicy:
+    """A parsed `serveros/fleet-audience.v1` document -> an `AudiencePolicy`."""
+    if not isinstance(document, dict):
+        raise AudienceRefused(f"a policy is an object, got {type(document).__name__}")
+    if document.get("schema") != AUDIENCE_SCHEMA:
+        raise AudienceRefused(
+            f"schema {document.get('schema')!r} is not {AUDIENCE_SCHEMA!r}")
+    devices = document.get("devices")
+    if not isinstance(devices, dict):
+        raise AudienceRefused("a policy carries no `devices` mapping")
+    for ref, entry in devices.items():
+        if not isinstance(entry, dict):
+            raise AudienceRefused(f"device {ref!r} is not an object")
+        vis = entry.get("visibility")
+        if vis is not None and vis not in VISIBILITIES:
+            raise AudienceRefused(
+                f"device {ref!r} has visibility {vis!r}, not one of {VISIBILITIES}; "
+                f"an unknown word is refused rather than read as the open one")
+        for grant in entry.get("grants") or []:
+            parse_audience(grant)
+    return AudiencePolicy(devices=devices, grants=document.get("grants"))
+
+
+def default_policy(*, devices=None) -> AudiencePolicy:
+    """The policy the inventory implies: corporate open, private by grant only."""
+    entries = {}
+    for entry in (devices if devices is not None else expected_devices()):
+        entries[entry["device_ref"]] = {
+            "visibility": entry.get("visibility") or VISIBILITY_PRIVATE,
+            "grants": list(entry.get("grants") or []),
+        }
+    return AudiencePolicy(devices=entries)
+
+
+def audience_policy_document(policy: AudiencePolicy) -> dict:
+    """The policy as the document `load_audience_policy` reads. Round-trips."""
+    return {"schema": AUDIENCE_SCHEMA,
+            "devices": {ref: {"visibility": policy.visibility(ref),
+                              "grants": sorted(policy._granted(ref))}
+                        for ref in policy.devices}}
+
+
+def authorize_devices(device_refs, *, audience, policy) -> dict:
+    """May this audience be shown these devices? The send-side gate.
+
+    The SAME `AudiencePolicy.allows` the model builder uses, called with the
+    device list a card actually carries. Two callers, one rule — a UI that hid a
+    row and a gate that checked a different list would be two rules, and the
+    gate is the one that has to hold when somebody assembles a card by hand.
+    """
+    if policy is None:
+        policy = default_policy()
+    return policy.visible(str(audience), list(device_refs))
+
+
+def _as_policy(policy, *, declared=None) -> AudiencePolicy:
+    if policy is None:
+        return default_policy(devices=declared)
+    if isinstance(policy, AudiencePolicy):
+        return policy
+    return load_audience_policy(policy)
+
+
+def apply_audience(devices, *, audience, policy=None, declared=None) -> tuple:
+    """`(visible_devices, withheld_count)` for one audience. The ONE filter.
+
+    Both `fleet_model`, which builds a card, and anything else that needs the
+    same rows go through here, so "which rows does this recipient get" has a
+    single answer. `None` audience means no filter at all — the caller asked for
+    the whole inventory and gets it — which is why every caller that has an
+    audience passes one rather than relying on a default.
+    """
+    if audience is None:
+        return list(devices), 0
+    rule = _as_policy(policy, declared=declared)
+    verdict = rule.visible(str(audience), [d["device_ref"] for d in devices])
+    allowed = set(verdict["allowed"])
+    return [d for d in devices if d["device_ref"] in allowed], len(verdict["denied"])
+
+
+# ---------------------------------------------------------------------------
+# The trend archive: authorized, timestamped samples in three dayparts
+# ---------------------------------------------------------------------------
+#
+# The main V13 card and the human hourly summary read the SAME samples from the
+# SAME store, so the two surfaces cannot disagree about a trend — a second
+# store would be a second status authority, which is the thing this file's
+# header forbids. What is stored is only what was measured: a sample with no
+# timestamp, or one that is not attributed to a real collection, is REFUSED
+# rather than written with a made-up time. A trend built from invented samples
+# is worse than no trend, because it looks like evidence.
+
+DAYPARTS = ("morning", "afternoon", "night")
+DAYPART_LABELS = {"morning": "上午（05–12）", "afternoon": "下午（12–18）",
+                  "night": "夜间（18–05）"}
+
+TREND_SCHEMA = "serveros/fleet-trend.v1"
+TREND_KEEP_PER_DAY = 480
+
+#: Fields a sample may NOT carry, for the same reason an account may not: each is
+#: a door onto another person's command line, files or secrets, and a trend is a
+#: reading of a machine and never of what somebody ran on it.
+SAMPLE_FORBIDDEN_FIELDS = ("argv", "cmdline", "environ", "env", "cwd",
+                           "open_files", "prompt", "token", "secret", "password")
+
+
+def daypart_of(instant) -> str | None:
+    """Which of the three dayparts a timestamp falls in, in ITS OWN offset.
+
+    The offsets are the wall clock a person reads on the machine the sample came
+    from, not a UTC guess: an evening in Tokyo is not an evening in UTC, and a
+    trend filed under the wrong daypart is a trend filed under the wrong claim.
+    `None` when the instant does not parse — a sample this module cannot place on
+    a clock is one it will not place in a bucket either.
+    """
+    when = monitor._parse(instant)
+    if when is None:
+        return None
+    hour = when.hour
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 18:
+        return "afternoon"
+    return "night"
+
+
+class TrendSampleRefused(RuntimeError):
+    """A sample the archive will not store."""
+
+
+class TrendArchive:
+    """Timestamped samples per `(device_ref, label)`, bucketed by daypart.
+
+    A bounded, append-only store — the trend twin of `card_delivery`'s ledger,
+    with the same file discipline (one writer, a JSON document written whole)
+    and none of its authority: it records measurements, it does not decide
+    whether anything is due. `KEEP` bounds each series so a chatty label cannot
+    evict the day.
+    """
+
+    def __init__(self, path, *, keep=TREND_KEEP_PER_DAY):
+        self.path = Path(path)
+        self.keep = int(keep)
+        self._doc = None
+
+    def read(self) -> dict:
+        if self._doc is not None:
+            return self._doc
+        if not self.path.exists():
+            self._doc = {"schema": TREND_SCHEMA, "samples": {}}
+            return self._doc
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise TrendSampleRefused(
+                f"{self.path} 读不出来（{exc}）；不替换它——一份读不出的趋势"
+                f"记录不该被一份新的空记录悄悄顶掉") from exc
+        if not isinstance(document, dict) or document.get("schema") != TREND_SCHEMA:
+            raise TrendSampleRefused(
+                f"{self.path} 不是一份 {TREND_SCHEMA} 文档")
+        document.setdefault("samples", {})
+        self._doc = document
+        return self._doc
+
+    def record(self, sample: dict) -> dict:
+        """Store one authorized, timestamped sample. Refuses an invented one.
+
+        REQUIRED: `device_ref`, `label`, a numeric `value`, a parseable
+        `observed_at`, and `attributed is True` — the last is the caller saying
+        this came from a real collection the audience is allowed to have, which
+        is the difference between a trend and a fabrication. A sample missing
+        any of them raises rather than being written with a stand-in.
+        """
+        if not isinstance(sample, dict):
+            raise TrendSampleRefused(f"a sample is an object, got {type(sample).__name__}")
+        leaked = [k for k in SAMPLE_FORBIDDEN_FIELDS if k in sample]
+        if leaked:
+            raise TrendSampleRefused(
+                f"sample carries forbidden field(s) {leaked}; a trend is a reading "
+                f"of a machine, never of what somebody ran on it")
+        for key in ("device_ref", "label"):
+            if not str(sample.get(key) or "").strip():
+                raise TrendSampleRefused(f"sample names no {key}")
+        value = sample.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TrendSampleRefused(
+                f"sample value {value!r} is not a number; a trend point is a number")
+        part = daypart_of(sample.get("observed_at"))
+        if part is None:
+            raise TrendSampleRefused(
+                f"sample observed_at {sample.get('observed_at')!r} does not parse; "
+                f"a sample that cannot be placed on a clock cannot be filed under a "
+                f"daypart either")
+        if sample.get("attributed") is not True:
+            raise TrendSampleRefused(
+                "sample is not attributed to a real collection (`attributed` must be "
+                "True); an unattributed point is a number nobody measured")
+        doc = self.read()
+        series = doc["samples"].setdefault(str(sample["device_ref"]), {}) \
+                             .setdefault(str(sample["label"]), [])
+        series.append({"at": str(sample["observed_at"]), "value": float(value),
+                       "daypart": part, "source": sample.get("source")})
+        series.sort(key=lambda row: row["at"])
+        if len(series) > self.keep:
+            del series[:len(series) - self.keep]
+        return {"device_ref": sample["device_ref"], "label": sample["label"],
+                "daypart": part, "stored": len(series)}
+
+    def commit(self) -> dict:
+        doc = self.read()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True),
+                             encoding="utf-8")
+        temporary.replace(self.path)
+        return doc
+
+    def series(self, device_ref, label, *, daypart=None, limit=None) -> list:
+        """The recorded values, oldest first, optionally one daypart."""
+        rows = ((self.read()["samples"].get(str(device_ref)) or {})
+                .get(str(label)) or [])
+        if daypart is not None:
+            if daypart not in DAYPARTS:
+                raise TrendSampleRefused(f"{daypart!r} is not one of {DAYPARTS}")
+            rows = [r for r in rows if r["daypart"] == daypart]
+        values = [r["value"] for r in rows]
+        return values[-limit:] if limit else values
+
+    def buckets(self, device_ref, label) -> dict:
+        """`{daypart: [values]}` for the three dayparts, in order."""
+        return {part: self.series(device_ref, label, daypart=part)
+                for part in DAYPARTS}
+
+    def trend_for(self, device_ref, label, *, limit=12) -> list:
+        """The most recent values, for a reading's `trend` field."""
+        return self.series(device_ref, label, limit=limit)
+
+
+def trend_archive_path(state_path) -> Path:
+    """The archive's file, beside the delivery ledger, named for what it holds."""
+    return Path(state_path).parent / "fleet-trend.json"
+
+
+def device_from_archive(device_ref, archive, *, labels, display_name=None,
+                        platform=None, observed_at=None, daypart=None):
+    """One device entry whose `trend` comes from the archive. Read-only.
+
+    The bridge that makes the card and the hourly summary share one source: the
+    values on the card are the values in the store, not a second read of the
+    machine. A label with no stored sample yields a reading with an empty trend
+    — never a synthesised one.
+    """
+    readings = []
+    for label in labels:
+        values = archive.trend_for(device_ref, label)
+        readings.append(monitor.reading(
+            label, (values[-1] if values else None), observed_at=observed_at,
+            trend=values, kind="trend") if values else monitor.unobserved(
+            label, reason=f"归档中没有 {label} 的样本", kind="trend"))
+    return {
+        "device_ref": device_ref,
+        "display_name": display_name or device_ref,
+        "platform": platform or "未知",
+        "reachability": ({"state": monitor.STATE_KNOWN, "observed_at": observed_at}
+                         if observed_at else
+                         {"state": monitor.STATE_UNKNOWN,
+                          "reason": "归档中没有可用于判定可达性的样本"}),
+        "readings": readings,
+        "_daypart": daypart,
+    }
+
+
 def device_from_snapshot(device_ref, snapshot, *, display_name=None,
                          platform=None, stale_after_s=None):
     """One device entry, from a `card_source.snapshot()` reading.
@@ -584,14 +984,26 @@ def device_from_snapshot(device_ref, snapshot, *, display_name=None,
 def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
                 refresh_seconds=monitor.DEFAULT_REFRESH_S,
                 stale_after_s=monitor.DEFAULT_STALE_AFTER_S,
-                names=None, platforms=None, accounts=None):
+                names=None, platforms=None, accounts=None,
+                inventory=None, audience=None, policy=None):
     """Compose many devices' snapshots into the monitor view model. Read-only.
 
-    `snapshots` is a list of `(device_ref, snapshot)` pairs. A device whose
-    snapshot is None is carried as an UNKNOWN-reachability device rather than
-    dropped — the same distinction `fleet/view.py` draws between "nobody looked"
-    and "looked, found none", applied to a device this adapter was handed
-    nothing for.
+    Every device in `inventory` (default `EXPECTED_DEVICES`) becomes a ROW
+    whether or not `snapshots` carries a reading for it. A device with no
+    snapshot is carried as UNKNOWN-reachability with the inventory's name and
+    platform, never dropped — that is the coverage property the inventory
+    exists for, and it is why a missing `personal-dell` provider now shows as an
+    UNKNOWN row instead of as an absent device. A snapshot for a ref that is NOT
+    in the inventory is appended rather than discarded, so a caller that hands
+    this a device the list does not know about does not silently lose it.
+
+    `audience` (a `user:<open_id>` / `chat:<chat_id>` string) plus `policy` (a
+    `serveros/fleet-audience.v1` document or an `AudiencePolicy`) filter the
+    rows: a device the audience is not granted is REMOVED from the model before
+    it is rendered, so the card physically lacks it rather than hiding it. The
+    model records how many were withheld — a count and not the names, because a
+    name in a corporate card would be the leak. `authorize_devices` is the same
+    rule applied at send time.
 
     `accounts` maps a `device_ref` to that device's per-UID account entries (see
     `accept_uid_summary`). It is a separate argument rather than part of the
@@ -602,28 +1014,51 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
     names = names or {}
     platforms = platforms or {}
     accounts = accounts or {}
+    by_ref = {ref: snap for ref, snap in snapshots}
+    declared = expected_devices() if inventory is None else [dict(e) for e in inventory]
+
     devices = []
-    for device_ref, snapshot in snapshots:
+    seen = set()
+    for entry in declared:
+        ref = entry["device_ref"]
+        seen.add(ref)
+        snapshot = by_ref.get(ref)
+        display_name = (names.get(ref) or entry.get("display_name") or ref)
+        platform = platforms.get(ref) or entry.get("platform") or "未知"
         if snapshot is None:
             devices.append({
-                "device_ref": device_ref,
-                "display_name": names.get(device_ref, device_ref),
-                "platform": platforms.get(device_ref, "未知"),
+                "device_ref": ref, "display_name": display_name,
+                "platform": platform,
                 "reachability": {"state": monitor.STATE_UNKNOWN,
                                  "reason": "该设备没有可用的采集结果"},
-                "readings": [],
-                "accounts": list(accounts.get(device_ref) or []),
+                "readings": [], "accounts": list(accounts.get(ref) or []),
+                # Never observed unless the inventory says otherwise: a row with
+                # no provider is a COVERAGE GAP (grey, UNCONFIRMED), which is a
+                # different finding from a machine that went silent (red).
+                "observed_ever": bool(entry.get("observed_ever", False)),
             })
             continue
-        entry = device_from_snapshot(
-            device_ref, snapshot, display_name=names.get(device_ref),
-            platform=platforms.get(device_ref))
-        entry["accounts"] = list(accounts.get(device_ref) or [])
-        devices.append(entry)
+        built = device_from_snapshot(ref, snapshot, display_name=display_name,
+                                     platform=platform)
+        built["accounts"] = list(accounts.get(ref) or [])
+        devices.append(built)
+    for ref, snapshot in snapshots:
+        if ref in seen:
+            continue
+        built = device_from_snapshot(ref, snapshot, display_name=names.get(ref),
+                                     platform=platforms.get(ref))
+        built["accounts"] = list(accounts.get(ref) or [])
+        devices.append(built)
+
+    devices, withheld = apply_audience(devices, audience=audience, policy=policy,
+                                       declared=declared)
+
     model = monitor.monitor_model(
         devices=devices, services=services, network=network, now=now,
         sample=sample, refresh_seconds=refresh_seconds,
         stale_after_s=stale_after_s)
+    if audience is not None:
+        model["audience"] = {"recipient": str(audience), "withheld": withheld}
     monitor.validate_model(model)
     return model
 
@@ -648,12 +1083,24 @@ def load_fixture(path=None):
     }
 
 
-def model_from_fixture(path=None):
+def model_from_fixture(path=None, *, audience=None, policy=None):
+    """The sample card. `audience` filters it through the SAME gate the rest use.
+
+    With no audience the whole inventory is returned, which is what makes the
+    coverage property visible in a test: every declared device has a row,
+    including the one with no provider. With an audience the rows that audience
+    is not granted are removed — the same `apply_audience` `fleet_model` calls,
+    so a fixture and a live card cannot disagree about who sees what.
+    """
     fixture = load_fixture(path)
+    devices = [dict(d) for d in fixture["devices"]]
+    devices, withheld = apply_audience(devices, audience=audience, policy=policy)
     model = monitor.monitor_model(
-        devices=fixture["devices"], services=fixture["services"],
+        devices=devices, services=fixture["services"],
         network=fixture["network"], now=fixture["now"], sample=True,
         stale_after_s=fixture["stale_after_s"])
+    if audience is not None:
+        model["audience"] = {"recipient": str(audience), "withheld": withheld}
     monitor.validate_model(model)
     return model
 

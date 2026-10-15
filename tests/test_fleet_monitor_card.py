@@ -322,10 +322,25 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("命令超时", gap[0]["reason"])
 
     def test_adapter_carries_a_missing_snapshot_as_unreachable(self):
-        model = source.fleet_model(snapshots=[("device:work-fj", None)],
-                                   services=[], now=NOW)
+        model = source.fleet_model(
+            snapshots=[("device:work-fj", None)], services=[], now=NOW,
+            inventory=[{"device_ref": "device:work-fj", "display_name": "FJPCOS",
+                        "platform": "windows"}])
+        self.assertEqual(len(model["devices"]), 1)
         self.assertEqual(model["devices"][0]["reachability"]["state"], "UNKNOWN")
         self.assertEqual(model["summary"]["devices"]["unreached"], 1)
+
+    def test_the_default_inventory_makes_every_declared_device_a_row(self):
+        # Coverage is a property of the declaration: with no snapshots at all,
+        # every expected device is still a row, unreached and truthful.
+        model = source.fleet_model(snapshots=[], services=[], now=NOW)
+        self.assertEqual(len(model["devices"]), len(source.EXPECTED_DEVICES))
+        self.assertEqual(sorted(d["device_ref"] for d in model["devices"]),
+                         sorted(e["device_ref"] for e in source.EXPECTED_DEVICES))
+        self.assertTrue(all(d["reachability"]["state"] == "UNKNOWN"
+                            for d in model["devices"]))
+        self.assertEqual(model["summary"]["devices"]["unreached"],
+                         len(source.EXPECTED_DEVICES))
 
     def test_fixture_builds_a_valid_sample_card(self):
         model = source.model_from_fixture()
@@ -341,13 +356,19 @@ class AdapterTest(unittest.TestCase):
         net = next(r for r in win["readings"] if r["kind"] == "network")
         self.assertNotIn("公网", net["label"])
 
-    def test_fixture_covers_exactly_the_three_company_devices(self):
-        # The personal Windows machine must not be a monitoring sample: a private
-        # host shown beside the company three is the leak this pins shut.
+    def test_fixture_covers_the_whole_declared_inventory(self):
+        # COVERAGE IS NOT OMISSION. Every declared device has a row; the laptop
+        # with no provider is present and UNKNOWN rather than dropped. WHICH rows
+        # a given recipient sees is the audience gate's job, not the fixture's.
         model = source.model_from_fixture()
         refs = sorted(d["device_ref"] for d in model["devices"])
-        self.assertEqual(refs, ["device:llm-lab-dell", "device:tokyo-shared-dev-01",
-                                "device:work-fj"])
+        self.assertEqual(refs, ["device:llm-lab-dell", "device:personal-dell",
+                                "device:tokyo-shared-dev-01", "device:work-fj"])
+        personal = next(d for d in model["devices"]
+                        if d["device_ref"] == "device:personal-dell")
+        self.assertEqual(personal["reachability"]["state"], "UNKNOWN")
+        self.assertEqual(personal["readings"], [],
+                         "a device with no provider must carry no invented metrics")
 
 
 class Phase2Test(unittest.TestCase):

@@ -1,5 +1,5 @@
 {
-  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. The card covers the THREE authorised company devices only — Tokyo (device:tokyo-shared-dev-01), the FJPCOS Windows workstation (device:work-fj) and the A6000 inference box (device:llm-lab-dell). The personal Windows machine (device:personal-dell) is deliberately ABSENT: it is not a company monitoring target, and a private machine shown beside these is the mistake this note exists to prevent. Also ABSENT: an egress-quota reading on Windows and the A6000, because the user confirmed a quota for Tokyo only and an unconfirmed quota must not be invented. Tokyo's share carries attribution=cgroup, the only attribution under which a host share is shown. Each device carries an `accounts` list: the per-UID CPU/RAM block V13 puts in the device's user area. The `quota`/`warn` figures are SUGGESTED soft lines, never cgroup limits — see the QUOTA_NOTE the renderer appends to the fold.",
+  "_note": "SAMPLE input for runtime/fleet_monitor_card.monitor_model. Every number is a fixture, not a reading: the model built from it is sample=true and the card says so. The fixture carries the WHOLE declared inventory (runtime/fleet_monitor_source.EXPECTED_DEVICES) — Tokyo (device:tokyo-shared-dev-01), the A6000 (device:llm-lab-dell), the personal Windows laptop (device:personal-dell) and the optional FJPCOS fourth (device:work-fj). Coverage is a property of the declaration, not of what answered: device:personal-dell has NO Fleet provider yet, so its row is present and truthful — UNKNOWN reachability, no readings, no invented metrics — rather than omitted. Omitting it was the earlier mistake this fixture corrects. WHICH of these a given card shows is the AUDIENCE's decision and not this file's: a corporate chat gets the corporate devices, and the private laptop appears only to a recipient an explicit device×recipient grant names (runtime/fleet_monitor_source.AudiencePolicy). Also ABSENT: an egress-quota reading on Windows and the A6000, because the user confirmed a quota for Tokyo only and an unconfirmed quota must not be invented. Tokyo's share carries attribution=cgroup, the only attribution under which a host share is shown. Each device that has them carries an `accounts` list: the per-UID CPU/RAM block V13 puts in the device's user area. The `quota`/`warn` figures are SUGGESTED soft lines, never cgroup limits — see the QUOTA_NOTE the renderer appends to the fold.",
   "now": "2026-10-13T06:00:00Z",
   "sample": true,
   "stale_after_s": 1800,
@@ -72,6 +72,15 @@
          "observed_at": "2026-10-13T05:59:00Z", "trend": [4.0, 4.8, 5.5, 6.0, 6.2],
          "scope": "uid", "note": "额度与警戒线均为建议软线，不是 cgroup 硬限制；本卡不限制、不结束任何进程", "source": "fixture"}
       ]
+    },
+    {
+      "device_ref": "device:personal-dell",
+      "display_name": "DellPCOS（个人机）",
+      "platform": "windows",
+      "reachability": {"state": "UNKNOWN", "reason": "该设备没有接入 Fleet provider，尚未有采集结果"},
+      "observed_ever": false,
+      "readings": [],
+      "accounts": []
     }
   ],
   "services": [

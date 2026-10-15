@@ -31,6 +31,16 @@ WHY THE DEFAULT TRANSPORT SENDS NOTHING
 to `MockTransport`, which records the call and answers with a synthetic id and
 opens no socket. A caller that wants the real transport passes one explicitly;
 nothing in this module, and no default anywhere in it, reaches Feishu.
+
+WHY A SEND ALSO NEEDS A GATE
+----------------------------
+The card carries machines that belong to different people, and which of them a
+recipient may be shown is a rule this module does not own — the source's
+`authorize_devices` answers it. So `apply_plan` refuses to send without a
+verdict: the enforcement lives at the one place a send starts from, not in a
+renderer that hid a row. A refusal touches no transport and produces no receipt,
+which is what keeps «we declined to send this» distinct from «we sent it and it
+failed» — the second is a delivery record and the first must not be one.
 """
 from __future__ import annotations
 
@@ -72,6 +82,18 @@ PATCH_MESSAGE = card_delivery.PATCH_MESSAGE
 #: unchanged one will not until the card changes.
 NOT_DUE = "NOT_DUE"
 UNCHANGED = "UNCHANGED"
+
+#: REFUSED is not a transport answer and not a scheduling one: it is this module
+#: declining to hand anything to a transport at all. It is a distinct word so
+#: that a refusal can never be read as a delivery that failed — a card that was
+#: never sent has no receipt to fail.
+REFUSED = "REFUSED"
+#: No audience verdict was established, so there is no answer to «may this
+#: recipient be shown these devices». A send is refused rather than assumed.
+GATE_REQUIRED = "GATE_REQUIRED"
+#: The audience verdict said no. The device list the card carries is not this
+#: recipient's to see.
+AUDIENCE_DENIED = "AUDIENCE_DENIED"
 
 
 class PlanError(RuntimeError):
@@ -182,16 +204,39 @@ class MockTransport:
         self.prefix = prefix
         self.calls: list[dict] = []
 
-    def send(self, *, card, action, version) -> dict:
+    def send(self, *, card, action, version, remote_id=None) -> dict:
+        """Record the call and answer with the id it acted on.
+
+        A PATCH answers with the id it was GIVEN — the message it changed — and
+        only a NEW message mints one. A mock that minted a fresh id for a patch
+        would model the exact defect V28 forbids: the receipt would name a
+        second card that does not exist, and a caller filing it would lose track
+        of the one on screen.
+        """
         self.calls.append({
-            "action": action, "version": version,
+            "action": action, "version": version, "remote_id": remote_id,
             "bytes": len(json.dumps(card, ensure_ascii=False, sort_keys=True)),
         })
+        if action == card_delivery.PATCH_MESSAGE and remote_id:
+            return {"state": "DELIVERED", "remote_id": remote_id}
         return {"state": "DELIVERED",
                 "remote_id": f"{self.prefix}{len(self.calls):04d}"}
 
 
-def apply_plan(plan, card, *, at, transport=None) -> dict:
+def open_gate(device_refs=(), *, audience=None) -> dict:
+    """An explicit «no restriction» verdict, said out loud rather than omitted.
+
+    The shape `apply_plan` expects, for the case where the caller genuinely has
+    no audience rule (a local preview, a fixture). It is a value a caller has to
+    WRITE, which is the point: `apply_plan` refuses a send with no gate, so
+    "nobody checked" is never the default and can never be mistaken for
+    "everybody is allowed".
+    """
+    return {"ok": True, "audience": audience, "allowed": list(device_refs),
+            "denied": [], "reason": None}
+
+
+def apply_plan(plan, card, *, at, transport=None, gate=None) -> dict:
     """Carry out a plan against a transport, defaulting to the mock.
 
     The ONLY place a send could happen. With the default transport it cannot:
@@ -199,17 +244,53 @@ def apply_plan(plan, card, *, at, transport=None) -> dict:
     returns is the shape `card_delivery.record` would take — version and the
     message id the send produced — but filing it is the ledger owner's job and
     not this module's.
+
+    THE GATE IS CHECKED HERE, BEFORE THE TRANSPORT, and a send without one is
+    refused. `gate` is a verdict from `fleet_monitor_source.authorize_devices`
+    (or `open_gate` for an explicit «no restriction»): the module that KNOWS who
+    may see which device answers, and this one — the only place a send starts
+    from — refuses to act without that answer. Two things follow, and both are
+    the reason this is a gate and not a UI:
+
+      * a denied send does not reach the transport at all, so a private device's
+        row cannot leave this machine because somebody assembled a card by hand;
+      * a refusal carries NO RECEIPT (`receipt` is `None`, `remote_id` is
+        `None`), so nothing downstream can file a delivery for a card that was
+        never sent. «Refused» and «attempted and failed» are different rows, and
+        a refusal that produced a receipt would erase the difference.
     """
     transport = transport if transport is not None else MockTransport()
     if not plan["send"]:
         return {"state": "NOOP", "action": plan["action"], "reason": plan["reason"],
-                "version": plan["version"], "remote_id": None, "at": at}
+                "version": plan["version"], "remote_id": None, "at": at,
+                "receipt": None, "denied": []}
+    if gate is None:
+        return _refused(plan, at, GATE_REQUIRED,
+                        "没有 audience 判决就发送：这台（或这群）收件人是否该看到这张卡上"
+                        "列出的设备无从判断。发送被拒，没有触碰 transport，也没有产生任何"
+                        "送达收据——「没检查过」不能默认成「谁都可以看」")
+    if not gate.get("ok", False):
+        denied = list(gate.get("denied") or [])
+        return _refused(plan, at, AUDIENCE_DENIED,
+                        f"收件人 {gate.get('audience')!r} 未被授权看到 {len(denied)} 台"
+                        f"设备中的读数。发送被拒，没有触碰 transport，也没有产生任何送达"
+                        f"收据", denied=denied)
     result = transport.send(card=card, action=plan["action"],
-                            version=plan["version"])
+                            version=plan["version"],
+                            remote_id=plan.get("remote_id"))
+    remote_id = result.get("remote_id")
     return {"state": result.get("state", "UNKNOWN"), "action": plan["action"],
             "reason": result.get("reason") or plan["reason"],
-            "version": plan["version"], "remote_id": result.get("remote_id"),
-            "at": at}
+            "version": plan["version"], "remote_id": remote_id, "at": at,
+            "receipt": {"version": plan["version"], "remote_id": remote_id},
+            "denied": []}
+
+
+def _refused(plan, at, reason, says, *, denied=()) -> dict:
+    """A refusal, with no receipt and no remote id — nothing was attempted."""
+    return {"state": REFUSED, "action": plan["action"], "reason": reason,
+            "version": plan["version"], "remote_id": None, "at": at,
+            "receipt": None, "denied": list(denied), "says": says}
 
 
 def main(argv=None):  # pragma: no cover - hand check
