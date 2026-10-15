@@ -54,8 +54,14 @@ def _load_json(path: str) -> dict:
 
 
 def plan(proposal: dict, command: str) -> dict:
-    preflight = gate.evaluate(proposal)
-    if preflight["decision"] != "PRECHECK_READY_FOR_HUMAN_CANARY":
+    if command == "uninstall":
+        return {"decision": "BLOCKED",
+                "blockers": ["Next uninstall requires separate reviewed retirement"],
+                "writes": [], "executes": []}
+    recovery = command in ("rollback", "status")
+    preflight = gate.evaluate(proposal, recovery=recovery)
+    ready = "RECOVERY_PLAN_READY" if recovery else "PRECHECK_READY_FOR_HUMAN_CANARY"
+    if preflight["decision"] != ready:
         return {"decision": "BLOCKED", "blockers": preflight["blockers"],
                 "writes": [], "executes": []}
     nxt = proposal["next"]
@@ -64,7 +70,7 @@ def plan(proposal: dict, command: str) -> dict:
         return {"decision": "BLOCKED",
                 "blockers": ["next.runtime_root: must end in /ingress-next"],
                 "writes": [], "executes": []}
-    if proposal["limits"] != BUDGET:
+    if not recovery and proposal["limits"] != BUDGET:
         return {"decision": "BLOCKED",
                 "blockers": ["limits: must match the Next service template"],
                 "writes": [], "executes": []}
@@ -84,6 +90,7 @@ def plan(proposal: dict, command: str) -> dict:
                     "writes": [], "executes": []}
     return {
         "decision": "DRY_RUN_READY",
+        "mode": "NEXT_ONLY_RECOVERY" if recovery else "NEXT_CANARY_INSTALL",
         "command": command,
         "unit": UNIT,
         "composition": COMPOSITION,
@@ -175,6 +182,40 @@ def _effective_limit_errors(mod) -> list[str]:
     return problems
 
 
+def _real_path_isolation(proposal: dict) -> None:
+    """Resolve symlinks at execution time so lexical separation cannot lie."""
+    for next_key in gate.PATH_FIELDS:
+        nxt = Path(proposal["next"][next_key]).resolve()
+        for old_key in gate.PATH_FIELDS:
+            v1 = Path(proposal["v1"][old_key]).resolve()
+            if nxt == v1 or nxt in v1.parents or v1 in nxt.parents:
+                raise Refused("Next path resolves inside V1; refusing effect")
+
+
+def _restore_failed_install(mod, root: Path, before: tuple, reason: str) -> None:
+    """Stop only Next, restore its previous pointers, never restart V1.
+
+    Artifacts are intentionally retained for forensics. A recovered prior
+    pointer is not an assurance the prior Next process is running.
+    """
+    stop_error = None
+    try:
+        stopped = mod.systemctl("stop", UNIT, check=False)
+        if stopped.returncode != 0:
+            stop_error = " Next stop reported nonzero status."
+    except (OSError, RuntimeError):
+        stop_error = " Next stop could not be confirmed."
+    try:
+        if mod.read_link(root / "current") != before[0]:
+            mod.point(root / "current", before[0])
+            mod.point(root / "previous", before[1])
+    except (OSError, ValueError) as exc:
+        raise Refused("Next failed; could not restore Next revision links: "
+                      + type(exc).__name__ + (";" + stop_error if stop_error else "")) from exc
+    raise Refused("Next failed, Next-only stop/rollback attempted: " + reason
+                  + (stop_error or ""))
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("command", choices=("install", "status", "rollback", "uninstall"))
@@ -201,8 +242,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.owner_approved:
             raise Refused("--execute requires explicit --owner-approved confirmation")
-        if args.command == "uninstall":
-            raise Refused("Next removal is a separate reviewed operation; no automatic uninstall")
+        # Consent is per-operator intent. It must not be replaced with a
+        # platform-wide permission switch or inherited from the V1 token.
+        _real_path_isolation(proposal)
         if args.command == "install" and not args.no_start:
             reason = _current_pressure()
             if reason:
@@ -240,16 +282,25 @@ def main(argv: list[str] | None = None) -> int:
 
         # Every destructive operation is addressed to the Next unit ONLY.
         # The wrapper does not grant OAuth, register a plugin or change V1.
-        result = mod.main(args_list)
-        if args.command == "install" and not args.no_start and result == 0:
+        root = Path(nxt["runtime_root"])
+        prior = (mod.read_link(root / "current"), mod.read_link(root / "previous"))
+        try:
+            result = mod.main(args_list)
+        except SystemExit as exc:
+            if args.command == "install":
+                _restore_failed_install(mod, root, prior,
+                                        "installer exited nonzero; status must be inspected")
+            raise
+        if args.command == "install" and result != 0:
+            _restore_failed_install(mod, root, prior, "installer returned nonzero")
+        if args.command == "install" and not args.no_start:
             faults = _effective_limit_errors(mod)
             if faults:
-                # Stopping the new canary is allowed: NEVER stop/restart V1 here.
-                mod.systemctl("stop", UNIT, check=False)
-                raise Refused("Next stopped: cgroup readback failed: " + ", ".join(faults))
+                _restore_failed_install(mod, root, prior,
+                                        "cgroup limits not enforced: " + ", ".join(faults))
             if not mod.wait_for_health(old["probe"], 3.0):
-                mod.systemctl("stop", UNIT, check=False)
-                raise Refused("V1 health unavailable after Next launch; Next stopped")
+                _restore_failed_install(mod, root, prior,
+                                        "V1 /health unavailable after Next launch")
         return result
     except Refused as exc:
         print(json.dumps({"decision": "BLOCKED", "reason": str(exc),
