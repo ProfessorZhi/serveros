@@ -20,6 +20,9 @@ add_library(core_lite_profile STATIC
   # The runtime identity readback, apart from the parser because a parser that
   # called `getuid()` would only be testable on the host it was written on.
   src/identity.cpp
+  # The `gpu.readonly` observation. The program it runs is an absolute constant
+  # with a fixed field list; the runner is the supervisor's bounded one.
+  src/gpu_readings.cpp
   # The `services` observation, projected from the supervisor's read-only unit
   # observations. It compiles against the NARROW `ServiceQuery` — one method —
   # rather than the supervisor's `Provider`, which also has start/restart/stop: a
@@ -63,6 +66,14 @@ target_link_libraries(core-lite-profile-check PRIVATE core_lite_profile)
 # could make it act, and adding one would be a different review.
 add_executable(core-lite-status src/status_main.cpp)
 target_link_libraries(core-lite-status PRIVATE core_lite_profile)
+# The supervisor's `src/` again, for `proc.hpp` — the bounded argv runner that
+# runs the fixed GPU program. PRIVATE includes do not propagate from the library
+# to this executable, so the path is repeated here rather than inherited. This is
+# the third use of the same private directory (the JSON reader, the unit adapter's
+# parser, now the runner), which is why the README names publishing those headers
+# as the structural follow-up rather than leaving it as three local choices.
+target_include_directories(core-lite-status PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
 
 # `enable_testing()` and `add_test` are the PARENT's: `native/node-core` already
 # calls `enable_testing()` before its subdirectories, so `ctest` from the root
@@ -88,6 +99,10 @@ add_test(NAME core_lite_status COMMAND test_core_lite_status)
 # The Linux adapter, against the snapshot the repository already ships. The test
 # finds the fixture relative to its working directory and FAILS if it cannot, so
 # a wrong `WORKING_DIRECTORY` cannot pass as a green run.
+add_executable(test_core_lite_gpu tests/test_gpu_readings.cpp)
+target_link_libraries(test_core_lite_gpu PRIVATE core_lite_profile)
+add_test(NAME core_lite_gpu COMMAND test_core_lite_gpu)
+
 add_executable(test_core_lite_services tests/test_service_readings.cpp)
 target_link_libraries(test_core_lite_services PRIVATE core_lite_profile)
 # The test re-reads the observation text with the component's own parser, and

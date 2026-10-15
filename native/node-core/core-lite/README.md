@@ -18,7 +18,7 @@ independent UIDs and neither can see or act on the other's.
 | PSI (`psi.cpu` / `psi.memory` / `psi.io`) | the collector's `psi` block, from `/proc/pressure`. The kernel windows the averages itself, so ONE sample is a complete reading. A line the kernel does not provide (`full` on some kernels) is `UNAVAILABLE` in place, never zero |
 | service state | the supervisor's `systemd_user.hpp` observation, unchanged — **read-only**, through a one-method interface. `INACTIVE` (installed, stopped) and `NOT_INSTALLED` (no unit behind the name) are different words, because systemd answers `ActiveState=inactive` for both |
 | connector health | declared as an observation; read by the Node adapter, never by the remote side |
-| GPU / VRAM / Strata storage (Dell) | **read-only**, and only where the profile says `authorized: true` |
+| GPU (Dell, NVIDIA) | **read-only**, and only where the profile says `authorized: true`. One fixed program at an absolute path with a fixed field list — no flag names it and no profile field changes it — through the supervisor's bounded runner. Card counters only: no UUID, no serial, no process id, no command line. A utilisation figure is **not** a health signal for the model server on the card |
 
 Every reading carries `observed_at` and either a value or an UNKNOWN with a
 reason. The collector's own invariant — *a fact that could not be measured is
@@ -49,7 +49,7 @@ vocabularies, named refusals, never a half-built document.
 | layer | status | evidence |
 |---|---|---|
 | **Source** | **REAL** | the reader, the status builder, the runtime identity readback and the Linux adapter — compiled by `cmake --build` over `native/node-core` with GNU 13.3, `-std=c++20 -Wall -Wextra -Wpedantic`, **zero warnings** |
-| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **20/20 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **99 checks**, `core_lite_readings` **226 checks** and `core_lite_services` **57 checks**, plus the collector's `test_swap_psi` **137 checks**. The three pre-existing collector suites are unchanged at 72 / 54 / 68. All 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
+| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **20/20 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **99 checks**, `core_lite_readings` **226 checks**, `core_lite_services` **58 checks** and `core_lite_gpu` **141 checks**, plus the collector's `test_swap_psi` **137 checks**. The three pre-existing collector suites are unchanged at 72 / 54 / 68. All 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
 | **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice into `node-resource-snapshot.v1`; the projection read it and the status reported `cpu`, `memory`, `swap` (32 GiB total, 27.1 GiB used, `pages_out_per_second 0.0`) and `psi.cpu/memory/io` — all `PRESENT`/`COMPLETE` — from those real counters. `services` and `connector` remain `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/CORE-LITE-SWAP-PSI/20261015/` |
 | **RealUserStaged** | **NOT DONE — BLOCKED** | no unit installed, none enabled, no linger. The Tokyo account would need the owner to install it; **Dell's `fjd` is not this account and only `fjd` may install there** |
 | **Running** | **NOT DONE — BLOCKED** | nothing has ever executed on a real host. No `systemd --user` unit for Core-Lite exists yet |
@@ -112,14 +112,15 @@ message already sent.
   its own root; configure and build were run that way and the whole project built
   clean. The plain `cmake -S native/node-core -B build` in §4 is the command an
   ordinary host runs, and it is the one that was exercised.
-- **`supervisor/src` on the include path**: `core-lite` includes the supervisor's
-  private `json_detail.hpp` — the one strict JSON reader in this repository, and
-  the one that reads an untrusted snapshot as input — via a `PRIVATE` include of
-  `../supervisor/src`. The structural fix belongs to the supervisor's review
-  (publish it as `supervisor/include/supervisor/json_reader.hpp`), not to this
-  one. Recorded rather than hidden, because before this branch the documented
-  CMake path did not build at all and that is exactly what the missing include
-  was hiding.
+- **`supervisor/src` on the include path, three times**: `core-lite` reaches into
+  the supervisor's private `src/` for the strict JSON reader (`json_detail.hpp`),
+  the unit-adapter's parser (`systemd_user.hpp` is public, but the tests read the
+  observation text directly) and now the bounded argv runner (`proc.hpp`). Each is
+  a `PRIVATE` include of `../supervisor/src`. The structural fix belongs to the
+  supervisor's review — publish these as `supervisor/include/supervisor/…` — not
+  to this one, and it is now worth doing: three components' worth of private
+  surface is a coupling that grew one reasonable decision at a time, which is how
+  this kind of coupling always grows. Recorded rather than hidden.
 - **No unit, anywhere**: not installed, not enabled, not started, no linger.
 - **Dell `fjd`**: this account has no permission there. The profile is a
   **declaration awaiting `fjd`'s own authorisation**.

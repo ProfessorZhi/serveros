@@ -33,11 +33,13 @@
 #include <vector>
 
 #include "corelite/collector_readings.hpp"
+#include "corelite/gpu_readings.hpp"
 #include "corelite/identity.hpp"
 #include "corelite/profile.hpp"
 #include "corelite/service_readings.hpp"
 #include "corelite/status.hpp"
 #include "nodecore/clock.hpp"
+#include "proc.hpp"
 #include "supervisor/provider.hpp"
 #include "supervisor/systemd_user.hpp"
 
@@ -65,6 +67,44 @@ public:
 
 private:
     nodecore::supervisor::SystemdUserProvider& provider_;
+};
+
+//: Runs the FIXED program for `gpu.readonly`.
+//:
+//: The argv is built here out of three constants and nothing else: an absolute
+//: path, a field list assembled from `kNvidiaSmiQueryFields`, and a format
+//: string. There is no flag on this program that can change any of them, so a
+//: caller cannot point it at another program or add an argument to this one —
+//: which is a stronger statement than "the caller is not supposed to".
+//:
+//: It goes through the supervisor's bounded runner: `execvp` with no shell, a
+//: wall deadline that kills the whole process group, and both output streams
+//: capped. A wedged driver is exactly when a monitoring program must not wait.
+class NvidiaSmi final : public nodecore::corelite::NvidiaQuery {
+public:
+    nodecore::corelite::NvidiaAnswer sample() override {
+        std::string query = "--query-gpu=";
+        const std::size_t field_count =
+            sizeof(nodecore::corelite::kNvidiaSmiQueryFields) /
+            sizeof(nodecore::corelite::kNvidiaSmiQueryFields[0]);
+        for (std::size_t index = 0; index < field_count; ++index) {
+            if (index != 0) {
+                query += ",";
+            }
+            query += nodecore::corelite::kNvidiaSmiQueryFields[index];
+        }
+        const std::vector<std::string> argv = {nodecore::corelite::kNvidiaSmiPath, query,
+                                              "--format=csv,noheader,nounits"};
+        const nodecore::supervisor::detail::RunResult run = nodecore::supervisor::detail::run_argv(
+            argv, {}, nodecore::corelite::kNvidiaSmiTimeoutSeconds,
+            nodecore::corelite::kNvidiaSmiMaxOutputBytes);
+        nodecore::corelite::NvidiaAnswer answer;
+        answer.ok = run.ok;
+        answer.stdout_text = run.stdout_text;
+        answer.code = run.code;
+        answer.exit_code = run.exit_code;
+        return answer;
+    }
 };
 
 void print_usage(std::FILE* out) {
@@ -189,8 +229,11 @@ int main(int argc, char** argv) {
         std::string error;
         // `services` comes from systemd, not from the snapshot: named here so
         // this adapter does not also answer it with a placeholder.
+        // `services` comes from systemd and `gpu.readonly` from nvidia-smi:
+        // both are OS facts, not `/proc` ones, so both are named here and this
+        // adapter does not also answer them with a placeholder.
         auto readings = nodecore::corelite::readings_from_snapshot(
-            profile, snapshot_text, error, {"services"});
+            profile, snapshot_text, error, {"services", "gpu.readonly"});
         if (!error.empty()) {
             std::fprintf(stderr, "the snapshot could not be read: %s\n", error.c_str());
             return 1;
@@ -236,6 +279,16 @@ int main(int argc, char** argv) {
         }
         input.readings.push_back(services);
     }
+
+    // ---- the gpu.readonly observation ------------------------------------
+    // The sampler is constructed unconditionally and RUNS nothing unless the
+    // owner granted the observation and this is a Linux profile: `gpu_reading`
+    // checks both before it calls `sample()`, so an ungranted observation costs
+    // no process at all.
+    NvidiaSmi gpu_sampler;
+    input.readings.push_back(nodecore::corelite::gpu_reading(
+        profile, os_identity, gpu_sampler,
+        nodecore::iso8601_utc(std::chrono::system_clock::now())));
 
     const auto outcome = nodecore::corelite::build_status(input);
     if (!outcome.ok) {

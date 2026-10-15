@@ -189,7 +189,7 @@ memory numbers is a value a reader will do arithmetic on and get wrong.
 | `psi.cpu` / `psi.memory` / `psi.io` | **PRESENT** — the six averages | the collector's `psi` block, from `/proc/pressure`; the kernel already windows them, so one sample is a complete reading |
 | `services` | **PRESENT** — this account's declared units, read-only | the supervisor's existing `systemd_user` adapter. See §6 |
 | `connector` | `NOT_IMPLEMENTED` | read by a Node adapter that does not exist yet |
-| `gpu.readonly` | `NOT_IMPLEMENTED` | read-only by declaration; not implemented |
+| `gpu.readonly` | **PRESENT** on a Linux host with an NVIDIA card | the fixed `nvidia-smi` query, read-only. See §6c |
 
 A granted observation is **never silently omitted**: the adapter answers every
 one of them, so «nobody asked» and «asked and got nothing» cannot look the same.
@@ -262,6 +262,69 @@ Until a typed, authenticated source exists, the honest answer is that nobody has
 written the collector — `NOT_IMPLEMENTED` — rather than a status derived from an
 unauthenticated request. This is the same rule as #213 §4b: an assertion is not
 evidence.
+
+## 6c. `gpu.readonly`: one fixed program, card counters only
+
+**The program is an absolute constant with a fixed argument list.** There is no
+flag on `core-lite-status` that names it and no profile field that changes it, so
+a caller cannot point this at another program and cannot add an argument to this
+one. The field list is the six names in the projection table and nothing else —
+there is no `--query-compute-apps`, so no process data is in the answer, which is
+why no other account's PID, command line or UID can be published: they were never
+asked for.
+
+It runs through the supervisor's existing bounded runner: `execvp` with no shell,
+a wall deadline that kills the whole process group, and both streams capped at
+`kNvidiaSmiMaxOutputBytes` — well under the runner's own default, because six
+short fields per card is all this shape holds. A wedged driver is exactly when a
+monitoring program must not sit waiting.
+
+### What refuses, and why each one is a refusal
+
+| refused | why |
+|---|---|
+| an observation the profile did not grant | **the program is not run at all.** An unauthorised observation costs no process — reading it and then discarding it is the thing the grant exists to prevent |
+| an unresolved account | there is no Core to attribute a reading to |
+| a non-Linux profile | `/usr/bin/nvidia-smi` is a Linux path and this is a Linux program. **A Windows Core's GPU answer must come from a Windows adapter**, and nothing here may be presented as one |
+| the program missing, timing out, exiting non-zero, or exceeding the output cap | `UNAVAILABLE` / `NO_SOURCE`. A host with no card, a wedged driver and a refused binary all land here, and none of them is a `0%` |
+| a utilisation outside `[0, 100]`, memory used above total, a negative or non-integer memory figure, an `N/A` in any numeric field | the WHOLE sample becomes `UNAVAILABLE`. One bad card makes the reading untrustworthy; dropping just that row would leave a reader comparing two cards with no way to know one was gone |
+| a temperature outside `[-40, 150]` °C | a driver that reports `-273` or `9000` is reporting an error into a field. A wrong number in front of somebody who would act on it is worse than no number |
+| two rows with the same index | two answers for one card is a contradiction, and picking one is picking silently |
+| more rows than `kMaxGpuRows` | a document that grew to a thousand rows is not this shape |
+
+`N/A` deserves its own line: it is the reason this observation exists. A driver
+that cannot answer must never be rendered as an idle card, and `nvidia-smi`
+writes `N/A` precisely when it cannot.
+
+### The one free-text field
+
+`label` is the card's **model name** — and only when it matches a bounded
+charset **and** contains no run of eight or more hex characters. Character class
+alone cannot tell `GPU-1a2b3c4d-…` from `NVIDIA RTX A6000`; both are letters,
+digits and hyphens. What separates them is that an identifier carries a long
+unbroken hex run and a marketing name does not — the longest in `A6000` is five,
+in `RTX 8000` is four. So no UUID, serial or hash can travel in this field, and a
+name that fails is a signal the answer is not the answer this program asked for.
+
+The direction of that guess is deliberate: a model name wrongly refused costs a
+label; an identifier wrongly published is a hardware identifier leaked.
+
+### `sample_time` is not `observed_at`
+
+`nvidia-smi` stamps nothing, so unlike the snapshot's `observed_at` — which is
+the producer's own sample instant, copied — `sample_time` is the instant **this
+process asked the question**, read from its own clock. The document says so by
+naming it differently, and `freshness` remains `NOT_ASSERTED` either way: the
+staleness bound belongs to the reader.
+
+### A GPU figure is not a service health signal
+
+**Utilisation and memory tell you nothing about whether the model server on the
+card is working.** A wedged server can sit at 0% with the card idle, and a server
+answering nothing can have the card at 100%. A reader that derives service health
+from these numbers will report a working service as dead and a dead one as
+working. Service health comes from a trusted probe that has the right to ask —
+not from this field.
 
 ## 7. How to run it
 
