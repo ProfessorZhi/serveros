@@ -123,6 +123,7 @@ class NextOnlyInstaller(unittest.TestCase):
 
     def test_bootstrap_stages_with_no_new_plugin_id_and_no_oauth(self):
         p = candidate()
+        p["next"]["public_mcp_url"] = None
         p["next"]["plugin_id"] = None
         p["attestations"]["next_oauth_client_authorized"] = False
         with mock.patch.object(next_install, "_load_legacy_installer",
@@ -133,8 +134,17 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertEqual(summary["unit"], gate.NEXT_UNIT)
         self.assertEqual(summary["executes"], [])
 
+    def test_full_install_still_refuses_unassigned_next_public_url(self):
+        p = candidate()
+        p["next"]["public_mcp_url"] = None
+        verdict = next_install.plan(p, "install")
+        self.assertEqual(verdict["decision"], "BLOCKED")
+        self.assertTrue(any("next.public_mcp_url" in reason
+                            for reason in verdict["blockers"]))
+
     def test_execute_stage_always_passes_no_start_into_next_installer(self):
         p = candidate()
+        p["next"]["public_mcp_url"] = None
         p["next"]["plugin_id"] = None
         p["attestations"]["next_oauth_client_authorized"] = False
         class FakeMod:
