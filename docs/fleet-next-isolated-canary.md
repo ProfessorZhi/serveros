@@ -59,6 +59,37 @@ detected contradiction. It does NOT prove the running service's real identity
 or permit an unreviewed deployment. Input attestations must be verified by an
 owner, not fabricated by the candidate installer.
 
+## Two-stage bootstrap avoids a Plugin/OAuth registration deadlock
+
+The prior installer gate required a real Next Plugin ID and completed OAuth
+consent *before any Next service could be staged*. That is circular when owner
+registration first needs an isolated MCP endpoint to inspect.
+
+Fleet Next now has a `stage` subcommand: it uses the strict two-stack
+identity preflight in BOOTSTRAP mode, requiring separate paths, a separate
+loopback port, V1 observed identity, Next binding owner review, explicit
+rollback preparation, and the same systemd resource budget. It allows the
+Next plugin id to be null and skips the Next OAuth-consent attestation ONLY
+for this stage.
+
+Example dry-run (the checked-in example intentionally has false attestations
+and therefore returns BLOCKED):
+
+    python3 fleet_mcp/deploy/next_install.py stage --proposal next.json
+
+A real stage requires the same explicit `--execute --owner-approved` flags
+as any installer action, but is forced to the legacy installer's `--no-start`:
+there is **no service start** and no real ChatGPT Plugin registration. It
+refuses an already existing Next `current` revision symlink so it cannot
+repoint a running Next. It never selects the V1 unit. No automatic permission
+switch or OS-admin escalation is part of staging.
+
+After independent HTTPS ingress/App setup and owner OAuth, the full `install`
+preflight again requires a real **new** Plugin ID, Next OAuth consent and
+complete static binding attestations. The actual launch then undergoes a
+short live memory-pressure probe, cgroup limit readback, Next-only rollback
+and V1 health readback. Bootstrap **never** implies these are complete.
+
 ## Memory constraints without an impossible "stable Swap" promise
 
 High SWAP USED percentage alone is NOT an admission gate: it may represent
