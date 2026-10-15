@@ -52,6 +52,7 @@ from fleet_mcp.fleet import (  # noqa: E402
     Principal,
 )
 from fleet_mcp.identity import SessionKey  # noqa: E402
+from fleet_mcp.runtime_identity import BASE_RUNTIME  # noqa: E402
 from fleet_mcp.providers.base import (  # noqa: E402
     MANAGED_IDLE,
     ProviderHealth,
@@ -241,14 +242,41 @@ class TheToolIsOnTheSurfaceAndTheOldOnesAreUnchanged(unittest.TestCase):
 class ArgumentsAreCloudclisOwnSchema(unittest.TestCase):
     """The field names are CloudCLI 1.39's, carried rather than invented."""
 
+    #: Arguments this surface adds on top of CloudCLI's `session_create` schema.
+    #: Named here so that a second one is a diff: the assertion below exists to
+    #: say the field names are the provider's, and an argument this surface owns
+    #: is the exception that has to be written down to stay an exception.
+    #:
+    #: `runtime` selects WHICH account's binding on the device the create goes
+    #: to. CloudCLI has no such field because it is only ever reached through one
+    #: binding at a time — the routing between them is this surface's, so the
+    #: argument is too. It is consumed here and never forwarded, which the test
+    #: below asserts, because the provider's own schema is closed.
+    SURFACE_OWNED_ARGUMENTS = {"runtime"}
+
     def test_the_declared_properties_are_the_providers_schema(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_create_session"]
         self.assertEqual(
             set(tool.input_schema["properties"]),
             {"device", "project", "message", "provider", "model",
-             "lifecycle_mode", "permission_mode", "idempotency_key"},
+             "lifecycle_mode", "permission_mode", "idempotency_key"}
+            | self.SURFACE_OWNED_ARGUMENTS,
         )
         self.assertEqual(tool.input_schema["required"], ["device", "project"])
+        # Optional on purpose: a caller written before a device could serve two
+        # must not have to name the account it already means.
+        self.assertNotIn("runtime", tool.input_schema["required"])
+
+    def test_the_surface_owned_argument_is_not_forwarded_to_the_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.service.create_session(
+                harness.principal(), device=TOKYO, project="p-1",
+                runtime=BASE_RUNTIME)
+        sent = harness.providers[TOKYO].created[-1]
+        self.assertNotIn("runtime", sent,
+                         "the provider's schema is closed; an argument this "
+                         "surface owns must be consumed here, not relayed")
 
     def test_a_create_carries_the_snake_case_names_onto_the_wire_as_camel(self):
         with tempfile.TemporaryDirectory() as tmp:

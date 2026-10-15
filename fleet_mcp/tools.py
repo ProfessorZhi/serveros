@@ -38,6 +38,7 @@ from .errors import BAD_REQUEST, FleetRefusal, refuse
 from .fleet import Principal
 from .identity import SessionKey
 from .privacy import redact_payload
+from .runtime_identity import BASE_RUNTIME
 
 SESSION_REF_DOC = (
     "The session's full reference, `device:<id>|<provider>|<native session id>`, "
@@ -205,6 +206,7 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         project=project,
         message=args.get("message"),
         provider=args.get("provider") or "claude",
+        runtime=args.get("runtime") or BASE_RUNTIME,
         model=args.get("model"),
         lifecycle_mode=args.get("lifecycle_mode"),
         permission_mode=args.get("permission_mode"),
@@ -483,10 +485,13 @@ TOOLS: tuple[Tool, ...] = (
             "that its operator writes; the default is refusal for every device, "
             "including devices authorized for control.\n\n"
             "The arguments are CloudCLI's own `session_create` schema, carried "
-            "unchanged: `project` is required and must already be a project id "
-            "(a display name is not resolved here), and `provider` defaults to "
-            "`claude`. Omit a field rather than sending an empty one — an omitted "
-            "field is filled from the device owner's own remembered defaults.\n\n"
+            "unchanged apart from one this surface owns: `runtime`, which picks "
+            "which account on the device the create goes to and is consumed here "
+            "rather than forwarded. `project` is required and must already be a "
+            "project id (a display name is not resolved here), and `provider` "
+            "defaults to `claude`. Omit a field rather than sending an empty one "
+            "— an omitted field is filled from the device owner's own remembered "
+            "defaults.\n\n"
             "`run_id` is present only when you supplied a first `message`: "
             "creating a session and starting a run in it are two different "
             "things, and a create that started nothing reports no run. Creating a "
@@ -517,6 +522,25 @@ TOOLS: tuple[Tool, ...] = (
                     "creates the session with nothing running."
                 ),
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
+                "runtime": _string(
+                    "Which account's runtime on that device to create in. Omit to "
+                    "use the device's own runtime, which is what every caller "
+                    "written before a device could serve two means. This is NOT "
+                    "the agent family — `provider` is that, and one runtime "
+                    "serves both families.\n\n"
+                    "A runtime is a credential instance, not an OS username: two "
+                    "Claude Code configurations in one account are two runtimes. "
+                    "It must be one this surface already has a binding for; a "
+                    "name it does not know is refused, so this selects among "
+                    "configured routes and cannot create a new endpoint or reach "
+                    "an address the operator never bound.\n\n"
+                    "Authorization is per runtime: `allow_create` is read from "
+                    "that runtime's own binding, so a machine that authorized "
+                    "creation in one account has not authorized it in the account "
+                    "beside it. The default is the device's own runtime, and it "
+                    "never falls back to another one — a name that is not bound "
+                    "is refused rather than redirected."
+                ),
                 "model": _string(
                     "Model id for the session. Omit to let the device use its own "
                     "default for the chosen provider — which is the only value "
