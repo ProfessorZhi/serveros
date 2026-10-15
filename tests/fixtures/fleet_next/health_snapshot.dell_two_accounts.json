@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "A positive control for fleet_mcp.health_admission, not a measurement.",
+    "Nothing here was probed: `source: LIVE` is the field the gate requires and",
+    "this file is the fixture that satisfies the shape of it. The two accounts",
+    "on the Dell host are the case the six-dimension key exists for -- vince",
+    "(uid 1002) and fjd (uid 1000) differ in two fields, and a key of",
+    "(device_ref, runtime_id) would have made them one admission decision.",
+    "sampled_at is 1000 and the tests assess it at now=1010, inside MAX_AGE_S."
+  ],
+  "schema": "serveros/fleet-next-health-snapshot/v1",
+  "hosts": [
+    {
+      "device_ref": "device:llm-lab-dell",
+      "sampled_at": 1000,
+      "source": "LIVE",
+      "reachable": true,
+      "memory_psi_full_avg10": 0.0,
+      "swap_out_mib_s": 0.0,
+      "blocked_tasks": 0,
+      "swap_used_percent": 96.0
+    }
+  ],
+  "runtimes": [
+    {
+      "device_ref": "device:llm-lab-dell",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "claude-vince-main",
+      "family": "claude",
+      "credential_instance": "cc-vince-primary",
+      "credential_state": "active",
+      "owner_approved": true,
+      "source": "LIVE",
+      "reachable": true,
+      "sampled_at": 1000,
+      "running_sessions": 0,
+      "stuck_sessions": 0,
+      "max_sessions": 2
+    },
+    {
+      "device_ref": "device:llm-lab-dell",
+      "os_user": "fjd",
+      "uid": 1000,
+      "runtime_id": "claude-fjd-main",
+      "family": "claude",
+      "credential_instance": "cc-fjd-primary",
+      "credential_state": "active",
+      "owner_approved": true,
+      "source": "LIVE",
+      "reachable": true,
+      "sampled_at": 1000,
+      "running_sessions": 0,
+      "stuck_sessions": 0,
+      "max_sessions": 2
+    },
+    {
+      "device_ref": "device:llm-lab-dell",
+      "os_user": "vince",
+      "uid": 1002,
+      "runtime_id": "codex-vince-main",
+      "family": "codex",
+      "credential_instance": "codex-vince-native",
+      "provider": "codex-native",
+      "credential_state": "active",
+      "owner_approved": true,
+      "source": "LIVE",
+      "reachable": true,
+      "sampled_at": 1000,
+      "running_sessions": 1,
+      "stuck_sessions": 0,
+      "max_sessions": 2
+    }
+  ]
+}
