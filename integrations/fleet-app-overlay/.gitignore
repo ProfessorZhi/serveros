@@ -1,0 +1,5 @@
+# Generated-only: reproducible from the pinned source by build_overlay.py, and
+# committing it would put a second, silently-drifting copy beside the one it was
+# built from. A real overlay also carries an app binding, so a `dist/` here is
+# never something to check in.
+dist/
