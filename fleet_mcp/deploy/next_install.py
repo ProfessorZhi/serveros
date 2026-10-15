@@ -59,8 +59,10 @@ def plan(proposal: dict, command: str) -> dict:
                 "blockers": ["Next uninstall requires separate reviewed retirement"],
                 "writes": [], "executes": []}
     recovery = command in ("rollback", "status")
-    preflight = gate.evaluate(proposal, recovery=recovery)
-    ready = "RECOVERY_PLAN_READY" if recovery else "PRECHECK_READY_FOR_HUMAN_CANARY"
+    bootstrap = command == "stage"
+    preflight = gate.evaluate(proposal, recovery=recovery, bootstrap=bootstrap)
+    ready = ("RECOVERY_PLAN_READY" if recovery else
+             "BOOTSTRAP_PLAN_READY" if bootstrap else "PRECHECK_READY_FOR_HUMAN_CANARY")
     if preflight["decision"] != ready:
         return {"decision": "BLOCKED", "blockers": preflight["blockers"],
                 "writes": [], "executes": []}
@@ -91,7 +93,8 @@ def plan(proposal: dict, command: str) -> dict:
                         "writes": [], "executes": []}
     return {
         "decision": "DRY_RUN_READY",
-        "mode": "NEXT_ONLY_RECOVERY" if recovery else "NEXT_CANARY_INSTALL",
+        "mode": "NEXT_ONLY_RECOVERY" if recovery else
+                "NEXT_ONLY_STAGE_NO_START" if bootstrap else "NEXT_CANARY_INSTALL",
         "command": command,
         "unit": UNIT,
         "composition": COMPOSITION,
@@ -225,7 +228,7 @@ def _restore_failed_install(mod, root: Path, before: tuple, reason: str) -> None
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("command", choices=("install", "status", "rollback", "uninstall"))
+    p.add_argument("command", choices=("stage", "install", "status", "rollback", "uninstall"))
     p.add_argument("--proposal", required=True, help="non-secret, freshly reviewed JSON")
     p.add_argument("--source", default=str(_ROOT))
     p.add_argument("--revision")
@@ -261,16 +264,17 @@ def main(argv: list[str] | None = None) -> int:
         mod = _load_legacy_installer()
         nxt = proposal["next"]
         runtime_root = str(Path(nxt["runtime_root"]).parent)
-        args_list = [args.command, "--runtime-root", runtime_root,
+        args_list = ["install" if args.command == "stage" else args.command,
+                     "--runtime-root", runtime_root,
                      "--composition", COMPOSITION, "--config", nxt["config_path"],
                      "--health-timeout", str(args.health_timeout)]
-        if args.command == "install":
+        if args.command in ("stage", "install"):
             args_list.extend(["--source", args.source])
             if args.revision:
                 args_list.extend(["--revision", args.revision])
             if args.label:
                 args_list.extend(["--label", args.label])
-            if args.no_start:
+            if args.no_start or args.command == "stage":
                 args_list.append("--no-start")
 
             # The Next and V1 binding files must be ACTUALLY distinct today,
@@ -285,22 +289,25 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("Next binding differs from reviewed proposal")
             if info["port"] == old["port"]:
                 raise Refused("Next would reuse V1's local listening port")
-            if not args.no_start and not mod.wait_for_health(old["probe"], 3.0):
+            if args.command == "install" and not args.no_start and not mod.wait_for_health(old["probe"], 3.0):
                 raise Refused("V1 health unavailable before Next start; do not risk cutover")
 
         # Every destructive operation is addressed to the Next unit ONLY.
         # The wrapper does not grant OAuth, register a plugin or change V1.
         root = Path(nxt["runtime_root"])
         prior = (mod.read_link(root / "current"), mod.read_link(root / "previous"))
+        if args.command == "stage" and prior[0] is not None:
+            raise Refused("bootstrap stage requires an empty Next revision root; "
+                          "do not repoint an existing Next instance")
         effect_started = True  # no longer a dry-run, even if the install fails
         try:
             result = mod.main(args_list)
         except SystemExit as exc:
-            if args.command == "install":
+            if args.command in ("stage", "install"):
                 _restore_failed_install(mod, root, prior,
                                         "installer exited nonzero; status must be inspected")
             raise
-        if args.command == "install" and result != 0:
+        if args.command in ("stage", "install") and result != 0:
             _restore_failed_install(mod, root, prior, "installer returned nonzero")
         if args.command == "install" and not args.no_start:
             faults = _effective_limit_errors(mod)
