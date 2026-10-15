@@ -131,6 +131,45 @@ class ProviderBinding:
     # default, like every other grant, so a binding that never considered the
     # question answers it with silence rather than with yes.
     allow_control: bool = False
+    #: Which credential profile inside the account this binding reaches. One OS
+    #: account can hold several independent CC identities — a general route, an
+    #: official subscription, a work identity — and those are separate runtimes
+    #: with separate tags, separate anchors and separate grants. This is the
+    #: NAME of one. It grants nothing: a binding that sets it is still bound by
+    #: every flag above, and a profile named here is not thereby authorized for
+    #: anything the profile beside it was not.
+    profile: str | None = None
+    #: Which OS account owns this runtime. Naming only, for the same reason.
+    account: str | None = None
+    #: An owner-authored incarnation label: which provisioning of this profile
+    #: the operator meant. Its purpose is to let a declaration say "the second
+    #: time this account was set up", so two declarations can be told apart.
+    #:
+    #: It is a DECLARATION ON A LOCAL FILE. It is not a live-process identity,
+    #: nothing signs it, and this surface cannot read a remote incarnation back
+    #: today — so it must not be described as fencing. A deployment that needs
+    #: proof it is speaking to the same running process needs that proof from
+    #: the device's own protocol; until then the honest answer is UNVERIFIED,
+    #: never a quiet fallback to a different profile.
+    instance_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """Shape only. Whether a declared runtime EXISTS is not a question a
+        single binding can answer, and set-level questions are asked where the
+        whole set is visible."""
+        for name, value in (("account", self.account), ("profile", self.profile),
+                            ("instance_id", self.instance_id)):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string when set")
+            if value.strip() != value:
+                raise ValueError(f"{name} must not be padded with whitespace")
+            if runtime_identity.is_a_selector(value):
+                raise ValueError(
+                    f"{name} {value!r} is the query vocabulary, which names a set "
+                    f"of runtimes rather than one"
+                )
 
     def credential(self) -> str | None:
         """Read the credential at the anchor. Never logged, never returned."""
@@ -808,7 +847,43 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             allow_send=bool(entry.get("allow_send", False)),
             allow_create=bool(entry.get("allow_create", False)),
             allow_control=bool(entry.get("allow_control", False)),
+            account=entry.get("account"),
+            profile=entry.get("profile"),
+            instance_id=entry.get("instance_id"),
         )
+
+    # Two set-level questions a single binding cannot answer, asked once the
+    # whole set is visible. Both refuse rather than pick a winner: a duplicate
+    # here is a declaration that says two things about one runtime, and the
+    # silent resolutions — first wins, last wins — differ only in which of the
+    # two the operator will be surprised by.
+    _accounts_seen: dict[tuple[str, str | None, str | None], str] = {}
+    _instances_seen: dict[str, str] = {}
+    for _key, _binding in providers.items():
+        if _binding.instance_id is not None:
+            prior = _instances_seen.get(_binding.instance_id)
+            if prior is not None and prior != _key:
+                raise refuse(
+                    BAD_REQUEST,
+                    f"two bindings declare the same instance_id "
+                    f"{_binding.instance_id!r} ({prior} and {_key}). One "
+                    f"incarnation label names one provisioning, so this is "
+                    f"refused rather than resolved by declaration order.",
+                )
+            _instances_seen[_binding.instance_id] = _key
+        if _binding.profile is None and _binding.account is None:
+            continue
+        identity = (_binding.device_ref, _binding.account, _binding.profile)
+        prior = _accounts_seen.get(identity)
+        if prior is not None and prior != _key:
+            raise refuse(
+                BAD_REQUEST,
+                f"two bindings on {_binding.device_ref} declare the same "
+                f"account/profile ({_binding.account!r}, {_binding.profile!r}) "
+                f"— {prior} and {_key}. Two tags cannot both be that one "
+                f"runtime, so this is refused rather than routed by order.",
+            )
+        _accounts_seen[identity] = _key
 
     auth_raw = raw.get("auth") or {}
     auth = AuthBinding(
