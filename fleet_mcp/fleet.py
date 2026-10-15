@@ -25,6 +25,7 @@ What it is careful about
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import threading
 import time
@@ -32,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
-from . import cloudcli_native, runtime_identity
+from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
 from .runtime_identity import BASE_RUNTIME
@@ -206,12 +207,18 @@ class _IdempotencyEntry:
 
 
 class FleetService:
-    def __init__(self, config: FleetConfig, *, registry=None, providers=None) -> None:
+    def __init__(self, config: FleetConfig, *, registry=None, providers=None,
+                 core_lite_source=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
             providers if providers is not None else build_providers(config)
         )
+        #: A provider-side Core-Lite reader, injected. `None` means no device
+        #: here has one, which is the truthful default: no live Node exposes a
+        #: trusted Core API yet, so every reading this surface could otherwise
+        #: show would be one it made up. See `core_lite_status()`.
+        self.core_lite_source = core_lite_source
         self.audit = AuditLog(config.audit)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self._idempotency: dict[str, _IdempotencyEntry] = {}
@@ -616,6 +623,49 @@ class FleetService:
             return False, False, False, None
         health = provider.health()
         return True, health.reachable, health.authorized, health
+
+    def core_lite_status(self, principal: Principal, device_ref: str,
+                         *, received_at=None) -> dict[str, Any]:
+        """This device's Core-Lite reading, or why there is not one to show.
+
+        **Not an MCP tool.** Nothing in `tools.py` names it, `list_devices` and
+        `status` do not call it, and no route is declared for it — so the served
+        surface is exactly what it was: nine hand-written tools plus the 22
+        inherited verbs, six scopes, `TOOL_SURFACE_REVISION = "fleet-mcp-3"`.
+        Adding a field to `fleet_list_devices` would be a change to a tool's
+        contract shape, and that decision belongs in the change that makes it,
+        openly, rather than inside a wiring commit.
+
+        What it does add is the seam: a place a provider adapter can be plugged
+        into, and one place that decides whether what came back may be
+        attributed to this device at all.
+
+        The device reference is an ARGUMENT and the account comes from the
+        binding — neither is read from the document. The route evidence comes
+        from the source. `ProviderHealth` contributes nothing here, on purpose:
+        a provider whose transport answers is not thereby a device whose Core
+        answered.
+        """
+        principal.require(SCOPE_READ)
+        binding = self.config.provider_for(device_ref)
+        account = binding.account if binding is not None else None
+        if received_at is None:
+            received_at = dt.datetime.now(dt.timezone.utc)
+        summary = core_lite_source.admit_core_lite(
+            self.core_lite_source,
+            device_ref=device_ref,
+            binding_account=account,
+            received_at=received_at,
+        )
+        # `device_ref` and `decision` are the names the disclosure table already
+        # carries a kind for (REF and CODE). A fresh pair of names here would
+        # have been silently WITHHELD from the audit record — which is what
+        # `test_fleet_mcp_disclosure` caught — and adding them to the table
+        # would be a disclosure-policy change smuggled in under a wiring commit.
+        self.audit.record("fleet.core_lite_status", principal=principal.name,
+                          device_ref=device_ref,
+                          decision=summary.get("route", {}).get("state"))
+        return summary
 
     def list_devices(self, principal: Principal, *, include_inactive: bool = True) -> dict[str, Any]:
         principal.require(SCOPE_READ)
