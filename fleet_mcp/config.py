@@ -33,6 +33,8 @@ from .identity import SessionKey
 from .local_roots import binding_candidates, refusal_if_closed_root
 from . import runtime_identity
 from .runtime_identity import BASE_RUNTIME
+from .runtime_create_policy import (RuntimeProjectDefaults, PolicyError,
+                                    parse_runtime_create_defaults)
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
@@ -269,6 +271,10 @@ class PolicyBinding:
     # the device gate refuses, this gate refuses one level in — see `CreateGrant`
     # for why the inner ceiling is the narrow one.
     create_allow: dict[str, CreateGrant] = field(default_factory=dict)
+    # Explicit runtime-and-project defaults are independent of the project's
+    # upper ceilings. Absent entries preserve existing provider defaults. No
+    # new runtime inherits model credentials or bypass mode from its neighbor.
+    runtime_create_defaults: dict[str, dict[str, RuntimeProjectDefaults]] = field(default_factory=dict)
     # `create_allow: {"*": ...}` would make the project allowlist meaningless,
     # exactly as a wildcard send does. Refused at load for the same reason: a
     # configuration mistake should be an outage on start, not a silent widening
@@ -875,11 +881,19 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             "grant meaningless; set `allow_wildcard_control: true` if that is "
             "genuinely intended.",
         )
+    create_grants = _create_allow(policy_raw)
+    try:
+        runtime_defaults = parse_runtime_create_defaults(
+            policy_raw.get("runtime_create_defaults"),
+            known_runtimes=set(providers), project_ceilings=create_grants)
+    except PolicyError as exc:
+        raise refuse(BAD_REQUEST, f"policy.runtime_create_defaults: {exc}") from None
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
         operator_grants=load_operator_grants(policy_raw),
-        create_allow=_create_allow(policy_raw),
+        create_allow=create_grants,
+        runtime_create_defaults=runtime_defaults,
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
         control_allow=control_allow,
         allow_wildcard_control=bool(policy_raw.get("allow_wildcard_control", False)),
