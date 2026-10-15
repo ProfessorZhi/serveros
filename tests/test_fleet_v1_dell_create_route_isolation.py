@@ -476,29 +476,29 @@ class TheOtherAccountIsNotASecondDeviceTest(unittest.TestCase):
         self.assertEqual(refs, {DEVICE})
 
 
-class TheSendRefusalFoldsUnboundIntoUnauthorizedTest(unittest.TestCase):
-    """OBSERVED GAP — reported to the Runtime Lane, not fixed here.
+class TheTwoVerbsAgreeOnAnUnboundRuntimeTest(unittest.TestCase):
+    """MIGRATED FROM A GAP CHARACTERISATION — this is the evidence the fix landed.
 
-    `send_to_session` resolves control authorization (`_may_send`) before
-    reachability (`_require_provider`). `_may_send` reads `binding is None or not
-    binding.allow_send` as one condition, so a session ref naming a runtime this
-    host holds NO binding for is answered `APPROVAL_REQUIRED` — "not authorized
-    for control" — when the true statement is "there is no route to that
-    runtime".
-
-    `create_session` answers the same situation with `UNKNOWN_DEVICE`, because it
-    calls `_require_provider` first.
-
-    Nothing is mis-delivered either way — both refuse, and no provider is
-    reached. What differs is which file an operator is sent to edit: the policy
-    for an authorization question, the binding for a routing one. On a device
-    whose second account is simply not running yet, that is the common case, and
-    the wrong answer costs an editing round trip.
-
-    This class pins today's observable behaviour so a fix cannot land silently.
-    It is a characterisation test, not an endorsement: when the Runtime Lane
+    This class used to be `TheSendRefusalFoldsUnboundIntoUnauthorizedTest`, and
+    its own docstring said what would happen to it: "when the Runtime Lane
     changes the code, this test is expected to be UPDATED, and the update is the
-    evidence the fix landed. See `docs/fleet-v1-dell-readiness.md`.
+    evidence the fix landed". Lane B has now changed it, so the update is here.
+
+    What the old test recorded was that `_may_send` read `binding is None or not
+    binding.allow_send` as ONE condition, so a session ref naming a runtime this
+    host holds no binding for came back `APPROVAL_REQUIRED` — "not authorized" —
+    while `create_session` answered the same situation `UNKNOWN_DEVICE`. The two
+    verbs disagreed about one missing binding.
+
+    They agree now. The reason it mattered is not that anything was
+    mis-delivered — both refused, and no provider was reached — but that the two
+    answers send an operator to different files: policy for an authorization
+    question, the binding for a routing one. On a device whose second account is
+    simply not running yet, the wrong file is the common case.
+
+    Rewritten as POSITIVE assertions of the corrected behaviour. The
+    characterisation did not survive as a constraint, and the fix was not
+    allowed to be quietly reverted to make anything green.
     """
 
     def setUp(self):
@@ -508,21 +508,39 @@ class TheSendRefusalFoldsUnboundIntoUnauthorizedTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_send_to_an_unbound_runtime_is_approval_required_today(self):
+    def test_send_to_an_unbound_runtime_is_unreachable(self):
+        """Was `…is_approval_required_today`. The answer is now the routing one."""
         h = TwoAccounts(self.tmp, other=False)
         with self.assertRaises(FleetRefusal) as caught:
             h.service.send_to_session(h.principal(), SessionKey.parse(OTHER_REF),
                                       message="hello")
-        self.assertEqual(caught.exception.code, APPROVAL_REQUIRED)
+        self.assertEqual(caught.exception.code, UNKNOWN_DEVICE)
+        self.assertNotEqual(caught.exception.code, APPROVAL_REQUIRED)
 
-    def test_create_to_the_same_unbound_runtime_is_unknown_device(self):
-        """The two verbs disagree about the same missing binding, which is the
-        evidence that this is an ordering artefact rather than a policy."""
+    def test_the_two_verbs_now_agree_about_the_same_missing_binding(self):
+        """They used to disagree, and the disagreement was the tell: create
+        asked reachability first and send did not."""
         h = TwoAccounts(self.tmp, other=False)
-        with self.assertRaises(FleetRefusal) as caught:
+        with self.assertRaises(FleetRefusal) as sent:
+            h.service.send_to_session(h.principal(), SessionKey.parse(OTHER_REF),
+                                      message="hello")
+        with self.assertRaises(FleetRefusal) as created:
             h.service.create_session(h.principal(), device=DEVICE, project=PROJECT,
                                      runtime=OTHER_RUNTIME)
-        self.assertEqual(caught.exception.code, UNKNOWN_DEVICE)
+        self.assertEqual(sent.exception.code, UNKNOWN_DEVICE)
+        self.assertEqual(created.exception.code, sent.exception.code)
+
+    def test_the_unbound_answer_does_not_confirm_the_account_exists(self):
+        """The other half of the fix: `APPROVAL_REQUIRED` would have said "there
+        is a route here and you were not given it", which tells a caller probing
+        a tag that the profile behind it is real."""
+        h = TwoAccounts(self.tmp, other=False)
+        with self.assertRaises(FleetRefusal) as caught:
+            h.service.send_to_session(h.principal(), SessionKey.parse(OTHER_REF),
+                                      message="hello")
+        for phrase in ("not authorized", "allow_send", "granted", "grant"):
+            with self.subTest(phrase=phrase):
+                self.assertNotIn(phrase, caught.exception.detail.lower())
 
     def test_neither_verb_reaches_a_provider_for_the_missing_runtime(self):
         """The invariant any fix must preserve: refusal, not a fallback."""
