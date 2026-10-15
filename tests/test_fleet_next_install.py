@@ -172,6 +172,8 @@ class NextOnlyInstaller(unittest.TestCase):
         # ...and the wrapper republishes it as one Next-only receipt.
         self.assertEqual(output["decision"], "EXECUTED")
         self.assertEqual(output["unit"], gate.NEXT_UNIT)
+        self.assertEqual(output["unit_path"],
+                         "/home/operator/.config/systemd/user/serveros-fleet-example-mcp.service")
         self.assertIs(output["started"], False)
         self.assertFalse(output["v1_action"])
         self.assertEqual(output["executes"], [gate.NEXT_UNIT])
