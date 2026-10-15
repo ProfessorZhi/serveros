@@ -14,7 +14,7 @@ writes a service and never starts a daemon. Operators supply observed,
 non-secret identity values; the gate decides whether the plan is isolated and
 at which stage of the ladder it honestly stands.
 
-Two properties it exists to keep:
+Three properties it exists to keep:
 
   * **No secret can enter.** A Tailscale auth key must never be issued, stored,
     copied or recorded by this tooling — registration is an interactive owner
@@ -22,9 +22,18 @@ Two properties it exists to keep:
     and any credential-shaped field name is refused *by name, with no value
     echoed*.
 
-  * **A stage is not evidence of the one above it.** One open TCP port is not
-    "ChatGPT can use it". The ladder is monotone and fail-closed, so a stage
-    whose prerequisites are unmet is BLOCKED rather than reported as reached.
+  * **Provisioning a route is not serving it.** Publishing a Funnel at a
+    restricted loopback backend that is not running yet is a real, checkable
+    step — and it is exactly the step at which HTTP `/health` CANNOT answer.
+    The ladder therefore separates "the route and its certificate exist" from
+    "the process behind it is live" from "the public HTTPS surface actually
+    answered". A run sheet that asked for a 200 before the unit starts would
+    block its own next stage.
+
+  * **A stage is not evidence of the one above it.** A self-reported boolean is
+    not public liveness. `PUBLIC_MCP_VERIFIED` is reached only from a recorded
+    readback of the public origin, and there is deliberately no `public_verified`
+    flag for a plan to set.
 """
 from __future__ import annotations
 
@@ -37,14 +46,18 @@ from collections.abc import Mapping
 
 SCHEMA = "serveros/fleet-next-tailscale-ingress.v1"
 
-#: The stages, in the only order they may be reached. Each entry names what
-#: must be TRUE for that stage to be honestly claimed.
-STAGES: tuple[tuple[str, str], ...] = (
-    ("SOURCE", "next_state"),
+#: The stages, in the only order they may be reached. `flag` names the state
+#: field whose observed value advances the ladder, or `None` for the entry
+#: stage. `public_verified` is the exception: it is DERIVED from recorded
+#: readback evidence, never from a flag, so it cannot be self-reported.
+STAGES: tuple[tuple[str, str | None], ...] = (
+    ("SOURCE", None),
     ("STAGED_NO_START", "staged"),
     ("NEW_NODE_REGISTERED", "node_registered"),
-    ("HTTPS_LIVE", "https_live"),
-    ("NEXT_MCP_LIVE", "mcp_live"),
+    ("NEXT_ROUTE_PROVISIONED", "route_provisioned"),
+    ("TLS_CERT_READY", "tls_cert_ready"),
+    ("NEXT_UNIT_LIVE", "unit_live"),
+    ("PUBLIC_MCP_VERIFIED", "public_verified"),
     ("FEISHU_AUTHENTICATED", "feishu_authenticated"),
     ("CHATGPT_INSTALLED", "chatgpt_installed"),
 )
@@ -61,10 +74,18 @@ ROUTE_FIELDS = frozenset({
     "oauth_authorization_server", "feishu_callback",
 })
 STATE_FIELDS = frozenset({
-    "staged", "node_registered", "owner_login_attested", "https_live",
-    "mcp_live", "feishu_authenticated", "chatgpt_installed",
+    "staged", "node_registered", "owner_login_attested", "route_provisioned",
+    "tls_cert_ready", "unit_live", "feishu_authenticated", "chatgpt_installed",
 })
-TOP_FIELDS = frozenset({"schema", "existing", "next", "routes", "state", "next_state"})
+#: What a public verification must have actually observed. Every field is a
+#: measurement taken against the public origin, so the stage cannot be reached
+#: by asserting it.
+PUBLIC_READBACK_FIELDS = frozenset({
+    "health_status", "oauth_protected_resource_status",
+    "oauth_authorization_server_status", "mcp_tools_seen", "issuer", "audience",
+})
+TOP_FIELDS = frozenset({"schema", "existing", "next", "routes", "state",
+                        "next_state", "public_readback"})
 
 #: The paths the Next host must serve, and their only acceptable values. The
 #: issuer is a host, not a path, so the four paths plus /health are the whole
@@ -88,6 +109,10 @@ SECRET_HINTS = ("authkey", "auth_key", "token", "secret", "password", "passwd",
                 "credential", "private_key", "apikey", "api_key", "bearer")
 
 _HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+#: The stages at which the backend behind the route is deliberately NOT running,
+#: and at which no HTTP status may be demanded or claimed.
+ROUTE_ONLY_STAGES = ("NEXT_ROUTE_PROVISIONED", "TLS_CERT_READY")
 
 
 def _path(value: object) -> str | None:
@@ -146,21 +171,84 @@ def _shape(mapping: object, allowed: frozenset[str], label: str,
     return mapping
 
 
-def reached_stage(state: Mapping) -> int:
+def public_verified(readback: object, *, issuer: object,
+                    problems: list[str]) -> bool:
+    """Whether the PUBLIC origin was actually observed serving, and how well.
+
+    Every field is a measurement. A caller that has not fetched anything has
+    nothing to put here, which is the point: there is no boolean to set.
+    """
+    if readback is None:
+        return False
+    if not isinstance(readback, dict):
+        problems.append("public_readback: expected object")
+        return False
+    unknown = set(readback) - PUBLIC_READBACK_FIELDS
+    if unknown:
+        problems.append(
+            f"public_readback: unsupported field(s) {', '.join(sorted(unknown))}")
+    missing = PUBLIC_READBACK_FIELDS - set(readback)
+    if missing:
+        problems.append(
+            "public_readback: incomplete — every field is an observation made "
+            f"against the public origin; missing {', '.join(sorted(missing))}"
+        )
+        return False
+
+    ok = True
+    for field in ("health_status", "oauth_protected_resource_status",
+                  "oauth_authorization_server_status"):
+        value = readback.get(field)
+        if value != 200:
+            problems.append(
+                f"public_readback.{field}: observed {value!r}; reaching "
+                f"PUBLIC_MCP_VERIFIED requires the public origin to have "
+                f"answered 200 on this path"
+            )
+            ok = False
+    tools_seen = readback.get("mcp_tools_seen")
+    if isinstance(tools_seen, bool) or not isinstance(tools_seen, int) or tools_seen < 1:
+        problems.append(
+            "public_readback.mcp_tools_seen: must be the number of tools the "
+            "public /mcp actually listed; an open port is not a tool face"
+        )
+        ok = False
+    if readback.get("issuer") != issuer:
+        problems.append(
+            "public_readback.issuer: must be the issuer the public origin "
+            "reported, and must equal next.issuer — a mismatch means the "
+            "discovery documents point somewhere other than the route just "
+            "published"
+        )
+        ok = False
+    audience = readback.get("audience")
+    if not isinstance(audience, str) or not audience.strip():
+        problems.append("public_readback.audience: the observed audience is required")
+        ok = False
+    return ok
+
+
+def reached_stage(state: Mapping, *, public_ok: bool) -> int:
     """How far up the ladder the evidence actually reaches.
 
     Monotone by construction: a stage is reached only if every stage below it
-    is too. `owner_login_attested` gates registration because a node that was
-    not interactively logged in by the owner was registered by something else.
+    is too. `node_registered` additionally requires `owner_login_attested`,
+    because a node that was not interactively logged in by the owner was
+    registered by something else.
     """
     index = 0
     for position, (_, flag) in enumerate(STAGES):
-        if flag in ("staged",) and not state.get("staged"):
-            break
+        if flag is None:
+            index = position
+            continue
         if flag == "node_registered":
-            if not (state.get("node_registered") and state.get("owner_login_attested")):
-                break
-        elif flag != "staged" and flag != "next_state" and not state.get(flag):
+            ok = bool(state.get("node_registered")) and bool(
+                state.get("owner_login_attested"))
+        elif flag == "public_verified":
+            ok = public_ok
+        else:
+            ok = bool(state.get(flag))
+        if not ok:
             break
         index = position
     return index
@@ -207,8 +295,7 @@ def evaluate(plan: object) -> dict:
             )
     # A different field name is not a different isolation boundary: the Next
     # socket must not live inside the old node's state dir, nor its state dir
-    # inside the old socket's directory. Same rule the dual-stack gate applies
-    # to the runtime/config/OAuth roots, applied to the two paths here.
+    # inside the old socket's directory.
     for new_key in ("state_dir", "socket"):
         new_path = _path(nxt.get(new_key))
         if new_path is None:
@@ -277,11 +364,14 @@ def evaluate(plan: object) -> dict:
         if held != expected:
             problems.append(f"routes.{name}: must be {expected!r}")
 
+    # --- the public stage is reached from evidence, never from a flag -----
+    public_ok = public_verified(root.get("public_readback"), issuer=issuer,
+                                problems=problems)
+
     # --- the stage ladder, fail-closed and monotone -----------------------
-    index = reached_stage(state)
+    index = reached_stage(state, public_ok=public_ok)
     stage = STAGES[index][0]
-    claims = state.get("chatgpt_installed")
-    if claims and stage != STAGES[-1][0]:
+    if state.get("chatgpt_installed") and stage != STAGES[-1][0]:
         problems.append(
             f"state.chatgpt_installed: claimed while the ladder stands at "
             f"{stage}; an open port is not a usable MCP route"
@@ -293,7 +383,7 @@ def evaluate(plan: object) -> dict:
             "else may stand in for it"
         )
 
-    pending = [flag for _, flag in STAGES[index + 1:] if flag != "next_state"]
+    pending = [flag for _, flag in STAGES[index + 1:] if flag is not None]
     return {
         "schema": SCHEMA,
         "decision": "BLOCKED" if problems else "PLAN_READY",
@@ -302,6 +392,8 @@ def evaluate(plan: object) -> dict:
         "stage_ordinal": index,
         "next_stage": STAGES[index + 1][0] if index + 1 < len(STAGES) else None,
         "next_stage_requires": pending[:1],
+        "backend_running": stage not in ROUTE_ONLY_STAGES and index > 0,
+        "public_verified": public_ok,
         "writes": [],
         "executes": [],
         "old_node_changed": False,
@@ -320,6 +412,11 @@ def run_sheet(plan: object) -> dict:
     Tokyo's host is operated by its own owner under the resource gate. This
     function therefore emits instructions and executes nothing; `--manual-run`
     prints this and stops.
+
+    A step never asks for something the stage cannot produce. In particular the
+    two route stages run against a backend that is deliberately NOT started, so
+    they read configuration, the published route and the TLS handshake — never
+    an HTTP status.
     """
     decision = evaluate(plan)
     if decision["decision"] == "BLOCKED":
@@ -337,16 +434,34 @@ def run_sheet(plan: object) -> dict:
             "read back: the new node appears as its own machine in the tailnet, "
             "and the existing node is unchanged",
         ],
-        "HTTPS_LIVE": [
-            "enable Funnel on the new node only, pointed at "
+        "NEXT_ROUTE_PROVISIONED": [
+            "enable Funnel on the NEW node only, pointed at "
             "127.0.0.1:<next.local_listen.port>",
-            "read back /health, both OAuth discovery documents and /mcp over the "
-            "https issuer",
+            "publish the route and read it back from the tailnet side: which node "
+            "serves it, and which loopback port it targets",
+            "the backend is NOT started at this stage and MUST NOT be started to "
+            "satisfy this step: no HTTP status is expected, asked for or recorded "
+            "here — a connection refused or 502 behind a working route is the "
+            "correct observation",
         ],
-        "NEXT_MCP_LIVE": [
+        "TLS_CERT_READY": [
+            "complete the certificate for the new <next.tailnet_host> and read it "
+            "back as a TLS fact: the handshake and the served certificate chain "
+            "for the issuer host",
+            "still no backend: a successful handshake with no HTTP response is the "
+            "expected result, and no 200 may be claimed here",
+        ],
+        "NEXT_UNIT_LIVE": [
             "start the Next user unit with the existing Next unit file",
             "read back: systemctl --user show confirms MemoryMax, MemorySwapMax=0, "
             "CPUQuota, TasksMax, and exactly one Next instance",
+        ],
+        "PUBLIC_MCP_VERIFIED": [
+            "now that the unit is live, fetch the public origin for real: "
+            "GET /health, both OAuth discovery documents, and the /mcp tool face",
+            "record the observations in public_readback, including the issuer and "
+            "audience the public origin itself reported",
+            "this stage is reached from that recording, not from any flag",
         ],
         "FEISHU_AUTHENTICATED": [
             "one real Feishu login against the new callback path, in the owner's browser"
@@ -369,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--plan", required=True,
                    help="non-secret JSON: the two node identities, the route set, "
-                        "and the observed state flags")
+                        "the observed state flags, and any public readback")
     p.add_argument("--manual-run", action="store_true",
                    help="print the owner run sheet for the next stage (still no "
                         "writes and no execution)")

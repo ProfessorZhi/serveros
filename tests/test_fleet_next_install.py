@@ -53,13 +53,22 @@ def candidate() -> dict:
 
 
 def cli(argv: list[str], proposal: dict) -> tuple[int, dict]:
+    """Run the CLI and return its exit code plus whatever it printed.
+
+    Only three paths print: a blocked preview, a dry-run preview, and a
+    `Refused` refusal. A successful `--execute` prints NOTHING — it delegates to
+    the installer and returns an exit code — so a strict `json.loads` here would
+    turn the one outcome this suite most wants to assert (the command ran, with
+    the right arguments) into a parse error. An empty stream is a valid result.
+    """
     with tempfile.TemporaryDirectory() as temp:
         p = Path(temp) / "proposal.json"
         p.write_text(json.dumps(proposal), encoding="utf-8")
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             rc = next_install.main([argv[0], "--proposal", str(p)] + argv[1:])
-    return rc, json.loads(stdout.getvalue())
+    text = stdout.getvalue()
+    return rc, (json.loads(text) if text.strip() else {})
 
 
 class NextOnlyInstaller(unittest.TestCase):
