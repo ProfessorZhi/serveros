@@ -95,17 +95,26 @@ _VERB_CREATE = "create"
 # the truth rather than a fabrication. See `interrupt_session`.
 
 
-def _create_scope(device_ref: str, project: str) -> str:
-    """What a create key is scoped to: the device *and* the project.
+def _create_scope(device_ref: str, project: str,
+                  runtime: str = BASE_RUNTIME) -> str:
+    """What a create key is scoped to: the device, the *runtime*, the project.
 
-    Both, because either alone is wrong in a way the caller cannot see. Scoped
-    to the device only, the same key against two projects returns the first
-    project's session — a session in the wrong working tree, wearing a plausible
-    session id. Scoped to the project only, the same key against two devices
-    returns a session on the wrong machine, which is the worse of the two: the
-    caller asked Tokyo to make something and would be told it is on the laptop.
+    All three, because any one alone is wrong in a way the caller cannot see.
+    Scoped to the device only, the same key against two projects returns the
+    first project's session — a session in the wrong working tree, wearing a
+    plausible session id. Scoped to the project only, the same key against two
+    devices returns a session on the wrong machine, which is the worse of the
+    two: the caller asked Tokyo to make something and would be told it is on
+    the laptop. And scoped without the runtime, the same key against two
+    accounts on ONE machine returns whichever account answered first — which is
+    the cross-account case this all exists to prevent, and the one nobody can
+    see from the returned ref, because both sessions are on the right device and
+    differ only in whose credential they were minted under.
+
+    The runtime is carried as its own component rather than folded into the
+    device, so the three axes stay separately readable in the key.
     """
-    return f"{device_ref}\x00{project}"
+    return f"{device_ref}\x00{runtime}\x00{project}"
 
 
 def _key_from_record(record: dict[str, Any], device_ref: str) -> SessionKey | None:
@@ -497,17 +506,27 @@ class FleetService:
         above carry the whole weight, and why the project allowlist is closed by
         default: an empty `create_allow` means no project, never every project.
 
+        Both gates are read for the caller's RUNTIME, not for the device alone.
+        `allow_create` lives on a binding, and a binding is one account's
+        reach — so a machine that authorized creation in one account has not
+        authorized it in the account beside it, and reading the device's first
+        binding would answer for the wrong one. The runtime is a parameter here
+        rather than a lookup this function performs for itself, so the caller
+        resolves it once and every gate below reads the same account.
+
         Returns the project's grant, so the caller checks the mode/model ceiling
         against the same lookup the authorization came from rather than resolving
         the project a second time and hoping the two agree.
         """
-        binding = self.config.provider_for(device_ref)
+        binding = self.config.provider_for(device_ref, runtime)
         if binding is None:
             # No binding is not "not authorized", it is "not reachable", and the
             # two send an operator to different configuration. `_require_provider`
             # is where that distinction is already drawn; this defers to it
             # rather than folding unreachability into an authorization refusal.
-            self._require_provider(device_ref)
+            # It is asked for the SAME runtime, so the two cannot disagree about
+            # which account was unreachable.
+            self._require_provider(device_ref, runtime)
         if binding is None or not binding.allow_create:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -1241,7 +1260,7 @@ class FleetService:
 
         if idempotency_key:
             replayed = self._lookup_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project), idempotency_key
+                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key
             )
             if replayed is not None:
                 self.audit.record(
@@ -1289,7 +1308,20 @@ class FleetService:
                 f"the session may exist and this surface cannot name it. Keys "
                 f"answered: {sorted(payload)}",
             )
-        key = SessionKey.compose(device_ref, provider, str(session_id))
+        # Composed with the RUNTIME, not with `provider`. The middle component of
+        # a session ref is the runtime tag — `list_sessions` says so in as many
+        # words (`row["runtime"] = summary.key.provider`) and every read, send
+        # and control path resolves it that way
+        # (`_require_provider(key.device_ref, key.provider)`). `provider` here is
+        # the CloudCLI AGENT FAMILY, a different axis: one connector serves both.
+        # Composing with the family gave a session minted in a second account the
+        # base account's address, so the very next `read_session` on that ref
+        # resolved to the account beside the one that created it — the same
+        # device, a different credential, and nothing in the returned ref to say
+        # so. For the default call the two spellings agree (`provider` defaults
+        # to `claude`, which is `BASE_RUNTIME`), so this is byte-identical for
+        # every caller that existed before a device could serve two.
+        key = SessionKey.compose(device_ref, runtime, str(session_id))
         run_id = payload.get("runId") or payload.get("run_id")
         record = {
             "session": key.as_dict(),
@@ -1298,7 +1330,7 @@ class FleetService:
         }
         if idempotency_key:
             self._remember_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project), idempotency_key, record
+                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key, record
             )
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
