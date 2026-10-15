@@ -12,7 +12,9 @@ the human release approval required by the deployment policy.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -186,6 +188,45 @@ def _effective_limit_errors(mod) -> list[str]:
     return problems
 
 
+def one_receipt(text: str) -> tuple[dict | None, str | None]:
+    """The legacy installer's stdout as EXACTLY ONE machine receipt.
+
+    `install.py::install()` prints one JSON object on both of its success
+    paths — `--no-start` and a full start — and `rollback()` prints one too.
+    The wrapper therefore has something specific to require, and this is where
+    it says what that is.
+
+    Returns `(payload, None)` on a single well-formed object, or
+    `(None, reason)` otherwise. The reason is always a statement about the
+    OUTPUT, never about the system: an unreadable receipt cannot tell us
+    whether the command took effect, and the caller must not turn it into
+    either a success or a clean failure.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None, "the installer printed no receipt"
+    decoder = json.JSONDecoder()
+    found: list = []
+    index = 0
+    while index < len(stripped):
+        while index < len(stripped) and stripped[index].isspace():
+            index += 1
+        if index >= len(stripped):
+            break
+        try:
+            obj, end = decoder.raw_decode(stripped, index)
+        except ValueError:
+            return None, "the installer's receipt is not valid JSON"
+        found.append(obj)
+        index = end
+    if len(found) != 1:
+        return None, (f"the installer printed {len(found)} JSON documents; "
+                      f"exactly one Next-only receipt is required")
+    if not isinstance(found[0], dict):
+        return None, "the installer's receipt is not a JSON object"
+    return found[0], None
+
+
 def _real_path_isolation(proposal: dict) -> None:
     """Resolve symlinks at execution time so lexical separation cannot lie."""
     for next_key in gate.PATH_FIELDS:
@@ -196,18 +237,30 @@ def _real_path_isolation(proposal: dict) -> None:
                 raise Refused("Next path resolves inside V1; refusing effect")
 
 
-def _restore_failed_install(mod, root: Path, before: tuple, reason: str) -> None:
+def _restore_failed_install(mod, root: Path, before: tuple, reason: str,
+                            *, effect_attempted: bool) -> None:
     """Stop only Next, restore its previous pointers, never restart V1.
 
     Artifacts are intentionally retained for forensics. A recovered prior
     pointer is not an assurance the prior Next process is running.
+
+    `effect_attempted` is supplied by the caller, which is the only party that
+    knows it. Whether the `current` symlink MOVED is not the question: an
+    install over an already-live unit takes the `restart` path, and a restart
+    of the SAME revision leaves `current` byte-identical while replacing the
+    process that serves it. Judging by symlink equality alone therefore
+    reported "existing Next untouched" for the one case that most needs a
+    rollback — a restart that was attempted and did not come back healthy —
+    and left the unhealthy process running under a clean-sounding receipt.
+
+    So: no effect attempted means nothing to undo and a healthy Next must not
+    be touched. An effect attempted means Next-only stop plus a pointer restore
+    if there is one to restore, and the Next service state is reported UNKNOWN
+    unless a readback says otherwise.
     """
-    # A failure before any revision switch (e.g. a source-validation error)
-    # must not take down a previously healthy Next. V1 is never addressed.
-    changed = mod.read_link(root / "current") != before[0]
-    if not changed:
-        raise Refused("Next install failed before revision switch; existing Next untouched: "
-                      + reason)
+    if not effect_attempted:
+        raise Refused("Next install failed before any effect was attempted; "
+                      "existing Next untouched: " + reason)
     stop_error = None
     try:
         stopped = mod.systemctl("stop", UNIT, check=False)
@@ -222,8 +275,11 @@ def _restore_failed_install(mod, root: Path, before: tuple, reason: str) -> None
     except (OSError, ValueError) as exc:
         raise Refused("Next failed; could not restore Next revision links: "
                       + type(exc).__name__ + (";" + stop_error if stop_error else "")) from exc
-    raise Refused("Next failed, Next-only stop/rollback attempted: " + reason
-                  + (stop_error or ""))
+    # A same-revision restart leaves no pointer to restore, so the receipt must
+    # not imply the Next service is back to its previous state: it was stopped
+    # and that is all that is known.
+    raise Refused("Next failed, Next-only stop/rollback attempted; Next service "
+                  "state is UNKNOWN until read back: " + reason + (stop_error or ""))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -300,23 +356,75 @@ def main(argv: list[str] | None = None) -> int:
             raise Refused("bootstrap stage requires an empty Next revision root; "
                           "do not repoint an existing Next instance")
         effect_started = True  # no longer a dry-run, even if the install fails
+        # The legacy installer's own stdout is CAPTURED, not forwarded. It
+        # prints one JSON receipt per successful operation and the wrapper
+        # republishes exactly one Next-only receipt — so a caller parses a
+        # single document whichever command it ran, and cannot be shown two
+        # conflicting ones. `mod.main` may also die after printing, which is
+        # why the capture outlives the call.
+        captured = io.StringIO()
         try:
-            result = mod.main(args_list)
-        except SystemExit as exc:
+            with contextlib.redirect_stdout(captured):
+                result = mod.main(args_list)
+        except SystemExit:
             if args.command in ("stage", "install"):
-                _restore_failed_install(mod, root, prior,
-                                        "installer exited nonzero; status must be inspected")
+                payload, problem = one_receipt(captured.getvalue())
+                if payload is not None:
+                    detail = (f" The installer's own receipt said started="
+                              f"{payload.get('started')!r}, health={payload.get('health')!r}.")
+                elif problem:
+                    detail = f" It also printed no usable receipt ({problem})."
+                else:
+                    detail = ""
+                _restore_failed_install(
+                    mod, root, prior,
+                    "installer exited nonzero; status must be inspected." + detail,
+                    effect_attempted=True)
             raise
         if args.command in ("stage", "install") and result != 0:
-            _restore_failed_install(mod, root, prior, "installer returned nonzero")
+            _restore_failed_install(mod, root, prior, "installer returned nonzero",
+                                    effect_attempted=True)
         if args.command == "install" and not args.no_start:
             faults = _effective_limit_errors(mod)
             if faults:
                 _restore_failed_install(mod, root, prior,
-                                        "cgroup limits not enforced: " + ", ".join(faults))
+                                        "cgroup limits not enforced: " + ", ".join(faults),
+                                        effect_attempted=True)
             if not mod.wait_for_health(old["probe"], 3.0):
                 _restore_failed_install(mod, root, prior,
-                                        "V1 /health unavailable after Next launch")
+                                        "V1 /health unavailable after Next launch",
+                                        effect_attempted=True)
+
+        # Success is a RECEIPT, not an exit code. A command that returned 0
+        # without leaving one parseable Next-only report has not told us what
+        # it did, and "it probably worked" is not a state this wrapper reports.
+        payload, problem = one_receipt(captured.getvalue())
+        if problem is not None:
+            print(json.dumps({
+                "decision": "UNKNOWN",
+                "command": args.command,
+                "unit": UNIT,
+                "reason": problem,
+                "effect_state": "NEXT_ONLY_ACTION_ATTEMPTED",
+                "writes": "POSSIBLE_OR_ROLLED_BACK",
+                "executes": [UNIT],
+                "v1_action": False,
+                "receipt": None,
+            }, indent=2, sort_keys=True))
+            return 4
+        print(json.dumps({
+            "decision": "EXECUTED",
+            "command": args.command,
+            "unit": UNIT,
+            "effect_state": "NEXT_ONLY_ACTION_ATTEMPTED",
+            "writes": [str(Path(nxt["runtime_root"]))],
+            "executes": [UNIT],
+            "v1_action": False,
+            "started": payload.get("started"),
+            "health": payload.get("health"),
+            "unit_path": payload.get("unit_path"),
+            "receipt": payload,
+        }, indent=2, sort_keys=True))
         return result
     except Refused as exc:
         # Never report writes=[] after attempting an install/restart and

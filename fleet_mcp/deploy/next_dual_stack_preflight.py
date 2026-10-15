@@ -215,7 +215,7 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
             "Next tool discovery, OAuth, one read-only device request, and rollback checked",
         ],
         "mode": "RECOVERY_ONLY" if recovery else "NEXT_ONLY_BOOTSTRAP" if bootstrap else "INSTALL_PRECHECK",
-        "note": "This is dry-run metadata, never an authorization or a launch.",
+        "note": "This is dry-run metadata: not an authorization, and not a launch.",
     }
 
 
