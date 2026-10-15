@@ -283,6 +283,13 @@ Reading gpu_reading(const Profile& profile, const OsIdentity& os, NvidiaQuery& q
         reading.reason = "IDENTITY_UNKNOWN";
         return reading;
     }
+    // The profile is an owner grant, not a transferable permission slip. The
+    // runtime's OS-resolved principal must match BEFORE the GPU process runs:
+    // refusing only in the final status still performs the unauthorized read.
+    if (profile.principal != os.user) {
+        reading.reason = "IDENTITY_UNKNOWN";
+        return reading;
+    }
 
     // The platform gate before the process gate: `/usr/bin/nvidia-smi` is a
     // Linux path and this is a Linux program. A Windows Core's GPU answer comes
