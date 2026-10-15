@@ -475,7 +475,13 @@ class TheLegacyPathIsUnchanged(unittest.TestCase):
         h = Harness(tmp, grants={OAUTH: {TOKYO: ("send",)}}, allow_send=False)
         with self.assertRaises(FleetRefusal) as caught:
             h.send(f"{TOKYO}|claude|x")
-        self.assertIn("not authorized for control", caught.exception.detail)
+        self.assertEqual(caught.exception.code, "APPROVAL_REQUIRED")
+        self.assertIn("not authorized to send", caught.exception.detail)
+        # The refusal names the verb that was attempted. It used to say
+        # "control" — copied from `_may_control` — which told a caller that
+        # *send* authority had been weighed and withheld when the sentence was
+        # about a different verb entirely.
+        self.assertNotIn("control", caught.exception.detail)
 
     def test_the_wildcard_is_refused_rather_than_deprioritized(self):
         """Leaving the hatch in place would leave a second way to say it."""
