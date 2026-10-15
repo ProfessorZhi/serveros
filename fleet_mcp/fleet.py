@@ -1946,6 +1946,24 @@ class FleetService:
             )
         self._may_name_mode_and_model(device_ref, actual, grant,
                                       model=model, permission_mode=mode)
+        # Reconfigure must not bypass the narrower per-credential-instance
+        # ceiling after a legitimate create. Do NOT fill omitted fields here:
+        # a reconfigure that names only model must not reset permissionMode.
+        runtime_rule = self.config.policy.runtime_create_defaults.get(
+            provider_key(device_ref, key.provider), {}).get(actual)
+        if runtime_rule is not None:
+            if model is not None and model not in runtime_rule.allowed_models:
+                raise refuse(
+                    WRITE_NOT_GRANTED,
+                    "session_reconfigure model is not authorized for this account/project",
+                    device_ref=device_ref, runtime=key.provider, project=actual,
+                )
+            if mode is not None and mode not in runtime_rule.allowed_permission_modes:
+                raise refuse(
+                    WRITE_NOT_GRANTED,
+                    "session_reconfigure permissionMode is not authorized for this account/project",
+                    device_ref=device_ref, runtime=key.provider, project=actual,
+                )
 
     def _native_approval(self, arguments: dict[str, Any], native) -> None:
         """An approval answer must name the request AND the user's choice.
