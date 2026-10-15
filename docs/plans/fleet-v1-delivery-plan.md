@@ -34,6 +34,13 @@ V1 includes:
 | identity | single Feishu SSO |
 | isolation | an independent Next port and a **brand-new, independent Tailscale node** |
 | lifecycle | basic resource bounds, error/disconnect handling, continue, rollback, same-Plugin-ID update |
+| **Core-Lite** | a **per-OS-user, observe-only** local Node/Core on each device: **Linux** (the managed UID) and **Dell `fjd`** get the C++ Core; **Windows** keeps its existing local runtime and waits for a light adapter. See §14 |
+| **basic monitoring** | CPU / RAM / Swap / realtime PSI (where the kernel offers it) / disk / service health / sampling freshness, plus a read-only Dell GPU-VRAM summary. UNKNOWN where unavailable, and **never an execution permission** |
+
+**Monitoring adds no surface.** These readings ride as sub-fields of the
+**existing read-only Fleet status**, not as new MCP tools, a new state store, or
+a shell. The tool count stays 33 and the scope count stays 6 — a monitor is not
+a verb, and a metric is not an entitlement.
 
 **33 tools is not 33 permissions.** The tool list is what the surface *offers*;
 authority is what the credential *carries*. The implemented scope set is 6 and
@@ -121,13 +128,30 @@ it called the Tokyo deployment "live, 7 tools served" and the other two "not
 deployed", which reads as a statement about the devices when it was a statement
 about one old release.
 
-| runtime | device | family | **legacy V1 field (live)** | **new Next node/binding** |
-|---|---|---|---|---|
-| `device:tokyo-shared-dev-01\|claude` | Tokyo (company) | claude | reachable + authorized | **not deployed** |
-| `device:work-fj\|claude` | FJPCOS (company, Windows) | claude | reachable + authorized | **not deployed** |
-| `device:llm-lab-dell\|claude` | Dell (company) | claude | reachable + authorized | **not deployed** |
-| `device:llm-lab-dell\|claude-fjd` | Dell (company) | claude | **UNKNOWN** — no observation names this second account | **not deployed** |
-| **Codex** (any device) | — | codex | registry declares `claude-code` only | **UNKNOWN** |
+| runtime | device | family | **legacy V1 field (live)** | **new Next node/binding** | **required for V1?** |
+|---|---|---|---|---|---|
+| `device:tokyo-shared-dev-01\|claude` | Tokyo (company) | claude | reachable + authorized | **not deployed** | **yes** — the managed account is Tokyo's `vince` |
+| `device:work-fj\|claude` | FJPCOS (company, Windows) | claude | reachable + authorized | **not deployed** | **yes** — the authorised local user |
+| `device:llm-lab-dell\|claude-fjd` | Dell (company) | claude | **UNKNOWN** — no observation names this account | **not deployed** | **yes** — **`fjd` is Dell's required runtime** |
+| `device:llm-lab-dell\|claude` | Dell (company) | claude | bound to **`vince`** | **not deployed** | **no** — legacy only, see below |
+| **Codex** (any device) | — | codex | registry declares `claude-code` only | **UNKNOWN** | capability-dependent |
+
+**Dell's required runtime is `fjd`, and the legacy reference is not remapped.**
+`device:llm-lab-dell|claude|<id>` is bound to `vince` and **must not be silently
+repointed at `fjd`**. The address someone already holds keeps meaning what it
+means. `fjd` is reached by its **own tag**, `claude-fjd`, on the **same**
+`device:llm-lab-dell` ref — one physical machine, two runtimes, as everywhere
+else in this document.
+
+Two things that look like shortcuts and are not: `device_default_account` is
+**not** set to `fjd` in order to relabel the old `claude` tag, because that
+would re-address live sessions through a declaration; and a device-level
+`preferred_runtime = claude-fjd` is a **UX choice** about which runtime an
+operator is shown first — it is not an alias, and it grants nothing.
+
+The old `vince` connector is a **lossless transition**, not a target: it is not
+dispatched work by the new Next, and retiring it is a separate act requiring
+**its owner's** approval. Nothing here deletes the `vince` OS account.
 
 **How the left column was read.** It is an **operator-reported live reading**
 taken today through the legacy Fleet 0.1.0 `fleet_status`: all three company
@@ -336,6 +360,11 @@ artifacts are the rollback.
 | changing Feishu app 2's redirect list | **account owner** | a production console change |
 | the first client install | **user** | it happens in their client, once |
 | production deployment | **separate approval** | not covered by this plan |
+| **Dell is reached as `fjd`** | **`fjd`** | **their own** login and their own workspace; nothing is copied from `vince` and nothing of theirs is read. §14 |
+| **`fjd`'s `linger`** | **`fjd` / OS owner** | currently `no`; a user-level Core needs it on, and enabling it is a controlled system act |
+| **installing a Core** on any device | **owner**, per device | §14 — Core is SOURCE/TESTED today and a monitor is not an installation |
+| **Windows C++ native parity** | **owner** | needs a **real Windows test environment**; until it exists the Windows Core gate is **UNKNOWN** |
+| **retiring the legacy Dell `vince` connector** | **`vince`'s owner** | only after `fjd` passes acceptance, and only on their word |
 
 The split is between **authorisation to work** and **an owner's own account
 action**. Ordinary repository, staging and canary work on the Next lane does not
@@ -570,3 +599,118 @@ what is here, and none is claimed.
 V1 is stable cross-device control of the authorised CC/Codex cluster with thin
 Skills. OpenAgents, role teams and broader Ability governance are V2 and are not
 a dependency of this release. Nothing in this section adds scope to V1.
+
+---
+
+## 14 · V1 gains Core-Lite — and what "observe-only" is a claim about
+
+### The addition, and its ceiling
+
+V1 now includes a **minimal, per-OS-user, observe-only local Core** on each
+device, reporting **basic resource and service health**. The ceiling is stated
+first because it is the part that is easy to lose:
+
+- **observe-only.** It reads. It does not restart, stop, reclaim, heal or
+  execute. Bounded self-healing is **V2** and is not a V1 dependency.
+- **No new surface.** The readings arrive as **sub-fields of the existing
+  read-only Fleet status** — not as new MCP tools, not as a new state store,
+  and not through a shell. **33 tools and 6 scopes do not move.**
+- **A metric is not a permission.** Nothing here widens what a credential may
+  do, and a freshness field is not a grant.
+
+| what is read | note |
+|---|---|
+| CPU, RAM, Swap | per the managed UID |
+| realtime PSI | **where the kernel offers it**; absent is reported absent, not zero |
+| disk | |
+| service health | |
+| **sampling freshness** | when the reading was taken, and how old it is |
+| Dell GPU / VRAM | a **read-only summary**, where the capability is available |
+| anything unavailable | **UNKNOWN** — never estimated, never inferred from silence |
+
+**Timestamps are UTC.** A monitoring record with a local-time timestamp is one
+that two devices disagree about, and the disagreement lands exactly when someone
+is comparing them during an incident.
+
+**Anomalies are reported as findings.** A reading outside its bound is recorded
+with the bound it crossed and the reading that crossed it — and it changes
+nothing. There is no code path from an anomaly to an action, in V1, by design.
+
+### Core local truth, and the Fleet's thin proxy
+
+The device is the **authority** for its own facts. The Core reads them locally;
+Fleet carries a **summary** and never recomputes it. So a number shown through
+Fleet is a **copy of a local reading with its own time on it**, and the two must
+be reconcilable: if the proxy and the device disagree, the device is right and
+the proxy is stale — which is why freshness travels with the value rather than
+being assumed from the fact that something was returned.
+
+### C++ Core maturity — as it actually is
+
+| | |
+|---|---|
+| **what exists** | Lane B's `#180` (`5a174ce`) is a **Linux C++20 observe-only resident loop**, a Unix status socket protected by **exact `SO_PEERCRED`**, a status JSON, and a user-systemd template, with offline unit tests |
+| **what does NOT exist** | it is **not installed and not boot-enabled anywhere**; the production Python `serverosd` remains **the only writer**; the `applied_generation` fence is **not persisted and not consumed** by the loop; signed trust and bounded self-healing are **not verified on real hardware**; and the **Windows SCM/Task-Scheduler adapter is a separate, unimplemented design** |
+| **what that means for V1** | **SOURCE / TESTED only.** Adding Core to the scope does **not** install it, boot it, or make it authoritative about anything |
+
+**Two writers on one unit is forbidden.** The production Python daemon and a
+native Core must never both own the same unit; a migration is its own reviewed
+step with an explicit handover, not a side effect of deploying a monitor.
+
+### The Windows-parity risk, named as a gate
+
+Windows has an existing ServerOS local runtime, and a **light Windows adapter**
+is the plan. But a Linux `systemd` template cannot stand in for it: Windows
+supervises differently, and "we have the same code" is not "it behaves the same
+here". **If Windows C++ native parity is required, it needs a real Windows test
+environment, and until that exists the Windows Core release gate is UNKNOWN** —
+not passed, and not waived.
+
+### Migration: what may move, and what may not
+
+The rule is one sentence: **code that is in git may move; anything that is a
+credential, a session or a private file may not.**
+
+| may move | may NOT move |
+|---|---|
+| ServerOS project **git repositories, branches, unpublished commits** (committed first, or exported as a reviewed key-free patch) | `mv /home/vince /home/fjd`, any bulk `rsync` of a whole `HOME`, any `sudo`/`chown` shortcut |
+| **owner-selected, credential-free config templates** and necessary project records | `.ssh`, `.config/gh`, `.claude`, `.codex`, OAuth state, Tailscale state, node secrets, CloudCLI credentials, Unix sockets, **live session databases** |
+| | `/opt/strata` and the existing GPU/Qwen data — **left in place, untouched** |
+
+The **`fjd` account is logged into by `fjd`** (or by someone they explicitly
+authorise) — never by copying `vince`'s git token or Claude account. Source
+worktrees are **preserved as they are**, with their dirty state, hashes and
+manifests checked rather than assumed.
+
+**`fjd`'s `linger` is `no`.** A user-level Core needs the account to survive
+logout, so enabling it is an **account-owner action performed with the
+controlled system method** — not something this lane may do, and not something
+to be worked around.
+
+### Staged acceptance, in order
+
+1. Core-Lite requirements and the device profiles; the Linux candidate's
+   regression; **a separate Windows adapter design** (not a port of the Linux one).
+2. Each device's read-only sampling, service state and sampling time; UID
+   isolation; resource caps; and **no automatic action anywhere**.
+3. `fjd` authorises and prepares **their own** workspace and their own
+   CloudCLI/CC/Codex accounts, with each model and permission mode genuinely
+   read back.
+4. Register Next Dell `claude-fjd`; confirm read-only, then a controlled
+   session create/send. **The old `claude` history is not repointed and `vince`
+   is not in the new required runtimes.**
+5. The GPU/Strata services are still alive, and Next and the legacy Fleet are
+   both stable; the user confirms the legacy Dell `vince` connector's retirement
+   from their own receipt.
+6. The ChatGPT first install over a stable MCP + Skills, and a same-Plugin-ID
+   backend upgrade.
+
+V2 adds automation and governance on top. It is not a precondition for any step
+above.
+
+### What this section does not authorise
+
+Nothing here installs a Linux or Windows Core, switches users, reads `fjd`'s
+private files, writes `fjd`'s home, or retires the legacy connector. Those are
+owner acts in the sequence above, and a document recording scope is not a
+receipt for any of them.
