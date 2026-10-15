@@ -25,6 +25,11 @@ constexpr std::size_t kMaxRowsPerBlock = 64;
 //: A role name the collector uses (`ROOT_FS`, `DATA_FS`) is a short identifier.
 //: Anything else — a path, an account, a long free-form string — is not a role,
 //: and is refused rather than published under a name we would be inventing.
+//: A `psi.<resource>` observation name. Local because `status.cpp` keeps its own
+//: copy in an anonymous namespace, and two translation units agreeing by sharing
+//: a header for two lines is not worth a header.
+bool is_psi(const std::string& name) { return name.compare(0, 4, "psi.") == 0; }
+
 bool safe_role_name(const std::string& name) {
     if (name.empty() || name.size() > 32) {
         return false;
@@ -277,14 +282,162 @@ const char* designed_block_for(const std::string& name) {
     if (name == "cpu") return "cpu";
     if (name == "memory") return "memory";
     if (name == "storage.readonly") return "storage";
-    // The collector samples `/proc/stat` and `/proc/meminfo` and stops there.
-    // Everything below is a thing Linux COULD read (`/proc/pressure`,
-    // `/proc/swaps`, `/proc/<pid>`) and no block exists for yet.
-    if (name == "swap" || name == "psi.cpu" || name == "psi.memory" || name == "psi.io" ||
-        name == "services" || name == "connector" || name == "gpu.readonly") {
+    if (name == "swap") return "swap";
+    // All three PSI resources are answered by the one `psi` block, which carries
+    // a row per resource; the observation name says which row.
+    if (is_psi(name)) return "psi";
+    // A thing Linux COULD read (`/proc/<pid>`, a GPU's sysfs) and no block exists
+    // for yet. NOT_IMPLEMENTED, not UNSUPPORTED_PLATFORM: Linux's platform is not
+    // the problem.
+    if (name == "services" || name == "connector" || name == "gpu.readonly") {
         return nullptr;
     }
     return nullptr;
+}
+
+//: A field inside a value that could not be read. The reason is the adapter's
+//: own closed word and NEVER the producer's prose: the collector's reasons name
+//: /proc paths, and a status is read by people who are not on this host.
+Json unmeasured(Json& value, const std::string& key) {
+    Json row = Json::object();
+    row.set("state", Json::string(kFieldUnavailable));
+    row.set("reason", Json::string("NO_SOURCE"));
+    value.set(key, row);
+    return row;
+}
+
+//: What one projection produced, so the caller can state how much of it was
+//: measured without inspecting the value it just built.
+struct Projected {
+    Json value = Json::object();
+    bool any_measured = false;
+    bool all_measured = true;
+};
+
+//: A non-negative integer field, or an explicit UNAVAILABLE. A byte count written
+//: as a real is refused rather than rounded into one.
+void project_bytes(const Parsed& block, const char* key, Projected& out) {
+    Parsed node;
+    std::uint64_t bytes = 0;
+    if (member(block, key, node) && as_bytes(node, bytes)) {
+        out.value.set(key, Json::uinteger(bytes));
+        out.any_measured = true;
+        return;
+    }
+    unmeasured(out.value, key);
+    out.all_measured = false;
+}
+
+//: A non-negative number (a rate, or a percentage). Refused rather than clamped
+//: when it is negative or not a number at all.
+void project_rate(const Parsed& block, const char* key, Projected& out, bool percentage) {
+    Parsed node;
+    double number = 0.0;
+    const bool ok = member(block, key, node) &&
+                    (percentage ? as_percent(node, number) : as_number(node, number)) &&
+                    number >= 0.0;
+    if (ok) {
+        out.value.set(key, Json::number(number, 2));
+        out.any_measured = true;
+        return;
+    }
+    unmeasured(out.value, key);
+    out.all_measured = false;
+}
+
+//: Swap: the STOCK (bytes in use) and the FLOW (pages per second).
+//:
+//: Exactly these five fields and no others. Notably NOT the raw page deltas:
+//: `pages_in_per_second` is the signal a Fleet reader wants, and the lifetime
+//: counters themselves are in the snapshot for anyone who needs them.
+bool project_swap(const Parsed& block, Projected& out) {
+    project_bytes(block, "total_bytes", out);
+    project_bytes(block, "free_bytes", out);
+    project_bytes(block, "used_bytes", out);
+    project_rate(block, "pages_in_per_second", out, /*percentage=*/false);
+    project_rate(block, "pages_out_per_second", out, /*percentage=*/false);
+    return out.any_measured;
+}
+
+//: One PSI resource's averages: `some` and `full`, three windows each.
+//:
+//: `total_microseconds` is deliberately NOT projected. It is a raw monotonic
+//: counter with no window; publishing it invites a consumer to compute a rate
+//: from two documents taken at unknown times, which is exactly the arithmetic
+//: the kernel has already done correctly in the averages.
+void project_psi_line(const Parsed& row, const char* key, Projected& out) {
+    const Parsed* line = row.find(key);
+    if (line == nullptr || !line->is_object()) {
+        unmeasured(out.value, key);
+        out.all_measured = false;
+        return;
+    }
+    Json averages = Json::object();
+    bool any = false;
+    bool all = true;
+    for (const char* window : {"avg10", "avg60", "avg300"}) {
+        Parsed node;
+        double percent = 0.0;
+        if (member(*line, window, node) && as_percent(node, percent)) {
+            averages.set(window, Json::number(percent, 2));
+            any = true;
+        } else {
+            unmeasured(averages, window);
+            all = false;
+        }
+    }
+    if (any) {
+        out.value.set(key, averages);
+        out.any_measured = true;
+        out.all_measured = out.all_measured && all;
+    } else {
+        // None of the three windows is readable, so the line is not a reading.
+        unmeasured(out.value, key);
+        out.all_measured = false;
+    }
+}
+
+//: The `psi` block, narrowed to the row for `resource`.
+bool project_psi(const Parsed& root, const std::string& resource, Projected& out) {
+    const Parsed* block = root.find("psi");
+    if (block == nullptr || !block->is_object()) {
+        return false;
+    }
+    const Parsed* resources = block->find("resources");
+    if (resources == nullptr || !resources->is_array() ||
+        resources->items.size() > kMaxRowsPerBlock) {
+        return false;
+    }
+    const Parsed* row = nullptr;
+    for (const Parsed& candidate : resources->items) {
+        if (!candidate.is_object()) {
+            continue;
+        }
+        Parsed name;
+        if (member(candidate, "resource", name) && name.is_string() && name.text == resource) {
+            row = &candidate;
+            break;
+        }
+    }
+    if (row == nullptr) {
+        // The block is there and this resource is not in it. The adapters asks
+        // and gets nothing, which is NO_SOURCE — not NOT_IMPLEMENTED, because the
+        // collector does have a block for PSI.
+        return false;
+    }
+    project_psi_line(*row, "some", out);
+    project_psi_line(*row, "full", out);
+    // `some` is the line every kernel that has PSI at all provides. Without it
+    // there is no reading here, whatever `full` said.
+    const Parsed* some = row->find("some");
+    if (some == nullptr || !some->is_object() || some->find("state") == nullptr) {
+        return false;
+    }
+    const Parsed* some_state = some->find("state");
+    if (!some_state->is_string() || some_state->text != "PRESENT") {
+        return false;
+    }
+    return true;
 }
 
 Reading unavailable(const std::string& name, const std::string& reason) {
@@ -354,15 +507,26 @@ SnapshotReadings readings_from_snapshot(const Profile& profile, const std::strin
             continue;
         }
 
-        Json projected;
+        Projected projected;
         bool have_projection = false;
         if (observation.name == "storage.readonly") {
-            have_projection = project_storage(root, projected);
+            have_projection = project_storage(root, projected.value);
+        } else if (observation.name == "swap") {
+            const Parsed* block = root.find(designed);
+            if (block != nullptr && block->is_object() && block_is_present(*block)) {
+                have_projection = project_swap(*block, projected);
+            }
+        } else if (is_psi(observation.name)) {
+            have_projection = project_psi(root, observation.name.substr(4), projected);
         } else {
             const Parsed* block = root.find(designed);
             if (block != nullptr && block->is_object() && block_is_present(*block)) {
-                have_projection = (observation.name == "cpu") ? project_cpu(*block, projected)
-                                                             : project_memory(*block, projected);
+                if (observation.name == "cpu") {
+                    have_projection = project_cpu(*block, projected.value);
+                } else {
+                    have_projection = project_memory(*block, projected.value);
+                }
+                projected.any_measured = have_projection;
             }
         }
 
@@ -380,7 +544,8 @@ SnapshotReadings readings_from_snapshot(const Profile& profile, const std::strin
         reading.state = ReadingState::Present;
         reading.source = "nodecore/NodeResourceSnapshot v1";
         reading.observed_at = answer.observed_at;
-        reading.value = projected;
+        reading.value = projected.value;
+        reading.completeness = projected.all_measured ? kComplete : kPartial;
         reading.has_value = true;
         answer.readings.push_back(reading);
     }

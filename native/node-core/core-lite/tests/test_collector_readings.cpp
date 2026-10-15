@@ -219,33 +219,56 @@ void test_the_real_snapshot_becomes_real_linux_readings() {
     }
 }
 
-void test_names_the_collector_does_not_measure_are_not_implemented() {
-    std::cout << "a granted name with no collector block is NOT_IMPLEMENTED, not zero\n";
-    const std::vector<std::string> names = {"cpu",     "swap",     "psi.cpu", "psi.memory",
-                                           "psi.io",  "services", "connector", "gpu.readonly"};
+void test_the_two_reasons_a_granted_name_can_be_unavailable() {
+    std::cout << "NOT_IMPLEMENTED and NO_SOURCE are different words for different facts\n";
+    // Two groups, and the difference between them is the point:
+    //   * `services` / `connector` / `gpu.readonly` — the collector has NO block
+    //     for these. Linux could read them; nobody has written it. That is
+    //     NOT_IMPLEMENTED.
+    //   * `swap` / `psi.*` — the collector HAS a block for these now, but the
+    //     committed example fixture predates it and so contains neither. The
+    //     adapter was asked and this document had nothing: NO_SOURCE.
+    // Reporting the second as the first would send an operator to the backlog
+    // when the answer is "this document is old".
+    const std::vector<std::string> no_block = {"services", "connector", "gpu.readonly"};
+    const std::vector<std::string> not_in_this_document = {"swap", "psi.cpu", "psi.memory", "psi.io"};
+
+    std::vector<std::string> names = {"cpu"};
+    names.insert(names.end(), no_block.begin(), no_block.end());
+    names.insert(names.end(), not_in_this_document.begin(), not_in_this_document.end());
     const Profile profile = profile_granting(names);
     std::string error;
     const auto answer = nodecore::corelite::readings_from_snapshot(profile, fixture_text(), error);
     expect(error.empty(), "no error: " + error);
     expect(answer.readings.size() == names.size(), "every granted name got exactly one reading");
 
-    for (const auto& name : names) {
+    for (const auto& name : no_block) {
         const Reading* reading = find(answer.readings, name);
         expect(reading != nullptr, name + " was answered rather than omitted");
         if (reading == nullptr) {
             continue;
         }
-        if (name == "cpu") {
-            expect(reading->state == ReadingState::Present, "cpu is the one the collector measures");
-            continue;
-        }
         expect(reading->state == ReadingState::Unavailable, name + " is UNAVAILABLE");
-        // The word is NOT_IMPLEMENTED, not UNSUPPORTED_PLATFORM: Linux CAN read
-        // /proc/pressure and /proc/swaps. Nobody wrote the block yet.
+        // NOT_IMPLEMENTED, not UNSUPPORTED_PLATFORM: Linux's platform is not the
+        // problem.
         expect(reading->reason == "NOT_IMPLEMENTED",
                name + " says NOT_IMPLEMENTED (was \"" + reading->reason + "\")");
         expect(!reading->has_value, name + " carries no value at all");
     }
+    for (const auto& name : not_in_this_document) {
+        const Reading* reading = find(answer.readings, name);
+        expect(reading != nullptr, name + " was answered rather than omitted");
+        if (reading == nullptr) {
+            continue;
+        }
+        expect(reading->state == ReadingState::Unavailable, name + " is UNAVAILABLE");
+        expect(reading->reason == "NO_SOURCE",
+               name + " says NO_SOURCE — this document has no such block (was \"" +
+                   reading->reason + "\")");
+        expect(!reading->has_value, name + " carries no value at all");
+    }
+    const Reading* cpu = find(answer.readings, "cpu");
+    expect(cpu != nullptr && cpu->state == ReadingState::Present, "cpu is still PRESENT");
 }
 
 void test_an_ungranted_observation_is_never_read() {
@@ -330,6 +353,150 @@ void test_storage_is_projected_to_roles_and_numbers_only() {
                                "read_bytes", "write_bytes"}) {
         expect(contains(compact, wanted), std::string("and it does carry ") + wanted);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Swap and PSI projections
+// ---------------------------------------------------------------------------
+
+//: A snapshot carrying the two new blocks, in the shape a real collector emits.
+//: Written as text because that is how a document arrives.
+std::string snapshot_with_swap_and_psi() {
+    return std::string(
+               "{\"schema\":\"serveros/node-resource-snapshot.v1\","
+               "\"observed_at\":\"2026-10-15T23:07:00.000000+00:00\","
+               "\"swap\":{\"state\":\"PRESENT\",\"source\":\"/proc/meminfo\","
+               "\"pages_source\":\"/proc/vmstat\",\"scope\":\"host-wide\","
+               "\"note\":\"a note nobody should see\","
+               "\"total_bytes\":34359734272,\"free_bytes\":5210218496,"
+               "\"used_bytes\":29149515776,\"used_percent\":84.8,"
+               "\"pages_in\":7,\"pages_out\":9,"
+               "\"pages_in_per_second\":17.5,\"pages_out_per_second\":22.5,"
+               "\"sample_seconds\":0.4},") +
+           "\"psi\":{\"state\":\"PRESENT\",\"source\":\"/proc/pressure\","
+           "\"scope\":\"host-wide\",\"note\":\"another note\","
+           "\"resources\":["
+           "{\"resource\":\"cpu\",\"state\":\"PRESENT\","
+           "\"some\":{\"state\":\"PRESENT\",\"avg10\":0.93,\"avg60\":4.86,"
+           "\"avg300\":5.69,\"total_microseconds\":24870925030},"
+           "\"full\":{\"state\":\"PRESENT\",\"avg10\":0.0,\"avg60\":0.0,"
+           "\"avg300\":0.0,\"total_microseconds\":0}},"
+           "{\"resource\":\"io\",\"state\":\"PRESENT\","
+           "\"some\":{\"state\":\"PRESENT\",\"avg10\":0.61,\"avg60\":0.22,"
+           "\"avg300\":0.67,\"total_microseconds\":34441418954},"
+           "\"full\":{\"state\":\"UNAVAILABLE\","
+           "\"reason\":\"cannot read /proc/pressure/io on this kernel\"}}]}}";
+}
+
+void test_swap_is_projected_to_bytes_and_rates_only() {
+    std::cout << "swap is the stock and the flow, and nothing else\n";
+    const Profile profile = profile_granting({"swap"});
+    std::string error;
+    const auto answer =
+        nodecore::corelite::readings_from_snapshot(profile, snapshot_with_swap_and_psi(), error);
+    expect(error.empty(), "no error: " + error);
+    const Reading* swap = find(answer.readings, "swap");
+    expect(swap != nullptr && swap->state == ReadingState::Present, "swap is PRESENT");
+    if (swap == nullptr || !swap->has_value) {
+        expect(false, "and carries a value");
+        return;
+    }
+    for (const char* wanted : {"total_bytes", "free_bytes", "used_bytes", "pages_in_per_second",
+                               "pages_out_per_second"}) {
+        expect(has_key(*swap, wanted), std::string("the value carries ") + wanted);
+    }
+    expect(value_keys(*swap).size() == 5, "and exactly those five fields");
+    // The raw deltas are NOT published: the rate is the signal, and the lifetime
+    // counters stay in the snapshot for anyone who wants them.
+    expect(!has_key(*swap, "pages_in"), "the raw page delta is not published");
+    expect(!has_key(*swap, "pages_out"), "nor the other one");
+    expect(!has_key(*swap, "note"), "nor the producer's prose");
+    expect(!has_key(*swap, "source"), "nor its source label");
+    expect(!has_key(*swap, "used_percent"), "the stock percentage is not part of this projection");
+    expect(swap->completeness == nodecore::corelite::kComplete,
+           "every projected field was measured, so COMPLETE");
+}
+
+void test_psi_is_projected_to_the_averages_only() {
+    std::cout << "psi is the six averages per resource\n";
+    const Profile profile = profile_granting({"psi.cpu"});
+    std::string error;
+    const auto answer =
+        nodecore::corelite::readings_from_snapshot(profile, snapshot_with_swap_and_psi(), error);
+    const Reading* cpu = find(answer.readings, "psi.cpu");
+    expect(cpu != nullptr && cpu->state == ReadingState::Present, "psi.cpu is PRESENT");
+    if (cpu == nullptr || !cpu->has_value) {
+        expect(false, "and carries a value");
+        return;
+    }
+    expect(value_keys(*cpu).size() == 2, "the value is some and full, and nothing else");
+    expect(has_key(*cpu, "some"), "some is there");
+    expect(has_key(*cpu, "full"), "full is there");
+    const std::string compact = cpu->value.dump_compact();
+    for (const char* wanted : {"avg10", "avg60", "avg300"}) {
+        expect(contains(compact, wanted), std::string("the averages include ") + wanted);
+    }
+    // The raw cumulative counter is left out on purpose: publishing it invites a
+    // consumer to derive a rate from two documents taken at unknown times.
+    expect(!contains(compact, "total_microseconds"), "the raw microsecond counter is not published");
+    expect(!contains(compact, "note"), "nor the producer's prose");
+    expect(!contains(compact, "/proc"), "nor any /proc path");
+    expect(cpu->completeness == nodecore::corelite::kComplete, "COMPLETE");
+}
+
+void test_a_psi_row_the_kernel_omits_is_per_field_unavailable() {
+    std::cout << "a line the kernel does not provide is UNAVAILABLE in place, not absent\n";
+    // `io` in this fixture has no readable `full` — the shape a kernel produces
+    // when it does not report that line. The `some` averages ARE measured, so
+    // throwing the whole reading away would lose real data; calling it COMPLETE
+    // would let a consumer read the missing `full` as zero. It is PARTIAL, and
+    // the absent line says so where it sits.
+    const Profile profile = profile_granting({"psi.io"});
+    std::string error;
+    const auto answer =
+        nodecore::corelite::readings_from_snapshot(profile, snapshot_with_swap_and_psi(), error);
+    const Reading* io = find(answer.readings, "psi.io");
+    expect(io != nullptr && io->state == ReadingState::Present, "psi.io is PRESENT");
+    if (io == nullptr || !io->has_value) {
+        expect(false, "and carries a value");
+        return;
+    }
+    expect(io->completeness == nodecore::corelite::kPartial,
+           "but PARTIAL, because one projected line was not measured");
+    const std::string compact = io->value.dump_compact();
+    expect(contains(compact, "\"avg10\":0.61"), "some's averages are still reported");
+    expect(contains(compact, "\"full\":{\"reason\":\"NO_SOURCE\",\"state\":\"UNAVAILABLE\"}"),
+           "full is an explicit UNAVAILABLE in place");
+    // The producer's own reason named a /proc path. It is NOT copied: the status
+    // is read by people who are not on this host.
+    expect(!contains(compact, "/proc"), "the producer's path-bearing reason is not propagated");
+    expect(!contains(compact, "this kernel"), "nor its prose");
+}
+
+void test_the_new_blocks_can_be_forged_like_the_old_ones() {
+    std::cout << "the new blocks are projected, so they cannot smuggle either\n";
+    // The same attack as the cpu block, aimed at the two new blocks: extra keys,
+    // a path, an argv. The projection names every field it emits, so none of
+    // them can arrive.
+    std::string forged = snapshot_with_swap_and_psi();
+    const std::size_t swap_at = forged.find("\"swap\":{");
+    expect(swap_at != std::string::npos, "the forged document has a swap block to poison");
+    const std::string canary =
+        "\"token\":\"SECRET-CANARY-xyz789\","
+        "\"argv\":[\"/usr/bin/secret\",\"--password=hunter2\"],"
+        "\"config_path\":\"/data/home/vince/.secrets/vault/key.pem\","
+        "\"mount_point\":\"/data\",";
+    forged.insert(forged.find('{', swap_at) + 1, canary);
+
+    const Profile profile = profile_granting({"swap", "psi.cpu"});
+    const std::string document = status_document_from(profile, forged);
+    for (const char* leak : {"SECRET-CANARY-xyz789", "hunter2", "vault/key.pem", "config_path",
+                             "token", "argv", "/usr/bin/secret", "mount_point", "/proc"}) {
+        expect(!contains(document, leak), std::string("the status carries no ") + leak);
+    }
+    // The real readings survive the poisoning.
+    expect(contains(document, "pages_out_per_second"), "the swap rate is still reported");
+    expect(contains(document, "avg10"), "and so is psi");
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +729,11 @@ void test_a_live_snapshot_if_one_was_given(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     test_the_real_snapshot_becomes_real_linux_readings();
-    test_names_the_collector_does_not_measure_are_not_implemented();
+    test_the_two_reasons_a_granted_name_can_be_unavailable();
+    test_swap_is_projected_to_bytes_and_rates_only();
+    test_psi_is_projected_to_the_averages_only();
+    test_a_psi_row_the_kernel_omits_is_per_field_unavailable();
+    test_the_new_blocks_can_be_forged_like_the_old_ones();
     test_an_ungranted_observation_is_never_read();
     test_the_linux_adapter_refuses_a_windows_profile();
     test_a_document_that_is_not_a_snapshot_is_refused();

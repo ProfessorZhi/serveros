@@ -51,6 +51,15 @@ walking the document.
 | `cpu.used_percent` | `busy / total`, with `iowait` counted as idle, and refused when the total delta is zero — a window that caught no ticks is not an idle machine. |
 | `cpu.counters.*` | `guest` and `guest_nice` are excluded from every sum: the kernel already counts them inside `user` and `nice`. |
 | `memory.scope` | Always `host-wide`. These are the machine's figures and are never divided by account. |
+| `swap.state` | `PRESENT` when **either** half was readable. The two halves come from two files and are reported independently; one being unreadable does not blank the other. |
+| `swap.total_bytes` / `free_bytes` / `used_bytes` | From `/proc/meminfo`'s `SwapTotal`/`SwapFree`, in bytes. `used_bytes` is `total - free`, derived the same way `memory`'s used figure is. A machine with no swap reports `0`/`0` — that is a measurement, not an absence. |
+| `swap.used_percent` | `used / total`, refused when `SwapTotal` is 0. **This is a STOCK, not a signal.** It falls when a process exits and says nothing about whether the machine is paging. |
+| `swap.pages_in` / `pages_out` | The `pswpin`/`pswpout` delta over the window, from `/proc/vmstat`. Refused when either sample is unreadable, when the interval is not measurable, or when either counter went backwards. |
+| `swap.pages_in_per_second` / `pages_out_per_second` | **The paging signal.** Present only when both the delta and the interval are known. A `0` here is a measured zero — no page moved in a measurable window — and is not the same as `UNAVAILABLE`. |
+| `psi.resources[]` | One row per resource the kernel exposes (`cpu`, `memory`, `io`), always all of them. A resource whose file is unreadable is present with `state: UNAVAILABLE` and a reason, so "this kernel has no PSI" and "nobody looked" cannot look the same. |
+| `psi.resources[].some` / `full` | `avg10`/`avg60`/`avg300` are percentages in `[0,100]` — the share of that window in which at least one task (`some`) or every task (`full`) was stalled. The kernel windows them, so **one sample is a complete reading and no second sample is needed**. |
+| `psi.resources[].full` | `UNAVAILABLE` with a reason on kernels that do not provide it for a resource (`cpu` on older kernels). Never `0`: "no task was ever fully stalled" and "this kernel does not report `full`" are different facts, and a zero would state the first. |
+| `psi.resources[].*.total_microseconds` | Cumulative since boot, a raw monotonic counter with no window. The averages above are the kernel's own and are **not** derived from it here. |
 | `filesystems.roles[].role` | A role (`ROOT_FS`, `DATA_FS`, …), never a device name — `/dev/vda2` means nothing to a policy that says "protect the system disk". |
 | `filesystems.roles[].mount_point` | The mount the path lands on, which is not always the path asked about. |
 | `filesystems.roles[].free_bytes` | `statvfs f_bfree`: every free block, **including** those reserved for root. **This is not `runtime/inventory.py`'s role-row `free_bytes`**, which is df's Avail column (`f_bavail`). Measured on this host: 22.1 GB apart on `/`, identical on `/data` (xfs reserves nothing) — a join by name is therefore wrong only on filesystems that reserve blocks, which is the shape of a defect that survives review. Join on `available_bytes`. |
@@ -80,10 +89,43 @@ give the same facts a different identity.
 `ensure_ascii=False` is matched: bytes above ASCII pass through as UTF-8, so a
 mount path is quoted verbatim and never transliterated.
 
+## Swap and PSI (added within `v1`)
+
+Both blocks are **optional** in the schema and additive: a consumer that does not
+know them ignores them, and a document produced by a build from before this
+change is still valid — verified by validating the committed
+`adapter/fixtures/snapshot.v1.example.json` (which has neither) against the
+current schema.
+
+A build that DOES have them always emits both, with `UNAVAILABLE` and a reason
+when the host gave nothing. Omitting a block is therefore not a state this
+collector produces, so "not measured" can never be read as "not asked for".
+
+**The one distinction worth reading twice.** `swap.used_percent` and
+`swap.pages_out_per_second` answer different questions, and only the second one
+is about paging:
+
+| | what it is | needs two samples | answers |
+|---|---|---|---|
+| `used_percent` (and the byte totals) | a **stock** | no | how much swap is in use |
+| `pages_*` / `pages_*_per_second` | a **flow** | yes | is this machine paging right now |
+
+Swap in use can fall while paging continues, and can sit at 85% on a machine
+that has not paged in an hour. The document carries a `note` saying so, because a
+number that is correct but read as the wrong signal is the failure this collector
+exists to prevent.
+
+Everything in the swap block is refused by the same rules as the rest of the
+document: a counter that went backwards, an interval that was not measurable, a
+reading that could not be taken. Nothing here is clamped, and nothing is
+defaulted to zero.
+
 ## How this interface may change
 
 * **`.v1` is additive.** New optional properties may appear within `v1`; a
-  consumer must ignore properties it does not know.
+  consumer must ignore properties it does not know. `swap` and `psi` are the
+  worked example: they were added without moving `required`, without changing any
+  existing field, and without invalidating a document that predates them.
 * **A change to the meaning of an existing field, a removed property, or a
   changed type is `.v2`.** The `schema` string is the signal, and the core already
   treats it as one: `runtime/registry.py:1058` refuses a mismatched document

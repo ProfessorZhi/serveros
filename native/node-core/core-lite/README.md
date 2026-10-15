@@ -13,8 +13,9 @@ independent UIDs and neither can see or act on the other's.
 
 | observed | how |
 |---|---|
-| CPU, memory, swap | the EXISTING `nodecore` collector (`native/node-core/src/linux_readers.cpp`) — **no second monitoring library** |
-| PSI (`psi.cpu` / `psi.memory` / `psi.io`) | declared in the profile; **UNAVAILABLE where `/proc/pressure` does not exist**, never zero |
+| CPU, memory | the EXISTING `nodecore` collector (`native/node-core/src/linux_readers.cpp`) — **no second monitoring library** |
+| swap | the collector's `swap` block: bytes in use from `/proc/meminfo`, and the paging rate from two `/proc/vmstat` samples. The **stock** and the **flow** are separate fields, because only the flow says whether the machine is paging |
+| PSI (`psi.cpu` / `psi.memory` / `psi.io`) | the collector's `psi` block, from `/proc/pressure`. The kernel windows the averages itself, so ONE sample is a complete reading. A line the kernel does not provide (`full` on some kernels) is `UNAVAILABLE` in place, never zero |
 | service state | the supervisor's `systemd_user.hpp` observation, unchanged |
 | connector health | declared as an observation; read by the Node adapter, never by the remote side |
 | GPU / VRAM / Strata storage (Dell) | **read-only**, and only where the profile says `authorized: true` |
@@ -48,8 +49,8 @@ vocabularies, named refusals, never a half-built document.
 | layer | status | evidence |
 |---|---|---|
 | **Source** | **REAL** | the reader, the status builder, the runtime identity readback and the Linux adapter — compiled by `cmake --build` over `native/node-core` with GNU 13.3, `-std=c++20 -Wall -Wextra -Wpedantic`, **zero warnings** |
-| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **18/18 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **99 checks**, `core_lite_readings` **182 checks** (190 with a live snapshot), all 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
-| **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice (`--interval-ms 300`) into `node-resource-snapshot.v1`; the projection read it and the status reported `cpu {"used_percent": 9.1}` and `memory {total/available/free_bytes, used_percent: 31.4}` **from those real counters**, plus `storage.readonly` as `ROLE_FS` + byte counts. The other grants are `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/FLEET-V1-CORE-LITE/20261015-core-lite-status/` |
+| **Test** | **REAL, EXECUTED** | `ctest` over the whole project: **19/19 passed**, of which 4 are Core-Lite's — `core_lite_profile` **46 checks**, `core_lite_status` **99 checks**, `core_lite_readings` **226 checks**, plus the collector's new `test_swap_psi` **137 checks**. The three pre-existing collector suites are unchanged at 72 / 54 / 68. All 0 failures. Includes both SHIPPED profiles parsing (`vince` 8 observations/1 service, `fjd` 8/0). Run under `systemd-run --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64` |
+| **Live observation** | **REAL, on Tokyo, not deployed** | the collector sampled this host twice into `node-resource-snapshot.v1`; the projection read it and the status reported `cpu`, `memory`, `swap` (32 GiB total, 27.1 GiB used, `pages_out_per_second 0.0`) and `psi.cpu/memory/io` — all `PRESENT`/`COMPLETE` — from those real counters. `services` and `connector` remain `NOT_IMPLEMENTED`. Nothing was installed, enabled or started. Evidence under `ARTIFACTS_ROOT/work-items/serveros/CORE-LITE-SWAP-PSI/20261015/` |
 | **RealUserStaged** | **NOT DONE — BLOCKED** | no unit installed, none enabled, no linger. The Tokyo account would need the owner to install it; **Dell's `fjd` is not this account and only `fjd` may install there** |
 | **Running** | **NOT DONE — BLOCKED** | nothing has ever executed on a real host. No `systemd --user` unit for Core-Lite exists yet |
 

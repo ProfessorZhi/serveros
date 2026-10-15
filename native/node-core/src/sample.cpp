@@ -1,6 +1,7 @@
 #include "nodecore/sample.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace nodecore {
@@ -116,6 +117,42 @@ std::optional<ProcMount> mount_for_path(const std::vector<ProcMount>& mounts,
     }
     return best;
 }
+
+// A decimal the kernel writes: digits, at most one '.', at least one digit
+// overall. No sign, no exponent, no leading '+'.
+//
+// The exponent is refused rather than supported because nothing in /proc writes
+// one, and accepting it would let `1e400` arrive as an infinity that a later
+// range check has to remember to catch. A format that cannot occur is not a
+// format worth parsing.
+std::optional<double> to_double(const std::string& token) {
+    if (token.empty()) {
+        return std::nullopt;
+    }
+    bool saw_dot = false;
+    bool saw_digit = false;
+    for (const char ch : token) {
+        if (ch >= '0' && ch <= '9') {
+            saw_digit = true;
+            continue;
+        }
+        if (ch == '.' && !saw_dot) {
+            saw_dot = true;
+            continue;
+        }
+        return std::nullopt;
+    }
+    if (!saw_digit) {
+        return std::nullopt;
+    }
+    const double value = std::strtod(token.c_str(), nullptr);
+    if (!std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+const char* const kSwapMeminfoKeys[] = {"SwapTotal:", "SwapFree:"};
 
 }  // namespace
 
@@ -336,6 +373,266 @@ std::vector<std::pair<std::string, std::pair<std::uint64_t, std::uint64_t>>> par
     return rows;
 }
 
+
+// SwapTotal/SwapFree, in bytes. The same "the unit is in the line, not in the
+// number" rule `parse_meminfo` applies: a row without its `kB` is refused rather
+// than assumed to be bytes.
+SwapFacts parse_meminfo_swap(const std::string& text) {
+    SwapFacts facts;
+    std::uint64_t total_kb = 0;
+    std::uint64_t free_kb = 0;
+    bool saw_total = false;
+    bool saw_free = false;
+    for (const std::string& line : split_lines(text)) {
+        const std::size_t colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        const std::string key = trim(line.substr(0, colon)) + ":";
+        std::uint64_t* slot = nullptr;
+        if (key == kSwapMeminfoKeys[0]) {
+            if (saw_total) {
+                facts.totals_reason = "/proc/meminfo states SwapTotal twice";
+                return facts;
+            }
+            slot = &total_kb;
+            saw_total = true;
+        } else if (key == kSwapMeminfoKeys[1]) {
+            if (saw_free) {
+                facts.totals_reason = "/proc/meminfo states SwapFree twice";
+                return facts;
+            }
+            slot = &free_kb;
+            saw_free = true;
+        } else {
+            continue;
+        }
+        const std::vector<std::string> rest = split_whitespace(line.substr(colon + 1));
+        if (rest.size() < 2 || rest[1] != "kB") {
+            facts.totals_reason = "a /proc/meminfo swap row is not in kB, so its scale is unknown";
+            return facts;
+        }
+        const auto value = to_u64(rest[0]);
+        if (!value.has_value()) {
+            facts.totals_reason = "a /proc/meminfo swap row has a non-numeric value";
+            return facts;
+        }
+        *slot = *value;
+    }
+    if (!saw_total || !saw_free) {
+        // A kernel with no swap configured still writes both rows with 0, so a
+        // missing row means the file could not be read as meminfo — not that the
+        // machine has no swap. Those are different facts.
+        facts.totals_reason = saw_total ? "/proc/meminfo carries no SwapFree row"
+                                        : "/proc/meminfo carries no SwapTotal row";
+        return facts;
+    }
+    if (free_kb > total_kb) {
+        // Free swap above total swap is not a busy machine, it is a file that
+        // does not add up; a "used" derived from it would be negative.
+        facts.totals_reason = "/proc/meminfo reports more free swap than total swap";
+        return facts;
+    }
+    // kB -> bytes can overflow: the multiplication is checked rather than
+    // allowed to wrap, because a wrapped uint64 is a small, plausible,
+    // completely wrong number of bytes — the exact failure this collector is
+    // written to make impossible.
+    if (total_kb > UINT64_MAX / 1024ull || free_kb > UINT64_MAX / 1024ull) {
+        facts.totals_reason = "/proc/meminfo reports a swap size that overflows a uint64 byte count";
+        return facts;
+    }
+    facts.totals_known = true;
+    facts.total_bytes = total_kb * 1024ull;
+    facts.free_bytes = free_kb * 1024ull;
+    return facts;
+}
+
+// pswpin/pswpout: pages, lifetime totals. The file is name-space-value, one pair
+// per line.
+SwapFacts parse_vmstat_page_counters(const std::string& text) {
+    SwapFacts facts;
+    bool saw_in = false;
+    bool saw_out = false;
+    for (const std::string& line : split_lines(text)) {
+        const std::vector<std::string> tokens = split_whitespace(line);
+        if (tokens.size() != 2) {
+            continue;
+        }
+        std::uint64_t* slot = nullptr;
+        if (tokens[0] == "pswpin") {
+            if (saw_in) {
+                facts.pages_reason = "/proc/vmstat states pswpin twice";
+                return facts;
+            }
+            slot = &facts.pages_in;
+            saw_in = true;
+        } else if (tokens[0] == "pswpout") {
+            if (saw_out) {
+                facts.pages_reason = "/proc/vmstat states pswpout twice";
+                return facts;
+            }
+            slot = &facts.pages_out;
+            saw_out = true;
+        } else {
+            continue;
+        }
+        const auto value = to_u64(tokens[1]);
+        if (!value.has_value()) {
+            // A counter that overflows uint64 is not a counter this document can
+            // carry, and truncating it would produce a small plausible number.
+            facts.pages_reason = "/proc/vmstat reports a page counter that is not a uint64";
+            return facts;
+        }
+        *slot = *value;
+    }
+    if (!saw_in || !saw_out) {
+        facts.pages_reason = saw_in ? "/proc/vmstat carries no pswpout row"
+                                    : "/proc/vmstat carries no pswpin row";
+        return facts;
+    }
+    facts.pages_known = true;
+    return facts;
+}
+
+const char* const kPressureResources[3] = {"cpu", "memory", "io"};
+
+PsiFacts parse_pressure(const std::string& resource, const std::string& text) {
+    PsiFacts facts;
+    facts.resource = resource;
+    for (const std::string& line : split_lines(text)) {
+        const std::vector<std::string> tokens = split_whitespace(line);
+        if (tokens.empty()) {
+            continue;
+        }
+        PsiLine* slot = nullptr;
+        if (tokens[0] == "some") {
+            slot = &facts.some;
+        } else if (tokens[0] == "full") {
+            slot = &facts.full;
+        } else {
+            // A line this parser does not know is IGNORED, not refused: a future
+            // kernel may add one, and a collector that goes blind on a kernel
+            // upgrade is worse than one that carries the two lines it was
+            // written for. Nothing here projects an unknown line, so ignoring it
+            // cannot publish anything.
+            continue;
+        }
+        if (slot->present || !slot->reason.empty()) {
+            facts.reason = "/proc/pressure/" + resource + " states " + tokens[0] + " twice";
+            facts.some = PsiLine{};
+            facts.full = PsiLine{};
+            return facts;
+        }
+
+        bool saw_avg10 = false;
+        bool saw_avg60 = false;
+        bool saw_avg300 = false;
+        bool saw_total = false;
+        bool bad = false;
+        std::string bad_reason;
+        for (std::size_t index = 1; index < tokens.size(); ++index) {
+            const std::size_t equals = tokens[index].find('=');
+            if (equals == std::string::npos || equals == 0) {
+                bad = true;
+                bad_reason = "a token is not key=value";
+                break;
+            }
+            const std::string key = tokens[index].substr(0, equals);
+            const std::string raw = tokens[index].substr(equals + 1);
+            double* average = nullptr;
+            bool* seen = nullptr;
+            if (key == "avg10") {
+                average = &slot->avg10;
+                seen = &saw_avg10;
+            } else if (key == "avg60") {
+                average = &slot->avg60;
+                seen = &saw_avg60;
+            } else if (key == "avg300") {
+                average = &slot->avg300;
+                seen = &saw_avg300;
+            } else if (key == "total") {
+                const auto value = to_u64(raw);
+                if (!value.has_value()) {
+                    bad = true;
+                    bad_reason = "total is not a uint64";
+                    break;
+                }
+                if (saw_total) {
+                    bad = true;
+                    bad_reason = "total appears twice";
+                    break;
+                }
+                slot->total_microseconds = *value;
+                saw_total = true;
+                continue;
+            } else {
+                // An unknown key inside a line this parser DOES read. Refused
+                // rather than ignored: the line's shape is not the shape this
+                // parser understands, so the values it did read cannot be
+                // trusted to mean what they are named.
+                bad = true;
+                bad_reason = "unknown key \"" + key + "\"";
+                break;
+            }
+            const auto value = to_double(raw);
+            // A percentage is a share of wall-clock time, so it lives in
+            // [0, 100]. A kernel cannot report one outside that, so a value
+            // outside it is a malformed line and not a high reading.
+            if (!value.has_value() || *value < 0.0 || *value > 100.0) {
+                bad = true;
+                bad_reason = key + " is not a percentage in [0,100]";
+                break;
+            }
+            if (*seen) {
+                bad = true;
+                bad_reason = key + " appears twice";
+                break;
+            }
+            *average = *value;
+            *seen = true;
+        }
+        if (!bad && !(saw_avg10 && saw_avg60 && saw_avg300 && saw_total)) {
+            bad = true;
+            bad_reason = "the line is missing " +
+                         std::string(saw_avg10 ? "" : "avg10 ")
+                         + (saw_avg60 ? "" : "avg60 ") + (saw_avg300 ? "" : "avg300 ") +
+                         (saw_total ? "" : "total");
+        }
+        if (bad) {
+            facts.reason = "/proc/pressure/" + resource + " " + tokens[0] + ": " + bad_reason;
+            facts.some = PsiLine{};
+            facts.full = PsiLine{};
+            return facts;
+        }
+        slot->present = true;
+    }
+
+    if (!facts.some.present && !facts.full.present) {
+        // Not "no pressure": a file with neither line is a file this parser did
+        // not recognise, and reporting 0.00 for it would invent the calmest
+        // possible machine out of an unreadable one.
+        facts.reason = "/proc/pressure/" + resource + " carries neither a some nor a full line";
+        return facts;
+    }
+    if (!facts.some.present) {
+        // `full` without `some` is not a state the kernel produces for any
+        // resource; treating it as a measurement would be reading a file whose
+        // shape we do not understand.
+        facts.reason = "/proc/pressure/" + resource + " carries full without some";
+        facts.full = PsiLine{};
+        return facts;
+    }
+    if (!facts.full.present && facts.full.reason.empty()) {
+        // Legitimate on kernels that do not provide cpu.full. Named so a reader
+        // can tell "this kernel does not report it" from "no task was ever fully
+        // stalled", which is what a zero would have said.
+        facts.full.reason = "/proc/pressure/" + resource +
+                            " has no full line on this kernel (not every kernel provides it)";
+    }
+    facts.present = true;
+    return facts;
+}
+
 std::optional<double> parse_uptime_seconds(const std::string& text) {
     const std::vector<std::string> tokens = split_whitespace(text);
     if (tokens.empty()) {
@@ -399,8 +696,46 @@ Sample take_sample(const FileSource& files, const Clock& clock, const SampleRequ
 
     if (const ReadResult meminfo = files.read_file("/proc/meminfo"); meminfo.ok) {
         sample.memory = parse_meminfo(meminfo.content);
+        // The SAME text, parsed for the swap rows. Two budgets, two results: a
+        // kernel with no swap still writes both swap rows with 0, and a meminfo
+        // that cannot be read must blank neither.
+        sample.swap = parse_meminfo_swap(meminfo.content);
     } else {
         sample.memory.reason = "cannot read /proc/meminfo (" + meminfo.error_name + ")";
+        sample.swap.totals_reason =
+            "cannot read /proc/meminfo (" + meminfo.error_name + ")";
+    }
+
+    if (const ReadResult vmstat = files.read_file("/proc/vmstat"); vmstat.ok) {
+        const SwapFacts pages = parse_vmstat_page_counters(vmstat.content);
+        sample.swap.pages_known = pages.pages_known;
+        sample.swap.pages_reason = pages.pages_reason;
+        sample.swap.pages_in = pages.pages_in;
+        sample.swap.pages_out = pages.pages_out;
+    } else {
+        sample.swap.pages_reason = "cannot read /proc/vmstat (" + vmstat.error_name + ")";
+    }
+
+    // PSI, one file per resource. The kernel exposes these three and nothing
+    // else, so the set is closed here rather than taken from the request: a
+    // caller cannot ask for a resource the kernel does not have, and cannot
+    // forget one it does.
+    for (const char* resource : kPressureResources) {
+        PsiFacts facts;
+        const std::string path = std::string("/proc/pressure/") + resource;
+        // A resource that has no file at all — an older kernel, or one built
+        // without CONFIG_PSI — is an ABSENT reading with a reason, and every
+        // resource is reported so that "not supported here" and "nobody looked"
+        // cannot look the same.
+        if (const ReadResult pressure = files.read_file(path); pressure.ok) {
+            facts = parse_pressure(resource, pressure.content);
+        } else {
+            facts.resource = resource;
+            facts.reason = "cannot read " + path + " (" + pressure.error_name + ")";
+            facts.some.reason = "cannot read " + path + " (" + pressure.error_name + ")";
+            facts.full.reason = facts.some.reason;
+        }
+        sample.psi.push_back(std::move(facts));
     }
 
     std::vector<ProcMount> mounts;

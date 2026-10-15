@@ -53,6 +53,63 @@ struct MemoryFacts {
     std::uint64_t free_bytes = 0;
 };
 
+// What the machine's swap looks like, in two independent halves.
+//
+// WHY THE TWO HALVES ARE SEPARATE. "How much swap is in use" and "is this host
+// paging right now" are different questions, and only the second is a
+// performance signal. SwapFree falls when a process is killed, and a page can
+// come back in without ever having gone out in the same window; so a used
+// percentage is a STOCK and says nothing about paging. Anyone who wants to know
+// whether the host is thrashing needs the page counters, and this struct keeps
+// them where that is obvious.
+//
+// They also come from two different files, so either half can be missing on its
+// own, and each says so separately.
+struct SwapFacts {
+    // From /proc/meminfo's SwapTotal/SwapFree.
+    bool totals_known = false;
+    std::string totals_reason;
+    std::uint64_t total_bytes = 0;
+    std::uint64_t free_bytes = 0;
+
+    // From /proc/vmstat's pswpin/pswpout. These are LIFETIME counters: a rate
+    // needs two readings, so the difference is taken in the snapshot, not here.
+    bool pages_known = false;
+    std::string pages_reason;
+    std::uint64_t pages_in = 0;
+    std::uint64_t pages_out = 0;
+};
+
+// One line of a /proc/pressure/<resource> file.
+//
+// The kernel reports averages it has ALREADY windowed, so these need no second
+// sample: `avg10` is the share of the last ten seconds in which at least one
+// task was stalled on this resource. That is why PSI is readable from a single
+// sample while the swap page counters — which are lifetime totals — are not.
+struct PsiLine {
+    bool present = false;
+    std::string reason;
+    double avg10 = 0.0;
+    double avg60 = 0.0;
+    double avg300 = 0.0;
+    // Microseconds, cumulative since boot. A raw monotonic counter with no
+    // window: kept so a consumer that wants its own interval can have one, and
+    // deliberately NOT what the averages are derived from here.
+    std::uint64_t total_microseconds = 0;
+};
+
+// One resource's two lines. `full` is absent on kernels that do not provide it
+// for a given resource — `cpu` on older kernels is the known case — and that is
+// reported as an absent line rather than as a zero, because "no task was fully
+// stalled" and "this kernel does not report full" are different facts.
+struct PsiFacts {
+    std::string resource;  // cpu, memory, io
+    bool present = false;
+    std::string reason;
+    PsiLine some;
+    PsiLine full;
+};
+
 struct ProcMount {
     std::string source;
     std::string target;
@@ -127,6 +184,13 @@ struct Sample {
     std::string boot_id;
     CpuTimes cpu;
     MemoryFacts memory;
+    // Optional in the schema's sense: a document produced by an older build has
+    // neither, and a consumer must ignore what it does not know (see the
+    // contract's "`.v1` is additive"). A build that has them ALWAYS emits them,
+    // with UNAVAILABLE and a reason when the host gave nothing — never omitted,
+    // so "not measured" can never look like "not asked for".
+    SwapFacts swap;
+    std::vector<PsiFacts> psi;
     std::vector<FilesystemFacts> filesystems;
     std::vector<DiskFacts> disks;
     std::vector<InterfaceFacts> interfaces;
@@ -150,6 +214,20 @@ struct SampleRequest {
 // -------- pure parsers --------
 CpuTimes parse_proc_stat(const std::string& text);
 MemoryFacts parse_meminfo(const std::string& text);
+// The SwapTotal/SwapFree half, from the SAME /proc/meminfo text `parse_meminfo`
+// reads. Parsed separately rather than folded into `MemoryFacts` because memory
+// and swap are two budgets, and one of them being unreadable must not blank the
+// other.
+SwapFacts parse_meminfo_swap(const std::string& text);
+// The pswpin/pswpout half, from /proc/vmstat. Lifetime totals.
+SwapFacts parse_vmstat_page_counters(const std::string& text);
+// One /proc/pressure/<resource> file. `resource` is carried into the result so a
+// caller cannot lose which file it parsed; an empty or unrecognised text is
+// UNAVAILABLE with a reason, never an all-zero reading.
+PsiFacts parse_pressure(const std::string& resource, const std::string& text);
+// The resources /proc/pressure exposes. A closed set: the kernel documents these
+// three and answers nothing else.
+extern const char* const kPressureResources[3];
 std::vector<ProcMount> parse_proc_mounts(const std::string& text);
 std::vector<DiskFacts> parse_diskstats(const std::string& text);
 // name -> (rx_bytes, tx_bytes)

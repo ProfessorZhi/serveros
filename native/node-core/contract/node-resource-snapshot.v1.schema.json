@@ -6,65 +6,148 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "collector", "observed_at", "sample_started_at", "sample_seconds",
-    "boot_id", "host", "monotonic_seconds", "cpu", "memory", "filesystems",
-    "disk_io", "interfaces", "attribution", "unknowns"
+    "schema",
+    "collector",
+    "observed_at",
+    "sample_started_at",
+    "sample_seconds",
+    "boot_id",
+    "host",
+    "monotonic_seconds",
+    "cpu",
+    "memory",
+    "filesystems",
+    "disk_io",
+    "interfaces",
+    "attribution",
+    "unknowns"
   ],
   "properties": {
-    "schema": { "const": "serveros/node-resource-snapshot.v1" },
+    "schema": {
+      "const": "serveros/node-resource-snapshot.v1"
+    },
     "collector": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version", "language", "live"],
+      "required": [
+        "name",
+        "version",
+        "language",
+        "live"
+      ],
       "properties": {
-        "name": { "const": "serveros-node-core-native" },
-        "version": { "type": "string" },
-        "language": { "const": "c++20" },
+        "name": {
+          "const": "serveros-node-core-native"
+        },
+        "version": {
+          "type": "string"
+        },
+        "language": {
+          "const": "c++20"
+        },
         "live": {
           "type": "boolean",
           "description": "False when the facts came from a fixture. A snapshot with live=false is never a reading of a host."
         }
       }
     },
-    "observed_at": { "$ref": "#/$defs/timestamp" },
-    "sample_started_at": { "$ref": "#/$defs/timestamp" },
-    "sample_seconds": { "$ref": "#/$defs/measure" },
-    "boot_id": { "oneOf": [{ "type": "string" }, { "$ref": "#/$defs/unavailable" }] },
-    "monotonic_seconds": { "$ref": "#/$defs/measure" },
+    "observed_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "sample_started_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "sample_seconds": {
+      "$ref": "#/$defs/measure"
+    },
+    "boot_id": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/unavailable"
+        }
+      ]
+    },
+    "monotonic_seconds": {
+      "$ref": "#/$defs/measure"
+    },
     "host": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scope", "note"],
+      "required": [
+        "scope",
+        "note"
+      ],
       "properties": {
-        "scope": { "const": "host-wide" },
-        "note": { "type": "string" }
+        "scope": {
+          "const": "host-wide"
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
-    "cpu": { "$ref": "#/$defs/cpu" },
-    "memory": { "$ref": "#/$defs/memory" },
+    "cpu": {
+      "$ref": "#/$defs/cpu"
+    },
+    "memory": {
+      "$ref": "#/$defs/memory"
+    },
     "filesystems": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["roles"],
+      "required": [
+        "roles"
+      ],
       "properties": {
-        "roles": { "type": "array", "items": { "$ref": "#/$defs/filesystem" } }
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/filesystem"
+          }
+        }
       }
     },
-    "disk_io": { "$ref": "#/$defs/disk_io" },
-    "interfaces": { "type": "array", "items": { "$ref": "#/$defs/interface" } },
-    "attribution": { "$ref": "#/$defs/attribution" },
+    "disk_io": {
+      "$ref": "#/$defs/disk_io"
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/interface"
+      }
+    },
+    "attribution": {
+      "$ref": "#/$defs/attribution"
+    },
     "unknowns": {
       "type": "array",
       "description": "Every field this snapshot could not measure, with the reason. Present so a reader does not have to walk the document to find out what is missing.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["field", "reason"],
+        "required": [
+          "field",
+          "reason"
+        ],
         "properties": {
-          "field": { "type": "string" },
-          "reason": { "type": "string", "minLength": 1 }
+          "field": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
+    },
+    "swap": {
+      "$ref": "#/$defs/swap"
+    },
+    "psi": {
+      "$ref": "#/$defs/psi"
     }
   },
   "$defs": {
@@ -75,52 +158,132 @@
     "unavailable": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state", "reason"],
+      "required": [
+        "state",
+        "reason"
+      ],
       "properties": {
-        "state": { "const": "UNAVAILABLE" },
-        "reason": { "type": "string", "minLength": 1 }
+        "state": {
+          "const": "UNAVAILABLE"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "measure": {
       "description": "A scalar or an explicit statement that it could not be measured. Never null, and never a zero standing in for an absence. `number` alone covers integers, and listing `integer` beside it would make every integer match two branches of a oneOf.",
-      "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/unavailable" }]
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/unavailable"
+        }
+      ]
     },
     "counter": {
       "description": "A byte or tick delta. Non-negative when measured: a counter that went backwards is reported UNAVAILABLE rather than rewound.",
-      "oneOf": [{ "type": "integer", "minimum": 0 }, { "$ref": "#/$defs/unavailable" }]
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "$ref": "#/$defs/unavailable"
+        }
+      ]
     },
     "cpu": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "reason"],
-          "properties": { "state": { "const": "UNAVAILABLE" }, "reason": { "type": "string" } }
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "UNAVAILABLE"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "sample_seconds", "total_jiffies", "busy_jiffies", "used_percent", "counters"],
+          "required": [
+            "state",
+            "sample_seconds",
+            "total_jiffies",
+            "busy_jiffies",
+            "used_percent",
+            "counters"
+          ],
           "properties": {
-            "state": { "enum": ["PRESENT", "UNAVAILABLE"] },
-            "reason": { "type": "string" },
-            "sample_seconds": { "$ref": "#/$defs/measure" },
-            "total_jiffies": { "$ref": "#/$defs/counter" },
-            "busy_jiffies": { "$ref": "#/$defs/counter" },
-            "used_percent": { "$ref": "#/$defs/measure" },
+            "state": {
+              "enum": [
+                "PRESENT",
+                "UNAVAILABLE"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "sample_seconds": {
+              "$ref": "#/$defs/measure"
+            },
+            "total_jiffies": {
+              "$ref": "#/$defs/counter"
+            },
+            "busy_jiffies": {
+              "$ref": "#/$defs/counter"
+            },
+            "used_percent": {
+              "$ref": "#/$defs/measure"
+            },
             "counters": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"],
+              "required": [
+                "user",
+                "nice",
+                "system",
+                "idle",
+                "iowait",
+                "irq",
+                "softirq",
+                "steal"
+              ],
               "properties": {
-                "user": { "$ref": "#/$defs/counter" },
-                "nice": { "$ref": "#/$defs/counter" },
-                "system": { "$ref": "#/$defs/counter" },
-                "idle": { "$ref": "#/$defs/counter" },
-                "iowait": { "$ref": "#/$defs/counter" },
-                "irq": { "$ref": "#/$defs/counter" },
-                "softirq": { "$ref": "#/$defs/counter" },
-                "steal": { "$ref": "#/$defs/counter" }
+                "user": {
+                  "$ref": "#/$defs/counter"
+                },
+                "nice": {
+                  "$ref": "#/$defs/counter"
+                },
+                "system": {
+                  "$ref": "#/$defs/counter"
+                },
+                "idle": {
+                  "$ref": "#/$defs/counter"
+                },
+                "iowait": {
+                  "$ref": "#/$defs/counter"
+                },
+                "irq": {
+                  "$ref": "#/$defs/counter"
+                },
+                "softirq": {
+                  "$ref": "#/$defs/counter"
+                },
+                "steal": {
+                  "$ref": "#/$defs/counter"
+                }
               }
             }
           }
@@ -132,21 +295,56 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "reason"],
-          "properties": { "state": { "const": "UNAVAILABLE" }, "reason": { "type": "string" } }
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "UNAVAILABLE"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "source", "scope", "total_bytes", "available_bytes", "free_bytes", "used_percent"],
+          "required": [
+            "state",
+            "source",
+            "scope",
+            "total_bytes",
+            "available_bytes",
+            "free_bytes",
+            "used_percent"
+          ],
           "properties": {
-            "state": { "const": "PRESENT" },
-            "source": { "const": "/proc/meminfo" },
-            "scope": { "const": "host-wide" },
-            "total_bytes": { "type": "integer", "minimum": 0 },
-            "available_bytes": { "type": "integer", "minimum": 0 },
-            "free_bytes": { "type": "integer", "minimum": 0 },
-            "used_percent": { "$ref": "#/$defs/measure" }
+            "state": {
+              "const": "PRESENT"
+            },
+            "source": {
+              "const": "/proc/meminfo"
+            },
+            "scope": {
+              "const": "host-wide"
+            },
+            "total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "available_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "free_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "used_percent": {
+              "$ref": "#/$defs/measure"
+            }
           }
         }
       ]
@@ -154,22 +352,63 @@
     "filesystem": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role", "path", "state"],
+      "required": [
+        "role",
+        "path",
+        "state"
+      ],
       "properties": {
-        "role": { "type": "string", "description": "ROOT_FS, DATA_FS, FILESYSTEM_ROLES in runtime/inventory.py:434." },
-        "path": { "type": "string" },
-        "state": { "enum": ["PRESENT", "UNAVAILABLE"] },
-        "reason": { "type": "string" },
-        "source": { "type": "string" },
-        "fstype": { "type": "string" },
-        "mount_point": { "type": "string", "description": "The mount the path actually lands on, which is not always the path asked about." },
-        "mount": { "$ref": "#/$defs/unavailable" },
-        "total_bytes": { "type": "integer", "minimum": 0 },
-        "free_bytes": { "type": "integer", "minimum": 0 },
-        "available_bytes": { "type": "integer", "minimum": 0 },
-        "used_bytes": { "type": "integer", "minimum": 0 },
-        "used_percent": { "$ref": "#/$defs/measure" },
-        "inodes": { "$ref": "#/$defs/inodes" }
+        "role": {
+          "type": "string",
+          "description": "ROOT_FS, DATA_FS, FILESYSTEM_ROLES in runtime/inventory.py:434."
+        },
+        "path": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "PRESENT",
+            "UNAVAILABLE"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "fstype": {
+          "type": "string"
+        },
+        "mount_point": {
+          "type": "string",
+          "description": "The mount the path actually lands on, which is not always the path asked about."
+        },
+        "mount": {
+          "$ref": "#/$defs/unavailable"
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "free_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "used_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "used_percent": {
+          "$ref": "#/$defs/measure"
+        },
+        "inodes": {
+          "$ref": "#/$defs/inodes"
+        }
       }
     },
     "inodes": {
@@ -177,19 +416,48 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "reason"],
-          "properties": { "state": { "const": "UNAVAILABLE" }, "reason": { "type": "string" } }
+          "required": [
+            "state",
+            "reason"
+          ],
+          "properties": {
+            "state": {
+              "const": "UNAVAILABLE"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "total", "free", "used", "used_percent"],
+          "required": [
+            "state",
+            "total",
+            "free",
+            "used",
+            "used_percent"
+          ],
           "properties": {
-            "state": { "const": "PRESENT" },
-            "total": { "type": "integer", "minimum": 0 },
-            "free": { "type": "integer", "minimum": 0 },
-            "used": { "type": "integer", "minimum": 0 },
-            "used_percent": { "$ref": "#/$defs/measure" }
+            "state": {
+              "const": "PRESENT"
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "free": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "used": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "used_percent": {
+              "$ref": "#/$defs/measure"
+            }
           }
         }
       ]
@@ -197,23 +465,54 @@
     "disk_io": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sample_seconds", "sector_size_bytes", "roles", "unmapped", "devices_without_a_role", "note"],
+      "required": [
+        "sample_seconds",
+        "sector_size_bytes",
+        "roles",
+        "unmapped",
+        "devices_without_a_role",
+        "note"
+      ],
       "properties": {
-        "sample_seconds": { "$ref": "#/$defs/measure" },
-        "sector_size_bytes": { "const": 512, "description": "The kernel's fixed unit for /proc/diskstats, not the device's logical sector size." },
+        "sample_seconds": {
+          "$ref": "#/$defs/measure"
+        },
+        "sector_size_bytes": {
+          "const": 512,
+          "description": "The kernel's fixed unit for /proc/diskstats, not the device's logical sector size."
+        },
         "roles": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["role", "name", "read_bytes", "write_bytes", "read_bytes_per_second", "write_bytes_per_second"],
+            "required": [
+              "role",
+              "name",
+              "read_bytes",
+              "write_bytes",
+              "read_bytes_per_second",
+              "write_bytes_per_second"
+            ],
             "properties": {
-              "role": { "type": "string" },
-              "name": { "type": "string" },
-              "read_bytes": { "$ref": "#/$defs/counter" },
-              "write_bytes": { "$ref": "#/$defs/counter" },
-              "read_bytes_per_second": { "$ref": "#/$defs/measure" },
-              "write_bytes_per_second": { "$ref": "#/$defs/measure" }
+              "role": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "read_bytes": {
+                "$ref": "#/$defs/counter"
+              },
+              "write_bytes": {
+                "$ref": "#/$defs/counter"
+              },
+              "read_bytes_per_second": {
+                "$ref": "#/$defs/measure"
+              },
+              "write_bytes_per_second": {
+                "$ref": "#/$defs/measure"
+              }
             }
           }
         },
@@ -223,53 +522,389 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["role", "source", "reason"],
+            "required": [
+              "role",
+              "source",
+              "reason"
+            ],
             "properties": {
-              "role": { "type": "string" },
-              "source": { "type": "string" },
-              "reason": { "type": "string" }
+              "role": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
             }
           }
         },
-        "devices_without_a_role": { "type": "array", "items": { "type": "string" } },
-        "note": { "type": "string" }
+        "devices_without_a_role": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
     "interface": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "loopback", "active", "kind", "rx_bytes", "tx_bytes", "rx_bytes_per_second", "tx_bytes_per_second", "speed_mbps", "rx_utilisation_percent", "tx_utilisation_percent"],
+      "required": [
+        "name",
+        "loopback",
+        "active",
+        "kind",
+        "rx_bytes",
+        "tx_bytes",
+        "rx_bytes_per_second",
+        "tx_bytes_per_second",
+        "speed_mbps",
+        "rx_utilisation_percent",
+        "tx_utilisation_percent"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "loopback": { "type": "boolean" },
-        "active": { "oneOf": [{ "type": "boolean" }, { "$ref": "#/$defs/unavailable" }] },
-        "operstate": { "type": "string" },
-        "kind": { "oneOf": [{ "enum": ["physical", "virtual"] }, { "$ref": "#/$defs/unavailable" }] },
-        "kind_source": { "type": "string", "description": "The sysfs path the classification was read from, so the judgement can be disagreed with." },
-        "rx_bytes": { "$ref": "#/$defs/counter" },
-        "tx_bytes": { "$ref": "#/$defs/counter" },
-        "rx_bytes_per_second": { "$ref": "#/$defs/measure" },
-        "tx_bytes_per_second": { "$ref": "#/$defs/measure" },
+        "name": {
+          "type": "string"
+        },
+        "loopback": {
+          "type": "boolean"
+        },
+        "active": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "operstate": {
+          "type": "string"
+        },
+        "kind": {
+          "oneOf": [
+            {
+              "enum": [
+                "physical",
+                "virtual"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "kind_source": {
+          "type": "string",
+          "description": "The sysfs path the classification was read from, so the judgement can be disagreed with."
+        },
+        "rx_bytes": {
+          "$ref": "#/$defs/counter"
+        },
+        "tx_bytes": {
+          "$ref": "#/$defs/counter"
+        },
+        "rx_bytes_per_second": {
+          "$ref": "#/$defs/measure"
+        },
+        "tx_bytes_per_second": {
+          "$ref": "#/$defs/measure"
+        },
         "speed_mbps": {
-          "oneOf": [{ "type": "integer", "minimum": 1 }, { "$ref": "#/$defs/unavailable" }],
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ],
           "description": "From /sys/class/net/<if>/speed. virtio_net reports -1 and loopback refuses with EINVAL; both are UNAVAILABLE, not 0."
         },
-        "rx_utilisation_percent": { "$ref": "#/$defs/measure" },
-        "tx_utilisation_percent": { "$ref": "#/$defs/measure" }
+        "rx_utilisation_percent": {
+          "$ref": "#/$defs/measure"
+        },
+        "tx_utilisation_percent": {
+          "$ref": "#/$defs/measure"
+        }
       }
     },
     "attribution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["uid", "scope", "note", "cgroup_path", "memory_current_bytes"],
+      "required": [
+        "uid",
+        "scope",
+        "note",
+        "cgroup_path",
+        "memory_current_bytes"
+      ],
       "properties": {
-        "uid": { "type": "integer" },
-        "scope": { "const": "self" },
-        "note": { "type": "string" },
-        "cgroup_path": { "oneOf": [{ "type": "string" }, { "$ref": "#/$defs/unavailable" }] },
-        "cgroup_version": { "type": "integer", "enum": [1, 2] },
-        "memory_current_bytes": { "$ref": "#/$defs/measure" }
+        "uid": {
+          "type": "integer"
+        },
+        "scope": {
+          "const": "self"
+        },
+        "note": {
+          "type": "string"
+        },
+        "cgroup_path": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "cgroup_version": {
+          "type": "integer",
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "memory_current_bytes": {
+          "$ref": "#/$defs/measure"
+        }
       }
+    },
+    "swap": {
+      "description": "Swap, in two halves that answer two different questions. The totals are a STOCK (how much swap is in use) and the page counters are the paging SIGNAL. A reader who takes used_percent for a thrashing indicator has drawn a wrong conclusion from correct numbers, which is why `note` is required. ADDED IN v1 (optional): a document produced by an older build has no `swap` key, and a consumer must ignore what it does not know.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/unavailable"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "source",
+            "pages_source",
+            "scope",
+            "note",
+            "total_bytes",
+            "free_bytes",
+            "used_bytes",
+            "used_percent",
+            "pages_in",
+            "pages_out",
+            "pages_in_per_second",
+            "pages_out_per_second",
+            "sample_seconds"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT"
+            },
+            "source": {
+              "const": "/proc/meminfo"
+            },
+            "pages_source": {
+              "const": "/proc/vmstat"
+            },
+            "scope": {
+              "const": "host-wide"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            },
+            "total_bytes": {
+              "$ref": "#/$defs/measure"
+            },
+            "free_bytes": {
+              "$ref": "#/$defs/measure"
+            },
+            "used_bytes": {
+              "$ref": "#/$defs/measure"
+            },
+            "used_percent": {
+              "$ref": "#/$defs/measure"
+            },
+            "pages_in": {
+              "$ref": "#/$defs/measure"
+            },
+            "pages_out": {
+              "$ref": "#/$defs/measure"
+            },
+            "pages_in_per_second": {
+              "$ref": "#/$defs/measure"
+            },
+            "pages_out_per_second": {
+              "$ref": "#/$defs/measure"
+            },
+            "sample_seconds": {
+              "$ref": "#/$defs/measure"
+            }
+          }
+        }
+      ]
+    },
+    "psi": {
+      "description": "Pressure Stall Information, one row per resource. The kernel has already WINDOWED these averages, so a single sample is a complete reading and no second sample is needed — unlike the swap page counters, which are lifetime totals. ADDED IN v1 (optional).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/unavailable"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "source",
+            "scope",
+            "note",
+            "resources"
+          ],
+          "properties": {
+            "state": {
+              "const": "PRESENT"
+            },
+            "source": {
+              "const": "/proc/pressure"
+            },
+            "scope": {
+              "const": "host-wide"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "resource",
+                  "state",
+                  "some",
+                  "full"
+                ],
+                "properties": {
+                  "resource": {
+                    "enum": [
+                      "cpu",
+                      "memory",
+                      "io"
+                    ]
+                  },
+                  "state": {
+                    "enum": [
+                      "PRESENT",
+                      "UNAVAILABLE"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Present when this resource's file could not be read at all, in which case `state` is UNAVAILABLE."
+                  },
+                  "some": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/$defs/unavailable"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "state",
+                          "avg10",
+                          "avg60",
+                          "avg300",
+                          "total_microseconds"
+                        ],
+                        "properties": {
+                          "state": {
+                            "const": "PRESENT"
+                          },
+                          "avg10": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "The share of the last 10 seconds in which this line's condition held. A percentage of wall-clock time, so it cannot leave [0,100]; the parser refuses a value outside it rather than publishing a high reading."
+                          },
+                          "avg60": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "avg300": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "total_microseconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Cumulative microseconds since boot. A raw monotonic counter with no window; the averages above are NOT derived from it here."
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "full": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/$defs/unavailable"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "state",
+                          "avg10",
+                          "avg60",
+                          "avg300",
+                          "total_microseconds"
+                        ],
+                        "properties": {
+                          "state": {
+                            "const": "PRESENT"
+                          },
+                          "avg10": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "The share of the last 10 seconds in which this line's condition held. A percentage of wall-clock time, so it cannot leave [0,100]; the parser refuses a value outside it rather than publishing a high reading."
+                          },
+                          "avg60": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "avg300": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "total_microseconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Cumulative microseconds since boot. A raw monotonic counter with no window; the averages above are NOT derived from it here."
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

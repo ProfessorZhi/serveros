@@ -76,6 +76,18 @@ struct Reading {
     //: what holds both.
     nodecore::Json value;
     bool has_value = false;
+    //: How much of `value` was actually measured — `COMPLETE` when every
+    //: projected field is a number, `PARTIAL` when at least one is an explicit
+    //: UNAVAILABLE. Empty on a reading that is not PRESENT.
+    //:
+    //: WHY THIS EXISTS. Two real cases produce a value that is partly measured:
+    //: a swap reading whose stock is readable while the interval between samples
+    //: is not, and a `psi.cpu` on a kernel that does not report `full`. Both used
+    //: to be a choice between two bad answers — call the whole reading
+    //: UNAVAILABLE and throw away real measurements, or call it PRESENT and let a
+    //: consumer assume the absent field is zero. This says which it is, so
+    //: neither has to be guessed and nothing has to be thrown away.
+    std::string completeness;
 };
 
 //: The closed UNAVAILABLE reasons. A reason outside this set is refused, so a
@@ -104,6 +116,18 @@ inline constexpr const char* kBasisAttested = "ATTESTED";
 inline constexpr const char* kBasisLocalDeclaration = "LOCAL_DECLARATION";
 inline constexpr const char* kBasisCallerSupplied = "CALLER_SUPPLIED";
 inline constexpr const char* kBasisNone = "NONE";
+
+//: Whether every projected field of a PRESENT reading was measured.
+inline constexpr const char* kComplete = "COMPLETE";
+inline constexpr const char* kPartial = "PARTIAL";
+
+//: The closed reason a PROJECTED FIELD carries when it could not be read.
+//:
+//: A field inside a value uses this, and never the producer's own prose: the
+//: producer's reasons name /proc paths, and a status is read by people who are
+//: not on this host. Same vocabulary as the observation-level reasons, so a
+//: reader learns one set of words.
+inline constexpr const char* kFieldUnavailable = "UNAVAILABLE";
 
 //: How this builder describes the AGE of what it carries.
 //:

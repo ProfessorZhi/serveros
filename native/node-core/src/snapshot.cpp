@@ -163,6 +163,170 @@ Json memory_block(const Sample& after, Unknowns& sink) {
     return block;
 }
 
+// Swap, in two halves that answer two different questions.
+//
+// The totals say how much swap is in use. The page counters say whether the
+// machine is paging right now, and ONLY they do: SwapFree falls when a process
+// is killed, and a page can come back in without having gone out in the same
+// window, so a used percentage is a stock and not a signal. The `note` is in the
+// document because a reader who takes `used_percent` for a thrashing indicator
+// has drawn a wrong conclusion from correct numbers — and a number that is right
+// but read as the wrong thing is this collector's whole subject.
+Json swap_block(const Sample& before, const Sample& after, std::optional<std::int64_t> interval,
+                Unknowns& sink) {
+    Json block = Json::object();
+    const SwapFacts& facts = after.swap;
+    if (!facts.totals_known && !facts.pages_known) {
+        const std::string reason = !facts.totals_reason.empty() ? facts.totals_reason
+                                                                : facts.pages_reason;
+        block.set("state", Json::string("UNAVAILABLE"));
+        block.set("reason", Json::string(reason));
+        sink.emplace_back("swap", reason);
+        return block;
+    }
+
+    block.set("state", Json::string("PRESENT"));
+    block.set("source", Json::string("/proc/meminfo"));
+    block.set("pages_source", Json::string("/proc/vmstat"));
+    block.set("scope", Json::string("host-wide"));
+    block.set("note",
+              Json::string("total/free/used describe how much swap is in use, which is a STOCK: it "
+                           "falls when a process exits and does not say whether the machine is "
+                           "paging. pages_in/out_per_second are the paging signal, and they need "
+                           "two samples."));
+
+    if (facts.totals_known) {
+        block.set("total_bytes", Json::uinteger(facts.total_bytes));
+        block.set("free_bytes", Json::uinteger(facts.free_bytes));
+        // Derived the same way the collector derives memory's used figure, and
+        // only where the producer made both operands available. A machine with
+        // no swap reports 0/0 and is not an error.
+        const std::uint64_t used = facts.total_bytes >= facts.free_bytes
+                                       ? facts.total_bytes - facts.free_bytes
+                                       : 0;
+        block.set("used_bytes", Json::uinteger(used));
+        // No denominator when the machine has no swap, so no percentage — and
+        // NOT 0%, which would report "swap is not being touched" about a machine
+        // that has none.
+        const std::optional<double> used_percent =
+            facts.total_bytes > 0
+                ? std::optional<double>(100.0 * static_cast<double>(used) /
+                                        static_cast<double>(facts.total_bytes))
+                : std::nullopt;
+        block.set("used_percent",
+                  optional_number(sink, "swap.used_percent", used_percent, 1,
+                                  "SwapTotal is zero, so a percentage has no denominator"));
+    } else {
+        block.set("total_bytes", unavailable_field(sink, "swap.total_bytes", facts.totals_reason));
+        block.set("free_bytes", unavailable_field(sink, "swap.free_bytes", facts.totals_reason));
+        block.set("used_bytes", unavailable_field(sink, "swap.used_bytes", facts.totals_reason));
+        block.set("used_percent",
+                  unavailable_field(sink, "swap.used_percent", facts.totals_reason));
+    }
+
+    // The paging half. Both counters are lifetime totals, so every value here is
+    // a DIFFERENCE and is refused when the interval is not measurable or when
+    // either reading is missing — the same `counter_delta` the disk rates use,
+    // which is also what refuses a counter that went backwards.
+    const std::string pages_reason =
+        !after.swap.pages_known
+            ? after.swap.pages_reason
+            : (!before.swap.pages_known ? "first sample: " + before.swap.pages_reason : "");
+    if (pages_reason.empty()) {
+        const Reading page_in_before = Reading::measured(before.swap.pages_in);
+        const Reading page_in_after = Reading::measured(after.swap.pages_in);
+        const Reading page_out_before = Reading::measured(before.swap.pages_out);
+        const Reading page_out_after = Reading::measured(after.swap.pages_out);
+        const Delta pages_in = counter_delta(page_in_before, page_in_after, interval);
+        const Delta pages_out = counter_delta(page_out_before, page_out_after, interval);
+        block.set("pages_in", pages_in.known
+                                  ? Json::uinteger(pages_in.value)
+                                  : unavailable_field(sink, "swap.pages_in", pages_in.reason));
+        block.set("pages_out", pages_out.known
+                                   ? Json::uinteger(pages_out.value)
+                                   : unavailable_field(sink, "swap.pages_out", pages_out.reason));
+        block.set("pages_in_per_second",
+                  rate_block(sink, "swap.pages_in_per_second", page_in_before, page_in_after,
+                             interval, "swap pages in"));
+        block.set("pages_out_per_second",
+                  rate_block(sink, "swap.pages_out_per_second", page_out_before, page_out_after,
+                             interval, "swap pages out"));
+    } else {
+        block.set("pages_in", unavailable_field(sink, "swap.pages_in", pages_reason));
+        block.set("pages_out", unavailable_field(sink, "swap.pages_out", pages_reason));
+        block.set("pages_in_per_second",
+                  unavailable_field(sink, "swap.pages_in_per_second", pages_reason));
+        block.set("pages_out_per_second",
+                  unavailable_field(sink, "swap.pages_out_per_second", pages_reason));
+    }
+    block.set("sample_seconds", interval.has_value()
+                                   ? Json::number(static_cast<double>(*interval) / 1e9, 6)
+                                   : Json::unavailable("the sample interval is not measurable"));
+    return block;
+}
+
+// One resource's two PSI lines.
+//
+// Nothing here is a delta: the kernel has already windowed these averages, so a
+// single sample is a complete reading. `full` is emitted even when the kernel
+// does not provide it, as an UNAVAILABLE carrying the reason — a zero there
+// would say "no task was ever fully stalled", which is a much stronger and
+// completely different statement.
+Json psi_line_block(const PsiLine& line, const std::string& prefix, Unknowns& sink) {
+    Json block = Json::object();
+    if (!line.present) {
+        block.set("state", Json::string("UNAVAILABLE"));
+        block.set("reason", Json::string(line.reason));
+        sink.emplace_back(prefix, line.reason);
+        return block;
+    }
+    block.set("state", Json::string("PRESENT"));
+    block.set("avg10", Json::number(line.avg10, 2));
+    block.set("avg60", Json::number(line.avg60, 2));
+    block.set("avg300", Json::number(line.avg300, 2));
+    block.set("total_microseconds", Json::uinteger(line.total_microseconds));
+    return block;
+}
+
+Json psi_block(const Sample& after, Unknowns& sink) {
+    Json block = Json::object();
+    if (after.psi.empty()) {
+        // A build that asks for no resource produces no rows; that is a
+        // different thing from a resource that could not be read, and the
+        // document says which by being empty.
+        block.set("state", Json::string("UNAVAILABLE"));
+        block.set("reason", Json::string("no /proc/pressure resource was read"));
+        sink.emplace_back("psi", "no /proc/pressure resource was read");
+        return block;
+    }
+    block.set("state", Json::string("PRESENT"));
+    block.set("source", Json::string("/proc/pressure"));
+    block.set("scope", Json::string("host-wide"));
+    block.set("note",
+              Json::string("avg10/avg60/avg300 are the share of the last 10/60/300 seconds in "
+                           "which at least one task was stalled (some) or every task was "
+                           "(full). The kernel windows them, so one sample is complete and no "
+                           "second sample is needed."));
+    Json resources = Json::array();
+    for (const PsiFacts& facts : after.psi) {
+        Json row = Json::object();
+        row.set("resource", Json::string(facts.resource));
+        row.set("some", psi_line_block(facts.some, "psi." + facts.resource + ".some", sink));
+        row.set("full", psi_line_block(facts.full, "psi." + facts.resource + ".full", sink));
+        // A resource whose file could not be read at all says so once, at the
+        // row, so a reader does not have to infer it from two UNAVAILABLE lines.
+        if (!facts.present) {
+            row.set("state", Json::string("UNAVAILABLE"));
+            row.set("reason", Json::string(facts.reason));
+        } else {
+            row.set("state", Json::string("PRESENT"));
+        }
+        resources.push(std::move(row));
+    }
+    block.set("resources", std::move(resources));
+    return block;
+}
+
 Json filesystem_row(const FilesystemFacts& facts, Unknowns& sink) {
     Json row = Json::object();
     const std::string prefix = "filesystems." + facts.role;
@@ -551,6 +715,12 @@ Json build_snapshot(const Sample& before, const Sample& after, const SnapshotOpt
 
     root.set("cpu", cpu_block(before, after, interval, unknowns));
     root.set("memory", memory_block(after, unknowns));
+    // `.v1` is additive: these two are optional in the schema, so a consumer
+    // that does not know them ignores them, and a build that produced this
+    // document always writes them — with UNAVAILABLE and a reason rather than
+    // omitting them — so "not measured" can never look like "not asked for".
+    root.set("swap", swap_block(before, after, interval, unknowns));
+    root.set("psi", psi_block(after, unknowns));
 
     Json filesystems = Json::object();
     Json role_rows = Json::array();

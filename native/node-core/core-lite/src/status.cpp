@@ -244,6 +244,11 @@ StatusOutcome build_status(const StatusInput& input) {
                 row.set("source", Json::string(found->source));
             } else {
                 row.set("state", Json::string("PRESENT"));
+                // Says whether every field in the value was measured, so a
+                // partly-measured reading is never read as a complete one.
+                if (!found->completeness.empty()) {
+                    row.set("completeness", Json::string(found->completeness));
+                }
                 // Copied from a `Json` the adapter BUILT key by key. There is no
                 // text on this path, so there is nothing on this path that a
                 // fragment could be spliced into.

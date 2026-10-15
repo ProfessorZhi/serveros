@@ -108,6 +108,27 @@ A device verdict of `MATCHED` with a basis of `LOCAL_DECLARATION` is still worth
 reporting — it says the account's own declaration agrees with the profile — but
 it is the account agreeing with itself.
 
+**A value can be partly measured, and says so.** `completeness` is `COMPLETE`
+when every projected field of a PRESENT reading is a number, and `PARTIAL` when
+at least one is an explicit UNAVAILABLE in place:
+
+```json
+{ "name": "psi.io", "state": "PRESENT", "completeness": "PARTIAL",
+  "value": { "some": { "avg10": 0.61, "avg60": 0.22, "avg300": 0.67 },
+             "full": { "state": "UNAVAILABLE", "reason": "NO_SOURCE" } } }
+```
+
+Two real cases produce this: a swap reading whose stock is readable while the
+sample interval is not, and a `psi.<resource>` on a kernel that does not report
+`full`. Both used to be a choice between two bad answers — call the whole reading
+UNAVAILABLE and throw away real measurements, or call it PRESENT and let a
+consumer read the absent field as zero. `completeness` says which it is, so
+neither has to be guessed and nothing is thrown away.
+
+The per-field `reason` is the adapter's own closed word (`NO_SOURCE`), **never
+the producer's prose**: the collector's reasons name `/proc` paths, and a status
+is read by people who are not on this host.
+
 **`live` means the identity is established. It does NOT mean healthy.** A Core
 whose identity was attested and which then measured nothing is `live: true` with
 every observation `UNAVAILABLE`. Those are two different questions and the
@@ -164,8 +185,8 @@ memory numbers is a value a reader will do arithmetic on and get wrong.
 | `cpu` | **PRESENT**, from `/proc/stat` | the collector's `cpu` block |
 | `memory` | **PRESENT**, from `/proc/meminfo` | the collector's `memory` block |
 | `storage.readonly` | **PRESENT** | assembled from the `filesystems` and `disk_io` blocks together |
-| `swap` | `NOT_IMPLEMENTED` | no block exists yet |
-| `psi.cpu` / `psi.memory` / `psi.io` | `NOT_IMPLEMENTED` | no block exists yet — **not** `UNSUPPORTED_PLATFORM`, see §3 |
+| `swap` | **PRESENT** — bytes in use, and the paging rate over the window | the collector's `swap` block, from `/proc/meminfo` and `/proc/vmstat` |
+| `psi.cpu` / `psi.memory` / `psi.io` | **PRESENT** — the six averages | the collector's `psi` block, from `/proc/pressure`; the kernel already windows them, so one sample is a complete reading |
 | `services` | `NOT_IMPLEMENTED` | the supervisor's `systemd_user.hpp` observation is not wired in yet |
 | `connector` | `NOT_IMPLEMENTED` | read by a Node adapter that does not exist yet |
 | `gpu.readonly` | `NOT_IMPLEMENTED` | read-only by declaration; not implemented |
