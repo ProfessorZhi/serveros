@@ -110,6 +110,45 @@ class OfflineDoubleStackSafety(unittest.TestCase):
         self.assertEqual(preview["writes"], [])
         self.assertEqual(preview["executes"], [])
 
+    def test_unassigned_public_url_is_permitted_only_for_nonstarting_bootstrap(self):
+        p = proposal()
+        p["next"]["public_mcp_url"] = None
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        staged = gate.evaluate(p, bootstrap=True)
+        self.assertEqual(staged["decision"], "BOOTSTRAP_PLAN_READY")
+        self.assertEqual(staged["writes"], [])
+        self.assertEqual(staged["executes"], [])
+        full = gate.evaluate(p)
+        self.assertEqual(full["decision"], "BLOCKED")
+        self.assertTrue(any("next.public_mcp_url" in b for b in full["blockers"]))
+
+    def test_bootstrap_refuses_missing_or_malformed_public_url(self):
+        for value in ("MISSING", "", "http://next.example.invalid/mcp",
+                      "https://next.example.invalid/sse?token=bad"):
+            with self.subTest(value=value):
+                p = proposal()
+                p["next"]["plugin_id"] = None
+                p["attestations"]["next_oauth_client_authorized"] = False
+                if value == "MISSING":
+                    del p["next"]["public_mcp_url"]
+                else:
+                    p["next"]["public_mcp_url"] = value
+                verdict = gate.evaluate(p, bootstrap=True)
+                self.assertEqual(verdict["decision"], "BLOCKED")
+                self.assertTrue(any("next.public_mcp_url" in b
+                                    for b in verdict["blockers"]))
+
+    def test_bootstrap_declared_url_still_cannot_reuse_v1_endpoint(self):
+        p = proposal()
+        p["next"]["public_mcp_url"] = p["v1"]["public_mcp_url"]
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        blocked = gate.evaluate(p, bootstrap=True)
+        self.assertEqual(blocked["decision"], "BLOCKED")
+        self.assertTrue(any("same published endpoint" in b
+                            for b in blocked["blockers"]))
+
     def test_bootstrap_still_requires_real_owner_and_v1_separation(self):
         p = proposal()
         p["next"]["plugin_id"] = None
