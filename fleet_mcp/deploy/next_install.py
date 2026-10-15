@@ -199,6 +199,12 @@ def _restore_failed_install(mod, root: Path, before: tuple, reason: str) -> None
     Artifacts are intentionally retained for forensics. A recovered prior
     pointer is not an assurance the prior Next process is running.
     """
+    # A failure before any revision switch (e.g. a source-validation error)
+    # must not take down a previously healthy Next. V1 is never addressed.
+    changed = mod.read_link(root / "current") != before[0]
+    if not changed:
+        raise Refused("Next install failed before revision switch; existing Next untouched: "
+                      + reason)
     stop_error = None
     try:
         stopped = mod.systemctl("stop", UNIT, check=False)
