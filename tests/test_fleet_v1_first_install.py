@@ -898,9 +898,10 @@ class TheRepositorysOwnArtifactsStayConsistent(unittest.TestCase):
                 self.assertIn(digest, doc)
         self.assertIn(lock["approved_source"]["sha256"], doc)
 
-    def test_the_lock_states_the_absent_behaviour(self) -> None:
+    def test_the_lock_distinguishes_absent_and_mismatched_assets(self) -> None:
         lock = json.loads((HERE / "brand-assets.lock.json").read_text(encoding="utf-8"))
-        self.assertEqual(lock["on_absent_or_mismatched"], builder.MISSING_BRAND_ASSET)
+        self.assertEqual(lock["on_absent"], builder.MISSING_BRAND_ASSET)
+        self.assertEqual(lock["on_mismatched"], builder.BRAND_ASSET_MISMATCH)
 
     def test_no_approved_image_is_committed_here(self) -> None:
         """`status` in the lock says the bytes are not in this repository, and
