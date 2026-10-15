@@ -888,6 +888,23 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             known_runtimes=set(providers), project_ceilings=create_grants)
     except PolicyError as exc:
         raise refuse(BAD_REQUEST, f"policy.runtime_create_defaults: {exc}") from None
+    # A route name alone does not isolate credentials. A newly configured
+    # account-level default must not be wired to the same gateway credential
+    # anchor or endpoint as another runtime on the SAME physical device.
+    # Compare canonical paths as well as spelling to reject symlink aliases.
+    for key in runtime_defaults:
+        binding = providers[key]
+        for other_key, other in providers.items():
+            if other_key == key or binding.device_ref != other.device_ref:
+                continue
+            if (binding.credential_anchor.resolve() == other.credential_anchor.resolve()
+                    or binding.endpoint == other.endpoint):
+                raise refuse(
+                    BAD_REQUEST,
+                    "policy.runtime_create_defaults requires distinct per-account "
+                    "provider credential anchors and endpoints; owner must "
+                    "repair the device binding before creating sessions",
+                )
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
