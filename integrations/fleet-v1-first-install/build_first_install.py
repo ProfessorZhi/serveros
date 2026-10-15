@@ -21,9 +21,18 @@ opposite of the instruction-only one: it **requires** `mcp.json`, while
 What it will not do
 -------------------
 * **It will not invent an endpoint.** A binding is a claim that a server is
-  reachable at a URL, so the URL must arrive with a *separate live
-  observation* of that URL — the discovery documents read back, with the host
-  named. No observation, no archive: `BLOCKED_MCP_ENDPOINT`.
+  reachable at a URL, so the URL must arrive with a *separate observation* of
+  that URL — the OAuth discovery documents read back at 200, an issuer and a
+  `scopes_supported` that advertises the six Fleet scopes, all on the endpoint's
+  own origin. No observation, no archive: `BLOCKED_MCP_ENDPOINT`.
+
+  **That receipt is an operator's claim, not a probe.** Everything in it was
+  typed by a person, including `source: LIVE`, and this tool has no network and
+  cannot check any of it. The builder's job is to refuse a *malformed* or
+  *inconsistent* claim and to make the release gate's remaining work visible;
+  it is not an authenticated verifier, and nothing it emits should be read as
+  one. The `endpoint_evidence` and `endpoint_probe_performed_by_this_tool`
+  fields in the record say so where a reader will actually see it.
 * **It will not substitute an asset.** The two approved brand images are pinned
   by SHA-256 in `brand-assets.lock.json`. A missing file is
   `MISSING_BRAND_ASSET`; a file whose bytes are not the approved ones is
@@ -42,6 +51,24 @@ What it will not do
 * It will not talk to anything. No network, no Plugin Creator, no OAuth, no
   Feishu, no Tailscale. Every fact it accepts about the outside world is a
   receipt the operator collected.
+
+Which namespace the client actually reads
+-----------------------------------------
+The presentation fields live under `extensions.com.openai.interface`, and the
+MCP server's OAuth declaration under
+`mcpServers.<name>.extensions.com.openai.auth`. Both are required here, and for
+the same reason: a field declared only under this repository's own namespace is
+a field no client is documented to read, so a package that kept its approved
+artwork there would have asked nobody to render it — and would still have
+looked complete.
+
+The auth declaration is validated shape by shape. `type` must be `oauth` (this
+server is an OAuth 2.1 authorization server with RFC 7591 dynamic client
+registration; `none`, `api_key` and `mixed` describe a different service), the
+client mode must be `dcr` (`provided` needs a real client id, which does not
+exist before registration, and one written here would be invented), no field
+may name a credential, and any scope list must stay inside the six scopes this
+surface mints. `headers` remains refused everywhere.
 
 The status set is closed
 ------------------------
@@ -103,6 +130,80 @@ SCHEMA_PROPERTIES = frozenset({
     "$schema", "name", "version", "description", "author", "homepage",
     "repository", "license", "keywords", "extensions",
 })
+
+#: The namespace the client is documented to read for presentation, and the
+#: object the icon slots live in. Declaring `composerIcon` under this
+#: repository's own namespace — which is what the first revision did — is not a
+#: claim any client is documented to honour, and a package whose approved
+#: artwork sits only there has not asked the client to render it at all.
+OPENAI_NS = "com.openai"
+PRESENTATION_OBJECT = "interface"
+#: Required inside `extensions.com.openai.interface`. `shortDescription` and the
+#: rest of the documented set are optional here; these three are what a first
+#: release has no reason to omit.
+REQUIRED_PRESENTATION_FIELDS = ("displayName", "composerIcon", "logo")
+EXPECTED_DISPLAY_NAME = "ServerOS Fleet"
+
+#: The six scopes this surface mints. Named here so the observation can be
+#: checked against them; `tests/test_fleet_v1_first_install.py` asserts they
+#: still equal `fleet_mcp.scopes.IMPLEMENTED_SCOPES`, so a scope added there
+#: fails the build here rather than drifting out of the release with nobody
+#: noticing.
+FLEET_SCOPES = ("fleet:read", "fleet:send", "fleet:control", "fleet:create",
+                "fleet:approve", "fleet:navigate")
+
+#: What a remote MCP server may say about its own authorization. The platform
+#: documents four `auth.type` values; this server offers exactly one of them,
+#: and the other three are refused by name rather than tolerated. An `api_key`
+#: or `none` declaration on the Fleet ingress would describe a different
+#: service, and a package that describes a different service is worse than one
+#: that describes none.
+DOCUMENTED_AUTH_TYPES = ("none", "oauth", "mixed", "api_key")
+ALLOWED_AUTH_TYPES = ("oauth",)
+
+#: Every field the OAuth declaration may carry, reviewed one at a time. The
+#: platform documents these; anything outside the set is refused, so a field
+#: added to the template arrives as a build failure with a name rather than as
+#: an unread blob in a release.
+AUTH_FIELDS = frozenset({
+    "type", "client",
+    "registrationUrl", "authorizationServerBase", "resource",
+    "defaultScopes", "baseScopes",
+    "authorizationUrl", "tokenUrl",
+    "oidcEnabled", "oidcConfigurationUrl", "oidcUserinfoEndpoint", "oidcScopesSupported",
+})
+#: URL-valued auth fields that name the ingress's own endpoints, so they must
+#: be on the same origin as the MCP URL — an authorization server the client is
+#: sent to on another host is not one this observation observed.
+SAME_ORIGIN_AUTH_FIELDS = ("registrationUrl", "authorizationServerBase")
+#: URL-valued auth fields that name endpoints of the authorization server. They
+#: may be on another host, but they must still be plain HTTPS origins.
+ABSOLUTE_AUTH_URL_FIELDS = ("authorizationUrl", "tokenUrl",
+                            "oidcConfigurationUrl", "oidcUserinfoEndpoint")
+#: Scope-list fields.
+AUTH_SCOPE_FIELDS = ("defaultScopes", "baseScopes", "oidcScopesSupported")
+
+#: `client.mode` is required when `client` is present. `provided` needs a real
+#: client id, which does not exist before registration; `cimd` is not a
+#: mechanism this server has. `dcr` is what it actually does (RFC 7591).
+CLIENT_MODES = ("provided", "dcr", "cimd")
+ALLOWED_CLIENT_MODES = ("dcr",)
+TOKEN_ENDPOINT_AUTH_METHODS = ("none", "client_secret_basic", "client_secret_post",
+                               "private_key_jwt")
+#: The two that do not imply a shared secret in the package. The platform has no
+#: `clientSecret` field at all, so a declaration that asked for one form of
+#: client authentication would be asking for something the format cannot carry.
+ALLOWED_TOKEN_ENDPOINT_AUTH_METHODS = ("none", "private_key_jwt")
+
+#: Keys that would carry a credential. Refused by name wherever they appear in
+#: the auth block, including nested under `client`. `clientId` is deliberately
+#: not here: it is an identifier rather than a secret, and it gets its own
+#: refusal below because the fix for it is different — it is assigned at
+#: registration, not withheld.
+FORBIDDEN_AUTH_KEYS = frozenset({"clientSecret", "client_secret", "secret", "password"})
+
+#: A scope token in the `namespace:action` shape this deployment mints.
+SCOPE_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*(?::[A-Za-z0-9._-]+)+$")
 
 #: A tailnet hostname, which is what an off-host Fleet ingress is reached by.
 #: Tailscale names a machine as `<machine>.<tailnet>.ts.net` — at least one
@@ -310,6 +411,35 @@ def check_skills(root: Path) -> list[str]:
 
 # -- the endpoint ---------------------------------------------------------
 
+def _origin(value: str) -> str | None:
+    """`scheme://host[:port]`, or None. Used only for comparing origins."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname}{port}"
+
+
+def _plain_https_url(value: object) -> bool:
+    """An absolute HTTPS URL with no userinfo, query or fragment.
+
+    The documentation's own rule for endpoint overrides. A URL carrying a
+    credential component is the shape a token arrives in, and a query string is
+    where an authorization code rides.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and bool(parts.hostname)
+            and not (parts.username or parts.password or parts.query or parts.fragment))
+
+
 def _observation_problems(url: str, observation: Path | None) -> list[str]:
     problems: list[str] = []
     if observation is None:
@@ -337,13 +467,51 @@ def _observation_problems(url: str, observation: Path | None) -> list[str]:
     discovery = record.get("discovery")
     if not isinstance(discovery, dict):
         problems.append("the observation carries no OAuth discovery readback")
-    else:
-        for key in ("protected_resource", "authorization_server"):
-            entry = discovery.get(key)
-            if (not isinstance(entry, dict) or entry.get("status") != 200
-                    or not isinstance(entry.get("receipt_ref"), str)
-                    or not entry["receipt_ref"].strip()):
-                problems.append(f"the observation carries no 200 readback for {key}")
+        return problems
+
+    origin = _origin(url)
+    for key in ("protected_resource", "authorization_server"):
+        entry = discovery.get(key)
+        if (not isinstance(entry, dict) or entry.get("status") != 200
+                or not isinstance(entry.get("receipt_ref"), str)
+                or not entry["receipt_ref"].strip()):
+            problems.append(f"the observation carries no 200 readback for {key}")
+            continue
+        if not _plain_https_url(entry.get("url")):
+            problems.append(f"the {key} readback is not an absolute HTTPS URL "
+                            f"without a credential component")
+        elif _origin(entry["url"]) != origin:
+            # A discovery document on another origin describes another
+            # authorization server. Binding the MCP URL while advertising
+            # somewhere else is exactly the reach the binding is meant to fix.
+            problems.append(f"the {key} readback is on {_origin(entry['url'])}, and "
+                            f"the MCP endpoint is on {origin}; discovery must be the "
+                            f"ingress's own")
+
+    authorization = discovery.get("authorization_server")
+    if isinstance(authorization, dict):
+        issuer = authorization.get("issuer")
+        if not _plain_https_url(issuer):
+            problems.append("the authorization server readback names no absolute "
+                            "HTTPS issuer without a credential component")
+        elif _origin(issuer) != origin:
+            problems.append(f"the issuer is on {_origin(issuer)} and the MCP endpoint "
+                            f"is on {origin}; RFC 8414 issuer and RFC 9728 resource "
+                            f"must be the pair that was observed together")
+        scopes = authorization.get("scopes_supported")
+        if not isinstance(scopes, list) or not scopes or any(
+                not isinstance(s, str) or not SCOPE_TOKEN.match(s) for s in scopes):
+            problems.append("the authorization server readback carries no well-formed "
+                            "scopes_supported list")
+        else:
+            missing = [s for s in FLEET_SCOPES if s not in scopes]
+            if missing:
+                # A client cannot request a scope the AS does not advertise, so a
+                # missing one makes the Skill that needs it unusable — and the
+                # package would still build, which is the failure this catches.
+                problems.append(f"the authorization server does not advertise "
+                                f"{missing}; the six Fleet scopes are what this "
+                                f"package exists to use")
     return problems
 
 
@@ -391,6 +559,148 @@ def check_endpoint(url: object, observation: Path | None, *,
     return url.rstrip("/")
 
 
+def _validate_auth(name: str, auth: object, url: str) -> dict:
+    """The one auth declaration this package may carry, or a refusal by name.
+
+    Everything here is a refusal of a *shape*, not of a value: the builder has
+    no way to check that an OAuth server behaves, so what it checks is that the
+    package asks for the mechanism the server actually offers and carries
+    nothing that would put a credential in an uploaded file.
+    """
+    where = f"mcpServers.{name}.extensions.{OPENAI_NS}.auth"
+    if not isinstance(auth, dict):
+        raise Refused(SOURCE_REFUSED, f"{where} must be an object")
+
+    stray = sorted(set(auth) - AUTH_FIELDS)
+    if stray:
+        raise Refused(SOURCE_REFUSED,
+                      f"{where} declares {stray}, which the documented auth shape "
+                      f"does not define. Known fields: {sorted(AUTH_FIELDS)}.")
+
+    forbidden = sorted(set(auth) & FORBIDDEN_AUTH_KEYS)
+    if forbidden:
+        raise Refused(SOURCE_REFUSED,
+                      f"{where} declares {forbidden}. The format has no field for a "
+                      f"client secret; secrets arrive through the connection setup "
+                      f"flow, not through a package.")
+    _reject_nested_credentials(where, auth)
+    _reject_client_id(where, auth)
+
+    auth_type = auth.get("type")
+    if auth_type not in DOCUMENTED_AUTH_TYPES:
+        raise Refused(SOURCE_REFUSED,
+                      f"{where}.type is {auth_type!r}, which is not one of the "
+                      f"documented {list(DOCUMENTED_AUTH_TYPES)}.")
+    if auth_type not in ALLOWED_AUTH_TYPES:
+        # `none` would ship the connector unauthenticated; `api_key` and `mixed`
+        # describe a server this is not. Refusing rather than tolerating, because
+        # a package that declares the wrong mechanism still installs.
+        raise Refused(SOURCE_REFUSED,
+                      f"{where}.type is {auth_type!r}. The Fleet ingress offers "
+                      f"{list(ALLOWED_AUTH_TYPES)}: an OAuth 2.1 authorization "
+                      f"server with dynamic client registration. A different "
+                      f"mechanism here describes a different service.")
+
+    for field in SAME_ORIGIN_AUTH_FIELDS:
+        if field not in auth:
+            continue
+        if not _plain_https_url(auth[field]):
+            raise Refused(SOURCE_REFUSED, f"{where}.{field} must be an absolute HTTPS "
+                                          f"URL with no query, fragment or userinfo")
+        if _origin(auth[field]) != _origin(url):
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.{field} is on {_origin(auth[field])} and the MCP "
+                          f"endpoint is on {_origin(url)}; the ingress's own "
+                          f"endpoints are on its own origin.")
+    for field in ABSOLUTE_AUTH_URL_FIELDS:
+        if field in auth and not _plain_https_url(auth[field]):
+            raise Refused(SOURCE_REFUSED, f"{where}.{field} must be an absolute HTTPS "
+                                          f"URL with no query, fragment or userinfo")
+
+    for field in AUTH_SCOPE_FIELDS:
+        if field not in auth:
+            continue
+        value = auth[field]
+        if not isinstance(value, list) or not value:
+            raise Refused(SOURCE_REFUSED, f"{where}.{field} must be a non-empty list")
+        for scope in value:
+            if not isinstance(scope, str) or not SCOPE_TOKEN.match(scope):
+                raise Refused(SOURCE_REFUSED,
+                              f"{where}.{field} names {scope!r}, which is not a "
+                              f"`namespace:action` scope token")
+        outside = [s for s in value if s not in FLEET_SCOPES]
+        if outside:
+            # Consistent with the observation transitively: the observation is
+            # required to advertise all of FLEET_SCOPES, so a declaration
+            # confined to FLEET_SCOPES cannot ask for one the server does not
+            # offer. That is why the two checks do not need to meet.
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.{field} asks for {outside}, which this surface "
+                          f"does not mint ({list(FLEET_SCOPES)}). A scope no code "
+                          f"path honours reads to a client as authority it has.")
+
+    if "client" in auth:
+        client = auth["client"]
+        if not isinstance(client, dict):
+            raise Refused(SOURCE_REFUSED, f"{where}.client must be an object")
+        mode = client.get("mode")
+        if mode not in CLIENT_MODES:
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.client.mode is {mode!r}, which is not one of the "
+                          f"documented {list(CLIENT_MODES)}.")
+        if mode not in ALLOWED_CLIENT_MODES:
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.client.mode is {mode!r}. `provided` needs a real "
+                          f"client id and this plugin has not been registered, so one "
+                          f"written here would be invented; this server registers "
+                          f"clients dynamically.")
+        method = client.get("tokenEndpointAuthMethod")
+        if method is not None and method not in TOKEN_ENDPOINT_AUTH_METHODS:
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.client.tokenEndpointAuthMethod is {method!r}, not "
+                          f"one of {list(TOKEN_ENDPOINT_AUTH_METHODS)}.")
+        if method is not None and method not in ALLOWED_TOKEN_ENDPOINT_AUTH_METHODS:
+            raise Refused(SOURCE_REFUSED,
+                          f"{where}.client.tokenEndpointAuthMethod is {method!r}, which "
+                          f"implies a shared secret. The format carries no client "
+                          f"secret, so a package declaring this would be declaring a "
+                          f"credential it cannot hold.")
+    return auth
+
+
+def _reject_client_id(where: str, auth: dict) -> None:
+    """A client id has to be assigned before it can be written down.
+
+    `client.mode: dcr` is what this server does, and the platform's own rule for
+    a dynamic registration is that no client id appears. One typed into the
+    template would be an invented identifier that a client would then present.
+    """
+    client = auth.get("client")
+    if "clientId" in auth or (isinstance(client, dict) and "clientId" in client):
+        raise Refused(
+            SOURCE_REFUSED,
+            f"{where} names a `clientId`. This plugin has not been registered, so "
+            f"there is no client id to name and one written here would be invented; "
+            f"registration assigns it. A client id is not a secret, but an invented "
+            f"one is still a false declaration.",
+        )
+
+
+def _reject_nested_credentials(where: str, value: object, path: str = "") -> None:
+    """Refuse a credential-shaped key anywhere inside the auth block."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in FORBIDDEN_AUTH_KEYS and path:
+                raise Refused(SOURCE_REFUSED,
+                              f"{where}{path}.{key} would carry a credential. The MCP "
+                              f"schema has no field for one; secrets arrive through "
+                              f"the connection setup flow, not through a package.")
+            _reject_nested_credentials(where, item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_nested_credentials(where, item, f"{path}[{index}]")
+
+
 def render_mcp_binding(root: Path, url: str) -> str:
     """Generate `mcp.json` from the template. Returns the file's text."""
     template_path = root / "mcp.template.json"
@@ -401,28 +711,52 @@ def render_mcp_binding(root: Path, url: str) -> str:
     binding = {
         "$schema": MCP_SCHEMA_URL,
         "mcpServers": {
-            name: {**dict(server), "url": url}
+            name: {**_validated_server(name, dict(server), url)}
             for name, server in servers.items()
         },
     }
-    for name, server in binding["mcpServers"].items():
-        if set(server) - {"type", "url", "headers"}:
-            raise Refused(SOURCE_REFUSED,
-                          f"mcpServers.{name} carries a field the 1.0.0 mcp schema "
-                          f"does not define")
-        if server.get("type") != "streamable-http":
-            raise Refused(SOURCE_REFUSED,
-                          f"mcpServers.{name} is {server.get('type')!r}; the Fleet "
-                          f"ingress is a streamable-http endpoint")
-        if server.get("headers"):
-            raise Refused(
-                SOURCE_REFUSED,
-                f"mcpServers.{name} declares headers. Header values are not a "
-                f"portable secret mechanism and the specification says clients "
-                f"must not forward them to another origin; a Fleet credential "
-                f"does not belong in a package.",
-            )
     return json.dumps(binding, indent=2, ensure_ascii=False) + "\n"
+
+
+def _validated_server(name: str, server: dict, url: str) -> dict:
+    if set(server) - {"type", "url", "headers", "extensions"}:
+        raise Refused(SOURCE_REFUSED,
+                      f"mcpServers.{name} carries a field the 1.0.0 mcp schema does "
+                      f"not define")
+    if server.get("type") != "streamable-http":
+        raise Refused(SOURCE_REFUSED,
+                      f"mcpServers.{name} is {server.get('type')!r}; the Fleet "
+                      f"ingress is a streamable-http endpoint")
+    if server.get("headers"):
+        raise Refused(
+            SOURCE_REFUSED,
+            f"mcpServers.{name} declares headers. Header values are not a "
+            f"portable secret mechanism and the specification says clients "
+            f"must not forward them to another origin; a Fleet credential "
+            f"does not belong in a package.",
+        )
+    server["url"] = url
+    extensions = server.get("extensions")
+    if extensions is None:
+        return server
+    if not isinstance(extensions, dict) or set(extensions) != {OPENAI_NS}:
+        raise Refused(SOURCE_REFUSED,
+                      f"mcpServers.{name}.extensions must carry exactly the "
+                      f"{OPENAI_NS!r} block, which is the one the client is "
+                      f"documented to read. An auth declaration under any other "
+                      f"namespace asks nobody in particular.")
+    block = extensions[OPENAI_NS]
+    if not isinstance(block, dict) or set(block) - {"auth"}:
+        raise Refused(SOURCE_REFUSED,
+                      f"mcpServers.{name}.extensions.{OPENAI_NS} may carry only "
+                      f"`auth`; it is the field this release reviewed.")
+    if "auth" not in block:
+        raise Refused(SOURCE_REFUSED,
+                      f"mcpServers.{name}.extensions.{OPENAI_NS} declares no `auth`. "
+                      f"A first install must say how the connector authenticates; "
+                      f"an unauthenticated remote MCP is not this server.")
+    server["extensions"] = {OPENAI_NS: {"auth": _validate_auth(name, block["auth"], url)}}
+    return server
 
 
 # -- the assets -----------------------------------------------------------
@@ -482,6 +816,97 @@ def check_assets(root: Path, lock: dict) -> dict:
         report[name] = {"sha256": actual, "width": width, "height": height,
                         "bytes": len(data)}
     return report
+
+
+# -- the presentation block -----------------------------------------------
+
+def check_presentation(manifest: dict, lock: dict) -> dict:
+    """`extensions.com.openai.interface`, and the paths it must point at.
+
+    Declaring the icon slots under this repository's own namespace — which the
+    first revision did — is not a declaration any client is documented to read.
+    So the supported block is required here, the two paths in it are required
+    to be the shipped paths the lock pins, and the custom namespace is allowed
+    to say anything it likes about *provenance* but is not where a presentation
+    field may live.
+
+    Passing this says the manifest asks the documented way. It says nothing
+    about whether a client renders the image, which is a client behaviour and
+    has not been observed.
+    """
+    extensions = manifest.get("extensions")
+    if not isinstance(extensions, dict) or OPENAI_NS not in extensions:
+        raise Refused(
+            SOURCE_REFUSED,
+            f"plugin.json declares no `extensions.{OPENAI_NS}`. That namespace is "
+            f"where the client is documented to read `displayName`, `composerIcon` "
+            f"and `logo`; a package that declares them only under its own namespace "
+            f"has not asked the client to render the approved artwork.",
+        )
+    block = extensions[OPENAI_NS]
+    if not isinstance(block, dict) or not isinstance(block.get(PRESENTATION_OBJECT), dict):
+        raise Refused(
+            SOURCE_REFUSED,
+            f"`extensions.{OPENAI_NS}.{PRESENTATION_OBJECT}` is absent or is not an "
+            f"object. The presentation fields are nested there, not at the top of "
+            f"the namespace.",
+        )
+    presentation = block[PRESENTATION_OBJECT]
+
+    missing = [f for f in REQUIRED_PRESENTATION_FIELDS if not presentation.get(f)]
+    if missing:
+        raise Refused(
+            SOURCE_REFUSED,
+            f"`extensions.{OPENAI_NS}.{PRESENTATION_OBJECT}` is missing {missing}. A "
+            f"first release declares its display name and both approved icon slots, "
+            f"or it does not ask for them at all.",
+        )
+    if presentation["displayName"] != EXPECTED_DISPLAY_NAME:
+        raise Refused(
+            SOURCE_REFUSED,
+            f"displayName is {presentation['displayName']!r}; the approved name is "
+            f"{EXPECTED_DISPLAY_NAME!r}. The name a user sees is part of what was "
+            f"approved, not a label this build may choose.",
+        )
+
+    shipped = {}
+    for slot in lock.get("slots", []):
+        value = presentation.get(slot["slot"])
+        # The shape of the path is checked before the path itself, so a
+        # declaration that leaves the plugin is refused as an escape rather
+        # than as a mismatch — the two have different fixes, and telling an
+        # operator to check a digest for a path that can never resolve is
+        # sending them to the wrong place.
+        if (not isinstance(value, str) or not value.startswith("./")
+                or ".." in value.split("/") or "\\" in value):
+            raise Refused(
+                SOURCE_REFUSED,
+                f"`{PRESENTATION_OBJECT}.{slot['slot']}` is {value!r}; it must be a "
+                f"root-relative `./` path that does not escape the plugin.",
+            )
+        if value != "./" + slot["shipped_path"]:
+            raise Refused(
+                SOURCE_REFUSED,
+                f"`{PRESENTATION_OBJECT}.{slot['slot']}` is {value!r}; the approved "
+                f"asset is shipped at {slot['shipped_path']!r} and the declaration "
+                f"must name it as `./{slot['shipped_path']}`. A path that resolves "
+                f"anywhere else is a different image.",
+            )
+        shipped[slot["slot"]] = value
+
+    # A presentation field under the custom namespace would be a second answer
+    # to a question the supported block already answers.
+    custom = extensions.get("com.serveros.fleet-ingress")
+    if isinstance(custom, dict):
+        duplicated = sorted(set(custom) & set(REQUIRED_PRESENTATION_FIELDS))
+        if duplicated:
+            raise Refused(
+                SOURCE_REFUSED,
+                f"`extensions.com.serveros.fleet-ingress` repeats {duplicated}. The "
+                f"supported block is the one a client reads; a second copy is how "
+                f"the two come to disagree.",
+            )
+    return shipped
 
 
 # -- the app binding ------------------------------------------------------
@@ -588,6 +1013,7 @@ def preflight(root: Path, lock: dict, *, next_mcp_url, observation,
     skills = check_skills(root)
     url = check_endpoint(next_mcp_url, observation, v1_mcp_url=v1_mcp_url)
     assets = check_assets(root, lock)
+    presentation = check_presentation(manifest, lock)
     app = check_app_binding(app_backed=app_backed, plugin_id=plugin_id,
                             registration=registration)
     mcp_text = render_mcp_binding(root, url)
@@ -598,6 +1024,7 @@ def preflight(root: Path, lock: dict, *, next_mcp_url, observation,
         "mcp_url": url,
         "skills": skills,
         "assets": assets,
+        "presentation": presentation,
         "app_binding": app,
         "source_members": audited,
         "mcp_json": mcp_text,
@@ -626,8 +1053,15 @@ def build(root: Path, out_dir: Path, lock: dict, **kwargs) -> dict:
         "members": sorted(p.relative_to(stage).as_posix() for p in members),
         "mcp_url": plan["mcp_url"],
         "assets": plan["assets"],
+        "presentation": plan["presentation"],
         "skills": plan["skills"],
         "app_binding": plan["app_binding"],
+        # What the endpoint evidence actually is. `source: LIVE` inside the
+        # receipt is a field an operator filled in, and this tool has no network
+        # to check it against; naming that here keeps a reader from reading the
+        # record's own confidence as a measurement.
+        "endpoint_evidence": "OPERATOR_SUPPLIED_RECEIPT",
+        "endpoint_probe_performed_by_this_tool": False,
         "writes": [],
         "uploads": [],
         "installs": [],
@@ -635,7 +1069,10 @@ def build(root: Path, out_dir: Path, lock: dict, **kwargs) -> dict:
         "warning": ("A built archive is a source artefact. Nothing here uploads, "
                     "registers, installs or authorises: the plugin id is assigned "
                     "by the client's Plugin Creator, and the OAuth consent is the "
-                    "owner's."),
+                    "owner's. The endpoint receipt is an operator's claim, not a "
+                    "probe this tool performed — the release gate must query the "
+                    "Next endpoint and its discovery documents itself, and verify "
+                    "the audience, before anyone calls this live."),
     }
     return record
 
