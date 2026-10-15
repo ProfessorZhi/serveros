@@ -305,6 +305,36 @@ void test_an_unresolved_account_runs_nothing() {
     expect(nvidia.calls == 0, "and the program was not run");
 }
 
+void test_a_foreign_runtime_principal_cannot_trigger_gpu_sampling() {
+    std::cout << "a borrowed fjd profile cannot authorize vince to sample GPU\n";
+    // The profile itself grants gpu.readonly to fjd. A vince process can read
+    // that declaration, but it must not turn it into vince's GPU permission.
+    FakeNvidia nvidia{std::string(kOneCard)};
+    const Reading reading = nodecore::corelite::gpu_reading(
+        profile_granting(true), user("vince"), nvidia, "2026-10-16T00:00:00+00:00");
+    expect(nvidia.calls == 0, "no GPU source is queried for a different OS user");
+    expect(reading.state == ReadingState::Unavailable, "the reading is UNAVAILABLE");
+    expect(reading.reason == "IDENTITY_UNKNOWN", "the reason identifies missing owner binding");
+    expect(!reading.has_value, "nothing from another user's grant is emitted");
+
+    // A resolved identity with no name is also NOT the owner. Known OS state
+    // alone is insufficient; the concrete OS name must match the profile.
+    FakeNvidia blank{std::string(kOneCard)};
+    OsIdentity unnamed = user("");
+    const Reading unknown_name = nodecore::corelite::gpu_reading(
+        profile_granting(true), unnamed, blank, "2026-10-16T00:00:00+00:00");
+    expect(blank.calls == 0, "an empty current-user name does not authorize sampling");
+    expect(unknown_name.reason == "IDENTITY_UNKNOWN", "the unnamed account is rejected");
+
+    // The existing synthetic owner-positive case remains valid: a matching
+    // fjd account is allowed to query once, not silently disabled by the fix.
+    FakeNvidia own{std::string(kOneCard)};
+    const Reading valid = nodecore::corelite::gpu_reading(
+        profile_granting(true), user("fjd"), own, "2026-10-16T00:00:00+00:00");
+    expect(own.calls == 1, "a matching owner may query once");
+    expect(valid.state == ReadingState::Present, "the matching owner's reading is PRESENT");
+}
+
 void test_a_non_linux_profile_does_not_use_this_source() {
     std::cout << "a Windows profile does not get this Linux sampler's answer\n";
     // `/usr/bin/nvidia-smi` is a Linux path and this is a Linux program.
@@ -431,6 +461,7 @@ int main() {
     test_a_forged_name_cannot_carry_a_path_or_a_command();
     test_an_ungranted_observation_runs_nothing();
     test_an_unresolved_account_runs_nothing();
+    test_a_foreign_runtime_principal_cannot_trigger_gpu_sampling();
     test_a_non_linux_profile_does_not_use_this_source();
     test_a_missing_binary_is_unavailable();
     test_a_timeout_or_nonzero_exit_is_unavailable();
