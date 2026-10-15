@@ -79,11 +79,13 @@ detail string; the detail is for a person.
 
 Icons, and whose rules these are
 --------------------------------
-The 1.0.0 manifest schema defines no icon property and its property list is
-closed, so the two slots are declared under the package's own `extensions`
-namespace and shipped as files. Whether any client reads that block is
-**UNVERIFIED**, and nothing here claims otherwise. The dimension and format
-checks are this repository's own release rules, not the platform's.
+The 1.0.0 manifest schema has no root-level icon property. Presentation is
+declared in the supported `extensions.com.openai.interface` object; its
+`composerIcon` and `logo` values name shipped files pinned by SHA-256.
+Static checks verify the manifest path and bytes. Whether the live ChatGPT
+client actually renders the approved assets is **UNVERIFIED** until client
+acceptance. The platform requires icons and logos to be square and at least
+48 by 48 pixels. The additional file-byte limit is a repository release rule.
 """
 from __future__ import annotations
 
