@@ -5,9 +5,11 @@ plugin or SSH connection is accessed. The gate is pure: every case here is a
 plan dict in and a decision out, and every case asserts that nothing was
 written and nothing was executed.
 
-The four groups mirror the four ways this can go wrong: reusing the old node,
-publishing an origin whose paths disagree with themselves, registering without
-the owner's own login, and letting a lower stage claim a higher one.
+The groups mirror the ways this goes wrong: reusing the old node; publishing an
+origin whose paths disagree with themselves; registering without the owner's own
+login; **demanding an HTTP 200 from a backend that is deliberately not running**;
+**accepting a self-reported flag as public liveness**; and letting a lower stage
+claim a higher one.
 """
 from __future__ import annotations
 
@@ -22,6 +24,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fleet_mcp.deploy import next_tailscale_gate as gate     # noqa: E402
+
+HOST = "fleet-next-abc.ts.net"
+ISSUER = f"https://{HOST}"
+
+#: The ladder's state flags in order. `public_verified` is listed with them
+#: because it occupies a rung, but it is NOT a state field — it is derived from
+#: `public_readback`, which is the whole point of the case below.
+LADDER = ["staged", "node_registered", "owner_login_attested", "route_provisioned",
+          "tls_cert_ready", "unit_live", "public_verified", "feishu_authenticated",
+          "chatgpt_installed"]
 
 
 def plan() -> dict:
@@ -40,10 +52,10 @@ def plan() -> dict:
             "state_dir": "/home/operator/.local/state/fleet-next-tailscale",
             "socket": "/home/operator/.local/state/fleet-next-tailscale/tailscaled.sock",
             "service_unit": "fleet-next-tailscaled.service",
-            "tailnet_host": "fleet-next-abc.ts.net",
+            "tailnet_host": HOST,
             "funnel_target_port": 3411,
             "local_listen": {"host": "127.0.0.1", "port": 3411},
-            "issuer": "https://fleet-next-abc.ts.net",
+            "issuer": ISSUER,
         },
         "routes": {
             "health": "/health",
@@ -54,20 +66,40 @@ def plan() -> dict:
         },
         "state": {
             "staged": False, "node_registered": False, "owner_login_attested": False,
-            "https_live": False, "mcp_live": False, "feishu_authenticated": False,
-            "chatgpt_installed": False,
+            "route_provisioned": False, "tls_cert_ready": False, "unit_live": False,
+            "feishu_authenticated": False, "chatgpt_installed": False,
         },
     }
 
 
-def at(stage_flag: str) -> dict:
-    """A plan whose state flags are set for every stage up to and including one."""
-    order = ["staged", "node_registered", "owner_login_attested", "https_live",
-             "mcp_live", "feishu_authenticated", "chatgpt_installed"]
+def readback(**over) -> dict:
+    """What a real fetch of the public origin would have recorded."""
+    base = {
+        "health_status": 200,
+        "oauth_protected_resource_status": 200,
+        "oauth_authorization_server_status": 200,
+        "mcp_tools_seen": 33,
+        "issuer": ISSUER,
+        "audience": f"{ISSUER}/mcp",
+    }
+    base.update(over)
+    return base
+
+
+def at(stage: str) -> dict:
+    """A plan standing at `stage`, with every rung below it satisfied the way
+    that rung is actually satisfied — a recorded readback for `public_verified`,
+    a flag for the others."""
     item = plan()
-    if stage_flag:
-        for flag in order[:order.index(stage_flag) + 1]:
+    if not stage:
+        return item
+    for flag in LADDER:
+        if flag == "public_verified":
+            item["public_readback"] = readback()
+        else:
             item["state"][flag] = True
+        if flag == stage:
+            break
     return item
 
 
@@ -92,12 +124,169 @@ class EveryDecisionIsSideEffectFreeTest(unittest.TestCase):
     def test_the_example_plan_shipped_with_the_module_is_valid(self):
         path = ROOT / "fleet_mcp" / "deploy" / "next_tailscale_plan.example.json"
         loaded = json.loads(path.read_text(encoding="utf-8"))
-        # The example uses placeholder host/account names; those are the only
-        # things it is allowed to stand in for.
-        loaded["next"]["tailnet_host"] = "fleet-next-abc.ts.net"
-        loaded["next"]["issuer"] = "https://fleet-next-abc.ts.net"
+        loaded["next"]["tailnet_host"] = HOST
+        loaded["next"]["issuer"] = ISSUER
         got = gate.evaluate(loaded)
         self.assertEqual(got["decision"], "PLAN_READY", got["blockers"])
+        self.assertEqual(got["stage"], "SOURCE")
+
+
+class ProvisioningARouteIsNotServingItTest(unittest.TestCase):
+    """The circular block this file exists to keep out.
+
+    Publishing a Funnel at a restricted loopback backend that is not running yet
+    is a real step — and it is exactly the step at which HTTP cannot answer. A
+    run sheet that asked for `/health` 200 before the unit starts would forbid
+    its own next stage: the unit starts one rung later.
+    """
+
+    def test_the_route_stages_come_before_the_unit_is_live(self):
+        names = [name for name, _ in gate.STAGES]
+        self.assertLess(names.index("NEXT_ROUTE_PROVISIONED"),
+                        names.index("NEXT_UNIT_LIVE"))
+        self.assertLess(names.index("TLS_CERT_READY"),
+                        names.index("NEXT_UNIT_LIVE"))
+        self.assertLess(names.index("NEXT_UNIT_LIVE"),
+                        names.index("PUBLIC_MCP_VERIFIED"))
+
+    def test_a_provisioned_route_is_a_reachable_stage_with_no_backend(self):
+        got = gate.evaluate(at("route_provisioned"))
+        self.assertEqual(got["decision"], "PLAN_READY", got["blockers"])
+        self.assertEqual(got["stage"], "NEXT_ROUTE_PROVISIONED")
+        self.assertFalse(got["backend_running"])
+
+    def test_a_ready_certificate_is_a_reachable_stage_with_no_backend(self):
+        got = gate.evaluate(at("tls_cert_ready"))
+        self.assertEqual(got["decision"], "PLAN_READY", got["blockers"])
+        self.assertEqual(got["stage"], "TLS_CERT_READY")
+        self.assertFalse(got["backend_running"])
+        self.assertFalse(got["public_verified"])
+
+    def test_neither_route_sheet_asks_for_an_http_status(self):
+        """The negative that pins the review. `run_sheet` emits the sheet for the
+        stage AFTER the plan's, so the route sheet comes from a plan standing at
+        NEW_NODE_REGISTERED and the cert sheet from one at NEXT_ROUTE_PROVISIONED.
+
+        Neither may ask for `/health`: that fetch belongs one rung higher, after
+        the unit is live. A status code may appear only as a prohibition.
+        """
+        for standing, sheet_stage in (("owner_login_attested", "NEXT_ROUTE_PROVISIONED"),
+                                      ("route_provisioned", "TLS_CERT_READY")):
+            with self.subTest(sheet=sheet_stage):
+                got = gate.run_sheet(at(standing))
+                self.assertEqual(got["stage"], sheet_stage)
+                joined = " ".join(got["owner_commands"])
+                self.assertNotIn("/health", joined)
+                if sheet_stage == "NEXT_ROUTE_PROVISIONED":
+                    self.assertIn("MUST NOT be started", joined)
+
+    def test_neither_route_stage_demands_health_in_the_decision(self):
+        for stage in ("route_provisioned", "tls_cert_ready"):
+            with self.subTest(stage=stage):
+                got = gate.evaluate(at(stage))
+                self.assertFalse(any("health" in b.lower() for b in got["blockers"]))
+
+    def test_the_route_sheet_says_the_backend_must_not_be_started_for_it(self):
+        got = gate.run_sheet(at("owner_login_attested"))
+        self.assertEqual(got["stage"], "NEXT_ROUTE_PROVISIONED")
+        joined = " ".join(got["owner_commands"])
+        self.assertIn("MUST NOT be started", joined)
+        self.assertIn("no HTTP status", joined)
+
+    def test_the_cert_sheet_asks_for_a_handshake_not_a_response(self):
+        got = gate.run_sheet(at("route_provisioned"))
+        self.assertEqual(got["stage"], "TLS_CERT_READY")
+        joined = " ".join(got["owner_commands"]).lower()
+        self.assertIn("handshake", joined)
+        self.assertIn("no 200", joined)
+        self.assertNotIn("/health", joined)
+
+    def test_the_unit_stage_is_where_caps_are_read_back(self):
+        got = gate.run_sheet(at("tls_cert_ready"))
+        self.assertEqual(got["stage"], "NEXT_UNIT_LIVE")
+        joined = " ".join(got["owner_commands"])
+        self.assertIn("systemctl --user show", joined)
+        self.assertTrue(got["next_stage_requires"], "the unit stage advances on unit_live")
+
+
+class PublicVerificationComesFromEvidenceTest(unittest.TestCase):
+    """A self-reported boolean is not public liveness."""
+
+    def test_there_is_no_flag_a_plan_can_set_to_claim_it(self):
+        item = plan()
+        item["state"]["public_verified"] = True
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("unsupported field" in b for b in got["blockers"]))
+        self.assertFalse(got["public_verified"])
+
+    def test_no_readback_means_no_public_stage(self):
+        """The overclaim the review named: a plan that says the route is up and
+        the unit is up, and therefore claims the public surface works."""
+        item = at("unit_live")
+        item["state"]["chatgpt_installed"] = True
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertFalse(got["public_verified"])
+        self.assertNotEqual(got["stage"], "CHATGPT_INSTALLED")
+
+    def test_a_recorded_readback_is_what_reaches_the_stage(self):
+        got = gate.evaluate(at("public_verified"))
+        self.assertEqual(got["decision"], "PLAN_READY", got["blockers"])
+        self.assertEqual(got["stage"], "PUBLIC_MCP_VERIFIED")
+        self.assertTrue(got["public_verified"])
+
+    def test_a_502_on_health_does_not_reach_the_stage(self):
+        item = at("unit_live")
+        item["public_readback"] = readback(health_status=502)
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("health_status" in b for b in got["blockers"]))
+        self.assertNotIn(got["stage"], ("PUBLIC_MCP_VERIFIED", "CHATGPT_INSTALLED"))
+
+    def test_a_missing_discovery_document_does_not_reach_the_stage(self):
+        for field in ("oauth_protected_resource_status",
+                      "oauth_authorization_server_status"):
+            with self.subTest(field=field):
+                item = at("unit_live")
+                item["public_readback"] = readback(**{field: 404})
+                got = gate.evaluate(item)
+                self.assertEqual(got["decision"], "BLOCKED")
+                self.assertTrue(any(field in b for b in got["blockers"]))
+
+    def test_an_empty_tool_face_is_not_a_tool_face(self):
+        item = at("unit_live")
+        item["public_readback"] = readback(mcp_tools_seen=0)
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("mcp_tools_seen" in b for b in got["blockers"]))
+
+    def test_an_issuer_mismatch_is_refused(self):
+        item = at("unit_live")
+        item["public_readback"] = readback(issuer="https://somewhere-else.ts.net")
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("public_readback.issuer" in b for b in got["blockers"]))
+
+    def test_an_incomplete_readback_is_refused(self):
+        item = at("unit_live")
+        item["public_readback"] = {"health_status": 200}
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("incomplete" in b for b in got["blockers"]))
+
+    def test_a_missing_audience_is_refused(self):
+        item = at("unit_live")
+        item["public_readback"] = readback(audience="")
+        got = gate.evaluate(item)
+        self.assertEqual(got["decision"], "BLOCKED")
+        self.assertTrue(any("audience" in b for b in got["blockers"]))
+
+    def test_the_unit_stage_does_not_require_any_readback(self):
+        """The complement: evidence is demanded only where it can exist."""
+        got = gate.evaluate(at("unit_live"))
+        self.assertEqual(got["decision"], "PLAN_READY", got["blockers"])
+        self.assertEqual(got["stage"], "NEXT_UNIT_LIVE")
 
 
 class TheOldNodeIsNeverReusedTest(unittest.TestCase):
@@ -181,8 +370,7 @@ class TheOriginAndItsPathsAgreeTest(unittest.TestCase):
         self.assertTrue(any("next.issuer" in b for b in blockers))
 
     def test_a_plaintext_issuer_is_refused(self):
-        blockers = self._blocked(
-            lambda p: p["next"].update(issuer="http://fleet-next-abc.ts.net"))
+        blockers = self._blocked(lambda p: p["next"].update(issuer=f"http://{HOST}"))
         self.assertTrue(any("next.issuer" in b for b in blockers))
 
     def test_the_feishu_callback_path_is_pinned_exactly(self):
@@ -242,7 +430,8 @@ class NoCredentialCanEnterTest(unittest.TestCase):
         """Structural, not behavioural: the fields are a closed set and none of
         them is credential-shaped, so a compliant plan cannot carry one."""
         for allowed in (gate.NEXT_FIELDS, gate.EXISTING_FIELDS, gate.STATE_FIELDS,
-                        gate.ROUTE_FIELDS, gate.TOP_FIELDS):
+                        gate.ROUTE_FIELDS, gate.TOP_FIELDS,
+                        gate.PUBLIC_READBACK_FIELDS):
             for name in allowed:
                 with self.subTest(field=name):
                     self.assertFalse(
@@ -261,8 +450,9 @@ class TheLadderIsMonotoneAndFailClosedTest(unittest.TestCase):
     def test_the_ladder_is_the_declared_order(self):
         self.assertEqual([name for name, _ in gate.STAGES],
                          ["SOURCE", "STAGED_NO_START", "NEW_NODE_REGISTERED",
-                          "HTTPS_LIVE", "NEXT_MCP_LIVE", "FEISHU_AUTHENTICATED",
-                          "CHATGPT_INSTALLED"])
+                          "NEXT_ROUTE_PROVISIONED", "TLS_CERT_READY",
+                          "NEXT_UNIT_LIVE", "PUBLIC_MCP_VERIFIED",
+                          "FEISHU_AUTHENTICATED", "CHATGPT_INSTALLED"])
 
     def test_a_fresh_plan_stands_at_source(self):
         got = gate.evaluate(plan())
@@ -271,8 +461,10 @@ class TheLadderIsMonotoneAndFailClosedTest(unittest.TestCase):
 
     def test_each_stage_is_reached_only_with_its_own_evidence(self):
         for flag, name in (("staged", "STAGED_NO_START"),
-                           ("https_live", "HTTPS_LIVE"),
-                           ("mcp_live", "NEXT_MCP_LIVE"),
+                           ("route_provisioned", "NEXT_ROUTE_PROVISIONED"),
+                           ("tls_cert_ready", "TLS_CERT_READY"),
+                           ("unit_live", "NEXT_UNIT_LIVE"),
+                           ("public_verified", "PUBLIC_MCP_VERIFIED"),
                            ("feishu_authenticated", "FEISHU_AUTHENTICATED"),
                            ("chatgpt_installed", "CHATGPT_INSTALLED")):
             with self.subTest(stage=name):
@@ -292,22 +484,23 @@ class TheLadderIsMonotoneAndFailClosedTest(unittest.TestCase):
         self.assertEqual(got["decision"], "PLAN_READY")
         self.assertEqual(got["stage"], "NEW_NODE_REGISTERED")
 
-    def test_an_open_port_may_not_be_reported_as_a_usable_route(self):
-        """The exact overclaim the ladder exists for: the listener is up, so the
-        plan says ChatGPT is installed."""
-        item = at("https_live")
-        item["state"]["chatgpt_installed"] = True
-        got = gate.evaluate(item)
-        self.assertEqual(got["decision"], "BLOCKED")
-        self.assertTrue(any("open port is not a usable MCP route" in b
-                            for b in got["blockers"]))
-
     def test_a_gap_in_the_middle_blocks_everything_above_it(self):
         item = at("chatgpt_installed")
-        item["state"]["mcp_live"] = False
+        item["state"]["unit_live"] = False
         got = gate.evaluate(item)
         self.assertEqual(got["decision"], "BLOCKED")
         self.assertNotEqual(got["stage"], "CHATGPT_INSTALLED")
+
+    def test_a_missing_certificate_holds_the_ladder_below_the_public_stage(self):
+        """Public evidence does not rescue a gap in the staging record. The plan
+        still says the certificate is not ready, so the ladder stops there and
+        the stage is reported honestly rather than promoted by the readback."""
+        item = at("public_verified")
+        item["state"]["tls_cert_ready"] = False
+        got = gate.evaluate(item)
+        self.assertEqual(got["stage"], "NEXT_ROUTE_PROVISIONED")
+        self.assertNotEqual(got["stage"], "PUBLIC_MCP_VERIFIED")
+        self.assertTrue(got["public_verified"], "the evidence itself still stands")
 
 
 class NextOnlyRollbackAndLimitsTest(unittest.TestCase):
@@ -324,7 +517,6 @@ class NextOnlyRollbackAndLimitsTest(unittest.TestCase):
         unit = path.read_text(encoding="utf-8")
         self.assertIn("NEVER install under", unit)
         self.assertIn(preflight.V1_UNIT, unit)
-        # The name it actually installs under is the Next one, not V1's.
         self.assertIn("SyslogIdentifier=serveros-fleet-example-mcp", unit)
 
     def test_the_unit_template_still_carries_the_bounded_caps(self):
@@ -349,12 +541,12 @@ class TheGateIsDeterministicTest(unittest.TestCase):
     is the whole of its idempotence: it holds no state to advance."""
 
     def test_two_evaluations_of_one_plan_agree(self):
-        item = at("https_live")
+        item = at("public_verified")
         first, second = gate.evaluate(item), gate.evaluate(copy.deepcopy(item))
         self.assertEqual(first, second)
 
     def test_evaluating_does_not_mutate_the_plan(self):
-        item = at("staged")
+        item = at("tls_cert_ready")
         before = copy.deepcopy(item)
         gate.evaluate(item)
         gate.run_sheet(item)
@@ -389,8 +581,8 @@ class TheRunSheetIsASheetNotAnActionTest(unittest.TestCase):
         self.assertNotIn("owner_commands", got)
 
     def test_no_sheet_step_names_a_system_or_privileged_operation(self):
-        for flag in ("staged", "owner_login_attested", "https_live", "mcp_live",
-                     "feishu_authenticated"):
+        for flag in ("staged", "owner_login_attested", "route_provisioned",
+                     "tls_cert_ready", "unit_live", "feishu_authenticated"):
             with self.subTest(stage=flag):
                 got = gate.run_sheet(at(flag))
                 text = " ".join(got["owner_commands"]).lower()

@@ -28,8 +28,9 @@
     "staged": false,
     "node_registered": false,
     "owner_login_attested": false,
-    "https_live": false,
-    "mcp_live": false,
+    "route_provisioned": false,
+    "tls_cert_ready": false,
+    "unit_live": false,
     "feishu_authenticated": false,
     "chatgpt_installed": false
   }
