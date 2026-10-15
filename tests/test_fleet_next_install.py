@@ -80,6 +80,61 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertEqual(doc["decision"], "DRY_RUN_READY")
         self.assertEqual(doc["writes"], [])
 
+    def test_bootstrap_stages_with_no_new_plugin_id_and_no_oauth(self):
+        p = candidate()
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        with mock.patch.object(next_install, "_load_legacy_installer",
+                               side_effect=AssertionError("no system actions in dry-run")):
+            rc, summary = cli(["stage"], p)
+        self.assertEqual(rc, 0)
+        self.assertEqual(summary["mode"], "NEXT_ONLY_STAGE_NO_START")
+        self.assertEqual(summary["unit"], gate.NEXT_UNIT)
+        self.assertEqual(summary["executes"], [])
+
+    def test_execute_stage_always_passes_no_start_into_next_installer(self):
+        p = candidate()
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        class FakeMod:
+            calls = []
+            def binding(self, path):
+                old = str(path) == p["v1"]["config_path"]
+                return {"port": 8401 if old else 8402,
+                        "bind": "127.0.0.1", "probe": "http://127.0.0.1:8401" if old else "http://127.0.0.1:8402"}
+            def read_link(self, path):
+                return None
+            def main(self, args):
+                self.calls.append(args)
+                return 0
+        module = FakeMod()
+        with mock.patch.object(next_install, "_load_legacy_installer", return_value=module):
+            rc, output = cli(["stage", "--execute", "--owner-approved"], p)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(module.calls), 1)
+        self.assertIn("--no-start", module.calls[0])
+        self.assertEqual(module.calls[0][0], "install")
+        self.assertIn("--composition", module.calls[0])
+        self.assertIn("ingress-next", module.calls[0])
+
+    def test_stage_does_not_repoint_a_running_existing_next(self):
+        p = candidate()
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        class FakeMod:
+            def binding(self, path):
+                old = str(path) == p["v1"]["config_path"]
+                return {"port": 8401 if old else 8402,
+                        "bind": "127.0.0.1", "probe": "http://127.0.0.1:8401"}
+            def read_link(self, path):
+                return Path("/preexisting-next-revision") if path.name == "current" else None
+            def main(self, args):
+                raise AssertionError("must not stage over an existing Next")
+        with mock.patch.object(next_install, "_load_legacy_installer", return_value=FakeMod()):
+            rc, output = cli(["stage", "--execute", "--owner-approved"], p)
+        self.assertEqual(rc, 2)
+        self.assertIn("empty Next revision root", output["reason"])
+
     def test_next_root_needs_own_composition(self):
         p = candidate()
         p["next"]["runtime_root"] = "/home/operator/runtime-assets/new-ingress/ingress"
