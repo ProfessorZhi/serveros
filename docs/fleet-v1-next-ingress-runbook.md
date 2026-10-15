@@ -100,8 +100,10 @@ Read back: the Next revision root holds the bytes and **no Next unit is running*
 
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
-Confirm the candidate loopback port is free **on the Tokyo host** — `3411` is a
-candidate from the plan, not a reservation:
+Confirm the candidate loopback port is free **on the Tokyo host**. The owner's
+read-only check reported `3411` free, `user-systemd` available and memory PSI
+`full=0`; re-measure at execution time, because a free port is a point-in-time
+fact and not a reservation:
 
 ```bash
 ss -tlnH | grep -E ':(3411|3401|3402)$'      # expect no Next entry; V1 untouched
@@ -218,13 +220,19 @@ port.
 | The route/cert rungs complete without a running backend, and demand no status | **REAL** (offline) |
 | A self-reported `public_verified` flag is refused; evidence is required | **REAL** (offline) |
 | The gate refuses credential-shaped fields without echoing them | **REAL** (offline) |
+| `--execute` publishes exactly one Next-only receipt, and reports `UNKNOWN` rather than success without one | **REAL** (offline; 38 cases) |
 | The #198 dual-stack gate and the Next installer suite pass | **REAL** (offline; both were repaired in this branch, see §6) |
-| Candidate port 3411 is free | **UNVERIFIED** — must be measured on the Tokyo host |
+| Port **3411 free on the Tokyo host**; user-systemd available; memory PSI `full=0` | **REPORTED by the Tokyo owner's read-only check** — not measured by this branch, and a free port is not a service |
+| Official userspace Tailscale **1.104.1** binary staged on the Tokyo host | **STAGED ONLY** — no node registered, no Funnel enabled |
 | A Next Tailscale node exists | **NOT DONE** |
 | Funnel / TLS / HTTPS origin live | **NOT DONE** |
 | Next MCP reachable to ChatGPT | **NOT DONE** |
 | Feishu login completed | **NOT DONE** |
 | Any stage above `SOURCE` reached on a real host | **NOT DONE** |
+
+The staged binary and the free port are real milestones and they are **still
+below rung 2**. A staged artifact is not a registered node; a free port is not
+a listener; `SOURCE` remains the highest stage reached anywhere.
 
 **Nothing in this branch has been deployed.** Offline tests over pure functions
 prove the *rules*; they are not evidence that a host, a node, an origin or a
@@ -234,8 +242,9 @@ plugin exists.
 
 ## 6. Repaired in this branch
 
-Two failures existed at `8186028` and are fixed here, each on the side that
-preserves the other's intent:
+### Two failures that existed at `8186028`
+
+Each fixed on the side that preserves the other's intent:
 
 * `next_dual_stack_preflight.py` — the dry-run note read `"never an
   authorization or a launch."` while `test_fleet_next_dual_stack_preflight.py`
@@ -243,14 +252,62 @@ preserves the other's intent:
   own idiom elsewhere. The **note wording** was brought in line; no behaviour
   changed.
 * `test_fleet_next_install.py::cli()` — the helper unconditionally
-  `json.loads`-ed stdout, but a successful `--execute` prints nothing (it
-  delegates to the installer and returns an exit code). The **helper** now
-  tolerates an empty stream. The CLI's output contract was deliberately not
-  changed.
+  `json.loads`-ed stdout, but a successful `--execute` printed nothing. That
+  first repair tolerated the empty stream, which was **wrong** and is
+  superseded below: `install.py::install()` does print a receipt, so an empty
+  stream is a symptom, not a valid result.
 
-Both failures reproduced identically on a worktree containing none of this
-branch's files, which is how they were confirmed pre-existing rather than
-introduced here.
+Both reproduced identically on a worktree containing none of this branch's
+files, which is how they were confirmed pre-existing rather than introduced
+here.
+
+### The `--execute` receipt contract (supersedes the empty-stdout tolerance)
+
+`install.py::install()` prints exactly one JSON object on each success path
+(`--no-start`, and a full start), and `rollback()` prints one too. The wrapper
+now **captures** that stdout, requires exactly one well-formed document, and
+republishes a single Next-only receipt:
+
+```json
+{"decision": "EXECUTED", "unit": "serveros-fleet-example-mcp.service",
+ "started": false, "health": null, "unit_path": "...",
+ "effect_state": "NEXT_ONLY_ACTION_ATTEMPTED", "v1_action": false,
+ "writes": ["..."], "executes": ["..."], "receipt": { ...the installer's own... }}
+```
+
+A command that returned 0 without leaving one usable receipt reports
+`decision: "UNKNOWN"` and a nonzero exit — never success:
+
+| Output | Result |
+|---|---|
+| one well-formed document | `EXECUTED`, with the installer's own `started`/`health`/`unit_path` |
+| nothing | `UNKNOWN` — "the installer printed no receipt" |
+| not valid JSON | `UNKNOWN` |
+| two documents | `UNKNOWN` — one receipt is required, and picking one of two would be a guess |
+| `SystemExit` after printing | refusal that **quotes the installer's own** `started`/`health` |
+
+`writes` is never `[]` on an attempted effect.
+
+### Same-revision restart is no longer reported as "untouched"
+
+`_restore_failed_install` used to decide "nothing happened" from `current`
+symlink equality. An install over an already-live unit takes the **restart**
+path, and a restart of the *same* revision leaves `current` byte-identical
+while replacing the process serving it — so a restart that never came back
+healthy was reported as `existing Next untouched`, leaving an unhealthy Next
+running under a clean-sounding line.
+
+The wrapper now passes an explicit `effect_attempted` flag, because only the
+caller knows whether an effect was attempted:
+
+| Situation | Behaviour |
+|---|---|
+| failure **before** any effect (validation, path isolation, pre-launch health) | `existing Next untouched`; a healthy Next is **not** stopped |
+| effect attempted, pointers moved | Next-only `stop` + pointer restore |
+| effect attempted, same revision (no pointer to restore) | Next-only `stop`, and the receipt says the **Next service state is UNKNOWN until read back** |
+
+V1 is never addressed in any branch, and the flag is the only thing
+distinguishing the outcomes — the filesystem looks identical in both.
 
 ---
 
