@@ -266,12 +266,16 @@ def install(args: argparse.Namespace) -> int:
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     swap = unit_path.with_name(unit_path.name + ".swap")
     swap.write_text(render_unit(template, runtime, config_path), encoding="utf-8")
+    # Never inherit a permissive process umask for an executable user unit:
+    # the rendered unit points at this user\u0027s private runtime/config paths.
+    swap.chmod(0o600)
     os.replace(swap, unit_path)
     systemctl("daemon-reload")
 
     if args.no_start:
         print(json.dumps({**plan, "tree_sha256": manifest["tree_sha256"],
-                          "started": False, "next": f"systemctl --user start {UNIT_NAME}"},
+                          "unit_path": str(unit_path), "started": False,
+                          "next": f"systemctl --user start {UNIT_NAME}"},
                          indent=2))
         return 0
 
