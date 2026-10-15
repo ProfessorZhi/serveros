@@ -92,11 +92,14 @@ class FakeMod:
     """
 
     def __init__(self, *, current=None, previous=None, unit_state="inactive",
+                 enabled_state="disabled", enabled_error=False,
                  exit_code=0, raise_systemexit=False, revision="b" * 40,
                  extra_receipt=None):
         self.root_current = Path(current) if current else None
         self.root_previous = Path(previous) if previous else None
         self.unit_state = unit_state
+        self.enabled_state = enabled_state
+        self.enabled_error = enabled_error
         self.exit_code = exit_code
         self.raise_systemexit = raise_systemexit
         self.revision = revision
@@ -118,8 +121,15 @@ class FakeMod:
 
     def systemctl(self, *args, check=True):
         self.systemctl_calls.append(args)
-        state = self.unit_state if args[:1] == ("is-active",) else "inactive"
-        return SimpleNamespace(returncode=0, stdout=state + "\n", stderr="")
+        if args[:1] == ("is-active",):
+            return SimpleNamespace(returncode=0,
+                                   stdout=self.unit_state + "\n", stderr="")
+        if args[:1] == ("is-enabled",):
+            if self.enabled_error:
+                raise RuntimeError("systemctl is-enabled could not be read")
+            return SimpleNamespace(returncode=0,
+                                   stdout=self.enabled_state + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
 
     def main(self, args):
         self.calls.append(list(args))
@@ -181,7 +191,25 @@ def gitrepo(*, dirty: bool = False) -> tempfile.TemporaryDirectory:
     return temp
 
 
+def head_of(repo: str) -> str:
+    """The full SHA `git rev-parse HEAD` reports for a real repository."""
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
 class RefreshStageAcceptsAnIncrementalPublishTest(unittest.TestCase):
+    def test_the_dry_run_contract_states_the_enablement_precondition(self):
+        """The preview is the artefact an operator approves; it must not be
+        looser than the guard. A precondition absent from `requires` is one the
+        operator is refused for after treating the preview as the approved plan,
+        so the enablement rule and the `--revision` rule must both appear."""
+        rc, out = run(["refresh-stage"], candidate())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "DRY_RUN_READY")
+        requires = " ".join(out["requires"])
+        self.assertIn("DISABLED", requires)
+        self.assertIn("byte-for-byte", requires)
+
     def test_refresh_writes_only_next_paths_and_keeps_the_old_current(self):
         with gitrepo() as repo:
             mod = FakeMod(current=f"/rev/{OLD_LABEL}", revision="c" * 40)
@@ -286,9 +314,78 @@ class RefreshStageRefusesWhatItCannotMakeSafeTest(unittest.TestCase):
     def test_the_revision_already_current_is_refused(self):
         """Re-pointing to the same revision would consume `previous` for nothing."""
         mod = FakeMod(current=f"/rev/{OLD_LABEL}", revision=OLD_REV)
-        out = self._refuse(mod, argv_extra=("--revision", OLD_REV))
+        with gitrepo() as repo:
+            # `current` names the revision the clean source already IS, so the
+            # derived target equals it and the refusal is about the same-revision
+            # repoint rather than about a `--revision` mismatch.
+            mod.root_current = Path(f"/rev/fleet-mcp-20261015@{head_of(repo)[:7]}")
+            rc, out = run(["refresh-stage", "--execute", "--owner-approved"],
+                          candidate(), mod=mod, source=repo)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(mod.calls, [])
         self.assertIn("already", out["reason"])
         self.assertIn("previous", out["reason"])
+
+    def test_an_enabled_next_unit_is_refused_even_when_inactive(self):
+        """Linger is on: an enabled inactive unit starts the new code at boot."""
+        out = self._refuse(FakeMod(current=f"/rev/{OLD_LABEL}",
+                                   unit_state="inactive",
+                                   enabled_state="enabled"))
+        self.assertIn("disabled", out["reason"])
+        self.assertIn("Linger", out["reason"])
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+
+    def test_any_non_disabled_enablement_is_refused(self):
+        """Fail closed: only the exact string `disabled` is safe."""
+        for estate in ("static", "masked", "indirect", "generated", ""):
+            with self.subTest(enablement=estate):
+                out = self._refuse(FakeMod(current=f"/rev/{OLD_LABEL}",
+                                           unit_state="inactive",
+                                           enabled_state=estate))
+                self.assertIn("disabled", out["reason"])
+
+    def test_an_unreadable_enablement_is_refused(self):
+        out = self._refuse(FakeMod(current=f"/rev/{OLD_LABEL}",
+                                   unit_state="inactive",
+                                   enabled_error=True))
+        self.assertIn("enablement", out["reason"])
+
+    def test_an_explicit_revision_that_is_not_head_is_refused(self):
+        """An override would stamp these bytes with a name HEAD does not give them."""
+        out = self._refuse(FakeMod(current=f"/rev/{OLD_LABEL}"),
+                           argv_extra=("--revision", "d" * 40))
+        self.assertIn("not the clean source", out["reason"])
+        self.assertIn("HEAD", out["reason"])
+
+    def test_an_explicit_revision_equal_to_head_is_accepted(self):
+        """`--revision` may RESTATE the clean HEAD; that is the only value it may be."""
+        mod = FakeMod(current=f"/rev/{OLD_LABEL}", revision="c" * 40)
+        with gitrepo() as repo:
+            rc, out = run(["refresh-stage", "--execute", "--owner-approved",
+                           "--revision", head_of(repo)],
+                          candidate(), mod=mod, source=repo)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+    def test_a_short_head_sha_is_refused_and_the_message_is_actionable(self):
+        """Byte-equality is the rule; a 7-char SHA is not the HEAD, however familiar.
+
+        The refusal must show the two values distinguishably — printing both as
+        `[:7]` would print two identical strings for a refusal that is precisely
+        about them not being identical.
+        """
+        mod = FakeMod(current=f"/rev/{OLD_LABEL}")
+        with gitrepo() as repo:
+            head = head_of(repo)
+            rc, out = run(["refresh-stage", "--execute", "--owner-approved",
+                           "--revision", head[:7]],
+                          candidate(), mod=mod, source=repo)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(mod.calls, [])
+        self.assertIn("not the clean source", out["reason"])
+        self.assertIn(head[:7], out["reason"])
+        self.assertIn(head, out["reason"])
 
     def test_a_dirty_source_is_refused(self):
         """A revision name is a claim about bytes; dirty bytes break the claim."""
