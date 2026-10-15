@@ -404,3 +404,81 @@ The Tokyo legacy field is reachable — and that is the old release, not this on
 
 Everything past S3a therefore remains an **owner action**, listed in §10, and
 this document still cannot stand in for one.
+
+---
+
+## 12 · A ↔ B contract: runtime identity, and one test class that must not gate
+
+**Status: CONTRACT_PENDING_REWRITE.** Recorded here so the requirement survives
+the branch that will satisfy it.
+
+### Two different things are called "the runtime"
+
+| | what it is | what it is for | where it belongs |
+|---|---|---|---|
+| **profile tag** | a **stable logical** selector for one credential profile — the general DeepSeek route, the official Claude account, the MarketOps account | addressing. It is what a session ref names and what a grant is written against | **in** the session ref, as the middle segment |
+| **instance / incarnation** | one **running** binding of a profile: this connector, this boot, this credential | fencing. It is how a reconnect proves it is the successor and a stale binding is refused | **out** of the session ref, as a sidecar on the Node identity |
+
+They must not be the same field, and neither may stand in for the other.
+Putting the incarnation in the tag makes the address drift on every restart and
+every credential rotation — every live session would be re-addressed by an event
+that changed nothing about who it belongs to. Collapsing two profiles into one
+tag is the opposite failure and the worse one: two accounts' sessions share an
+address, so a native session id that exists in both becomes a coin toss.
+
+### Why the OS user is not enough
+
+`runtime_tag(user)` currently derives `claude` / `claude-fjd` from the **OS
+user** alone. That is exactly wide enough for the two-account case this release
+started with and wrong for the one it is heading to: one UID is to carry **0..N
+independent CC identities** — a general DeepSeek profile, an official Claude
+subscription, a MarketOps identity — and those are three different credential
+owners inside one account, not three spellings of one.
+
+So:
+
+- Each credential profile gets its **own stable tag**, and the tag is stable
+  across restarts and credential rotation.
+- The **legacy address keeps its meaning**: `device:<id>|claude|<native id>` is
+  what every live session already says, and it must keep saying it. The default
+  profile continues to answer to the bare tag.
+- The **agent family stays a separate axis**. `claude` / `codex` is what kind of
+  agent it is; the profile is whose credential it runs under. One runtime serves
+  both families and neither is derivable from the other.
+- The **sidref stays three segments**. A fourth is refused by name today and
+  that refusal is a positive invariant, kept — see
+  `TheSessionRefMustNotChangeTest`.
+
+### The instance sidecar
+
+An instance id is bound to the **Node identity and the connector's own live
+readback**, and it is used for reconnect proof and fencing: a returning
+connector shows which incarnation it is, and a binding from an earlier one is
+refused. It **grants nothing** — it is not a credential and not a permission,
+and an identity field is never evidence of authority. A profile whose owner has
+not logged in is **refused**, not defaulted to a neighbour: no implicit
+cross-account fallback, ever.
+
+### The test class this supersedes
+
+`tests/test_fleet_v1_dell_instance_identity_and_smoke.py::TheBindingNamesAnAccountAndNotAnInstanceTest`
+asserts that something is **absent** — no instance field on a binding, no way to
+distinguish a restart from its predecessor, a provider key with exactly one
+separator. It was written as a measurement of the gap and its own docstring says
+so, but a green is a green: left passing it reads as "this is how it should be",
+and Lane B's correct change would turn it red with "keep the gap" as the
+cheapest repair.
+
+It is therefore **skipped under the name `CONTRACT_PENDING_REWRITE`**, with the
+reason printed in every run, and **not deleted** — the measurements stay
+readable and stop counting toward a release. When Lane B lands, each becomes a
+positive test (two profiles under one UID get two distinct stable tags; a
+restart is distinguishable from its predecessor; a stale binding is refused) and
+the skip comes off in the same change that makes it pass.
+
+One item is **watched rather than skipped**, because it is genuinely unclear
+whether it survives: `test_fleet_v1_dell_runtime_matrix.py` asserts
+`runtime_tag("admin", …) == "claude-admin"`. That stays correct if the default
+profile keeps the OS-user derivation; it breaks if the derivation gains a
+profile axis. It is recorded here so the next round decides with B's interface
+in hand instead of guessing.
