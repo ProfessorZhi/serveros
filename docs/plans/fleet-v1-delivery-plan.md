@@ -482,3 +482,91 @@ whether it survives: `test_fleet_v1_dell_runtime_matrix.py` asserts
 profile keeps the OS-user derivation; it breaks if the derivation gains a
 profile axis. It is recorded here so the next round decides with B's interface
 in hand instead of guessing.
+
+---
+
+## 13 · S2 integration state, and the S3 pre-launch checklist
+
+**This section is a receipt.** Every number in it is a real run; every "unknown"
+is something nobody has run.
+
+### What is on the tip
+
+`cd68cb4` plus `f56ca1a`, merging two lanes **by their own histories** rather
+than by re-application:
+
+| brought in | lane | how |
+|---|---|---|
+| `feat/fleet-v1-runtime-fallback-20261015` @ `23668db` | **B · runtime identity** | `--no-ff` merge of the branch |
+| `feat/fleet-v1-preflight-smoke-20261015` @ `d4f4e5c` | **E · ingress** | `--no-ff` merge — E was already stacked on this branch's former tip, so it is ONE merge and no E commit is applied twice |
+
+Both merges were checked for file overlap first and neither needed a conflict
+resolution a reviewer would have to trust. Lane E independently reached the same
+conclusion A's §3 did about the circular route stage, and its commit says so.
+
+### The two gap characterisations are migrated, not deleted
+
+Lane B closed both gaps, and both were written by their authors to be rewritten
+when that happened:
+
+- `…_dell_create_route_isolation.py` — a runtime with no binding now answers
+  `UNKNOWN_DEVICE` for **send as well as create**, and the refusal no longer
+  carries the withheld-grant vocabulary that would confirm a profile exists.
+- `…_dell_instance_identity_and_smoke.py` — a binding now HAS `account`,
+  `profile` and `instance_id`; two incarnations of one account are
+  distinguishable; naming one grants nothing; and the incarnation stays out of
+  the three-segment session ref.
+
+Neither was kept as a false constraint and neither was removed. The
+`CONTRACT_PENDING_REWRITE` marker is gone because the rewrite it named happened.
+
+### The real run
+
+```
+20 fleet suites, in systemd-run --user --scope
+  -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64
+
+730 passed, 401 subtests — no failures, no skips
+```
+
+The two failures #198 carried (`test_fleet_next_dual_stack_preflight`,
+`test_fleet_next_install`) are **gone**: Lane E repaired them.
+
+### What is NOT done, and must not be reported as done
+
+| | state |
+|---|---|
+| **C · plugin #204** | **NOT integrated.** Its `extensions.com.openai.interface` and `mcpServers.<name>.extensions.com.openai.auth` fields are wrong and it is with the Dell C lane. Integrating it now would put a manifest nobody has reviewed into the candidate. |
+| **the approved logo bytes** | **not in this repository.** The conversation's asset pack has not been transferred; a synthetic fixture is NOT a brand asset and the overlay reports `NEEDS_ASSET`. |
+| **`instance_id`** | a **local declaration**. Nothing signs it and no remote incarnation is read back, so it is not fencing. **Node signed incarnation is an open protocol item**, not a passing test. |
+| **the three pytest suites E did not run on Dell** | **UNKNOWN** — E's report named them; this run is the first time some of them executed here. |
+| **real accounts** | **not logged in.** `fjd`, official Claude and MarketOps are unconnected. No host has been changed. |
+
+### S3 pre-launch checklist — what was observed, read-only
+
+Nothing below starts anything. Each line is a fact read from the host, and the
+owner actions beside it are the ones a plan cannot perform.
+
+| # | checked | observed |
+|---|---|---|
+| 1 | candidate port **3411** free | yes — `ss -ltn` filtered to `:3411` returns no listener |
+| 2 | V1 untouched and serving | `serveros-fleet-mcp.service` active, `127.0.0.1:3401` sole listener |
+| 3 | user systemd | available (`systemd-run` at `/usr/bin/systemd-run`) |
+| 4 | userspace Tailscale binary | **staged only** — 1.104.1 at `~/.local/opt/fleet-next-tailscale/1.104.1/`, SHA verified against the official sidecar; **no node created** |
+| 5 | `tailscale`/`tailscaled` on PATH | **absent** — the staged pin is not installed anywhere, deliberately |
+
+**Owner actions still required before any canary**, none of which an agent may
+perform: the owner's browser login and MFA for the new Tailscale node; the
+Funnel approval for it; a real FQDN for the Next ingress; registration of the
+Next **App and Plugin ID**; the Feishu app-2 callback registered against that
+FQDN; and the approved brand bytes transferred in.
+
+Until those exist the Next surface has **no public route at all** — so a
+discovery document, a callback URL or an installable ZIP cannot be produced from
+what is here, and none is claimed.
+
+### Scope, unchanged
+
+V1 is stable cross-device control of the authorised CC/Codex cluster with thin
+Skills. OpenAgents, role teams and broader Ability governance are V2 and are not
+a dependency of this release. Nothing in this section adds scope to V1.
