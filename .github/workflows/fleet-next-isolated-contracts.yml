@@ -1,0 +1,39 @@
+name: Fleet Next isolated canary contracts
+on:
+  pull_request:
+    paths:
+      - 'fleet_mcp/deploy/next_*'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
+      - 'tests/test_fleet_next_install.py'
+      - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - '.github/workflows/fleet-next-isolated-contracts.yml'
+  push:
+    branches:
+      - 'feat/fleet-next-isolated-rollout-20261015'
+    paths:
+      - 'fleet_mcp/deploy/next_*'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
+      - 'tests/test_fleet_next_install.py'
+      - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - '.github/workflows/fleet-next-isolated-contracts.yml'
+permissions:
+  contents: read
+jobs:
+  offline-unit-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the exact PR contents
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check Python syntax
+        run: |
+          python3 -m py_compile fleet_mcp/deploy/next_dual_stack_preflight.py
+          python3 -m py_compile fleet_mcp/deploy/next_install.py
+          python3 -m py_compile tests/test_fleet_next_install.py
+          python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
+      - name: Run dual-stack isolation tests offline
+        run: |
+          python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
+          python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
