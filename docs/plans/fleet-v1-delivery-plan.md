@@ -224,11 +224,29 @@ revision of this section read only for V2 vocabulary and so missed it:
   the release's own checks. A monitoring capability deciding a V1 release is the
   shape of a V2 requirement reaching backwards.
 
-**Status: PENDING INDEPENDENT QA — do not read this as "no V2 block".** The
-question for Lane F is whether each listed operation is (a) genuinely required
-for V1, (b) actually performable by every provider V1 declares, and (c) fail-
-closed without becoming unsatisfiable. Until Lane F answers, the honest state is
-*unverified*, not *absent*.
+**Status: CLOSED by Lane F at `a8fe25d`.** The risk was real and Lane F fixed it
+rather than restating it. The flat rule is gone: operations are split into
+`MANAGED_ACTIONS` and `CAPABILITY_ACTIONS`, and the provider-gated side must be
+**evidenced** — a declared `UNSUPPORTED` needs its own receipt, must agree with
+the per-operation verdict, and cannot cover anything the release promises, while
+`UNKNOWN` or a merely absent field blocks. Lane F's own words for why: under the
+flat rule a Codex runtime with no interactive approval channel "blocked the
+release forever, and the only way past it was to write `PASS`" — a false receipt
+that the gate would then treat as its strongest evidence.
+
+The blanket `real_time_monitoring` check is renamed `psi_and_resource_caps`: a
+release-gating check should name the V1 precondition it actually tests, not a
+monitoring *outcome*. The runtime census became a six-dimensional managed matrix
+(`Device × OSUser × family × credentialInstance × Runtime × Project`), which is
+what stops two CC accounts under one OS UID — and Dell's vince and fjd — from
+collapsing into a single green row. And V2 is excluded in the module's own text:
+no OpenAgents layering, no autonomous self-governance, no trend forecasting or
+self-healing.
+
+Kept as a standing instruction rather than a closed item: a *new* gate must be
+read for two failures — one vocabulary check for V2 concepts, and one strength
+check for a rule V1 cannot satisfy. The first revision of this section ran only
+the first and therefore missed the second.
 
 ---
 
@@ -323,3 +341,66 @@ The split is between **authorisation to work** and **an owner's own account
 action**. Ordinary repository, staging and canary work on the Next lane does not
 need to be re-approved; what stops at a human is anything that needs that
 person's identity — an interactive login, a one-click consent, a console edit.
+
+---
+
+## 11 · Integrated tip, and what it actually runs
+
+**This section is a receipt, not a plan.** Everything in it was measured; the
+numbers are the real output of a real run.
+
+### What the tip is
+
+`8257d2d` — the integration branch `feat/fleet-v1-integration-20261015`, merged
+with `--no-ff` so each lane's history stays readable:
+
+| brought in | lane | what it adds |
+|---|---|---|
+| **F · `a8fe25d`** | release QA | the promise/capability split, the six-dimension managed matrix, `health_admission`, and a human acceptance runbook |
+| **D · `1243f2d`** | Dell | the two-account route isolation tests, the runtime matrix, and the Dell readiness document |
+| **A · `cf21c67`, `f5ddd88`** | integration | this plan and the V1/V2 boundary |
+
+The three lanes touched **disjoint file sets** (zero overlap, checked before
+merging), which is why both merges were clean and neither needed a conflict
+resolution that a reviewer would have to trust.
+
+### The real run
+
+```
+systemd-run --user --scope -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -p TasksMax=64
+  -- timeout 120 python3 -m pytest -q tests/test_fleet_v1_dell_*.py tests/test_fleet_next_*.py
+
+228 passed, 2 failed, 111 subtests passed in 4.70s
+```
+
+The kernel limit was **read back, not assumed**: `memory.max` inside the scope
+reported `1073741824` — exactly 1 GiB. The run is bounded in memory, in swap
+(zero) and in CPU, so it cannot be the thing that takes the host down.
+
+### The two failures are inherited, and they are not this lane's to fix
+
+Both are **#198's own tests**, and both test files *and* the sources they
+exercise are **byte-identical between `8186028` and the integrated tip** — so
+neither D nor F nor A caused them:
+
+| test | cause |
+|---|---|
+| `test_fleet_next_dual_stack_preflight::…human_canary_precheck` | a **stale assertion string**. The test wants `"not an authorization"`; the source emits `"This is dry-run metadata, never an authorization or a launch."` — the same claim, stated more fully. |
+| `test_fleet_next_install::…stage_always_passes_no_start…` | the **executed path of `main()` prints nothing**: only the preview and blocked paths emit JSON, so the test's helper parses an empty string. That is also a gap in the module's own promise to report what it did after acting. |
+
+**Owner: Lane E** (now reassigned to the Dell vince session). They are recorded
+here rather than patched from this lane, because editing E's source and tests
+from here would put two writers on one file — the exact collision the
+reassignment was made to avoid. **The honest state is 2 red, not 230 green.**
+
+### What is *not* live — the part that matters most
+
+**V1 is not live in any sense this document can certify.** Not one row of §5
+reaches beyond LOCAL STAGED for the Next surface: no Next service has ever
+started, no Next node is bound, no Next route exists, and no plugin has been
+installed. The Dell two-account paths are exercised **against fixtures**;
+`fjd` has never been connected on real hardware and needs its **owner's login**.
+The Tokyo legacy field is reachable — and that is the old release, not this one.
+
+Everything past S3a therefore remains an **owner action**, listed in §10, and
+this document still cannot stand in for one.
