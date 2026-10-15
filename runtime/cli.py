@@ -318,8 +318,10 @@ def cmd_journey_walk(args) -> int:
     true`、或一段 APPROVE 文本）得到的答案是 `NEEDS_HUMAN`——因为身份是一次 lookup 而不是
     一个参数，而这条命令手上没有任何权威可以 lookup。这不是「还没做」：一个能被 JSON
     授权的人类批准，等于没有人类批准。要真正接受一条候选，需要把
-    `runtime/journey.py#actor_verifier` 接上，而它在这台机器上是 BLOCKED 的
-    （venv 里没有 `cryptography`，且 `human-control-trust.json` 不存在）。
+    `runtime/journey.py#signed_delegation_provider` 接上，而它在这台机器上是 BLOCKED 的
+    （venv 里没有 `cryptography`，且 `human-control-trust.json` 不存在）。它的失败码，
+    以及「被伪造世界跑通的、未修改的 `verify_delegation`」，见
+    `tests/test_journey_provider.py`。
     """
     mod = _load_module_from(REPO_ROOT / "runtime" / "journey.py",
                             "serveros_runtime_journey")

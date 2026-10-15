@@ -120,7 +120,8 @@ claim_kinds:
 # 一次 miss，而 miss 不是要被抹平的异常，它就是答案。
 #
 # 另一半是 `verifier`，一个**注入**的可调用对象。它被注入而不是被配置，因为
-# 「谁是权威」是部署的事实而不是一个模块常量：生产入口是 `runtime/journey.py#actor_verifier`，
+# 「谁是权威」是部署的事实而不是一个模块常量：生产入口是
+# `runtime/journey.py#signed_delegation_provider`，
 # 测试注入一个独立的 fake。它的签名与返回形状如下，因为一个形状说不清的权威接口，正是
 # 两份实现开始各自漂移的地方。
 authorization:
@@ -143,8 +144,29 @@ authorization:
     checks:
       - validate(record)           # 记录是不是声明的形状
       - authorizes(record, now)    # 现在 FRESH 且 VERIFIED 且 provenance FACT？
+      - record.context_ref == claim.context_ref   # 把手必须就是那个把手
       - approved_revision == proposal.source_revision
       - normalize_actor_ref(record.actor_ref) == normalize_actor_ref(approver_ref)
+
+  # 生产实现：一个可注入的 Provider，而不是本模块里写死的函数。
+  production_provider:
+    entry: runtime/journey.py#signed_delegation_provider
+    takes: []                    # 刻意不接受任何参数——包括信任根
+    delegates_to: context/actor.py#verify_delegation
+    # 信任问题返回 `found: false` 并**原样保留** Actor 契约自己的 code，而不是抛一个
+    # 自己编的异常：那样「为什么没通过」就不再是一个说法，而是一个可以 grep 的判据。
+    refusal_codes:
+      - DELEGATION_PROVIDER_UNBOUND      # 信任根没绑定，或 provider/key/audience 不在其中
+      - DELEGATION_SIGNATURE_INVALID     # 签名验不过
+      - DELEGATION_EVIDENCE_INVALID      # 信封或载荷不是声明的形状 / 签发时钟不成立
+      - DELEGATION_SCOPE_INVALID         # grant 的字段、动作、预算或窗口越界
+      - DELEGATION_VERIFIER_UNAVAILABLE  # 本机没有 Ed25519 支持
+      - PRESENTED_REF_MISMATCH           # 呈上的把手不是这份委派签发给的那一条
+    exercised_by: tests/test_journey_provider.py
+    faked_in_that_test:
+      - tests/journey_provider_fixture.py#fake_cryptography   # 签名原语，不是协议
+      - tests/journey_provider_fixture.py#provider_world      # 信任根的**位置**，不是内容
+
   unbound_verifier_stops: NEEDS_HUMAN
   unbound_verifier_because: >-
     `verifier is None` 时唯一的答案是 NEEDS_HUMAN，没有别的分支：一个没有验证器的进程

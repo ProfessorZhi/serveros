@@ -335,14 +335,18 @@ class TestTheTrustBoundary:
         second = walk(tmp_path / "b", sender=Sender(), goal="另一个目标")
         assert first["refs"]["work_ref"] != second["refs"]["work_ref"]
 
-    def test_the_production_verifier_fails_closed_on_this_host(self):
-        """`actor_verifier()` is BLOCKED here — no `cryptography`, no trust
-        binding — and BLOCKED must be a refusal, never a pass."""
+    def test_the_production_provider_fails_closed_on_this_host(self):
+        """`signed_delegation_provider()` is BLOCKED here — no `cryptography`, no
+        trust binding — and BLOCKED must be a refusal that NAMES its reason, never
+        a pass. The code is the Actor contract's own word for why.
+
+        The exercised denial (a faked world, the real `verify_delegation`) lives in
+        `tests/test_journey_provider.py`; this is the production condition itself."""
         with pytest.raises(journey.Refused) as caught:
             journey.walk(journey_input(approval_claim=claim(evidence={"payload": {},
                                                                      "signature": ""})),
-                         at=AT, verifier=journey.actor_verifier())
-        assert "这次检查没有发生" in str(caught.value)
+                         at=AT, verifier=journey.signed_delegation_provider())
+        assert "DELEGATION_" in str(caught.value)
 
 
 # ---------------------------------------------------------------------------

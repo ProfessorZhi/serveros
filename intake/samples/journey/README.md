@@ -40,7 +40,8 @@ serverosctl journey walk \
 | | 谁跑 | 验证器 | 结果 |
 |---|---|---|---|
 | **生产 CLI** | `serverosctl journey walk` | 恒为 `None` | 任何 `approval_claim` → `NEEDS_HUMAN` |
-| **生产入口（未通）** | `runtime/journey.py#actor_verifier` | `context/actor.py#verify_delegation`（Ed25519 签名委派） | 本机 **BLOCKED**：venv 里没有 `cryptography`，且 `~/.config/serveros/human-control-trust.json` 不存在 |
+| **生产入口（未通）** | `runtime/journey.py#signed_delegation_provider` | `context/actor.py#verify_delegation`（Ed25519 签名委派） | 本机 **BLOCKED**：venv 里没有 `cryptography`，且 `~/.config/serveros/human-control-trust.json` 不存在 |
+| **该入口被真正跑通过** | `pytest tests/test_journey_provider.py` | 同上——**未修改的** `verify_delegation` | 确定性：签名原语与信任根**位置**被 fake（`tests/journey_provider_fixture.py`），协议本身的每一道判据都是真的 |
 | **MOCK** | `pytest tests/test_journey.py` | 注入一个**独立 fake** | 走完 B3→B4→A7→B8→B10，收据链七条齐 |
 
 MOCK 那一栏里，fake 验证器返回的记录不是测试自己编的 dict——它是用

@@ -347,7 +347,7 @@ def authorize(proposal: dict, *, claim=None, verifier=None, now=None) -> dict:
     记录或一次 miss，而 miss 不是要被抹平的异常，它就是答案。
 
     `verifier` 把那个把手换成一条可信记录。它是**注入**的，因为「谁是权威」是部署的事实
-    而不是一个模块常量：生产入口是 `actor_verifier()`，测试注入一个独立的 fake。
+    而不是一个模块常量：生产入口是 `signed_delegation_provider()`，测试注入一个独立的 fake。
     **`verifier is None` 时答案是 `NEEDS_HUMAN`**，没有别的分支 —— 一个没有验证器的进程
     不能因为调用方在 JSON 里写了什么就产出授权。
 
@@ -380,7 +380,7 @@ def authorize(proposal: dict, *, claim=None, verifier=None, now=None) -> dict:
                         "所以那个声称无法被换成一条记录。身份是一次 lookup 而不是一个"
                         "参数——一个能宣称自己背后有人的进程，可以为它此后的每一次变更"
                         "背书。要接受这一条，需要把验证器接上：生产入口是 "
-                        "`runtime/journey.py#actor_verifier`，它只认 "
+                        "`runtime/journey.py#signed_delegation_provider`，它只认 "
                         "`context/actor.py#verify_delegation` 验过的签名证据")}
 
     ref = str(claim.get("context_ref") or "").strip()
@@ -504,15 +504,16 @@ def open_work(proposal: dict, authorization: dict, *, epoch: int = 1) -> dict:
                     f"runtime/agent_control_store.py，不在这里")}
 
 
-def actor_verifier():
+def signed_delegation_provider():
     """生产入口：把调用方呈现的**签名证据**交给 Actor 契约自己的验证器。
 
-    这是 `authorize(verifier=...)` 应当被接上的那一个。它只做三件事：
+    这是 `authorize(verifier=...)` 应当被接上的那一个 —— 「谁是权威」是部署的事实，
+    所以它是一个**可注入的 Provider**，而不是本模块里写死的一个函数。它只做三件事：
 
       1. 取 `claim["evidence"]` —— 调用方呈现的材料，**不可信**；
       2. 交给 `context/actor.py#verify_delegation` —— issuer、公钥、受众、Ed25519 签名、
-         主体、时间窗**全部由那个模块判**，这里一个字都不重写（第二份实现就是第二个
-         会漂移的地方，而漂移的那一个一定是不常跑的）；
+         主体、时间窗、grant 窗口与预算**全部由那个模块判**，这里一个字都不重写
+         （第二份实现就是第二个会漂移的地方，而漂移的那一个一定是不常跑的）；
       3. 把结果翻译成本模块的解析形状。
 
     第 3 步里最关键的是 `approved_revision`：它取自**签名载荷**里的 `scope_digests`
@@ -523,20 +524,32 @@ def actor_verifier():
     刻意**没有** `trust` 参数：`context/actor.py#delegation_trust` 写了为什么——一个
     准入路径可以指向别处的信任根，就是一个由调用方选择的信任根。
 
-    在这台机器上这个入口是 **BLOCKED**，而它阻塞的原因是可核对的：项目 venv 里没有
-    `cryptography`（`verify_delegation` 会答 `DELEGATION_VERIFIER_UNAVAILABLE`），且
-    `~/.config/serveros/human-control-trust.json` 不存在（`DELEGATION_PROVIDER_UNBOUND`）。
-    两种情况都会被 `authorize` 翻成 REFUSED —— 一个验证器抛错时，这次检查没有发生，
-    而一次没有发生的检查不授权任何东西。
+    **信任问题返回 `found: False`，而不是抛异常。** Actor 契约的每一个
+    `DELEGATION_*` code 都被**原样**放进 `because`，于是「为什么没通过」不是一个说法，
+    而是一个可以 grep 的判据：`DELEGATION_PROVIDER_UNBOUND`（信任根没绑定）、
+    `DELEGATION_SIGNATURE_INVALID`（签名不对）、`DELEGATION_SCOPE_INVALID`（grant 越界）、
+    `DELEGATION_VERIFIER_UNAVAILABLE`（没有 Ed25519 支持）。两种表达都是 fail-closed，
+    但这一种留下了理由。
+
+    在这台机器上这个入口是 **BLOCKED**，原因是可核对的：项目 venv 里没有 `cryptography`
+    （答 `DELEGATION_VERIFIER_UNAVAILABLE`），且 `~/.config/serveros/human-control-trust.json`
+    不存在（答 `DELEGATION_PROVIDER_UNBOUND`）。这条路径的**可执行性**由
+    `tests/journey_provider_fixture.py` + `tests/test_journey_provider.py` 在测试侧提供，
+    而那两个文件从不进入任何生产导入路径。
     """
     def verify(claim, now):
         actor = _actor()
         evidence = (claim or {}).get("evidence")
-        grant, context = actor.verify_delegation(evidence, now=now)
+        try:
+            grant, context = actor.verify_delegation(evidence, now=now)
+        except actor.Rejected as exc:
+            # Fail closed, and keep the contract's own word for why.
+            return {"found": False, "because": str(exc)}
         presented = str((claim or {}).get("context_ref") or "").strip()
         if presented and context["context_ref"] != presented:
-            raise actor.Rejected(
-                "PRESENTED_REF_MISMATCH: 呈上的 context_ref 不是这份委派被签发给的那一条")
+            return {"found": False,
+                    "because": ("PRESENTED_REF_MISMATCH: 呈上的 context_ref 不是这份委派"
+                                "被签发给的那一条")}
         digests = grant.get("scope_digests") or {}
         covers = [str(c) for c in (grant.get("covers") or [])]
         approved = next((digests[c] for c in covers if c in digests), None)
