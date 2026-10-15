@@ -187,7 +187,7 @@ memory numbers is a value a reader will do arithmetic on and get wrong.
 | `storage.readonly` | **PRESENT** | assembled from the `filesystems` and `disk_io` blocks together |
 | `swap` | **PRESENT** — bytes in use, and the paging rate over the window | the collector's `swap` block, from `/proc/meminfo` and `/proc/vmstat` |
 | `psi.cpu` / `psi.memory` / `psi.io` | **PRESENT** — the six averages | the collector's `psi` block, from `/proc/pressure`; the kernel already windows them, so one sample is a complete reading |
-| `services` | `NOT_IMPLEMENTED` | the supervisor's `systemd_user.hpp` observation is not wired in yet |
+| `services` | **PRESENT** — this account's declared units, read-only | the supervisor's existing `systemd_user` adapter. See §6 |
 | `connector` | `NOT_IMPLEMENTED` | read by a Node adapter that does not exist yet |
 | `gpu.readonly` | `NOT_IMPLEMENTED` | read-only by declaration; not implemented |
 
@@ -211,6 +211,57 @@ field exists to prevent.
 - **No freshness policy enforced here.** `observed_at` is carried; deciding that
   a reading is `STALE` is the reader's bound, not the builder's, and the builder
   will carry a `STALE` reason it was handed.
+
+## 6b. `services`: reading units, never touching them
+
+`services` is the one observation that is not a `/proc` fact and not in the
+snapshot. It comes from the supervisor's existing read-only `systemd_user`
+adapter, through a **one-method interface**: the projection is compiled against
+`ServiceQuery`, which has `query` and nothing else. The supervisor's `Provider`
+also has `start`/`restart`/`stop`, and the code that decides what a service
+reading SAYS cannot reach them, because a type that cannot express a verb cannot
+call one.
+
+**The owner gate runs on the RUNTIME account.** A service whose `owner` is not
+the account this process actually runs as is **not emitted at all** — not as
+`UNAVAILABLE`, because a present-and-blank field reads as «measured nothing» and
+its presence alone discloses that the account has a service there. The profile
+reader refuses `owner != principal` as well; this is the second gate, and it is
+the one that runs where the string would become a query. A unit that is not in
+this profile's own allowlist, or an answer about a *different* unit, is refused
+rather than relabelled.
+
+### `INACTIVE` and `NOT_INSTALLED` are different facts
+
+Measured on this host: `systemctl --user show` answers
+`ActiveState=inactive LoadState=not-found` for a unit name **that does not
+exist**, and the same `ActiveState` for one that exists and was stopped. A
+projection that printed `INACTIVE` for both would state that a service exists and
+is stopped when there is no service at all.
+
+So the observation carries the **load state** as well:
+
+| `state` | means |
+|---|---|
+| `ACTIVE` / `INACTIVE` / `FAILED` / `ACTIVATING` / `DEACTIVATING` | the unit is installed; the supervisor's own `Active` vocabulary in this document's spelling |
+| `NOT_INSTALLED` | the load state says there is no unit behind this name (`not-found`, or `masked` — a mask is the deliberate absence of a unit) |
+| `UNAVAILABLE` + `reason` | the state was not read, was not measured, or the load state was **not read at all** |
+
+The last row is why the load state is tri-state: `true` (installed), `false`
+(not found), and **refused** when nothing read it. "We did not look" and "it is
+not there" are different facts, and only one of them is about the host — so an
+answer that omits the load state is `UNAVAILABLE`, never assumed installed and
+never assumed absent.
+
+### `connector` stays `NOT_IMPLEMENTED`
+
+There is no trusted typed source for it, and **an HTTP health endpoint is not
+one**: a `200` from something that answers says a socket opened, not that a
+device is connected or that the thing answering is the thing it claims to be.
+Until a typed, authenticated source exists, the honest answer is that nobody has
+written the collector — `NOT_IMPLEMENTED` — rather than a status derived from an
+unauthenticated request. This is the same rule as #213 §4b: an assertion is not
+evidence.
 
 ## 7. How to run it
 

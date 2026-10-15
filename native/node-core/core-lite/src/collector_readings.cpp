@@ -2,6 +2,7 @@
 // the status. See `collector_readings.hpp` for the rules.
 #include "corelite/collector_readings.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -452,7 +453,8 @@ Reading unavailable(const std::string& name, const std::string& reason) {
 }  // namespace
 
 SnapshotReadings readings_from_snapshot(const Profile& profile, const std::string& snapshot_json,
-                                        std::string& error) {
+                                        std::string& error,
+                                        const std::vector<std::string>& answered_elsewhere) {
     error.clear();
     SnapshotReadings answer;
 
@@ -494,6 +496,13 @@ SnapshotReadings readings_from_snapshot(const Profile& profile, const std::strin
             // Not granted by the owner: it does not appear. Enforced here as
             // well as in the status builder, so an ungranted name cannot even
             // reach the document.
+            continue;
+        }
+
+        // Answered by another source the caller named. Not emitted at all, so
+        // the two can never race for the same observation name.
+        if (std::find(answered_elsewhere.begin(), answered_elsewhere.end(), observation.name) !=
+            answered_elsewhere.end()) {
             continue;
         }
 

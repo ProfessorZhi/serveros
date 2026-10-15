@@ -80,7 +80,21 @@ struct SnapshotReadings {
 //: when the platform could but no collector block exists yet. A granted
 //: observation is NEVER silently omitted, because omission and "measured nothing"
 //: would then look the same to a Fleet reader.
+//: `answered_elsewhere` names observations the CALLER is supplying from another
+//: source, so this adapter does not emit a placeholder for them.
+//:
+//: WHY IT EXISTS. `build_status` takes the FIRST reading with a given name, so
+//: two sources emitting the same observation is a precedence question that would
+//: otherwise be settled by the order somebody happened to concatenate two
+//: vectors in. `services` is the live case: it is a systemd fact, not a `/proc`
+//: one, so it comes from the supervisor's unit adapter — and this adapter must
+//: not also answer it with `NOT_IMPLEMENTED`.
+//:
+//: The "a granted observation is never silently omitted" rule is not weakened:
+//: the omission is REQUESTED by the caller that is supplying the answer, and the
+//: name has to be passed in for it to happen.
 SnapshotReadings readings_from_snapshot(const Profile& profile, const std::string& snapshot_json,
-                                        std::string& error);
+                                        std::string& error,
+                                        const std::vector<std::string>& answered_elsewhere = {});
 
 }  // namespace nodecore::corelite

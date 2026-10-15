@@ -20,14 +20,19 @@ std::vector<std::string> systemctl_verb_argv(const std::string& systemctl_path,
 
 std::vector<std::string> systemctl_show_argv(const std::string& systemctl_path,
                                              const std::string& unit) {
+    // `LoadState` is requested beside `ActiveState` because `ActiveState` alone
+    // cannot tell "installed and stopped" from "does not exist": systemd answers
+    // `ActiveState=inactive` for a unit name it cannot find. Asking for the two
+    // together costs nothing and is what makes the difference reportable.
     return {systemctl_path, "--user",      "--no-pager", "--quiet",
-            "show",         "--property=ActiveState,SubState", "--", unit};
+            "show",         "--property=ActiveState,SubState,LoadState", "--", unit};
 }
 
 Observed parse_systemctl_show(const std::string& unit, const std::string& stdout_text,
                               const std::string& observed_at) {
     std::string active;
     std::string sub_state;
+    std::string load_state;
     std::istringstream stream(stdout_text);
     std::string line;
     while (std::getline(stream, line)) {
@@ -44,6 +49,8 @@ Observed parse_systemctl_show(const std::string& unit, const std::string& stdout
             active = value;
         } else if (key == "SubState") {
             sub_state = value;
+        } else if (key == "LoadState") {
+            load_state = value;
         }
     }
 
@@ -66,6 +73,7 @@ Observed parse_systemctl_show(const std::string& unit, const std::string& stdout
     row.unit = unit;
     row.active = *parsed;
     row.sub_state = sub_state;
+    row.load_state = load_state;
     row.observed_at = observed_at;
     row.source = "systemd-user";
     row.measured = true;

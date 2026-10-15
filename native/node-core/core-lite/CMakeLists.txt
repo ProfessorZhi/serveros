@@ -20,6 +20,11 @@ add_library(core_lite_profile STATIC
   # The runtime identity readback, apart from the parser because a parser that
   # called `getuid()` would only be testable on the host it was written on.
   src/identity.cpp
+  # The `services` observation, projected from the supervisor's read-only unit
+  # observations. It compiles against the NARROW `ServiceQuery` — one method —
+  # rather than the supervisor's `Provider`, which also has start/restart/stop: a
+  # type that cannot express those cannot call them.
+  src/service_readings.cpp
   # The Linux adapter: a `node-resource-snapshot.v1` PROJECTED onto the reviewed
   # fields. It reads the collector's document rather than `/proc`, so the numbers
   # a Fleet reader sees here are the collector's own — and it names every field it
@@ -83,6 +88,14 @@ add_test(NAME core_lite_status COMMAND test_core_lite_status)
 # The Linux adapter, against the snapshot the repository already ships. The test
 # finds the fixture relative to its working directory and FAILS if it cannot, so
 # a wrong `WORKING_DIRECTORY` cannot pass as a green run.
+add_executable(test_core_lite_services tests/test_service_readings.cpp)
+target_link_libraries(test_core_lite_services PRIVATE core_lite_profile)
+# The test re-reads the observation text with the component's own parser, and
+# asserts the tri-state that decides absent-vs-stopped.
+target_include_directories(test_core_lite_services PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
+add_test(NAME core_lite_services COMMAND test_core_lite_services)
+
 add_executable(test_core_lite_readings tests/test_collector_readings.cpp)
 target_link_libraries(test_core_lite_readings PRIVATE core_lite_profile)
 # The test re-reads the status document with the component's own reader rather

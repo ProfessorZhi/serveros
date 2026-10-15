@@ -15,6 +15,7 @@
 #pragma once
 
 #include <optional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,21 @@ struct Observed {
     std::string unit;
     Active active = Active::Unknown;
     std::string sub_state;
+    // `LoadState` from the same `systemctl show`, verbatim.
+    //
+    // WHY IT IS CARRIED, AND WHY IT IS NOT OPTIONAL IN PRACTICE. `ActiveState`
+    // alone cannot tell "this unit is installed and stopped" from "this unit does
+    // not exist": systemd synthesizes a unit for an unknown name and answers
+    // `ActiveState=inactive LoadState=not-found` for it, measured on this host
+    // against both a real and a fictional unit id. A reader that reports
+    // `Inactive` for a unit nobody installed has stated a fact that is false —
+    // the service is not stopped, it is absent — so the distinction travels with
+    // the reading.
+    //
+    // Empty when the output carried no LoadState. That is NOT `loaded`: it means
+    // the load state was not read, which is why `unit_is_installed` refuses on an
+    // empty value rather than assuming.
+    std::string load_state;
     // ISO-8601 with an explicit offset, the same shape the rest of the tree
     // writes (`native/node-core/contract/node-resource-snapshot.v1.md`).
     std::string observed_at;
@@ -75,6 +91,17 @@ struct Observed {
 
     static Observed unavailable(std::string unit, std::string reason);
 };
+
+// Whether the observation says the unit is INSTALLED, as opposed to merely
+// inactive.
+//
+// Tri-state on purpose, and the third state is the point:
+//   * `true`  — LoadState says the unit was found and read.
+//   * `false` — LoadState says it was not found. The unit does not exist.
+//   * `nullopt` — LoadState was not read, or the observation was not measured.
+//     Refused rather than answered, because "we did not look" and "it is not
+//     there" are different facts and only one of them is about the host.
+std::optional<bool> unit_is_installed(const Observed& observed);
 
 // --------------------------------------------------------------- recovery
 

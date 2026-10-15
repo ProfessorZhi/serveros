@@ -35,24 +35,56 @@
 #include "corelite/collector_readings.hpp"
 #include "corelite/identity.hpp"
 #include "corelite/profile.hpp"
+#include "corelite/service_readings.hpp"
 #include "corelite/status.hpp"
+#include "nodecore/clock.hpp"
+#include "supervisor/provider.hpp"
+#include "supervisor/systemd_user.hpp"
 
 namespace {
 
+//: The systemctl this program would ask, if a profile grants `services`. The
+//: same default the supervisor uses, and overridable for the same reason.
+constexpr const char* kDefaultSystemctl = "/usr/bin/systemctl";
+
+//: Wraps the supervisor's unit adapter and exposes ONE method.
+//:
+//: `SystemdUserProvider` also has `start`, `restart` and `stop`, and this class
+//: holds one. What makes that safe is not this class but the interface the
+//: projection is compiled against: `services_reading` takes a `ServiceQuery`,
+//: which has only `query`, so the code that decides what a service reading SAYS
+//: has no way to express a verb. This wrapper is the seam that keeps it that way.
+class ReadOnlyUnits final : public nodecore::corelite::ServiceQuery {
+public:
+    explicit ReadOnlyUnits(nodecore::supervisor::SystemdUserProvider& provider)
+        : provider_(provider) {}
+
+    nodecore::supervisor::Observed query(const std::string& unit) override {
+        return provider_.query(unit);
+    }
+
+private:
+    nodecore::supervisor::SystemdUserProvider& provider_;
+};
+
 void print_usage(std::FILE* out) {
     std::fprintf(out,
-                 "usage: core-lite-status --profile PATH [--snapshot PATH]\n"
+                 "usage: core-lite-status --profile PATH [--snapshot PATH] [--systemctl PATH]\n"
                  "\n"
                  "  --profile PATH      a serveros/core-lite-profile.v1 document (required)\n"
                  "  --snapshot PATH     a serveros/node-resource-snapshot.v1 document to read\n"
                  "                      readings from. Without it, every granted observation is\n"
                  "                      reported UNAVAILABLE with the reason why.\n"
+                 "  --systemctl PATH    the systemctl to ASK about this profile's units (default\n"
+                 "                      %s). Only ever `show`: this program has no verb that\n"
+                 "                      starts, stops or restarts anything.\n"
                  "\n"
                  "Reads only. Never acts, never writes, never reaches the network.\n"
                  "\n"
                  "The device reference and the observation time are NOT arguments: the first\n"
                  "comes from this host's declaration file, the second from the snapshot's own\n"
-                 "stamp. See the comment at the top of this file for why.\n");
+                 "stamp. See the comment at the top of this file for why.\n",
+                 kDefaultSystemctl);
 }
 
 bool read_file(const std::string& path, std::string& out) {
@@ -79,6 +111,7 @@ constexpr const char* kDeviceDeclarationRelpath = ".config/serveros/node-identit
 int main(int argc, char** argv) {
     std::string profile_path;
     std::string snapshot_path;
+    std::string systemctl_path = kDefaultSystemctl;
 
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index];
@@ -86,7 +119,8 @@ int main(int argc, char** argv) {
             print_usage(stdout);
             return 0;
         }
-        const bool wants_value = (arg == "--profile" || arg == "--snapshot");
+        const bool wants_value =
+            (arg == "--profile" || arg == "--snapshot" || arg == "--systemctl");
         if (wants_value && index + 1 >= argc) {
             std::fprintf(stderr, "%s needs a value\n", arg.c_str());
             return 1;
@@ -95,6 +129,8 @@ int main(int argc, char** argv) {
             profile_path = argv[++index];
         } else if (arg == "--snapshot") {
             snapshot_path = argv[++index];
+        } else if (arg == "--systemctl") {
+            systemctl_path = argv[++index];
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
             print_usage(stderr);
@@ -151,7 +187,10 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::string error;
-        auto readings = nodecore::corelite::readings_from_snapshot(profile, snapshot_text, error);
+        // `services` comes from systemd, not from the snapshot: named here so
+        // this adapter does not also answer it with a placeholder.
+        auto readings = nodecore::corelite::readings_from_snapshot(
+            profile, snapshot_text, error, {"services"});
         if (!error.empty()) {
             std::fprintf(stderr, "the snapshot could not be read: %s\n", error.c_str());
             return 1;
@@ -160,6 +199,42 @@ int main(int argc, char** argv) {
         // The source's OWN sample time. There is no flag that sets this, because
         // a caller who could set it could make an old document look new.
         input.source_observed_at = readings.observed_at;
+    }
+
+    // ---- the services observation ---------------------------------------
+    // Services are not a /proc fact and are not in the snapshot: they live in
+    // systemd, and the only supported way to ask is the supervisor's adapter.
+    // Read once, at the end, and only when the owner granted the observation —
+    // a profile that did not ask for `services` costs no process at all.
+    bool grants_services = false;
+    for (const auto& observation : profile.observations) {
+        if (observation.authorized && observation.name == "services") {
+            grants_services = true;
+        }
+    }
+    if (grants_services) {
+        std::vector<std::string> units;
+        for (const auto& service : profile.services) {
+            units.push_back(service.unit);
+        }
+        const auto built = nodecore::supervisor::UnitAllowlist::build(units);
+        if (!built.ok) {
+            std::fprintf(stderr, "the profile's units are not usable: %s\n", built.error.c_str());
+            return 1;
+        }
+        nodecore::supervisor::SystemdUserProvider provider(
+            systemctl_path, built.allowlist,
+            []() { return nodecore::iso8601_utc(std::chrono::system_clock::now()); });
+        ReadOnlyUnits units_query(provider);
+        std::string service_error;
+        const auto services =
+            nodecore::corelite::services_reading(profile, os_identity, units_query, service_error);
+        if (!service_error.empty()) {
+            std::fprintf(stderr, "the services observation could not be built: %s\n",
+                         service_error.c_str());
+            return 1;
+        }
+        input.readings.push_back(services);
     }
 
     const auto outcome = nodecore::corelite::build_status(input);

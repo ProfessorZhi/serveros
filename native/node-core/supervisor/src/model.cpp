@@ -85,4 +85,29 @@ Observed Observed::unavailable(std::string unit, std::string reason) {
     return observed;
 }
 
+std::optional<bool> unit_is_installed(const Observed& observed) {
+    // Not measured is not "not installed". Refused, because the only honest
+    // answer to "is it there" when nobody looked is that nobody looked.
+    if (!observed.measured || observed.load_state.empty()) {
+        return std::nullopt;
+    }
+    // Measured on this host against both a real unit id and a fictional one:
+    // systemd synthesizes a unit for a name it cannot find and answers
+    // `ActiveState=inactive LoadState=not-found`. Only `loaded` means there is a
+    // unit file behind this name.
+    if (observed.load_state == "loaded") {
+        return true;
+    }
+    // `masked` is not installed either: a mask is the deliberate absence of a
+    // unit, and a reader that called it Inactive would report a service that was
+    // switched off on purpose as one that happened to stop.
+    if (observed.load_state == "not-found" || observed.load_state == "masked") {
+        return false;
+    }
+    // `bad-setting`, `error`, `merged`, or a word a newer systemd added. Each of
+    // those is a unit that exists in some sense and could not be read in another;
+    // guessing which way is how a broken unit becomes an absent one. Refused.
+    return std::nullopt;
+}
+
 }  // namespace nodecore::supervisor
