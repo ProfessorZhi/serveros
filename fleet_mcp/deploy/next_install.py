@@ -74,20 +74,21 @@ def plan(proposal: dict, command: str) -> dict:
         return {"decision": "BLOCKED",
                 "blockers": ["limits: must match the Next service template"],
                 "writes": [], "executes": []}
-    template = _HERE / "serveros-fleet-example-mcp.service"
-    if not template.is_file():
-        return {"decision": "BLOCKED", "blockers": ["Next unit template missing"],
-                "writes": [], "executes": []}
-    body = template.read_text(encoding="utf-8")
-    for required in (
-        "MemoryMax=1536M", "MemorySwapMax=0", "CPUQuota=40%",
-        "TasksMax=96", "NoNewPrivileges=yes", "@FLEET_MCP_RUNTIME@",
-        "@FLEET_MCP_CONFIG@",
-    ):
-        if required not in body:
-            return {"decision": "BLOCKED",
-                    "blockers": ["Next unit template does not match bounded canary contract"],
+    if not recovery:
+        template = _HERE / "serveros-fleet-example-mcp.service"
+        if not template.is_file():
+            return {"decision": "BLOCKED", "blockers": ["Next unit template missing"],
                     "writes": [], "executes": []}
+        body = template.read_text(encoding="utf-8")
+        for required in (
+            "MemoryMax=1536M", "MemorySwapMax=0", "CPUQuota=40%",
+            "TasksMax=96", "NoNewPrivileges=yes", "@FLEET_MCP_RUNTIME@",
+            "@FLEET_MCP_CONFIG@",
+        ):
+            if required not in body:
+                return {"decision": "BLOCKED",
+                        "blockers": ["Next unit template does not match bounded canary contract"],
+                        "writes": [], "executes": []}
     return {
         "decision": "DRY_RUN_READY",
         "mode": "NEXT_ONLY_RECOVERY" if recovery else "NEXT_CANARY_INSTALL",
@@ -95,7 +96,7 @@ def plan(proposal: dict, command: str) -> dict:
         "unit": UNIT,
         "composition": COMPOSITION,
         "same_as_v1": False,
-        "limits": dict(BUDGET),
+        "limits": dict(BUDGET) if not recovery else None,
         "writes": [], "executes": [],
         "requires": [
             "Next owner authorization and distinct real App/Plugin registration",
