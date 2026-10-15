@@ -6,6 +6,11 @@ on:
       - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
       - 'tests/test_fleet_next_install.py'
       - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'fleet_mcp/runtime_create_policy.py'
+      - 'fleet_mcp/config.py'
+      - 'fleet_mcp/fleet.py'
+      - 'docs/fleet-next-runtime-model-defaults.md'
       - '.github/workflows/fleet-next-isolated-contracts.yml'
   push:
     branches:
@@ -15,6 +20,11 @@ on:
       - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
       - 'tests/test_fleet_next_install.py'
       - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'fleet_mcp/runtime_create_policy.py'
+      - 'fleet_mcp/config.py'
+      - 'fleet_mcp/fleet.py'
+      - 'docs/fleet-next-runtime-model-defaults.md'
       - '.github/workflows/fleet-next-isolated-contracts.yml'
 permissions:
   contents: read
@@ -37,6 +47,8 @@ jobs:
           persist-credentials: false
       - name: Prepare test log
         run: mkdir -p test-output
+      - name: Install bounded Python test dependency
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
       - name: Check Python syntax
         shell: bash
         run: |
@@ -46,6 +58,10 @@ jobs:
             python3 -m py_compile fleet_mcp/deploy/next_install.py
             python3 -m py_compile tests/test_fleet_next_install.py
             python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
+            python3 -m py_compile fleet_mcp/runtime_create_policy.py
+            python3 -m py_compile fleet_mcp/config.py
+            python3 -m py_compile fleet_mcp/fleet.py
+            python3 -m py_compile tests/test_fleet_runtime_create_policy.py
           } 2>&1 | tee test-output/compile.log
       - name: Run dual-stack isolation tests offline
         shell: bash
@@ -54,6 +70,8 @@ jobs:
           {
             python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
             python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_runtime_create_policy.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_create_session_runtime.py' -v
           } 2>&1 | tee test-output/tests.log
       - name: Preserve bounded offline test output
         if: always()
