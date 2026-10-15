@@ -40,8 +40,11 @@ import unittest
 import zipfile
 import zlib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 HERE = ROOT / "integrations" / "fleet-v1-first-install"
 
 _spec = importlib.util.spec_from_file_location(
@@ -65,7 +68,19 @@ def make_png(width: int, height: int) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.hostname}"
+
+
 def observation(url: str = OBSERVED_URL, **overrides) -> dict:
+    """The shape an operator's endpoint receipt must have.
+
+    Every value here is something a person typed. `source: LIVE` is a field, not
+    a measurement, and the builder says so in its own record; this helper exists
+    so the *shape* is checkable, not so the claim is.
+    """
+    base = origin(url)
     record = {
         "schema": builder.ENDPOINT_OBSERVATION_SCHEMA,
         "url": url,
@@ -74,10 +89,14 @@ def observation(url: str = OBSERVED_URL, **overrides) -> dict:
         "reachable": True,
         "tls": {"scheme": "https", "verified": True},
         "discovery": {
-            "protected_resource": {"url": url.replace("/mcp", "/.well-known/oauth-protected-resource"),
+            "protected_resource": {"url": base + "/.well-known/oauth-protected-resource",
                                    "status": 200, "receipt_ref": "evidence/obs/prm"},
-            "authorization_server": {"url": url.replace("/mcp", "/.well-known/oauth-authorization-server"),
-                                     "status": 200, "receipt_ref": "evidence/obs/as"},
+            "authorization_server": {
+                "url": base + "/.well-known/oauth-authorization-server",
+                "status": 200, "receipt_ref": "evidence/obs/as",
+                "issuer": base,
+                "scopes_supported": list(builder.FLEET_SCOPES),
+            },
         },
         "receipt_ref": "evidence/obs/endpoint",
     }
@@ -138,6 +157,24 @@ class Fixture:
 
     def archives(self) -> list[str]:
         return sorted(p.name for p in self.out.glob("*.zip"))
+
+    def retemplate(self, mutate) -> None:
+        """Edit `mcp.template.json` in place, and hand the caller the refusal."""
+        path = self.source / "mcp.template.json"
+        template = json.loads(path.read_text(encoding="utf-8"))
+        mutate(template)
+        path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+
+    def remanifest(self, mutate) -> None:
+        path = self.source / "plugin.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        mutate(manifest)
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    def binding(self, **overrides) -> dict:
+        record = self.build(**overrides)
+        with zipfile.ZipFile(self.out / record["archive"]) as zf:
+            return json.loads(zf.read("mcp.json"))
 
     def close(self) -> None:
         self._tmp.cleanup()
@@ -507,6 +544,319 @@ class TheStatusSetIsClosed(unittest.TestCase):
                      "APP_BINDING_UNREGISTERED"):
             with self.subTest(name=name):
                 self.assertIn(name, builder.STATUSES)
+
+
+class ThePresentationFieldsLiveWhereTheClientReadsThem(unittest.TestCase):
+    """A slot declared under our own namespace asks nobody in particular.
+
+    This is the whole of the P0 branding finding: the approved artwork existed,
+    the digest was pinned, and the declaration was in a namespace the client is
+    not documented to read — so the package looked complete and had not asked
+    for the image to be rendered at all.
+    """
+
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def test_the_openai_interface_block_is_required(self) -> None:
+        self.f.remanifest(lambda m: m["extensions"].pop("com.openai"))
+        refusal = self.f.refusal()
+        self.assertEqual(refusal.status, builder.SOURCE_REFUSED)
+        self.assertIn("extensions.com.openai", refusal.detail)
+
+    def test_the_presentation_fields_must_be_nested_under_interface(self) -> None:
+        def flatten(manifest):
+            block = manifest["extensions"]["com.openai"]
+            block.update(block.pop("interface"))
+
+        self.f.remanifest(flatten)
+        self.assertIn("interface", self.f.refusal().detail)
+
+    def test_the_two_icon_paths_are_the_shipped_asset_paths(self) -> None:
+        record = self.f.build()
+        self.assertEqual(record["presentation"],
+                         {"composerIcon": "./assets/composerIcon.png",
+                          "logo": "./assets/logo.png"})
+
+    def test_a_path_that_is_not_the_locked_one_is_refused(self) -> None:
+        def move(manifest):
+            manifest["extensions"]["com.openai"]["interface"]["logo"] = "./assets/other.png"
+
+        self.f.remanifest(move)
+        self.assertIn("different image", self.f.refusal().detail)
+
+    def test_a_relative_path_that_escapes_the_plugin_is_refused(self) -> None:
+        # Refused as an escape rather than as a mismatch: the two have different
+        # fixes, and the path has to resolve before a digest is worth discussing.
+        self.f.remanifest(
+            lambda m: m["extensions"]["com.openai"]["interface"].update(
+                {"logo": "./../shared/logo.png"}))
+        self.assertIn("does not escape the plugin", self.f.refusal().detail)
+
+    def test_the_display_name_is_part_of_the_approved_release(self) -> None:
+        self.f.remanifest(
+            lambda m: m["extensions"]["com.openai"]["interface"].update(
+                {"displayName": "Fleet"}))
+        self.assertIn("approved name", self.f.refusal().detail)
+
+    def test_both_slots_are_required(self) -> None:
+        for field in ("composerIcon", "logo", "displayName"):
+            with self.subTest(field=field):
+                f = Fixture()
+                self.addCleanup(f.close)
+                f.remanifest(
+                    lambda m, field=field: m["extensions"]["com.openai"]["interface"].pop(field))
+                self.assertEqual(f.refusal().status, builder.SOURCE_REFUSED)
+
+    def test_the_custom_namespace_may_not_repeat_a_presentation_field(self) -> None:
+        self.f.remanifest(
+            lambda m: m["extensions"]["com.serveros.fleet-ingress"].update(
+                {"composerIcon": "./assets/composerIcon.png"}))
+        self.assertIn("repeats", self.f.refusal().detail)
+
+    def test_the_custom_namespace_is_still_allowed_for_provenance(self) -> None:
+        record = self.f.build()
+        self.assertEqual(record["skills"].__len__(), 5)
+
+    def test_passing_this_does_not_claim_a_render(self) -> None:
+        """The check is about the manifest; rendering is a client behaviour."""
+        manifest = json.loads((self.f.source / "plugin.json").read_text(encoding="utf-8"))
+        note = manifest["extensions"]["com.openai"]["note"]
+        self.assertIn("not a claim that a client renders", note)
+
+
+class TheBindingDeclaresTheAuthTheServerOffers(unittest.TestCase):
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def _auth(self, mutate) -> dict:
+        self.f.retemplate(lambda t: mutate(
+            t["mcpServers"]["serveros-fleet"]["extensions"]["com.openai"]["auth"]))
+        return self.f.binding()["mcpServers"]["serveros-fleet"]["extensions"]["com.openai"]["auth"]
+
+    def _refuse(self, needle: str, mutate) -> None:
+        """Apply the mutation to the template, then assert the refusal names it."""
+        self.f.retemplate(lambda t: mutate(
+            t["mcpServers"]["serveros-fleet"]["extensions"]["com.openai"]["auth"]))
+        refusal = self.f.refusal()
+        self.assertEqual(refusal.status, builder.SOURCE_REFUSED)
+        self.assertIn(needle, refusal.detail)
+
+    def test_the_shipped_binding_declares_oauth_with_dynamic_registration(self) -> None:
+        server = self.f.binding()["mcpServers"]["serveros-fleet"]
+        auth = server["extensions"]["com.openai"]["auth"]
+        self.assertEqual(auth["type"], "oauth")
+        self.assertEqual(auth["client"], {"mode": "dcr"})
+
+    def test_no_client_id_is_invented_before_registration(self) -> None:
+        auth = self.f.binding()["mcpServers"]["serveros-fleet"]["extensions"]["com.openai"]["auth"]
+        self.assertNotIn("clientId", json.dumps(auth))
+
+    def test_the_binding_top_level_is_exactly_the_two_documented_keys(self) -> None:
+        binding = self.f.binding()
+        self.assertEqual(set(binding), {"$schema", "mcpServers"})
+
+    def test_the_auth_block_is_required(self) -> None:
+        self.f.retemplate(lambda t: t["mcpServers"]["serveros-fleet"]["extensions"]["com.openai"].pop("auth"))
+        self.assertIn("declares no `auth`", self.f.refusal().detail)
+
+    def test_an_auth_block_under_another_namespace_is_refused(self) -> None:
+        self.f.retemplate(
+            lambda t: t["mcpServers"]["serveros-fleet"]["extensions"].update(
+                {"com.example": t["mcpServers"]["serveros-fleet"]["extensions"].pop("com.openai")}))
+        self.assertIn("com.openai", self.f.refusal().detail)
+
+    def test_the_documented_but_wrong_auth_types_are_refused_by_name(self) -> None:
+        for auth_type in ("none", "api_key", "mixed"):
+            with self.subTest(auth_type=auth_type):
+                f = Fixture()
+                self.addCleanup(f.close)
+                f.retemplate(lambda t, auth_type=auth_type: t["mcpServers"]["serveros-fleet"]
+                             ["extensions"]["com.openai"]["auth"].update({"type": auth_type}))
+                refusal = f.refusal()
+                self.assertEqual(refusal.status, builder.SOURCE_REFUSED)
+                self.assertIn(auth_type, refusal.detail)
+
+    def test_an_undocumented_auth_type_is_refused(self) -> None:
+        self._refuse("not one of the documented", lambda a: a.update({"type": "hmac"}))
+
+    def test_an_unknown_auth_field_is_refused(self) -> None:
+        self._refuse("does not define", lambda a: a.update({"resource2": "x"}))
+
+    def test_a_client_id_is_refused(self) -> None:
+        self._refuse("names a `clientId`",
+                     lambda a: a["client"].update({"clientId": "invented"}))
+
+    def test_client_credentials_are_refused_at_any_depth(self) -> None:
+        for key in ("clientSecret", "client_secret", "secret", "password"):
+            with self.subTest(key=key):
+                f = Fixture()
+                self.addCleanup(f.close)
+                f.retemplate(lambda t, key=key: t["mcpServers"]["serveros-fleet"]
+                             ["extensions"]["com.openai"]["auth"]["client"].update({key: "s3cret"}))
+                self.assertIn("credential", f.refusal().detail)
+
+    def test_provided_and_cimd_modes_are_refused(self) -> None:
+        for mode in ("provided", "cimd"):
+            with self.subTest(mode=mode):
+                f = Fixture()
+                self.addCleanup(f.close)
+                f.retemplate(lambda t, mode=mode: t["mcpServers"]["serveros-fleet"]
+                             ["extensions"]["com.openai"]["auth"]["client"].update({"mode": mode}))
+                refusal = f.refusal()
+                self.assertIn(mode, refusal.detail)
+
+    def test_an_unknown_mode_is_refused(self) -> None:
+        self._refuse("documented", lambda a: a["client"].update({"mode": "magic"}))
+
+    def test_a_secret_bearing_token_auth_method_is_refused(self) -> None:
+        for method in ("client_secret_basic", "client_secret_post"):
+            with self.subTest(method=method):
+                f = Fixture()
+                self.addCleanup(f.close)
+                f.retemplate(lambda t, method=method: t["mcpServers"]["serveros-fleet"]
+                             ["extensions"]["com.openai"]["auth"]["client"].update(
+                                 {"tokenEndpointAuthMethod": method}))
+                self.assertIn("shared secret", f.refusal().detail)
+
+    def test_a_secretless_token_auth_method_is_allowed(self) -> None:
+        auth = self._auth(lambda a: a["client"].update({"tokenEndpointAuthMethod": "none"}))
+        self.assertEqual(auth["client"]["tokenEndpointAuthMethod"], "none")
+
+    def test_legacy_bearer_headers_are_still_refused(self) -> None:
+        self.f.retemplate(lambda t: t["mcpServers"]["serveros-fleet"].update(
+            {"headers": {"Authorization": "Bearer placeholder"}}))
+        self.assertIn("declares headers", self.f.refusal().detail)
+
+    def test_an_auth_url_on_another_origin_is_refused(self) -> None:
+        self._refuse("own origin", lambda a: a.update(
+            {"registrationUrl": "https://elsewhere.example.invalid/register"}))
+
+    def test_a_same_origin_registration_url_is_allowed(self) -> None:
+        auth = self._auth(lambda a: a.update(
+            {"registrationUrl": origin(OBSERVED_URL) + "/register"}))
+        self.assertTrue(auth["registrationUrl"].endswith("/register"))
+
+    def test_an_auth_url_may_not_carry_a_credential_or_query(self) -> None:
+        for bad in ("https://u:p@" + urlsplit(OBSERVED_URL).hostname + "/register",
+                    origin(OBSERVED_URL) + "/register?code=abc",
+                    origin(OBSERVED_URL) + "/register#frag",
+                    "http://" + urlsplit(OBSERVED_URL).hostname + "/register"):
+            with self.subTest(bad=bad):
+                self._refuse("absolute HTTPS URL", lambda a, bad=bad: a.update({"registrationUrl": bad}))
+
+    def test_a_scope_list_outside_the_fleet_scopes_is_refused(self) -> None:
+        self._refuse("does not mint",
+                     lambda a: a.update({"baseScopes": ["fleet:read", "fleet:admin"]}))
+
+    def test_a_scope_list_inside_the_fleet_scopes_is_allowed(self) -> None:
+        auth = self._auth(lambda a: a.update({"baseScopes": ["fleet:read", "fleet:send"]}))
+        self.assertEqual(auth["baseScopes"], ["fleet:read", "fleet:send"])
+
+    def test_an_ill_formed_scope_token_is_refused(self) -> None:
+        for bad in (["read"], ["fleet:"], ["fleet:read", ""]):
+            with self.subTest(bad=bad):
+                self._refuse("scope token", lambda a, bad=bad: a.update({"baseScopes": bad}))
+
+    def test_an_empty_scope_list_is_refused(self) -> None:
+        self._refuse("non-empty list", lambda a: a.update({"defaultScopes": []}))
+
+    def test_a_bare_scope_string_is_refused_rather_than_wrapped(self) -> None:
+        # A string is not a one-element list, and reading it as one is how a
+        # typo becomes a declaration.
+        self._refuse("non-empty list", lambda a: a.update({"baseScopes": "fleet:read"}))
+
+
+class TheObservationMustBeInternallyConsistent(unittest.TestCase):
+    """The receipt is an operator's claim; it must at least not contradict itself."""
+
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def _blocked(self, record: dict) -> str:
+        path = self.f.root / "mutated.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        refusal = self.f.refusal(observation=path)
+        self.assertEqual(refusal.status, builder.BLOCKED_MCP_ENDPOINT)
+        return refusal.detail
+
+    def test_discovery_on_another_origin_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["protected_resource"]["url"] = \
+            "https://other.tail3d8b76.ts.net/.well-known/oauth-protected-resource"
+        self.assertIn("ingress's own", self._blocked(record))
+
+    def test_a_discovery_url_with_a_credential_component_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"]["url"] = \
+            "https://u:p@" + urlsplit(OBSERVED_URL).hostname + "/.well-known/oauth-authorization-server"
+        self.assertIn("credential component", self._blocked(record))
+
+    def test_the_issuer_must_be_the_endpoints_origin(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"]["issuer"] = "https://elsewhere.example.invalid"
+        self.assertIn("must be the pair that was observed together", self._blocked(record))
+
+    def test_a_missing_issuer_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"].pop("issuer")
+        self.assertIn("names no absolute HTTPS issuer", self._blocked(record))
+
+    def test_an_issuer_with_a_query_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"]["issuer"] = origin(OBSERVED_URL) + "/?x=1"
+        self.assertIn("credential component", self._blocked(record))
+
+    def test_the_six_fleet_scopes_must_be_advertised(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"]["scopes_supported"] = ["fleet:read", "fleet:send"]
+        detail = self._blocked(record)
+        self.assertIn("does not advertise", detail)
+        self.assertIn("fleet:create", detail)
+
+    def test_a_missing_scopes_list_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"].pop("scopes_supported")
+        self.assertIn("scopes_supported", self._blocked(record))
+
+    def test_an_ill_formed_scope_is_refused(self) -> None:
+        record = observation()
+        record["discovery"]["authorization_server"]["scopes_supported"] = \
+            list(builder.FLEET_SCOPES) + ["read"]
+        self.assertIn("scopes_supported", self._blocked(record))
+
+
+class TheReceiptIsNotAProbe(unittest.TestCase):
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def test_the_record_says_what_the_endpoint_evidence_is(self) -> None:
+        record = self.f.build()
+        self.assertEqual(record["endpoint_evidence"], "OPERATOR_SUPPLIED_RECEIPT")
+        self.assertFalse(record["endpoint_probe_performed_by_this_tool"])
+
+    def test_the_record_does_not_describe_the_manifest_as_live(self) -> None:
+        record = self.f.build()
+        self.assertIn("not a", record["warning"])
+        self.assertIn("probe this tool performed", record["warning"])
+
+    def test_the_six_scopes_still_match_the_surface_that_mints_them(self) -> None:
+        """Named once here, asserted against `fleet_mcp.scopes` rather than
+        trusted: a scope added to the surface must fail this build."""
+        from fleet_mcp import scopes
+
+        self.assertEqual(tuple(builder.FLEET_SCOPES), tuple(scopes.IMPLEMENTED_SCOPES))
+        self.assertEqual(set(builder.FLEET_SCOPES), set(scopes.ALLOWED_SCOPES))
+
+    def test_the_builder_has_no_network_or_creator_path(self) -> None:
+        source = (HERE / "build_first_install.py").read_text(encoding="utf-8")
+        for forbidden in ("urllib", "requests", "socket", "http.client", "subprocess"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(f"import {forbidden}", source)
 
 
 class TheRepositorysOwnArtifactsStayConsistent(unittest.TestCase):
