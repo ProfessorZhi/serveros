@@ -9,12 +9,12 @@ def snapshot():
         'schema': SCHEMA,
         'hosts': [{
             'device_ref': 'device:tokyo', 'sampled_at': 100, 'source': 'LIVE',
-            'memory_psi_full_avg10': 0, 'swap_out_mib_s': 0,
+            'reachable': True, 'memory_psi_full_avg10': 0, 'swap_out_mib_s': 0,
             'blocked_tasks': 0, 'swap_used_percent': 100.0,
         }],
         'runtimes': [{
             'device_ref': 'device:tokyo', 'runtime_id': 'claude-vince-1',
-            'owner_approved': True, 'source': 'LIVE', 'sampled_at': 100,
+            'owner_approved': True, 'source': 'LIVE', 'reachable': True, 'sampled_at': 100,
             'running_sessions': 0, 'max_sessions': 1,
         }],
     }
@@ -57,7 +57,7 @@ class HealthAdmission(unittest.TestCase):
         row['hosts'][0]['memory_psi_full_avg10'] = 74
         row['runtimes'].append({
             'device_ref': 'device:windows', 'runtime_id': 'codex-win', 'source': 'LIVE',
-            'owner_approved': True, 'sampled_at': 100,
+            'owner_approved': True, 'reachable': True, 'sampled_at': 100,
             'running_sessions': 0, 'max_sessions': 1,
         })
         actual = assess(row, now=110)['admissions']
@@ -67,6 +67,16 @@ class HealthAdmission(unittest.TestCase):
     def test_duplicate_host_identity_fails_closed(self):
         row = snapshot()
         row['hosts'].append(copy.deepcopy(row['hosts'][0]))
+        self.assertEqual(assess(row, now=110)['admissions'][0]['decision'], 'NO_GO')
+
+    def test_disconnected_runtime_is_not_admitted(self):
+        row = snapshot()
+        row['runtimes'][0]['reachable'] = False
+        self.assertEqual(assess(row, now=110)['admissions'][0]['decision'], 'NO_GO')
+
+    def test_disconnected_host_is_not_admitted(self):
+        row = snapshot()
+        row['hosts'][0]['reachable'] = False
         self.assertEqual(assess(row, now=110)['admissions'][0]['decision'], 'NO_GO')
 
     def test_never_executes_side_effect(self):
