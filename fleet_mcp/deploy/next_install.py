@@ -122,9 +122,10 @@ def plan(proposal: dict, command: str) -> dict:
              "remain unassigned only for this non-starting bootstrap stage"
              if bootstrap else
              "Next owner authorization and distinct real App/Plugin registration"),
-            ("An INACTIVE Next unit, a clean `--source`, and a revision that "
-             "differs from the one `current` already names; the revision being "
-             "replaced is kept as `previous`"
+            ("An INACTIVE and DISABLED Next unit, a clean `--source`, and a "
+             "revision that differs from the one `current` already names; an "
+             "explicit `--revision` must restate the clean HEAD byte-for-byte; "
+             "the revision being replaced is kept as `previous`"
              if refresh else
              "Short live memory-PSI/swap-IO probe before Next start"),
             "systemctl --user show confirms effective cgroup limits after start",
@@ -256,14 +257,26 @@ def _source_state(source: str) -> tuple[str | None, str | None]:
 
 
 def _next_unit_state(mod) -> tuple[str | None, str | None]:
-    """The Next unit's activation state, or why it may not be refreshed.
+    """The Next unit's activation AND enablement state, or why it may not be refreshed.
 
-    Only `inactive` may be refreshed. `active` is refused because repointing a
+    Two facts are required and they are different facts; neither implies the
+    other.
+
+    `is-active` must be `inactive`. `active` is refused because repointing a
     running service's revision without restarting it is the one change a
     non-starting flow must never make. `failed` is refused for a different
     reason: a unit that already tried and did not come up is a fact an operator
     has to read, and silently repointing it would overwrite the evidence.
-    Anything unreadable is refused too — an unknown state is not a safe one.
+
+    `is-enabled` must be `disabled`. This is NOT implied by `inactive` — a unit
+    can be inactive and enabled at the same time — and the account that runs
+    Next has `Linger=yes`, so an ENABLED unit is started by the user manager at
+    boot/login with no further approval. Repointing it would therefore run the
+    moved revision the next time the manager restarts, which is exactly the
+    activation this non-starting flow exists to avoid.
+
+    Anything unreadable, and anything that is not the exact expected string, is
+    refused: an unknown state is not a safe one, and this guard fails closed.
     """
     try:
         result = mod.systemctl("is-active", UNIT, check=False)
@@ -274,6 +287,18 @@ def _next_unit_state(mod) -> tuple[str | None, str | None]:
     if state != "inactive":
         return None, (f"Next unit is {state or 'unknown'!r}, not 'inactive'; "
                       f"only an inactive Next may be refreshed without starting it")
+    try:
+        enabled = mod.systemctl("is-enabled", UNIT, check=False)
+    except (OSError, RuntimeError) as exc:
+        return None, ("Next unit enablement could not be read ("
+                      + type(exc).__name__ + "); refusing to refresh blind")
+    enablement = (enabled.stdout or "").strip()
+    if enablement != "disabled":
+        return None, (
+            f"Next unit is {enablement or 'unknown'!r}, not 'disabled'; an "
+            f"enabled unit is started by the user manager at boot/login "
+            f"(Linger is on for this account), so the repointed revision would "
+            f"run without a separate activation approval")
     return state, None
 
 
@@ -463,10 +488,24 @@ def main(argv: list[str] | None = None) -> int:
             revision, problem = _source_state(args.source)
             if problem:
                 raise Refused(problem)
+            # An explicit `--revision` may only RESTATE the revision the clean
+            # source actually is. It is not an override: a caller-chosen SHA
+            # would stamp these bytes with a name `HEAD` does not give them,
+            # which is the one thing a revision name must never do. A mismatch
+            # is refused rather than silently ignored — ignoring it would
+            # publish a revision under a name the caller did not ask for.
+            if args.revision and args.revision != revision:
+                # Both values are printed in full: a short SHA is refused, and
+                # truncating them would print two identical strings for a
+                # refusal that is precisely about them not being identical.
+                raise Refused(
+                    f"--revision {args.revision!r} is not the clean source's HEAD "
+                    f"{revision!r}; an explicit --revision may only restate HEAD "
+                    f"byte-for-byte, so a short or different SHA is refused")
             # `install.py` derives the revision the same way; mirroring it is
             # what makes this a statement about the revision that will actually
             # be written rather than about a different one.
-            target = args.revision or revision
+            target = revision
             current_rev = prior[0].name.rsplit("@", 1)[-1]
             if target[:7] == current_rev:
                 raise Refused(
