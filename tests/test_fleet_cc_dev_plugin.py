@@ -191,5 +191,79 @@ class Generated(unittest.TestCase):
         self.assertFalse(inside.exists())
 
 
+class TheV1SelfHealingBoundary(unittest.TestCase):
+    """V1 has bounded self-healing; it is not a V2 capability.
+
+    An earlier revision of `fleet-safety-boundaries` said self-healing was V2,
+    which is wrong on the product: V1 closes a recovery loop over the resource
+    monitoring plane for the **approved services** on a device, with the owner's
+    authority and a list of bounds. "Production recovery needs approval" is a
+    gate on acting, not a statement that the capability is absent — and a Skill
+    that answers otherwise teaches the assistant to refuse work V1 supports.
+
+    These are offline assertions over the source text: they pin the *writing*,
+    not a model's behaviour. Behaviour was measured once, wrongly, and the
+    corrected text has not been re-run against a model.
+    """
+
+    SAFETY = SHARED_SKILLS / "fleet-safety-boundaries" / "SKILL.md"
+    EVIDENCE = SHARED_SKILLS / "fleet-evidence-review" / "SKILL.md"
+    README = HERE / "README.md"
+
+    def safety_text(self) -> str:
+        return self.SAFETY.read_text(encoding="utf-8")
+
+    def test_the_bounds_of_v1_self_healing_are_all_named(self) -> None:
+        body = self.safety_text().lower()
+        for bound in ("scope", "owner", "allowlist", "budget", "backoff",
+                      "busy agent", "manually disabled", "needslogin",
+                      "same-unit single writer"):
+            with self.subTest(bound=bound):
+                self.assertIn(bound, body, f"the {bound!r} bound is not written down")
+
+    def test_the_named_services_are_the_approved_ones(self) -> None:
+        body = self.safety_text().lower()
+        for service in ("cloudcli", "tailscale", "connector"):
+            with self.subTest(service=service):
+                self.assertIn(service, body)
+
+    def test_the_text_never_calls_self_healing_v2(self) -> None:
+        """The exact regression: the capability moved into V2 in prose."""
+        body = self.safety_text().lower()
+        self.assertNotIn("automatic self-healing is v2", body)
+        self.assertNotIn("self-healing is v2", body)
+        self.assertIn("bounded self-healing is v1", body)
+
+    def test_testing_the_loop_is_separated_from_production_recovery(self) -> None:
+        body = self.safety_text().lower()
+        self.assertIn("toy service", body)
+        self.assertIn("production recovery", body)
+
+    def test_the_monitoring_skill_points_at_the_real_boundary(self) -> None:
+        body = self.EVIDENCE.read_text(encoding="utf-8").lower()
+        self.assertIn("owner-authorised loop", body)
+        self.assertNotIn("must *not* perform", body)
+
+    def test_the_readme_records_self_heal_as_not_run_not_forbidden(self) -> None:
+        body = self.README.read_text(encoding="utf-8")
+        self.assertIn("`SELF_HEAL_VERIFIED` | **NOT_RUN**", body)
+        self.assertNotIn("automatic self-healing is V2", body)
+
+    def test_the_readme_withdraws_the_earlier_probes_self_heal_answer(self) -> None:
+        body = self.README.read_text(encoding="utf-8")
+        self.assertIn("FAILED_REQUIREMENT", body)
+        self.assertIn("pending re-test", body)
+
+    def test_the_readme_separates_load_evidence_from_mcp_enumeration(self) -> None:
+        body = self.README.read_text(encoding="utf-8")
+        self.assertIn("package-load evidence", body)
+        self.assertIn("not an MCP\nenumeration", body)
+        self.assertIn("read-only smoke profile", body)
+
+    def test_the_readme_keeps_the_over_limit_model_call_on_the_record(self) -> None:
+        body = self.README.read_text(encoding="utf-8")
+        self.assertIn("Two** restricted model calls were made, not one", body)
+
+
 if __name__ == "__main__":
     unittest.main()

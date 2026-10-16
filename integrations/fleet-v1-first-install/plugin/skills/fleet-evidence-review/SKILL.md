@@ -84,5 +84,7 @@ dispatch, and before accepting a result.
   obstacle to route around.
 
 A reading tells you what is true, not what you may do. It authorises nothing —
-in particular it does not authorise recovery. `fleet-safety-boundaries` is
-where the self-healing this surface must *not* perform is written down.
+in particular it does not authorise recovery. Recovery is its own bounded,
+owner-authorised loop; `fleet-safety-boundaries` is where that loop's allowlist,
+budget and backoff — and the recovery that sits on no allowlist at all — are
+written down.

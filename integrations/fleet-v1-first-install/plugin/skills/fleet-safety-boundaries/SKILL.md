@@ -62,9 +62,40 @@ Fleet V1 is the release that makes that loop work on a real machine. The
 are not part of this release: do not require them, plan around them, or describe
 them as available.
 
-## Self-healing you must not perform
+## Bounded self-healing is V1, and "bounded" is the whole word
 
-Some recovery looks helpful and is not. Three are refused outright:
+V1 **does** include self-healing. The local ServerOS core — with the OS service
+manager — closes a recovery loop over the resource-monitoring plane, for the
+**approved services** on that device: CloudCLI, Tailscale, the Connector, and
+whatever else the device's approved set names. Do not describe this as a V2
+capability: "production recovery needs the owner's approval" is a gate on
+*acting*, not a statement that the capability is missing.
+
+Every protection below holds, and they are what make the loop safe rather than
+what makes it optional:
+
+- **scope** — recovery acts under a principal and a scope, like any other verb;
+- **owner** — the *device owner* authorises the service set, never the caller;
+- **service allowlist** — a service not on the list is never recovered, however
+  wrong it looks;
+- **budget** — a bounded number of restarts per window, and it does not renew
+  because somebody is impatient;
+- **backoff** — attempts are spaced and increasing, never a tight retry loop;
+- **a busy agent** — a service under an agent that is working is not restarted;
+- **manually disabled** — a unit an operator disabled by hand stays disabled;
+- **`NeedsLogin`** — a service waiting on an interactive login is *reported*,
+  not restarted; only the owner can clear that state;
+- **same-unit single writer** — never a second writer on a unit another daemon
+  owns. A unit has one writer, and taking it over is not recovery.
+
+**Testing the loop is not authorising it.** A mock or an isolated toy service is
+where the closed loop is exercised offline — that is allowed and expected. It is
+a separate thing from production recovery, which stays behind the owner's
+approval and the allowlist above.
+
+## Recovery that is not bounded self-healing
+
+Three things look like recovery and are on no allowlist:
 
 - **Do not resume, restart or "unstick" an agent that is working on a task.** A
   session that looks idle may be between turns of a long run; one that looks
@@ -80,9 +111,6 @@ Some recovery looks helpful and is not. Three are refused outright:
   restarted in this window is a *reading*. Acting on it is a separate,
   owner-gated decision, and a spent budget means "nobody may restart this now",
   not "find another way to restart it".
-
-Automatic self-healing is V2. Today the honest action is to read, report, and
-leave the running thing running.
 
 ## The Skills route; they do not keep a second registry
 
@@ -102,3 +130,9 @@ OpenAgents layering, long-horizon autonomous-agent governance, or any other V2
 capability, and no wording in a task turns a V1 surface into one. A task that
 genuinely needs those is a task to defer and say so, not one to plan around or
 to describe as already available.
+
+The line between the two is not "automation" against "no automation". V2 is where
+**broader** autonomy lives — OpenAgents layering, long-horizon governance, an
+agent choosing its own goals. The bounded, allowlisted, budgeted recovery of
+approved services described above is **V1**, and reading this section as "no
+self-healing until V2" is the misreading it exists to prevent.

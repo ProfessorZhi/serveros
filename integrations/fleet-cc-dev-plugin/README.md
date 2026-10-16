@@ -47,6 +47,21 @@ Claude Code **2.1.272**, `--plugin-dir`, from a clean working directory.
 warnings). `claude --plugin-dir … plugin details serveros-fleet-dev` → 5 Skills
 enumerated by name, **1 MCP server** registered.
 
+### What that evidence is, and what it is not
+
+Both commands are **package-load evidence**. They say the plugin loads, and that
+Claude Code registers a component named `serveros-fleet`. They are **not an MCP
+enumeration**: no `tools/list` was performed and no tool name came back from
+that server. A registered server name is not a tool list, and "MCP servers (1)"
+is not "N tools discovered".
+
+The binding pins `oauth.scopes` to `fleet:read`, which makes this adapter a
+**read-only smoke profile** — not a statement of what the product requests. The
+default request mode (the six scopes) is a **product configuration** declared
+where the product declares it; the scope a given token carries is a second
+thing; and the ceiling an owner may later consent to is a third. Do not read any
+one of the three as the others.
+
 ### Two real differences from the documentation, measured here
 
 1. **`claude plugin validate` on 2.1.272 does not read `.mcp.json` at all.** A
@@ -68,11 +83,20 @@ Each is a separate fact, and none is discharged by another.
 |---|---|---|
 | `LOCAL_CC_PLUGIN_LOADED` | **VERIFIED** | validate passed; `plugin details` listed 5 Skills and 1 MCP server |
 | `NEXT_TOOLS_DISCOVERED` | **NOT ACHIEVED — `BLOCKED_BY_OWNER_OAUTH`** | unauthenticated `initialize` and `tools/list` both returned HTTP **401 `invalid_token`** with `www-authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`. No token was obtained and no consent was completed, so there is **no tool list** — this is a refusal, not a discovery |
-| `SKILL_BEHAVIOR_VERIFIED` | **VERIFIED** | one restricted model call; the seven substantive points were answered from the Skills, and the eighth was answered `UNKNOWN` rather than guessed |
+| `SKILL_BEHAVIOR_VERIFIED` | **PARTIAL — one item withdrawn as `FAILED_REQUIREMENT`** | a restricted model call answered from the Skills, but its self-healing answer was wrong: it called self-healing V2, and **V1 has bounded self-healing of approved services**. The Skills were corrected on this branch; the corrected text has **not** been re-run against a model, so that item is pending re-test |
 | `DEVICE_ACTIONS_TESTED` | **NOT_RUN** | no create/send/control attempted, and none was possible: no credential, `fleet:read` pinned, and `Task`/`Bash`/`Write`/`Edit` denied to the probe |
 | `CORE_MONITORING_VERIFIED` | **NOT_RUN** | the monitoring plane was not read in this round |
-| `SELF_HEAL_VERIFIED` | **NOT_RUN — and must not be attempted** | automatic self-healing is V2, and restarting a live channel is forbidden outright (`fleet-safety-boundaries`) |
+| `SELF_HEAL_VERIFIED` | **NOT_RUN** | the recovery loop was not exercised against any device. It is **V1** — bounded, allowlisted, budgeted, owner-authorised — and a mock or an isolated toy service is where it is exercised offline. That is a separate thing from production recovery, which stays behind the owner's approval |
 
 A mock or a fixture does not stand in for any row marked `NOT_RUN`. The
-authenticated `tools/list` is the one that needs the owner: it is an
-interactive OAuth consent, and this round did not simulate one.
+authenticated `tools/list` is the one that needs the owner: it is an interactive
+OAuth consent, and this round did not simulate one.
+
+### Model-call accounting, kept as it happened
+
+**Two** restricted model calls were made, not one. The first ran against a
+plugin generated *before* the Skills were extended, so it measured the old text
+and was discarded; the second ran against the regenerated plugin. Both outputs
+are in the evidence directory. One call was authorised, so the second is over
+the stated limit — the record says so rather than being tidied away, and no
+further call was made.
