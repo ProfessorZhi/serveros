@@ -33,11 +33,17 @@ restarted by any of it.**
 | path | what |
 |---|---|
 | `contract/desired-state.v1.md` | the manifest contract, and why every rule exists |
+| `contract/bounded-recovery.v1.md` | the admission gate, its refusal precedence, and the single-writer lease |
+| `contract/service-readiness.v1.md` | the closed probe vocabulary, the readiness rule, and offline local recovery |
+| `contract/generation-fence.v1.md` | the generation fence the resident loop is expected to persist |
 | `examples/desired-state.example.json` | one worked manifest — parsed by a test, so it cannot rot |
 | `include/supervisor/model.hpp` | the typed vocabulary: `Desired`, `Active`, `Observed`, `RecoveryPolicy`, `Refusal` |
 | `include/supervisor/manifest.hpp`, `src/manifest.cpp` | the strict reader |
 | `include/supervisor/plan.hpp`, `src/plan.cpp` | the **pure** planner |
 | `include/supervisor/recovery.hpp`, `src/recovery.cpp` | budget, backoff ladder, circuit breaker, and their persisted form |
+| `include/supervisor/admission.hpp`, `src/admission.cpp` | the last gate before a verb: the facts a pure planner cannot see — install state, the link, an agent mid-task, the service's own runtime, and whether this writer holds the lease |
+| `include/supervisor/lease.hpp`, `src/lease.cpp` | the single-writer lease: `flock(2)`, non-blocking, released by the kernel on exit |
+| `include/supervisor/probe.hpp`, `src/probe.cpp` | service-level readiness: a declared `unix-socket-connect` / `tcp-connect` probe, so `READY` means the SERVICE answers rather than that systemd calls the unit active |
 | `include/supervisor/provider.hpp`, `src/provider.cpp` | the provider interface and the exact-id allowlist |
 | `include/supervisor/systemd_user.hpp`, `src/systemd_user.cpp` | the `systemctl --user` adapter |
 | `src/proc.hpp`, `src/proc.cpp` | the bounded, shell-free argv runner |
@@ -184,13 +190,18 @@ attempted here.
 installed**. Two of its lines are the whole safety argument:
 
 ```
-ExecStart=@SERVEROS_NATIVE_CORE_BIN@ --observe --manifest @SERVEROS_NATIVE_CORE_MANIFEST@
+ExecStart=@SERVEROS_NATIVE_CORE_BIN@ --serve --manifest @SERVEROS_NATIVE_CORE_MANIFEST@
 Restart=on-failure
 ```
 
-`--observe`, never `--enable-actions`: turning acting on is a deliberate
-invocation that a reboot cannot make for you — the same rule
-`runtime/serverosd.service` states for `--enable-reconcile`. It carries no
+`--serve`, never `--enable-actions`: observe-only is the **default** in both
+modes and needs no flag, so the one flag that could turn acting on is simply
+absent — and turning it on is a deliberate invocation that a reboot cannot make
+for you, the same rule `runtime/serverosd.service` states for
+`--enable-reconcile`. (The Stage 1 template passed `--observe`, a flag this
+binary has never accepted; that unit would have failed at start with *unknown
+option*, and it was fixed in Stage 2. The line above is what the template
+actually carries.) It carries no
 `ReadWritePaths=`, `ProtectSystem=` or `PrivateTmp=`, because
 `runtime/serverosd.service` measured that each of those puts a user unit in a
 namespace where `/proc` hides an observing process's peers, and a supervisor
@@ -224,11 +235,35 @@ BUILD=/data/home/vince/artifacts/work-items/serveros/native-supervisor-v1-202610
 | `test_sup_status` | the status document parsed back: an unmeasured service is `measured: false` with a reason and **no** `age_seconds`, and no argv, path or token appears anywhere |
 | `test_sup_serve` | the loop driven by an injected clock: two ticks, a stop request honoured between ticks, a failing and a throwing tick survived and counted, an overrunning tick not firing a backlog, a backwards clock counted rather than obeyed, and a 200 ms slice |
 | `test_sup_status_socket` | a **real** socket in a temporary directory with a **real** client: 0600/0700 modes, a peer from another uid refused **before** the status is assembled, an illegal request refused the same way, an over-long request refused, an existing path refused and left untouched, a too-long path refused by name, and a clean shutdown that frees the path |
+| `test_sup_admission` | every way a correct plan becomes a wrong action, each fact supplied as an argument: the tri-state install state, a mask, a link that is down or unread, an agent busy or unread, `NEEDS_LOGIN`, the per-service link opt-out, and the refusal **precedence** asserted as carefully as the outcomes |
+| `test_sup_probe` | the probe vocabulary and the target rules refused by name, the readiness rule (including the case the module exists for — `active` unit, refusing endpoint), and a **real** unix socket and a **real** loopback listener: a listener that answers, a socket nobody is listening on, a path that is not there, a plain file, and a port that closed |
+| `test_sup_lease` | the single-writer lease against **real `flock(2)`** — two file descriptions contending in one process, and a lock dropped when its description closes. *This suite needs a writable `/data/home/vince/artifacts` and is therefore expected to fail on any host that is not Tokyo; it fails loudly and says why rather than passing by accident* |
 
 Every function that could read a clock takes one instead, so no test sleeps and
 no test's answer depends on when it ran. The provider suite is the only one that
 starts a process, and it starts a shell script in a temporary directory — never
 this host's service manager.
+
+### The opt-in REAL_TOY harness
+
+`tests/toy/service_recovery_toy.sh` is **manual and not part of `ctest`**, because
+it creates a real transient `systemd --user` unit and kills it on purpose:
+
+```sh
+bash native/node-core/supervisor/tests/toy/service_recovery_toy.sh ./serveros-native-core
+```
+
+It creates `serveros-c-toy-<pid>.service` bounded by
+`MemoryMax=256M / MemorySwapMax=0 / CPUQuota=25% / TasksMax=16`, proves the
+readiness rule against a **real** socket (`CONNECTED` for a listener that
+answers, `NOT_READY` for a unit that is `active` and serves nothing), injects a
+fault with `SIGKILL` so the unit is `failed`, and then drives the built binary
+with a real manifest, a real `flock` lease and a real link-down fact: `LINK_DOWN`
+refuses the link-dependent service and runs no verb, the same service declared
+`offline_recoverable` is admitted and the verb is attempted, `NEEDS_LOGIN`
+refuses, and a second `flock` on the same path is refused. It removes its unit
+and its scratch directory on every exit path. It proves nothing about
+production: it touches only the unit it created.
 
 ## Not done, and not claimed
 
@@ -240,9 +275,11 @@ this host's service manager.
   Turning acting on for a resident Core is a change of authority and needs its
   own review, not a flag — and it is the one thing that must not happen while
   two supervisors could otherwise manage one unit.
-- **No real recovery has been exercised.** The planner produces verbs and the
-  provider can carry them out, but no test and no run in this stage has started
-  or restarted a unit on any machine. Every provider test uses a **fake
+- **No PRODUCTION recovery has been exercised.** The planner produces verbs and
+  the provider can carry them out, and the opt-in toy harness above really does
+  start, kill and try to bring back a transient unit of its own — but no test and
+  no run in this stage has started, stopped or restarted any service that was not
+  created by that harness. Every `ctest` provider case uses a **fake
   `systemctl`** in a temporary directory.
 - **No Windows SCM adapter.** A separate design, per the section above.
 - **No signature verification.** The receipt records a digest and the Core holds

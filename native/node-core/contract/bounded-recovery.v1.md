@@ -33,9 +33,10 @@ is told to fix.
 | 2 | `MASKED` | the unit is a mask | undoing, with a program, a decision a person made |
 | 3 | `INSTALL_STATE_UNKNOWN` | the install state was not read | guessing in either direction: spending an attempt on a unit that is not there, or refusing one that is running |
 | 4 | `NOT_INSTALLED` | `LoadState` says there is no unit | **the case this exists for** — systemd answers `ActiveState=inactive` for a name it cannot find, so a boot trigger with `start_on_boot` would start nothing and blame the host |
-| 5 | `LINK_DOWN` | no working link, or not established | a restart spent on a network fault, which outlives the fault |
-| 6 | `AGENT_STATE_UNKNOWN` | nobody established whether an agent is using it | the same as 5, in the other direction |
-| 7 | `AGENT_BUSY` | an agent is mid-task | interrupting work that was going to finish. A busy thing is not a broken thing |
+| 5 | `NEEDS_LOGIN` | the **service**'s own runtime says it needs a person | a restart that cannot work, spending the budget and hiding an authorisation only a person can renew |
+| 6 | `LINK_DOWN` | **when the service is `link_dependent`** — no working link, or not established | a restart spent on a network fault, which outlives the fault |
+| 7 | `AGENT_STATE_UNKNOWN` | nobody established whether an agent is using it | the same as 6, in the other direction |
+| 8 | `AGENT_BUSY` | an agent is mid-task | interrupting work that was going to finish. A busy thing is not a broken thing |
 
 `MASKED` is checked **before** the install tri-state on purpose:
 `unit_is_installed` answers `false` for a mask, so checking the tri-state first
@@ -47,6 +48,21 @@ deploy anything.
 cannot establish the link is refused, because assuming "up" is exactly how a
 restart gets spent on a network fault.
 
+Two facts were added to this gate by
+[`service-readiness.v1.md`](./service-readiness.v1.md), and each narrows it:
+
+- **`NEEDS_LOGIN`** — read from the *service*'s own runtime, not the unit's. A
+  tunnel can be `active` and report `NeedsLogin`; a restart brings it back
+  needing login again, so the repair is a person. It is the one fact whose
+  absence is **not** a refusal, because the plan's own readiness probe already
+  decides whether the service is serving.
+- **The link gate is per-service.** `LINK_DOWN` applies only to a service whose
+  recovery depends on the link. A crashed LOCAL tunnel is recovered by starting
+  it, which is a local act, and refusing it would leave exactly the broken thing
+  this Core exists to fix unrestarted, waiting on the network that is the one
+  thing down. A manifest opts a specific service out with
+  `recovery.offline_recoverable: true` — per service, defaulting **off**.
+
 ## 3. Readiness: a process is not a service
 
 `readiness_of(Observed)` returns `READY` only for `Active::Active`, which is
@@ -55,6 +71,14 @@ systemd's own judgement rather than this component's. Everything else —
 version does not know — is `NOT_READY`, and an unreadable observation is
 `UNMEASURED` rather than assumed either way. A supervisor that has just run a
 verb is the one most likely to assume it worked.
+
+`readiness_of` is now the rule for the **default** probe, `systemd-is-active`,
+and no longer the whole story: a manifest may declare a service-level probe
+(`unix-socket-connect`, `tcp-connect`) that asks the SERVICE rather than the
+unit, and `readiness_from_probe` then decides. See
+[`service-readiness.v1.md`](./service-readiness.v1.md) §2–§3. A unit reading that
+says the unit *cannot* be running still outranks a probe that connects, because
+a stale listener can outlive its service.
 
 ## 4. The lease
 
@@ -92,7 +116,8 @@ of an effect.
 - No second registry, no second daemon, no new schema for services.
 - No self-healing beyond the verbs the manifest already declares
   (`allowed_verbs`), and no verb the allowlist does not permit.
-- No link or agent provider: the facts are supplied by the caller today. Reading
-  them from the host is a separate change, and inventing a default for either
+- No link or agent provider: the facts are supplied by the caller today
+  (`--link-state`, `--agent-state`, and now `--service-runtime`). Reading them
+  from the host is a separate change, and inventing a default for any of them
   would reintroduce the permissive-by-omission failure this document exists to
   remove.
