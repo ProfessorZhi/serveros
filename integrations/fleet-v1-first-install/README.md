@@ -53,6 +53,15 @@ and carries a `NOT-INSTALLABLE.md` member. A release-shaped ZIP that cannot be
 installed is the one output that must never exist, because it is the one that
 gets installed.
 
+That fallback is gated by the **same source audit** as the release, and it may
+be refused. `SOURCE-ONLY` is a label, not a permission: the bundle is written to
+a directory an operator uploads and mirrors, so a tree the audit refuses — for a
+credential-shaped file, a committed `mcp.json`, a symlink, a by-product
+directory — produces **no archive at all**, and the reason is printed. A
+fallback that packaged the whole tree minus a `*.pyc` filter would hand back the
+very file whose discovery blocked the release, and would do it under a name that
+reads as safe. `--source-bundle` on such a tree is refused, not narrowed.
+
 ## Building it once the two inputs exist
 
 ```sh
