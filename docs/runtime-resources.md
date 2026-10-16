@@ -11,6 +11,10 @@ failures rather than by review.
 §3  floating dependencies a managed dependency that floats is refused, not tolerated
 ```
 
+## 2026-10-17 per-principal Native Core and service life-cycle clarification
+
+The complete [Fleet V1 topology](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) now requires one local C++ Core per authorized OS principal on Tokyo/Dell/Windows, managed by its **OS service manager**, not by a provider Session. Real CC/Codex Runtime/CloudCLI Sessions may come and go without changing the durable owner of declared local services (Tailscale, Connector, permitted SSH tunnel, RDC), and their accumulated context/permissions cannot be reused as an unguarded shared pool. Service profiles have desired state, true application-level probes, owner/service allowlist and bounded recovery receipts. Windows's local SSH forward on 127.0.0.1:16095 serving Selkies/Claude Web is a potential durable service dependency, but the remote service itself has a distinct owner and its own Core. Only device-host capabilities and owner approvals determine whether it may be recovered. Historical Python serverosd remains production writer until an approved shadow/cutover; never two writers on one unit.
+
 ## 1. Lifecycle ownership
 
 Every managed resource already carries a lifecycle class, and the classes were

@@ -6,6 +6,8 @@
 
 配套合同：[21 项 Ability 要求与验收](ABILITY-REQUIREMENTS.md)、[目录与深度收敛](DIRECTORY-CONVERGENCE.md)、[唯一 CC 执行计划](../plans/plan-01-native-work-environment.md)、[夜间执行委托](../CC-OVERNIGHT-MANDATE.md)。专题按需读取：[调研与 GPT 交接](RESEARCH-EXCHANGE.md)、[LiteLLM 重点来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)。历史差距快照保留在 IMPLEMENTATION-DELTA-20261007.md，不能代替最新状态。
 
+> **2026-10-17 完整 Fleet V1 的设备级补充范围（不改变本文件原 Work/Agent 原理）：** [Fleet V1 设备拓扑](FLEET-V1-TOPOLOGY-OPERATIONS.md) 和 [一次性多线交付计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 负责每台授权 OS principal 的 C++ Native Core、资源/服务/网络/隧道观测、OS 自动启动及受控自愈、CloudCLI 上真实 CC+Codex Runtime、可执行的 Device Abilities 和本地 CC Operator Plugin 验收。Windows 的 127.0.0.1:16095 SSH→Selkies/Claude Web 及 Tailscale/RDC 是独立状态、owner和恢复策略。主要开发与测试在东京/Dell，Windows 不承担通用重型 Agent 工作。三设备实际 Live 和 Codex entitlement 均需真实证据，不由此设计自动成立。适用范围以 [Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) 当前用户确认目标为准。
+
 ## 1. 产品目标与边界
 
 人负责目标、重要取舍、必要的责任性批准和结果接收。Native Agent 选择方法并交付。ServerOS 提供正确的信息、能力、环境、权限、连续性与证据。

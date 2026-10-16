@@ -1,6 +1,7 @@
 # Fleet V1：设备运行底座、统一 MCP、Operator Skills 与工作交付
 
-> **架构与发布范围决策 / DESIGN · 2026-10-16。** 不是已部署验收记录；线上功能、授权与 Runtime 能力以各自现时回读为准。
+> **架构与发布范围决策 / DESIGN · 2026-10-16，2026-10-17 完整 Fleet V1 修订。** 不是已部署验收记录；线上功能、授权与 Runtime 能力以各自现时回读为准。
+> **当前范围与唯一实施清单：** [Complete Fleet V1 Delivery Campaign](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。三设备 Native Core + 网络/服务自愈 + CC/Codex/CloudCLI + Device Ability + 33-tool Fleet + 本地 CC Plugin/Skills，作为最终 Fleet V1 功能范围。旧文档所写 Codex 正式验收在 V2 的结论被此 owner 决策取代；未安装/未授权的能力仍必须明确列为 BLOCKED，不能虚构已接通。开发优先 Tokyo/Dell，Windows 只做最终必需原生验收，ChatGPT App2/插件注册非当前开发关键路径。
 >
 > **V2 Agent 身份、Session 资源化、Assignment、分层委派与消息通信的唯一专题架构**：
 > [Agent Identity, Session Resources and Multi-Agent Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md)。
@@ -52,6 +53,31 @@ V1 **必须**拥有对已明确批准的本用户服务的本机受限恢复能�
 
 服务管理器返回 active 只是 liveness；CloudCLI/MCP、模型或隧道仍须按功能协议重新探测。故障演练先使用隔离 toy service；toy PASS 不等于获准重启真正的 Fleet、CloudCLI 或 Tailscale。
 
+
+### 完整 Fleet V1：每设备 / 每授权 OS principal 的 ServerOS 实例
+
+每台物理机可以有多个受管 OS principal，每个受管 principal 至多有一个生产写入 Core 实例；同一 OS principal 下多个 Claude Code/Codex Session 共享本地资源观测而不共享私密会话历史。Core 必须依赖 OS 服务管理器启动/监督，本机状态健康、受信读回、Credential Owner 和实际工作授权独立计算；Linux 是 per-user systemd / owner policy，Windows 使用可信 SCM/TaskScheduler adapter。迁移期间不能由 C++ Core 和现存 Python serverosd 同时恢复同一 unit。
+
+各节点的最小共同运行层包括：进程和服务生命周期、CPU/RAM/Swap/PSI（支持时）、磁盘/IO、GPU（仅已授权设备）、隧道/网络可用性、服务级 readiness、恢复/拒绝 receipt、Node Connector、CloudCLI、可证实的 Claude Code 与 Codex Runtime/Session、有效 Ability 安装与执行证据。任何无法受信测量的项目保持 UNKNOWN/UNSUPPORTED。
+
+| 节点与实际主责 | V1 节点能力重点 | 不混淆的责任 |
+| --- | --- | --- |
+| Tokyo / vince | Work & Fleet 控制入口、GitHub 集成、Feishu 信息/报告、Linux Core/CC+Codex/CloudCLI、能力注册与发布 | 保护共享机器其他 OS 用户的活跃 Agent/服务，不将同主机存在的账号视为有授权 |
+| Dell A6000 / fjd | Linux Core、受控资源/GPU 遥测、模型/测试/批处理 Device Ability、CC+Codex/CloudCLI 与隔离编译测试 | 未获准不得触动 Strata、GPU 生产任务或借用别人的账号/令牌 |
+| FJPCOS Windows | Windows Core/SCM、Task Scheduler、SSH 转发、Selkies/Claude Web 客户端、Tailscale、Remote Desktop Control、CC+Codex/CloudCLI 与 Windows 专项 Ability | 开发源代码/Mock 优先在 Tokyo/Dell；Windows 只做确认必要的短时原生测试 |
+
+### 每台设备的服务/网络健康与自愈矩阵
+
+| 受管目标 | 需要测量的事实 | 允许的恢复边界 |
+| --- | --- | --- |
+| CloudCLI / CC / Codex / Node Connector | OS principal + service/transport 健康 + Provider Run + 实际账号/模型/PermissionMode | 本机 owner 已授予的精确 unit，重启后重新进行应用协议层 readback；不可自动重新登录 |
+| Tailscale / Fleet 隧道 | 本机 service、链路/路由、鉴权、新鲜度以及与关键远端探测分开 | 网络断开时仅本地 Core 可用现存 standing grant 修复已登记的本地连接服务，不能远端自授权 |
+| SSH 隧道 / Selkies | Windows 声明的浏览器入口 http://127.0.0.1:16095/ → 本地 listener → 受管 SSH forward → 上游 Selkies/Claude Web → 实际交互流 | 16095 是用户给的待验证本地端口，不是已证实的服务名/上游路径；Windows 只处理自己的隧道，远端服务由其实际 host Core 维护 |
+| Remote Desktop Control | 本地 Adapter / transport 状态、可用权限、客户端功能 | 与 Fleet 原生 Session 管理分离，拒绝“可连接＝可操作”，绝不凭工具存在赋予桌面控制 |
+| Core 自己 / 监控管道 | OS manager、版本、采样时间、新鲜度/缺口、恢复 budget/circuit breaker | OS manager 管 Core 本体；Unit ACTIVE 与服务 READY/用户最终可用不是一个状态 |
+
+恢复策略须具有 owner、exact service ID、desired-state、start-on-boot、probe、allowed verbs、TTL、频次/预算、maintenance/manual disable、agent busy 与恢复后验证；无授权保持 observe-only，不尝试重启业务 Agent/模型服务。
+
 ## 3. 三类设备分工，新增设备无需重做 Plugin
 
 | 节点 | 主要职责 | 约束 |
@@ -77,6 +103,10 @@ Windows→东京 Claude Web/noVNC 特殊隧道和 Remote Desktop Control 是 Edg
 **Operator Skills 不等于 Device Abilities**，不能把全部机器内 Skill/CLI 的正文复制到 ChatGPT 里。当前能力权威是 [ability-management](https://github.com/ProfessorZhi/ability-management) 的 manifest；同一 Ability 的来源/Revision 只注册一次，设备 Installation/Ready/Supported 则逐个观测。一个 Agent 是否能调用，先核当前 Ability × Provider × Device Binding × Runtime × Target × Health × Authorization。
 
 声明 33 个工具不等于“可做 33 项写操作”；六个 Scope 只是可能的权限类，与发给此 token 的 Scope、device allow flags、本地 owner floor、Work/OS 协议分别核验。权限、默认模型和 permissionMode 必须区分 requested / resolved / effective；不能因为 CLI 参数包含“default”或某配置文件缺失就声称实际模型是既定 DeepSeek。
+
+**V1 当前的第一个正式客户端验收者是东京本地 Claude Code Fleet Plugin**（一个经真实认证的 MCP Server + 一套共享 Operator Skills 源），并需要至少验证实际工具发现、负面授权、受管 Session 生命周期、本机 Core/网络健康、Device Ability 调用和原始回执。未来 ChatGPT/Claude Chat 的格式/OAuth/图标/飞书 App2 属后续部署工作；不能因为 CC 本地通过就声称 ChatGPT 已安装。CC Plugin 是 Fleet 使用指南而不是 Device Ability 的复制件。
+
+Operator Skills 的初始五个核心入口分别是 device-and-session-discovery、reuse-idle-session、create-with-grants、evidence-review 和 safety-boundaries；按需以 references 扩充运行时/模型核验、Tailscale/SSH/Selkies/RDC 故障分析、恢复审批、Ability route 和版本回滚，不复制新 registry。
 
 ## 5. 主要业务流程在东京自动接续，而不是固定步骤仪式
 
@@ -109,14 +139,14 @@ Dell 任务临时目录可以按 owner/Work/Run 做已结束工件 dry-run 清�
 
 **V1 验收门：**
 - 经授权设备/OS user 上 Native Core 的实际采集、身份/新鲜度、服务与资源状态、受管重启后自启、必要服务的有界恢复/拒绝及复测；生产动作仍需要各 unit 单独批准。
-- Claude Code + CloudCLI/Fleet 的实际多 Runtime 地址、发现/创建/发送/读取/中断/继续所支持的生命周期，以及项目/模型/权限负测；未实测的旧 Codex 声明不算 V1 功能。
-- 东京本地 Claude Code **真正**加载同源 Fleet MCP+Skills，完成 authenticated initialize/tools/list、真实设备只读及获授权隔离 Session 操作、负例与对应 Run 证据；再分别验收 ChatGPT 和 Claude Chat 的客户端连接/同意。
+- **CC-first 里程碑**：Claude Code + CloudCLI/Fleet 的实际多 Runtime 寻址、发现/创建/发送/读取/中断/继续所支持的生命周期，以及项目/有效模型/permissionMode/账号/授权负测；**完整 V1 验收还必须包含真实 Codex 与 CloudCLI/Node/Fleet 的三机相应 Runtime/Session 支持（真实支持/授权的 profile），不得用 registry 声明或 Windows mock 充当验收。**
+- **首先**在东京本地 Claude Code 真正加载同源 Fleet MCP+Skills，完成 authenticated initialize/tools/list、真实设备只读/受权隔离 Session 操作、Core/网络健康和 Device Ability 访问、负例与对应 Run 证据；待 Fleet V1 主体完成后，再分别开展 ChatGPT 和 Claude Chat 的客户端注册/同意验收。
 - 至少一条真实飞书来源改变 → 有权限的认识/需求/Work → native 执行/测试/Outcome → 报告/发送/回读的闭环，不依赖手工逐层粘贴 Agent 结果。
 - 新设备和断线、旧 Runtime、未登录账号、资源紧张等场景精确拒绝；生产发布与回滚取得独立验收。
 
-**V2 新增但不回填为 V1：** 正式 Codex Provider 验收；稳定 Logical Agent 身份与可替换 Session/Assignment/epoch；专业 Agent 间的受治理通信、浅层 Parent 分工，以及 [openagents-org/openagents-sdk](https://github.com/openagents-org/openagents-sdk) 作为可替换 A6 委派 Provider 的独立实验。V2 的详细合同只见 [Agent Identity / Session / Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md)；不在此复制新的 Agent schema、业务数据库或第二个调度器。
+**V2 新增但不回填为 V1：** 稳定跨设备 Logical Agent/Role Principal 身份、动态 Session 资源池、复杂 Assignment/Activation 派生视图；专业 Agent 间的受治理通信、浅层 Parent 分工，以及 [openagents-org/openagents-sdk](https://github.com/openagents-org/openagents-sdk) 作为可替换 A6 委派 Provider 的独立实验。V2 的详细合同只见 [Agent Identity / Session / Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md)；不在此复制新的 Agent schema、业务数据库或第二个调度器。
 
-截至本文决策日，候选源码、PR 与合成/toy 验收**不等于三设备生产部署或本地 CC authenticated E2E 已通过**。[Fleet 架构与实现计划 Issue #189](https://github.com/ProfessorZhi/serveros/issues/189)、[Ability Journey #190](https://github.com/ProfessorZhi/serveros/issues/190) 和各自真实回执是实施范围与证据入口。
+截至本文决策日，候选源码、PR 与合成/toy 验收**不等于三设备生产部署或本地 CC authenticated E2E 已通过**。[Fleet 完整 V1 Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244)、[完整 V1 实施计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 和 [早期计划 Issue #189](https://github.com/ProfessorZhi/serveros/issues/189)、[Ability Journey #190](https://github.com/ProfessorZhi/serveros/issues/190) 和各自真实回执是实施范围与证据入口。
 
 ## 7. 直接依赖的既有规范
 

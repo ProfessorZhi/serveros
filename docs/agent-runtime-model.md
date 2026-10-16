@@ -14,6 +14,12 @@ The canonical contract is
 This document is the reasoning; where the two disagree, the contract is the one
 that is executed and this one is wrong.
 
+## Complete Fleet V1 provider acceptance — 2026-10-17 owner revision
+
+[Per-device Fleet topology](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) and [full V1 campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md) require **actual Claude Code and Codex** installation/authentication/CloudCLI provider and Session lifecycle on authorized profiles for Tokyo, Dell A6000 and Windows, subject to owner login and real platform support. CC-first local Fleet Plugin acceptance is an intermediate milestone; the former V2-only Codex release deferral does not apply to the final Fleet V1 target. Catalog membership, a declared runtime binding, a Codex binary version, or a requested/default model are **not** live acceptance.
+
+Measure five distinct axes: Device stable identity; OS principal / credential owner; Runtime family and actual provider instance; model requested/resolved/effective + permissionMode; supported Session create/list/read/send/run/interrupt/continue + verified grants. Windows desktop/app-server and CLI variants are **surface differences**, not new top-level runtime identities. Do not fall back to another account or model on an unauthorized route. If a provider cannot show effective model or method, report UNKNOWN instead of inventing it. Track per-profile acceptance in [R1 #248](https://github.com/ProfessorZhi/serveros/issues/248).
+
 ## The identity, and the growth rule
 
 ```text

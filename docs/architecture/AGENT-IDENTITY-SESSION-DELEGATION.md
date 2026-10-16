@@ -6,6 +6,8 @@
 >
 > **Normative order:** [root architecture](../../ARCHITECTURE.md) is the product authority; [Native Agent Work Environment §6](NATIVE-WORK-ENVIRONMENT.md) already established "Session is a resource; roles can be handed off" on 2026-10-07/08. This document **extends and operationalizes that decision**, rather than inventing another authority. Existing versioned V1 contracts and runtime behavior take precedence until explicitly migrated.
 >
+> **2026-10-17 Fleet V1 release-scope correction:** [Complete Fleet Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) and [per-node V1 plan](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) now require supported **Claude Code AND Codex** provider/session lifecycle on the three authorized devices, tested by a local CC Fleet Plugin before ChatGPT packaging. Earlier lines in this document deferring formal Codex acceptance until V2 are superseded. V2 retains identity-independent role pools, governed peer messaging and optional OpenAgents, not the basic Codex adapter. This is a target change, NOT evidence installed Codex is live.
+>
 > **Immediate prerequisite:** [V1 correctness and security gates #237](https://github.com/ProfessorZhi/serveros/issues/237). Expanding Agent orchestration before these gates are satisfied amplifies unsafe behavior.
 
 ## 1. Decision: separation without a second system of record
@@ -97,7 +99,7 @@ Default rules:
 5. Runtime selection is constrained by data location, device/principal, installed Abilities, effective model/runtime profile, supported verb, freshness, grants, capacity and current leases.
 6. If any needed fact is UNKNOWN, refuse the unsafe mutation and report the missing fact.
 
-Current V1 runtime catalogs already mention Claude Code and Codex. That is not evidence of a **live Codex Session/provider end-to-end acceptance**; the latter remains a V2 deliverable.
+Current V1 runtime catalogs mention Claude Code and Codex, but catalog membership never proves native provider/Session E2E. **Actual Codex acceptance is now part of the final complete Fleet V1 target** after the CC-first milestone; until observed per device/runtime it stays BLOCKED/UNKNOWN, not PASS.
 
 ### Cardinalities
 
@@ -230,9 +232,9 @@ The above is intentionally thinner than the original PR #234 proposal.
 
 ## 10. V2 transport/provider choices
 
-### Codex
+### Codex — now a V1 full-fleet Provider, not a V2-only promise
 
-Codex has existing ServerOS runtime contracts and adapter concepts, but **real supported provider/session lifecycle acceptance** is explicitly V2 scope. Build on actual capability and observed installed versions. A provider adapter must never rename a fresh Session "resume" when native continuity is unavailable.
+The **actual** installed, authenticated and usable Codex CLI/CloudCLI adapter/Node/Fleet lifecycle on each supported authorized device profile is a complete-Fleet-V1 gate tracked by [#248](https://github.com/ProfessorZhi/serveros/issues/248). CC-first local-plugin testing comes earlier as a test stage, but does not waive this final Codex acceptance. Build on actual measured capability and native versions. A provider adapter must never label a fresh Session "resume" when native continuity is unavailable. **V2** may add role-independent scheduling and delegation across CC/Codex, not basic provider eligibility.
 
 ### OpenAgents
 
@@ -268,25 +270,25 @@ New devices/Runtime instances are admitted only after authenticated identity, ow
 
 V1 must demonstrate:
 
-- Claude Code + CloudCLI/Fleet integration, independent per-device/per-principal/per-Runtime authorization and supported Session lifecycle;
-- Core on the required devices: actual resource/service monitoring, OS startup and bounded, **owner-approved** recovery of exact services (including relevant CloudCLI/Tailscale/Connector paths) with manual-disable/NeedsLogin/busy-agent protection;
+- Claude Code-first, then authenticated real Codex + CloudCLI/Fleet integration, independent per-device/per-principal/per-Runtime authorization and supported Session lifecycle across all three authorized device classes;
+- Per-authorized-principal C++ Core on the required Linux/Windows nodes: actual resource/service monitoring, OS startup and bounded, **owner-approved** recovery of exact services (including CloudCLI/Tailscale/Connector/owned SSH tunnel and Windows 16095→Selkies/Claude Web + RDC readiness paths) with manual-disable/NeedsLogin/busy-agent protection;
 - Ability discovery/selection, Work continuity, retained evidence, and truthful UNKNOWN/freshness;
 - authenticated and reliable Tokyo↔Dell cross-device coordination with user-granted effects, plus necessary Windows-native acceptance;
 - Feishu source → understanding → accepted Work → real code/test/evidence → reporting/receipt where authorized;
-- one Tokyo-local CC client actually loading MCP + Skills, discovering tools under appropriate credentials, then a separate ChatGPT installation/consent test;
+- one Tokyo-local CC Fleet developer plugin actually loading one canonical Operator Skills source + MCP, authenticating/discovering tools, and executing permitted Session/Device Ability/Core cases; ChatGPT registration/SSO and Claude Chat come after the local Fleet E2E as a separate rollout;
 - safety gates **B1–B5** in [Issue #237](https://github.com/ProfessorZhi/serveros/issues/237).
 
 Documentation or an SDK mock alone is **not** this acceptance. Distinguish CODE, MOCK, STAGED, LIVE SERVICE, authenticated CLIENT and real scenario E2E.
 
 ### V2 — only after V1 foundations
 
-- Codex fully accepted as an installed/runtime/session provider;
+- Role-independent runtime scheduling and cross-provider CC/Codex delegation **beyond** the actual V1 provider lifecycle;
 - project role principals and derived current responsibilities;
 - runtime capacity selection with safe Session bindings, not arbitrary cross-project context pools;
 - bounded hierarchical Parent/child delegation and governed agent messaging;
 - optional OpenAgents compatibility PoC, adopted only if secure and beneficial.
 
-Existing V1 schema references to Codex are retained; they do not force live V1 Codex release. The October 2026 V1/V2 **release split** is distinct from the earlier document title "Native Agent Work Environment V2" (a **design revision name**).
+Existing V1 schema references to Codex remain insufficient to claim live operation. The 2026-10-17 owner decision **requires real Codex acceptance for full Fleet V1**; it does not authorize an unattended login or installation. The earlier title "Native Agent Work Environment V2" is a design revision name, not this Fleet release split.
 
 ## 13. Migration plan (minimal, dependency ordered)
 
@@ -294,11 +296,11 @@ Existing V1 schema references to Codex are retained; they do not force live V1 C
 2. **V1 B2:** store and reconcile mutation attempts across restart; prove lost-response and duplicate-transport behavior.
 3. **V1 B3:** establish and consume one exclusive Work write-lease authority, expiry, renewal and fencing, without confusing resource occupancy references.
 4. **V1 B4/B5:** verify the actual Fleet Next route and Tokyo/Dell partition/recovery behavior using precise source and running revisions; test the Node/Core/recovery/report chain separately.
-5. **V1 E2E:** run real authorized CC + MCP + Skills test and one source-to-delivery scenario; preserve receipts and unresolved gaps.
+5. **V1 CC/Codex + local Plugin E2E:** pass the local CC plugin first, then real per-node CC and Codex/CloudCLI Session paths plus Node/Core/Ability work and evidence; preserve unsupported/approval-blocked facts.
 6. **V2 Identity:** expose project role config and a derived current-responsibility view; avoid a new central store.
 7. **V2 Runtime scheduling:** select constrained Runtime capacity, then bind compatible native Sessions with checked context provenance.
 8. **V2 Delegation:** reuse parent/child Work, admission, checkpoint and bounded result acceptance; implement only missing message semantics.
-9. **V2 Providers:** bring Codex to live acceptance, optionally trial OpenAgents in a restricted sandbox.
+9. **V2 federation:** optionally trial OpenAgents in a restricted sandbox, add dynamic cross-provider role delegation only after the full V1 CC/Codex lifecycle and security gates.
 
 The smallest valid path remains: one accepted Work, one suitable native Agent/Session, one evidence-backed outcome. Multi-Agent coordination is an optimization, not a mandatory workflow stage.
 
@@ -342,5 +344,5 @@ Every claim must name **repo revision, installed revision, provider, device/prin
 - No new Agent/Assignment/Message database duplicates an existing owner.
 - Delegation does not increase authority; message delivery is not result acceptance.
 - Unknown results are not automatically retried; UNKNOWN never becomes DONE.
-- Codex and OpenAgents remain V2 acceptance/optional experiment respectively.
+- Real Codex/CloudCLI/Fleet acceptance is in complete V1; only dynamic cross-provider Agent federation and optional OpenAgents remain V2.
 - Design changes alone do not assert implementation or deployed readiness.

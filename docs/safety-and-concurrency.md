@@ -6,6 +6,12 @@ Directory governance is not an exclusive maintenance window. MarketOps, Support 
 knowledge work and other approved Items may create resources concurrently. Their
 continuity takes precedence over tidiness.
 
+## 2026-10-17 Fleet V1 runtime concurrency and release scope
+
+[Per-node Fleet V1 topology](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) and [campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) make three independent statements: (1) every **authorized OS principal** on Tokyo/Dell/Windows has a trusted local Core / real CC+Codex Provider and signed Node Adapter; (2) Work Engine owns exclusive Work writer lease while Node resource-occupancy lease, file flock and OS service-manager state are different authorities; (3) local CC Plugin may only route effects under current device×principal×runtime×project×verb×grant. Tool count/scope names are not carte-blanche power.
+
+The owner may deliberately enable bounded Core recovery only for exact service profiles: CloudCLI/Connector/Tailscale/SSH Tunnel/RDC as locally applicable; Windows's 127.0.0.1:16095 Selkies/Claude Web listener is **not** permission to restart a remote Selkies server or access an arbitrary GUI session. Work handoff/timeout/restart must reject stale epoch and reconcile EFFECT_UNKNOWN before any reissue. Windows development by default takes place on Tokyo/Dell in mocks, with minimal true Windows read/verification at the final gate. Hosted CI no-quota is an infrastructure waiver, **never** source tests accepted or a permission override.
+
 ## Ownership and scope
 
 Visibility, age, a familiar path or an empty child list does not prove a resource

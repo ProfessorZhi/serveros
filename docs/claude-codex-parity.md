@@ -4,6 +4,10 @@ Product authority: [ARCHITECTURE.md](../ARCHITECTURE.md), sections 6, 19 and 29.
 
 **One work world; runtime-specific, version-tested adapters.**
 
+## 2026-10-17 full Fleet V1 acceptance rule
+
+Provider parity is **a V1 final fleet milestone**, with the local Claude Code Fleet Plugin as the first consumer; ChatGPT Client is later. Before declaring Codex equivalent to Claude Code, capture verified evidence for each authorized Tokyo/Dell/Windows OS principal and actual CloudCLI provider: native installed/version/credential type (not contents), effective model and permission mode, project/session IDs, create/send/get_run/read/resume/interrupt, actual observed authorization refusals and device/network failure behavior. Label an adapter capability UNSUPPORTED if native API cannot perform it. CC/Codex model names, account entitlements and local path/Windows desktop capability must not be presumed from one registry row. This updates the earlier V2-only Codex release framing without changing the runtime identity schema. See [R1 #248](https://github.com/ProfessorZhi/serveros/issues/248).
+
 ## Shared semantics
 
 Both runtimes use the same Project/Item identity, accepted intent, ownership/policy,
