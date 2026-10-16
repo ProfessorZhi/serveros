@@ -301,8 +301,41 @@ be claimed here.**
 
 ### Rung 5 → `NEXT_UNIT_LIVE` — the backend starts now
 
-Start the Next user unit, then **measure** that the caps took effect — a template
-cannot prove isolation:
+Start the Next user unit with the one verb that starts it and publishes nothing:
+
+```bash
+python3 fleet_mcp/deploy/next_install.py canary-start \
+  --proposal <next-proposal.json>            # a plan; writes nothing, executes nothing
+python3 fleet_mcp/deploy/next_install.py canary-start \
+  --proposal <next-proposal.json> --execute --owner-approved
+```
+
+`canary-start` exists because `install` cannot reach this rung. `install`
+demands a real `next.plugin_id` and `attestations.next_oauth_client_authorized`
+— two facts about a client that is registered against a *running* public
+origin — and the only way to obtain them is to start the service. That is the
+bootstrap circle this verb breaks, and it breaks **only** that: it copies no
+revision, moves no `current`/`previous` pointer, writes no unit file, never
+`enable`s the unit, and never touches V1. `install` remains the only verb that
+publishes a revision, and it still requires both registration facts.
+
+Everything else is still checked, and checked before the start: the unit must
+be `inactive` **and** unable to start itself; `current` must name a revision
+whose recomputed tree hash matches its own `ARTIFACT.json`; the binding must be
+one `fleet_mcp.config.load_config()` accepts, with the owner token anchor
+present, a regular file (not a symlink), mode `0600`, and neither the anchor nor
+the OAuth store derived from it resolving inside a V1 root; the public origin
+must complete a **verified** TLS handshake whose certificate names that host;
+live memory pressure must be clear; and V1 `/health` must answer. A failure after
+the start stops **Next only** and leaves the staged revision and V1 as they
+were.
+
+Those are checks on the anchor's *path and mode*, and the runbook will not claim
+more than they do: a mode-`0600` regular **copy** of V1's token is
+indistinguishable from a fresh one to any check that refuses to read the file,
+so "the token is not V1's" stays an owner statement, not a measured fact.
+
+Then **measure** that the caps took effect — a template cannot prove isolation:
 
 ```bash
 systemctl --user show serveros-fleet-example-mcp.service \
@@ -310,6 +343,10 @@ systemctl --user show serveros-fleet-example-mcp.service \
 ```
 Expect `MemoryMax=1536M`, `MemorySwapMax=0`, `CPUQuota=40%`, `TasksMax=96`, and
 **exactly one** Next instance. Re-check V1 `/health` in the same window.
+The verb's own receipt carries these readbacks, plus `enabled: false`, V1's
+`MainPID` before and after, and the measured public statuses. It reports
+`tool_declarations: null` on purpose: the MCP tool face is an **authenticated**
+readback and rung 6 is where it is measured.
 
 ### Rung 6 → `PUBLIC_MCP_VERIFIED` — now fetch the public origin
 
