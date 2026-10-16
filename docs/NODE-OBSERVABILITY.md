@@ -2,6 +2,14 @@
 
 状态：2026-09-23 产品/架构修订，尚非运行实现。细化 ARCHITECTURE.md §17/20/21/26，不改变 frozen resident surface：serverosd仍是唯一Core常驻进程。Provider可常驻；独立检查采用已有OS监督器与有限任务，不新增monitoringd。
 
+## 2026-10-17 完整 Fleet V1 节点观测 / C++ Core 版本边界
+
+[完整 Fleet V1 拓扑](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) 与 [交付计划](plans/plan-02-complete-fleet-v1-delivery-campaign.md) 是最新设备范围。本文原 2026-09-23 的 serverosd/Python 实机观察是历史基线：目标形态为 **每台受管设备、每个授权 OS principal 至多一份 C++ Native Core 写方**，旧 Python serverosd 在迁移期间继续担任当前生产写方，C++ Core 先 observe/shadow 对比，未经批准不能并发操作同一服务。OS supervisor 管 Core 的启动/进程退出；Core 本身保持轻量、不内嵌 LLM/Worker/第二服务管理器。
+
+必须至少分离 CPU/内存/Swap/PSI、磁盘、GPU（实际授权时）、单用户 cgroup、服务进程、服务协议 readiness、Tailscale 链路、SSH Tunnel、CloudCLI/Connector、Native CC/Codex Provider/Session、Remote Desktop Control 与监控自身健康。每项有 owner、平台/采样源、observed_at/TTL、UNKNOWN/STALE、实际版本与能力证据；采样和监控本身不能增加操作权。Codex 最终实测为完整 Fleet V1 目标，而非仅静态 registry 声明。
+
+**Windows 专项访问路径：** 用户现提出的 http://127.0.0.1:16095/ 是 Windows 浏览器通过 SSH forward 访问 Selkies/Claude Web 的待核实际入口；不得把该 URL 当作 SSH unit 名或已探测过的远端地址。状态必须逐段核验：Windows-owned SSH 隧道生命周期 → 16095 listener → SSH 上游/私网 → Selkies 服务 → 带身份的交互流；RDC 与 Tailscale 各自独立健康及局部恢复策略。Windows 只需要最终短时原生验收，主要开发与 Mock 测试由 Tokyo/Dell 完成。只有本地拥有的服务且有 owner approved allowlist/预算，才可自愈。参见 [N3 #247](https://github.com/ProfessorZhi/serveros/issues/247) 和 [Windows Core #246](https://github.com/ProfessorZhi/serveros/issues/246)。
+
 ## 1. 问题、证据和边界
 
 用户09-23 10:00卡片截图只在外层给UID/进程数、CPU型号和loopback入口，关键用量被折叠；没有必须服务或serverosd自身的可读状态。本轮读取serveros@89887a4的cards.py、card_source.py、presentation.py、daemon.py和现有设计：status_card逐区只取lines[0]，共享_footnote将“只读告警”加到日常状态卡。这是产品信息层级与数据结构问题，不是把字体变小即可解决。
