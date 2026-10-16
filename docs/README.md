@@ -36,7 +36,7 @@ OpenViking **已于 2026-09-27 在这台节点上绑定并运行**（独立 unit
 |---|---|
 | [Collaboration](COLLABORATION-CONTRACT.md) | Parent继续责任、receiver接受、授权/预算/恢复 |
 | [Fleet V1：设备拓扑、MCP/Skills、自愈与交付验收](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) | V1：东京 Work、A6000 Compute、Windows Edge、CloudCLI/Fleet MCP、Native Core、有界自愈和 CC-first E2E 门禁 |
-| [Agent Identity / Session / Delegation V2](architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) | V2：Logical Agent 与 Session 解耦、Assignment/Activation、层级委派、Agent 间通信、Codex/OpenAgents 边界 |
+| [Agent Identity / Session / Delegation V2](architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) | 复用既有 Work/Grant/Checkpoint/epoch，以项目角色＋派生责任视图解耦 Session；不另建 Assignment DB；V1 写入 fencing/幂等/互斥租约先通过 [#237](https://github.com/ProfessorZhi/serveros/issues/237) |
 | [Daily Work Cycle](daily-work-cycle.md) | 两水位、最多两root焦点、GPT/Quay与必需交付 |
 | [Ability Operating Model](ABILITY-OPERATING-MODEL.md) | 21稳定职责→子Ability/实现层；定时节点owner、Session/Workspace显式位置、serverosd与scheduler边界、自迭代入口 |
 | [Scenario Acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10；本轮REF/DEEP追加到对应用户场景 |
