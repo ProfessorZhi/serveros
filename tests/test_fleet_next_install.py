@@ -1199,19 +1199,11 @@ class ADirtyTreeTakesNoSystemActionTest(unittest.TestCase):
                                head="c" * 40, record=calls)
         self.assertEqual(rc, 2, out)
         self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        # The reason must be the REFUSAL's, not just any blocked outcome: with
+        # `accept=False` the fake raises if the installer is reached, and a
+        # blocked shape is not evidence that the pre-check fired.
+        self.assertIn("uncommitted", out["reason"])
         self.assertEqual(calls, [])
-
-    def test_a_non_git_source_keeps_the_revision_route_open(self):
-        """`tree_state` has no answer for a source that is not a repository.
-
-        Ungated it answers "cannot read the git directory", which would close
-        the `--revision` route the installer documents for exactly that source.
-        """
-        calls = []
-        rc, out = _publish("stage", self._bootstrap(), tree_problem=self.PROBLEM,
-                           head=None, accept=True, record=calls)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(out["decision"], "EXECUTED")
 
     def _bootstrap(self) -> dict:
         p = candidate()
@@ -1355,6 +1347,11 @@ class APreEffectSystemExitStillPrintsOneReceiptTest(unittest.TestCase):
                 self.assertEqual(out["writes"], [])
                 self.assertEqual(out["executes"], [])
                 self.assertFalse(out["v1_action"])
+                # Pins the PRE-effect branch specifically. Without it the
+                # post-effect branch emits the same four fields, so the branch
+                # point would be unobservable — and for `rollback`/`status` the
+                # two branches genuinely differ.
+                self.assertEqual(out["refusal_exit"], 2)
 
 
 class TheRunbookDoesNotSellAStopTheToolWillNotTakeTest(unittest.TestCase):
@@ -1586,6 +1583,97 @@ class TheBindingRefusesShapesItCannotReadTest(unittest.TestCase):
         for label, body in self.SHAPES.items():
             with self.subTest(shape=label):
                 self.assertIn("install.py:", self._refusal(body))
+
+
+class TheTreeRuleAsksWhetherItIsARepositoryAtAllTest(unittest.TestCase):
+    """A caller that gates the tree rule on a readable HEAD exempts an UNBORN one.
+
+    `git init` with nothing committed — or `git checkout --orphan` — is a work
+    tree whose bytes no commit describes: exactly the misnaming this rule exists
+    to catch, reachable through the shape a HEAD-based gate skips. "Is this a
+    work tree?" is what separates "makes no claim" from "makes a claim I cannot
+    verify", so `tree_state` asks it first and answers it itself.
+    """
+
+    def test_a_plain_directory_makes_no_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(install.tree_state(Path(tmp)))
+
+    def test_a_repository_with_an_unborn_head_is_still_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+            (root / "fleet_mcp").mkdir()
+            (root / "fleet_mcp" / "marker.py").write_text("x = 1\n",
+                                                          encoding="utf-8")
+            self.assertIsNone(install.git_revision(root),
+                              "an unborn HEAD reads as no revision at all")
+            problem = install.tree_state(root)
+            self.assertIsNotNone(problem, "an unborn HEAD must not be exempt")
+            self.assertIn("uncommitted", problem)
+
+    def test_a_clean_repository_passes(self):
+        with _git_repo() as repo:
+            self.assertIsNone(install.tree_state(Path(repo)))
+
+    def test_a_dirty_repository_is_refused(self):
+        with _git_repo() as repo:
+            (Path(repo) / "fleet_mcp" / "marker.py").write_text("x = 2\n",
+                                                                encoding="utf-8")
+            self.assertIn("uncommitted", install.tree_state(Path(repo)))
+
+
+class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase):
+    """The wrapper's own post-start verification runs AFTER a successful start.
+
+    `_effective_limit_errors` and the V1 health readback sit outside the inner
+    try, just past `effect_started`. An `OSError` there — a `systemctl` missing
+    from the wrapper's PATH, say — used to be re-raised, so an install that had
+    actually SUCCEEDED left the caller with no document at all.
+    """
+
+    def _started(self, p, calls):
+        class FakeMod(_FakeInstallModule):
+            def binding(self, path):
+                old = str(path) == p["v1"]["config_path"]
+                return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
+                        "probe": "http://127.0.0.1:8401" if old
+                        else "http://127.0.0.1:8402"}
+
+            def read_link(self, path):
+                return None
+
+            def wait_for_health(self, *a, **k):
+                return {"ok": True}
+
+            def systemctl(self, *args, **kw):
+                calls.append(args)
+                return type("Result", (), {"returncode": 0,
+                                           "stdout": "inactive\n"})()
+
+            def main(self, args):
+                print(legacy_full_receipt())
+                return 0
+
+        return FakeMod()
+
+    def test_a_raising_limit_readback_still_reports(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
+            with mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=self._started(p, calls)), \
+                 mock.patch.object(next_install, "_current_pressure",
+                                   return_value=None), \
+                 mock.patch.object(next_install, "_effective_limit_errors",
+                                   side_effect=OSError("systemctl: not found")):
+                rc, out = cli(["install", "--execute", "--owner-approved"], p)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
+        self.assertTrue(out["writes"])
+        self.assertIn("OSError", out["reason"])
 
 
 if __name__ == "__main__":

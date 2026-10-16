@@ -528,17 +528,17 @@ def main(argv: list[str] | None = None) -> int:
                 # healthy Next over a validation refusal. Taken here, before any
                 # system action.
                 #
-                # Gated on a readable HEAD, exactly as `install.py` gates its
-                # own call. `tree_state` only has an answer for a GIT source —
-                # it REFUSES when it cannot resolve a git directory, which is
-                # precisely the non-git source this must leave alone. Calling it
-                # ungated would close the `--revision` route the installer
-                # documents for a non-git artifact.
+                # Called UNGATED. `tree_state` itself answers None for a source
+                # that is not a work tree, so the `--revision` route for a
+                # non-git artifact stays open; and it does NOT answer None for a
+                # repository with an unborn HEAD, which is the tree that has
+                # bytes no commit describes. Gating here on a readable HEAD — as
+                # an earlier revision did, mirroring `install.py` — quietly
+                # exempted exactly that case.
                 source = Path(args.source).expanduser().resolve()
-                if mod.git_revision(source):
-                    problem = mod.tree_state(source)
-                    if problem:
-                        raise Refused(problem + " No system action has been taken.")
+                problem = mod.tree_state(source)
+                if problem:
+                    raise Refused(problem + " No system action has been taken.")
             if args.label:
                 args_list.extend(["--label", args.label])
             # `--force` is never passed, so the shared installer's own
@@ -776,7 +776,32 @@ def main(argv: list[str] | None = None) -> int:
         # Once `effect_started` is set, the inner handler has already reported
         # and the exception must propagate unchanged.
         if effect_started:
-            raise
+            # An exception from a region the INNER handler does not wrap: the
+            # wrapper's own post-start verification, or the marker clear — with
+            # the installer already driven. Re-raising printed no document at
+            # all, and "no document" is indistinguishable from a crash; worse,
+            # the post-start verification runs after a COMPLETED install, so the
+            # caller was left with neither a receipt nor a reason.
+            #
+            # The recovery verbs keep their existing no-document behaviour:
+            # their effect tracking is the recorded residue, and silently
+            # reporting "no action" for a rollback that may have moved `current`
+            # would be the same overstatement in the other direction.
+            if args.command in ("rollback", "status"):
+                raise
+            print(json.dumps({
+                "decision": "BLOCKED",
+                "reason": (f"the wrapper failed after driving the installer "
+                           f"({type(exc).__name__}); the receipt could not be "
+                           f"completed, so the outcome is unknown"),
+                "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_attempted
+                                 else "NO_SYSTEM_ACTION_STARTED"),
+                "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_attempted else []),
+                "executes": ([UNIT] if effect_attempted else []),
+                "v1_action": False,
+                "refusal_exception": type(exc).__name__,
+            }, sort_keys=True))
+            return 2
         print(json.dumps({
             "decision": "BLOCKED",
             "reason": ("a pre-effect check refused before anything was written, "
