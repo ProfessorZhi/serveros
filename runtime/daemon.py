@@ -3035,6 +3035,17 @@ class Daemon:
             item["observed_at"] = _iso(self._now())
         return {"found": True, "session_ref": ref, "binding": record,
                 "item": item,
+                # #237 B1. The CURRENT WRITER of this thread's write scope, the
+                # consumer half of the v2 writer-binding. Derived by the kernel's
+                # ONE derivation function from this store's OWN binding records —
+                # no second store, no copied authority. `None` means no thread
+                # claims the scope: a reading, not a failure. The gate refuses a
+                # thread that CLAIMS a superseded writer, and refuses a thread
+                # that claims nothing while the scope is owned by another; an
+                # unowned scope is left ungated so pre-existing threads keep
+                # working.
+                "current_writer": (coordination_mod.current_writer(
+                    store.bindings(), bound) if bound else None),
                 "item_axis": coordination_mod.item_axis(
                     (item or {}).get("state"), outcome=(item or {}).get("outcome")),
                 "provenance": {
@@ -3056,25 +3067,68 @@ class Daemon:
         The record is built here rather than accepted. `put_binding` refuses a
         second, different record for a session, so a caller cannot use this to
         change which Item a thread is for; it can only create one.
+
+        #237 B1. This is also the PRODUCER of the write-scope claim: an
+        execution binding records which thread owns its Item's write scope, so
+        that the admission gate fires on the real path and not only in tests.
+        `_writer_claim` states the three rules it applies.
         """
         ref = _required(params, "session_ref")
+        store = self.control_store()
         try:
             record = coordination_mod.binding(
                 session_role=params.get("session_role"),
                 bound_item_ref=params.get("bound_item_ref"),
                 work_item=params.get("work_item"),
                 device_ref=params.get("device_ref"),
-                recorded_at=_iso(self._now()))
+                recorded_at=_iso(self._now()),
+                writer=self._writer_claim(store, ref, params))
         except coordination_mod.ThreadRefused as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": exc.reason, "detail": exc.detail}
         record["session_ref"] = ref
         try:
-            stored = self.control_store().put_binding(record)
+            stored = store.put_binding(record)
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
         return {"recorded": True, "session_ref": ref, "binding": stored}
+
+    def _writer_claim(self, store, ref, params):
+        """The write-scope claim to record with this binding, or None.
+
+        THE PRODUCER HALF of the v2 writer-binding (#237 B1). Three rules, each
+        a deliberate decision:
+
+          * an EXPLICIT claim in `params["writer"]` is used as given (validated
+            by `coordination.binding`/`normalize_writer`). This is how a scope
+            is armed by hand — the CLI path, and a re-arm of a scope whose
+            threads predate this field.
+          * a RE-RECORD of the same session reuses the claim already stored, so
+            `put_binding`'s idempotency holds: a retried create must not become
+            a second, different record.
+          * a NEW session claims the scope ONLY when no thread claims it yet. A
+            thread arriving at an ALREADY-OWNED scope does not take it: a
+            transfer is what revokes the incumbent (the router's handoff), and a
+            create is not a transfer. This is what keeps an old source's write
+            authority intact until the handoff actually moves it, and it is what
+            stops a new session from silently becoming a second writer.
+        """
+        explicit = params.get("writer")
+        if isinstance(explicit, dict):
+            return explicit
+        if str(params.get("session_role") or "") != "execution":
+            return None
+        item = str(params.get("bound_item_ref") or "").strip()
+        if not item:
+            return None
+        existing = store.get_binding(ref)
+        if existing is not None:
+            return dict(existing.get("writer") or {}) or None
+        bindings = store.bindings()
+        if coordination_mod.scope_has_writer(bindings, item):
+            return None
+        return coordination_mod.mint_writer(bindings, item, owner=ref)
 
     def _r_agent_binding_close(self, params) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.

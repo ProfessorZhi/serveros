@@ -743,6 +743,83 @@ def test_the_binding_list_reports_roles_and_counts_never_records(daemon):
     assert "LIT-0101" not in json.dumps(listing["by_role"])
 
 
+def test_the_daemon_produces_a_write_scope_claim_and_serves_it_back(daemon):
+    """#237 B1. The v2 writer-binding, produced and consumed on the REAL path.
+
+    This is the P0 the router's own PR left open: a binding was recorded with no
+    claim, so the admission gate could never fire in production. Now the daemon
+    MINTS a claim for the first execution thread on an Item and serves the
+    scope's current writer back on `resolve` — the producer and the consumer of
+    the v2 writer-binding, on the daemon surface rather than only in tests.
+    """
+    first = daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})["result"]
+    assert first["recorded"] is True
+    assert first["binding"]["schema"] == coordination.SCHEMA_WRITER
+    assert first["binding"]["writer"]["owner"] == "session-1"
+
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-1"}})["result"]
+    assert read["current_writer"]["owner"] == "session-1"
+    assert read["current_writer"]["epoch"] == 1
+
+
+def test_a_second_thread_on_an_owned_scope_does_not_take_it(daemon):
+    """A create is not a transfer (#237: the source must not lose it early).
+
+    The second execution thread on the same Item records NO claim — the scope is
+    already owned — so it is not the writer until the incumbent is revoked. It
+    claims nothing and is not gated by that alone; the gate fences it because
+    the scope HAS an owner.
+    """
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    second = daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-2", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})["result"]
+    assert second["recorded"] is True
+    assert second["binding"]["schema"] == coordination.SCHEMA      # no claim
+    assert "writer" not in second["binding"]
+
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-2"}})["result"]
+    assert read["current_writer"]["owner"] == "session-1"
+
+
+def test_closing_the_incumbent_frees_the_scope(daemon):
+    """The handoff's transfer effect, at the store level.
+
+    `_revoke_source_write_authority` closes the source only once the target is
+    established; this asserts the effect that follow-on relies on — a closed
+    incumbent leaves the scope with NO current writer, so a thread that was
+    waiting on it may write.
+    """
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-2", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    daemon.handle({"method": "agent.binding.close",
+                   "params": {"session_ref": "session-1"}})
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-2"}})["result"]
+    assert read["current_writer"] is None
+
+
+def test_an_explicit_claim_arms_a_scope_by_hand(daemon):
+    """A scope whose threads predate the field is armed by naming the writer."""
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101",
+        "writer": {"owner": "operator", "epoch": 7, "token": "7"}}})
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-1"}})["result"]
+    assert read["current_writer"] == {"owner": "operator", "epoch": 7, "token": "7"}
+
+
 def test_the_store_refuses_a_binding_keyed_by_anything_but_a_session(store):
     """There is no actor key here, and the same test in `test_actor_context.py`
     forbids the method names that would make one.

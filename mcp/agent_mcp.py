@@ -487,8 +487,13 @@ class DaemonBindings:
         answer = self._call("agent.binding.resolve", {"session_ref": str(ref)})
         # Both halves of one read. `admit_work` joins them, and joining two
         # separately-fetched records would decide about a thread using an Item
-        # state from a different moment than the binding.
+        # state from a different moment than the binding. The CURRENT WRITER
+        # (#237 B1) travels in the same answer for the same reason: the gate
+        # compares the binding's claim against the scope's owner, and two
+        # separately-fetched records would be a decision about a moment that
+        # never existed.
         return {"binding": answer.get("binding"), "item": answer.get("item"),
+                "current_writer": answer.get("current_writer"),
                 "found": bool(answer.get("found"))}
 
     def put(self, record) -> dict:

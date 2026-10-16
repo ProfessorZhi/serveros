@@ -128,6 +128,9 @@ actions:
 #                    `bound_item_ref` is required for `execution` and forbidden
 #                    for `coordinator`. Validated before the provider is asked,
 #                    so a create that cannot be bound never starts a session.
+#                    It also RECORDS the write-scope claim: the first execution
+#                    thread on an Item owns it, a later one arriving at an
+#                    owned scope records none (#237 B1, see `write_scope`).
 #   session.send     ADMITS. The thread's binding, its Item's state AND the
 #                    current writer for the Item's write scope (#237 B1) are
 #                    read in one call, and `admit_work` decides. A thread that
@@ -236,6 +239,47 @@ idempotency:
     The same key on a different action or device is a caller bug and is refused,
     not answered with the other call's result. Answering it would report an
     effect that never happened for this request.
+
+# ---------------------------------------------------------------------------
+# #237 B1 — the write scope: who may write an Item, and how that is decided.
+# ---------------------------------------------------------------------------
+write_scope:
+  authority: >-
+    The Agent Control binding records, and nothing else. There is no second
+    store: a binding for an execution thread carries a `writer` claim (owner,
+    epoch, token, optional expiry), and the CURRENT WRITER of an Item is derived
+    from those records by `runtime/coordination.py#current_writer` — the OPEN
+    claim with the highest `(epoch, token, session_ref)`. The session ref is the
+    final tiebreak, so two claims minted identically still resolve to ONE winner
+    rather than to whichever was iterated last.
+  producer: >-
+    `serverosd`'s `agent.binding.record` MINTS the claim (`_writer_claim`). The
+    FIRST execution thread on an Item claims it; a later thread arriving at an
+    ALREADY-OWNED scope records no claim, because a create is not a transfer. A
+    re-record of the same session reuses its stored claim, so a retried create
+    stays idempotent. An explicit `writer` in the request arms a scope by hand
+    (a scope whose threads predate this field).
+  consumer: >-
+    `agent.binding.resolve` returns `current_writer` beside the binding and the
+    Item state, in ONE read, and `DaemonBindings.get` carries it to the router's
+    admission. `admit_work` then refuses a thread whose claim is STALE or
+    EXPIRED, and refuses a thread that claims NOTHING while the scope is owned
+    by another.
+  transfer: >-
+    A handoff moves authority by REVOKING the incumbent, which frees the scope:
+    once the closed source is the only claim, `current_writer` is None and the
+    established target may write. A new thread never takes an owned scope by
+    being created — that is the "the source must not lose authority early" rule
+    and the "one writer per scope" rule at the same time.
+  unowned_is_ungated: >-
+    A scope nobody claims gates nobody. That is the compatibility rule that
+    keeps every pre-existing (v1) thread working after this field was
+    introduced; the moment a scope gets a writer, every other thread on it is
+    fenced.
+  not_claimed: >-
+    This fences the CONTROL-PLANE admission and the binding record. It does NOT
+    claim to stop a shell side-effect inside a provider that offers no native
+    fence; that is B2/B5, and it needs effect reconciliation.
 
 # ---------------------------------------------------------------------------
 # #237 B2 — the durable-effect interface this contract does NOT yet implement.

@@ -370,14 +370,28 @@ class TestWriterFenceKernel(unittest.TestCase):
         self.assertEqual(record["schema"], coordination.SCHEMA)
         self.assertNotIn("writer", record)
 
-    def test_a_thread_that_records_no_writer_is_not_gated(self):
+    def test_a_thread_that_records_no_writer_is_not_gated_while_the_scope_is_unowned(self):
+        # Compatibility: a thread that claims nothing, on a scope nobody claims,
+        # is every pre-existing thread. Gating it would break every normal path.
         record = coordination.binding(
             session_role="execution", bound_item_ref=self.ITEM)
         out = coordination.admit_work(
             binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
-            current_writer=writer(owner="agent:B", epoch=9, token="9"))
+            current_writer=None)
         self.assertEqual(out["state"], "ADMITTED")
         self.assertEqual(out["writer_axis"], "UNKNOWN")
+
+    def test_a_thread_that_records_no_writer_is_fenced_once_the_scope_is_owned(self):
+        # The other half, and the one that stops a second writer: once a scope
+        # has an owner, a thread claiming nothing is not the writer.
+        record = coordination.binding(
+            session_role="execution", bound_item_ref=self.ITEM)
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:B", epoch=9, token="9"))
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+        self.assertIn("second writer", ctx.exception.detail)
 
     # -- the gate ----------------------------------------------------------
 
@@ -481,6 +495,124 @@ class TestWriterFenceKernel(unittest.TestCase):
             coordination.writer_axis({"writer": writer(epoch=1, token="1")},
                                      current_writer=writer(epoch=1, token="1")),
             "CURRENT")
+
+
+class TestWriterDerivation(unittest.TestCase):
+    """The ONE derivation of who owns a write scope (#237 B1/T2).
+
+    `current_writer` / `scope_has_writer` / `mint_writer` are pure, and the
+    daemon, the gate and the test double all go through them — a second
+    derivation would be a second answer to who may write.
+    """
+
+    ITEM = "LIT-0101"
+
+    def test_no_claim_means_no_current_writer(self):
+        b = {"s1": {"bound_item_ref": self.ITEM, "state": "OPEN"}}
+        self.assertIsNone(coordination.current_writer(b, self.ITEM))
+        self.assertFalse(coordination.scope_has_writer(b, self.ITEM))
+
+    def test_the_newest_claim_wins(self):
+        b = {
+            "s1": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="A", epoch=1, token="1")},
+            "s2": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="B", epoch=2, token="2")},
+        }
+        self.assertEqual(coordination.current_writer(b, self.ITEM)["owner"], "B")
+        self.assertTrue(coordination.scope_has_writer(b, self.ITEM))
+
+    def test_a_closed_binding_is_history_not_authority(self):
+        b = {
+            "s1": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="A", epoch=1, token="1")},
+            "s2": {"bound_item_ref": self.ITEM, "state": "CLOSED",
+                   "writer": writer(owner="B", epoch=9, token="9")},
+        }
+        self.assertEqual(coordination.current_writer(b, self.ITEM)["owner"], "A")
+
+    def test_a_closed_binding_alone_leaves_the_scope_unowned(self):
+        # This is how a handoff frees the scope: the incumbent is closed and no
+        # other thread claims it, so the successor may write.
+        b = {"s1": {"bound_item_ref": self.ITEM, "state": "CLOSED",
+                    "writer": writer(owner="A", epoch=1, token="1")}}
+        self.assertIsNone(coordination.current_writer(b, self.ITEM))
+        self.assertFalse(coordination.scope_has_writer(b, self.ITEM))
+
+    def test_another_items_claim_is_not_this_scopes(self):
+        b = {"s1": {"bound_item_ref": "LIT-0205", "state": "OPEN",
+                    "writer": writer(owner="B", epoch=9, token="9")}}
+        self.assertIsNone(coordination.current_writer(b, self.ITEM))
+
+    def test_the_token_breaks_a_tie_within_an_epoch(self):
+        b = {
+            "s1": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="A", epoch=1, token="1")},
+            "s2": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="B", epoch=1, token="2")},
+        }
+        self.assertEqual(coordination.current_writer(b, self.ITEM)["owner"], "B")
+
+    def test_the_session_ref_is_the_final_tiebreak(self):
+        # Two claims minted identically must still resolve to ONE winner rather
+        # than to whichever dict was iterated last.
+        b = {
+            "s1": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="A", epoch=1, token="1")},
+            "s2": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                   "writer": writer(owner="B", epoch=1, token="1")},
+        }
+        self.assertEqual(coordination.current_writer(b, self.ITEM)["owner"], "B")
+        self.assertEqual(coordination.current_writer(dict(reversed(list(b.items()))),
+                                                      self.ITEM)["owner"], "B")
+
+    def test_mint_starts_a_free_scope_at_epoch_1_token_1(self):
+        claim = coordination.mint_writer({}, self.ITEM, owner="session-1")
+        self.assertEqual(claim, {"owner": "session-1", "epoch": 1, "token": 1})
+
+    def test_mint_advances_past_every_token_already_minted(self):
+        b = {"s1": {"bound_item_ref": self.ITEM, "state": "OPEN",
+                    "writer": writer(owner="A", epoch=1, token="4")}}
+        claim = coordination.mint_writer(b, self.ITEM, owner="session-2")
+        self.assertEqual(claim["epoch"], 1)
+        self.assertEqual(claim["token"], 5)
+
+
+class TestTheHandleCarriesTheWriter(unittest.TestCase):
+    """The last hop: `DaemonBindings.get` must carry `current_writer` through.
+
+    The daemon produces it, the router's `_admit` reads it, and this handle is
+    the wire between them. A pass-through that dropped one field would leave the
+    gate armed-but-blind in production and green in every other test — the exact
+    shape `#237` is about. Loaded lazily because `mcp/agent_mcp.py` pulls the
+    whole surface in.
+    """
+
+    def _agent_mcp(self):
+        name = "serveros_test_agent_mcp"
+        if name in sys.modules:
+            return sys.modules[name]
+        spec = importlib.util.spec_from_file_location(
+            name, REPO / "mcp" / "agent_mcp.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_daemons_writer_reaches_the_gate(self):
+        agent_mcp = self._agent_mcp()
+        claim = {"owner": "agent:A", "epoch": 1, "token": "1"}
+
+        class Client:
+            def call(self, method, params):
+                self.method = method
+                return {"found": True, "binding": {"session_role": "execution"},
+                        "item": {"state": "ACTIVE"}, "current_writer": claim}
+
+        handle = agent_mcp.DaemonBindings(Client())
+        got = handle.get("session:1")
+        self.assertEqual(got["current_writer"], claim)
+        self.assertEqual(got["binding"]["session_role"], "execution")
 
 
 if __name__ == "__main__":

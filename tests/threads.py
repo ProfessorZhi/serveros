@@ -30,6 +30,27 @@ and a reader can grep for it.
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
+#: The kernel, loaded the way every other test loads a runtime module: under the
+#: synthetic name the daemon uses, so the `ThreadRefused` class caught here is
+#: the SAME class the daemon raises.
+_COORDINATION_NAME = "serveros_runtime_coordination"
+
+
+def _coordination():
+    if _COORDINATION_NAME in sys.modules:
+        return sys.modules[_COORDINATION_NAME]
+    path = Path(__file__).resolve().parent.parent / "runtime" / "coordination.py"
+    spec = importlib.util.spec_from_file_location(_COORDINATION_NAME, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_COORDINATION_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 ASSUME_BOUND = "assume-bound"
 REFUSE = "refuse"
 MODES = (ASSUME_BOUND, REFUSE)
@@ -84,28 +105,16 @@ class MemoryBindings:
                 "current_writer": self._current_writer(record)}
 
     def _current_writer(self, record):
-        """The open binding for the same Item with the highest writer epoch.
+        """The scope's current writer, derived by the KERNEL's own function.
 
-        Mirrors what the production handle computes from the scope's owner: the
-        current writer is the newest claim on the Item, and a thread whose claim
-        is older is STALE. Returns None when nothing claims a writer, which the
-        kernel reads as UNKNOWN and does not gate on.
+        Delegated rather than re-derived. A second derivation of "who may write
+        this scope" is a second answer to it, and this double exists to mirror
+        the daemon — not to invent a rule the daemon does not have.
         """
         if not record or not record.get("bound_item_ref"):
             return None
-        item = str(record["bound_item_ref"])
-        best = None
-        for other in list(self._records.values()):
-            if str(other.get("bound_item_ref")) != item:
-                continue
-            if str(other.get("state") or "").upper() == "CLOSED":
-                continue
-            claim = other.get("writer")
-            if not claim:
-                continue
-            if best is None or int(claim.get("epoch", 0)) > int(best.get("epoch", 0)):
-                best = claim
-        return dict(best) if best is not None else None
+        return _coordination().current_writer(self._records,
+                                              record["bound_item_ref"])
 
     def put(self, record):
         ref = str(record["session_ref"])

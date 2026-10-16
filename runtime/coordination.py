@@ -375,6 +375,93 @@ def writer_axis(binding_record, *, current_writer=None, now=None) -> str:
     return "STALE"
 
 
+def current_writer(bindings, item_ref) -> dict | None:
+    """The current writer of an Item's write scope, from the binding records.
+
+    The OPEN binding bound to `item_ref` whose claim is newest, where newer is
+    `(epoch, token, session_ref)` — the session ref is the final tiebreak so
+    that two claims minted at the same epoch and token still resolve to ONE
+    winner instead of to whichever dict the caller happened to iterate last.
+    A CLOSED binding's claim is history, not authority.
+
+    PURE, and ONE implementation. The daemon passes its store's bindings, the
+    kernel's own gate is tested against this, and `tests/threads.py` mirrors it
+    by calling it — a second derivation would be a second answer to who may
+    write a scope, which is the failure `#237` is about.
+    """
+    best = None
+    best_key = None
+    for ref, record in (bindings or {}).items():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("bound_item_ref") or "") != str(item_ref or ""):
+            continue
+        if str(record.get("state") or "").upper() == "CLOSED":
+            continue
+        claim = record.get("writer")
+        if not claim:
+            continue
+        try:
+            key = (int(claim.get("epoch", 0)), int(claim.get("token", 0)), str(ref))
+        except (TypeError, ValueError):
+            continue
+        if best_key is None or key > best_key:
+            best_key, best = key, claim
+    return dict(best) if best is not None else None
+
+
+def scope_has_writer(bindings, item_ref) -> bool:
+    """Whether anyone claims the write scope — the fact a mint is gated on.
+
+    Separate from `current_writer` because the two questions differ: "who is
+    the writer" and "is there one at all". A scope with no claim at all is a
+    scope this kernel does not gate (a thread that claims nothing and a scope
+    nobody claims are both un-armed), and that is what keeps every pre-existing
+    thread working after this field was introduced.
+    """
+    for record in (bindings or {}).values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("bound_item_ref") or "") != str(item_ref or ""):
+            continue
+        if str(record.get("state") or "").upper() == "CLOSED":
+            continue
+        if record.get("writer"):
+            return True
+    return False
+
+
+def mint_writer(bindings, item_ref, *, owner, expires_at=None) -> dict:
+    """The claim a NEW writer for a scope carries. Pure.
+
+    The epoch is held at the scope's current epoch (1 when nobody has claimed
+    it) and the token advances past every token already minted for the Item, so
+    a successor always outranks its predecessor. The daemon calls this when it
+    records the FIRST writer of a scope; it is not called for a scope that
+    already has one, because a second thread arriving at an owned scope is not
+    a transfer — a transfer is what revokes the incumbent.
+    """
+    epoch = 1
+    token = 0
+    for record in (bindings or {}).values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("bound_item_ref") or "") != str(item_ref or ""):
+            continue
+        claim = record.get("writer")
+        if not claim:
+            continue
+        try:
+            epoch = max(epoch, int(claim.get("epoch", 0)))
+            token = max(token, int(claim.get("token", 0)))
+        except (TypeError, ValueError):
+            continue
+    claim = {"owner": str(owner), "epoch": epoch, "token": token + 1}
+    if expires_at:
+        claim["expires_at"] = str(expires_at)
+    return claim
+
+
 def admit_work(*, binding_record, work_item=None, item_state=None,
                outcome=None, current_writer=None, now=None) -> dict:
     """Whether this call may hand work to this thread. Raises `ThreadRefused`.
@@ -444,27 +531,39 @@ def admit_work(*, binding_record, work_item=None, item_state=None,
     claim = (binding_record or {}).get("writer") if binding_record else None
     writer_state = writer_axis(binding_record, current_writer=current_writer,
                                now=now)
-    if claim and writer_state != "CURRENT":
-        current = current_writer or {}
+    refused_why = None
+    if claim:
         if writer_state == "EXPIRED":
-            why = "its claim has expired, so the scope must be re-acquired"
+            refused_why = "its claim has expired, so the scope must be re-acquired"
         elif writer_state == "STALE":
-            why = ("the scope has moved to a different owner, epoch or token, "
-                   "so this thread was superseded")
-        else:
-            why = ("no current-writer record was available to check the claim "
-                   "against, and a write nobody could authorize is refused "
-                   "rather than admitted on the claim alone")
+            refused_why = ("the scope has moved to a different owner, epoch or "
+                           "token, so this thread was superseded")
+        elif writer_state == "UNKNOWN":
+            refused_why = ("no current-writer record was available to check the "
+                           "claim against, and a write nobody could authorize is "
+                           "refused rather than admitted on the claim alone")
+    elif current_writer is not None:
+        # A thread that claims NOTHING, on a scope that HAS an owner. Admitting
+        # it would put a second writer on a scope that already has one — the
+        # double write #237 forbids. A thread claiming nothing is ungated only
+        # while the scope is UNOWNED, which is what keeps every pre-existing
+        # (v1) thread working; the moment a scope gets a writer, every other
+        # thread on it is fenced.
+        refused_why = ("this thread claims no writer while the scope is owned by "
+                       "another thread, and admitting it would be a second writer")
+    if refused_why is not None:
+        current = current_writer or {}
+        who = ("no claim" if not claim else
+               f"{claim.get('owner')!r} at epoch {claim.get('epoch')!r} token "
+               f"{claim.get('token')!r}")
         raise ThreadRefused(
             "NOT_CURRENT_WRITER",
-            f"this thread claims the write scope {bound or '(unbound)'} as "
-            f"{claim.get('owner')!r} at epoch {claim.get('epoch')!r} token "
-            f"{claim.get('token')!r}, and it is not the current writer "
-            f"({writer_state}): {why}. The current writer is "
-            f"{current.get('owner')!r} at epoch {current.get('epoch')!r} token "
-            f"{current.get('token')!r}. Read the current writer from its owner "
-            f"and stop writing here; a thread that lost the scope does not get "
-            f"it back by writing again")
+            f"this thread claims the write scope {bound or '(unbound)'} as {who}, "
+            f"and it is not the current writer ({writer_state}): {refused_why}. "
+            f"The current writer is {current.get('owner')!r} at epoch "
+            f"{current.get('epoch')!r} token {current.get('token')!r}. Read the "
+            f"current writer from its owner and stop writing here; a thread that "
+            f"lost the scope does not get it back by writing again")
 
     return {"state": "ADMITTED", "session_role": binding_record.get("session_role"),
             "bound_item_ref": bound, "item_axis": axis,
