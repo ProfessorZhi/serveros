@@ -117,8 +117,51 @@ OBSERVATION_VALUE_KEYS: dict[str, dict[str, str]] = {
     # empty value: success-shaped, and silently empty.
     "services": {"services": "service_rows"},
     "connector": {},
-    "gpu.readonly": {},
+    # The card counters and the instant this process asked for them. `gpus` is
+    # the reading; `sample_time` is NOT `observed_at` — nvidia-smi stamps
+    # nothing, so this is the caller's own clock at the moment of the question,
+    # and the document's `freshness` stays NOT_ASSERTED either way. The rows are
+    # projected by `_gpu_value` (all-or-nothing, like `storage.readonly`), and
+    # this map is what tells the reader which members are ITS shape, so a
+    # document that grew a `processes` list is refused rather than carried.
+    "gpu.readonly": {"gpus": "gpu_rows", "sample_time": "sample_time"},
 }
+
+#: A card counter. `index` and `label` identify a card to a human without naming
+#: an instance — no UUID, no serial, no bus id — which is why `label` is
+#: charset-bounded below rather than carried as free text.
+GPU_ROW_KEYS = frozenset({"index", "label", "gpu_util_percent",
+                          "memory_used_bytes", "memory_total_bytes",
+                          "temperature_c"})
+
+#: What a `gpu.readonly` value may hold. `sample_time` is optional: the producer
+#: omits it when its own clock gave it nothing, and its absence is not a
+#: malformed document.
+GPU_VALUE_KEYS = frozenset({"gpus", "sample_time"})
+
+#: Mirrors of the wire schema's own bounds. Named here so a refusal can quote
+#: the number rather than describe it: `kMaxGpuRows` and the row schema in
+#: `core-lite-status.v1.schema.json`.
+GPU_MAX_ROWS = 16
+GPU_MAX_INDEX = 4096
+GPU_LABEL_MAX = 64
+GPU_TEMP_MIN, GPU_TEMP_MAX = -40.0, 150.0
+
+#: The one free-text field on a row, and the charset a model name is allowed.
+#: No `/`, no `:`, no quote, no backslash and no shell metacharacter, so a
+#: forged answer cannot dress a command line as a label.
+GPU_LABEL_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .-_+()"
+)
+
+#: A run this long is an IDENTIFIER, not a marketing name: a UUID segment is
+#: eight, a serial is a long digit run. The longest run in `A6000` is five and in
+#: `RTX 8000` is four, so ordinary names pass. Refusing the RUN rather than the
+#: whole shape is what keeps model names working while no instance id travels
+#: here; and the direction of the guess is deliberate — a name wrongly refused
+#: costs a label, an identifier wrongly published is a hardware identifier
+#: leaked.
+GPU_IDENTIFIER_RUN = 8
 
 #: The words one service row's `state` may hold. Closed, and copied from the
 #: native adapter's own `kServiceStates` with `UNKNOWN` deliberately EXCLUDED:
@@ -557,6 +600,155 @@ def _storage_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any
     return _OK, out
 
 
+def _finite_number(node: Any) -> bool:
+    """A real number, and not a bool. `bool` is an `int` in Python, so a
+    document that wrote `true` where a percentage belongs would otherwise be
+    read as `1` — a measured-looking value for a field nobody measured."""
+    if isinstance(node, bool) or not isinstance(node, (int, float)):
+        return False
+    return node == node and node not in (float("inf"), float("-inf"))
+
+
+def _gpu_label_ok(text: Any) -> bool:
+    """Whether a row's `label` looks like a model name and nothing else.
+
+    The same rule the producer applies before it will emit a label, restated
+    here because a reader may not take a producer's word for it: a document is
+    free to write anything, and this is the one field on the row that is text.
+    """
+    if not isinstance(text, str) or not text or len(text) > GPU_LABEL_MAX:
+        return False
+    if any(character not in GPU_LABEL_CHARS for character in text):
+        return False
+    run = 0
+    for character in text:
+        hex_digit = character in "0123456789abcdefABCDEF"
+        run = run + 1 if hex_digit else 0
+        if run >= GPU_IDENTIFIER_RUN:
+            return False
+    return True
+
+
+def _gpu_rows(rows: Any, sink: list[Refusal]) -> tuple[str, Any]:
+    """Validate the card rows. Returns (state, rows) with state in _OK/_BAD.
+
+    All-or-nothing, like `storage.readonly` and for the same reason: the
+    contract has the producer refuse the WHOLE sample when one card's answer
+    does not survive, because a reader comparing two cards has no way to know
+    one row was silently dropped. A marker in a numeric field is refused here
+    rather than carried, matching the producer's own rule that an `N/A` in any
+    numeric field makes the sample UNAVAILABLE — and matching this reader's
+    habit of trusting a document's markers only where the producer writes them
+    (`INLINE_UNAVAILABLE_OBSERVATIONS`).
+    """
+    if not isinstance(rows, list):
+        sink.append(Refusal("MALFORMED_VALUE", "gpu.readonly.gpus",
+                            "not a list of rows"))
+        return _BAD, None
+    if not rows:
+        # A host with no card is `UNAVAILABLE` in the contract, and the producer
+        # says so by not being PRESENT at all. An empty list is therefore not a
+        # reading of "zero cards" — it is a document this reader does not know,
+        # and reporting it PRESENT would be a success-shaped nothing.
+        sink.append(Refusal("MALFORMED_VALUE", "gpu.readonly.gpus",
+                            "an empty row list is not a reading"))
+        return _BAD, None
+    if len(rows) > GPU_MAX_ROWS:
+        sink.append(Refusal("MALFORMED_VALUE", "gpu.readonly.gpus",
+                            f"more than {GPU_MAX_ROWS} rows"))
+        return _BAD, None
+
+    out: list[dict[str, Any]] = []
+    seen_index: set[int] = set()
+    for position, row in enumerate(rows):
+        where = f"gpu.readonly.gpus[{position}]"
+        if not isinstance(row, dict):
+            sink.append(Refusal("MALFORMED_VALUE", where, "not an object"))
+            return _BAD, None
+        unknown = set(row) - GPU_ROW_KEYS
+        if unknown:
+            sink.append(Refusal("UNKNOWN_FIELD", where,
+                                f"{len(unknown)} key(s) this reader does not "
+                                f"carry were dropped"))
+            return _BAD, None
+        missing = GPU_ROW_KEYS - set(row)
+        if missing:
+            # Every member is required on every row: a row without one is not
+            # this shape, and filling it in would be inventing a measurement.
+            sink.append(Refusal("MALFORMED_VALUE", where,
+                                f"{len(missing)} required field(s) absent"))
+            return _BAD, None
+
+        index = row["index"]
+        if not _bytes_ok(index) or index > GPU_MAX_INDEX:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.index",
+                                "not an integer in range"))
+            return _BAD, None
+        if index in seen_index:
+            # Two answers for one card is a contradiction, and picking one is
+            # picking silently.
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.index",
+                                "duplicate card index"))
+            return _BAD, None
+        seen_index.add(index)
+
+        if not _gpu_label_ok(row["label"]):
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.label",
+                                "not a bounded model name"))
+            return _BAD, None
+
+        used, total = row["memory_used_bytes"], row["memory_total_bytes"]
+        if not _bytes_ok(used) or not _bytes_ok(total):
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.memory",
+                                "not a non-negative integer"))
+            return _BAD, None
+        if used > total:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.memory",
+                                "used memory exceeds total"))
+            return _BAD, None
+
+        util, temperature = row["gpu_util_percent"], row["temperature_c"]
+        if not _finite_number(util) or not 0 <= util <= 100:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.gpu_util_percent",
+                                "not a number in [0, 100]"))
+            return _BAD, None
+        if not _finite_number(temperature) or not (GPU_TEMP_MIN <= temperature <= GPU_TEMP_MAX):
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.temperature_c",
+                                f"not a number in [{GPU_TEMP_MIN:g}, "
+                                f"{GPU_TEMP_MAX:g}]"))
+            return _BAD, None
+
+        out.append({"index": index, "label": row["label"],
+                    "gpu_util_percent": util, "memory_used_bytes": used,
+                    "memory_total_bytes": total, "temperature_c": temperature})
+    return _OK, out
+
+
+def _gpu_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any, bool]:
+    """Project a `gpu.readonly` value. Returns (state, value, all_measured).
+
+    `sample_time` is validated when present and its ABSENCE does not make the
+    reading partial: the wire schema marks it optional, the producer omits it
+    when its own clock gave it nothing, and the document's `freshness` is
+    NOT_ASSERTED whether it is there or not. It is never read as `observed_at`.
+    """
+    state, rows = _gpu_rows(value["gpus"], sink)
+    if state != _OK:
+        return _BAD, None, False
+    out: dict[str, Any] = {"gpus": rows}
+    if "sample_time" in value:
+        stamp = _as_iso(value["sample_time"])
+        if stamp is None:
+            # A time this reader cannot place is not a time: reading it as UTC
+            # would move it, and reading it as "now" would make the reading look
+            # fresh forever.
+            sink.append(Refusal("MALFORMED_VALUE", "gpu.readonly.sample_time",
+                                "not a timestamp this reader can place"))
+            return _BAD, None, False
+        out["sample_time"] = value["sample_time"]
+    return _OK, out, True
+
+
 def _project_value(name: str, value: dict[str, Any], sink: list[Refusal]
                    ) -> tuple[str, Any, bool]:
     """Project one PRESENT value. Returns (state, value, all_measured)."""
@@ -566,6 +758,15 @@ def _project_value(name: str, value: dict[str, Any], sink: list[Refusal]
         sink.append(Refusal("UNKNOWN_FIELD", f"{name}.value",
                             f"{len(unknown)} key(s) this reader does not carry "
                             f"were dropped"))
+    if name == "gpu.readonly":
+        # Its members are not scalars, so it is projected here rather than
+        # through the generic loop below — the same shape as
+        # `storage.readonly`, and for the same reason.
+        unknown = set(value) - GPU_VALUE_KEYS
+        if unknown:
+            return _BAD, None, False
+        return _gpu_value(value, sink)
+
     if name == "storage.readonly":
         state, projected = _storage_value(value, sink)
         # The native adapter assembles storage from two blocks that are each
@@ -1006,6 +1207,14 @@ __all__ = [
     "SERVICE_UNPROJECTED_KEYS",
     "SERVICE_SOURCES",
     "MAX_SERVICE_ROWS",
+    "GPU_ROW_KEYS",
+    "GPU_VALUE_KEYS",
+    "GPU_MAX_ROWS",
+    "GPU_MAX_INDEX",
+    "GPU_LABEL_MAX",
+    "GPU_TEMP_MIN",
+    "GPU_TEMP_MAX",
+    "GPU_IDENTIFIER_RUN",
     "COMPLETENESS_WORDS",
     "K_BYTES",
     "K_RATE",
