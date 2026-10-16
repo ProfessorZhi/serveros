@@ -9,6 +9,7 @@ import contextlib
 import copy
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from fleet_mcp.deploy import install  # noqa: E402
 from fleet_mcp.deploy import next_install, next_dual_stack_preflight as gate  # noqa: E402
 
 
@@ -155,6 +157,13 @@ class NextOnlyInstaller(unittest.TestCase):
                         "bind": "127.0.0.1", "probe": "http://127.0.0.1:8401" if old else "http://127.0.0.1:8402"}
             def read_link(self, path):
                 return None
+            def systemctl(self, *args, check=True):
+                # Mirrors the real module: `stage` reads enablement before any
+                # write, and only the exact string `disabled` is publishable.
+                return type("Result", (), {
+                    "returncode": 0,
+                    "stdout": ("disabled\n" if args[:1] == ("is-enabled",)
+                               else "inactive\n")})()
             def main(self, args):
                 self.calls.append(args)
                 # The real installer prints one JSON receipt on this path.
@@ -439,6 +448,11 @@ class TheExecutePathMustProduceExactlyOneReceiptTest(unittest.TestCase):
                         "probe": "http://127.0.0.1:8401" if old else "http://127.0.0.1:8402"}
             def read_link(self, path):
                 return None
+            def systemctl(self, *args, check=True):
+                return type("Result", (), {
+                    "returncode": 0,
+                    "stdout": ("disabled\n" if args[:1] == ("is-enabled",)
+                               else "inactive\n")})()
             def main(self, args):
                 self.calls.append(args)
                 emit()
@@ -499,8 +513,13 @@ class TheExecutePathMustProduceExactlyOneReceiptTest(unittest.TestCase):
                         "probe": "http://127.0.0.1:8401" if old else "http://127.0.0.1:8402"}
             def read_link(self, path):
                 return None
-            def systemctl(self, *a, **k):
-                return type("Result", (), {"returncode": 0, "stdout": ""})()
+            def systemctl(self, *args, **kw):
+                # Enablement must be the exact string `disabled` to publish;
+                # `is-active` is not consulted on the `stage` path.
+                return type("Result", (), {
+                    "returncode": 0,
+                    "stdout": ("disabled\n" if args[:1] == ("is-enabled",)
+                               else "inactive\n")})()
             def main(self, args):
                 print(legacy_full_receipt(started=False, health=None))
                 raise SystemExit(3)
@@ -620,6 +639,324 @@ class ASameRevisionRestartIsNotUntouchedTest(unittest.TestCase):
             next_install._restore_failed_install(Attempted(), root, (rev, None),
                                                  "attempted", effect_attempted=True)
         self.assertEqual(stopped, [("stop", gate.NEXT_UNIT)])
+
+
+def _git_repo() -> tempfile.TemporaryDirectory:
+    """A real repository, because `install.py::git_revision` reads real state."""
+    temp = tempfile.TemporaryDirectory(prefix="fleet-install-rev-")
+    root = Path(temp.name)
+    def run(*a):
+        return subprocess.run(["git", "-C", str(root), *a],
+                              capture_output=True, text=True, check=True)
+    run("init", "-q")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "t")
+    (root / "fleet_mcp").mkdir()
+    (root / "fleet_mcp" / "marker.py").write_text("x = 1\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    return temp
+
+
+def _head(repo: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _publish(command, p, *, active="inactive", enabled="disabled",
+             enabled_error=False, extra=(), accept=False, head=None, record=None):
+    """Run a non-starting publish against a unit whose state we choose.
+
+    `accept=False` makes the installer unreachable, so a test asserting a
+    refusal also proves nothing reached the installer.
+    """
+    class FakeMod:
+        def binding(self, path):
+            old = str(path) == p["v1"]["config_path"]
+            return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
+                    "probe": "http://127.0.0.1:8401" if old
+                    else "http://127.0.0.1:8402"}
+        def read_link(self, path):
+            return None
+        def wait_for_health(self, *a, **k):
+            return {"ok": True}
+        def git_revision(self, source):
+            return head
+        def systemctl(self, *args, check=True):
+            if record is not None:
+                record.append(args)
+            if args[:1] == ("is-active",):
+                return type("Result", (), {
+                    "returncode": 0, "stdout": active + "\n"})()
+            if args[:1] == ("is-enabled",):
+                if enabled_error:
+                    raise RuntimeError("systemctl is-enabled could not be read")
+                return type("Result", (), {
+                    "returncode": 0, "stdout": enabled + "\n"})()
+            return type("Result", (), {"returncode": 0, "stdout": ""})()
+        def main(self, args):
+            if not accept:
+                raise AssertionError("nothing may reach the installer")
+            print(legacy_stage_receipt())
+            return 0
+    with mock.patch.object(next_install, "_load_legacy_installer",
+                           return_value=FakeMod()):
+        return cli([command, "--execute", "--owner-approved", *extra], p)
+
+
+class ANonStartingPublishNeedsAUnitThatCannotStartItselfTest(unittest.TestCase):
+    """`Linger` is on: a unit that can start itself runs the new bytes later.
+
+    The empty revision root proves only that nothing is SERVING from this tree.
+    It proves nothing about the unit, and `stage` and `install --no-start` used
+    to read no unit state at all. Two distinct hazards follow, and both are
+    refused:
+
+    * a unit left ENABLED by an earlier `install` is started by the user manager
+      at boot/login, so the published revision runs with no activation approval;
+    * a unit in `activating (auto-restart)` re-evaluates `ExecStart` on every
+      attempt (the template sets `Restart=on-failure`), so it can pick the
+      revision up within `RestartSec` while `is-enabled` still reads `disabled`.
+
+    A unit that does NOT EXIST YET is the first-install state and is accepted:
+    `systemctl --user is-enabled` answers `not-found` for it (measured on this
+    host, rc=4), which is strictly safer than `disabled` — a unit that does not
+    exist cannot start at all, and refusing it would refuse the very first
+    `stage`, the command that creates the unit file.
+    """
+
+    def _bootstrap(self) -> dict:
+        p = candidate()
+        p["next"]["public_mcp_url"] = None
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        return p
+
+    def test_a_unit_that_does_not_exist_yet_is_still_publishable(self):
+        """The first install: `is-enabled` answers `not-found` — and that is safe.
+
+        Refusing it would refuse the very command that creates the unit file, so
+        this is the regression guard for that over-reach.
+        """
+        rc, out = _publish("stage", self._bootstrap(),
+                           enabled="not-found", accept=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+    def test_an_enabled_next_is_refused_even_with_an_empty_root(self):
+        rc, out = _publish("stage", self._bootstrap(), enabled="enabled")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertIn("disabled", out["reason"])
+        self.assertIn("Linger", out["reason"])
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+
+    def test_any_other_enablement_is_refused(self):
+        """Fail closed: only `disabled` and `not-found` may be published to."""
+        for estate in ("enabled", "static", "masked", "indirect", "generated", ""):
+            with self.subTest(enablement=estate):
+                rc, out = _publish("stage", self._bootstrap(), enabled=estate)
+                self.assertEqual(rc, 2, out)
+                self.assertIn("disabled", out["reason"])
+
+    def test_a_unit_that_could_restart_is_refused(self):
+        """`Restart=on-failure`: an auto-restarting unit picks the bytes up."""
+        for estate in ("activating", "active", "failed", "deactivating"):
+            with self.subTest(active=estate):
+                rc, out = _publish("stage", self._bootstrap(),
+                                   active=estate, enabled="disabled")
+                self.assertEqual(rc, 2, out)
+                self.assertIn("inactive", out["reason"])
+
+    def test_an_unreadable_enablement_is_refused(self):
+        rc, out = _publish("stage", self._bootstrap(), enabled_error=True)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("enablement", out["reason"])
+
+    def test_the_stage_preview_states_the_whole_precondition(self):
+        """The preview is what an operator approves: it must not be looser."""
+        preview = next_install.plan(self._bootstrap(), "stage")
+        self.assertEqual(preview["decision"], "DRY_RUN_READY")
+        requires = " ".join(preview["requires"])
+        self.assertIn("INACTIVE", requires)
+        self.assertIn("disabled", requires)
+        self.assertIn("not installed yet", requires)
+        self.assertNotIn("memory-PSI", requires)
+
+
+class InstallNoStartIsAlsoANonStartingPublishTest(unittest.TestCase):
+    """`install --no-start` publishes and starts nothing — the same hazard class.
+
+    It writes the revision AND the unit file and starts nothing, so it needs the
+    same precondition as `stage`. Reading no unit state here left the stated
+    invariant true for two of the three verbs that publish without starting.
+    """
+
+    def test_install_no_start_refuses_an_enabled_unit(self):
+        rc, out = _publish("install", candidate(), enabled="enabled",
+                           extra=("--no-start",))
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertIn("disabled", out["reason"])
+
+    def test_install_no_start_refuses_a_restarting_unit(self):
+        rc, out = _publish("install", candidate(), active="activating",
+                           extra=("--no-start",))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("inactive", out["reason"])
+
+    def test_install_no_start_is_allowed_where_no_unit_exists_yet(self):
+        rc, out = _publish("install", candidate(), enabled="not-found",
+                           extra=("--no-start",), accept=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+    def test_the_install_no_start_preview_states_the_precondition(self):
+        preview = next_install.plan(candidate(), "install", no_start=True)
+        self.assertEqual(preview["decision"], "DRY_RUN_READY")
+        self.assertIn("--no-start", " ".join(preview["requires"]))
+
+    def test_a_starting_install_is_not_gated_on_enablement(self):
+        """`install` without `--no-start` STARTS, so enablement is not its gate."""
+        preview = next_install.plan(candidate(), "install")
+        self.assertEqual(preview["decision"], "DRY_RUN_READY")
+        self.assertNotIn("DISABLED", " ".join(preview["requires"]).upper())
+
+    def test_a_starting_install_reads_no_unit_state_at_all(self):
+        """Behavioural, not just preview text: the start verb takes no unit guard.
+
+        Asserting the preview string alone would pass for an empty `requires`.
+        This runs the real path and requires that no `is-active` / `is-enabled`
+        read happened — the guard belongs to the three publishing verbs only.
+        """
+        calls = []
+        with mock.patch.object(next_install, "_current_pressure",
+                               return_value=None), \
+             mock.patch.object(next_install, "_effective_limit_errors",
+                               return_value=[]):
+            rc, out = _publish("install", candidate(), record=calls, accept=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+        reads = [c for c in calls
+                 if c[:1] in (("is-active",), ("is-enabled",))]
+        self.assertEqual(reads, [], "the starting verb must not read unit state")
+
+
+class AMistypedRevisionTakesNoSystemActionTest(unittest.TestCase):
+    """A validation refusal must be free of system action.
+
+    The shared installer refuses a `--revision` the source's HEAD disagrees
+    with, but it refuses by DYING — and this wrapper treats a dying installer as
+    an attempted effect (it may have died after writing) and runs a Next-only
+    stop/rollback. That is the right default for a death of unknown timing and
+    the wrong answer for a mistyped SHA: nothing was written, so a healthy Next
+    must not be stopped for it. The wrapper pre-checks before any effect, which
+    is what keeps the refusal off that path.
+    """
+
+    def _mistyped(self, command, p, *, extra=()):
+        calls = []
+        with mock.patch.object(next_install, "_current_pressure",
+                               return_value=None):
+            rc, out = _publish(command, p, extra=("--revision", "d" * 40, *extra),
+                               head="c" * 40, record=calls)
+        return rc, out, calls
+
+    def test_a_mistyped_revision_on_a_starting_install_stops_nothing(self):
+        """The exact shape a typo would take: `install --execute --revision ...`."""
+        rc, out, calls = self._mistyped("install", candidate())
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["executes"], [])
+        self.assertEqual(out["writes"], [])
+        self.assertIn("--revision", out["reason"])
+        self.assertEqual(calls, [], "no systemctl call of any kind")
+
+    def test_a_mistyped_revision_on_a_stage_stops_nothing(self):
+        p = candidate()
+        p["next"]["public_mcp_url"] = None
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        rc, out, calls = self._mistyped("stage", p)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(calls, [])
+
+    def test_a_revision_equal_to_head_is_not_refused_by_the_pre_check(self):
+        """It is a pre-check, not a second and stricter gate."""
+        with mock.patch.object(next_install, "_current_pressure",
+                               return_value=None):
+            rc, out = _publish("install", candidate(),
+                               extra=("--revision", "c" * 40, "--no-start"),
+                               head="c" * 40, accept=True)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+
+class ExplicitRevisionMustRestateAGitHeadTest(unittest.TestCase):
+    """`--revision` is the route for a NON-git source, never an override.
+
+    The revision names the revision directory and is recorded in ARTIFACT.json,
+    so on a git source it may only restate the HEAD: a caller-chosen SHA ties
+    those bytes to a commit that never described them. The refusal happens
+    before the binding is read, which is what the absent config below uses to
+    tell the two gates apart.
+    """
+
+    ABSENT_CONFIG = "/nonexistent/fleet-binding.yaml"
+
+    def _run(self, source: str, revision: str | None) -> str:
+        argv = ["install", "--source", str(source), "--config", self.ABSENT_CONFIG,
+                "--runtime-root", "/nonexistent/runtime-assets"]
+        if revision is not None:
+            argv += ["--revision", revision]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                install.main(argv)
+        return err.getvalue()
+
+    def test_a_differing_revision_on_a_git_source_is_refused_before_any_read(self):
+        with _git_repo() as repo:
+            err = self._run(repo, "d" * 40)
+        self.assertIn("--revision", err)
+        self.assertIn("is not the git HEAD", err)
+        # Refused BEFORE the binding: a later gate would have named the file.
+        self.assertNotIn("no binding at", err)
+
+    def test_the_git_head_itself_is_accepted_and_the_next_gate_speaks(self):
+        with _git_repo() as repo:
+            err = self._run(repo, _head(repo))
+        self.assertIn("no binding at", err)          # reached the NEXT gate
+        self.assertNotIn("is not the git HEAD", err)
+
+    def test_a_non_git_source_keeps_the_explicit_revision_route(self):
+        """The escape hatch a non-git artifact needs must not be closed."""
+        with tempfile.TemporaryDirectory(prefix="fleet-install-nongit-") as plain:
+            err = self._run(plain, "c" * 40)
+        self.assertIn("no binding at", err)
+        self.assertNotIn("is not the git HEAD", err)
+
+    def test_omitting_revision_on_a_non_git_source_still_demands_one(self):
+        with tempfile.TemporaryDirectory(prefix="fleet-install-nongit-") as plain:
+            err = self._run(plain, None)
+        self.assertIn("pass --revision", err)
+
+
+class TheLiveInstallGatesWereNotLoosenedTest(unittest.TestCase):
+    """Hardening a NON-starting publish must not soften the live `install` gate."""
+
+    def test_the_canary_install_still_demands_the_oauth_attestation(self):
+        p = candidate()
+        p["attestations"]["next_oauth_client_authorized"] = False
+        self.assertEqual(next_install.plan(p, "install")["decision"], "BLOCKED")
+
+    def test_the_publish_guard_did_not_leak_onto_the_install_preview(self):
+        """`install` STARTS, so enablement is not its precondition."""
+        preview = next_install.plan(candidate(), "install")
+        self.assertEqual(preview["decision"], "DRY_RUN_READY")
+        self.assertNotIn("DISABLED", " ".join(preview["requires"]))
 
 
 if __name__ == "__main__":

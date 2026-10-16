@@ -103,6 +103,64 @@ def git_revision(source: Path) -> str | None:
     return result.stdout.strip() or None
 
 
+def tree_state(source: Path) -> str | None:
+    """Why a git source cannot be published as-is, or None when it is clean.
+
+    A revision name is a claim about BYTES, and this installer copies `fleet_mcp/`
+    and `fleet/` from the FILESYSTEM, not from the object store. So matching
+    `--revision` to `HEAD` is not enough: if the working tree carries uncommitted
+    edits, the copied bytes are not the commit, and `ARTIFACT.json` would name a
+    revision those bytes do not match. This is the check that makes the claim
+    true rather than merely well-typed.
+
+    The REAL git dir is resolved with `git rev-parse --absolute-git-dir` instead
+    of assuming `<source>/.git`: in a linked worktree `.git` is a FILE holding a
+    `gitdir:` pointer, so the index lock lives wherever that pointer leads, and a
+    path guess would look for a lock that cannot exist there.
+
+    Ignored files are deliberately NOT counted. `git status` excludes them, and
+    `.gitignore` is exactly where build residue belongs — requiring a tree with
+    no ignored files would refuse every normal checkout. Tracked edits and
+    untracked non-ignored paths are the dirty tree; `--untracked-files=all`
+    lists them individually rather than collapsing a directory to one entry.
+
+    Every unreadable answer is a refusal: this fails closed.
+    """
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(source), *args],
+                              capture_output=True, text=True)
+    try:
+        gitdir = git("rev-parse", "--absolute-git-dir")
+    except OSError as exc:
+        return (f"cannot read the git directory of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if gitdir.returncode != 0 or not gitdir.stdout.strip():
+        # `git_revision` already read a HEAD from here, so a gitdir that cannot
+        # be resolved now is a repository that changed under us, not a non-git
+        # source. Refuse rather than fall through to publishing.
+        return (f"cannot read the git directory of {source}; refusing to "
+                f"publish an unverifiable tree")
+    lock = Path(gitdir.stdout.strip()) / "index.lock"
+    if lock.exists():
+        return (f"another git process holds {lock}; the tree can change during "
+                f"the copy, so the artifact would not be the revision it names")
+    try:
+        status = git("status", "--porcelain", "--untracked-files=all")
+    except OSError as exc:
+        return (f"cannot read the working-tree state of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if status.returncode != 0:
+        return (f"cannot read the working-tree state of {source} "
+                f"(git status exited {status.returncode})")
+    if status.stdout.strip():
+        count = len(status.stdout.splitlines())
+        return (f"{source} has {count} uncommitted path(s) (tracked edits or "
+                f"untracked files); the installer copies the working tree, so "
+                f"the artifact would carry a revision name those bytes do not "
+                f"match. Commit them, or point --source at a clean tree.")
+    return None
+
+
 def read_link(path: Path) -> Path | None:
     if not path.is_symlink():
         return None
@@ -189,10 +247,37 @@ def wait_for_health(base: str, seconds: float = 20.0) -> dict | None:
 
 def install(args: argparse.Namespace) -> int:
     source = Path(args.source).expanduser().resolve()
-    revision = args.revision or git_revision(source)
+    head = git_revision(source)
+    # `--revision` is the route for a source that is NOT a git repository: there
+    # is no HEAD to read, so the caller must name the bytes. On a git source it
+    # is not an override. The revision names the directory and is written into
+    # ARTIFACT.json, so a caller-chosen SHA would tie those bytes to a commit
+    # that never described them — and, for a starting install, would be the
+    # identity the running service reports. A mismatch is refused rather than
+    # ignored: silently publishing HEAD under the caller's name would be a
+    # different lie, about which revision was asked for.
+    if args.revision and head and args.revision != head:
+        die(f"--revision {args.revision!r} is not the git HEAD of {source} "
+            f"({head!r}). A revision name records which bytes the artifact was "
+            f"built from; drop --revision to use the HEAD, or point --source at "
+            f"the tree those bytes are in. --revision stays available for a "
+            f"source that is not a git repository at all.")
+    revision = args.revision or head
     if not revision:
         die(f"cannot read a git revision from {source}; pass --revision so the "
             f"artifact records which bytes it was built from.")
+    # The revision must not only be NAMED right, the tree must BE it. This
+    # installer copies `PAYLOAD` from the filesystem, so a dirty working tree
+    # would publish bytes under a revision name that never described them —
+    # including in the `--revision == HEAD` and `--revision`-omitted cases that
+    # the check above cannot distinguish. Refuse here: before the binding is
+    # read, before anything is copied, and before any systemctl action. A source
+    # that is not a git repository makes no HEAD claim, so this does not apply
+    # to it and `--revision` stays its route.
+    if head:
+        problem = tree_state(source)
+        if problem:
+            die(problem)
     config_path = Path(args.config).expanduser()
     info = binding(config_path)
     label = args.label or f"fleet-mcp-{dt.date.today():%Y%m%d}"
