@@ -12,6 +12,8 @@
 > These are target requirements, not claims of deployed integration. Load only the
 > relevant section for the current task, not this entire document at session start.
 
+> **V2 identity/delegation extension:** [Agent Identity, Session Resources and Multi-Agent Delegation](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) records the accepted V2 direction: Logical Agent identity is distinct from provider/runtime Session; Work survives Session replacement; Assignment/Activation provides bounded responsibility; hierarchical delegation and governed Agent-to-Agent messaging are V2 capabilities. Codex and OpenAgents are V2 extensions. This does not change V1 identifiers in place.
+
 > **Retained detailed product/implementation baseline — 2026-09-24.**
 >
 > This document owns the intended behavior and boundaries of the broad ServerOS
