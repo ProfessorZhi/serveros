@@ -67,7 +67,7 @@ def _load_json(path: str) -> dict:
     return item
 
 
-def plan(proposal: dict, command: str) -> dict:
+def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
     if command == "uninstall":
         return {"decision": "BLOCKED",
                 "blockers": ["Next uninstall requires separate reviewed retirement"],
@@ -122,11 +122,23 @@ def plan(proposal: dict, command: str) -> dict:
              "remain unassigned only for this non-starting bootstrap stage"
              if bootstrap else
              "Next owner authorization and distinct real App/Plugin registration"),
-            ("An INACTIVE and DISABLED Next unit, a clean `--source`, and a "
-             "revision that differs from the one `current` already names; an "
-             "explicit `--revision` must restate the clean HEAD byte-for-byte; "
-             "the revision being replaced is kept as `previous`"
+            ("An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet), a clean `--source`, and a revision that "
+             "differs from the one `current` already names; an explicit "
+             "`--revision` must restate the clean HEAD byte-for-byte; the "
+             "revision being replaced is kept as `previous`"
              if refresh else
+             "An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet), and an empty Next revision root; the bytes "
+             "are published without being started, so a unit that could start "
+             "itself — enabled, or auto-restarting — is refused rather than "
+             "silently re-pointed"
+             if bootstrap else
+             "An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet): `--no-start` publishes without starting, "
+             "so a unit that could start itself would run the new revision at "
+             "the next boot/login with no activation approval"
+             if command == "install" and no_start else
              "Short live memory-PSI/swap-IO probe before Next start"),
             "systemctl --user show confirms effective cgroup limits after start",
             "V1 /health remains healthy throughout canary and Next-only rollback",
@@ -256,8 +268,56 @@ def _source_state(source: str) -> tuple[str | None, str | None]:
     return revision.strip(), None
 
 
+#: The enablement states in which the Next unit cannot start on its own.
+#:
+#: `disabled` is the explicit case. `not-found` is a unit FILE that does not
+#: exist yet — the state of every host that has never installed Next, and the
+#: state in which `systemctl --user is-enabled` answers `not-found` rather than
+#: `disabled` (verified: rc=4, stdout `not-found`). It is strictly SAFER than
+#: `disabled`, because a unit that does not exist cannot be started at all.
+#: Refusing it would refuse the very first `stage` — the command that creates
+#: the unit file — so it is accepted, not treated as an unknown.
+_NEVER_STARTS_BY_ENABLEMENT = ("disabled", "not-found")
+
+
+def _next_unit_enablement(mod) -> tuple[str | None, str | None]:
+    """The Next unit's enablement, or why a revision may not be published to it.
+
+    Publishing a revision without starting it — by `stage`, by `install
+    --no-start`, or by `refresh-stage` — is safe only while the unit cannot
+    start on its own. `is-active` does not answer that question: a unit can be
+    inactive and ENABLED at the same time. This account has `Linger=yes`, so an
+    enabled unit is started by the user manager at boot/login with no further
+    approval, and a revision published now would run later without an
+    activation approval — the one outcome a non-starting flow exists to prevent.
+
+    This is a distinct audit fact, not a restatement of activation: `stage` and
+    `install --no-start` never inspected the unit at all, and an operator who
+    left a unit enabled after an earlier `install` needs that named rather than
+    silently worked around.
+
+    Only the two states in `_NEVER_STARTS_BY_ENABLEMENT` are accepted; anything
+    else — including an empty or unreadable answer — is refused. This guard
+    fails closed.
+    """
+    try:
+        result = mod.systemctl("is-enabled", UNIT, check=False)
+    except (OSError, RuntimeError) as exc:
+        return None, ("Next unit enablement could not be read ("
+                      + type(exc).__name__ + "); refusing to publish blind")
+    state = (result.stdout or "").strip()
+    if state not in _NEVER_STARTS_BY_ENABLEMENT:
+        return None, (
+            f"Next unit is {state or 'unknown'!r}, not one of "
+            f"{list(_NEVER_STARTS_BY_ENABLEMENT)}; an enabled unit is started "
+            f"by the user manager at boot/login (Linger is on for this "
+            f"account), so a revision published now would run later without a "
+            f"separate activation approval")
+    return state, None
+
+
 def _next_unit_state(mod) -> tuple[str | None, str | None]:
-    """The Next unit's activation AND enablement state, or why it may not be refreshed.
+    """The Next unit's activation AND enablement state, or why it may not be published to.
 
     Two facts are required and they are different facts; neither implies the
     other.
@@ -268,12 +328,12 @@ def _next_unit_state(mod) -> tuple[str | None, str | None]:
     reason: a unit that already tried and did not come up is a fact an operator
     has to read, and silently repointing it would overwrite the evidence.
 
-    `is-enabled` must be `disabled`. This is NOT implied by `inactive` — a unit
-    can be inactive and enabled at the same time — and the account that runs
-    Next has `Linger=yes`, so an ENABLED unit is started by the user manager at
-    boot/login with no further approval. Repointing it would therefore run the
-    moved revision the next time the manager restarts, which is exactly the
-    activation this non-starting flow exists to avoid.
+    Enablement is checked by `_next_unit_enablement`.
+
+    All three non-starting publishes share this: `stage`, `install --no-start`
+    and `refresh-stage`. The wording below therefore speaks of publishing, not
+    of refreshing — an operator running `stage` must not be told about a verb
+    they did not run.
 
     Anything unreadable, and anything that is not the exact expected string, is
     refused: an unknown state is not a safe one, and this guard fails closed.
@@ -282,23 +342,15 @@ def _next_unit_state(mod) -> tuple[str | None, str | None]:
         result = mod.systemctl("is-active", UNIT, check=False)
     except (OSError, RuntimeError) as exc:
         return None, ("Next unit state could not be read ("
-                      + type(exc).__name__ + "); refusing to refresh blind")
+                      + type(exc).__name__ + "); refusing to publish blind")
     state = (result.stdout or "").strip()
     if state != "inactive":
         return None, (f"Next unit is {state or 'unknown'!r}, not 'inactive'; "
-                      f"only an inactive Next may be refreshed without starting it")
-    try:
-        enabled = mod.systemctl("is-enabled", UNIT, check=False)
-    except (OSError, RuntimeError) as exc:
-        return None, ("Next unit enablement could not be read ("
-                      + type(exc).__name__ + "); refusing to refresh blind")
-    enablement = (enabled.stdout or "").strip()
-    if enablement != "disabled":
-        return None, (
-            f"Next unit is {enablement or 'unknown'!r}, not 'disabled'; an "
-            f"enabled unit is started by the user manager at boot/login "
-            f"(Linger is on for this account), so the repointed revision would "
-            f"run without a separate activation approval")
+                      f"only an inactive Next may be published to without "
+                      f"starting it")
+    _, problem = _next_unit_enablement(mod)
+    if problem:
+        return None, problem
     return state, None
 
 
@@ -411,11 +463,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--health-timeout", type=float, default=20.0)
     args = p.parse_args(argv)
     effect_started = False
-    if args.health_timeout <= 0 or args.health_timeout > 60:
-        p.error("--health-timeout must be within (0, 60]")
+    #: Did anything need undoing? Distinct from `effect_started`, which only
+    #: says the installer was INVOKED. A refusal that happens before the shared
+    #: installer crosses its own effect boundary changes nothing, and stopping a
+    #: healthy Next for it would be a self-inflicted outage.
+    effect_attempted = False
     try:
+        # This command's contract is ONE parseable document on stdout. A bound
+        # check of ours belongs inside it, not in `p.error`, which prints usage
+        # and no document at all. (`argparse`'s own errors — an unknown flag,
+        # a missing `--proposal` — stay usage-level: they are about the shape of
+        # the invocation, not about the host.)
+        if args.health_timeout <= 0 or args.health_timeout > 60:
+            raise Refused("--health-timeout must be within (0, 60]")
         proposal = _load_json(args.proposal)
-        preview = plan(proposal, args.command)
+        preview = plan(proposal, args.command, no_start=args.no_start)
         if preview["decision"] == "BLOCKED":
             print(json.dumps(preview, indent=2, sort_keys=True))
             return 2
@@ -443,7 +505,45 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in STAGING_COMMANDS or args.command == "install":
             args_list.extend(["--source", args.source])
             if args.revision:
+                # Refuse a caller-named revision the source's HEAD disagrees with
+                # HERE, before any effect — not only inside the shared installer.
+                # The installer refuses it too, but it refuses by DYING, and this
+                # wrapper treats a dying installer as an attempted effect (it may
+                # have died after writing) and runs a Next-only stop/rollback.
+                # That is the right default for a death of unknown timing, but it
+                # is the wrong answer for a mistyped SHA: a validation refusal
+                # must not stop a healthy Next. `refresh-stage` checks the same
+                # thing against its own clean-source rules a little further down.
+                # A source that is not a git repository has no HEAD to disagree
+                # with, and `--revision` stays its only route.
+                if args.command in ("stage", "install"):
+                    head = mod.git_revision(Path(args.source).expanduser().resolve())
+                    if head and args.revision != head:
+                        raise Refused(
+                            f"--revision {args.revision!r} is not the source's HEAD "
+                            f"{head!r}; a revision name records which bytes the "
+                            f"artifact was built from, and no system action has "
+                            f"been taken")
                 args_list.extend(["--revision", args.revision])
+            if args.command in ("stage", "install"):
+                # Same reasoning as the revision check above, and it applies
+                # whether or not `--revision` was given: the shared installer
+                # refuses a dirty tree by DYING, and a dying installer is read
+                # as an attempted effect — so a dirty source would stop a
+                # healthy Next over a validation refusal. Taken here, before any
+                # system action.
+                #
+                # Called UNGATED. `tree_state` itself answers None for a source
+                # that is not a work tree, so the `--revision` route for a
+                # non-git artifact stays open; and it does NOT answer None for a
+                # repository with an unborn HEAD, which is the tree that has
+                # bytes no commit describes. Gating here on a readable HEAD — as
+                # an earlier revision did, mirroring `install.py` — quietly
+                # exempted exactly that case.
+                source = Path(args.source).expanduser().resolve()
+                problem = mod.tree_state(source)
+                if problem:
+                    raise Refused(problem + " No system action has been taken.")
             if args.label:
                 args_list.extend(["--label", args.label])
             # `--force` is never passed, so the shared installer's own
@@ -474,6 +574,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stage" and prior[0] is not None:
             raise Refused("bootstrap stage requires an empty Next revision root; "
                           "do not repoint an existing Next instance")
+        if args.command == "stage":
+            # The empty root establishes that nothing is SERVING from this tree.
+            # It establishes nothing about the unit, and `stage` used to read no
+            # unit state at all. Two distinct ways that bites:
+            #   * a unit left ENABLED by an earlier `install` (its revision tree
+            #     since emptied) is started by the user manager at boot/login
+            #     (Linger is on), so the revision published here would run with
+            #     no activation approval;
+            #   * a unit in `activating (auto-restart)` (the template sets
+            #     `Restart=on-failure`) re-evaluates `ExecStart` on every attempt,
+            #     so it can pick the revision up within `RestartSec` — while
+            #     `is-enabled` still reads `disabled`.
+            # Both are answered by the same rule `refresh-stage` uses: inactive
+            # AND unable to start on its own.
+            state, problem = _next_unit_state(mod)
+            if problem:
+                raise Refused(problem)
+        if args.command == "install" and args.no_start:
+            # `install --no-start` is a THIRD non-starting publish: it writes the
+            # revision and the unit file and starts nothing. It is therefore in
+            # exactly the same hazard class as `stage`, and reading no unit
+            # state here would leave the invariant this file states — a
+            # non-starting publish is safe only while the unit cannot start
+            # itself — true for two of the three verbs that do it.
+            state, problem = _next_unit_state(mod)
+            if problem:
+                raise Refused(problem)
         if args.command == "refresh-stage":
             # A refresh is the ONE flow that deliberately moves `current`, so
             # every guard that makes that safe is checked here, before any
@@ -514,6 +641,16 @@ def main(argv: list[str] | None = None) -> int:
                     f"re-pointing to the same one would consume `previous` "
                     f"without changing what runs")
         effect_started = True  # no longer a dry-run, even if the install fails
+        # The shared installer writes this marker the instant it is about to
+        # change the host, and clears it when it finishes cleanly. Clearing it
+        # first makes it a statement about THIS attempt; reading it after a
+        # failure is the only honest way to tell a refusal that must be left
+        # alone from a run that must be rolled back. The exit code cannot say it
+        # — `systemctl` can fail *after* `current` moved — and neither can the
+        # symlinks, because a restart of the SAME revision leaves them
+        # byte-identical. Whether `current` moved is not the question.
+        effect_marker = root / mod.EFFECT_MARKER
+        effect_marker.unlink(missing_ok=True)
         # The legacy installer's own stdout is CAPTURED, not forwarded. It
         # prints one JSON receipt per successful operation and the wrapper
         # republishes exactly one Next-only receipt — so a caller parses a
@@ -524,8 +661,20 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with contextlib.redirect_stdout(captured):
                 result = mod.main(args_list)
-        except SystemExit:
+        except (SystemExit, Exception) as exc:
             if args.command in STAGING_COMMANDS or args.command == "install":
+                # The installer's own marker answers "did it get past the point
+                # of no return?". A refusal BEFORE its effect boundary leaves no
+                # marker, wrote nothing, moved nothing and stopped nothing — so
+                # a healthy Next must not be stopped for it.
+                #
+                # `Exception` is caught with `SystemExit` on purpose: a
+                # `systemctl` that is missing from the installer's PATH, an
+                # `OSError` writing the unit, an `ENOSPC` on `os.replace` are
+                # all failures that can land AFTER the boundary, and they used
+                # to escape as a traceback — no receipt and, worse, no recovery
+                # for a run that had already moved `current`.
+                effect_attempted = effect_marker.exists()
                 payload, problem = one_receipt(captured.getvalue())
                 if payload is not None:
                     detail = (f" The installer's own receipt said started="
@@ -534,14 +683,21 @@ def main(argv: list[str] | None = None) -> int:
                     detail = f" It also printed no usable receipt ({problem})."
                 else:
                     detail = ""
+                if not isinstance(exc, SystemExit):
+                    detail += f" The installer raised {type(exc).__name__}."
                 _restore_failed_install(
                     mod, root, prior,
                     "installer exited nonzero; status must be inspected." + detail,
-                    effect_attempted=True)
+                    effect_attempted=effect_attempted)
             raise
-        if (args.command in STAGING_COMMANDS or args.command == "install") and result != 0:
-            _restore_failed_install(mod, root, prior, "installer returned nonzero",
-                                    effect_attempted=True)
+        if args.command in STAGING_COMMANDS or args.command == "install":
+            # Reaching here means `mod.main` RETURNED. A zero return means the
+            # installer ran to completion and cleared its own marker; a nonzero
+            # return means it stopped early, and only the marker says how far.
+            effect_attempted = (result == 0) or effect_marker.exists()
+            if result != 0:
+                _restore_failed_install(mod, root, prior, "installer returned nonzero",
+                                        effect_attempted=effect_attempted)
         if args.command == "install" and not args.no_start:
             faults = _effective_limit_errors(mod)
             if faults:
@@ -594,14 +750,73 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         # Never report writes=[] after attempting an install/restart and
         # perhaps a Next-only rollback. The outcome may be partial/unknown.
+        # `effect_attempted`, not `effect_started`: a refusal that never reached
+        # the installer's effect boundary wrote nothing, and reporting a
+        # possible write for it is the same overstatement in the other
+        # direction.
         print(json.dumps({
             "decision": "BLOCKED",
             "reason": str(exc),
-            "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_started
+            "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_attempted
                              else "NO_SYSTEM_ACTION_STARTED"),
-            "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_started else []),
-            "executes": ([UNIT] if effect_started else []),
+            "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_attempted else []),
+            "executes": ([UNIT] if effect_attempted else []),
             "v1_action": False,
+        }, sort_keys=True))
+        return 2
+    except (SystemExit, Exception) as exc:
+        # A HELPER of the shared installer can refuse before any effect by
+        # dying — `install.py::binding()` does exactly that when the Next
+        # binding file is absent, and it is reached from the cross-check that
+        # runs before the installer is ever driven. Nothing was written, nothing
+        # was started or stopped, and the caller still gets the ONE document
+        # this contract promises; without this the execute path printed no JSON
+        # at all, which is indistinguishable from a crash.
+        #
+        # `Exception` rides along for the same reason: this command's contract
+        # is one parseable document, and a traceback is not one. The exception
+        # TYPE is reported and its message is not — a message can carry paths,
+        # and a caller that needs the detail has it on stderr.
+        #
+        # Once `effect_started` is set, the inner handler has already reported
+        # and the exception must propagate unchanged.
+        if effect_started:
+            # An exception from a region the INNER handler does not wrap: the
+            # wrapper's own post-start verification, or the marker clear — with
+            # the installer already driven. Re-raising printed no document at
+            # all, and "no document" is indistinguishable from a crash; worse,
+            # the post-start verification runs after a COMPLETED install, so the
+            # caller was left with neither a receipt nor a reason.
+            #
+            # The recovery verbs keep their existing no-document behaviour:
+            # their effect tracking is the recorded residue, and silently
+            # reporting "no action" for a rollback that may have moved `current`
+            # would be the same overstatement in the other direction.
+            if args.command in ("rollback", "status"):
+                raise
+            print(json.dumps({
+                "decision": "BLOCKED",
+                "reason": (f"the wrapper failed after driving the installer "
+                           f"({type(exc).__name__}); the receipt could not be "
+                           f"completed, so the outcome is unknown"),
+                "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_attempted
+                                 else "NO_SYSTEM_ACTION_STARTED"),
+                "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_attempted else []),
+                "executes": ([UNIT] if effect_attempted else []),
+                "v1_action": False,
+                "refusal_exception": type(exc).__name__,
+            }, sort_keys=True))
+            return 2
+        print(json.dumps({
+            "decision": "BLOCKED",
+            "reason": ("a pre-effect check refused before anything was written, "
+                       "started or stopped; no system action was taken"),
+            "effect_state": "NO_SYSTEM_ACTION_STARTED",
+            "writes": [],
+            "executes": [],
+            "v1_action": False,
+            "refusal_exit": getattr(exc, "code", None),
+            "refusal_exception": type(exc).__name__,
         }, sort_keys=True))
         return 2
 

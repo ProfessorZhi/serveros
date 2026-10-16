@@ -108,6 +108,153 @@ python3 -I fleet_mcp/deploy/next_install.py stage \
 ```
 Read back: the Next revision root holds the bytes and **no Next unit is running**.
 
+#### Migration note — a non-starting publish needs a unit that cannot start itself
+
+All **three** verbs that publish a revision *without starting it* — `stage`,
+`install --no-start`, and `refresh-stage` — now read the Next unit's state
+first and require **both**:
+
+* `systemctl --user is-active <Next unit>` to be exactly `inactive`; and
+* `systemctl --user is-enabled <Next unit>` to be exactly `disabled`, **or**
+  `not-found` (no unit file yet).
+
+Anything else is refused, including an empty or unreadable answer.
+
+*Why.* This account has `Linger=yes`, so an ENABLED unit is started by the user
+manager at boot/login — a non-starting publish into it becomes a **start** later,
+with no activation approval. `is-active` alone does not cover that (a unit can be
+inactive and enabled at once), and `is-enabled` alone does not cover the other
+half: the unit template sets `Restart=on-failure`, so a unit in
+`activating (auto-restart)` re-evaluates `ExecStart` and can pick the new
+revision up within `RestartSec`. `stage` and `install --no-start` previously read
+no unit state at all.
+
+*`not-found` is accepted on purpose.* `systemctl --user is-enabled` answers
+`not-found` (rc=4, measured on this host) for a unit file that does not exist —
+the state of every host that has never installed Next. That is strictly **safer**
+than `disabled`, because a unit that does not exist cannot start at all; refusing
+it would refuse the first `stage`, which is the command that creates the unit
+file.
+
+*Who is affected.* A host with no Next unit yet, or one that is `inactive` **and**
+`disabled`, is unaffected. The new refusals fire when the unit is enabled, or
+running / auto-restarting, or in an unreadable state. This replaces an earlier
+precondition, pinned by a test, that `stage` did not consult the unit at all:
+that reasoning covered `is-active` only.
+
+*What to do.* Read the state, then take the step it names. **These are operator
+actions inside an approved maintenance window, taken one at a time — no
+publishing verb stops, disables or restarts anything, and none is a substitute
+for the other.** The order matters and it is the operator who chooses when:
+
+1. **Own the window.** Next serving traffic means stopping it is an outage you
+   are choosing, not a side effect of a deploy. Get that decision approved
+   before you touch the unit.
+2. **Take the service down deliberately:** `systemctl --user stop <Next unit>`
+   for a running/auto-restarting unit; `systemctl --user disable <Next unit>`
+   for one that is merely enabled.
+3. **Then publish with the verb the revision root calls for** — `refresh-stage`
+   when a revision is already staged, `stage` when the root is empty. Both apply
+   the same unit rule; only the root rule differs, and picking the wrong one is
+   refused by the root rule rather than silently accepted.
+
+A live Next is never re-pointed underneath itself, and neither publish verb is a
+substitute for the operator's own stop/disable: `refresh-stage` is refused while
+the unit is running or enabled, and `stage` is refused while the root is
+populated. If Next must not run at all, `systemctl --user disable` it, or retire
+it (`install.py uninstall`).
+
+Uninstalling removes the unit file, which returns the unit to `not-found` — an
+accepted state, so the host can be staged again.
+
+`--revision` also gains a rule on the shared installer: on a **git** source it
+may only restate `git rev-parse HEAD`; a differing SHA is refused. A source
+that is not a git repository keeps `--revision` as its only route, unchanged.
+
+#### And the tree must BE that revision, not merely be NAMED by it
+
+`install.py` copies `fleet_mcp/` and `fleet/` **from the filesystem**, not from
+the object store. Matching `--revision` to `HEAD` therefore proves nothing about
+the bytes on disk: a dirty working tree publishes an artifact whose
+`ARTIFACT.json` names a revision it is not — including in the `--revision ==
+HEAD` and `--revision`-omitted cases, which the name check cannot distinguish.
+Every formal publish (`install`, `stage`, `refresh-stage`) now also requires, for
+a **git** source:
+
+* `git status --porcelain --untracked-files=all` to be **empty** — tracked edits
+  and untracked non-ignored files both count, and are counted per file rather
+  than per directory; and
+* no `index.lock` in the repository's **real** git dir, resolved with
+  `git rev-parse --absolute-git-dir`. In a linked worktree `.git` is a *file*
+  holding a `gitdir:` pointer, so a `<source>/.git` path guess looks for a lock
+  that cannot exist there.
+
+Ignored files are deliberately **not** counted: `git status` already excludes
+them, and `.gitignore` is exactly where build residue belongs — requiring a tree
+with no ignored files would refuse every normal checkout.
+
+The refusal happens **before the binding is read, before anything is copied, and
+before any `systemctl`** — and, on the Next side, before the wrapper can treat a
+dying installer as an attempted effect and run a Next-only stop. A source that is
+not a git repository makes no HEAD claim, so none of this applies to it and
+`--revision` stays its only route.
+
+##### Migration note — this reaches V1 as well
+
+`install.py` is the **shared** installer; `serveros-fleet-mcp.service` (V1) and
+the Next canary both go through it. So this refusal is not Next-only, and saying
+otherwise would be wrong. What it changes for V1:
+
+* **A V1 install from a dirty git source is now refused.** V1's installer
+  defaults `--source` to the tree `install.py` lives in, so an install run from a
+  checkout with uncommitted edits — tracked or untracked — stops with a message
+  naming the count. Before, it published an artifact whose `ARTIFACT.json` named
+  a commit those bytes were not.
+* **A V1 install whose payload carries a git-ignored member, or a symlink, is
+  now refused too** — see the next subsection. A normal checkout is unaffected:
+  the only files that are present-but-untracked under `fleet_mcp/` and `fleet/`
+  on this host are `__pycache__/*.pyc`, which the copy already drops.
+* **A V1 that is already running is untouched.** This refuses; it does not stop,
+  restart, move, rewrite or replace anything, and it is reached before the
+  binding is read. There is no path from this change to a live V1 process.
+* **The remedy is the refusal's own text**: make the tree clean, or publish from
+  a clean revision tree. Nothing about V1's installed revision, unit or state
+  changes.
+
+`install.py` is also where a future change would put a **narrower** policy —
+enforcing this only for the Next wrapper is a one-line removal of the
+`tree_state()` call in `install()`. It is not done here because the defect is
+real for V1 too: the same dirty tree publishes the same misnamed artifact, and
+refusing it is the only outcome that does not ship a lie.
+
+#### And the copied bytes must be the TRACKED ones
+
+A clean `git status` is not the same claim. `git status` never reports ignored
+files, and `copytree` copies them — so a `.gitignore`d secret sitting under
+`fleet_mcp/` left the tree looking clean while the artifact carried it and
+`ARTIFACT.json` listed it. `payload_audit()` closes that: it compares the tree
+that was actually **COPIED** against `git ls-files`, and refuses any member the
+repository does not track.
+
+Two things follow, and both are deliberate:
+
+* **Ordinary build residue is not a refusal.** `IGNORE` already drops
+  `__pycache__`, `*.pyc` and `.pytest_cache` from the copy, so they never reach
+  the staging tree and are never counted. Measured on this host, the only
+  present-but-untracked files under the payload of either real V1 source are
+  `__pycache__/*.pyc` — so **no normal checkout is refused by this rule.**
+* **A symlink under the payload is a refusal.** A symlink's tracked blob is its
+  *target path*, and the copy *dereferences* it — so the artifact would ship the
+  target's content under a name the commit says is a link, and that target can
+  be anything on the host, a git-ignored secret included.
+
+A source that is not a git repository makes no claim about its bytes at all, so
+none of this applies to it and `--revision` stays its route. The refusal names
+the **count**, never the paths: a filename can itself be the sensitive thing, and
+the reason is republished into the receipt. The staging tree is removed before
+the refusal is raised, so a refused member is neither shipped nor left in a
+`.staging-*` directory — including when the copy itself fails partway.
+
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
 Confirm the candidate loopback port is free **on the Tokyo host**. The owner's
