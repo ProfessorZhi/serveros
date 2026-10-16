@@ -30,12 +30,15 @@ two of the three devices below are in today.
 
 Three properties of that table are load-bearing:
 
-*   **Nothing inherits.** A grant of `send` admits `send` and nothing else.
-    `control`, `approve` and `navigate` are named in
-    `PLANNED_OPERATOR_GRANT_VERBS` and are *refused when the binding is read* —
-    a file that lists one is a file whose author believes a control verb is
-    live, and the refusal is the correction of that belief rather than a
-    no-op that leaves it standing.
+*   **Nothing inherits.** A grant of one verb admits that verb and nothing
+    else. The names a binding may use are exactly the members of
+    `OPERATOR_GRANT_VERBS`; this document deliberately does not restate the
+    list, because restating it is how this bullet came to call three verbs
+    un-implemented after they shipped. Each member is both
+    accepted when the binding is read and enforced at its call site. A word
+    outside the tuple is *refused when the binding is read* — a file that lists
+    one is a file whose author believes a verb is live, and the refusal is the
+    correction of that belief rather than a no-op that leaves it standing.
 *   **Every gate defaults closed.** An omitted key is a refusal, not an
     inheritance. A provider entry with no `allow_create` has not authorized
     creation; a `policy:` with no `create_allow` has authorized no project;
@@ -160,9 +163,11 @@ policy:
       models: []
 
   # --- control -------------------------------------------------------------
-  # No per-principal arm exists for control; see §5, gap G1. Device-wide control
-  # is therefore expressed as a wildcard behind its own flag, and the flag is
-  # the sentence a reviewer reads.
+  # A per-principal arm exists for control now, exactly as it does for send --
+  # see the `operator_grants` block above. The wildcard below is kept because
+  # the deployment this file describes is one manager; it is the flag, not the
+  # list, that a reviewer reads. A deployment with two operators who should stop
+  # different things writes the grant and leaves this false.
   allow_wildcard_control: true
   control_allow: ["*"]
 
@@ -182,10 +187,14 @@ Two things to read off that block rather than assume:
     authority; it removes the ability to say *who*, which is the question an
     audit of a grant exists to answer. It is set false here on purpose.
 *   **`control_allow: ["*"]` with `allow_wildcard_control: true`.** This is not
-    laziness. It is the only way this build can say "stop any run on these three
-    devices" without listing every session ref, and the reason it needs an
-    explicit flag next to it is that the flag is where the decision is visible.
-    It is also, precisely, gap G1.
+    laziness. It is how this build says "stop any run on these three devices"
+    without listing every session ref, and the reason it needs an explicit flag
+    next to it is that the flag is where the decision is visible. It is a
+    *choice* now rather than the only option: `operator_grants` carries a
+    per-principal `control` arm, so the same reach can be written as a grant
+    naming who holds it, and a second operator is the reason to swap. (This
+    bullet used to end "it is also, precisely, gap G1"; that gap is closed --
+    see §5.)
 
 ## 4. Node side — `fleet-node.local.yaml`
 
@@ -247,16 +256,22 @@ notes: company device A, owner-grant deployment
 
 ## 5. What is deliberately not in these files
 
-**Gap G1 — control has no per-principal grant.** `OPERATOR_GRANT_VERBS` is
-`("send",)`; `control` sits in `PLANNED_OPERATOR_GRANT_VERBS` and a binding
-naming it is refused at load. So unlike `send`, control is not scoped to *who*
-at the Fleet boundary. It is scoped to the device (`allow_control`), the session
-list, and the node's own floor — but any credential carrying `fleet:control`
-gets the same reach on those three devices. In a one-manager deployment nothing
-is lost. In a deployment with two operators who should stop different things, it
-is the difference that matters, and it is not expressible today. The seam is
-named in `fleet.py#_may_control`'s own docstring: a device-wide owner grant for
-control is meant to plug in there, and nothing in this revision implements it.
+**Gap G1 — CLOSED: control has a per-principal grant.** This gap used to read
+"`OPERATOR_GRANT_VERBS` is `("send",)`; `control` sits in
+`PLANNED_OPERATOR_GRANT_VERBS` and a binding naming it is refused at load." That
+is no longer true. `OPERATOR_GRANT_VERBS` now names `send`, `control`, `create`,
+`approve` and `navigate`; `PLANNED_OPERATOR_GRANT_VERBS` is empty; and
+`fleet.py#_may_control` consults the `control` arm of `operator_grants` as its
+second gate — the seam its own docstring described, now filled. The sibling
+verbs are enforced too, each at its own call site (`create` in
+`create_session`; `approve` and `navigate` in `_gate_native_write` via
+`_require_operator_verb`). So control *is* scoped to who at the Fleet boundary,
+not only to the device, the session list and the node's floor.
+
+The paragraph is kept rather than deleted because it is why the `control_allow`
+wildcard in §3 carries an explanatory flag: the flag remains where a one-manager
+deployment's decision is visible. What changed is that a two-operator
+deployment no longer has to reach for it.
 
 **Gap G2 — `auth.owner_grant_anchor` is parsed and read by nothing.**
 `AuthBinding` declares it, `load_config` populates it, the comment beside
@@ -304,8 +319,13 @@ loads the other's file.
    That is the state to stop at if anything about the registry looks wrong: the
    `ownership` field on all three has to be `company`, and a device whose owner
    is unknown is not eligible, so a grant against it would be inert.
-3. Add `policy.operator_grants` and confirm `fleet_send_to_session` reaches a
-   session the grant names and no session it does not.
+3. Add `policy.operator_grants`, and turn on `allow_send` for a device you are
+   ready to send to: send needs **both** (`fleet.py#_may_send` — the device flag
+   *and* either a named session or a matching grant). Confirm
+   `fleet_send_to_session` reaches a session the grant names and no session it
+   does not. Note that step 2 left `allow_send: false`, so until this step the
+   grant is inert on purpose — it records who may send without yet letting
+   anything be sent.
 4. Add `auth.grantable_scopes`, then re-consent the connector (see the release
    plan — this is the one step that cannot be done by editing a file).
 5. Turn on `allow_create` / `allow_control` per device, last, one device at a
