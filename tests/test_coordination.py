@@ -338,7 +338,11 @@ def test_the_same_thread_admits_its_own_item_while_that_item_is_open():
         work_item="LIT-0205", item_state="ACTIVE", outcome=None)
     assert verdict == {"state": "ADMITTED", "session_role": "execution",
                        "bound_item_ref": "LIT-0205", "item_axis": "OPEN",
-                       "item_state": "ACTIVE", "work_item_named": "LIT-0205"}
+                       "item_state": "ACTIVE", "work_item_named": "LIT-0205",
+                       # #237 B1. Always reported, exactly like `item_axis`: a
+                       # thread that records no writer answers UNKNOWN, which is
+                       # a reading ("no write authority claimed"), not a refusal.
+                       "writer_axis": "UNKNOWN"}
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +424,8 @@ def test_every_word_this_kernel_returns_is_in_the_closed_vocabulary():
     declared = set(_reason_contract()["values"])
     produced = _words_handed_out(RUNTIME / "coordination.py", declared)
     assert produced == {"INVALID_CONTEXT", "THREAD_ITEM_MISMATCH",
-                        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK"}, (
+                        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK",
+                        "NOT_CURRENT_WRITER"}, (
         f"the scanner found {sorted(produced)} in runtime/coordination.py")
     assert produced <= declared
 
@@ -503,7 +508,8 @@ def test_a_word_cannot_enter_the_vocabulary_without_a_producer():
     assert set(contract["declared_here_only"]) == {
         "APPROVAL_CONTEXT_MISMATCH", "APPROVAL_EXPIRED",
         "APPROVAL_ALREADY_CONSUMED", "THREAD_ITEM_MISMATCH",
-        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK"}
+        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK",
+        "NOT_CURRENT_WRITER"}
 
 
 def test_the_daemon_turns_a_store_refusal_into_a_word_the_caller_has():

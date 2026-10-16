@@ -66,6 +66,7 @@ def _load(name: str, path: Path):
 
 
 resolver = _load("serveros_context_resolver", REPO / "context" / "resolver.py")
+coordination = _load("serveros_runtime_coordination", REPO / "runtime" / "coordination.py")
 
 # The ONE lease stamp format, pinned in `work-engine/workengine/store.py` and
 # consumed here by SQL string comparison. Second precision, fixed width, Z.
@@ -215,6 +216,155 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
         self.assertNotIn("context_handed_off", outcome.completed)
         self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "OPEN")
         self.assertTrue(self._send().ok, "a failed handoff fenced the source")
+
+
+def writer(*, owner="agent:A", epoch=1, token="1", expires_at=None):
+    w = {"owner": owner, "epoch": epoch, "token": token}
+    if expires_at is not None:
+        w["expires_at"] = expires_at
+    return w
+
+
+class TestWriterFenceKernel(unittest.TestCase):
+    """The pure writer gate in `runtime/coordination.py` (#237 B1/T3).
+
+    A thread that RECORDS a writer is claiming write authority, and the claim is
+    checked against the current writer when it is supplied. A thread that
+    records none never claimed it and is not gated — that is what keeps every
+    pre-existing thread working.
+    """
+
+    ITEM = "LIT-0101"
+
+    def _binding(self, **writer_kwargs):
+        return coordination.binding(
+            session_role="execution", bound_item_ref=self.ITEM,
+            writer=writer(**writer_kwargs))
+
+    # -- arming: a claim is gated, no claim is not -------------------------
+
+    def test_a_binding_that_records_a_writer_is_v2(self):
+        record = self._binding()
+        self.assertEqual(record["schema"], coordination.SCHEMA_WRITER)
+        self.assertEqual(record["writer"]["epoch"], 1)
+
+    def test_a_binding_without_a_writer_stays_v1(self):
+        record = coordination.binding(
+            session_role="execution", bound_item_ref=self.ITEM)
+        self.assertEqual(record["schema"], coordination.SCHEMA)
+        self.assertNotIn("writer", record)
+
+    def test_a_thread_that_records_no_writer_is_not_gated(self):
+        record = coordination.binding(
+            session_role="execution", bound_item_ref=self.ITEM)
+        out = coordination.admit_work(
+            binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+            current_writer=writer(owner="agent:B", epoch=9, token="9"))
+        self.assertEqual(out["state"], "ADMITTED")
+        self.assertEqual(out["writer_axis"], "UNKNOWN")
+
+    # -- the gate ----------------------------------------------------------
+
+    def test_the_current_writer_is_admitted(self):
+        record = self._binding(owner="agent:A", epoch=3, token="7")
+        out = coordination.admit_work(
+            binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+            current_writer=writer(owner="agent:A", epoch=3, token="7"))
+        self.assertEqual(out["state"], "ADMITTED")
+        self.assertEqual(out["writer_axis"], "CURRENT")
+
+    def test_a_stale_epoch_is_refused(self):
+        record = self._binding(owner="agent:A", epoch=1, token="1")
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:A", epoch=2, token="2"))
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+        self.assertIn("superseded", ctx.exception.detail)
+
+    def test_a_stale_token_is_refused(self):
+        # Same owner, same epoch, a token that was promoted past — the case a
+        # boolean "is this the owner" would wrongly admit (#237 T3).
+        record = self._binding(owner="agent:A", epoch=3, token="1")
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:A", epoch=3, token="2"))
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+
+    def test_a_wrong_owner_is_refused(self):
+        record = self._binding(owner="agent:A", epoch=3, token="7")
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:B", epoch=3, token="7"))
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+
+    def test_an_expired_claim_is_refused(self):
+        record = self._binding(owner="agent:A", epoch=3, token="7",
+                               expires_at=stamp(1000.0))
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:A", epoch=3, token="7"),
+                now=stamp(1001.0))
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+        self.assertIn("expired", ctx.exception.detail)
+
+    def test_a_claim_with_no_verifiable_source_is_refused(self):
+        # #237: "when no verifiable source, explicit UNKNOWN/refuse".
+        record = self._binding(owner="agent:A", epoch=3, token="7")
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=None)
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+        self.assertIn("no current-writer record", ctx.exception.detail)
+
+    # -- ordering: the four existing refusals still win --------------------
+
+    def test_a_closed_thread_refusal_outranks_the_writer_refusal(self):
+        record = self._binding(owner="agent:A", epoch=1, token="1")
+        record["state"] = "CLOSED"
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:B", epoch=9, token="9"))
+        self.assertEqual(ctx.exception.reason, "THREAD_CLOSED_FOR_NEW_WORK")
+
+    # -- shape validation --------------------------------------------------
+
+    def test_a_coordinator_may_not_record_a_writer(self):
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.binding(session_role="coordinator", writer=writer())
+        self.assertEqual(ctx.exception.reason, "INVALID_CONTEXT")
+
+    def test_a_writer_epoch_must_be_a_positive_integer_not_a_bool(self):
+        for bad in (0, -1, True, "1", None):
+            with self.assertRaises(coordination.ThreadRefused):
+                coordination.normalize_writer({"owner": "a", "epoch": bad, "token": "1"})
+
+    def test_a_writer_needs_an_owner_and_a_token(self):
+        for bad in ({"epoch": 1, "token": "1"}, {"owner": "a", "epoch": 1}):
+            with self.assertRaises(coordination.ThreadRefused):
+                coordination.normalize_writer(bad)
+
+    def test_writer_axis_reports_all_four_worlds(self):
+        self.assertEqual(
+            coordination.writer_axis(None), "UNKNOWN")
+        self.assertEqual(
+            coordination.writer_axis({"writer": None}), "UNKNOWN")
+        self.assertEqual(
+            coordination.writer_axis({"writer": writer(epoch=1, token="1")},
+                                     current_writer=None), "UNKNOWN")
+        self.assertEqual(
+            coordination.writer_axis({"writer": writer(epoch=1, token="1")},
+                                     current_writer=writer(epoch=2, token="2")),
+            "STALE")
+        self.assertEqual(
+            coordination.writer_axis({"writer": writer(epoch=1, token="1")},
+                                     current_writer=writer(epoch=1, token="1")),
+            "CURRENT")
 
 
 if __name__ == "__main__":

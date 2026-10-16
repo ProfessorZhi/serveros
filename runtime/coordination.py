@@ -83,10 +83,38 @@ repository's own bar for adding a word to the closed vocabulary is that a
 kernel produces a verdict whose REPAIR differs from every word already in it.
 All three differ, in the field the caller has to change. That bar is stated in
 `abilities/target-contract.yaml`, which is where the words are added.
+
+A FIFTH WORD, ONE PLANE OVER (#237 B1/B3)
+-----------------------------------------
+NOT_CURRENT_WRITER is not a fifth thread refusal. It is what `admit_work`
+produces when the SAME checks pass but the thread's RECORDED WRITE AUTHORITY is
+not the current one — the scope moved to another owner/epoch/token, or the
+thread's own claim expired, or no current-writer record was supplied to check
+the claim against. Its repair differs from all four above: not "bind this
+thread", not "start a thread that carries a role", not "name the right Item",
+not "start a thread for this work", but "re-read the current writer from its
+owner and stop writing here". A thread that lost the scope does not get it back
+by writing again.
+
+It is gated by a CLAIM: a binding that records no writer is not gated, so the
+threads that existed before write authority was recorded keep working. That is
+deliberate and it is the difference between arming a fence and breaking every
+path that predates it.
 """
 from __future__ import annotations
 
 SCHEMA = "serveros/thread-binding.v1"
+
+# A binding that RECORDS a writer is versioned separately (#237 B1). The schema
+# name is the version, and the distinction it carries is load bearing: a v1
+# thread records what it is FOR and claims no write authority, while a v2 thread
+# additionally claims to be the CURRENT writer of its Item's write scope at an
+# epoch with a fencing token. A reader that flattened the two would have to
+# guess, from a missing field, whether the thread never claimed write authority
+# or lost it — and "never had it" and "had it and was superseded" are opposite
+# readings with the same bytes. `writer_axis` answers UNKNOWN for the first and
+# STALE for the second.
+SCHEMA_WRITER = "serveros/thread-binding.v2"
 
 # The two roles. Closed, and the closure is load bearing: a third role would
 # need a rule about whether it may be bound, and "there is no third role" is
@@ -111,6 +139,44 @@ READ_ONLY_ITEM_STATES = ("DELIVERED", "CLOSED")
 # The three axes a caller can be on. Named so that a caller reading a record
 # can tell "the Item is open" from "nothing could tell us about the Item".
 ITEM_AXIS = ("OPEN", "READ_ONLY", "UNEVALUABLE")
+
+# ---------------------------------------------------------------------------
+# The writer axis (#237 B1/T3). What a thread's CLAIM of write authority is
+# worth, from what was read of the current writer.
+#
+# Four values, and the fourth is the one that matters — same reasoning as
+# ITEM_AXIS one screen up. A thread that records no writer is not a thread whose
+# writer is UNKNOWN; it is a thread that never claimed write authority, and a
+# `writer_axis` of UNKNOWN for it is a reading, not a refusal. But a thread that
+# DOES record a writer and has no verifiable current-writer source to compare
+# against has established nothing, and `admit_work` refuses that one rather than
+# admitting it on a claim it could not check.
+#
+#   CURRENT   the binding's writer IS the current writer (owner, epoch and token
+#             all match, and it has not expired)
+#   STALE     the binding claims a writer, and the current writer is a DIFFERENT
+#             owner/epoch/token — it was superseded
+#   EXPIRED   the binding's own writer TTL has passed, whatever the current
+#             writer says
+#   UNKNOWN   either nothing is recorded (no claim) or no current-writer source
+#             was supplied (nothing to check the claim against)
+# ---------------------------------------------------------------------------
+WRITER_AXIS = ("CURRENT", "STALE", "EXPIRED", "UNKNOWN")
+
+# The writer TTL is compared as a STRING against a fixed-width UTC stamp:
+# `YYYY-MM-DDTHH:MM:SSZ`. The same format the exclusive Work lease uses in
+# `work-engine/workengine/store.py`, and pinned for the same reason — an
+# `isoformat()` that drops the microsecond field sorts `...:00Z` and
+# `...:00.123456Z` wrongly at the same second. A fixed-width `Z` stamp is a
+# contract between whoever writes it and whoever compares it, and this module is
+# the comparer.
+WRITER_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+# The fields a writer tuple carries. `owner` is who holds the write scope, and
+# `epoch` and `token` are the fence: epoch moves when authority changes hands,
+# token moves when the SAME holder re-takes the scope (a promotion). Either
+# moving makes the old tuple STALE.
+WRITER_FIELDS = ("owner", "epoch", "token", "expires_at")
 
 
 class ThreadRefused(Exception):
@@ -143,7 +209,7 @@ def parse_role(value) -> str:
 
 
 def binding(*, session_role, bound_item_ref=None, work_item=None,
-            device_ref=None, recorded_at=None) -> dict:
+            device_ref=None, recorded_at=None, writer=None) -> dict:
     """The record that says what a thread is for. Raises `ThreadRefused`.
 
     Returned WITHOUT `session_ref`. A binding is a statement about a session
@@ -187,7 +253,7 @@ def binding(*, session_role, bound_item_ref=None, work_item=None,
             f"already pointing at two")
 
     record = {
-        "schema": SCHEMA,
+        "schema": SCHEMA_WRITER if writer is not None else SCHEMA,
         "session_role": role,
         "bound_item_ref": item,
         # Immutable, and the store is what makes that more than a comment:
@@ -195,6 +261,18 @@ def binding(*, session_role, bound_item_ref=None, work_item=None,
         "bound_item_ref_frozen": True,
         "state": "OPEN",
     }
+    if writer is not None:
+        # A writer is a CLAIM of write authority, recorded with the thread. It
+        # is present only on an execution thread — a coordinator has no Item and
+        # therefore no write scope to claim — and it is what `admit_work` checks
+        # when it is given a current-writer record to check against.
+        if role != "execution":
+            raise ThreadRefused(
+                "INVALID_CONTEXT",
+                f"a {role} thread may not record a writer. A coordinator "
+                f"crosses Items and has no single write scope to own; a writer "
+                f"on one would be a claim of authority nobody can check")
+        record["writer"] = normalize_writer(writer)
     if device_ref:
         record["device_ref"] = str(device_ref)
     if recorded_at:
@@ -225,8 +303,80 @@ def item_axis(state, *, outcome=None) -> str:
     return "OPEN"
 
 
+def normalize_writer(writer) -> dict:
+    """One writer claim, with every field a comparison will need. Raises.
+
+    `owner` is who holds the write scope (an agent/session identity), `epoch` is
+    the Work epoch at which they hold it, and `token` is the fencing token that
+    moves when the SAME owner re-takes the scope. `expires_at`, when present, is
+    the fixed-width UTC stamp the TTL is compared as a string against — the same
+    format the exclusive Work lease uses in `work-engine/workengine/store.py`.
+    """
+    if not isinstance(writer, dict):
+        raise ThreadRefused(
+            "INVALID_CONTEXT",
+            f"a writer is a record with owner/epoch/token; got "
+            f"{type(writer).__name__}. A writer that is not a record cannot be "
+            f"compared against a current one")
+    owner = str(writer.get("owner") or "").strip()
+    if not owner:
+        raise ThreadRefused(
+            "INVALID_CONTEXT",
+            "a writer needs an owner. Without one there is nothing to compare, "
+            "and a writer nobody is would be admitted for everybody")
+    epoch = writer.get("epoch")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
+        raise ThreadRefused(
+            "INVALID_CONTEXT",
+            f"writer epoch {epoch!r} is not a positive integer. The epoch is the "
+            f"half of the fence that moves when authority changes hands; a "
+            f"boolean is not an epoch and `isinstance(True, int)` is why this "
+            f"check is spelled out")
+    token = writer.get("token")
+    if token is None or str(token).strip() == "":
+        raise ThreadRefused(
+            "INVALID_CONTEXT",
+            "a writer needs a token. The epoch moves when authority changes "
+            "hands and the token moves when the same owner re-takes the scope; "
+            "without a token the second case is indistinguishable from the first")
+    out = {"owner": owner, "epoch": int(epoch), "token": str(token)}
+    if writer.get("expires_at"):
+        out["expires_at"] = str(writer["expires_at"])
+    return out
+
+
+def writer_axis(binding_record, *, current_writer=None, now=None) -> str:
+    """Which world a thread's recorded writer is in — one of `WRITER_AXIS`.
+
+    Pure. `current_writer` is the authoritative current writer for the binding's
+    write scope, read from its owner (the Agent Control / continuation store,
+    joined where the scope's epoch lives). This function does not go and get it:
+    a kernel that fetched its own inputs could not be tested without a store,
+    which is the same reason `admit_work` takes an Item's state as a string.
+
+    A binding that records NO writer answers UNKNOWN and is not a claim at all —
+    see `SCHEMA_WRITER`. A binding that records one and is given no current
+    writer to compare against also answers UNKNOWN, and `admit_work` refuses
+    that case: a claim nobody checked is not an authorization.
+    """
+    writer = (binding_record or {}).get("writer") if binding_record else None
+    if not writer:
+        return "UNKNOWN"
+    expires = writer.get("expires_at")
+    if expires and now is not None and str(expires) <= str(now):
+        return "EXPIRED"
+    if current_writer is None:
+        return "UNKNOWN"
+    current = current_writer or {}
+    if (str(writer.get("owner")) == str(current.get("owner"))
+            and str(writer.get("epoch")) == str(current.get("epoch"))
+            and str(writer.get("token")) == str(current.get("token"))):
+        return "CURRENT"
+    return "STALE"
+
+
 def admit_work(*, binding_record, work_item=None, item_state=None,
-               outcome=None) -> dict:
+               outcome=None, current_writer=None, now=None) -> dict:
     """Whether this call may hand work to this thread. Raises `ThreadRefused`.
 
     The order below is the order the answers matter in, and it is not the order
@@ -282,10 +432,44 @@ def admit_work(*, binding_record, work_item=None, item_state=None,
             f"another one. Start a thread for {named!r}; a thread does not "
             f"change which Item it is for")
 
+    # §17 + #237 B1/T3. The writer gate. Checked LAST, and deliberately so: a
+    # caller whose thread is closed, or whose Item is delivered, has a DIFFERENT
+    # field to change, and reporting that as "not the current writer" would send
+    # them to re-acquire authority in a thread that takes no work at all.
+    #
+    # Only a thread that RECORDS a writer is gated. A v1 binding records none —
+    # it never claimed write authority — and refusing it would break every
+    # thread created before this field existed. Gating is armed by the claim,
+    # and it is `admit_work`'s callers that decide which threads make one.
+    claim = (binding_record or {}).get("writer") if binding_record else None
+    writer_state = writer_axis(binding_record, current_writer=current_writer,
+                               now=now)
+    if claim and writer_state != "CURRENT":
+        current = current_writer or {}
+        if writer_state == "EXPIRED":
+            why = "its claim has expired, so the scope must be re-acquired"
+        elif writer_state == "STALE":
+            why = ("the scope has moved to a different owner, epoch or token, "
+                   "so this thread was superseded")
+        else:
+            why = ("no current-writer record was available to check the claim "
+                   "against, and a write nobody could authorize is refused "
+                   "rather than admitted on the claim alone")
+        raise ThreadRefused(
+            "NOT_CURRENT_WRITER",
+            f"this thread claims the write scope {bound or '(unbound)'} as "
+            f"{claim.get('owner')!r} at epoch {claim.get('epoch')!r} token "
+            f"{claim.get('token')!r}, and it is not the current writer "
+            f"({writer_state}): {why}. The current writer is "
+            f"{current.get('owner')!r} at epoch {current.get('epoch')!r} token "
+            f"{current.get('token')!r}. Read the current writer from its owner "
+            f"and stop writing here; a thread that lost the scope does not get "
+            f"it back by writing again")
+
     return {"state": "ADMITTED", "session_role": binding_record.get("session_role"),
             "bound_item_ref": bound, "item_axis": axis,
             "item_state": (str(item_state).strip().upper() if item_state else None),
-            "work_item_named": named}
+            "work_item_named": named, "writer_axis": writer_state}
 
 
 def tree_shape() -> dict:
@@ -307,5 +491,8 @@ def tree_shape() -> dict:
         "item_axis": list(ITEM_AXIS),
         "read_only_item_states": list(READ_ONLY_ITEM_STATES),
         "refusals": ["INVALID_CONTEXT", "THREAD_ITEM_MISMATCH",
-                     "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK"],
+                     "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK",
+                     "NOT_CURRENT_WRITER"],
+        "writer_axis": list(WRITER_AXIS),
+        "schema_versions": [SCHEMA, SCHEMA_WRITER],
     }
