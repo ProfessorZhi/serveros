@@ -14,6 +14,12 @@ output the builder exists to prevent. The output here is a directory named
 `staging/` and a file named `<name>-v<version>-STAGING-MANIFEST.json`; a name
 that says "staging" is what keeps it from being read as a release.
 
+A run is **one-shot**. If *either* output path already exists it refuses before
+writing either, so a second run can never blend into a first one's evidence or
+overwrite a manifest left by an incomplete first one — and `--out` at or below
+`--source` is refused outright, because a tree created inside the audited source
+changes what the next run audits and copies.
+
 The gates are the builder's own, called through and not re-implemented:
 `audit_source`, `load_manifest`, `check_skills` and `check_presentation` are
 run as-is, and the two blocking gates (`check_assets`, `check_endpoint`) are
@@ -142,21 +148,48 @@ def staging_manifest(root: Path, lock: Path, *, next_mcp_url=None,
 
 
 def stage(root: Path, out_dir: Path, lock: Path, **kwargs) -> dict:
-    """Write `<out>/staging/` and `<out>/<name>-v<version>-STAGING-MANIFEST.json`."""
+    """Write `<out>/staging/` and `<out>/<name>-v<version>-STAGING-MANIFEST.json`.
+
+    Both arguments are refused before anything is read or written, because each
+    of the two mistakes makes the *next* run disagree with this one:
+
+    - an `--out` at or below `--source` puts the staging tree inside the tree
+      the audit reads. The audit sees the source as it is *now*, so a directory
+      created under it afterwards is one the next run audits and copies: the
+      source has been changed by describing it;
+    - either output path already existing means a previous run left evidence
+      here. Overwriting it destroys a record and blends two runs into a tree
+      that matches neither manifest.
+
+    The second is checked on **both** paths. A directory-only check misses the
+    incomplete run — the one that wrote its manifest and no tree, or the reverse
+    — and that is the run whose bytes are most tempting to write over.
+    """
     root = Path(root).resolve()
     out_dir = Path(out_dir).resolve()
+
+    # Both paths are already real paths, so a symlink aimed at the source gives
+    # the same answer as naming the source: this compares targets, not spellings.
+    if out_dir == root or root in out_dir.parents:
+        raise builder.Refused(
+            builder.SOURCE_REFUSED,
+            f"--out {out_dir} is the source {root}, or is inside it. The audit "
+            f"reads the source before any output is written, so a staging tree "
+            f"created under it changes what the next run audits and copies. Keep "
+            f"the output in a separate evidence directory.",
+        )
+
     record = staging_manifest(root, lock, **kwargs)
 
     stage_dir = out_dir / STAGING_DIR_NAME
-    if stage_dir.exists():
-        # Written, not overwritten: a stale member this run would not have
-        # produced is indistinguishable from one it did, which is how a staging
-        # tree comes to disagree with its own manifest.
+    manifest_path = out_dir / f"{record['name']}-v{record['version']}{MANIFEST_SUFFIX}"
+    existing = [path for path in (stage_dir, manifest_path) if path.exists()]
+    if existing:
         raise builder.Refused(
             builder.SOURCE_REFUSED,
-            f"{stage_dir} already exists. A staging tree is written once into an "
-            f"empty directory; remove it deliberately rather than letting a second "
-            f"run blend into it.",
+            f"{existing[0]} already exists. A staging run writes once into an empty "
+            f"directory and never over an earlier run's evidence; remove it "
+            f"deliberately rather than letting a second run blend into it.",
         )
     stage_dir.mkdir(parents=True)
 
@@ -174,7 +207,6 @@ def stage(root: Path, out_dir: Path, lock: Path, **kwargs) -> dict:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(child.read_bytes())
 
-    manifest_path = out_dir / f"{record['name']}-v{record['version']}{MANIFEST_SUFFIX}"
     manifest_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
                              encoding="utf-8")
     record["staging_dir"] = STAGING_DIR_NAME

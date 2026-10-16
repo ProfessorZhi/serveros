@@ -123,6 +123,72 @@ class StagingRun(unittest.TestCase):
         self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
         self.assertIn("already exists", caught.exception.detail)
 
+    #: The name the fixture's plugin manifest produces, so the test can write a
+    #: file at the exact path the run would have used.
+    MANIFEST_NAME = "serveros-fleet-ingress-v1.0.0" + "-STAGING-MANIFEST.json"
+
+    def test_a_preexisting_manifest_is_never_overwritten(self) -> None:
+        """An incomplete prior run is still evidence, and the manifest is the half
+        of it a dir-only check misses.
+
+        The staging directory is absent here — that is the case the first version
+        missed, because the manifest path was computed after the tree was written
+        and nothing ever asked whether a file was already at it.
+        """
+        original = b'{"schema": "a previous run", "keep": "these bytes"}\n'
+        self.f.out.mkdir(parents=True, exist_ok=True)
+        target = self.f.out / self.MANIFEST_NAME
+        target.write_bytes(original)
+
+        with self.assertRaises(builder.Refused) as caught:
+            self.stage(next_mcp_url=None)
+
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertIn("already exists", caught.exception.detail)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertFalse((self.f.out / staging.STAGING_DIR_NAME).exists())
+        self.assertEqual(self.archives(), [])
+
+    def test_an_out_below_the_source_is_refused_before_any_write(self) -> None:
+        """`--out` under `--source` changes what the *next* run audits and copies.
+
+        The audit reads the source as it is now; a staging tree created inside it
+        afterwards is part of the tree the next run reads. So this is refused
+        before anything is read or written, and zero bytes land in the source.
+        """
+        before = sorted(p.relative_to(self.f.source).as_posix()
+                        for p in self.f.source.rglob("*"))
+        inside = self.f.source / "dist"
+
+        with self.assertRaises(builder.Refused) as caught:
+            staging.stage(self.f.source, inside, self.lock_path, next_mcp_url=None)
+
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertIn("inside it", caught.exception.detail)
+        self.assertFalse(inside.exists())
+        after = sorted(p.relative_to(self.f.source).as_posix()
+                       for p in self.f.source.rglob("*"))
+        self.assertEqual(before, after)
+
+    def test_an_out_equal_to_the_source_is_refused(self) -> None:
+        with self.assertRaises(builder.Refused) as caught:
+            staging.stage(self.f.source, self.f.source, self.lock_path,
+                          next_mcp_url=None)
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertFalse((self.f.source / staging.STAGING_DIR_NAME).exists())
+
+    def test_a_symlinked_out_that_resolves_into_the_source_is_refused(self) -> None:
+        """A realpath comparison, so a symlink is not a way around the rule."""
+        link = self.f.root / "out-link"
+        link.symlink_to(self.f.source)
+
+        with self.assertRaises(builder.Refused) as caught:
+            staging.stage(self.f.source, link, self.lock_path, next_mcp_url=None)
+
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertIn("inside it", caught.exception.detail)
+        self.assertFalse((self.f.source / staging.STAGING_DIR_NAME).exists())
+
     def test_a_source_with_every_gate_passing_says_to_build_a_release_instead(self) -> None:
         """A staging run over a buildable source is the wrong tool, and says so.
 

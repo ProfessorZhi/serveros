@@ -54,6 +54,17 @@ python3 integrations/fleet-v1-first-install/stage_manifest.py \
 
 This writes `<evidence-dir>/staging/` and
 `<evidence-dir>/<name>-v<version>-STAGING-MANIFEST.json`, and **no archive**.
+
+A run is **one-shot**, and refuses in two cases before it reads or writes
+anything:
+
+- **`--out` at or below `--source`** — the audit reads the source before any
+  output exists, so a tree created under it is one the *next* run audits and
+  copies. Keep the output in a separate evidence directory.
+- **either output path already existing** — a directory-only check misses the
+  incomplete run, which is the one whose manifest is most tempting to write
+  over. The existing manifest keeps its original bytes; nothing is written.
+
 Expected today, measured:
 
 ```
