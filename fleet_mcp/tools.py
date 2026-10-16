@@ -659,6 +659,15 @@ def _native_handler(native: cloudcli_native.NativeTool):
             arguments=args.get("arguments") or {},
             session_ref=args.get("session_ref"),
             project=args.get("project"),
+            # The second runtime axis, and it used to stop here: every one of
+            # the 22 mirrored verbs fell back to the device's own runtime, so a
+            # device serving two runtimes was reachable through the hand-written
+            # tools and NOT through the mirror. `native_call` already resolves
+            # and gates this (session_ref agreement, binding existence, and the
+            # per-runtime `allow_*` floors); the edge was the only thing not
+            # carrying it, and an omitted key must stay `None` so the service's
+            # own default is the one that decides.
+            runtime=args.get("runtime"),
         )
     return handler
 
@@ -689,6 +698,23 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
     schema = cloudcli_native.mirrored_schema(native)
     properties = schema["properties"]
     properties["device_ref"] = _string(f"Which device to call. {DEVICE_REF_DOC}")
+    # The runtime axis, on every mirrored verb. It is deliberately the SAME
+    # address the hand-written tools take, and it selects among bindings the
+    # operator already made: a runtime this surface has no binding for is
+    # refused (`UNKNOWN_DEVICE`), so it cannot create an endpoint or reach an
+    # address nobody bound. Omitting it means the device's own runtime — the
+    # behaviour every caller had before a device could serve two — and it never
+    # falls back to another one.
+    properties["runtime"] = _string(
+        "Which account's runtime on that device to call. Omit to use the "
+        "device's own runtime. A runtime this surface has no binding for is "
+        "refused rather than redirected, and when `session_ref` is also given "
+        "the two must name the same runtime (a session lives on the runtime "
+        "that holds it — the same id under two runtimes is two different "
+        "sessions). Authorization is per runtime: a write verb's `allow_*` "
+        "floor is read from that runtime's own binding, so a grant made in one "
+        "account is not a grant in the account beside it."
+    )
     if "session_ref" in properties:
         properties["session_ref"] = _string(
             "Required for this verb. The full `device:<id>|<provider>|<native "
@@ -766,8 +792,18 @@ NATIVE_MANIFEST_TOOL = Tool(
 )
 
 def _native_capability(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]:
+    # `native_capability` takes a runtime, but this handler never passed one, so
+    # the snapshot was only ever of the device's OWN runtime — a caller asking
+    # about the second runtime on a two-runtime device silently got the first
+    # one's answer. An omitted key stays `None` here so the service's own
+    # default (the device's own runtime) is what decides.
+    runtime = args.get("runtime")
+    if runtime is None:
+        return ctx.service.native_capability(ctx.principal,
+                                             device_ref=args.get("device_ref"))
     return ctx.service.native_capability(ctx.principal,
-                                         device_ref=args.get("device_ref"))
+                                         device_ref=args.get("device_ref"),
+                                         runtime=runtime)
 
 
 NATIVE_CAPABILITY_TOOL = Tool(
@@ -785,7 +821,15 @@ NATIVE_CAPABILITY_TOOL = Tool(
     ),
     input_schema={
         "type": "object",
-        "properties": {"device_ref": _string(f"Which device. {DEVICE_REF_DOC}")},
+        "properties": {
+            "device_ref": _string(f"Which device. {DEVICE_REF_DOC}"),
+            "runtime": _string(
+                "Which account's runtime on that device to snapshot. Omit for "
+                "the device's own runtime. A runtime this surface has no "
+                "binding for is refused, so this selects among configured "
+                "routes and cannot invent one."
+            ),
+        },
         "required": ["device_ref"],
         "additionalProperties": False,
     },
