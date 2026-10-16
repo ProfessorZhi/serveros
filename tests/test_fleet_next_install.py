@@ -9,6 +9,7 @@ import contextlib
 import copy
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1823,6 +1824,60 @@ class ThePayloadAuditRefusesIgnoredMembersTest(unittest.TestCase):
             with mock.patch.object(install, "systemctl", self._quiet_systemctl):
                 self.assertEqual(install.install(args), 0)
             self.assertTrue((comp / "current").exists())
+
+    def test_a_tracked_symlink_under_the_payload_is_refused(self):
+        """Being tracked is not the same as being the commit's BYTES.
+
+        A symlink's tracked blob is its TARGET PATH, and `copytree` dereferences
+        it — so the artifact would ship the target's content under a name the
+        commit says is a link. That target can be anything on the host, a
+        git-ignored secret included, and the shipped bytes are then described by
+        no commit at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, src = self._git_source(tmp, ignore="secrets/\n",
+                                               fixture=None)
+            (src / "secrets").mkdir()
+            (src / "secrets" / "pat.txt").write_text("HARmlessFixtureOnly\n",
+                                                     encoding="utf-8")
+            (src / "fleet_mcp" / "linked.txt").symlink_to("../secrets/pat.txt")
+            subprocess.run(["git", "-C", str(src), "add", "-A"],
+                           capture_output=True, text=True, check=True)
+            subprocess.run(["git", "-C", str(src), "commit", "-q", "-m", "link"],
+                           capture_output=True, text=True, check=True)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                install.install(args)
+            self.assertIn("are symlinks", err.getvalue())
+            self.assertFalse((comp / "current").exists())
+            self.assertEqual(list(comp.glob(".staging-*")), [])
+
+    def test_a_failed_copy_leaves_no_staging_behind(self):
+        """A copy that dies partway has already written whatever it reached.
+
+        Without the cleanup the ignored member would simply be left in a
+        `.staging-*` directory, and the next run uses a fresh timestamped name
+        that does not remove it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="fleet_mcp/*.secret\n",
+                fixture="fleet_mcp/owner-pat.secret")
+            real = shutil.copytree
+            calls = {"n": 0}
+
+            def flaky(*a, **k):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise shutil.Error("simulated: the second member failed")
+                return real(*a, **k)
+
+            with mock.patch.object(install.shutil, "copytree", flaky):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(shutil.Error):
+                        install.install(args)
+            self.assertEqual(list(comp.glob(".staging-*")), [],
+                             "a half-copied staging tree must not be left behind")
 
     def test_a_non_git_source_makes_no_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
