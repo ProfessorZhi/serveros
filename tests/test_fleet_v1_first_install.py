@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import shutil
 import struct
@@ -39,6 +40,7 @@ import tempfile
 import unittest
 import zipfile
 import zlib
+from contextlib import redirect_stderr
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -526,6 +528,90 @@ class NoPlaceholderIsEverWritten(unittest.TestCase):
         with self.assertRaises(builder.Refused):
             builder.source_bundle(f.source, f.out, manifest, refusal.status)
         self.assertEqual(f.archives(), [])
+
+
+class TheReleaseIsNotWrittenBackIntoItsOwnSource(unittest.TestCase):
+    """An output inside the source changes the tree the *next* run reads.
+
+    The audit runs before anything is written, so a release archive landing in
+    the source is not merely untidy: `audit_source` accepts a `.zip`, so a later
+    `--source-bundle` would carry a release archive inside the archive that
+    claims to be the source, and two builds of "one source" would no longer be
+    two builds of one source.
+
+    The `dist` and `out` names are refused by the audit — on the **next** run,
+    by accident. A test that used either would therefore pass against a builder
+    with no guard at all, which is why one case below deliberately names a
+    directory the audit allows.
+    """
+
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def _tree(self) -> list[str]:
+        return sorted(p.relative_to(self.f.source).as_posix()
+                      for p in self.f.source.rglob("*"))
+
+    def test_an_out_equal_to_the_source_is_refused_with_zero_writes(self) -> None:
+        before = self._tree()
+        with self.assertRaises(builder.Refused) as caught:
+            builder.build(self.f.source, self.f.source, self.f.lock, **self.f.kwargs())
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertIn("inside it", caught.exception.detail)
+        self.assertEqual(self._tree(), before)
+
+    def test_an_out_below_the_source_is_refused_for_a_name_the_audit_allows(self) -> None:
+        inside = self.f.source / "build"       # not `dist`/`out`: those are refused later
+        before = self._tree()
+        with self.assertRaises(builder.Refused) as caught:
+            builder.build(self.f.source, inside, self.f.lock, **self.f.kwargs())
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertFalse(inside.exists())
+        self.assertEqual(self._tree(), before)
+
+    def test_a_symlinked_out_that_resolves_into_the_source_is_refused(self) -> None:
+        link = self.f.root / "out-link"
+        link.symlink_to(self.f.source)
+        with self.assertRaises(builder.Refused) as caught:
+            builder.build(self.f.source, link, self.f.lock, **self.f.kwargs())
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertEqual([p for p in self.f.source.rglob("*.zip")], [])
+
+
+class ARefusalIsAStatusAndNotATraceback(unittest.TestCase):
+    """The CLI's own contract, on the one input read outside the source.
+
+    `Refused` documents itself as carrying "a status and a reason, not a
+    traceback". The lock is the brand-asset authority — the file this whole
+    package exists to enforce — so a mistyped `--lock` path is the likeliest
+    operator error there is, and it used to arrive as a stack trace.
+    """
+
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.addCleanup(self.f.close)
+
+    def test_a_malformed_lock_is_a_status_not_a_traceback(self) -> None:
+        bad = self.f.root / "bad-lock.json"
+        bad.write_text("not json\n", encoding="utf-8")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = builder.main(["--source", str(self.f.source), "--lock", str(bad),
+                                 "--out", str(self.f.out)])
+        self.assertEqual(code, 2)
+        self.assertIn(builder.SOURCE_REFUSED, err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_a_missing_lock_is_a_status_not_a_traceback(self) -> None:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = builder.main(["--source", str(self.f.source),
+                                 "--lock", str(self.f.root / "absent-lock.json"),
+                                 "--out", str(self.f.out)])
+        self.assertEqual(code, 2)
+        self.assertIn(builder.SOURCE_REFUSED, err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 class TheAppBackedPathNeedsAReceipt(unittest.TestCase):

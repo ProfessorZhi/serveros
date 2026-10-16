@@ -1038,7 +1038,26 @@ def preflight(root: Path, lock: dict, *, next_mcp_url, observation,
 
 
 def build(root: Path, out_dir: Path, lock: dict, **kwargs) -> dict:
-    """Write the release archive. Raises rather than writing a partial one."""
+    """Write the release archive. Raises rather than writing a partial one.
+
+    The output is refused at or below the source, before `preflight` reads
+    anything. The audit sees the source as it is *now*, so an archive written
+    into it afterwards is part of the tree the next run reads — and
+    `audit_source` accepts a `.zip`, so the next `--source-bundle` would carry a
+    release archive inside the archive that claims to be the source. The `dist`
+    and `out` names are refused by the audit on the *next* run, which makes this
+    look guarded when it is not.
+    """
+    root = Path(root).resolve()
+    out_dir = Path(out_dir).resolve()
+    if out_dir == root or root in out_dir.parents:
+        raise Refused(
+            SOURCE_REFUSED,
+            f"--out {out_dir} is the source {root}, or is inside it. The source is "
+            f"audited and then copied, so a release written into it changes the tree "
+            f"the next run reads and ends up inside the next source bundle. Keep the "
+            f"output outside the source.",
+        )
     plan = preflight(root, lock, **kwargs)
     out_dir.mkdir(parents=True, exist_ok=True)
     import tempfile
@@ -1157,12 +1176,16 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.source).resolve()
     out_dir = Path(args.out).resolve()
-    lock = _read_json(Path(args.lock).resolve(), "brand-assets.lock.json")
     kwargs = dict(next_mcp_url=args.next_mcp_url, observation=args.observation,
                   app_backed=args.app_backed, plugin_id=args.plugin_id,
                   registration=args.app_registration, v1_mcp_url=args.v1_mcp_url)
 
     try:
+        # Inside the `try`, with every other gate. `Refused` documents itself as
+        # carrying a status and a reason rather than a traceback, and the lock is
+        # the brand-asset authority — a mistyped `--lock` path is the likeliest
+        # operator error there is, and it arrived as a stack trace.
+        lock = _read_json(Path(args.lock).resolve(), "brand-assets.lock.json")
         if args.check:
             import tempfile
             with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:

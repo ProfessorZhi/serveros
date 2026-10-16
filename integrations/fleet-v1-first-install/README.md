@@ -71,6 +71,14 @@ python3 integrations/fleet-v1-first-install/build_first_install.py \
     --check                     # build twice, assert both digests agree
 ```
 
+`--out` is refused at or below `--source`. The audit reads the source before
+anything is written, so an archive created inside it becomes part of the tree
+the *next* run reads — and `audit_source` accepts a `.zip`, so the next source
+bundle would carry a release archive inside the archive that claims to be the
+source. The `dist` and `out` names are refused by the audit on the next run,
+which makes this look guarded when it is not. Keep the output in a separate
+directory.
+
 The observation receipt is JSON with schema
 `serveros/fleet-next-endpoint-observation/v1`; `tests/test_fleet_v1_first_install.py`
 constructs one in `observation()` and is the reference for the shape. It must
