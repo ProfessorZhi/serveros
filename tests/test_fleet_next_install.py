@@ -1648,6 +1648,21 @@ class TheTreeRuleAsksWhetherItIsARepositoryAtAllTest(unittest.TestCase):
             self.assertIsNotNone(problem, "a broken .git must not be exempt")
             self.assertIn(".git entry", problem)
 
+    def test_a_git_entry_that_is_a_broken_symlink_is_refused_too(self):
+        """`Path.exists()` follows symlinks, so a broken `.git` link answers False.
+
+        Git answers "not a repository" for it, and an existence test that
+        follows the link agrees — so the entry would be exempted without the
+        `is_symlink()` half.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").symlink_to("/nonexistent/gone")
+            (root / "fleet_mcp").mkdir()
+            problem = install.tree_state(root)
+            self.assertIsNotNone(problem, "a broken .git symlink must not be exempt")
+            self.assertIn(".git entry", problem)
+
 
 class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase):
     """The wrapper's own post-start verification runs AFTER a successful start.

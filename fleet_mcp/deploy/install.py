@@ -161,7 +161,11 @@ def tree_state(source: Path) -> str | None:
         # exit code does not differ and the two fatal strings do not generalise.
         # The `.git` ENTRY is what tells them apart, and for those there IS a
         # claim that cannot be verified, so `--revision` must not be trusted.
-        if (source / ".git").exists():
+        # `exists()` follows symlinks, so a `.git` that is a BROKEN symlink
+        # answers False to both git and this check and would be exempted. The
+        # entry is what decides, in every form it takes.
+        entry = source / ".git"
+        if entry.exists() or entry.is_symlink():
             return (f"{source} has a .git entry that git does not read as a "
                     f"repository; refusing to publish an unverifiable tree")
         # A plain directory makes no HEAD claim, so there is nothing to verify
