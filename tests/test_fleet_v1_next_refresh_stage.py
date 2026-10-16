@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from fleet_mcp.deploy import install  # noqa: E402
 from fleet_mcp.deploy import next_install, next_dual_stack_preflight as gate  # noqa: E402
 
 V1_CONFIG = "/home/operator/.config/old-fleet/config.yaml"
@@ -82,6 +83,19 @@ def candidate() -> dict:
     }
 
 
+def writable_root(p: dict, tmp: str) -> Path:
+    """A Next composition root a fake can leave effect evidence in.
+
+    The effect marker lives under the composition root, so a test whose fake
+    dies the way a MID-INSTALL death behaves needs a root that exists; the
+    proposal's shipped example path does not, on any host.
+    """
+    root = Path(tmp) / next_install.COMPOSITION
+    root.mkdir(parents=True, exist_ok=True)
+    p["next"]["runtime_root"] = str(root)
+    return root
+
+
 class FakeMod:
     """Models the shared installer's REAL pointer behaviour, not a stub answer.
 
@@ -89,7 +103,14 @@ class FakeMod:
     what `install.py::install()` does; a fake that returned fixed pointers could
     not tell a correct wrapper from one that reads the rollback target from the
     wrong place.
+
+    `begin_effect` models the EFFECT BOUNDARY. A fake that dies the way a
+    mid-install death behaves has to leave the same evidence the real installer
+    leaves, or the wrapper cannot tell that death from a refusal that never
+    wrote anything.
     """
+
+    EFFECT_MARKER = install.EFFECT_MARKER
 
     def __init__(self, *, current=None, previous=None, unit_state="inactive",
                  enabled_state="disabled", enabled_error=False,
@@ -131,11 +152,32 @@ class FakeMod:
                                    stdout=self.enabled_state + "\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
 
+    # The wrapper consults these two before any effect. This file models a CLEAN
+    # git source with no HEAD override; `test_fleet_next_install.py` owns the
+    # cases where either of them answers "no".
+    def git_revision(self, source):
+        return None
+
+    def tree_state(self, source):
+        return None
+
+    def begin_effect(self, args) -> Path:
+        """Leave the marker where the wrapper looks for it, as install.py does."""
+        runtime_root = Path(args[args.index("--runtime-root") + 1])
+        composition = args[args.index("--composition") + 1]
+        root = runtime_root / composition
+        root.mkdir(parents=True, exist_ok=True)
+        marker = root / self.EFFECT_MARKER
+        marker.write_text("0\n", encoding="utf-8")
+        return marker
+
     def main(self, args):
         self.calls.append(list(args))
         if self.raise_systemexit:
+            self.begin_effect(args)
             raise SystemExit(2)
         if self.exit_code != 0:
+            self.begin_effect(args)
             return self.exit_code
         self.root_previous = self.root_current
         self.root_current = Path(f"/rev/fleet-mcp-20261015@{self.revision[:7]}")
@@ -489,9 +531,11 @@ class TheFirstStageIsUnchangedTest(unittest.TestCase):
 class FailureIsReportedAsNextOnlyRecoveryTest(unittest.TestCase):
     def test_a_nonzero_installer_exit_reports_next_only_recovery(self):
         mod = FakeMod(current=f"/rev/{OLD_LABEL}", exit_code=3)
-        with gitrepo() as repo:
+        with gitrepo() as repo, tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
             rc, out = run(["refresh-stage", "--execute", "--owner-approved"],
-                          candidate(), mod=mod, source=repo)
+                          p, mod=mod, source=repo)
         self.assertEqual(rc, 2)
         self.assertEqual(out["decision"], "BLOCKED")
         self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
@@ -501,9 +545,11 @@ class FailureIsReportedAsNextOnlyRecoveryTest(unittest.TestCase):
 
     def test_an_unreadable_receipt_is_unknown_not_a_clean_failure(self):
         mod = FakeMod(current=f"/rev/{OLD_LABEL}", raise_systemexit=True)
-        with gitrepo() as repo:
+        with gitrepo() as repo, tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
             rc, out = run(["refresh-stage", "--execute", "--owner-approved"],
-                          candidate(), mod=mod, source=repo)
+                          p, mod=mod, source=repo)
         self.assertEqual(rc, 2)
         self.assertEqual(out["decision"], "BLOCKED")
         self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
@@ -512,9 +558,11 @@ class FailureIsReportedAsNextOnlyRecoveryTest(unittest.TestCase):
 
     def test_recovery_addresses_only_the_next_unit_and_never_v1(self):
         mod = FakeMod(current=f"/rev/{OLD_LABEL}", exit_code=3)
-        with gitrepo() as repo:
+        with gitrepo() as repo, tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
             run(["refresh-stage", "--execute", "--owner-approved"],
-                candidate(), mod=mod, source=repo)
+                p, mod=mod, source=repo)
         for call in mod.systemctl_calls:
             with self.subTest(call=call):
                 self.assertIn(gate.NEXT_UNIT, call)

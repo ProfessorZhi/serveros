@@ -68,6 +68,16 @@ UNIT_TEMPLATE = "fleet_mcp/deploy/serveros-fleet-mcp.service"
 DEFAULT_CONFIG = "~/.config/serveros-fleet-mcp/fleet-mcp.local.yaml"
 MANIFEST = "ARTIFACT.json"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
+#: Written the instant `install()` is about to make its FIRST change to the
+#: host, and removed when it finishes. A caller that finds it after a nonzero
+#: exit knows the run went past the point of no return and needs recovery. That
+#: question cannot be answered from the exit code — `systemctl` can fail *after*
+#: `current` moved — nor from the symlinks, because an install over a live unit
+#: takes the restart path and a restart of the SAME revision leaves them
+#: byte-identical. Absence of this file, after an attempt that reached the
+#: boundary, is the honest answer; presence is the honest answer in the other
+#: direction.
+EFFECT_MARKER = ".fleet-mcp-effect-begun"
 
 
 def die(message: str, code: int = 2) -> None:
@@ -206,8 +216,21 @@ def binding(config_path: Path) -> dict:
         die(f"no binding at {config_path}. This installer does not create one: a "
             f"service started without a binding refuses at startup, and a binding "
             f"it invented would be a claim about devices nothing verified.")
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    server = data.get("server") or {}
+    # A binding that cannot be PARSED is refused the same way as one that is
+    # absent: `die` rather than let a parser exception escape as a traceback.
+    # An escaping exception skips every caller's refusal path — the wrapper
+    # prints no receipt at all — and a traceback is not a refusal an operator
+    # can act on. The file's CONTENT is never echoed, only the failure kind.
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+        die(f"the binding at {config_path} is not readable YAML "
+            f"({type(exc).__name__}); refusing rather than starting a service "
+            f"from a binding nothing could parse.")
+    if data is not None and not isinstance(data, dict):
+        die(f"the binding at {config_path} is not a mapping; refusing rather "
+            f"than reading a shape nothing declared.")
+    server = (data or {}).get("server") or {}
     bind = str(server.get("bind") or "127.0.0.1")
     port = server.get("port")
     if not isinstance(port, int):
@@ -338,6 +361,18 @@ def install(args: argparse.Namespace) -> int:
         **manifest_of(staging),
     }
     (staging / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    # EFFECT BOUNDARY. Everything above this line only REFUSED, or built into
+    # the throwaway `.staging-*` directory: nothing was published, no pointer
+    # moved, no unit was rewritten and no service was touched, so a failure
+    # above here needs no recovery and must not stop a healthy Next. Everything
+    # below can change the host. The marker is created FIRST so a crash anywhere
+    # past this point leaves evidence, and it is removed only on the success
+    # paths — which is what lets the caller tell a refusal it must leave alone
+    # from a run it must roll back.
+    marker = composition_root / EFFECT_MARKER
+    marker.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
     revision_dir.parent.mkdir(parents=True, exist_ok=True)
     staging.replace(revision_dir)
 
@@ -362,6 +397,7 @@ def install(args: argparse.Namespace) -> int:
                           "unit_path": str(unit_path), "started": False,
                           "next": f"systemctl --user start {UNIT_NAME}"},
                          indent=2))
+        marker.unlink(missing_ok=True)   # finished cleanly: nothing to recover
         return 0
 
     # `enable --now` is a START, and a start on a unit that is ALREADY running is
@@ -386,8 +422,12 @@ def install(args: argparse.Namespace) -> int:
                       "unit_path": str(unit_path), "started": started, "health": health},
                      indent=2))
     if not started:
+        # The marker is deliberately LEFT here: the install changed the host and
+        # the service did not come back, which is exactly the state the caller
+        # must recover rather than walk away from.
         die(f"{UNIT_NAME} is installed and did not answer on {plan['health']}; "
             f"`journalctl --user -u {UNIT_NAME} -n 40` has the reason", code=3)
+    marker.unlink(missing_ok=True)       # finished cleanly: nothing to recover
     return 0
 
 
