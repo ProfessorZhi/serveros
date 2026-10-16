@@ -452,6 +452,8 @@ quietly: an unobserved binding has `observation: UNKNOWN` and an
 
 ## Related
 
+- [Fleet V1/V2 — Agent identity versus Session resource](architecture/FLEET-V1-V2-AGENT-SESSION.md): a future Logical Agent is topology-independent, but current provider-bound runtime/session IDs and admission contracts remain unchanged. The document is a design decision, not an implemented V2 mapping.
+
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — the unifying principle, invariant 9
 - [`claude-codex-parity.md`](claude-codex-parity.md) — what the two runtimes must share
 - [`ability-fabric.md`](ability-fabric.md) — where a runtime becomes one of eight inputs
