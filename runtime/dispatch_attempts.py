@@ -211,6 +211,31 @@ def reconcile(recorded, *, digest) -> dict:
                         f"unreadable outcome is not permission to dispatch")}
 
 
+#: The transport reasons that PROVE nothing reached the provider. A transport
+#: that could not deliver has learned nothing about the session on the far side,
+#: so for every OTHER reason the attempt stays ambiguous — and ambiguity is
+#: EFFECT_UNKNOWN, which refuses a retry. This list is deliberately SHORT and
+#: conservative: a reason wrongly placed here would let a possibly-sent effect be
+#: re-sent, and a reason wrongly left out only makes a retry refuse (and ask for
+#: reconciliation), which is the recoverable direction.
+NEVER_REACHED_THE_PROVIDER = ("DEVICE_UNREACHABLE", "NODE_RUNTIME_UNAVAILABLE")
+
+
+def phase_after_transport_failure(reason) -> str:
+    """Which phase a failed dispatch leaves the attempt in. Pure.
+
+    `DEVICE_UNREACHABLE` / `NODE_RUNTIME_UNAVAILABLE` mean the request never left
+    the control plane, so the attempt is still `CALL_NOT_SENT` and a retry is
+    safe. ANY other failure — a timeout, a provider error, a turn that failed —
+    leaves us unable to say whether the effect happened, and the honest phase is
+    `EFFECT_UNKNOWN`: the retry must not launch a second turn, and the answer is
+    to reconcile with the owner rather than to try again.
+    """
+    if str(reason or "").strip().upper() in NEVER_REACHED_THE_PROVIDER:
+        return CALL_NOT_SENT
+    return EFFECT_UNKNOWN
+
+
 def tree_shape() -> dict:
     """What this module declares, for a caller that reads contracts."""
     return {

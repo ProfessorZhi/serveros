@@ -1085,12 +1085,24 @@ class FleetAgentControlRouter:
         if replayed is not None:
             return replayed
 
+        # #245. The attempt is persisted BEFORE the mutation leaves this
+        # process, and that order is the whole point: a record written here can
+        # say "we had decided to send and had not yet" if the process dies next,
+        # which a record written AFTER the send cannot — by then it has already
+        # happened and the two crash windows are indistinguishable.
+        self._begin_attempt(request)
+
         try:
             result = node.send(request, resolved=record)
         except TransportFailure as exc:
-            # The transport's own vocabulary, verbatim. Nothing here converts a
-            # delivery failure into a statement about the session on the far
-            # side, because the transport learned nothing about it.
+            # #245. Leave the attempt in the phase its failure actually
+            # supports: nothing-sent stays CALL_NOT_SENT; anything ambiguous
+            # becomes EFFECT_UNKNOWN, so a retry does not launch a second paid
+            # turn. Then refuse in the transport's own vocabulary, verbatim —
+            # nothing here converts a delivery failure into a statement about
+            # the session on the far side, because the transport learned nothing
+            # about it.
+            self._mark_attempt_after_failure(request, exc.reason)
             return self._refuse(request, exc.reason, exc.detail, record=record,
                                 retryable=exc.retryable)
 
@@ -1164,6 +1176,49 @@ class FleetAgentControlRouter:
             verb=request.verb, params=request.params,
             workspace=request.workspace, work_item=request.work_item)
 
+    def _attempt_record(self, request, phase, *, result=None) -> dict:
+        """One durable attempt record for this request, at this phase."""
+        return dispatch_attempts.attempt_record(
+            key=request.idempotency_key, action=request.action,
+            device_ref=request.device_ref, verb=request.verb,
+            intent_digest=self._intent_digest(request), phase=phase,
+            work_item=request.work_item, result=result, at=_now())
+
+    def _durable_attempt(self, request) -> bool:
+        """Whether this request has a durable attempt to write. Mutations only."""
+        return bool(self._attempts is not None and request.idempotency_key
+                    and _mutating(request.verb))
+
+    def _begin_attempt(self, request) -> None:
+        """Persist `CALL_NOT_SENT` BEFORE the mutation leaves this process. #245.
+
+        The order is the entire value. A record written BEFORE `node.send` can
+        say "we had decided to send and had not yet" when the process dies next;
+        a record written after the send cannot, because by then the effect has
+        happened and "crashed before" and "crashed after" are the same bytes
+        with opposite repairs.
+
+        A store that refuses this write is NOT swallowed — it raises, as the
+        binding write at `_record` does — because dispatching without the record
+        is exactly the blind retry this exists to prevent.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(
+            self._attempt_record(request, dispatch_attempts.CALL_NOT_SENT))
+
+    def _mark_attempt_after_failure(self, request, reason) -> None:
+        """Leave the attempt in the phase the failure actually supports.
+
+        Nothing-sent stays `CALL_NOT_SENT` (a retry is safe); anything ambiguous
+        becomes `EFFECT_UNKNOWN`, so a retry refuses instead of launching a
+        second paid turn.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(self._attempt_record(
+            request, dispatch_attempts.phase_after_transport_failure(reason)))
+
     def _replay(self, request: AgentControlRequest) -> AgentControlResponse | None:
         """A retry of the same intent, answered from the record of the first.
 
@@ -1227,19 +1282,15 @@ class FleetAgentControlRouter:
             return
         digest = self._intent_digest(request)
         if self._attempts is not None:
-            # The durable record. Written AFTER the effect here because this
-            # router records a SETTLED outcome; the CALL_NOT_SENT phase (the one
-            # written BEFORE dispatch, which is what distinguishes "crashed
-            # before sending" from "crashed after sending") belongs to the
-            # dispatch site that owns the send, and wiring it is the remaining
-            # step #245 names. A store that refuses the write is NOT swallowed:
-            # the caller would otherwise believe a retry will be recognised when
-            # nothing recorded it.
-            self._attempts.put_dispatch_attempt(dispatch_attempts.attempt_record(
-                key=request.idempotency_key, action=request.action,
-                device_ref=request.device_ref, verb=request.verb,
-                intent_digest=digest, phase=dispatch_attempts.SETTLED,
-                work_item=request.work_item, result=result, at=_now()))
+            # The outcome. `_begin_attempt` already wrote CALL_NOT_SENT before
+            # the send, so this MOVES the same attempt to SETTLED — same key,
+            # same digest, a different phase, which is what a phase is for. A
+            # store that refuses the write is NOT swallowed: the caller would
+            # otherwise believe a retry will be recognised when nothing recorded
+            # it.
+            self._attempts.put_dispatch_attempt(
+                self._attempt_record(request, dispatch_attempts.SETTLED,
+                                      result=result))
         self._seen_keys[request.idempotency_key] = {
             "action": request.action, "device_ref": request.device_ref,
             "intent_digest": digest, "result": result,

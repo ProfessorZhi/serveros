@@ -302,14 +302,19 @@ durable_effects:
     durable record when it is given one, so a recorded EFFECT_UNKNOWN refuses a
     retry instead of dispatching it a second time (#237 T4/T9).
   what_remains: >-
-    The CALL_NOT_SENT phase must be written at the DISPATCH SITE that owns the
-    send — BEFORE the effect — so that "crashed before sending" and "crashed
-    after sending with the answer lost" are distinguishable; a record written
-    only after the effect cannot tell them apart. And the provider/owner-backed
-    RECONCILE that turns an EFFECT_UNKNOWN back into SETTLED. Wiring the durable
-    store into the deployed construction site (the daemon/MCP path) is the other
-    remaining step: today `attempts` is optional, so a router built without one
-    keeps the in-process guard it always had.
+    The provider/owner-backed RECONCILE that turns an EFFECT_UNKNOWN back into
+    SETTLED: today an unknown outcome is refused and stays refused until a human
+    or an owner lookup resolves it, which is honest but not yet recovery.
+  what_now_exists_too: >-
+    CALL_NOT_SENT is written at the dispatch site, BEFORE `node.send`, so
+    "crashed before sending" and "crashed after sending with the answer lost" are
+    distinguishable — a record written only after the effect cannot tell them
+    apart. A failed dispatch then leaves the attempt in the phase the failure
+    supports (`DEVICE_UNREACHABLE`/`NODE_RUNTIME_UNAVAILABLE` stay CALL_NOT_SENT
+    and may be retried; anything ambiguous becomes EFFECT_UNKNOWN and may not).
+    The deployed construction site passes the durable handle
+    (`mcp/agent_mcp.py` `DaemonAttempts` over the daemon's own store), so the
+    guard is no longer the in-process dict by default on that path.
   blocker: >-
     A lost response to a mutating dispatch is not fully reconciled today: restart
     the router WITHOUT a durable store and the same intent is a second effect.

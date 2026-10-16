@@ -124,6 +124,20 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(v["verdict"], "PROCEED")
 
 
+class TestPhaseAfterFailure(unittest.TestCase):
+    """Which phase a failed dispatch leaves the attempt in (#245)."""
+
+    def test_a_transport_that_could_not_deliver_stays_call_not_sent(self):
+        for reason in ("DEVICE_UNREACHABLE", "NODE_RUNTIME_UNAVAILABLE"):
+            self.assertEqual(attempts.phase_after_transport_failure(reason),
+                             attempts.CALL_NOT_SENT, reason)
+
+    def test_an_ambiguous_failure_becomes_effect_unknown(self):
+        for reason in ("TIMEOUT", "PROVIDER_ERROR", "TURN_FAILED", "", None):
+            self.assertEqual(attempts.phase_after_transport_failure(reason),
+                             attempts.EFFECT_UNKNOWN, reason)
+
+
 class TestTheRecordShape(unittest.TestCase):
     def test_the_record_carries_what_245_asks_for(self):
         rec = attempts.attempt_record(

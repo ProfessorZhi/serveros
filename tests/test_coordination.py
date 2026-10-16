@@ -58,6 +58,8 @@ def _load(name: str, filename: str):
 
 coordination = _load("serveros_runtime_coordination", "coordination.py")
 store_mod = _load("serveros_runtime_agent_control_store", "agent_control_store.py")
+# #245 / S2. The dispatch-attempt kernel, for the daemon-surface tests below.
+attempts = _load("serveros_runtime_dispatch_attempts", "dispatch_attempts.py")
 daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
 registry_mod = _load("serveros_runtime_registry", "registry.py")
 
@@ -818,6 +820,60 @@ def test_an_explicit_claim_arms_a_scope_by_hand(daemon):
     read = daemon.handle({"method": "agent.binding.resolve",
                           "params": {"session_ref": "session-1"}})["result"]
     assert read["current_writer"] == {"owner": "operator", "epoch": 7, "token": "7"}
+
+
+def _attempt(key, digest, phase, **over):
+    rec = attempts.attempt_record(key=key, action="agent.session.send",
+                                  device_ref="device:x", verb="session.send",
+                                  intent_digest=digest, phase=phase)
+    rec.update(over)
+    return rec
+
+
+def test_the_daemon_records_and_resolves_a_dispatch_attempt(daemon):
+    """#245. The durable attempt, on the REAL daemon surface.
+
+    `agent.dispatch.record` writes it and `agent.dispatch.resolve` reads it back
+    — the two halves the router's replay guard uses, over the daemon socket
+    rather than in-process.
+    """
+    digest = attempts.intent_digest(action="agent.session.send",
+                                    device_ref="device:x", verb="session.send",
+                                    params={"instruction": "more"})
+    written = daemon.handle({"method": "agent.dispatch.record", "params": {
+        "attempt": _attempt("k-1", digest, attempts.CALL_NOT_SENT)}})["result"]
+    assert written["recorded"] is True
+    assert written["attempt"]["phase"] == attempts.CALL_NOT_SENT
+
+    read = daemon.handle({"method": "agent.dispatch.resolve",
+                          "params": {"key": "k-1"}})["result"]
+    assert read["found"] is True
+    assert read["attempt"]["intent_digest"] == digest
+
+    missing = daemon.handle({"method": "agent.dispatch.resolve",
+                             "params": {"key": "nope"}})["result"]
+    assert missing["found"] is False and missing["attempt"] is None
+
+
+def test_the_daemon_refuses_a_dispatch_phase_nobody_declared(daemon):
+    answer = daemon.handle({"method": "agent.dispatch.record", "params": {
+        "attempt": {"key": "k", "action": "a", "device_ref": "d", "verb": "v",
+                    "intent_digest": "x", "phase": "MAYBE"}}})["result"]
+    assert answer["recorded"] is False
+    assert answer["reason"] == "INVALID_CONTEXT"
+
+
+def test_the_daemon_refuses_a_second_intent_under_one_key(daemon):
+    """#237 T5 at the daemon write point, not only at the router."""
+    d1 = attempts.intent_digest(action="a", device_ref="d", verb="v", params={"x": 1})
+    d2 = attempts.intent_digest(action="a", device_ref="d", verb="v", params={"x": 2})
+    first = daemon.handle({"method": "agent.dispatch.record", "params": {
+        "attempt": _attempt("k", d1, attempts.CALL_NOT_SENT)}})["result"]
+    assert first["recorded"] is True
+    second = daemon.handle({"method": "agent.dispatch.record", "params": {
+        "attempt": _attempt("k", d2, attempts.CALL_NOT_SENT)}})["result"]
+    assert second["recorded"] is False
+    assert "conflict" in second["detail"]
 
 
 def test_the_store_refuses_a_binding_keyed_by_anything_but_a_session(store):

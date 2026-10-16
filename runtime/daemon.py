@@ -489,6 +489,10 @@ approval_mod = _load("serveros_runtime_approval", "approval.py")
 # the daemon contributes the two things only it has — the durable binding store
 # and a way to reach the Item authority.
 coordination_mod = _load("serveros_runtime_coordination", "coordination.py")
+# #245 / S2. The dispatch-attempt kernel, under the same synthetic name every
+# other loader uses, so the `AttemptRefused` caught here is the one raised there.
+dispatch_attempts_mod = _load("serveros_runtime_dispatch_attempts",
+                              "dispatch_attempts.py")
 # §M. Which session a conversation is addressing. Pure rules and the level
 # projection; the daemon contributes the durable selection store. Loaded here
 # rather than restated because the console's `selection_record` is what refuses
@@ -1442,6 +1446,13 @@ class Daemon:
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
             "agent.binding.close": self._r_agent_binding_close,
+            # #245 / S2. The durable dispatch attempt. `agent.dispatch.resolve`
+            # is the read the router's replay guard matches a retry against;
+            # `agent.dispatch.record` is the write — CALL_NOT_SENT before the
+            # send, SETTLED/EFFECT_UNKNOWN after — and it is the record that
+            # makes a crash BETWEEN those two distinguishable from one after.
+            "agent.dispatch.resolve": self._r_agent_dispatch_resolve,
+            "agent.dispatch.record": self._r_agent_dispatch_record,
             # §M. Which session a conversation is addressing. Two methods and
             # not four: a selection has no close, because selecting another
             # session is what supersedes one, and a conversation that has
@@ -1580,6 +1591,12 @@ class Daemon:
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
                 "agent.binding.record", "agent.binding.close",
+                # #245 / S2. The durable dispatch attempt: `resolve` reads the
+                # record a retry is matched against, `record` writes it. On this
+                # socket (not the node MCP) for the same reason the bindings are:
+                # the record is the daemon's store, and the router that dispatches
+                # reaches it through here.
+                "agent.dispatch.resolve", "agent.dispatch.record",
                 # §M. Both, and reachable from a conversation by way of the
                 # CLI. This is the one console operation no provider serves:
                 # no provider has an opinion about which session a person is
@@ -3147,6 +3164,59 @@ class Daemon:
             return {"closed": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
         return {"closed": True, "session_ref": ref, "binding": closed}
+
+    def _r_agent_dispatch_resolve(self, params) -> dict:
+        """The recorded dispatch attempt for a key, or None (#245).
+
+        The READ half of the durable attempt. A retry is matched against this
+        record, so it must be the one the write half put there — one store,
+        `agent_control_store.py#dispatch_attempts`, reached by both.
+
+        NOT found is an answer and not an error: it means nothing was ever
+        dispatched under this key, which is what a FIRST dispatch looks like.
+        """
+        key = _required(params, "key")
+        attempt = self.control_store().get_dispatch_attempt(key)
+        return {"found": attempt is not None, "key": key, "attempt": attempt}
+
+    def _r_agent_dispatch_record(self, params) -> dict:
+        """Record one dispatch attempt (#245). The one write path for it.
+
+        Validated HERE as well as at the router, for the reason
+        `_r_agent_binding_record` states about its own shape: this is a write
+        point, and a write point that trusts its caller is one that will
+        eventually be handed a shape assembled somewhere else. The record is
+        rebuilt by `dispatch_attempts.attempt_record`, so a phase nobody
+        declared is refused here rather than stored as a word.
+
+        A second record under one key with a DIFFERENT intent digest is refused
+        by the store — the same-key-different-payload conflict (#237 T5) — so
+        this cannot be used to overwrite one intent with another.
+        """
+        incoming = params.get("attempt")
+        if not isinstance(incoming, dict):
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": ("a dispatch attempt is a record; there is nothing "
+                               "here to store")}
+        try:
+            record = dispatch_attempts_mod.attempt_record(
+                key=incoming.get("key"), action=incoming.get("action"),
+                device_ref=incoming.get("device_ref"), verb=incoming.get("verb"),
+                intent_digest=incoming.get("intent_digest"),
+                phase=incoming.get("phase"), work_item=incoming.get("work_item"),
+                principal=incoming.get("principal"),
+                runtime=incoming.get("runtime"), grant_ref=incoming.get("grant_ref"),
+                provider_locator=incoming.get("provider_locator"),
+                result=incoming.get("result"), at=incoming.get("recorded_at"))
+        except dispatch_attempts_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+        try:
+            stored = self.control_store().put_dispatch_attempt(record)
+        except agent_control_store_mod.StoreError as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+        return {"recorded": True, "key": stored["key"], "attempt": stored}
 
     def _r_agent_binding_list(self, params) -> dict:
         """Every binding this node holds, by role. Never by actor, never by Item.
