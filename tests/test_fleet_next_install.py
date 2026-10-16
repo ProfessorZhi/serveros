@@ -9,6 +9,7 @@ import contextlib
 import copy
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1347,11 +1348,20 @@ class APreEffectSystemExitStillPrintsOneReceiptTest(unittest.TestCase):
                 self.assertEqual(out["writes"], [])
                 self.assertEqual(out["executes"], [])
                 self.assertFalse(out["v1_action"])
-                # Pins the PRE-effect branch specifically. Without it the
-                # post-effect branch emits the same four fields, so the branch
-                # point would be unobservable — and for `rollback`/`status` the
-                # two branches genuinely differ.
+                # Pins the PRE-effect branch specifically, on two axes.
+                # `refusal_exit` is structural: without it the post-effect
+                # branch emits the same four fields, so the branch point would
+                # be unobservable — and for `rollback`/`status` the two branches
+                # genuinely differ.
                 self.assertEqual(out["refusal_exit"], 2)
+                # ...and this is the BEHAVIOURAL half, which is the one that
+                # matters: the two branches share every other field, so a swap
+                # of the reason sentences would otherwise pass the whole suite
+                # and tell an operator "no system action was taken" for a case
+                # where the installer HAD been driven — the exact overstatement
+                # this branch exists to prevent.
+                self.assertIn("pre-effect", out["reason"])
+                self.assertNotIn("after driving the installer", out["reason"])
 
 
 class TheRunbookDoesNotSellAStopTheToolWillNotTakeTest(unittest.TestCase):
@@ -1622,6 +1632,38 @@ class TheTreeRuleAsksWhetherItIsARepositoryAtAllTest(unittest.TestCase):
                                                                 encoding="utf-8")
             self.assertIn("uncommitted", install.tree_state(Path(repo)))
 
+    def test_a_git_entry_git_cannot_read_is_refused_not_exempted(self):
+        """A `.git` FILE whose `gitdir:` target is gone reports "not a repository".
+
+        That answer is indistinguishable from a plain directory by exit code
+        alone (rc 128 either way), and the bytes such a tree holds certainly
+        match no commit — so the `.git` ENTRY is what decides, and it decides
+        refuse rather than exempt.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").write_text("gitdir: /nonexistent/gone\n",
+                                       encoding="utf-8")
+            (root / "fleet_mcp").mkdir()
+            problem = install.tree_state(root)
+            self.assertIsNotNone(problem, "a broken .git must not be exempt")
+            self.assertIn(".git entry", problem)
+
+    def test_a_git_entry_that_is_a_broken_symlink_is_refused_too(self):
+        """`Path.exists()` follows symlinks, so a broken `.git` link answers False.
+
+        Git answers "not a repository" for it, and an existence test that
+        follows the link agrees — so the entry would be exempted without the
+        `is_symlink()` half.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").symlink_to("/nonexistent/gone")
+            (root / "fleet_mcp").mkdir()
+            problem = install.tree_state(root)
+            self.assertIsNotNone(problem, "a broken .git symlink must not be exempt")
+            self.assertIn(".git entry", problem)
+
 
 class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase):
     """The wrapper's own post-start verification runs AFTER a successful start.
@@ -1674,6 +1716,189 @@ class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase
         self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
         self.assertTrue(out["writes"])
         self.assertIn("OSError", out["reason"])
+        # The post-effect sentence, not the pre-effect one: this failure
+        # followed a COMPLETED install, so "no system action was taken" would be
+        # false in the direction that matters.
+        self.assertIn("after driving the installer", out["reason"])
+        self.assertNotIn("pre-effect", out["reason"])
+
+
+class ABadHealthTimeoutStillPrintsOneDocumentTest(unittest.TestCase):
+    """Our own bound check belongs inside the one-document contract.
+
+    `p.error` prints usage and exits with no JSON at all, so a mistyped
+    `--health-timeout` left a caller with nothing to parse. `argparse`'s own
+    errors (an unknown flag, a missing `--proposal`) stay usage-level: they are
+    about the shape of the invocation, not about the host or the run.
+    """
+
+    def test_the_bound_check_reports_instead_of_printing_usage(self):
+        rc, out = cli(["stage", "--health-timeout", "0"], candidate())
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["writes"], [])
+        self.assertIn("health-timeout", out["reason"])
+
+
+class ThePayloadAuditRefusesIgnoredMembersTest(unittest.TestCase):
+    """A clean `git status` does not mean every COPIED byte is tracked.
+
+    `git status` never reports ignored files, and `copytree` copies them — so a
+    `.gitignore`d secret under `fleet_mcp/` shipped inside the artifact while
+    `tree_state()` called the tree clean, and `ARTIFACT.json` named a revision
+    that never described it. The tree that matters is the one that was COPIED,
+    so the audit asks about `staging`; that is also what keeps ordinary build
+    residue out of the rule, because `IGNORE` drops it before it gets there.
+    """
+
+    SERVICE = "[Service]\nExecStart=@FLEET_MCP_RUNTIME@ @FLEET_MCP_CONFIG@\n"
+
+    def _git_source(self, tmp: str, *, ignore: str, fixture: str | None):
+        src = Path(tmp) / "src"
+        (src / "fleet_mcp" / "bin").mkdir(parents=True)
+        entry = src / "fleet_mcp" / "bin" / "serveros-fleet-mcp"
+        entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entry.chmod(0o755)
+        (src / "fleet_mcp" / "deploy").mkdir(parents=True)
+        (src / "fleet_mcp" / "deploy" / "serveros-fleet-mcp.service").write_text(
+            self.SERVICE, encoding="utf-8")
+        (src / "fleet").mkdir()
+        (src / "fleet" / "marker.py").write_text("x = 1\n", encoding="utf-8")
+        (src / ".gitignore").write_text(ignore, encoding="utf-8")
+
+        def run(*a):
+            return subprocess.run(["git", "-C", str(src), *a],
+                                  capture_output=True, text=True, check=True)
+        run("init", "-q")
+        run("config", "user.email", "t@example.invalid")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-q", "-m", "base")
+        if fixture is not None:
+            path = src / fixture
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("HARmlessFixtureOnly\n", encoding="utf-8")
+
+        cfg = Path(tmp) / "binding.yaml"
+        cfg.write_text("server:\n  bind: 127.0.0.1\n  port: 8401\n", encoding="utf-8")
+        root = Path(tmp) / "runtime"
+        args = install.parser().parse_args([
+            "install", "--source", str(src), "--config", str(cfg),
+            "--runtime-root", str(root), "--composition", "ingress",
+            "--unit-dir", str(Path(tmp) / "units"), "--no-start", "--label", "l"])
+        return args, root / "ingress", src
+
+    @staticmethod
+    def _quiet_systemctl(*a, **k):
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    def test_an_ignored_member_under_the_payload_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="fleet_mcp/*.secret\n",
+                fixture="fleet_mcp/owner-pat.secret")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                install.install(args)
+            self.assertIn("not tracked by the repository", err.getvalue())
+            # Nothing was published, and the ignored member is not left behind
+            # in a staging directory either.
+            self.assertFalse((comp / "current").exists())
+            self.assertEqual(list(comp.glob(".staging-*")), [])
+            self.assertFalse((comp / install.EFFECT_MARKER).exists())
+
+    def test_ordinary_ignored_build_residue_is_not_refused(self):
+        """`IGNORE` already drops `__pycache__`, so it must not be a refusal."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="__pycache__/\n*.pyc\n",
+                fixture="fleet_mcp/__pycache__/marker.cpython-312.pyc")
+            with mock.patch.object(install, "systemctl", self._quiet_systemctl):
+                self.assertEqual(install.install(args), 0)
+            self.assertTrue((comp / "current").exists())
+
+    def test_a_clean_git_source_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(tmp, ignore="*.log\n", fixture=None)
+            with mock.patch.object(install, "systemctl", self._quiet_systemctl):
+                self.assertEqual(install.install(args), 0)
+            self.assertTrue((comp / "current").exists())
+
+    def test_a_tracked_symlink_under_the_payload_is_refused(self):
+        """Being tracked is not the same as being the commit's BYTES.
+
+        A symlink's tracked blob is its TARGET PATH, and `copytree` dereferences
+        it — so the artifact would ship the target's content under a name the
+        commit says is a link. That target can be anything on the host, a
+        git-ignored secret included, and the shipped bytes are then described by
+        no commit at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, src = self._git_source(tmp, ignore="secrets/\n",
+                                               fixture=None)
+            (src / "secrets").mkdir()
+            (src / "secrets" / "pat.txt").write_text("HARmlessFixtureOnly\n",
+                                                     encoding="utf-8")
+            (src / "fleet_mcp" / "linked.txt").symlink_to("../secrets/pat.txt")
+            subprocess.run(["git", "-C", str(src), "add", "-A"],
+                           capture_output=True, text=True, check=True)
+            subprocess.run(["git", "-C", str(src), "commit", "-q", "-m", "link"],
+                           capture_output=True, text=True, check=True)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                install.install(args)
+            self.assertIn("are symlinks", err.getvalue())
+            self.assertFalse((comp / "current").exists())
+            self.assertEqual(list(comp.glob(".staging-*")), [])
+
+    def test_a_failed_copy_leaves_no_staging_behind(self):
+        """A copy that dies partway has already written whatever it reached.
+
+        Without the cleanup the ignored member would simply be left in a
+        `.staging-*` directory, and the next run uses a fresh timestamped name
+        that does not remove it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="fleet_mcp/*.secret\n",
+                fixture="fleet_mcp/owner-pat.secret")
+            real = shutil.copytree
+            calls = {"n": 0}
+
+            def flaky(*a, **k):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise shutil.Error("simulated: the second member failed")
+                return real(*a, **k)
+
+            with mock.patch.object(install.shutil, "copytree", flaky):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(shutil.Error):
+                        install.install(args)
+            self.assertEqual(list(comp.glob(".staging-*")), [],
+                             "a half-copied staging tree must not be left behind")
+
+    def test_a_non_git_source_makes_no_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / "plain"
+            plain.mkdir()
+            staging = Path(tmp) / "staging"
+            staging.mkdir()
+            self.assertIsNone(install.payload_audit(plain, staging))
+
+    def test_an_unreadable_payload_listing_is_refused(self):
+        """Fail closed: a `git ls-files` that cannot answer is not a pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, _, src = self._git_source(tmp, ignore="*.log\n", fixture=None)
+            staging = Path(tmp) / "staging"
+            staging.mkdir()
+            (staging / "fleet_mcp").mkdir()
+            (staging / "fleet_mcp" / "x.py").write_text("x\n", encoding="utf-8")
+            with mock.patch.object(install.subprocess, "run",
+                                   side_effect=OSError("git: not found")):
+                self.assertIn("refusing to publish blind",
+                              install.payload_audit(src, staging))
 
 
 if __name__ == "__main__":

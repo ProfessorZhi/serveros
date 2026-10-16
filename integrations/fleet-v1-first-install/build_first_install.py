@@ -1088,7 +1088,16 @@ def source_bundle(root: Path, out_dir: Path, manifest: dict, reason: str) -> dic
 
     Named so that it cannot be mistaken for a release, and carrying a member
     that says the same thing to anyone who opens it without reading the name.
+
+    The audit runs here too, and it may refuse. `SOURCE-ONLY` is a label, not a
+    permission: this archive lands in a directory an operator uploads and
+    mirrors, so a tree that carries a credential must not be archived at all —
+    least of all by the fallback that a refusal triggered. Without this the
+    member set would be the whole tree minus a `*.pyc` filter, and a build
+    refused for a `.env` would hand back a bundle carrying that `.env`: the
+    same bytes, under a name that reads as safe.
     """
+    audit_source(root)
     name = manifest.get("name") or "unnamed-plugin"
     version = manifest.get("version") or "0.0.0"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1176,9 +1185,17 @@ def main(argv: list[str] | None = None) -> int:
                 manifest = load_manifest(root)
             except Refused:
                 manifest = {"name": "unnamed-plugin", "version": "0.0.0"}
-            bundle = source_bundle(root, out_dir, manifest, refusal.status)
-            print(f"{bundle['archive']} sha256={bundle['archive_sha256']} "
-                  f"(NOT INSTALLABLE)", file=sys.stderr)
+            try:
+                bundle = source_bundle(root, out_dir, manifest, refusal.status)
+            except Refused as unarchivable:
+                # The tree is unfit to archive at all — the same audit that
+                # stopped the release stopped its fallback. Say so; writing
+                # nothing is the point, and a silent skip would read as a bug.
+                print(f"no source bundle was written: {unarchivable.status}: "
+                      f"{unarchivable.detail}", file=sys.stderr)
+            else:
+                print(f"{bundle['archive']} sha256={bundle['archive_sha256']} "
+                      f"(NOT INSTALLABLE)", file=sys.stderr)
         return 2
 
     print(f"{record['name']} v{record['version']}")
