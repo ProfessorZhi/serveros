@@ -16,6 +16,12 @@ This document is the vocabulary and the resolution rule. The contract is
 the resolver is [`../abilities/resolver.py`](../abilities/resolver.py) and it is
 pure — no filesystem, no network, no clock.
 
+## Fleet V1 effective per-device Ability acceptance · 2026-10-17
+
+For the full [Fleet V1 campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md), effective ability means the **current** ability-management canonical metadata/revision joined with actual per-node installation, configured provider, runtime CC/Codex surface, platform/tool support, health and valid work/effect authorization. Tokyo = Work/dev/Git/Feishu; Dell A6000 = GPU/compute/eval/test; Windows = GUI/SCM/SSH tunnel/16095 Selkies/Tailscale/RDC when actually available. Sharing a Skill name or registered 21 top-level abilities does **not** mean those are all usable on every node. One Operator Skills source in the local CC Fleet Plugin guides discovery and dispatch, not the device's actual implementation.
+
+A CODE or mock test can validate resolution rules, but only native device readback and an authorized bounded invocation prove Installed/Ready/Consumed/Accepted. Codex is part of complete Fleet V1 live Runtime/Ability acceptance and cannot be inferred from static maps. See [Device Ability #249](https://github.com/ProfessorZhi/serveros/issues/249).
+
 ## The five words
 
 They are kept apart because collapsing any two of them produces a sentence that

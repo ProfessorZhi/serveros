@@ -96,6 +96,23 @@ B8生成准确范围内容，B9做必要发布，B10按receiver/窗口发送；S
 
 恢复：静默期间可生成待发intent，醒来重查receiver/内容版本/授权；回执丢失但远端已接受先查，不重复新建消息/报告；无人receiver不冒充待办已被接受。
 
+## Fleet V1 三机完整运行路径补充 · 2026-10-17
+
+下表只增补当前 V1 功能/设备验收，不覆盖 J01–J10 的 Work/Feishu 业务场景。参见 [完整 Fleet V1 campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md)；所有用例记录 OS principal、真实设备与 Runtime、授权、source/installed SHA、协议 readback、测试 exit code 与恢复/拒绝 receipt。模拟与真实必须分栏。
+
+| 用例 | 真实验收谓词 | 明确不能冒充 PASS 的替代 |
+| --- | --- | --- |
+| FV01 三台 Native Core | Tokyo/Dell/Windows 授权 OS user 的 C++ Core 服务、状态 IPC、CPU/RAM/磁盘/压力/GPU适用数据、开机自启和版本固定 | Dell Linux toy 成功替代 Windows SCM 或生产 unit |
+| FV02 服务健康与恢复 | owner allowlist 的本地 CloudCLI/Connector/Tailscale/隧道恢复及 NEEDS_LOGIN/manual/AGENT_BUSY/NO_LEASE/预算拒绝，恢复后实际业务可用 | PID活着、systemd active、HTTP 200 或 mock provider |
+| FV03 Windows 16095 | Windows-owned SSH 转发的本地listener → upstream → Selkies/Claude Web 服务 → 授权交互流分段核验，RDC 另测 | 在东京 curl 127.0.0.1:16095 或 HTML 200 |
+| FV04 CC/Codex/CloudCLI | 三台已支持且 owner 授权的真实 CC/Codex Runtime 各有真实 Session lifecycle，模型/permissionMode effective reader、错账号拒绝 | registry列出 codex、CLI存在、mock读数 |
+| FV05 Fleet工具权限 | 33工具、6scope 真实当前客户端发现，可用verb与拒绝清单，Device/OSuser/runtime/project/verb交集授权 | tools/list 出现名字、Owner PAT默认scope 被错误扩大 |
+| FV06 Device Ability | 当前唯一 G1 manifest → 各设备安装/ready/capability/实际调用 → Work证据/核验 | 21个Ability都声明在元数据 |
+| FV07 Local CC Operator | 本地 CC 插件同源 Skills + 真实认证 MCP，完成设备发现、获授权CC/Codex Session/Ability/Core操作和结果验收 | 插件安装校验PASS、未认证401、只读提示测试 |
+| FV08 Release | 多仓固定SHA候选、独立QA、有界本地跨模块测试、回滚可验证、#237效果/并发/断线门通过 | GitHub Actions额度不足/构建未运行也称绿；PR仅Draft |
+
+对 Windows 只允许任务收敛后的短时专属真实平台验收，不能因为不想占用 Windows 就将必要真实结果改成绿。生产服务修改、开机启用、OAuth/Feishu App、账号登录或真实隧道重启需要独立人类批准，Code/Mock 进展不等于已获准生产行动。
+
 ## 3. 完成度从证据计算，不看目录数量
 
 记录每个case的实际source/intent、环境/版本、有效授权、必要交付、断言、观察/效果与receiver receipt、未覆盖和对应Run/Task。至少包含正向、关键负例、一次重放/中断恢复；不用为每个case发新业务Item或新建证据数据库。

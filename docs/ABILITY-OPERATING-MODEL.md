@@ -2,6 +2,12 @@
 
 状态：2026-09-24 产品行为收敛。本文把 ServerOS 的稳定 Ability 职责、Daily Cycle 的定时节点、Session/Workspace 等横向能力和唯一 Core 的边界放在一张图里。21个顶层语义职责不随 Skill / Plugin / MCP 重构改变；完整多层产品树见 ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md)。
 
+## 2026-10-17 完整 Fleet V1 · 设备 Ability 与 Core 分层
+
+原有 21 项语义职责与 B1–B10 日常流程不变。增加三机原生运行基础范围：[Fleet 拓扑](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) 和 [V1 campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md)。**每受管设备/OS principal 一个生产写入 Native C++ Core** 是最终本地运行形态；本文件现有 serverosd/Python Core 的文字是当前/历史实现基线，迁移为 C++ 时需 observe-only 影子阶段且不能同一 unit 双重恢复。Device Ability 仍从 [ability-management](https://github.com/ProfessorZhi/ability-management) 的同一份 manifest 派生，不给 Tokyo/Dell/Windows 建三个权威 registry。对 CC+Codex 的真实 Runtime、实际安装的 Skill/MCP/CLI、Device Binding、健康和授权逐设备决议。
+
+用户要求开发阶段**先验收本地 Claude Code Fleet Plugin + 共享 Operator Skills**，再将同源能力打包到 ChatGPT；Work Engine/Agent Control 仍是任务、writer、grant、checkpoint/receipt 权威。定时检查只触发有限 routine，不得变成长驻 LLM/额外 workflow daemon。当前每小时外部进度检查是辅助接续，不能用通知系统替代 Work Engine 的 durable dispatch/effect recovery。CI Hosted runner 因额度耗尽可明确记录 QUOTA_WAIVER，不把未运行的本地/真机验收称作通过。
+
 ## 1. 一句话
 
 ServerOS 的日常产品不是“一个daemon替用户工作”，而是：

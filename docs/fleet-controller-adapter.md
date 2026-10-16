@@ -1,5 +1,11 @@
 # Fleet Controller Adapter
 
+## Current complete Fleet V1 boundary (2026-10-17)
+
+This controller-adapter note records an earlier transport design and observed availability. The **current** Fleet product and release authority is [Fleet V1 topology](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) plus [full campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md). Local Claude Code Plugin/Operator Skills first tests one governed Fleet Next MCP ingress (33 tool names, 6 expressible scopes), and Tokyo/Dell/Windows independently measure actual CloudCLI CC+Codex Session/Runtime and local C++ Node Core. Windows SSH tunnel 127.0.0.1:16095 → Selkies/Claude Web, Tailscale and RDC belong to platform Service/Ability health, not a pretext to substitute the RDC graphics interface for native Session control.
+
+Do not infer device identity, privileges or Session state from SSH/RDP/RDC reachability. No extra fleet-controller daemon, admin-superuser transport or second Work registry is introduced by this release update. An old route test does not prove the installed Fleet Next revision.
+
 ## What this is for
 
 ServerOS knows *who* a device is. A transport knows *how* to reach it. The
