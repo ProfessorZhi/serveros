@@ -322,6 +322,11 @@ def cmd_journey_walk(args) -> int:
     （venv 里没有 `cryptography`，且 `human-control-trust.json` 不存在）。它的失败码，
     以及「被伪造世界跑通的、未修改的 `verify_delegation`」，见
     `tests/test_journey_provider.py`。
+
+    B1 那一头同理，而且**这一头是本命令可以真正接上的**：`--records-root` 把真实的
+    `intake/source_reading.py#read_packet` 绑上，于是声明了 manifest 的观察必须与**实际
+    读到的字节**相符。不给这个旗标时，任何声明 manifest 的观察被拒绝——「我读过真实字节」
+    是一句可以由字节核对的话，没有读取者时它无从核对。
     """
     mod = _load_module_from(REPO_ROOT / "runtime" / "journey.py",
                             "serveros_runtime_journey")
@@ -342,8 +347,13 @@ def cmd_journey_walk(args) -> int:
         spec["work_delta"] = report.measure_worktree(
             Path(args.worktree), window, report.Fallbacks())
 
+    authority = None
+    if getattr(args, "records_root", None):
+        authority = mod.source_reading_provider(Path(args.records_root))
+
     try:
-        record = mod.walk(spec, out_dir=args.out_dir, sender=None, at=args.at)
+        record = mod.walk(spec, out_dir=args.out_dir, sender=None, at=args.at,
+                          source_authority=authority)
     except Exception as exc:
         # Two modules can refuse here — `journey.Refused` for the seams, and
         # `daily_report.Refused` for the落盘 boundary `publish` owns. Both mean
@@ -13144,6 +13154,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--at",
         help="这一次旅程的时刻。不给则由报告自己报 clock=host——"
              "一行被默认的时间与一行调用方给的时间，可信度不一样")
+    j_walk.add_argument(
+        "--records-root",
+        help="给了就把 B1 的真实读取者（`intake/source_reading.py#read_packet`）绑上，"
+             "声明了 manifest 的观察才会被核对。不给则任何声明 manifest 的观察被拒绝——"
+             "「我读过真实字节」在没有读取者时无从核对")
     j_walk.set_defaults(func=cmd_journey_walk)
 
     runtime = sub.add_parser("runtime", help="managed runtimes (§16)", **_COMMON)

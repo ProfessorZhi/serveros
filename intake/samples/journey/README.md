@@ -31,6 +31,25 @@ serverosctl journey walk \
 | `02-needs-human.json` | `NEEDS_HUMAN` / 0 | 候选成形，但**没有人的批准**。有 `requirement_ref`，**无** `work_ref`。 |
 | `03-claimed-human.json` | `NEEDS_HUMAN` / 0 | 输入**自称**有人批准了。没有绑定的验证器，这个声称换不成一条记录——所以它和 `02` 一样停在同一个地方。 |
 | `04-child-done-is-not-authorization.json` | 具名拒绝 / **1** | 一个 `child-done` 的来源：它不是格式错误，它只是**不产生授权**。 |
+| `05-verified-source.json` | `NEEDS_HUMAN` / 0（**必须给 `--records-root`**，否则拒绝） | 一条声明了 manifest 的观察 —— 「我读过真实字节」这句话要能被核对。 |
+
+## B1：来源修订从哪里来
+
+`01`–`04` 的观察只带一个 `revision` 字符串。那是**调用方自述**，记录上写着 `verified: false`。
+`05` 不一样：它声明了 `manifest`，也就是声称读过真实字节，于是必须给读取者：
+
+```bash
+serverosctl journey walk \
+  --input intake/samples/journey/05-verified-source.json \
+  --records-root "$(pwd)/intake/samples/journey/records" \
+  --out-dir "$ARTIFACTS_ROOT/journey-sample/05" --at 2026-10-16T10:00:00+09:00
+```
+
+`--records-root` 把真实的 `intake/source_reading.py#read_packet` 绑上，`05` 的 `revision`
+（`ea341a44…`）就是 `records/information/raw/sample/content.md` 的 sha256。改一个字节、
+或者把 `revision` 换成别的值，都会在 B1 被拒绝 —— **以字节为准，不以调用方为准**。
+不给 `--records-root` 而输入里声明了 manifest，同样被拒绝：没有读取者时，
+「我读过真实字节」无从核对，那条观察就不能被记成一次读取。
 
 ## MOCK accepted 与生产安全 CLI 的区别
 

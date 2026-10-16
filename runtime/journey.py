@@ -104,6 +104,17 @@ def _actor():
     return _load("serveros_context_actor", ROOT / "context" / "actor.py")
 
 
+def _source_reading():
+    """The real B1 reader, under this tree's intake naming convention.
+
+    `intake/source_reading.py#_module` loads its own siblings as
+    `serveros_intake_<name>`, and `tests/load_census.py` measures how many times a
+    file's source is executed per process. One file, one name — the same reason
+    `_actor()` spells its key out.
+    """
+    return _load("serveros_intake_source_reading", ROOT / "intake" / "source_reading.py")
+
+
 class Refused(Exception):
     """这次输入不能变成一条收据，理由随消息一起说出来。"""
 
@@ -217,7 +228,58 @@ def empty_store() -> dict:
     return {"schema": SCHEMA, "messages": {}}
 
 
-def capture(store: dict, observations) -> dict:
+def _verified_revision(observation, *, claimed, authority, key):
+    """The revision this observation is entitled to claim, and how it got it.
+
+    Three outcomes, and the middle one is the defect this function exists for:
+
+        no manifest declared        -> the claim stands, MARKED unverified
+        a manifest, no authority    -> REFUSED (a claim to have read bytes cannot be
+                                       recorded by somebody who did not read them)
+        a manifest, bytes disagree  -> REFUSED (the bytes win; the caller does not)
+
+    A `revision` is not a caller's word for how fresh a source is. `read_packet`'s own
+    header says it: *Neither a timestamp nor a filename is a revision.*
+    """
+    manifest = str(observation.get("manifest") or "").strip()
+    if not manifest:
+        return (claimed, None,
+                "（revision 是调用方自述，未核对：这条观察没有声明可读的 manifest）")
+    if authority is None:
+        raise Refused(
+            f"{key} 声明了 manifest（{manifest}），但没有绑定任何来源读取权威。"
+            f"「我读过真实字节」是一句可以由字节来核对的话；没有读取者时它无从核对，"
+            f"所以这条观察不能被记成一次读取 —— 否则它的 revision 就是一个说法，"
+            f"而不是一个修订。绑定方式见 runtime/journey.py#source_reading_provider")
+    try:
+        resolved = authority(observation)
+    except Exception as exc:
+        raise Refused(
+            f"来源读取权威在回答之前抛出了 {type(exc).__name__}: {exc}。这次检查没有发生，"
+            f"而一次没有发生的检查不授权任何东西") from exc
+    if not isinstance(resolved, dict):
+        raise Refused(f"来源读取权威答了一个 {type(resolved).__name__}，"
+                      f"不是一份带 found 的解析结果")
+    if not resolved.get("found"):
+        raise Refused(
+            f"{manifest} 读不出一个来源身份：{resolved.get('because') or '（权威没有给理由）'}")
+    identity = str(resolved.get("content_identity") or "").strip()
+    if not identity:
+        raise Refused(f"来源读取权威说读到了 {manifest}，却没有给出 content_identity。"
+                      f"没有身份，就没有修订可谈")
+    if identity != claimed:
+        raise Refused(
+            f"调用方说 {key} 的 revision 是 {claimed}，而在 {manifest} 处读到的字节的 "
+            f"content_identity 是 {identity}。这两者不是同一件事 —— revision 不是调用方的"
+            f"说法，它是对**记录在案的 digest 处实际读到的字节**算出来的。谁说的与字节不符，"
+            f"以字节为准")
+    return (identity,
+            {"manifest": manifest, "content_identity": identity,
+             "kind": resolved.get("kind")},
+            "（revision 已由 B1 读取者按字节核对）")
+
+
+def capture(store: dict, observations, *, authority=None) -> dict:
     """把一批来源观察折进以**消息身份**建索引的捕获记录。
 
     三种结局在 `capture_states` 里，判据是 (消息身份, 修订)：
@@ -229,6 +291,11 @@ def capture(store: dict, observations) -> dict:
     第二种与第三种的区别是这份模块存在的一半理由：一个把到达次数当事实的系统，会在
     源没有变的时候越长越厚（那条曲线是「读了几次」的函数，不是「源改过几次」的函数），
     而一个把每条到达都当新消息的系统，会把一条被改过的消息变成两项工作。
+
+    `authority` 是**注入的 B1 读取者**（生产入口 `source_reading_provider`）。绑定之后，
+    一条观察的 `revision` 只能来自对真实字节的核对；一条**声明了 manifest 却没有读取者**
+    的观察是被拒绝的。没声明 manifest 的观察仍然被记录，但记录上写着它没有被核对——
+    「未核对」和「已核对」必须是两句不同的话，而不是同一个默认值。
     """
     if not isinstance(store, dict):
         raise Refused(f"store 是 {type(store).__name__}，不是一份捕获记录")
@@ -237,10 +304,13 @@ def capture(store: dict, observations) -> dict:
     for obs in observations or ():
         source_id = _need(obs, "source_id", "一条来源观察")
         message_id = _need(obs, "message_id", f"{source_id} 的一条观察")
-        revision = _need(obs, "revision", f"{message_ref(source_id, message_id)}")
+        claimed = _need(obs, "revision", f"{message_ref(source_id, message_id)}")
         captured_at = _need(obs, "captured_at", f"{message_ref(source_id, message_id)}")
         trust = _need(obs, "trust", f"{message_ref(source_id, message_id)}")
         key = message_ref(source_id, message_id)
+
+        revision, provenance, note = _verified_revision(
+            obs, claimed=claimed, authority=authority, key=key)
         previous = messages.get(key)
 
         if previous is None:
@@ -264,8 +334,12 @@ def capture(store: dict, observations) -> dict:
             record["revision"] = revision
             record["captured_at"] = captured_at
             record["trust"] = trust
+            record["verified"] = provenance is not None
+            if provenance is not None:
+                record["provenance"] = provenance
         messages[key] = record
-        outcomes.append(_receipt("capture", key, revision, state, why, captured_at))
+        outcomes.append(_receipt("capture", key, revision, state, why + note,
+                                 captured_at))
 
     return {"store": {"schema": SCHEMA, "messages": messages}, "outcomes": outcomes}
 
@@ -560,6 +634,47 @@ def signed_delegation_provider():
     return verify
 
 
+def source_reading_provider(records_root, *, allowed_asset_roots=()):
+    """生产入口 B1：把一条观察的 `revision` 交给**真实读取者**核对。
+
+    `capture()` 收到的是一个字符串。真实世界里「这条来源现在是什么版本」由
+    `intake/source_reading.py#read_packet` 回答：`content_identity` 是对**记录在案的
+    digest 处实际读到的字节**算出的 sha256，并与 manifest 核对。`read_packet` 的抬头写着
+    **Neither a timestamp nor a filename is a revision.** —— 一个从不读字节的 revision
+    不是一个修订，是一个说法。
+
+    签名 `read(observation) -> resolution`。`records_root` 与 `allowed_asset_roots` 在
+    **构造时**给出、**绝不**从 observation 取：`read_packet` 自己的注释写了为什么
+    （*External asset roots are supplied by the trusted caller, never the manifest.*）。
+    一个能选择自己证据从哪里读的观察，等于自己决定该信什么。
+
+    刻意**不**把 `observation["revision"]` 作为 `expected_identity` 传进去：那条比较只有
+    一个地方该做，而知道「调用方声称什么」的是 `capture`。两处比较就是两个会分歧的答案。
+
+    `read_packet` 的每一条拒绝（digest 不符、路径越界、8 MiB 预算、非 UTF-8、网页快照只有
+    shell）都被原样放进 `because`，「为什么没通过」因此是一个可以 grep 的判据。
+    """
+    root = Path(records_root)
+    roots = tuple(Path(asset) for asset in allowed_asset_roots)
+
+    def read(observation):
+        manifest = str((observation or {}).get("manifest") or "").strip()
+        if not manifest:
+            return {"found": False,
+                    "because": ("这条观察没有声明可读的 manifest：没有它，就没有任何字节"
+                                "可以被核对，`revision` 也就只是一个说法")}
+        try:
+            packet = _source_reading().read_packet(manifest, root,
+                                                   allowed_asset_roots=roots)
+        except Exception as exc:
+            return {"found": False, "because": str(exc)}
+        return {"found": True, "manifest": manifest, "kind": packet["kind"],
+                "content_identity": packet["content_identity"],
+                "coverage": packet["coverage"],
+                "because": "captured bytes read at their recorded digest"}
+    return read
+
+
 # ---------------------------------------------------------------------------
 # A7 —— 一次运行值多少，从观察读
 # ---------------------------------------------------------------------------
@@ -676,7 +791,8 @@ def _stop(receipts: list, stop: str, why: str, refs: dict) -> dict:
             "stop": stop, "why": why}
 
 
-def walk(journey: dict, *, out_dir=None, sender=None, at=None, verifier=None) -> dict:
+def walk(journey: dict, *, out_dir=None, sender=None, at=None, verifier=None,
+         source_authority=None) -> dict:
     """一条旅程：从一批来源观察，走到它该停的地方。
 
     它**按需**走，不是一条固定流水线 —— `docs/ABILITY-OPERATING-MODEL.md` §12 的
@@ -689,7 +805,8 @@ def walk(journey: dict, *, out_dir=None, sender=None, at=None, verifier=None) ->
     if not isinstance(journey, dict):
         raise Refused(f"journey 是一个 {type(journey).__name__}，不是一份输入")
 
-    got = capture(empty_store(), journey.get("observations") or [])
+    got = capture(empty_store(), journey.get("observations") or [],
+                  authority=source_authority)
     receipts = list(got["outcomes"])
     store = got["store"]
     refs = {"messages": sorted(store["messages"])}

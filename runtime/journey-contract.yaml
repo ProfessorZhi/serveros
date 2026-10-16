@@ -173,6 +173,53 @@ authorization:
     不能因为调用方在 JSON 里写了 `kind: human` 就产出授权。这不是留给以后的兜底，
     这就是现在生产 CLI 的行为。
 
+# ── B1：来源修订从哪里来 ──────────────────────────────────────────────────────
+#
+# 与上面的授权边界是**同一族**的问题，只是早了一个阶段：`capture()` 收到的 `revision`
+# 是一个字符串，而它在后面会变成承重的值 —— 一次签名的人类批准必须覆盖的正是它。
+# 一个由「后来要被它约束的那一方」提供的承重值，不叫输入，叫自证。
+#
+# 真实答案已经存在于 `intake/source_reading.py#read_packet`：它把来源身份定义为
+# `content_identity` —— 对**记录在案的 digest 处实际读到的字节**算出的 sha256，并与
+# manifest 核对。那个模块的抬头写着 **Neither a timestamp nor a filename is a revision.**
+source_authority:
+  caller_supplies:
+    - manifest          # 可选。声明了它，就等于声称「我读过真实字节」，那句话必须能被核对。
+  verifier:
+    signature: "read(observation) -> resolution"
+    resolution_found: true
+    resolution_fields:
+      - found
+      - content_identity   # found 时：读取者对实际字节算出的 sha256
+      - kind               # DOCUMENT | WEB
+      - coverage
+      - because
+    produced_by: intake/source_reading.py#read_packet
+    construction_time_only:      # 绝不从 observation 取
+      - records_root
+      - allowed_asset_roots
+    because: >-
+      `read_packet` 的注释：*External asset roots are supplied by the trusted caller,
+      never the manifest.* 一个能选择自己证据从哪里读的观察，等于自己决定该信什么。
+  rules:
+    - id: manifest_without_reader
+      outcome: REFUSED
+      means: >-
+        声明了 manifest 却没有绑定读取者。「我读过真实字节」是一句可以由字节来核对的话；
+        没有读取者时它无从核对，所以这条观察不能被记成一次读取。
+    - id: revision_disagrees_with_the_bytes
+      outcome: REFUSED
+      means: 以字节为准。revision 不是调用方的说法。
+    - id: manifest_the_reader_cannot_honour
+      outcome: REFUSED
+      means: 读取者自己的每一条拒绝（digest 不符、路径越界、8 MiB 预算、非 UTF-8、网页快照只有 shell）原样上报。
+    - id: no_manifest_declared
+      outcome: RECORDED_UNVERIFIED
+      means: >-
+        仍然被记录，但记录上写着 `verified: false`，收据的 why 里写着「自述，未核对」。
+        这不是漏洞：捕获本身不铸造工作，而要求每条观察都有 manifest 会让 `CAPTURED_ONLY`
+        永远不可达。「未核对」和「已核对」必须是两句不同的话，而不是同一个默认值。
+
 # ── 一条收据要能回答的问题 ────────────────────────────────────────────────────
 #
 # 六条，一条都不多。缺任何一条，收据就不能既被核对又被追问：`ref` 与 `revision` 说

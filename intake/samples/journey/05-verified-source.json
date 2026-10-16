@@ -1,0 +1,16 @@
+{
+  "_sample": "一条**声明了 manifest** 的来源观察 —— 也就是在说「我读过真实字节」。要跑它必须给 --records-root；不给就被拒绝，因为那句话无从核对。给了之后，revision 必须与读取者对 content.md 算出的 sha256 相符，否则以字节为准。",
+  "observations": [
+    {
+      "source_id": "feishu:doc:https://example.invalid/synthetic-feishu-doc",
+      "message_id": "om_sample_0002",
+      "revision": "ea341a4431d716fbf8b8504d356684412e0a1ee651d5590770c146ed48bca3ad",
+      "captured_at": "2026-10-16T10:00:00+09:00",
+      "trust": "authorized-follow",
+      "manifest": "sample/manifest.json"
+    }
+  ],
+  "goal": "把这份来源里提到的改动落成一次有测试的交付",
+  "acceptance": ["测试退出码为 0"],
+  "sources": ["feishu:doc:https://example.invalid/synthetic-feishu-doc|om_sample_0002"]
+}

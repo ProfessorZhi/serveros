@@ -1,0 +1,6 @@
+{
+  "_sample": "一份合成的 DOCUMENT 快照 manifest，形状取自 records 的 expand_feishu_doc 产物。content_sha256 是同目录 content.md 的 sha256 —— 这个值不是抄来的，是从字节算出来再写进来的，而 read_packet 每次读都会重算并比对。url 指向 example.invalid，不指向任何真实对象。",
+  "url": "https://example.invalid/synthetic-feishu-doc",
+  "content_sha256": "ea341a4431d716fbf8b8504d356684412e0a1ee651d5590770c146ed48bca3ad",
+  "media_count": 0
+}
