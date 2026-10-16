@@ -154,8 +154,22 @@ def tree_state(source: Path) -> str | None:
         return (f"cannot ask git about {source} ({type(exc).__name__}); "
                 f"refusing to publish blind")
     if inside.returncode != 0 or inside.stdout.strip() != "true":
-        # Not a work tree at all: no HEAD claim is made, so there is nothing to
-        # verify and `--revision` stays this source's documented route.
+        # Not a work tree — UNLESS something here looks like one and git refuses
+        # to read it. A corrupt `.git/HEAD`, and a `.git` FILE whose `gitdir:`
+        # target is gone, both make git answer "not a git repository" (rc 128),
+        # which is otherwise indistinguishable from a plain directory: the
+        # exit code does not differ and the two fatal strings do not generalise.
+        # The `.git` ENTRY is what tells them apart, and for those there IS a
+        # claim that cannot be verified, so `--revision` must not be trusted.
+        # `exists()` follows symlinks, so a `.git` that is a BROKEN symlink
+        # answers False to both git and this check and would be exempted. The
+        # entry is what decides, in every form it takes.
+        entry = source / ".git"
+        if entry.exists() or entry.is_symlink():
+            return (f"{source} has a .git entry that git does not read as a "
+                    f"repository; refusing to publish an unverifiable tree")
+        # A plain directory makes no HEAD claim, so there is nothing to verify
+        # and `--revision` stays this source's documented route.
         return None
     try:
         gitdir = git("rev-parse", "--absolute-git-dir")
@@ -185,6 +199,79 @@ def tree_state(source: Path) -> str | None:
                 f"untracked files); the installer copies the working tree, so "
                 f"the artifact would carry a revision name those bytes do not "
                 f"match. Commit them, or point --source at a clean tree.")
+    return None
+
+
+def payload_audit(source: Path, staging: Path) -> str | None:
+    """Why the bytes actually COPIED out of a git source are not all tracked.
+
+    `tree_state()` proves the WORKING TREE is clean, and `git status` does not
+    report ignored files — so a `.gitignore`d secret under `fleet_mcp/` leaves
+    that check passing while `copytree` copies it verbatim into the artifact.
+    The revision would then name bytes no commit describes, and a local
+    credential or PAT can ship inside the release. That is the leak this
+    closes.
+
+    The tree that matters is the one that was COPIED, so this asks about
+    `staging`, not about `source`. That also makes the rule precise rather than
+    broad: `IGNORE` already drops `__pycache__`, `*.pyc` and `.pytest_cache`
+    from the copy, so ordinary build residue never reaches `staging` and is
+    never counted. Only a member that would actually SHIP is refused.
+
+    A source that is not a work tree makes no claim about its bytes and
+    `--revision` stays its documented route, so this answers None for it.
+
+    Every unreadable answer is a refusal: this fails closed.
+    """
+    try:
+        inside = subprocess.run(["git", "-C", str(source),
+                                 "rev-parse", "--is-inside-work-tree"],
+                                capture_output=True, text=True)
+    except OSError as exc:
+        return (f"cannot ask git about {source} ({type(exc).__name__}); "
+                f"refusing to publish blind")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+    try:
+        listed = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "-z",
+                                 "--", *PAYLOAD],
+                                capture_output=True, text=True)
+    except OSError as exc:
+        return (f"cannot list the tracked payload of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if listed.returncode != 0:
+        return (f"cannot list the tracked payload of {source} "
+                f"(git ls-files exited {listed.returncode})")
+    tracked, symlinked = set(), []
+    for entry in listed.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        if not name:
+            continue
+        tracked.add(name)
+        if meta.split(" ", 1)[0] == "120000":
+            symlinked.append(name)
+    if symlinked:
+        # Being TRACKED is not the same as being the commit's BYTES. A symlink's
+        # blob is its TARGET PATH, and `copytree` dereferences it — so the
+        # artifact ships the target's content under a name the commit says is a
+        # link. That target can be anything on this host, a git-ignored secret
+        # included, and the shipped bytes are then described by no commit.
+        return (f"{len(symlinked)} path(s) under {PAYLOAD} are symlinks in "
+                f"{source}; the installer dereferences them, so the artifact "
+                f"would carry the target's bytes under a tracked name — bytes "
+                f"no commit describes. Replace them with regular files.")
+    untracked = [str(path.relative_to(staging))
+                 for path in sorted(staging.rglob("*"))
+                 if path.is_file() and str(path.relative_to(staging)) not in tracked]
+    if untracked:
+        # The paths are counted, not listed: a name can itself be the sensitive
+        # thing, and this refusal is republished into a receipt.
+        return (f"{len(untracked)} path(s) under {PAYLOAD} were copied from "
+                f"{source} but are not tracked by the repository (git-ignored, "
+                f"or untracked in a way `git status` did not report); the "
+                f"artifact would carry bytes no commit describes. Remove them, "
+                f"or point --source at a clean checkout — `git status --ignored` "
+                f"names them.")
     return None
 
 
@@ -371,8 +458,27 @@ def install(args: argparse.Namespace) -> int:
     composition_root.mkdir(parents=True, exist_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
-    for name in PAYLOAD:
-        shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    try:
+        for name in PAYLOAD:
+            shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    except BaseException:
+        # A copy that fails HALFWAY has already written whatever it got to, and
+        # the members it did not reach include the ones this exists to keep out
+        # of an artifact. Removing the staging tree on every failure keeps a
+        # `.gitignore`d secret from being left behind just because an unrelated
+        # path was unreadable.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    # A clean `git status` is not the same as "every copied byte is tracked":
+    # ignored members never appear there, and `copytree` copies them. This is
+    # the first thing checked after the copy and the last thing before anything
+    # is published, and the staging tree is removed first if it carries one —
+    # so a `.gitignore`d secret is neither shipped nor left lying in a staging
+    # directory.
+    problem = payload_audit(source, staging)
+    if problem:
+        shutil.rmtree(staging, ignore_errors=True)
+        die(problem)
     entry = staging / ENTRY
     if not entry.is_file():
         die(f"the payload has no {ENTRY}; the repository declares one, so this is "

@@ -489,6 +489,44 @@ class NoPlaceholderIsEverWritten(unittest.TestCase):
         bundle = builder.source_bundle(f.source, f.out, manifest, builder.MISSING_BRAND_ASSET)
         self.assertNotIn("mcp.json", bundle["members"])
 
+    def test_a_blocked_build_refuses_a_source_bundle_over_a_credential(self) -> None:
+        """The fallback is refused, not merely renamed.
+
+        `SOURCE-ONLY` is a label, not a permission: the bundle is written to a
+        directory an operator uploads and mirrors, so a tree the audit refuses
+        for a credential must not become an archive because the release build
+        was refused first — that would package the very file whose discovery
+        blocked the release. The refusal has to survive the fallback.
+        """
+        f = Fixture(omit_assets=True)
+        self.addCleanup(f.close)
+        (f.source / ".env").write_text("FLEET_TOKEN=abcdef123456\n", encoding="utf-8")
+        refusal = f.refusal()
+        self.assertEqual(refusal.status, builder.SOURCE_REFUSED)
+        manifest = builder.load_manifest(f.source)
+        with self.assertRaises(builder.Refused) as caught:
+            builder.source_bundle(f.source, f.out, manifest, refusal.status)
+        self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
+        self.assertEqual(f.archives(), [])
+
+    def test_a_source_bundle_does_not_smuggle_a_committed_binding(self) -> None:
+        """A committed `mcp.json` blocks the release, so it may not ride along.
+
+        It is refused by the audit rather than dropped from the member list: a
+        file that is silently omitted is one a reader of this archive cannot
+        tell from a file that was never there, and the binding is the member
+        the whole fallback claims not to carry.
+        """
+        f = Fixture(omit_assets=True)
+        self.addCleanup(f.close)
+        (f.source / "mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+        refusal = f.refusal()
+        self.assertEqual(refusal.status, builder.SOURCE_REFUSED)
+        manifest = builder.load_manifest(f.source)
+        with self.assertRaises(builder.Refused):
+            builder.source_bundle(f.source, f.out, manifest, refusal.status)
+        self.assertEqual(f.archives(), [])
+
 
 class TheAppBackedPathNeedsAReceipt(unittest.TestCase):
     def setUp(self) -> None:
