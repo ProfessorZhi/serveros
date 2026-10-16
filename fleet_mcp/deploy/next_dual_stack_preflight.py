@@ -95,18 +95,31 @@ def _overlap(first: str, second: str) -> bool:
             or second.startswith(first + "/"))
 
 
-def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = False) -> dict:
-    """Validate install or an emergency Next-only inspection/rollback.
+def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = False,
+             canary: bool = False) -> dict:
+    """Validate install, a Next-only canary start, or an emergency recovery.
 
     Recovery may remain possible when the Next OAuth client has been revoked,
     the plugin was uninstalled, or a limit changed. The caller still has to
     name the fixed Next unit and prove filesystem isolation from V1. This is
     not authority to act; the separate installer requires explicit approval.
+
+    `canary` is the narrowest mode and exists for one ordering fact, named
+    rather than worked around: `next.plugin_id` and
+    `attestations.next_oauth_client_authorized` are facts about a client that
+    is registered against a *running* public origin, so requiring them before
+    the fixed Next unit has ever started is a bootstrap circle — the same
+    circle `bootstrap` breaks for staging. `canary` breaks it for a start, and
+    it is deliberately NOT `bootstrap`: everything `bootstrap` excuses is
+    REQUIRED here. The public `/mcp` URL must be real and dedicated, every
+    other attestation must be true, the limits must match, and V1 identity and
+    path isolation are checked exactly as for an install. Only the two
+    client-registration facts are excused, and only in this mode.
     """
     problems: list[str] = []
-    if bootstrap and recovery:
+    if sum((bootstrap, recovery, canary)) > 1:
         return {"schema": SCHEMA, "decision": "BLOCKED",
-                "blockers": ["bootstrap and recovery are mutually exclusive"],
+                "blockers": ["bootstrap, canary and recovery are mutually exclusive"],
                 "writes": [], "executes": [], "v1_changed": False}
     root = _shape(proposal, TOP_FIELDS, "proposal", problems)
     if root.get("schema") != SCHEMA:
@@ -182,8 +195,12 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
 
         for label, item in (("v1", v1), ("next", nxt)):
             pid = item.get("plugin_id")
-            if bootstrap and label == "next" and pid is None:
-                continue  # stage the bytes before registering the real Next App
+            if (bootstrap or canary) and label == "next" and pid is None:
+                # Bootstrap stages the bytes before the App is registered;
+                # a canary start brings the origin up so that registration can
+                # happen at all. Both excuse the SAME fact, and neither excuses
+                # the V1 plugin id, which is always required.
+                continue
             if not isinstance(pid, str) or not pid.strip():
                 problems.append(f"{label}.plugin_id: actual installed/registered ID required")
             elif not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", pid):
@@ -198,8 +215,14 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
         if limits.get("memory_swap_max_mib") != 0:
             problems.append("limits.memory_swap_max_mib: canary must not consume global swap")
         for key in sorted(ATTEST_FIELDS):
-            if bootstrap and key == "next_oauth_client_authorized":
-                continue  # real consent happens *after* isolated staging
+            if (bootstrap or canary) and key == "next_oauth_client_authorized":
+                # Real consent happens after the isolated bytes exist
+                # (`bootstrap`) or after the origin exists (`canary`). Every
+                # other attestation is still required in both modes: the owner
+                # binding reviewed, the V1 identity observed, and a rollback
+                # that is ready. A canary start that skipped those would be a
+                # start nobody reviewed, which is the thing this gate is for.
+                continue
             if attest.get(key) is not True:
                 problems.append(f"attestations.{key}: owner/readback confirmation missing")
 
@@ -210,6 +233,7 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
         "schema": SCHEMA,
         "decision": ("RECOVERY_PLAN_READY" if recovery else
                      "BOOTSTRAP_PLAN_READY" if bootstrap else
+                     "CANARY_START_READY" if canary else
                      "PRECHECK_READY_FOR_HUMAN_CANARY") if not problems else "BLOCKED",
         "blockers": sorted(set(problems)),
         "writes": [],
@@ -224,7 +248,9 @@ def evaluate(proposal: object, *, recovery: bool = False, bootstrap: bool = Fals
             "Exactly one next service instance; no concurrent model/CC stress tests",
             "Next tool discovery, OAuth, one read-only device request, and rollback checked",
         ],
-        "mode": "RECOVERY_ONLY" if recovery else "NEXT_ONLY_BOOTSTRAP" if bootstrap else "INSTALL_PRECHECK",
+        "mode": ("RECOVERY_ONLY" if recovery else
+                 "NEXT_ONLY_BOOTSTRAP" if bootstrap else
+                 "NEXT_ONLY_CANARY_START" if canary else "INSTALL_PRECHECK"),
         "note": "This is dry-run metadata: not an authorization, and not a launch.",
     }
 
