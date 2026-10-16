@@ -169,6 +169,66 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual(observed["permission_mode"], "default")
         self.assertEqual(self.h.owner_provider.calls, [])
 
+    def test_the_receipt_keeps_requested_and_resolved_apart(self):
+        """The caller asked for NOTHING; the policy filled something in.
+
+        This is the case the three words exist for. `requested` is null because
+        the caller named no model, `resolved` is the owner-approved default, and
+        `effective` is null because nothing has read back what the device
+        applied. Reporting `resolved` as effective would assert a readback the
+        surface never took, and the one case that matters — a device that
+        quietly applies its own default — is exactly where the two differ.
+        """
+        self.configure()
+        self.h.second_provider.create = lambda **kw: {"sessionId": "session-defaulted"}
+        result = self.h.create(runtime=SECOND, project=PROJECT)
+        defaults = result["defaults"]
+        self.assertIsNone(defaults["requested"]["model"])
+        self.assertIsNone(defaults["requested"]["permission_mode"])
+        self.assertEqual(defaults["resolved"]["model"], M[0])
+        self.assertEqual(defaults["resolved"]["permission_mode"], "bypassPermissions")
+        self.assertEqual(defaults["resolved"]["by"], "runtime/project policy")
+        self.assertIsNone(defaults["effective"])
+
+    def test_an_explicit_request_survives_as_requested(self):
+        """`resolve()` REBINDS the names, so this is what it used to destroy.
+
+        A caller asking for `M[2]` used to leave no trace of having asked: the
+        local names were overwritten by the resolution, so a receipt built
+        afterwards could not tell "asked for `M[2]`" from "asked for nothing and
+        was given `M[2]`". Both readings are plausible from the old answer and
+        only one of them is true.
+        """
+        self.configure()
+        self.h.second_provider.create = lambda **kw: {"sessionId": "session-explicit"}
+        result = self.h.create(runtime=SECOND, project=PROJECT, model=M[2],
+                               permission_mode="default")
+        defaults = result["defaults"]
+        self.assertEqual(defaults["requested"]["model"], M[2])
+        self.assertEqual(defaults["requested"]["permission_mode"], "default")
+        self.assertEqual(defaults["resolved"]["model"], M[2])
+        self.assertEqual(defaults["resolved"]["permission_mode"], "default")
+
+    def test_effective_is_never_inferred_from_resolved(self):
+        """Even when the two agree, `effective` stays null — the claim is what
+        would be wrong, not the value."""
+        self.configure()
+        self.h.second_provider.create = lambda **kw: {"sessionId": "session-x"}
+        for kwargs in ({}, {"model": M[2], "permission_mode": "default"}):
+            with self.subTest(kwargs=sorted(kwargs)):
+                result = self.h.create(runtime=SECOND, project=PROJECT, **kwargs)
+                self.assertIsNone(result["defaults"]["effective"])
+                self.assertIn("UNKNOWN", result["defaults"]["effective_reason"])
+
+    def test_without_a_policy_rule_nothing_is_attributed_to_one(self):
+        """No rule means no `by`: the surface must not claim a policy resolved
+        something it never looked at."""
+        self.h.second_provider.create = lambda **kw: {"sessionId": "session-norule"}
+        result = self.h.create(runtime=SECOND, project=PROJECT)
+        defaults = result["defaults"]
+        self.assertIsNone(defaults["resolved"]["by"])
+        self.assertIsNone(defaults["effective"])
+
     def test_no_operator_create_grant_denies_even_when_scope_is_present(self):
         self.configure(owner=False)
         with self.assertRaises(FleetRefusal) as caught:

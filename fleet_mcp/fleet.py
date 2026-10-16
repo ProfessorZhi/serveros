@@ -1407,6 +1407,15 @@ class FleetService:
         # project. No global default, fallback account, or operator-provided
         # endpoint is permitted. Existing installations with no policy keep the
         # provider's own default behavior byte-for-byte.
+        # WHAT THE CALLER ASKED FOR, captured before anything resolves it.
+        # `runtime_rule.resolve()` rebinds these names, so the requested value
+        # was destroyed by the act of completing it: a receipt built afterwards
+        # could not tell "the caller asked for X and the policy overrode it to Y"
+        # from "the caller asked for Y". The three are different facts and the
+        # caller is entitled to all of them.
+        requested_defaults = {"model": model, "permission_mode": permission_mode}
+        resolved_defaults = {"model": model, "permission_mode": permission_mode,
+                             "by": None}
         runtime_rule = self.config.policy.runtime_create_defaults.get(
             provider_key(device_ref, runtime), {}).get(project)
         if runtime_rule is not None:
@@ -1423,6 +1432,8 @@ class FleetService:
             try:
                 model, permission_mode = runtime_rule.resolve(
                     family=provider, model=model, permission_mode=permission_mode)
+                resolved_defaults = {"model": model, "permission_mode": permission_mode,
+                                     "by": "runtime/project policy"}
             except PolicyError as exc:
                 raise refuse(
                     WRITE_NOT_GRANTED,
@@ -1528,6 +1539,24 @@ class FleetService:
             # "created" as "mine to control" — is exactly the inference this
             # block exists to prevent.
             "control": self._control_block(principal, key),
+            # requested / resolved / effective, kept apart because they are
+            # three facts and only the first two are known HERE.
+            #
+            # `effective` is null on purpose and never inferred from `resolved`:
+            # what the device actually ran with is a property of the device, and
+            # no amount of configuration declares it. A surface that reported
+            # `resolved` as effective would be asserting a readback it never
+            # took — and the one case that matters, a device that quietly
+            # applies its own default, is exactly the case where the two differ.
+            "defaults": {
+                "requested": requested_defaults,
+                "resolved": resolved_defaults,
+                "effective": None,
+                "effective_reason": (
+                    "not read back: what the device applied is a property of the "
+                    "device, and this surface does not infer it from what it asked "
+                    "for. Null means UNKNOWN, never 'the resolved values were used'."),
+            },
             "note": "session_create mints a session and, when a first message was "
                     "given, starts its run. It grants no authority over anything "
                     "that session may then operate on: see `control` for whether "
