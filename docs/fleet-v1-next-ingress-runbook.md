@@ -153,14 +153,16 @@ for the other.** The order matters and it is the operator who chooses when:
 2. **Take the service down deliberately:** `systemctl --user stop <Next unit>`
    for a running/auto-restarting unit; `systemctl --user disable <Next unit>`
    for one that is merely enabled.
-3. **Then publish** with `refresh-stage` (it applies the same unit rule plus its
-   own populated-root rule).
+3. **Then publish with the verb the revision root calls for** — `refresh-stage`
+   when a revision is already staged, `stage` when the root is empty. Both apply
+   the same unit rule; only the root rule differs, and picking the wrong one is
+   refused by the root rule rather than silently accepted.
 
-A live Next is never re-pointed underneath itself, and `refresh-stage` alone is
-refused while the unit is running or enabled — so "just run `refresh-stage`" is
-not a remedy for a live Next. If Next must not run at all, `systemctl --user
-disable` it, or retire it (`install.py uninstall`); do not re-point the
-first-install path at it.
+A live Next is never re-pointed underneath itself, and neither publish verb is a
+substitute for the operator's own stop/disable: `refresh-stage` is refused while
+the unit is running or enabled, and `stage` is refused while the root is
+populated. If Next must not run at all, `systemctl --user disable` it, or retire
+it (`install.py uninstall`).
 
 Uninstalling removes the unit file, which returns the unit to `not-found` — an
 accepted state, so the host can be staged again.

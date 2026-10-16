@@ -231,6 +231,13 @@ def binding(config_path: Path) -> dict:
         die(f"the binding at {config_path} is not a mapping; refusing rather "
             f"than reading a shape nothing declared.")
     server = (data or {}).get("server") or {}
+    if not isinstance(server, dict):
+        # `server: hello` and `server:\n  - 1` both parse as YAML and both used
+        # to reach `.get` and raise AttributeError — the same escaping-traceback
+        # shape the checks above exist to close, one level down.
+        die(f"the binding at {config_path} declares `server` as "
+            f"{type(server).__name__}, not a mapping; refusing rather than "
+            f"reading a shape nothing declared.")
     bind = str(server.get("bind") or "127.0.0.1")
     port = server.get("port")
     if not isinstance(port, int):
@@ -375,15 +382,15 @@ def install(args: argparse.Namespace) -> int:
     # EFFECT BOUNDARY. Everything above this line only REFUSED, or built into
     # the throwaway `.staging-*` directory: nothing was published, no pointer
     # moved, no unit was rewritten and no service was touched, so a failure
-    # above here needs no recovery and must not stop a healthy Next. Everything
-    # below can change the host. The marker is created FIRST so a crash anywhere
-    # past this point leaves evidence, and it is removed only on the success
-    # paths — which is what lets the caller tell a refusal it must leave alone
-    # from a run it must roll back.
+    # above here needs no recovery and must not stop a healthy Next. The marker
+    # is written immediately before the first PUBLISHING act — after the
+    # `revisions/` directory exists, so a failure to create it (which changes
+    # nothing observable) is not reported as an effect — and it is removed only
+    # on the success paths. That is what lets the caller tell a refusal it must
+    # leave alone from a run it must roll back.
+    revision_dir.parent.mkdir(parents=True, exist_ok=True)
     marker = composition_root / EFFECT_MARKER
     marker.write_text(f"{os.getpid()}\n", encoding="utf-8")
-
-    revision_dir.parent.mkdir(parents=True, exist_ok=True)
     staging.replace(revision_dir)
 
     previous = read_link(composition_root / "current")
