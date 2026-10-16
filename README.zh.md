@@ -2,6 +2,8 @@
 
 [English](README.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1 设备/MCP 运行架构](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Agent/Session V2](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
+**当前 Fleet 完整 V1 的已确认开发范围（2026-10-17）：** [完整三机 Core/Fleet 拓扑](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [一口气多线交付计划](docs/plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [总 Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。东京共享 Linux、Dell A6000 和 Windows 各自授权 OS 用户拥有 C++ Native Core、资源/服务/网络状态和受控自愈；CC 与 Codex 的真实 Runtime 经 CloudCLI/Node 接入，Device Ability 按实际安装、健康及权限分配。Windows 127.0.0.1:16095 → SSH 隧道 → Selkies/Claude Web 及 Tailscale/RDC 属于必须核实的节点服务路径，主要代码开发和测试在东京/Dell，Windows 只做必要原生验证。**先本地 Claude Code Fleet Plugin + 同源 Operator Skills 完整 E2E，最后才注册 ChatGPT 插件**。完整 V1 接受目标已包含真实 Codex，不再把基础 Codex Provider 全部推迟到 V2；当前仍不得声称 Codex 已经验证。Hosted GitHub Actions 配额不足只豁免托管CI，不豁免真实本地测试和设备验收。
+
 实施入口：[唯一P0–P12计划](docs/CC-EXECUTION-PLAN.md) · [2026-09-25现场基线](docs/IMPLEMENTATION-BASELINE-20260925.md) · [交给服务器CC的短提示](docs/CC-IMPLEMENTATION-HANDOFF.md)。计划覆盖实现、获准安装、真实验收、定时启用与目录收口，不代表已执行。
 
 **ServerOS 是个人用户态 Agent 工作操作系统：增强 Claude Code、Codex，而不是在它们上面再套一个更笨的调度者。**
@@ -206,7 +208,7 @@ OpenViking 当前仍是 **目标/未绑定 Provider**，不是 LIVE 事实。服
 
 ## 设备与合规
 
-当前拓扑：**Tokyo 主节点，Windows 专项执行节点，手机控制端，北京仅保留历史引用。**
+当前完整 Fleet V1 目标拓扑：**Tokyo/vince 主 Work+Fleet 节点、Dell A6000/fjd Compute/Linux Core 节点、Windows FJPCOS 原生 Edge 节点**；手机与 ChatGPT 是后续客户端入口，北京为历史/未验证绑定。设备注册不表示其所有 OS 用户、Codex Runtime、服务或 Session 都有授权。
 
 Tailscale 是默认私网 Provider：**先用 tailnet，特殊需要才开隧道**。节点在线不等于所有端口可用；替换隧道前验证实际客户端、应用、认证和流式连接，并保证服务可自启动。
 
