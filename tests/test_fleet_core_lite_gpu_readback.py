@@ -180,6 +180,30 @@ class AValueThisReaderCannotCarryIsNotReportedAsAReding(unittest.TestCase):
         self.assertTrue(base.refusals(base.read(document)),
                         "a refused value must leave a record")
 
+    def test_a_value_without_gpus_is_refused_and_does_not_raise(self):
+        """The one unguarded lookup, and the value that reaches it.
+
+        `_gpu_value` read `value["gpus"]` directly. A PRESENT observation whose
+        value is `{}` — the exact thing the empty spec used to emit — took the
+        whole read down with a `KeyError` that escaped the reader, so a caller
+        got a traceback instead of a refusal and a status page got nothing at
+        all. The schema lists `gpus` as required, so this is checked, not caught.
+        """
+        for value in ({}, {"sample_time": base.stamp()}):
+            with self.subTest(value=sorted(value)):
+                self.assert_refused(value)
+
+    def test_a_value_that_is_not_an_object_is_still_refused(self):
+        """The observation-level guard, pinned here so the pair cannot drift."""
+        for value in (None, [], "gpus", 0, True):
+            with self.subTest(value=value):
+                document = base.doc(observations=[{
+                    "name": "gpu.readonly", "state": "PRESENT", "value": value,
+                    "completeness": "COMPLETE", "observed_at": base.stamp()}])
+                got = gpu(document)
+                self.assertEqual(got["state"], "UNAVAILABLE", value)
+                self.assertNotIn("value", got)
+
     def test_an_unknown_member_on_the_value_is_refused(self):
         value = gpu_value()
         value["processes"] = [{"pid": 1}]

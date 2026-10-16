@@ -731,7 +731,18 @@ def _gpu_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any, bo
     reading partial: the wire schema marks it optional, the producer omits it
     when its own clock gave it nothing, and the document's `freshness` is
     NOT_ASSERTED whether it is there or not. It is never read as `observed_at`.
+
+    `gpus` is required, and asking for it is what a PRESENT reading means: the
+    schema's `gpu_value` lists it in `required`, so a value without it is not
+    this shape. It is checked BEFORE the lookup rather than by catching the
+    `KeyError` afterwards: an escaping exception would leave the reader with no
+    refusal and no state, and a `{}` value — the exact value the empty spec used
+    to produce — would take the whole read down with it.
     """
+    if "gpus" not in value:
+        sink.append(Refusal("MALFORMED_VALUE", "gpu.readonly",
+                            "a PRESENT gpu value must carry `gpus`"))
+        return _BAD, None, False
     state, rows = _gpu_rows(value["gpus"], sink)
     if state != _OK:
         return _BAD, None, False
