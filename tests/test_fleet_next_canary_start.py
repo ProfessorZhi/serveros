@@ -85,6 +85,8 @@ class FakeMod:
                  local_health: bool = True, v1_health: bool = True,
                  v1_health_after_start: bool | None = None,
                  v1_main_pid: int = 1111, next_main_pid: int | None = None,
+                 v1_main_pid_after_start: int | None = None,
+                 exec_start_rc: int = 0,
                  v1_device_ref: str | None = None,
                  exec_start: str | None = None,
                  working_directory: str | None = None):
@@ -102,6 +104,8 @@ class FakeMod:
         self.v1_health = v1_health
         self.v1_health_after_start = v1_health_after_start
         self.v1_main_pid = v1_main_pid
+        self.v1_main_pid_after_start = v1_main_pid_after_start
+        self.exec_start_rc = exec_start_rc
         self.v1_device_ref = (next_install.NEXT_DEVICE_REF if v1_device_ref is None
                               else v1_device_ref)
         self.exec_start = exec_start
@@ -147,6 +151,8 @@ class FakeMod:
         if verb == "show":
             unit = args[1]
             wanted = [args[i + 1] for i, a in enumerate(args) if a == "-p"]
+            if unit == UNIT and "ExecStart" in wanted and self.exec_start_rc != 0:
+                return _Result("", self.exec_start_rc)
             return _Result("\n".join(
                 f"{name}={value}" for name, value in
                 ((n, self._prop(unit, n)) for n in wanted)))
@@ -154,7 +160,10 @@ class FakeMod:
 
     def _prop(self, unit: str, name: str) -> str:
         if unit == V1_UNIT:
-            return {"MainPID": str(self.v1_main_pid), "ActiveState": "active",
+            pid = self.v1_main_pid
+            if self.started and self.v1_main_pid_after_start is not None:
+                pid = self.v1_main_pid_after_start
+            return {"MainPID": str(pid), "ActiveState": "active",
                     "NRestarts": "0"}.get(name, "")
         values = {
             "MemoryMax": str(1536 * 1024 * 1024) if self.limits_ok else str(1024),
@@ -230,6 +239,7 @@ def good_documents(base: str = f"https://{FQDN}") -> dict:
             "authorization_endpoint": f"{base}/oauth/authorize",
             "token_endpoint": f"{base}/oauth/token",
             "registration_endpoint": f"{base}/oauth/register",
+            "revocation_endpoint": f"{base}/oauth/revoke",
         }),
     }
 
@@ -277,6 +287,7 @@ class CanaryHarness(unittest.TestCase):
                    binding: dict | None = None, pressure: str | None = None,
                    omit_runtime_root: bool = False,
                    documents: dict | None = None,
+                   fetch_raises: BaseException | None = None,
                    tls_impl=None,
                    extra_args: list[str] | None = None) -> tuple[int, dict, FakeMod]:
         root = fixture(self.tmp)
@@ -314,6 +325,8 @@ class CanaryHarness(unittest.TestCase):
             resolved["public_base_url"])
 
         def _fake_fetch(url: str, **_kwargs):
+            if fetch_raises is not None:
+                raise fetch_raises
             for path, answer in served.items():
                 if url.endswith(path):
                     return answer
@@ -601,6 +614,251 @@ class AFailedCanaryStopsNextOnly(CanaryHarness):
         # It read the unit (that is how the state was checked) and changed nothing.
         self.assertNotIn("start", mod.verbs())
         self.assertNotIn("stop", mod.verbs())
+
+
+class NoStartIsAContradictionNotARequest(CanaryHarness):
+    """`--no-start` on a verb whose only action is a start must refuse.
+
+    argparse accepts `--no-start` on every verb, so the flag reaches
+    `canary-start` whether or not it means anything there. Ignoring it would
+    start a service the operator explicitly asked not to start; honouring it
+    would make the verb a no-op with a success receipt. Both are wrong, so the
+    contradiction is named — and nothing is started on either path.
+    """
+
+    def test_plan_refuses_the_combination(self):
+        for flag in (True, False):
+            preview = next_install.plan(candidate(), "canary-start", no_start=flag)
+            if flag:
+                self.assertEqual(preview["decision"], "BLOCKED")
+                self.assertIn("--no-start contradicts this verb",
+                              " ".join(preview["blockers"]))
+                self.assertEqual(preview["writes"], [])
+                self.assertEqual(preview["executes"], [])
+            else:
+                self.assertEqual(preview["decision"], "DRY_RUN_READY")
+
+    def test_preview_with_no_start_starts_nothing(self):
+        mod = FakeMod()
+        root = fixture(self.tmp)
+        proposal = candidate()
+        proposal["next"]["runtime_root"] = str(root)
+        with mock.patch.object(next_install, "_load_legacy_installer",
+                               return_value=mod) as loader:
+            rc, payload = cli(["canary-start", "--no-start"], proposal)
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertEqual(mod.calls, [])
+        loader.assert_not_called()
+
+    def test_execute_with_no_start_issues_zero_systemctl_start(self):
+        mod = FakeMod()
+        rc, payload, _ = self.run_canary(candidate(), mod,
+                                         extra_args=["--no-start"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertEqual(payload["writes"], [])
+        self.assertEqual(payload["executes"], [])
+        self.assertFalse(mod.started)
+        self.assertNotIn("start", mod.verbs())
+        self.assertEqual(mod.calls, [])
+
+    def test_the_execute_path_refuses_even_if_the_preview_is_bypassed(self):
+        """The refusal is stated twice on purpose; both statements are tested.
+
+        `plan()` is what a caller normally hits, but the `--execute` path has
+        its own guard so that a future edit to the preview cannot turn an
+        explicit "--no-start" into a start. Reaching it needs the preview
+        bypassed, which is exactly what this test does.
+        """
+        mod = FakeMod()
+        proposal = candidate()
+        root = fixture(self.tmp)
+        proposal["next"]["runtime_root"] = str(root)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "proposal.json"
+            path.write_text(json.dumps(proposal), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch.object(next_install, "plan",
+                                   return_value={"decision": "DRY_RUN_READY"}), \
+                 mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=mod), \
+                 contextlib.redirect_stdout(stdout):
+                rc = next_install.main(["canary-start", "--proposal", str(path),
+                                        "--execute", "--owner-approved",
+                                        "--no-start"])
+        payload, problem = next_install.one_receipt(stdout.getvalue())
+        self.assertIsNone(problem, stdout.getvalue()[:200])
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertEqual(payload["writes"], [])
+        self.assertEqual(payload["executes"], [])
+        self.assertFalse(mod.started)
+        self.assertEqual(mod.calls, [])
+
+    def test_the_non_starting_verbs_still_take_no_start(self):
+        registered = candidate()
+        registered["next"]["plugin_id"] = "plugin_asdk_app_fresh_next"
+        registered["attestations"]["next_oauth_client_authorized"] = True
+        for command in ("stage", "refresh-stage", "install"):
+            preview = next_install.plan(registered, command, no_start=True)
+            self.assertNotEqual(preview.get("blockers", []),
+                                ["canary-start: --no-start contradicts this verb"],
+                                command)
+
+
+class TheConfigFlagCannotBeOverridden(CanaryHarness):
+    """The launcher takes the LAST `--config`; the guard must not read only the first."""
+
+    @staticmethod
+    def _exec_start(launcher: str, flags: str) -> str:
+        return (f"{{ path={launcher} ; argv[]={launcher} --http {flags} ; "
+                f"ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; "
+                f"pid=0 ; code=(null) ; status=0/0 }}")
+
+    def _launcher(self, root: Path) -> str:
+        return str((root / "current").resolve() / "fleet_mcp" / "bin"
+                   / "serveros-fleet-next-mcp")
+
+    def test_reviewed_then_override_is_blocked(self):
+        proposal = candidate()
+        root = fixture(self.tmp)
+        reviewed = proposal["next"]["config_path"]
+        mod = FakeMod()
+        mod.exec_start = self._exec_start(
+            self._launcher(root),
+            f"--config {reviewed} --config /tmp/other.yaml")
+        _, payload, _ = self.run_canary(proposal, mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("more than once", payload["reason"])
+        self.assertFalse(mod.started)
+        self.assertNotIn("start", mod.verbs())
+
+    def test_reviewed_then_short_flag_override_is_blocked(self):
+        proposal = candidate()
+        root = fixture(self.tmp)
+        mod = FakeMod()
+        mod.exec_start = self._exec_start(
+            self._launcher(root),
+            f"--config {proposal['next']['config_path']} -c /tmp/other.yaml")
+        _, payload, _ = self.run_canary(proposal, mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertFalse(mod.started)
+
+    def test_short_flag_naming_the_reviewed_binding_is_accepted(self):
+        proposal = candidate()
+        root = fixture(self.tmp)
+        mod = FakeMod()
+        mod.exec_start = self._exec_start(
+            self._launcher(root), f"-c {proposal['next']['config_path']}")
+        rc, payload, _ = self.run_canary(proposal, mod)
+        self.assertEqual(rc, 0, payload)
+
+    def test_short_flag_naming_another_binding_is_blocked(self):
+        proposal = candidate()
+        root = fixture(self.tmp)
+        mod = FakeMod()
+        mod.exec_start = self._exec_start(self._launcher(root), "-c /tmp/other.yaml")
+        _, payload, _ = self.run_canary(proposal, mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("not the reviewed Next binding", payload["reason"])
+        self.assertFalse(mod.started)
+
+
+class TheUnreadableUnitIsRefused(CanaryHarness):
+    """The guards an earlier suite could not tell from absent."""
+
+    def test_exec_start_that_cannot_be_read_is_blocked(self):
+        mod = FakeMod(exec_start_rc=1)
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("ExecStart could not be read back", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_empty_argv_is_blocked(self):
+        mod = FakeMod(exec_start="{ path=/usr/bin/true ; argv[]= ; ignore_errors=no ; "
+                                  "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; "
+                                  "code=(null) ; status=0/0 }")
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("argv is empty", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_authorization_server_document_that_is_not_json_stops_next(self):
+        from fleet_mcp.version import AUTHORIZATION_SERVER_PATH
+        docs = good_documents()
+        docs[AUTHORIZATION_SERVER_PATH] = (200, None)
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("did not return a JSON object", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_document_with_no_endpoints_stops_next(self):
+        docs = good_documents()
+        from fleet_mcp.version import AUTHORIZATION_SERVER_PATH
+        from fleet_mcp.scopes import ALLOWED_SCOPES
+        docs[AUTHORIZATION_SERVER_PATH] = (200, {
+            "issuer": f"https://{FQDN}", "scopes_supported": list(ALLOWED_SCOPES)})
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("advertises no authorization_endpoint", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_owner_token_anchor_inside_a_v1_root_is_blocked(self):
+        v1_root = Path(self.tmp) / "v1-tree"
+        (v1_root / "borrowed").mkdir(parents=True)
+        token = v1_root / "borrowed" / "owner-pat"
+        token.write_text("not-read-by-any-test\n", encoding="utf-8")
+        token.chmod(0o600)
+        proposal = candidate()
+        proposal["v1"]["runtime_root"] = str(v1_root)
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(proposal, mod,
+                                        binding=binding_for(self.tmp, pat=token))
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("owner token anchor would resolve inside a V1 root",
+                      payload["reason"])
+        self.assertFalse(mod.started)
+
+
+class AFailedCanaryStopsNextAndNeverTouchesV1(CanaryHarness):
+    """The failure path is proven, not assumed."""
+
+    def test_v1_main_pid_change_stops_next_and_is_unknown(self):
+        mod = FakeMod(v1_main_pid_after_start=9999)
+        rc, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertEqual(payload["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
+        self.assertEqual(payload["executes"], [UNIT])
+        self.assertEqual(payload["writes"], "POSSIBLE_OR_ROLLED_BACK")
+        self.assertTrue(mod.stopped)
+        self.assertFalse(payload["v1_action"])
+        self.assertIn("UNKNOWN until read back", payload["reason"])
+        # V1 was read and never driven: no V1 unit ever reaches systemctl.
+        self.assertNotIn(V1_UNIT, [call[1] for call in mod.calls
+                                   if len(call) > 1 and call[0] in
+                                   ("start", "stop", "restart", "enable")])
+
+    def test_keyboard_interrupt_during_the_readback_still_stops_next(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod,
+                                        fetch_raises=KeyboardInterrupt())
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertEqual(payload["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
+        self.assertTrue(mod.stopped)
+
+    def test_the_receipt_reports_measured_endpoints(self):
+        mod = FakeMod()
+        rc, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(rc, 0)
+        examined = payload["public_readback"]["endpoints_examined"]
+        self.assertEqual(sorted(examined),
+                         ["authorization_endpoint", "registration_endpoint",
+                          "revocation_endpoint", "token_endpoint"])
+        self.assertIs(payload["public_readback"]["endpoints_same_origin"], True)
 
 
 class TheDryRunIsInert(CanaryHarness):
