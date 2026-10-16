@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -92,6 +93,21 @@ ARTIFACT_SCHEMA = "serveros/fleet-mcp-artifact/v1"
 #: on the FILE, never on its contents: this module does not read the token, and
 #: nothing in this package should.
 PAT_ANCHOR_MODE = 0o600
+
+#: The reviewed identity of the device a Next canary may start on.
+#:
+#: Pinned rather than discovered, because a binding that names its own device
+#: cannot be its own authority: the whole question is whether the file the
+#: service will read declares the device an operator reviewed. The live V1
+#: binding is asked to AGREE with this constant as well — both services run on
+#: one device — so a host that was ever re-enrolled refuses here instead of
+#: passing on a stale constant.
+NEXT_DEVICE_REF = "device:tokyo-shared-dev-01"
+
+#: The one directory shape a published revision is ever given by
+#: `install.py`: `<label>@<revision>`. A `current` link that resolves somewhere
+#: else is not this deployment's artifact, whatever its manifest says.
+REVISION_DIR_NAME = re.compile(r"^[A-Za-z0-9._-]+@[0-9a-fA-F]{7,64}$")
 
 
 class Refused(Exception):
@@ -524,6 +540,127 @@ def _tree_sha256(files: dict) -> str:
     ).hexdigest()
 
 
+def _fetch_json(url: str, *, timeout: float = 8.0) -> tuple[int | None, dict | None]:
+    """The status AND the parsed body of one document.
+
+    A status alone cannot tell a real discovery document from a wrong server
+    answering 200, so the body is read too. A body that is not a JSON object
+    is `None`: an unparseable answer is not a document, and the caller must not
+    read fields out of nothing. The raw bytes are never logged or returned.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            status = int(response.status)
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None, None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return status, None
+    return status, body if isinstance(body, dict) else None
+
+
+def _same_origin(url: object, base: str) -> bool:
+    """Whether a URL is served from exactly this origin."""
+    from urllib.parse import urlsplit  # noqa: PLC0415 - small, local
+
+    if not isinstance(url, str):
+        return False
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return False
+    return f"{parts.scheme}://{parts.netloc}" == base
+
+
+def _brief(value: object) -> str:
+    """A received value, for a refusal message. Bounded, never a whole body."""
+    return repr(value)[:120]
+
+
+def _public_origin_errors(public_base: str, expected_resource: str) -> tuple[dict, list[str]]:
+    """What the two discovery documents CLAIM, compared to what was reviewed.
+
+    A 200 says only that something answered. It does not say which authorization
+    server, for which resource, or for which audience — so a wrong OAuth server
+    answering 200 on the Next hostname would have been reported as a verified
+    Next public origin by a status-code-only check. These two documents are the
+    service's own statement of its identity, and they are the thing rung 6 is
+    actually about, so they are read and compared:
+
+      * the protected-resource document must name THIS deployment's `/mcp` as
+        `resource`, and `authorization_servers` must be exactly `[this origin]`;
+      * the authorization-server document's `issuer` must be this origin, its
+        `scopes_supported` must be exactly the scopes this build implements, and
+        every endpoint it advertises must be on this origin.
+
+    Nothing here reads or reports a credential: these documents are public, and
+    the endpoint fields are compared by origin rather than echoed.
+    """
+    from fleet_mcp.scopes import ALLOWED_SCOPES  # noqa: PLC0415 - authority
+    from fleet_mcp.version import (  # noqa: PLC0415 - authoritative route names
+        AUTHORIZATION_SERVER_PATH,
+        PROTECTED_RESOURCE_PATH,
+    )
+
+    problems: list[str] = []
+    protected_status, protected = _fetch_json(public_base + PROTECTED_RESOURCE_PATH)
+    authz_status, authz = _fetch_json(public_base + AUTHORIZATION_SERVER_PATH)
+    readback: dict = {
+        "protected_resource_status": protected_status,
+        "authorization_server_status": authz_status,
+        "resource": None,
+        "authorization_servers": None,
+        "issuer": None,
+        "scopes_supported": None,
+        "endpoints_same_origin": None,
+    }
+    if protected is None:
+        problems.append(f"{PROTECTED_RESOURCE_PATH} did not return a JSON object "
+                        f"(status {protected_status!r})")
+    else:
+        readback["resource"] = protected.get("resource")
+        readback["authorization_servers"] = protected.get("authorization_servers")
+        if protected.get("resource") != expected_resource:
+            problems.append(f"{PROTECTED_RESOURCE_PATH} names resource "
+                            f"{_brief(protected.get('resource'))}, not this "
+                            f"deployment's {expected_resource}")
+        if protected.get("authorization_servers") != [public_base]:
+            problems.append(f"{PROTECTED_RESOURCE_PATH} names "
+                            f"authorization_servers "
+                            f"{_brief(protected.get('authorization_servers'))}, "
+                            f"not exactly [{public_base}]")
+    if authz is None:
+        problems.append(f"{AUTHORIZATION_SERVER_PATH} did not return a JSON object "
+                        f"(status {authz_status!r})")
+    else:
+        readback["issuer"] = authz.get("issuer")
+        readback["scopes_supported"] = authz.get("scopes_supported")
+        if authz.get("issuer") != public_base:
+            problems.append(f"{AUTHORIZATION_SERVER_PATH} declares issuer "
+                            f"{_brief(authz.get('issuer'))}, not {public_base}")
+        scopes = authz.get("scopes_supported")
+        if not isinstance(scopes, list) or sorted(map(str, scopes)) != sorted(ALLOWED_SCOPES):
+            problems.append(f"{AUTHORIZATION_SERVER_PATH} advertises "
+                            f"{_brief(scopes)}, not the {len(ALLOWED_SCOPES)} scopes "
+                            f"this build implements")
+        endpoints = ("authorization_endpoint", "token_endpoint",
+                     "registration_endpoint", "revocation_endpoint")
+        examined = [name for name in endpoints if authz.get(name) is not None]
+        off_origin = [name for name in examined
+                      if not _same_origin(authz.get(name), public_base)]
+        readback["endpoints_same_origin"] = not off_origin
+        for name in off_origin:
+            problems.append(f"{AUTHORIZATION_SERVER_PATH} advertises {name} off "
+                            f"{public_base}")
+    return readback, problems
+
+
 def _staged_revision(mod, root: Path) -> tuple[dict | None, str | None]:
     """The revision `current` names, or why it may not be started.
 
@@ -549,6 +686,21 @@ def _staged_revision(mod, root: Path) -> tuple[dict | None, str | None]:
         return None, f"the staged Next revision link at {current} is unreadable"
     if not target.is_dir():
         return None, f"the staged Next revision {target} is not a directory"
+    # `current` is this deployment's own pointer, and it may only name this
+    # deployment's own tree. A link that resolves into another root would make
+    # every check below a statement about somebody else's bytes — the manifest
+    # would agree with itself and the service would still start a foreign
+    # artifact. The comparison is on the RESOLVED target, so a link chain that
+    # passes through a symlink cannot launder the destination.
+    revisions_root = (root / "revisions").resolve()
+    if target != revisions_root and revisions_root not in target.parents:
+        return None, (f"the staged Next revision {target} resolves outside "
+                      f"{revisions_root}; `current` may only point into this "
+                      f"deployment's own revision tree")
+    if not REVISION_DIR_NAME.match(target.name):
+        return None, (f"the staged Next revision directory {target.name!r} is not "
+                      f"the <label>@<revision> shape a published revision is "
+                      f"given; these bytes were not published by this tooling")
     manifest_path = target / MANIFEST
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -668,6 +820,81 @@ def _pat_anchor_state(anchor: Path | None) -> tuple[dict | None, str | None]:
     return {"path": str(anchor), "mode": f"{mode:04o}", "bytes": info.st_size}, None
 
 
+def _property_value(mod, unit: str, name: str) -> str | None:
+    info = mod.systemctl("show", unit, "-p", name, check=False)
+    if info.returncode != 0:
+        return None
+    for line in info.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == name:
+            return value.strip()
+    return None
+
+
+def _unit_identity_errors(mod, revision: dict, config_path: Path,
+                          v1_paths: list[str]) -> list[str]:
+    """Whether the unit about to be started runs THESE bytes and THIS binding.
+
+    The unit's name is not evidence. `serveros-fleet-next-mcp.service` can be
+    left over from an earlier render pointing at another revision root, another
+    binding, or a launcher outside the staged tree — and `systemctl start`
+    would then start something no reviewer looked at, under a receipt that says
+    the reviewed revision was started.
+
+    So the effective unit is asked what it will actually execute:
+    `ExecStart`'s argv must name a launcher inside the resolved `current`
+    revision, and its `--config` must be the reviewed Next binding. The working
+    directory must be an existing directory outside every V1 root.
+    """
+    problems: list[str] = []
+    exec_start = _property_value(mod, UNIT, "ExecStart")
+    if exec_start is None:
+        return ["the Next unit's ExecStart could not be read back"]
+    match = re.search(r"argv\[\]=(.*?)\s*;\s", exec_start)
+    if match is None:
+        return ["the Next unit's ExecStart declares no argv; refusing to start "
+                "a unit whose command line could not be read"]
+    try:
+        argv = shlex.split(match.group(1))
+    except ValueError:
+        return ["the Next unit's ExecStart argv is not parseable"]
+    if not argv:
+        return ["the Next unit's ExecStart argv is empty"]
+
+    target = Path(revision["path"]).resolve()
+    launcher = Path(argv[0])
+    resolved_launcher = launcher.resolve() if launcher.is_absolute() else launcher
+    if resolved_launcher != target and target not in resolved_launcher.parents:
+        problems.append("the Next unit's ExecStart does not run the staged "
+                        "revision's own launcher")
+
+    if "--config" not in argv:
+        problems.append("the Next unit names no --config, so it would start "
+                        "from a default binding rather than the reviewed one")
+    else:
+        index = argv.index("--config")
+        if index + 1 >= len(argv):
+            problems.append("the Next unit's --config names no path")
+        else:
+            declared = Path(argv[index + 1])
+            if declared.resolve() != Path(config_path).resolve():
+                problems.append("the Next unit's --config is not the reviewed "
+                                "Next binding")
+
+    working = _property_value(mod, UNIT, "WorkingDirectory")
+    if working is not None and working not in ("", "-"):
+        resolved = Path(working).resolve()
+        if not resolved.is_dir():
+            problems.append("the Next unit's WorkingDirectory is not a directory")
+        for v1 in v1_paths:
+            v1_resolved = Path(v1).resolve()
+            if resolved == v1_resolved or v1_resolved in resolved.parents:
+                problems.append("the Next unit's WorkingDirectory resolves "
+                                "inside a V1 root")
+                break
+    return problems
+
+
 def _canary_instance_errors(mod, before: dict) -> list[str]:
     """Exactly one Next instance, and the same V1 that was there before.
 
@@ -705,6 +932,12 @@ def _public_base(public_mcp_url: str) -> str:
     """The origin a public MCP URL is served from. `/mcp` is a path, not a host."""
     base = public_mcp_url.rstrip("/")
     return base[: -len("/mcp")] if base.endswith("/mcp") else base
+
+
+def _mcp_path(public_mcp_url: str) -> str:
+    """The path of a public MCP URL, as the binding's `mcp_path` must spell it."""
+    stripped = public_mcp_url.rstrip("/")
+    return "/mcp" if stripped.endswith("/mcp") else "/"
 
 
 def _canary_preconditions(mod, proposal: dict) -> dict:
@@ -746,14 +979,57 @@ def _canary_preconditions(mod, proposal: dict) -> dict:
         raise Refused("the Next binding the service reads does not match the "
                       "reviewed proposal's local_listen")
 
-    # 4. V1 is read for two facts and changed for none: its own binding is used
-    #    only to prove the two ports differ.
+    # 3b. And it must be the REVIEWED device and the REVIEWED origin.
+    #
+    #     Comparing bind and port alone is not enough. A binding that declared
+    #     V1's `public_base_url`, or another host's, passed this gate — and the
+    #     TLS check below would then have verified the *proposal's* hostname
+    #     while the service went on to advertise a different issuer and mint
+    #     tokens whose audience was never reviewed. The device matters for the
+    #     same reason: the binding is what tells the service whose fleet it is
+    #     speaking for, and it is authored, never discovered.
+    #
+    #     Both are compared as exact strings. A "close enough" origin is a
+    #     different origin.
     old = mod.binding(Path(proposal["v1"]["config_path"]))
+    if binding["device_ref"] != NEXT_DEVICE_REF:
+        raise Refused(f"the Next binding declares device "
+                      f"{binding['device_ref']!r}, not the reviewed "
+                      f"{NEXT_DEVICE_REF!r}")
+    if binding["device_ref"] != old["device_ref"]:
+        raise Refused(f"the Next binding declares device "
+                      f"{binding['device_ref']!r} while live V1 declares "
+                      f"{old['device_ref']!r}; both services run on one device, "
+                      f"so one of these bindings is about another host")
+    expected_base = _public_base(str(nxt["public_mcp_url"]))
+    expected_path = _mcp_path(str(nxt["public_mcp_url"]))
+    if binding["public_base_url"] != expected_base:
+        raise Refused(f"the Next binding advertises public_base_url "
+                      f"{binding['public_base_url']!r}, not the reviewed "
+                      f"{expected_base!r}; the service would issue tokens for an "
+                      f"origin nobody reviewed")
+    if binding["mcp_path"] != expected_path:
+        raise Refused(f"the Next binding serves mcp_path {binding['mcp_path']!r}, "
+                      f"not the reviewed {expected_path!r}")
+
+    # 4. V1 is read for three facts and changed for none: its binding proves the
+    #    two ports differ, that the two deployments agree on the device, and
+    #    that no Next path is inside it.
     if (old["port"] != proposal["v1"]["local_listen"]["port"]
             or old["bind"] != proposal["v1"]["local_listen"]["host"]):
         raise Refused("live V1 binding differs from the reviewed proposal")
     if binding["port"] == old["port"]:
         raise Refused("Next would reuse V1's local listening port")
+
+    # 4b. The unit must actually run the staged revision from the reviewed
+    #     binding. A Next-named unit left over from an earlier render can point
+    #     at another revision root or another config, and `systemctl start`
+    #     would then run bytes no reviewer saw.
+    problems = _unit_identity_errors(
+        mod, revision, Path(nxt["config_path"]),
+        [proposal["v1"][key] for key in gate.PATH_FIELDS])
+    if problems:
+        raise Refused("; ".join(problems))
 
     # 5. The owner's token: present, private, and not a borrowed one.
     anchor, problem = _pat_anchor_state(binding["pat_anchor"])
@@ -771,7 +1047,13 @@ def _canary_preconditions(mod, proposal: dict) -> dict:
     # 6. The public origin, MEASURED. A proposal cannot assert this: the
     #    certificate has to be served, chain to a trusted root and name this
     #    host, and the only way to know that is to ask for it.
-    public_base = _public_base(str(nxt["public_mcp_url"]))
+    #
+    #    The host is taken from the BINDING (which step 3b has just proved equal
+    #    to the reviewed one), not from the proposal, because the binding is what
+    #    the service will actually advertise. Measuring the proposal's hostname
+    #    while the service advertised another would verify the wrong origin and
+    #    report it as verified.
+    public_base = binding["public_base_url"]
     host = public_base.split("://", 1)[-1].split("/", 1)[0]
     tls = _tls_readback(host)
     if not tls["verified"]:
@@ -821,11 +1103,6 @@ def _canary_postcondition(mod, proposal: dict, before: dict, *,
     an unanswerable question for a passing one. No status here is ever invented:
     in particular this function has no way to report a 200 it did not receive.
     """
-    from fleet_mcp.version import (  # noqa: PLC0415 - authoritative route names
-        AUTHORIZATION_SERVER_PATH,
-        PROTECTED_RESOURCE_PATH,
-    )
-
     nxt = proposal["next"]
     problems: list[str] = []
     problems.extend(_effective_limit_errors(mod))
@@ -836,15 +1113,17 @@ def _canary_postcondition(mod, proposal: dict, before: dict, *,
     if local_health is None:
         problems.append(f"the Next unit answered nothing on {probe}/health")
     public_base = before["public_base"]
-    public = {
-        "/health": _http_status(f"{public_base}/health"),
-        PROTECTED_RESOURCE_PATH: _http_status(public_base + PROTECTED_RESOURCE_PATH),
-        AUTHORIZATION_SERVER_PATH: _http_status(public_base + AUTHORIZATION_SERVER_PATH),
-    }
-    for name, status in public.items():
-        if status != 200:
-            problems.append(f"the public route {public_base}{name} answered "
-                            f"{status!r}, not 200")
+    health_status = _http_status(f"{public_base}/health")
+    if health_status != 200:
+        problems.append(f"the public route {public_base}/health answered "
+                        f"{health_status!r}, not 200")
+    # A status is not an identity: the two discovery documents are parsed and
+    # compared, because a wrong OAuth server answering 200 here would otherwise
+    # be reported as a verified Next public origin.
+    public, discovery_problems = _public_origin_errors(
+        public_base, f"{public_base}{before['binding']['mcp_path']}")
+    public["health_status"] = health_status
+    problems.extend(discovery_problems)
 
     v1_after = mod.systemctl(
         "show", proposal["v1"]["service_unit"], "-p", "MainPID", check=False)

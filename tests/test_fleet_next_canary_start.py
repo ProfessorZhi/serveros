@@ -84,7 +84,10 @@ class FakeMod:
                  stop_rc: int = 0, start_raises: Exception | None = None,
                  local_health: bool = True, v1_health: bool = True,
                  v1_health_after_start: bool | None = None,
-                 v1_main_pid: int = 1111, next_main_pid: int | None = None):
+                 v1_main_pid: int = 1111, next_main_pid: int | None = None,
+                 v1_device_ref: str | None = None,
+                 exec_start: str | None = None,
+                 working_directory: str | None = None):
         # A main process that really exists: the wrapper checks `/proc/<pid>`,
         # and a fake pid would make that check fail for the wrong reason.
         self.next_main_pid = os.getpid() if next_main_pid is None else next_main_pid
@@ -99,15 +102,19 @@ class FakeMod:
         self.v1_health = v1_health
         self.v1_health_after_start = v1_health_after_start
         self.v1_main_pid = v1_main_pid
+        self.v1_device_ref = (next_install.NEXT_DEVICE_REF if v1_device_ref is None
+                              else v1_device_ref)
+        self.exec_start = exec_start
+        self.working_directory = working_directory
         self.calls: list[tuple] = []
         self.started = False
         self.stopped = False
 
     # --- the surface the canary path uses ---------------------------------
     def binding(self, config_path: Path) -> dict:
-        # Only V1's binding is read (to prove the two ports differ).
+        # Only V1's binding is read (ports, device agreement).
         return {"bind": "127.0.0.1", "port": 8401,
-                "probe": "http://127.0.0.1:8401", "device_ref": "device:old"}
+                "probe": "http://127.0.0.1:8401", "device_ref": self.v1_device_ref}
 
     def manifest_of(self, root: Path) -> dict:
         return install.manifest_of(root)
@@ -157,6 +164,8 @@ class FakeMod:
             "ActiveState": "active" if self.started else "inactive",
             "MainPID": str(self.next_main_pid) if self.started else "0",
             "NRestarts": str(self.restarts),
+            "ExecStart": self.exec_start or "",
+            "WorkingDirectory": self.working_directory or "",
         }
         return values.get(name, "")
 
@@ -174,7 +183,13 @@ def fixture(tmp: str, *, corrupt: bool = False, staged: bool = True) -> Path:
     (rev / "fleet_mcp").mkdir(parents=True, exist_ok=True)
     (rev / "fleet_mcp" / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
     (rev / "serveros-fleet-next-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
-    files = install.manifest_of(rev)["files"]
+    # The manifest is dropped from its own file list, exactly as `install.py`
+    # does: it is written AFTER the tree is hashed. Rebuilding a fixture in the
+    # same root would otherwise fold the previous manifest into the list and
+    # make a healthy revision look tampered-with.
+    files = {name: digest for name, digest
+             in install.manifest_of(rev)["files"].items()
+             if name != next_install.MANIFEST}
     manifest = {"schema": next_install.ARTIFACT_SCHEMA, "files": files,
                 "tree_sha256": next_install._tree_sha256(files)}
     (rev / next_install.MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n",
@@ -188,11 +203,35 @@ def fixture(tmp: str, *, corrupt: bool = False, staged: bool = True) -> Path:
     return root
 
 
-def binding_for(tmp: str, *, pat: Path | None = None, oauth_enabled: bool = True) -> dict:
+def binding_for(tmp: str, *, pat: Path | None = None, oauth_enabled: bool = True,
+                device_ref: str | None = None, public_base_url: str | None = None,
+                mcp_path: str = "/mcp") -> dict:
     anchor = pat if pat is not None else Path(tmp) / "owner-pat"
-    return {"device_ref": "device:operator-host", "bind": "127.0.0.1", "port": 8402,
-            "mcp_path": "/mcp", "public_base_url": f"https://{FQDN}",
+    return {"device_ref": device_ref or next_install.NEXT_DEVICE_REF,
+            "bind": "127.0.0.1", "port": 8402, "mcp_path": mcp_path,
+            "public_base_url": public_base_url or f"https://{FQDN}",
             "pat_anchor": anchor, "oauth_enabled": oauth_enabled}
+
+
+def good_documents(base: str = f"https://{FQDN}") -> dict:
+    """The two discovery documents as this build actually serves them."""
+    from fleet_mcp.scopes import ALLOWED_SCOPES
+    from fleet_mcp.version import (AUTHORIZATION_SERVER_PATH,
+                                   PROTECTED_RESOURCE_PATH)
+    return {
+        PROTECTED_RESOURCE_PATH: (200, {
+            "resource": f"{base}/mcp",
+            "authorization_servers": [base],
+            "bearer_methods_supported": ["header"],
+        }),
+        AUTHORIZATION_SERVER_PATH: (200, {
+            "issuer": base,
+            "scopes_supported": list(ALLOWED_SCOPES),
+            "authorization_endpoint": f"{base}/oauth/authorize",
+            "token_endpoint": f"{base}/oauth/token",
+            "registration_endpoint": f"{base}/oauth/register",
+        }),
+    }
 
 
 def owner_token(tmp: str, *, mode: int = 0o600, symlink_to: Path | None = None) -> Path:
@@ -237,6 +276,8 @@ class CanaryHarness(unittest.TestCase):
                    tls: dict | None = None, http: int = 200,
                    binding: dict | None = None, pressure: str | None = None,
                    omit_runtime_root: bool = False,
+                   documents: dict | None = None,
+                   tls_impl=None,
                    extra_args: list[str] | None = None) -> tuple[int, dict, FakeMod]:
         root = fixture(self.tmp)
         if not omit_runtime_root:
@@ -254,17 +295,45 @@ class CanaryHarness(unittest.TestCase):
         if execute:
             argv += ["--execute", "--owner-approved"]
         argv += (extra_args or [])
+
+        # What the unit would actually execute. Set from the fixture so the
+        # happy path is a real path, and overridden per-test to model a stale
+        # or misrendered unit.
+        revision_dir = (root / "current").resolve()
+        launcher = str(revision_dir / "fleet_mcp" / "bin" / "serveros-fleet-mcp")
+        if mod.exec_start is None:
+            mod.exec_start = (
+                f"{{ path={launcher} ; argv[]={launcher} --http --config "
+                f"{proposal['next']['config_path']} ; ignore_errors=no ; "
+                f"start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; "
+                f"status=0/0 }}")
+        if mod.working_directory is None:
+            mod.working_directory = str(Path(self.tmp))
+
+        served = documents if documents is not None else good_documents(
+            resolved["public_base_url"])
+
+        def _fake_fetch(url: str, **_kwargs):
+            for path, answer in served.items():
+                if url.endswith(path):
+                    return answer
+            return (404, None)
+
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(
                 next_install, "_load_legacy_installer", return_value=mod))
             stack.enter_context(mock.patch.object(
                 next_install, "_next_binding", return_value=(resolved, None)))
             stack.enter_context(mock.patch.object(
-                next_install, "_tls_readback", return_value=tls or tls_ok()))
+                next_install, "_tls_readback",
+                **({"side_effect": tls_impl} if tls_impl is not None
+                   else {"return_value": tls or tls_ok()})))
             stack.enter_context(mock.patch.object(
                 next_install, "_http_status", return_value=http))
             stack.enter_context(mock.patch.object(
                 next_install, "_current_pressure", return_value=pressure))
+            stack.enter_context(mock.patch.object(
+                next_install, "_fetch_json", side_effect=_fake_fetch))
             rc, payload = cli(argv, proposal)
         return rc, payload, mod
 
@@ -460,12 +529,17 @@ class TheHappyPathStartsOnceAndChangesNothingElse(CanaryHarness):
         # the readbacks are measurements, not promises
         self.assertEqual(payload["v1_main_pid"], 1111)
         self.assertTrue(payload["v1_main_pid_unchanged"])
-        self.assertEqual(payload["public_readback"],
-                         {"/health": 200,
-                          "/.well-known/oauth-protected-resource": 200,
-                          "/.well-known/oauth-authorization-server": 200})
+        readback = payload["public_readback"]
+        self.assertEqual(readback["health_status"], 200)
+        self.assertEqual(readback["protected_resource_status"], 200)
+        self.assertEqual(readback["authorization_server_status"], 200)
+        self.assertEqual(readback["resource"], f"https://{FQDN}/mcp")
+        self.assertEqual(readback["authorization_servers"], [f"https://{FQDN}"])
+        self.assertEqual(readback["issuer"], f"https://{FQDN}")
+        self.assertIs(readback["endpoints_same_origin"], True)
         self.assertIsNone(payload["tool_declarations"])
-        self.assertEqual(payload["binding"]["device_ref"], "device:operator-host")
+        self.assertEqual(payload["binding"]["device_ref"],
+                         next_install.NEXT_DEVICE_REF)
         self.assertEqual(payload["owner_token_anchor"]["mode"], "0600")
 
     def test_cgroup_limits_are_read_back_not_assumed(self):
@@ -606,6 +680,268 @@ class TheExemptionIsNarrow(CanaryHarness):
                        {"recovery": True, "canary": True},
                        {"recovery": True, "bootstrap": True, "canary": True}):
             self.assertEqual(gate.evaluate(candidate(), **kwargs)["decision"], "BLOCKED")
+
+
+class TheBindingMustBeTheReviewedDeviceAndOrigin(CanaryHarness):
+    """Review gap 1: bind/port alone let a binding advertise another origin."""
+
+    def test_wrong_device_ref_is_blocked(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(
+            candidate(), mod,
+            binding=binding_for(self.tmp, device_ref="device:somewhere-else"))
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("not the reviewed", payload["reason"])
+        self.assertFalse(mod.started)
+        self.assertNotIn("start", mod.verbs())
+
+    def test_device_disagreeing_with_live_v1_is_blocked(self):
+        mod = FakeMod(v1_device_ref="device:a-different-host")
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("one of these bindings is about another host", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_v1_public_origin_is_blocked_with_zero_starts(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(
+            candidate(), mod,
+            binding=binding_for(self.tmp,
+                                public_base_url="https://serveros-fleet.tail3d8b76.ts.net"))
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("nobody reviewed", payload["reason"])
+        self.assertFalse(mod.started)
+        self.assertNotIn("start", mod.verbs())
+
+    def test_another_host_is_blocked(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(
+            candidate(), mod,
+            binding=binding_for(self.tmp, public_base_url="https://other.invalid"))
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertFalse(mod.started)
+
+    def test_mcp_path_mismatch_is_blocked(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(
+            candidate(), mod, binding=binding_for(self.tmp, mcp_path="/mcp2"))
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("mcp_path", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_the_handshake_targets_the_bindings_origin(self):
+        """The TLS check must ask about what the SERVICE advertises."""
+        seen: list[str] = []
+
+        def _spy(host, **_kwargs):
+            seen.append(host)
+            return tls_ok()
+
+        rc, payload, _ = self.run_canary(candidate(), FakeMod(), tls_impl=_spy)
+        self.assertEqual(rc, 0, payload)
+        self.assertEqual(seen, [FQDN])
+
+
+class TheUnitMustRunTheStagedBytes(CanaryHarness):
+    """Review gap 3: a Next-named unit can point at other bytes or config."""
+
+    def test_exec_start_outside_the_revision_is_blocked(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "EXECUTED")
+
+        stale = FakeMod(exec_start="{ path=/usr/bin/true ; argv[]=/usr/bin/true "
+                                  "--http --config /tmp/elsewhere.yaml ; "
+                                  "ignore_errors=no ; start_time=[n/a] ; "
+                                  "stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }")
+        _, payload, _ = self.run_canary(candidate(), stale)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("does not run the staged revision", payload["reason"])
+        self.assertFalse(stale.started)
+
+    def test_config_not_the_reviewed_binding_is_blocked(self):
+        mod = FakeMod()
+        root = fixture(self.tmp)
+        launcher = str((root / "current").resolve() / "fleet_mcp" / "bin"
+                       / "serveros-fleet-mcp")
+        mod.exec_start = (f"{{ path={launcher} ; argv[]={launcher} --http "
+                          f"--config /home/operator/.config/other.yaml ; "
+                          f"ignore_errors=no ; start_time=[n/a] ; "
+                          f"stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}")
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("not the reviewed Next binding", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_no_config_flag_is_blocked(self):
+        mod = FakeMod()
+        root = fixture(self.tmp)
+        launcher = str((root / "current").resolve() / "fleet_mcp" / "bin"
+                       / "serveros-fleet-mcp")
+        mod.exec_start = (f"{{ path={launcher} ; argv[]={launcher} --http ; "
+                          f"ignore_errors=no ; start_time=[n/a] ; "
+                          f"stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}")
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("names no --config", payload["reason"])
+
+    def test_unreadable_exec_start_is_blocked(self):
+        mod = FakeMod(exec_start="")
+        _, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("ExecStart", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_working_directory_inside_v1_is_blocked(self):
+        v1_root = Path(self.tmp) / "v1-state"
+        v1_root.mkdir(parents=True, exist_ok=True)
+        proposal = candidate()
+        proposal["v1"]["oauth_state_root"] = str(v1_root)
+        mod = FakeMod(working_directory=str(v1_root / "sub"))
+        (v1_root / "sub").mkdir(exist_ok=True)
+        _, payload, _ = self.run_canary(proposal, mod)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("WorkingDirectory resolves inside a V1 root", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def _own_root(self) -> Path:
+        """An ingress-next root of this test's own, away from the fixture's.
+
+        The harness always builds `tmp/ingress-next`; these tests need a root
+        where they, not the harness, decide what `current` names.
+        """
+        root = Path(self.tmp) / "alt" / next_install.COMPOSITION
+        (root / "revisions").mkdir(parents=True, exist_ok=True)
+        return root
+
+    @staticmethod
+    def _seal(target: Path) -> None:
+        files = {name: digest for name, digest
+                 in install.manifest_of(target)["files"].items()
+                 if name != next_install.MANIFEST}
+        (target / next_install.MANIFEST).write_text(json.dumps(
+            {"schema": next_install.ARTIFACT_SCHEMA, "files": files,
+             "tree_sha256": next_install._tree_sha256(files)}), encoding="utf-8")
+
+    def test_current_pointing_outside_the_revision_tree_is_blocked(self):
+        proposal = candidate()
+        target = Path(self.tmp) / "somewhere-else" / "fleet-mcp-20261016@deadbee"
+        (target / "fleet_mcp").mkdir(parents=True, exist_ok=True)
+        (target / "fleet_mcp" / "runtime.py").write_text("VALUE = 1\n",
+                                                         encoding="utf-8")
+        self._seal(target)
+        root = self._own_root()
+        (root / "current").symlink_to(target)
+        proposal["next"]["runtime_root"] = str(root)
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(proposal, mod, omit_runtime_root=True)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("outside", payload["reason"])
+        self.assertFalse(mod.started)
+
+    def test_revision_directory_of_the_wrong_shape_is_blocked(self):
+        proposal = candidate()
+        root = self._own_root()
+        target = root / "revisions" / "not-a-published-name"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
+        self._seal(target)
+        (root / "current").symlink_to(target)
+        proposal["next"]["runtime_root"] = str(root)
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(proposal, mod, omit_runtime_root=True)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("shape a published revision", payload["reason"])
+        self.assertFalse(mod.started)
+
+
+class TheDiscoveryDocumentsMustNameThisOrigin(CanaryHarness):
+    """Review gap 2: a 200 is not an identity."""
+
+    def test_protected_resource_naming_another_resource_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-protected-resource"] = (
+            200, {"resource": "https://serveros-fleet.tail3d8b76.ts.net/mcp",
+                  "authorization_servers": [f"https://{FQDN}"]})
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("names resource", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_wrong_authorization_server_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-protected-resource"] = (
+            200, {"resource": f"https://{FQDN}/mcp",
+                  "authorization_servers": ["https://serveros-fleet.tail3d8b76.ts.net"]})
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("authorization_servers", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_wrong_issuer_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-authorization-server"] = (
+            200, {"issuer": "https://serveros-fleet.tail3d8b76.ts.net",
+                  "scopes_supported": list(_allowed_scopes())})
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("declares issuer", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_wrong_scope_set_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-authorization-server"] = (
+            200, {"issuer": f"https://{FQDN}", "scopes_supported": ["fleet:read"]})
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("scopes", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_off_origin_endpoint_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-authorization-server"][1]["token_endpoint"] = (
+            "https://serveros-fleet.tail3d8b76.ts.net/oauth/token")
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("token_endpoint off", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_non_json_body_stops_next(self):
+        docs = good_documents()
+        docs["/.well-known/oauth-protected-resource"] = (200, None)
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod, documents=docs)
+        self.assertEqual(payload["decision"], "BLOCKED")
+        self.assertIn("did not return a JSON object", payload["reason"])
+        self.assertTrue(mod.stopped)
+
+    def test_happy_discovery_is_reported_as_measured(self):
+        mod = FakeMod()
+        rc, payload, _ = self.run_canary(candidate(), mod)
+        self.assertEqual(rc, 0)
+        readback = payload["public_readback"]
+        self.assertEqual(readback["resource"], f"https://{FQDN}/mcp")
+        self.assertEqual(readback["issuer"], f"https://{FQDN}")
+        self.assertEqual(len(readback["scopes_supported"]), 6)
+        # The tool face is authenticated, so it stays unknown — never invented.
+        self.assertIsNone(payload["tool_declarations"])
+
+    def test_the_receipt_carries_no_credential_material(self):
+        mod = FakeMod()
+        _, payload, _ = self.run_canary(candidate(), mod)
+        rendered = json.dumps(payload)
+        self.assertNotIn("not-read-by-any-test", rendered)
+        self.assertNotIn("Bearer", rendered)
+
+
+def _allowed_scopes() -> tuple:
+    from fleet_mcp.scopes import ALLOWED_SCOPES
+    return ALLOWED_SCOPES
 
 
 class TheMirrorsAgreeWithTheirAuthority(unittest.TestCase):
