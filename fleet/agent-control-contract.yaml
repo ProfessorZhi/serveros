@@ -291,6 +291,33 @@ handoff:
     A handoff that stops the source by default is a handoff that loses it
     whenever the target turns out to be unsuitable an hour later.
 
+  # #237 B1. The source session is not stopped by a default, but its WRITE
+  # AUTHORITY does move — and the two are separate operations.
+  authority_transfer:
+    when: >-
+      At `context_handed_off` — the step at which the target is KNOWN to hold a
+      session for this Work — and INDEPENDENTLY of `release_source`.
+    what: >-
+      The source session's thread binding is closed. Closing the binding is what
+      transfers write authority: `session.send` and `session.resume` on the
+      source then refuse with THREAD_CLOSED_FOR_NEW_WORK, while `inspect`,
+      `result`, `interrupt` and `stop` stay available, so the closed thread
+      remains readable.
+    why_not_a_process_stop: >-
+      Stopping the source is a separate operation, still governed by
+      `release_default` and the §22 approval gate. "Failure to stop A is not
+      failure to revoke A's future writing authority": authority moves with the
+      handoff, the process does not have to.
+    not_retargetable: >-
+      The binding is write-once on `session_ref`, so a revoked source can never
+      be silently reopened or repointed at another Item. A successor needs a new
+      session; the old binding stays as the record of what its turns were about.
+    scope: >-
+      This fences a stale source at the CONTROL-PLANE admission. It does not
+      claim to stop a shell side-effect inside a provider that offers no native
+      fence; that is B2/B5 territory, and it needs effect reconciliation rather
+      than a control-plane word.
+
 # ---------------------------------------------------------------------------
 # Failure semantics. Three different failures, three different words.
 # ---------------------------------------------------------------------------

@@ -1297,6 +1297,23 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
             checkpoint=checkpoint)
     completed.append("context_handed_off")
 
+    # #237 B1 / architecture doc §5. Authority has moved: the target now holds a
+    # session for this Work. Revoke the SOURCE's future WRITE authority here,
+    # and independently of `release_source` below. "Failure to stop A is not
+    # failure to revoke A's future writing authority" — and a handoff that
+    # stopped the source by default is a handoff that loses it whenever the
+    # target turns out to be unsuitable an hour later.
+    #
+    # Closing the source's BINDING — not the session — is what makes the
+    # existing word `THREAD_CLOSED_FOR_NEW_WORK` answerable for the stale
+    # source: it means exactly "the thread was closed while its provider session
+    # is still alive and accepting turns". The source stays READABLE (`inspect`,
+    # `result`, `interrupt`, `stop` are not gated), and its provider session may
+    # stay alive; a new `session.send` or `session.resume` on it refuses. The
+    # binding is write-once on `session_ref`, so the source can never be
+    # silently retargeted; a real successor needs a new session.
+    _revoke_source_write_authority(router, request)
+
     release = (request.params or {}).get("release_source")
     if not release:
         return HandoffOutcome(True, None, tuple(completed), None, True,
@@ -1378,6 +1395,39 @@ def _stop_step(answer: AgentControlResponse) -> str:
         return "target_available"
     # The target was reached, and what came back is the target's own answer.
     return "target_ready"
+
+
+def _revoke_source_write_authority(router, request: AgentControlRequest):
+    """Close the SOURCE thread's binding after a handoff transferred authority.
+
+    §9 / #237 B1. Called once `context_handed_off` has been reached, i.e. the
+    target holds a session, so authority has moved. A thread is closed by
+    closing its binding; the provider session is untouched and the closure is
+    what `THREAD_CLOSED_FOR_NEW_WORK` reports to a later `session.send`.
+
+    Reached through the SOURCE device's own transport, so the binding that is
+    closed is the one the source's admission will later read — never a second
+    store. Returns the closed record, or None when there was nothing to close.
+
+    A thread whose binding was never recorded has nothing to revoke: closing it
+    would record a closure of a statement ServerOS does not hold. That is
+    reported by returning None rather than raising, because one unbound thread
+    is not a reason to fail a handoff that otherwise succeeded.
+    """
+    transport = router.transport_for(request.device_ref)
+    bindings = getattr(transport, "bindings", None)
+    if bindings is None or not hasattr(bindings, "close"):
+        return None
+    existing = None
+    if hasattr(bindings, "get"):
+        existing = (bindings.get(request.session_ref) or {}).get("binding")
+    if not existing:
+        return None
+    if str(existing.get("state") or "").upper() == "CLOSED":
+        return existing
+    return bindings.close(
+        request.session_ref, at=_now(),
+        reason="handoff moved write authority to the target session")
 
 
 def _resume_request(request: AgentControlRequest) -> AgentControlRequest:

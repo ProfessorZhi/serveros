@@ -86,12 +86,28 @@ class MemoryBindings:
         return self._records[ref]
 
     def close(self, ref, *, at="2026-09-14T00:00:00+00:00", reason=None):
-        record = dict(self._records[str(ref)])
+        """Close the binding for `ref`. A ref with nothing to close is a no-op.
+
+        Matches `AgentControlStore.close_binding`'s intent — closing a thread
+        that was never bound is not an error, there is simply nothing to
+        revoke — WITHOUT its fail-loud refusal, because a test double that
+        raised here would make a handoff unreachable from every routing test
+        (they run `assume-bound`, where `get` answers for a ref that was never
+        recorded). A ref that is neither recorded nor assumed has no binding and
+        this returns None.
+        """
+        key = str(ref)
+        record = self._records.get(key)
+        if record is None:
+            record = (self.get(key) or {}).get("binding")
+            if record is None:
+                return None
+        record = dict(record)
         record["state"] = "CLOSED"
         record["closed_at"] = at
         if reason:
             record["closed_reason"] = reason
-        self._records[str(ref)] = record
+        self._records[key] = record
         return record
 
     def bind(self, ref, *, session_role="execution",
