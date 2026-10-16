@@ -9,7 +9,14 @@ SERVER_VERSION = "0.1.0"
 # `fleet-mcp-3`: the surface grew from nine hand-written tools to those nine
 # PLUS the 22 inherited CloudCLI verbs — a change a client that cached
 # `tools/list` must be told about, so the revision moved with it.
-TOOL_SURFACE_REVISION = "fleet-mcp-3"
+# `fleet-mcp-4`: `fleet_list_devices` and `fleet_status` each carry a new
+# OPTIONAL `core_lite` block — the machine's Core reading, or why there is none.
+# It is a change to a tool's output contract, so it is a new revision even though
+# the tool COUNT is unchanged: a client that cached `tools/list` at `-3` and one
+# that reads `-4` see the same 33 tools and different result shapes, and a
+# revision that only moved when the count moved would not be telling them that.
+# Every field that existed at `-3` is still there, unchanged.
+TOOL_SURFACE_REVISION = "fleet-mcp-4"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

@@ -296,7 +296,12 @@ class ReachabilityIsNotCoreConnectivityTest(unittest.TestCase):
 
 class FleetSurfaceIsUnchangedTest(unittest.TestCase):
     def test_no_tool_was_added_and_no_scope_changed(self):
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-3")
+        # The COUNT is what stayed still: 9 + 22 + 2 = 33 tools and six
+        # scopes, at `fleet-mcp-4` exactly as at `fleet-mcp-3`. The revision
+        # moved anyway, and had to: an OUTPUT shape changed, and a revision
+        # that only moves when the tool count moves tells a client nothing
+        # about the clients that cached `tools/list`.
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-4")
         self.assertEqual(len(fleet_tools.TOOLS), 9)
         self.assertEqual(len(fleet_tools.NATIVE_MIRROR_TOOLS), 22)
         self.assertEqual(len(fleet_tools.SERVED_TOOLS), 33)
@@ -307,17 +312,25 @@ class FleetSurfaceIsUnchangedTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertNotIn(name, [t.name for t in fleet_tools.SERVED_TOOLS])
 
-    def test_list_devices_output_is_untouched_by_a_configured_source(self):
-        """V1-not-connected regression: the served shape does not move.
+    def test_the_only_thing_a_source_adds_is_the_optional_core_lite_block(self):
+        """The `fleet-mcp-4` change, asserted AS the additive change it is.
 
-        A source that WOULD return a full reading is injected, and the device
-        listing is compared against the same listing with no source at all. If
-        the seam had leaked into the served tools, these would differ — and a
-        client that cached `tools/list` would have been told nothing.
+        This guard used to require the served shape not to move at all, which was
+        the right guard while that decision was open. It is now made: the two
+        status tools carry an OPTIONAL `core_lite` block. The guard is not
+        deleted — it is restated as the property that still has to hold, which is
+        that NOTHING ELSE moved. An injected source is the sharpest form of the
+        test, because a source is exactly what could tempt a seam into a tool.
+
+        The second half is the one worth keeping: an injected source must not
+        conjure a reading for a device that is not enrolled. A source answers
+        about devices; it does not get to add one.
         """
+
         class Reachable:
             device_ref = DEVICE
             kind = "cloudcli-mcp-http"
+
             def health(self):
                 return ProviderHealth(device_ref=DEVICE, kind=self.kind,
                                       reachable=True, authorized=True, detail="ok")
@@ -331,15 +344,42 @@ class FleetSurfaceIsUnchangedTest(unittest.TestCase):
             with_source = FleetService(_config(tmp), registry=_EmptyRegistry(),
                                        providers={DEVICE: Reachable()},
                                        core_lite_source=FakeSource())
-            a = json.dumps(without.list_devices(principal), sort_keys=True)
-            b = json.dumps(with_source.list_devices(principal), sort_keys=True)
+            a = without.list_devices(principal)
+            b = with_source.list_devices(principal)
+
+            # `list_devices` carries the block PER ROW (a reading is a fact
+            # about a machine), so its TOP-LEVEL shape is unchanged — which is
+            # itself worth pinning, because that is where a careless wiring
+            # would have put it.
+            self.assertEqual(set(a), set(b), "the top-level shape moved")
             self.assertEqual(a, b)
-            # ...and the same for the surface's own status report.
-            sa = json.dumps(without.status(principal), sort_keys=True)
-            sb = json.dumps(with_source.status(principal), sort_keys=True)
-            self.assertEqual(sa, sb)
-            for blob in (a, b, sa, sb):
-                self.assertNotIn("core_lite", blob)
+            # No device is enrolled, so there are no rows and no readings — and
+            # the injected source does not manufacture either. A source answers
+            # about devices; it does not get to add one.
+            self.assertEqual(b["devices"], [])
+
+            # `status` is the one that gained a TOP-LEVEL key, because it is
+            # already a surface-wide report rather than a per-device listing.
+            sa = without.status(principal)
+            sb = with_source.status(principal)
+            # Present whether or not a source answers, so a client can rely on
+            # the key existing instead of probing for it: what a source changes
+            # is the CONTENT, and an absent source must not make the key vanish.
+            self.assertIn("core_lite", sa)
+            self.assertIn("core_lite", sb)
+            self.assertEqual(set(sa) ^ set(sb), set(), "the key set moved")
+            for key in sa:
+                if key == "core_lite":
+                    continue
+                with self.subTest(field=f"status.{key}"):
+                    self.assertEqual(sa[key], sb[key])
+            self.assertEqual(sb["core_lite"], [])
+
+    def test_the_core_lite_status_entry_is_still_not_a_tool(self):
+        """The seam stayed a seam: it is embedded, not exposed."""
+        for name in src.__all__:
+            with self.subTest(name=name):
+                self.assertNotIn(name, [t.name for t in fleet_tools.SERVED_TOOLS])
 
     def test_the_read_tool_needs_the_read_scope(self):
         with tempfile.TemporaryDirectory() as d:

@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-3
+tool_surface_revision: fleet-mcp-4
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -636,6 +636,11 @@ node_transport:
     # the SIGNED body, so there is no path parameter and no redirect; the device
     # refuses any tool name outside the recorded CloudCLI set.
     - 'POST /v1/native/call'
+    # The one Core-Lite route. Read-only and NAMED: no path parameter and no
+    # query the caller can shape, and the connector chooses the producer from
+    # its OWN configuration, never from the request. A caller that could name
+    # a path or a command could make a monitoring surface read the machine.
+    - 'GET /v1/core/status'
   route_set: closed
   declared_in: fleet_mcp/node_protocol.py#ROUTES
   rule: >-

@@ -91,6 +91,14 @@ ROUTES = (
     # the recorded CloudCLI set. This is the whole of the cross-device native
     # surface, and it is added here, by name, rather than as a catch-all forward.
     "POST /v1/native/call",
+    # The one route that answers with a Core-Lite status document. Read-only,
+    # and NAMED rather than parameterised: there is no path segment and no query
+    # the caller can shape, and the connector decides for itself which producer
+    # to run — from ITS OWN configuration, never from anything in the request.
+    # That is the whole reason this is a route and not a "run this and return
+    # the output" forward: a caller that could name a path or a command would be
+    # able to make a monitoring surface read the machine for it.
+    "GET /v1/core/status",
 )
 
 

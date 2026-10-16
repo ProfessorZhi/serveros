@@ -35,9 +35,11 @@ from typing import Any
 
 from .. import cloudcli_native
 from ..config import ProviderBinding
+from ..core_lite_source import CoreLiteFetch, CoreLiteRoute
 from ..disclosure import remote_summary
 from ..errors import (
     BAD_REQUEST,
+    FleetRefusal,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
@@ -47,8 +49,56 @@ from ..errors import (
 )
 from ..identity import SessionKey
 from ..runtime_identity import BASE_RUNTIME
+
 from ..node_protocol import PROTOCOL, PROTOCOL_HEADER, body_digest, sign, split_path_and_query
 from .base import DeviceProvider, ProviderHealth, SessionSummary, summary_from_dict
+
+
+#: The largest Core-Lite document this surface will read off the node channel.
+#: The producer's shape is a fixed set of observations with bounded rows; a body
+#: past this is not that shape, and reading it anyway would let a device decide
+#: how much memory Fleet spends answering a read.
+CORE_LITE_MAX_BYTES = 512 * 1024
+
+
+class NodeCoreLiteSource:
+    """The node channel as a `CoreLiteStatusSource`. One method, by design.
+
+    Attribution is grounded in the CHANNEL, not in the document. The request is
+    signed with a secret bound to one device and — on the v2 protocol — one
+    runtime; the connector answers with its own Core status, and the document's
+    `node` field is then checked against the same device by `readback`. So
+    `authenticated=True` here means "this surface holds a verified route to that
+    device", never "the document said so".
+
+    `route.device_ref` is the PROVIDER'S OWN device, not the device the caller
+    asked about. Naming the caller's argument here would make `admit_core_lite`'s
+    device check compare a value with itself and pass for every input — a guard
+    that cannot fire is not a guard. This way, asking provider A about device B
+    is refused as `DEVICE_MISMATCH` instead of published as B's reading.
+    """
+
+    def __init__(self, provider: "FleetNodeProvider") -> None:
+        self._provider = provider
+
+    def fetch(self, device_ref: str) -> CoreLiteFetch:
+        try:
+            document = self._provider.core_status()
+        except FleetRefusal as exc:
+            # "No secret" is not a broken source, it is an absent credential, and
+            # the two send an operator to different files. Reported as the
+            # unauthenticated route it is, so the summary says UNAUTHENTICATED
+            # rather than blaming the code.
+            if exc.code == PROVIDER_UNAUTHORIZED:
+                return CoreLiteFetch(
+                    document=None,
+                    route=CoreLiteRoute(device_ref=self._provider.device_ref,
+                                        authenticated=False))
+            raise
+        return CoreLiteFetch(
+            document=document,
+            route=CoreLiteRoute(device_ref=self._provider.device_ref,
+                                authenticated=True))
 
 
 class FleetNodeProvider(DeviceProvider):
@@ -73,7 +123,8 @@ class FleetNodeProvider(DeviceProvider):
         runtime = getattr(self.binding, "runtime", BASE_RUNTIME)
         return None if runtime == BASE_RUNTIME else runtime
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None,
+                 *, max_bytes: int | None = None) -> dict[str, Any]:
         secret = self.binding.credential()
         if not secret:
             raise refuse(
@@ -96,7 +147,24 @@ class FleetNodeProvider(DeviceProvider):
         request = urllib.request.Request(url, data=body or None, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.binding.read_timeout) as response:
-                raw = response.read().decode("utf-8", "replace")
+                if max_bytes is None:
+                    raw = response.read().decode("utf-8", "replace")
+                else:
+                    # One byte past the cap is read on purpose: it is what tells
+                    # a body that fits from one that was truncated, and the two
+                    # must not look the same. A capped read that then refuses is
+                    # a refusal about the answer's SIZE, which the connector can
+                    # act on; a silently truncated JSON body would instead fail
+                    # to parse and be reported as the connector answering badly.
+                    payload_bytes = response.read(max_bytes + 1)
+                    if len(payload_bytes) > max_bytes:
+                        raise refuse(
+                            BAD_REQUEST,
+                            f"the {self.device_ref} connector answered with more "
+                            f"than {max_bytes} bytes; a Core-Lite document is a "
+                            f"bounded shape and a body this size is not one",
+                        )
+                    raw = payload_bytes.decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             raw = ""
             try:
@@ -130,6 +198,31 @@ class FleetNodeProvider(DeviceProvider):
             err = decoded["error"] or {}
             raise self._map_code(err.get("code"), err.get("detail") or "")
         return decoded if isinstance(decoded, dict) else {}
+
+    def core_status(self) -> dict[str, Any]:
+        """Ask this device for its Core-Lite status. Read-only, bounded.
+
+        The route is a NAME, not a parameter: this method takes no path, no
+        command and no options, so nothing a caller sends can decide what the
+        device runs. The producer is chosen by the CONNECTOR from its own
+        configuration — that is the property that makes a monitoring read safe to
+        expose, and it would be lost the moment this method forwarded an argument
+        into it.
+        """
+        return self._request("GET", "/v1/core/status", max_bytes=CORE_LITE_MAX_BYTES)
+
+    def core_lite_source(self) -> "NodeCoreLiteSource | None":
+        """This device as a `CoreLiteStatusSource`, or `None` when it cannot be.
+
+        A device reached over the node channel has a route whose authenticity is
+        established by the signature, so it gets a source. A device reached any
+        other way has no such route yet and returns `None` — which
+        `admit_core_lite` reports as `NOT_CONFIGURED`. That is the honest answer
+        for the CloudCLI path today: this surface holds a PAT that can drive a
+        session, and a credential that can drive a session is not evidence of
+        what the machine's Core measured.
+        """
+        return NodeCoreLiteSource(self)
 
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:

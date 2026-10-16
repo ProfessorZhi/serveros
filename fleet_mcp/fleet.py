@@ -647,16 +647,10 @@ class FleetService:
         answered.
         """
         principal.require(SCOPE_READ)
-        binding = self.config.provider_for(device_ref)
-        account = binding.account if binding is not None else None
-        if received_at is None:
-            received_at = dt.datetime.now(dt.timezone.utc)
-        summary = core_lite_source.admit_core_lite(
-            self.core_lite_source,
-            device_ref=device_ref,
-            binding_account=account,
-            received_at=received_at,
-        )
+        # ONE implementation, shared with the two tools that embed this. Two
+        # would be two answers to "whose reading is this", and the one that is
+        # asked least often is the one that drifts.
+        summary = self._core_lite_summary(device_ref, received_at=received_at)
         # `device_ref` and `decision` are the names the disclosure table already
         # carries a kind for (REF and CODE). A fresh pair of names here would
         # have been silently WITHHELD from the audit record — which is what
@@ -666,6 +660,41 @@ class FleetService:
                           device_ref=device_ref,
                           decision=summary.get("route", {}).get("state"))
         return summary
+
+    def _core_lite_summary(self, device_ref: str, *, received_at=None) -> dict[str, Any]:
+        """`core_lite_status`'s body, without the scope check or the audit row.
+
+        Split out because `list_devices` and `status` embed one of these PER
+        DEVICE: the scope is already checked once by the tool that called them,
+        and an audit row per device per read would turn one authorized read into
+        a burst of records that say the same thing.
+
+        Which source answers is decided HERE, per device, and that is the part
+        that matters: a device reached over the node channel has an
+        authenticated route and its provider hands back a source; a device
+        reached any other way has none, and gets `NOT_CONFIGURED` rather than
+        borrowing another device's route. `self.core_lite_source`, when injected,
+        is the fallback a test uses — never a licence for one device's answer to
+        be published under another's name, because `admit_core_lite` still
+        compares the route's device with the one asked about.
+        """
+        binding = self.config.provider_for(device_ref)
+        account = binding.account if binding is not None else None
+        if received_at is None:
+            received_at = dt.datetime.now(dt.timezone.utc)
+        source = None
+        provider = self._provider(device_ref)
+        getter = getattr(provider, "core_lite_source", None) if provider is not None else None
+        if callable(getter):
+            source = getter()
+        if source is None:
+            source = self.core_lite_source
+        return core_lite_source.admit_core_lite(
+            source,
+            device_ref=device_ref,
+            binding_account=account,
+            received_at=received_at,
+        )
 
     def list_devices(self, principal: Principal, *, include_inactive: bool = True) -> dict[str, Any]:
         principal.require(SCOPE_READ)
@@ -697,6 +726,14 @@ class FleetService:
                         "external_only": list(capability.external_only()),
                     },
                     "provider": health.as_dict() if health else None,
+                    # The Core reading, next to — and NOT derived from — the
+                    # provider's health. A connector whose transport answers is
+                    # not thereby a machine whose Core reported, and the two are
+                    # kept as separate keys so no reader can plug one into the
+                    # other's meaning. A device with no trusted Core route says
+                    # `NOT_CONFIGURED` here while its `provider` block is
+                    # perfectly reachable, which is the whole point of the split.
+                    "core_lite": self._core_lite_summary(device.device_ref.ref),
                     "probe": probe,
                     "control": {
                         "send_allowed_device": bool(
@@ -2229,6 +2266,13 @@ class FleetService:
         for ref, provider in sorted(self.providers.items()):
             health = provider.health()
             providers.append(health.as_dict())
+        # The Core readings, gathered beside the provider health and never folded
+        # into it. Keyed by DEVICE rather than by provider key, because a Core
+        # reading is a fact about a machine and not about one runtime's route to
+        # it; a device with two runtimes still has one Core.
+        core_lite: list[dict[str, Any]] = []
+        for device in self.registry.all():
+            core_lite.append(self._core_lite_summary(device.device_ref.ref))
         enrolled = [d.device_ref.ref for d in self.registry.all()]
         bound = sorted(self.providers)
         for ref in sorted(set(enrolled) - set(bound)):
@@ -2256,6 +2300,11 @@ class FleetService:
                 "devices_with_route": bound,
             },
             "providers": providers,
+            # A separate top-level list, not a field on each provider: the
+            # reading is about the MACHINE. Merging it into `providers` would
+            # say that a device's Core is a property of one runtime's route,
+            # which is exactly the substitution this key exists to prevent.
+            "core_lite": core_lite,
             "policy": {
                 "send_allow": list(self.config.policy.send_allow),
                 "read_redact": self.config.policy.read_redact,

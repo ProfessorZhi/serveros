@@ -941,7 +941,10 @@ class NoFleetSurfaceIsTouchedTest(unittest.TestCase):
     def test_importing_this_module_does_not_change_the_tool_surface(self):
         from fleet_mcp import tools
         from fleet_mcp.version import TOOL_SURFACE_REVISION
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-3")
+        # `fleet-mcp-4`: the two status tools gained an OPTIONAL `core_lite`
+        # block. The tool COUNT is unchanged, which is why this module
+        # still asserts it; the revision moved for the output shape.
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-4")
         self.assertEqual(len(tools.TOOLS), 9)
         self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS), 22)
 

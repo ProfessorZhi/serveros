@@ -48,7 +48,9 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
     def test_the_tool_surface_revision_is_the_one_the_contract_declares(self):
         import yaml
 
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-3")
+        # `fleet-mcp-4`: an OUTPUT shape changed (the optional `core_lite`
+        # block on the two status tools). The tool count did not.
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-4")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)
