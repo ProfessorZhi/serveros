@@ -130,6 +130,21 @@ def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
         return {"decision": "BLOCKED",
                 "blockers": ["Next uninstall requires separate reviewed retirement"],
                 "writes": [], "executes": []}
+    if command == CANARY_START and no_start:
+        # `--no-start` is a global flag, so argparse accepts it on every verb —
+        # and `canary-start`'s ONLY action is a start. Obeying the flag would
+        # make the verb do nothing; ignoring it would start a service the
+        # operator explicitly asked not to start. Neither is acceptable, so the
+        # contradiction is named and refused, with no system action at all.
+        #
+        # This is not a synonym game: nothing here renames or aliases the verb.
+        # A caller who wants no start must run the verb that means that (`stage`,
+        # `refresh-stage`, `install --no-start`), none of which this changes.
+        return {"decision": "BLOCKED",
+                "blockers": ["canary-start: --no-start contradicts this verb — its "
+                             "only action IS a start. Use `stage`, `refresh-stage` "
+                             "or `install --no-start` for a non-starting publish"],
+                "writes": [], "executes": []}
     recovery = command in ("rollback", "status")
     bootstrap = command in STAGING_COMMANDS
     canary = command == CANARY_START
@@ -618,6 +633,7 @@ def _public_origin_errors(public_base: str, expected_resource: str) -> tuple[dic
         "authorization_servers": None,
         "issuer": None,
         "scopes_supported": None,
+        "endpoints_examined": None,
         "endpoints_same_origin": None,
     }
     if protected is None:
@@ -651,10 +667,24 @@ def _public_origin_errors(public_base: str, expected_resource: str) -> tuple[dic
                             f"this build implements")
         endpoints = ("authorization_endpoint", "token_endpoint",
                      "registration_endpoint", "revocation_endpoint")
+        # A client cannot complete a flow without somewhere to authorize and
+        # somewhere to exchange the code — and a document that advertises
+        # NEITHER would have made the origin comparison below examine nothing
+        # and still report `true`, which is a receipt for a measurement that was
+        # never taken. So the two the flow cannot do without are required to be
+        # present; the other two are checked when they are there. This build
+        # serves all four (verified against the live origin and the source), so
+        # the requirement refuses nothing a real deployment produces.
+        missing = [name for name in ("authorization_endpoint", "token_endpoint")
+                   if authz.get(name) is None]
+        for name in missing:
+            problems.append(f"{AUTHORIZATION_SERVER_PATH} advertises no {name}; "
+                            f"an OAuth flow cannot be completed against it")
         examined = [name for name in endpoints if authz.get(name) is not None]
         off_origin = [name for name in examined
                       if not _same_origin(authz.get(name), public_base)]
-        readback["endpoints_same_origin"] = not off_origin
+        readback["endpoints_examined"] = examined
+        readback["endpoints_same_origin"] = (not off_origin) if examined else None
         for name in off_origin:
             problems.append(f"{AUTHORIZATION_SERVER_PATH} advertises {name} off "
                             f"{public_base}")
@@ -788,12 +818,17 @@ def _pat_anchor_state(anchor: Path | None) -> tuple[dict | None, str | None]:
 
     The token is the owner's, it is what makes the human consent step real, and
     this module does not read a byte of it. What a start can establish without
-    it is the three things an owner has to be able to rely on: that the file is
-    THERE (otherwise the OAuth issuer builds nothing and the public surface
-    degrades silently), that it is a REGULAR FILE and not a symlink (a symlink
-    is how another deployment's token gets borrowed by accident), and that its
-    mode is 0600 (a group- or world-readable owner token is a token that has
-    already leaked).
+    reading it is three things an owner has to be able to rely on: that the file
+    is THERE (otherwise the OAuth issuer builds nothing and the public surface
+    degrades silently), that it is a REGULAR FILE and not a symlink, and that
+    its mode is 0600 (a group- or world-readable owner token has already
+    leaked).
+
+    What this does NOT establish is that the token's CONTENT is not V1's. A
+    copy of V1's token is an ordinary mode-0600 regular file, and no check that
+    refuses to read the file can tell it from a fresh one — so this function
+    does not claim to, and the docstrings and the runbook say what is actually
+    checked rather than what would be reassuring.
     """
     if anchor is None:
         return None, ("auth.pat_anchor is unset in the Next binding; the OAuth "
@@ -868,18 +903,29 @@ def _unit_identity_errors(mod, revision: dict, config_path: Path,
         problems.append("the Next unit's ExecStart does not run the staged "
                         "revision's own launcher")
 
-    if "--config" not in argv:
+    # The launcher's own parser (`fleet_mcp/runtime.py`) re-assigns its config
+    # on EVERY `--config`/`-c` it sees, so the LAST one is the binding that
+    # actually runs. Comparing only the first — as an earlier revision of this
+    # guard did — let a stale unit declare the reviewed binding first and a
+    # different one last: every other guard then verified the reviewed file
+    # while `systemctl start` brought the service up on the other. A repeated
+    # flag is therefore refused outright, and `-c` is recognised as the same
+    # flag rather than treated as "no --config".
+    positions = [i for i, arg in enumerate(argv) if arg in ("--config", "-c")]
+    if not positions:
         problems.append("the Next unit names no --config, so it would start "
                         "from a default binding rather than the reviewed one")
+    elif len(positions) > 1:
+        problems.append("the Next unit names --config more than once; the "
+                        "launcher takes the LAST one, so the binding this guard "
+                        "reviewed need not be the one that runs")
+    elif positions[0] + 1 >= len(argv):
+        problems.append("the Next unit's --config names no path")
     else:
-        index = argv.index("--config")
-        if index + 1 >= len(argv):
-            problems.append("the Next unit's --config names no path")
-        else:
-            declared = Path(argv[index + 1])
-            if declared.resolve() != Path(config_path).resolve():
-                problems.append("the Next unit's --config is not the reviewed "
-                                "Next binding")
+        declared = Path(argv[positions[0] + 1])
+        if declared.resolve() != Path(config_path).resolve():
+            problems.append("the Next unit's --config is not the reviewed "
+                            "Next binding")
 
     working = _property_value(mod, UNIT, "WorkingDirectory")
     if working is not None and working not in ("", "-"):
@@ -1031,18 +1077,29 @@ def _canary_preconditions(mod, proposal: dict) -> dict:
     if problems:
         raise Refused("; ".join(problems))
 
-    # 5. The owner's token: present, private, and not a borrowed one.
+    # 5. The owner's token: present, private, and on no V1 root.
     anchor, problem = _pat_anchor_state(binding["pat_anchor"])
     if problem:
         raise Refused(problem)
+    # TWO containment questions, and they are different questions:
+    #   * the ANCHOR itself must not sit on a V1 root, or Next would be reading
+    #     a token out of another deployment's tree;
+    #   * the DERIVED OAuth store (`anchor.parent/"fleet-mcp-oauth"`, mirroring
+    #     `fleet_mcp/oauth.py`) must not land on one either, because that is the
+    #     directory Next will create and own.
+    # Neither is a claim that the token's CONTENT differs from V1's: a copy
+    # parked elsewhere cannot be told apart by looking at a path, and this check
+    # does not pretend to detect one.
+    v1_roots = [Path(proposal["v1"][key]).resolve() for key in gate.PATH_FIELDS]
+    anchor_path = Path(binding["pat_anchor"]).resolve()
     oauth_root = Path(binding["pat_anchor"]).parent / "fleet-mcp-oauth"
-    for key in gate.PATH_FIELDS:
-        v1_path = Path(proposal["v1"][key]).resolve()
-        candidate = oauth_root.resolve()
-        if (candidate == v1_path or candidate in v1_path.parents
-                or v1_path in candidate.parents):
-            raise Refused("the Next OAuth store would resolve inside a V1 root; "
-                          "an owner token written there would be V1's")
+    for label, candidate in (("owner token anchor", anchor_path),
+                             ("Next OAuth store", oauth_root.resolve())):
+        for v1_path in v1_roots:
+            if (candidate == v1_path or candidate in v1_path.parents
+                    or v1_path in candidate.parents):
+                raise Refused(f"the {label} would resolve inside a V1 root "
+                              f"({v1_path})")
 
     # 6. The public origin, MEASURED. A proposal cannot assert this: the
     #    certificate has to be served, chain to a trusted root and name this
@@ -1263,6 +1320,13 @@ def main(argv: list[str] | None = None) -> int:
         # platform-wide permission switch or inherited from the V1 token.
         _real_path_isolation(proposal)
         if args.command == CANARY_START:
+            # Belt and braces: `plan()` already refuses this combination, and it
+            # is re-stated here so that a future edit to the preview cannot make
+            # an --execute run start something the caller asked not to start.
+            # Reached only if the preview check is ever bypassed.
+            if args.no_start:
+                raise Refused("canary-start: --no-start contradicts this verb — "
+                              "its only action IS a start; no system action taken")
             # The whole of the canary path, and it differs from `install` in
             # what it does NOT do: no revision is copied, no `current`/`previous`
             # pointer moves, no unit file is written and the unit is not
@@ -1282,11 +1346,20 @@ def main(argv: list[str] | None = None) -> int:
                                               health_timeout=args.health_timeout)
             except Refused:
                 raise
-            except (SystemExit, Exception) as exc:  # noqa: BLE001 - see below
+            except (SystemExit, Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
                 # The start or the readback died. `install.py` treats a death of
                 # unknown timing as an attempted effect and this does the same,
                 # for the same reason: the unit may be running the revision right
                 # now, and "it probably did not start" is not a state.
+                #
+                # `KeyboardInterrupt` rides along deliberately, and it is the one
+                # `BaseException` caught anywhere in this module. It is a
+                # `BaseException`, so leaving it out meant a Ctrl-C during the
+                # readback escaped every handler: no rollback, no receipt, and a
+                # Next unit left serving. Between "the operator waits a moment
+                # longer" and "a service nobody knows about is left running",
+                # this file chooses the former — the stop is one systemctl call
+                # and the receipt still reports the state as UNKNOWN.
                 _restore_failed_canary(mod, f"{type(exc).__name__} during start "
                                             f"or readback")
             if after["problems"]:

@@ -323,11 +323,17 @@ Everything else is still checked, and checked before the start: the unit must
 be `inactive` **and** unable to start itself; `current` must name a revision
 whose recomputed tree hash matches its own `ARTIFACT.json`; the binding must be
 one `fleet_mcp.config.load_config()` accepts, with the owner token anchor
-present, regular, mode `0600` and outside every V1 root; the public origin must
-complete a **verified** TLS handshake whose certificate names that host; live
-memory pressure must be clear; and V1 `/health` must answer. A failure after
+present, a regular file (not a symlink), mode `0600`, and neither the anchor nor
+the OAuth store derived from it resolving inside a V1 root; the public origin
+must complete a **verified** TLS handshake whose certificate names that host;
+live memory pressure must be clear; and V1 `/health` must answer. A failure after
 the start stops **Next only** and leaves the staged revision and V1 as they
 were.
+
+Those are checks on the anchor's *path and mode*, and the runbook will not claim
+more than they do: a mode-`0600` regular **copy** of V1's token is
+indistinguishable from a fresh one to any check that refuses to read the file,
+so "the token is not V1's" stays an owner statement, not a measured fact.
 
 Then **measure** that the caps took effect — a template cannot prove isolation:
 
