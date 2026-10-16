@@ -2,6 +2,14 @@
 
 状态：2026-09-24 产品架构合同。本文补充 Monitoring Product Architecture，定义 ServerOS 到底监控什么、共享机如何避免监视/干预别人、哪些资源可以自动恢复、常规播报何时发送，以及飞书 Broadcast/Incident 卡片的最终生命周期。DESIGN != LIVE：本轮不修改 timer、service、registry、reconcile mode、sender 或现有卡片。
 
+## 2026-10-17 Fleet 节点服务补充
+
+本文件 2026-09-24 对工作日广播与当前 Python serverosd 的描述保留为历史产品基线。**当前完整 Fleet V1 目标**详见 [Fleet Node topology](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md)、[campaign plan](plans/plan-02-complete-fleet-v1-delivery-campaign.md)。每个授权 principal 的 C++ Core 负责自己声明的 service readiness 和有界恢复，切换生产前 Python/C++ 同一 unit 不能双写。
+
+对 Windows 的 Tailscale/SSH 隧道、浏览器 local 127.0.0.1:16095 → Selkies Claude Web、Remote Desktop Control 只在实际 owner/profile 已声明且新鲜观察时进入受管集合：Windows Core 只恢复本地合法服务；远端 Selkies 由远端 owner Core 负责。进程、listener、SSH upstream、应用层/WebSocket readiness 不可互相代替。用户手工 disabled、NeedsLogin、AGENT_BUSY、未知或已耗尽预算必须拒绝恢复。
+
+V13 当前发送/展示契约采用受众许可的一张 LIVE 监控+告警卡（固定 message_id PATCH、心跳 :00/:30 与独立告警事件游标）与独立时段 CORE REPORT；可在10分钟采样但不需10分钟发卡。样本统一 source journal，明确样本 TTL/覆盖缺口，Patch失败不算已通知。
+
 ## 1. Monitored Set 不是全机扫描
 
 MONITORED_SET = PERSONAL_RESOURCE + PERSONAL_MANAGED_RUNTIME + ACTIVE_FOCUS_DEPENDENCY + STANDING_INFRASTRUCTURE + SHARED_CRITICAL_SERVICE + HOST_AGGREGATE - OTHER_PRINCIPAL_WIP。
