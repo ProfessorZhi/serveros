@@ -232,7 +232,13 @@ class TheRealConnectorAnswersAndTheAnswerIsSigned(unittest.TestCase):
             self.assertEqual(summary["source"], "node-core-route")
 
             listed = service.list_devices(principal())["devices"][0]
-            self.assertEqual(listed["core_lite"]["route"]["state"], "VERIFIED")
+            # The SAME shape as `fleet_status`: a list, one entry per bound
+            # runtime. Two shapes for one fact is how a reader picks the wrong
+            # one, and a two-account machine would have shown one Core here and
+            # two there.
+            self.assertEqual(len(listed["core_lite"]), 1)
+            self.assertEqual(listed["core_lite"][0]["route"]["state"], "VERIFIED")
+            self.assertEqual(listed["core_lite"][0]["runtime"], BASE_RUNTIME)
             # The provider's health and the Core reading are separate answers.
             self.assertIsNotNone(listed["provider"])
 
@@ -246,6 +252,35 @@ class TheRealConnectorAnswersAndTheAnswerIsSigned(unittest.TestCase):
             self.assertEqual(rows[0]["runtime"], BASE_RUNTIME)
 
         with_real(body)
+
+    def test_both_tools_agree_on_a_two_runtime_machine(self):
+        """`list_devices` and `status` must not disagree about how many Cores.
+
+        They did: `status` reported per runtime while `list_devices` reported
+        only the base one, so a machine serving two accounts showed two rows in
+        one tool and one in the other. The disagreement is the defect — either
+        shape could look right on its own.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = RealConnector(tmp, runtime=OTHER_RUNTIME)
+            try:
+                service, _ = harness(tmp, node, runtime=BASE_RUNTIME)
+                extra = ProviderBinding(
+                    device_ref=NODE, runtime=OTHER_RUNTIME, kind="fleet-node",
+                    endpoint=node.endpoint, credential_anchor=tmp / "node.secret",
+                    account="other-account")
+                service.config.providers[provider_key(NODE, OTHER_RUNTIME)] = extra
+                service.providers[provider_key(NODE, OTHER_RUNTIME)] = FleetNodeProvider(extra)
+
+                row = service.list_devices(principal())["devices"][0]
+                listed = sorted(entry["runtime"] for entry in row["core_lite"])
+                stated = sorted(entry["runtime"] for entry in
+                                service.status(principal())["core_lite"])
+                self.assertEqual(listed, [BASE_RUNTIME, OTHER_RUNTIME])
+                self.assertEqual(listed, stated)
+            finally:
+                node.stop()
 
     def test_a_second_runtime_is_its_own_row_and_its_own_source(self):
         """Two accounts on one machine are two Cores, not one answer."""

@@ -748,7 +748,15 @@ class FleetService:
                     # other's meaning. A device with no trusted Core route says
                     # `NOT_CONFIGURED` here while its `provider` block is
                     # perfectly reachable, which is the whole point of the split.
-                    "core_lite": self._core_lite_summary(device.device_ref.ref),
+                    # A LIST, one entry per BOUND runtime — the same shape
+                    # `fleet_status` carries, because it is the same fact and
+                    # two shapes for one fact is how a reader picks the wrong
+                    # one. This was a single summary over the base runtime while
+                    # `status` already reported per runtime, so a machine
+                    # serving two accounts showed one Core here and two there.
+                    "core_lite": [self._core_lite_summary(device.device_ref.ref, runtime)
+                                  for runtime in (self._bound_runtimes(device.device_ref.ref)
+                                                  or (BASE_RUNTIME,))],
                     "probe": probe,
                     "control": {
                         "send_allowed_device": bool(
