@@ -1,6 +1,6 @@
 # ServerOS
 
-[中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Fleet V1/V2: Logical Agents and Sessions](docs/architecture/FLEET-V1-V2-AGENT-SESSION.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
 Current target: [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md).
 Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-environment.md),
@@ -10,6 +10,8 @@ The [earlier P0–P12 plan](docs/CC-EXECUTION-PLAN.md) remains a subsystem refer
 none of these design documents is a deployment receipt.
 
 **A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
+
+**Fleet release decision (2026-10-16):** V1 targets authenticated Claude Code, per-node Core and bounded recovery, one Fleet MCP with thin operator Skills, and an evidenced Work/reporting journey. V2 adds formal Codex acceptance and evaluates topology-independent Logical Agent identities, hierarchical delegation and OpenAgents messaging. Existing Codex contracts may remain without counting as V1-live capability. See the Fleet architecture link above.
 
 ## The daily experience
 
