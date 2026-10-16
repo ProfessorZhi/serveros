@@ -1725,5 +1725,111 @@ class ABadHealthTimeoutStillPrintsOneDocumentTest(unittest.TestCase):
         self.assertIn("health-timeout", out["reason"])
 
 
+class ThePayloadAuditRefusesIgnoredMembersTest(unittest.TestCase):
+    """A clean `git status` does not mean every COPIED byte is tracked.
+
+    `git status` never reports ignored files, and `copytree` copies them — so a
+    `.gitignore`d secret under `fleet_mcp/` shipped inside the artifact while
+    `tree_state()` called the tree clean, and `ARTIFACT.json` named a revision
+    that never described it. The tree that matters is the one that was COPIED,
+    so the audit asks about `staging`; that is also what keeps ordinary build
+    residue out of the rule, because `IGNORE` drops it before it gets there.
+    """
+
+    SERVICE = "[Service]\nExecStart=@FLEET_MCP_RUNTIME@ @FLEET_MCP_CONFIG@\n"
+
+    def _git_source(self, tmp: str, *, ignore: str, fixture: str | None):
+        src = Path(tmp) / "src"
+        (src / "fleet_mcp" / "bin").mkdir(parents=True)
+        entry = src / "fleet_mcp" / "bin" / "serveros-fleet-mcp"
+        entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entry.chmod(0o755)
+        (src / "fleet_mcp" / "deploy").mkdir(parents=True)
+        (src / "fleet_mcp" / "deploy" / "serveros-fleet-mcp.service").write_text(
+            self.SERVICE, encoding="utf-8")
+        (src / "fleet").mkdir()
+        (src / "fleet" / "marker.py").write_text("x = 1\n", encoding="utf-8")
+        (src / ".gitignore").write_text(ignore, encoding="utf-8")
+
+        def run(*a):
+            return subprocess.run(["git", "-C", str(src), *a],
+                                  capture_output=True, text=True, check=True)
+        run("init", "-q")
+        run("config", "user.email", "t@example.invalid")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-q", "-m", "base")
+        if fixture is not None:
+            path = src / fixture
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("HARmlessFixtureOnly\n", encoding="utf-8")
+
+        cfg = Path(tmp) / "binding.yaml"
+        cfg.write_text("server:\n  bind: 127.0.0.1\n  port: 8401\n", encoding="utf-8")
+        root = Path(tmp) / "runtime"
+        args = install.parser().parse_args([
+            "install", "--source", str(src), "--config", str(cfg),
+            "--runtime-root", str(root), "--composition", "ingress",
+            "--unit-dir", str(Path(tmp) / "units"), "--no-start", "--label", "l"])
+        return args, root / "ingress", src
+
+    @staticmethod
+    def _quiet_systemctl(*a, **k):
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    def test_an_ignored_member_under_the_payload_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="fleet_mcp/*.secret\n",
+                fixture="fleet_mcp/owner-pat.secret")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                install.install(args)
+            self.assertIn("not tracked by the repository", err.getvalue())
+            # Nothing was published, and the ignored member is not left behind
+            # in a staging directory either.
+            self.assertFalse((comp / "current").exists())
+            self.assertEqual(list(comp.glob(".staging-*")), [])
+            self.assertFalse((comp / install.EFFECT_MARKER).exists())
+
+    def test_ordinary_ignored_build_residue_is_not_refused(self):
+        """`IGNORE` already drops `__pycache__`, so it must not be a refusal."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(
+                tmp, ignore="__pycache__/\n*.pyc\n",
+                fixture="fleet_mcp/__pycache__/marker.cpython-312.pyc")
+            with mock.patch.object(install, "systemctl", self._quiet_systemctl):
+                self.assertEqual(install.install(args), 0)
+            self.assertTrue((comp / "current").exists())
+
+    def test_a_clean_git_source_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args, comp, _ = self._git_source(tmp, ignore="*.log\n", fixture=None)
+            with mock.patch.object(install, "systemctl", self._quiet_systemctl):
+                self.assertEqual(install.install(args), 0)
+            self.assertTrue((comp / "current").exists())
+
+    def test_a_non_git_source_makes_no_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / "plain"
+            plain.mkdir()
+            staging = Path(tmp) / "staging"
+            staging.mkdir()
+            self.assertIsNone(install.payload_audit(plain, staging))
+
+    def test_an_unreadable_payload_listing_is_refused(self):
+        """Fail closed: a `git ls-files` that cannot answer is not a pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, _, src = self._git_source(tmp, ignore="*.log\n", fixture=None)
+            staging = Path(tmp) / "staging"
+            staging.mkdir()
+            (staging / "fleet_mcp").mkdir()
+            (staging / "fleet_mcp" / "x.py").write_text("x\n", encoding="utf-8")
+            with mock.patch.object(install.subprocess, "run",
+                                   side_effect=OSError("git: not found")):
+                self.assertIn("refusing to publish blind",
+                              install.payload_audit(src, staging))
+
+
 if __name__ == "__main__":
     unittest.main()
