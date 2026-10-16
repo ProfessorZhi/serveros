@@ -19,6 +19,8 @@ add_library(nodecore_supervisor STATIC
   src/provider.cpp
   src/proc.cpp
   src/systemd_user.cpp
+  src/admission.cpp
+  src/lease.cpp
   src/receipt.cpp
   src/status.cpp
   src/serve.cpp

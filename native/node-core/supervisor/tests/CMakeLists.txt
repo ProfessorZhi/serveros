@@ -18,6 +18,8 @@ set(supervisor_cases
   test_sup_status
   test_sup_serve
   test_sup_status_socket
+  test_sup_admission
+  test_sup_lease
 )
 
 foreach(case IN ITEMS ${supervisor_cases})

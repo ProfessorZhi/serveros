@@ -37,6 +37,8 @@
 #include <string>
 #include <vector>
 
+#include "supervisor/admission.hpp"
+#include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
 #include "supervisor/plan.hpp"
 #include "supervisor/receipt.hpp"
@@ -90,7 +92,19 @@ void print_usage(std::FILE* out) {
                  "                         different thing from this one.\n"
                  "  --max-ticks N          stop after N ticks. For tests; a unit must not\n"
                  "                         pass it.\n"
-                 "  --enable-actions       ACT. Refused with --serve in this stage.\n"
+                 "  --enable-actions       ACT. Refused with --serve in this stage, and it\n"
+                 "                         REQUIRES --lease, --link-state and --agent-state:\n"
+                 "                         acting without a single-writer guarantee, or without\n"
+                 "                         knowing whether the host is connected or the service\n"
+                 "                         is in use, is the failure those flags exist for.\n"
+                 "  --lease FILE           single-writer lease. Taken with flock, never\n"
+                 "                         waited for, and released when this process exits.\n"
+                 "  --link-state up|down|unknown\n"
+                 "                         whether this host has a working link. Default\n"
+                 "                         unknown, which REFUSES to act.\n"
+                 "  --agent-state idle|busy|unknown\n"
+                 "                         whether an agent is using the service now. Default\n"
+                 "                         unknown, which REFUSES to act.\n"
                  "  --receipt FILE         write the receipt here instead of stdout.\n"
                  "  --version              print the version and exit.\n"
                  "  --help                 print this text and exit.\n",
@@ -155,6 +169,14 @@ int main(int argc, char** argv) {
     std::string systemctl_path = kDefaultSystemctl;
     std::string status_socket_override;
     std::vector<std::string> allowed_units;
+    std::string lease_path;
+    // The facts the planner cannot see, and the DEFAULT IS "NOT ESTABLISHED".
+    // Assuming a link is up is how a restart gets spent on a network fault, and
+    // assuming nobody is using a service is how an agent's work is interrupted;
+    // both are permissive-by-omission, so neither is the default here. A caller
+    // that wants to act states them.
+    nodecore::supervisor::LinkFacts link;
+    nodecore::supervisor::AgentFacts agent;
     bool act = false;
     bool serve = false;
     bool no_status_socket = false;
@@ -172,6 +194,47 @@ int main(int argc, char** argv) {
         if (flag == "--version") {
             std::printf("serveros-native-core %s\n", kVersion);
             return 0;
+        }
+        if (flag == "--lease") {
+            if (!has_value) {
+                std::fprintf(stderr, "--lease needs a value\n");
+                return 2;
+            }
+            lease_path = argv[++i];
+            continue;
+        }
+        if (flag == "--link-state") {
+            const std::string value = has_value ? argv[++i] : std::string();
+            if (value == "up") {
+                link.known = true;
+                link.up = true;
+            } else if (value == "down") {
+                link.known = true;
+                link.up = false;
+                link.reason = "stated by the caller";
+            } else if (value == "unknown") {
+                link = nodecore::supervisor::LinkFacts{};
+            } else {
+                std::fprintf(stderr, "--link-state is up, down or unknown\n");
+                return 2;
+            }
+            continue;
+        }
+        if (flag == "--agent-state") {
+            const std::string value = has_value ? argv[++i] : std::string();
+            if (value == "idle") {
+                agent.known = true;
+                agent.busy = false;
+            } else if (value == "busy") {
+                agent.known = true;
+                agent.busy = true;
+            } else if (value == "unknown") {
+                agent = nodecore::supervisor::AgentFacts{};
+            } else {
+                std::fprintf(stderr, "--agent-state is idle, busy or unknown\n");
+                return 2;
+            }
+            continue;
         }
         if (flag == "--enable-actions") {
             act = true;
@@ -243,6 +306,34 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--interval-seconds only applies with --serve\n");
         return 2;
     }
+    if (act) {
+        // ACTING REQUIRES ALL THREE. Each is the specific fact that turns a
+        // correct plan into a wrong action, and none of them has a safe default:
+        // two writers each believe they own the budget, a restart spent on a
+        // network fault outlives the fault, and a service that is busy is not a
+        // service that is broken. Refused with a named reason rather than
+        // defaulted, because a caller that did not think about these is exactly
+        // the caller that should be told.
+        if (lease_path.empty()) {
+            std::fprintf(stderr,
+                         "--enable-actions requires --lease: two Cores acting on one host each "
+                         "believe they own the recovery budget, and neither receipt shows it\n");
+            return 2;
+        }
+        if (!link.known) {
+            std::fprintf(stderr,
+                         "--enable-actions requires --link-state: a restart cannot fix a host that "
+                         "is not connected, and this Core does not know which it is\n");
+            return 2;
+        }
+        if (!agent.known) {
+            std::fprintf(stderr,
+                         "--enable-actions requires --agent-state: an agent mid-task on a service "
+                         "is a reason to wait, and this Core does not know whether one is\n");
+            return 2;
+        }
+    }
+
     if (!serve && max_ticks >= 0) {
         std::fprintf(stderr, "--max-ticks only applies with --serve\n");
         return 2;
@@ -302,6 +393,11 @@ int main(int argc, char** argv) {
 
     nodecore::supervisor::Plan last_plan;
     std::vector<nodecore::supervisor::ExecutionResult> executed;
+    //: Holds the single-writer lease for as long as this process runs. Declared
+    //: OUTSIDE the tick lambda on purpose: a lease taken inside the pass would
+    //: be released when the pass ended, which is the moment before the verbs it
+    //: was supposed to be guarding.
+    nodecore::supervisor::WriterLease writer_lease;
 
     const auto observe_and_plan = [&](bool allow_execution) -> nodecore::supervisor::TickOutcome {
         const long tick_started = monotonic_seconds();
@@ -324,7 +420,62 @@ int main(int argc, char** argv) {
             }
         }
 
-        const nodecore::supervisor::Plan plan = nodecore::supervisor::build_plan(input);
+        nodecore::supervisor::Plan plan = nodecore::supervisor::build_plan(input);
+
+        // ---- the gate, applied to the plan BEFORE it is recorded ----
+        // Everything here can only REMOVE actions, and it runs before
+        // `last_plan` is assigned so that a receipt can never describe a verb
+        // that was refused. A receipt that lists an action the Core did not take
+        // is worse than no receipt: it is a false record of an effect.
+        if (allow_execution && act && plan.ok && !plan.actions.empty()) {
+            // 1. THE LEASE. Taken once and held until this process exits. A
+            //    writer that cannot take it does not act at all: with two
+            //    writers, every judgement below is being made twice, by two
+            //    processes that each believe they are the only one.
+            const nodecore::supervisor::LeaseAttempt taken = writer_lease.acquire(
+                lease_path, manifest.node.empty() ? std::string("serveros-native-core")
+                                                  : manifest.node);
+            if (!taken.ok) {
+                std::fprintf(stderr, "not acting: %s\n", taken.reason.c_str());
+                for (const nodecore::supervisor::Action& action : plan.actions) {
+                    plan.refusals.push_back({action.service_id, "NO_LEASE", taken.reason});
+                }
+                plan.actions.clear();
+            }
+        }
+        if (allow_execution && act && plan.ok && !plan.actions.empty()) {
+            // 2. THE FACTS THE PLANNER CANNOT SEE, per action. Admission reads
+            //    the same observation the plan was built from, so a refusal
+            //    names the fact that made the plan wrong rather than blaming the
+            //    service.
+            std::vector<nodecore::supervisor::Action> admitted;
+            for (const nodecore::supervisor::Action& action : plan.actions) {
+                nodecore::supervisor::AdmissionInput gate;
+                gate.service_id = action.service_id;
+                gate.unit = action.unit;
+                const auto found = input.observed.find(action.unit);
+                if (found != input.observed.end()) {
+                    gate.observed = &found->second;
+                    gate.installed = nodecore::supervisor::unit_is_installed(found->second);
+                    gate.masked = found->second.load_state == "masked";
+                }
+                gate.link = link;
+                gate.agent = agent;
+                gate.lease.held_by_us = writer_lease.held();
+
+                const nodecore::supervisor::AdmissionVerdict verdict =
+                    nodecore::supervisor::admit(gate);
+                if (verdict.admitted) {
+                    admitted.push_back(action);
+                } else {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 verdict.reason.c_str());
+                    plan.refusals.push_back({action.service_id, verdict.code, verdict.reason});
+                }
+            }
+            plan.actions = admitted;
+        }
+
         last_plan = plan;
 
         if (allow_execution && act && plan.ok) {
