@@ -1422,5 +1422,43 @@ class TheSharedInstallerMarksItsEffectBoundaryTest(unittest.TestCase):
                              "a clean finish must not leave a recovery marker")
 
 
+class TheDirtyTreeGuardReachesV1TooAndIsRecordedTest(unittest.TestCase):
+    """`install.py` is SHARED, so this refusal reaches V1 installs as well.
+
+    That is a real change to what V1 will accept, and it is the deliberate one:
+    the alternative is publishing a V1 artifact whose `ARTIFACT.json` names a
+    commit its bytes do not match. It REFUSES — it does not stop, move, rewrite
+    or replace anything, so a V1 that is already running is untouched, and the
+    operator remedy (make the tree clean, or deploy from a clean revision tree)
+    is in the refusal itself. The runbook carries the migration note, and this
+    test is what keeps the behaviour from changing silently.
+    """
+
+    def test_the_shared_installer_refuses_a_dirty_git_source(self):
+        with _git_repo() as repo:
+            (Path(repo) / "fleet_mcp" / "marker.py").write_text("x = 2\n",
+                                                               encoding="utf-8")
+            args = install.parser().parse_args([
+                "install", "--source", repo, "--no-start",
+                "--config", "/nonexistent/binding.yaml",
+                "--runtime-root", "/nonexistent/runtime"])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit):
+                    install.install(args)
+        self.assertIn("uncommitted", err.getvalue())
+        self.assertNotIn("no binding at", err.getvalue(),
+                         "refused before the binding is read, i.e. before any "
+                         "copy, pointer move or systemctl")
+
+    def test_the_runbook_records_the_v1_side_of_this(self):
+        text = (ROOT / "docs" / "fleet-v1-next-ingress-runbook.md").read_text(
+            encoding="utf-8")
+        self.assertIn("#### And the tree must BE that revision", text)
+        note = text.split("#### And the tree must BE that revision", 1)[1]
+        self.assertIn("V1", note[:6000],
+                      "the note must say this reaches V1 as well")
+
+
 if __name__ == "__main__":
     unittest.main()
