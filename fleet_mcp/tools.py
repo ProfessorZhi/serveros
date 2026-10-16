@@ -206,7 +206,12 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         project=project,
         message=args.get("message"),
         provider=args.get("provider") or "claude",
-        runtime=args.get("runtime") or BASE_RUNTIME,
+        # `or` here swallowed a blank runtime into the base account before the
+        # service could see it, so the caller's explicit value never reached the
+        # validator that exists to refuse it. Only a key that was NOT supplied
+        # falls back: an empty string is a value, and it is refused downstream.
+        runtime=(args["runtime"] if args.get("runtime") is not None
+                 else BASE_RUNTIME),
         model=args.get("model"),
         lifecycle_mode=args.get("lifecycle_mode"),
         permission_mode=args.get("permission_mode"),

@@ -35,6 +35,7 @@ from fleet_mcp.runtime_identity import BASE_RUNTIME
 DEVICE = "device:tokyo-shared-dev-01"
 SECOND = "claude-official"
 OAUTH = "oauth:test-client"
+UUID = "11111111-2222-3333-4444-555555555555"
 
 
 def _registry(tmp: Path) -> Path:
@@ -62,6 +63,14 @@ class FakeProvider:
     def native_call(self, tool, arguments, *, session_ref=None):
         self.calls.append((tool, arguments, session_ref))
         return {"ok": True, "runtime": self.runtime, "tool": tool}
+
+    def create(self, *, project, message=None, provider="claude", model=None,
+               lifecycle_mode=None, permission_mode=None):
+        # The hand-written create reaches the provider here; a mirrored one
+        # reaches `native_call`. Both record, so "which account" is always a
+        # fact about the fake rather than an inference from a return value.
+        self.calls.append(("create", {"project": project, "provider": provider}))
+        return {"sessionId": UUID, "runId": None, "served_by": self.runtime}
 
 
 class TwoRuntimes:
@@ -388,3 +397,169 @@ class TheCapabilitySnapshotNamesItsRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ABlankRuntimeIsNeverAnAccount(unittest.TestCase):
+    """An explicitly-named runtime that is not a name is refused, not defaulted.
+
+    `FleetService._runtime_for_call` resolved an unnamed call with
+    `runtime or BASE_RUNTIME`, so `runtime=""` — a value the caller DID send —
+    became "the base account". That is the one outcome this whole axis exists to
+    prevent: a call that names nothing lands on a named account, and the caller
+    is told it succeeded. Whitespace fared no better in kind: it was refused as
+    `UNKNOWN_DEVICE`, which is the answer for "a legal name with nothing behind
+    it" and reads to an operator as a missing binding rather than a bad request.
+
+    The grammar authority is `SessionKey` (`FleetService._validate_runtime_selector`
+    already says so); these tests pin that the mirror and the capability snapshot
+    go through it, and that they reach NO provider while refusing.
+
+    A key that is ABSENT still means the device's own runtime — that is the
+    behaviour every caller had before a device could serve two, and it is
+    unchanged. An explicit `null` is the same "unnamed" in this codebase
+    (`node_protocol.py`: "`runtime=None` is v1, unchanged"), so it is not
+    treated as a name either.
+    """
+
+    BLANKS = ("", " ", "   ", "\t", "\n", "  \t ")
+
+    def _mirror_read(self, h, runtime, *, session_ref=None):
+        args = {"device_ref": DEVICE, "runtime": runtime,
+                "arguments": {"session": "s-1"}}
+        if session_ref is not None:
+            args["session_ref"] = session_ref
+        return h.edge("fleet_cloudcli_session_get", args, SCOPE_READ)
+
+    def test_a_blank_runtime_on_a_mirrored_read_is_a_bad_request(self):
+        for blank in self.BLANKS:
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp))
+                result = self._mirror_read(h, blank)
+                self.assertTrue(is_error(result), repr(blank))
+                self.assertIn(BAD_REQUEST, codes(result), repr(blank))
+                self.assertEqual(h.first.calls, [], repr(blank))
+                self.assertEqual(h.second.calls, [], repr(blank))
+
+    def test_a_blank_runtime_with_a_session_ref_is_refused_without_a_route(self):
+        """Neither half may win: the call names no valid runtime at all."""
+        for blank in self.BLANKS:
+            for runtime_named in (BASE_RUNTIME, SECOND):
+                with tempfile.TemporaryDirectory() as tmp:
+                    h = TwoRuntimes(Path(tmp))
+                    result = self._mirror_read(
+                        h, blank,
+                        session_ref=f"{DEVICE}|{runtime_named}|s-1")
+                    self.assertTrue(is_error(result), repr(blank))
+                    self.assertTrue(
+                        BAD_REQUEST in codes(result) or BAD_SESSION_REF in codes(result),
+                        codes(result))
+                    self.assertEqual(h.first.calls, [], repr(blank))
+                    self.assertEqual(h.second.calls, [], repr(blank))
+
+    def test_a_blank_runtime_cannot_create_in_the_base_account(self):
+        """The sharpest form: this one used to MINT against the base account."""
+        for blank in self.BLANKS:
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp), create_allow={"p": CreateGrant()},
+                                grants={OAUTH: {DEVICE: ("create",)}})
+                result = h.edge("fleet_cloudcli_session_create",
+                                {"device_ref": DEVICE, "runtime": blank,
+                                 "project": "p",
+                                 "arguments": {"project": "p"}},
+                                SCOPE_CREATE)
+                self.assertTrue(is_error(result), repr(blank))
+                self.assertIn(BAD_REQUEST, codes(result), repr(blank))
+                self.assertEqual(h.first.calls, [], repr(blank))
+                self.assertEqual(h.second.calls, [], repr(blank))
+
+    def test_a_blank_runtime_on_the_capability_snapshot_is_a_bad_request(self):
+        for blank in self.BLANKS:
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp))
+                result = h.edge("fleet_cloudcli_native_capability",
+                                {"device_ref": DEVICE, "runtime": blank},
+                                SCOPE_READ)
+                self.assertTrue(is_error(result), repr(blank))
+                self.assertIn(BAD_REQUEST, codes(result), repr(blank))
+
+    def test_the_hand_written_read_keeps_refusing_a_blank_runtime(self):
+        """The behaviour that was already right, pinned so it cannot regress."""
+        for blank in self.BLANKS:
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp))
+                result = h.edge("fleet_list_sessions",
+                                {"device": DEVICE, "runtime": blank}, SCOPE_READ)
+                self.assertTrue(is_error(result), repr(blank))
+                self.assertIn(BAD_REQUEST, codes(result), repr(blank))
+
+    def test_an_absent_runtime_still_means_the_devices_own(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = TwoRuntimes(Path(tmp))
+            result = self._mirror_read(h, None)
+            self.assertFalse(is_error(result), codes(result))
+            self.assertEqual(len(h.first.calls), 1)
+            self.assertEqual(h.second.calls, [])
+
+    def test_an_explicit_null_is_unnamed_not_a_second_kind_of_missing(self):
+        """`node_protocol.py` fixes `runtime=None` as v1 \"unnamed\"; it names
+        no account, so it cannot reach one the caller did not name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            h = TwoRuntimes(Path(tmp))
+            result = h.edge("fleet_cloudcli_session_get",
+                            {"device_ref": DEVICE, "runtime": None,
+                             "arguments": {"session": "s-1"}}, SCOPE_READ)
+            self.assertFalse(is_error(result), codes(result))
+            self.assertEqual(len(h.first.calls), 1)
+            self.assertEqual(h.second.calls, [])
+
+    def test_a_non_string_runtime_is_a_bad_request_not_a_route(self):
+        for bogus in (0, 1, True, [], {}, 1.5):
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp))
+                result = self._mirror_read(h, bogus)
+                self.assertTrue(is_error(result), repr(bogus))
+                self.assertIn(BAD_REQUEST, codes(result), repr(bogus))
+                self.assertEqual(h.first.calls, [], repr(bogus))
+                self.assertEqual(h.second.calls, [], repr(bogus))
+
+    def test_the_hand_written_create_refuses_a_blank_runtime(self):
+        """The same hole existed on the tool that predates the mirror.
+
+        `fleet_create_session` resolved its runtime with `args.get("runtime") or
+        BASE_RUNTIME`, so a blank never reached the validator: the hand-written
+        create MINTED in the base account for a caller who named something else.
+        The mirror was where it was noticed; it was not where it started.
+        """
+        for blank in self.BLANKS:
+            with tempfile.TemporaryDirectory() as tmp:
+                h = TwoRuntimes(Path(tmp), create_allow={"p": CreateGrant()},
+                                grants={OAUTH: {DEVICE: ("create",)}})
+                result = h.edge("fleet_create_session",
+                                {"device": DEVICE, "project": "p",
+                                 "runtime": blank}, SCOPE_CREATE)
+                self.assertTrue(is_error(result), repr(blank))
+                self.assertIn(BAD_REQUEST, codes(result), repr(blank))
+                self.assertEqual(h.first.calls, [], repr(blank))
+                self.assertEqual(h.second.calls, [], repr(blank))
+
+    def test_the_hand_written_create_still_works_without_a_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = TwoRuntimes(Path(tmp), create_allow={"p": CreateGrant()},
+                            grants={OAUTH: {DEVICE: ("create",)}})
+            result = h.edge("fleet_create_session",
+                            {"device": DEVICE, "project": "p"}, SCOPE_CREATE)
+            self.assertFalse(is_error(result), codes(result))
+            self.assertEqual(len(h.first.calls), 1)
+            self.assertEqual(h.second.calls, [])
+
+    def test_the_hand_written_create_names_the_second_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = TwoRuntimes(Path(tmp), create_allow={"p": CreateGrant()},
+                            grants={OAUTH: {DEVICE: ("create",),
+                                            provider_key(DEVICE, SECOND): ("create",)}})
+            result = h.edge("fleet_create_session",
+                            {"device": DEVICE, "project": "p",
+                             "runtime": SECOND}, SCOPE_CREATE)
+            self.assertFalse(is_error(result), codes(result))
+            self.assertEqual(len(h.second.calls), 1)
+            self.assertEqual(h.first.calls, [])

@@ -744,6 +744,23 @@ class FleetService:
         """
         if runtime is None or runtime_identity.is_a_selector(runtime):
             return
+        # A value the caller DID send, which names no runtime, is a bad request
+        # and never the device's own. The distinction is the point: `None` is
+        # the absence of a name and means the device's own runtime, while `""`
+        # and `"   "` are names that match nothing — and resolving either of
+        # them with `runtime or BASE_RUNTIME` silently routed the call to the
+        # base account, which is the one outcome this axis exists to prevent.
+        # Whitespace is refused here rather than as `UNKNOWN_DEVICE`, because
+        # that code tells an operator a binding is missing when what is missing
+        # is a name.
+        if not isinstance(runtime, str) or not runtime.strip():
+            raise refuse(
+                BAD_REQUEST,
+                f"{runtime!r} is not a runtime name: a runtime is "
+                f"`{BASE_RUNTIME}` or `{BASE_RUNTIME}-<account>`, and a blank or "
+                f"non-string value names none. Omit the key — or pass null — to "
+                f"use the device's own runtime.",
+            )
         try:
             SessionKey(self.config.local_device_ref, runtime, "runtime-selector")
         except ValueError as exc:
@@ -1255,6 +1272,12 @@ class FleetService:
             )
         resolved = resolve_or_refuse(self.registry, device)
         device_ref = resolved.device_ref.ref
+        # A runtime the caller named that is not a name is refused here, with
+        # the device, and for the same reason: `""` is an argument that was
+        # supplied and names nothing, while an omitted one means the device's
+        # own runtime. Resolving the first as the second would mint the session
+        # in the base account under a caller who asked for another one.
+        self._validate_runtime_selector(runtime)
         # Reachability first, then policy. A caller with no route to the device
         # is told that, not told about an allowlist — the two answers point at
         # different configuration, and answering the second when the first is
@@ -1487,8 +1510,12 @@ class FleetService:
         runtimes: on this surface it never is, because the runtime is part of
         the address.
         """
+        # The same authority the read path already uses, asked BEFORE the
+        # default is applied — otherwise `""` is not "unnamed", it is the base
+        # account, chosen by a caller who named something else.
+        self._validate_runtime_selector(runtime)
         if not session_ref:
-            return runtime or BASE_RUNTIME
+            return runtime if runtime is not None else BASE_RUNTIME
         key = SessionKey.parse(str(session_ref))
         if runtime is not None and runtime != key.provider:
             raise refuse(
@@ -1697,6 +1724,10 @@ class FleetService:
         # outbound call like any other; exempting it would make this the one
         # read that can be hammered.
         self.admit(principal)
+        # Asked before the binding lookup, so a blank runtime is a bad request
+        # rather than "no such binding" — the same rule, and the same authority,
+        # as every other entry that takes a runtime.
+        self._validate_runtime_selector(runtime)
         binding = self.config.provider_for(device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE,
