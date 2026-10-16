@@ -8,13 +8,17 @@ description: What the Fleet tool list does and does not authorize, which runtime
 The tool surface is a **catalogue of what can be asked for**, not a grant. Each
 verb is separately gated, and the gates are on other machines:
 
-- the **scope** on the presented credential. The surface **advertises** six
-  scopes, and that is not the same as a caller holding six: a token carries only
-  the **granted** subset, the default grantable set is **two** (`fleet:read`,
-  `fleet:send`), and the scopes are fixed at authorization — they cannot be
-  widened afterwards, only re-consented. The owner's own personal access token
-  is a different credential with a different grant, so never generalise it to a
-  client and never assume "everyone has the six";
+- the **scope** on the presented credential. Four things get said with one word,
+  and the live discovery documents keep them in separate keys: `scopes_supported`
+  is what the surface **advertises** (six); `scopes_grantable` is the **ceiling**
+  a binding permits, which may also be all six; what a token actually **carries**
+  is only the granted subset; and the **default grant** — what an operator who
+  declares nothing gets — is **two** (`fleet:read`, `fleet:send`). So "the surface
+  advertises six" is not "this client may be granted six", and neither is "this
+  token holds six". Scopes are fixed at authorization and cannot be widened
+  afterwards, only re-consented. The owner's own personal access token is a
+  different credential with a different grant: never generalise it to a client,
+  and never assume "everyone has the six";
 - the **device binding** on the ingress (`allow_send`, `allow_create`,
   `allow_control`);
 - the **operator grant**, per principal, per device, per verb;
