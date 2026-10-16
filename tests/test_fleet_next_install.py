@@ -105,6 +105,47 @@ def legacy_full_receipt(**over) -> str:
     return json.dumps(payload, indent=2)
 
 
+class _FakeInstallModule:
+    """The no-op form of the bits of `install.py` the wrapper may consult.
+
+    A fake modelling a CLEAN git source: `tree_state` answers None and
+    `git_revision` has no HEAD. Tests that need a dirty tree or a real HEAD
+    override these.
+
+    `begin_effect` models the shared installer's EFFECT BOUNDARY. A fake whose
+    `main` dies the way a MID-INSTALL death behaves has to leave the same
+    evidence the real installer leaves, or the wrapper cannot tell that death
+    from a refusal that never wrote anything — which is the whole distinction
+    under test.
+    """
+
+    EFFECT_MARKER = install.EFFECT_MARKER
+
+    def git_revision(self, source):
+        return None
+
+    def tree_state(self, source):
+        return None
+
+    def begin_effect(self, args) -> Path:
+        """Leave the marker where the wrapper looks for it, as install.py does."""
+        runtime_root = Path(args[args.index("--runtime-root") + 1])
+        composition = args[args.index("--composition") + 1]
+        root = runtime_root / composition
+        root.mkdir(parents=True, exist_ok=True)
+        marker = root / self.EFFECT_MARKER
+        marker.write_text("0\n", encoding="utf-8")
+        return marker
+
+
+def writable_root(p: dict, tmp: str) -> Path:
+    """A Next composition root a fake can leave effect evidence in."""
+    root = Path(tmp) / next_install.COMPOSITION
+    root.mkdir(parents=True, exist_ok=True)
+    p["next"]["runtime_root"] = str(root)
+    return root
+
+
 class NextOnlyInstaller(unittest.TestCase):
     def test_safe_preview_names_next_unit_and_has_no_effect(self):
         preview = next_install.plan(candidate(), "install")
@@ -149,7 +190,7 @@ class NextOnlyInstaller(unittest.TestCase):
         p["next"]["public_mcp_url"] = None
         p["next"]["plugin_id"] = None
         p["attestations"]["next_oauth_client_authorized"] = False
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             calls = []
             def binding(self, path):
                 old = str(path) == p["v1"]["config_path"]
@@ -192,7 +233,7 @@ class NextOnlyInstaller(unittest.TestCase):
         p = candidate()
         p["next"]["plugin_id"] = None
         p["attestations"]["next_oauth_client_authorized"] = False
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             def binding(self, path):
                 old = str(path) == p["v1"]["config_path"]
                 return {"port": 8401 if old else 8402,
@@ -255,7 +296,7 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertIn('UNIT_TEMPLATE = "fleet_mcp/deploy/serveros-fleet-mcp.service"', shared)
 
     def test_effective_cgroup_limits_are_checked_on_actual_service(self):
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             def systemctl(self, *args, **kw):
                 return type("Result", (), {"returncode": 0, "stdout": (
                     "MemoryMax=1610612736\nMemorySwapMax=0\nTasksMax=96\n"
@@ -263,7 +304,7 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertEqual(next_install._effective_limit_errors(FakeMod()), [])
 
     def test_missing_live_swap_cap_is_not_reported_as_healthy(self):
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             def systemctl(self, *args, **kw):
                 return type("Result", (), {"returncode": 0, "stdout": (
                     "MemoryMax=1610612736\nMemorySwapMax=infinity\nTasksMax=96\n"
@@ -351,35 +392,51 @@ class NextOnlyInstaller(unittest.TestCase):
                                                  effect_attempted=False)
 
     def test_simulated_install_crash_recovers_next_only(self):
-        p = candidate()
-        root = Path(p["next"]["runtime_root"])
-        old_rev, new_rev = root / "rev-old", root / "rev-bad"
-        class MockModule:
-            def __init__(self):
-                self.links = {"current": old_rev, "previous": None}
-                self.calls = []
-            def binding(self, path):
-                if str(path) == p["v1"]["config_path"]:
-                    return {"port": 8401, "bind": "127.0.0.1", "probe": "http://127.0.0.1:8401"}
-                return {"port": 8402, "bind": "127.0.0.1", "probe": "http://127.0.0.1:8402"}
-            def wait_for_health(self, *args):
-                return {"ok": True}
-            def read_link(self, path):
-                return self.links[path.name]
-            def point(self, path, target):
-                self.links[path.name] = target
-            def systemctl(self, *args, **kwargs):
-                self.calls.append(args)
-                return type("Result", (), {"returncode": 0})()
-            def main(self, args):
-                self.links["previous"] = old_rev
-                self.links["current"] = new_rev
-                raise SystemExit(3)
-        instance = MockModule()
-        with mock.patch.object(next_install, "_load_legacy_installer",
-                               return_value=instance):
-            with mock.patch.object(next_install, "_current_pressure", return_value=None):
-                rc, report = cli(["install", "--execute", "--owner-approved"], p)
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            root = writable_root(p, tmp)
+            old_rev, new_rev = root / "rev-old", root / "rev-bad"
+
+            class MockModule(_FakeInstallModule):
+                def __init__(self):
+                    self.links = {"current": old_rev, "previous": None}
+                    self.calls = []
+
+                def binding(self, path):
+                    if str(path) == p["v1"]["config_path"]:
+                        return {"port": 8401, "bind": "127.0.0.1",
+                                "probe": "http://127.0.0.1:8401"}
+                    return {"port": 8402, "bind": "127.0.0.1",
+                            "probe": "http://127.0.0.1:8402"}
+
+                def wait_for_health(self, *args):
+                    return {"ok": True}
+
+                def read_link(self, path):
+                    return self.links[path.name]
+
+                def point(self, path, target):
+                    self.links[path.name] = target
+
+                def systemctl(self, *args, **kwargs):
+                    self.calls.append(args)
+                    return type("Result", (), {"returncode": 0})()
+
+                def main(self, args):
+                    # A crash MID-install: the shared installer has crossed its
+                    # effect boundary, and left the evidence that says so.
+                    self.begin_effect(args)
+                    self.links["previous"] = old_rev
+                    self.links["current"] = new_rev
+                    raise SystemExit(3)
+
+            instance = MockModule()
+            with mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=instance):
+                with mock.patch.object(next_install, "_current_pressure",
+                                       return_value=None):
+                    rc, report = cli(["install", "--execute", "--owner-approved"], p)
+
         self.assertEqual(rc, 2)
         self.assertIn("Next-only stop/rollback", report["reason"])
         self.assertEqual(report["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
@@ -440,7 +497,7 @@ class TheExecutePathMustProduceExactlyOneReceiptTest(unittest.TestCase):
 
     def _execute(self, emit, p: dict):
         """Run `stage --execute` with an installer whose stdout is `emit()`."""
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             calls = []
             def binding(self, path):
                 old = str(path) == p["v1"]["config_path"]
@@ -505,26 +562,39 @@ class TheExecutePathMustProduceExactlyOneReceiptTest(unittest.TestCase):
     def test_a_dying_installer_that_printed_a_receipt_is_quoted_back(self):
         """`install.py` prints its receipt and THEN dies when the service did
         not answer. The wrapper must not lose that fact in the refusal."""
-        p = candidate()
-        class FakeMod:
-            def binding(self, path):
-                old = str(path) == p["v1"]["config_path"]
-                return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
-                        "probe": "http://127.0.0.1:8401" if old else "http://127.0.0.1:8402"}
-            def read_link(self, path):
-                return None
-            def systemctl(self, *args, **kw):
-                # Enablement must be the exact string `disabled` to publish;
-                # `is-active` is not consulted on the `stage` path.
-                return type("Result", (), {
-                    "returncode": 0,
-                    "stdout": ("disabled\n" if args[:1] == ("is-enabled",)
-                               else "inactive\n")})()
-            def main(self, args):
-                print(legacy_full_receipt(started=False, health=None))
-                raise SystemExit(3)
-        with mock.patch.object(next_install, "_load_legacy_installer", return_value=FakeMod()):
-            rc, report = cli(["stage", "--execute", "--owner-approved"], p)
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
+
+            class FakeMod(_FakeInstallModule):
+                def binding(self, path):
+                    old = str(path) == p["v1"]["config_path"]
+                    return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
+                            "probe": "http://127.0.0.1:8401" if old
+                            else "http://127.0.0.1:8402"}
+
+                def read_link(self, path):
+                    return None
+
+                def systemctl(self, *args, **kw):
+                    # Enablement must be a state a publish accepts; `is-active`
+                    # is what the same guard reads first.
+                    return type("Result", (), {
+                        "returncode": 0,
+                        "stdout": ("disabled\n" if args[:1] == ("is-enabled",)
+                                   else "inactive\n")})()
+
+                def main(self, args):
+                    # The unit did not answer AFTER the install: past the effect
+                    # boundary, so the marker has to be there or the wrapper
+                    # would report a refusal instead of a failed start.
+                    self.begin_effect(args)
+                    print(legacy_full_receipt(started=False, health=None))
+                    raise SystemExit(3)
+
+            with mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=FakeMod()):
+                rc, report = cli(["stage", "--execute", "--owner-approved"], p)
         self.assertEqual(rc, 2)
         self.assertIn("started=False", report["reason"])
         self.assertEqual(report["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
@@ -546,7 +616,7 @@ class ASameRevisionRestartIsNotUntouchedTest(unittest.TestCase):
             "CPUQuotaPerSecUSec=400ms\n")
 
     def _restart_that_never_comes_back(self, p: dict):
-        class FakeMod:
+        class FakeMod(_FakeInstallModule):
             def __init__(self):
                 self.calls = []
                 self.health_calls = 0
@@ -664,13 +734,14 @@ def _head(repo: str) -> str:
 
 
 def _publish(command, p, *, active="inactive", enabled="disabled",
-             enabled_error=False, extra=(), accept=False, head=None, record=None):
+             enabled_error=False, extra=(), accept=False, head=None, record=None,
+             tree_problem=None):
     """Run a non-starting publish against a unit whose state we choose.
 
     `accept=False` makes the installer unreachable, so a test asserting a
     refusal also proves nothing reached the installer.
     """
-    class FakeMod:
+    class FakeMod(_FakeInstallModule):
         def binding(self, path):
             old = str(path) == p["v1"]["config_path"]
             return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
@@ -682,6 +753,8 @@ def _publish(command, p, *, active="inactive", enabled="disabled",
             return {"ok": True}
         def git_revision(self, source):
             return head
+        def tree_state(self, source):
+            return tree_problem
         def systemctl(self, *args, check=True):
             if record is not None:
                 record.append(args)
@@ -957,6 +1030,396 @@ class TheLiveInstallGatesWereNotLoosenedTest(unittest.TestCase):
         preview = next_install.plan(candidate(), "install")
         self.assertEqual(preview["decision"], "DRY_RUN_READY")
         self.assertNotIn("DISABLED", " ".join(preview["requires"]))
+
+
+class AGitSourceMustBeTheCommitItNamesTest(unittest.TestCase):
+    """The revision NAME must equal the BYTES, not merely the HEAD string.
+
+    `install.py` copies the working tree from the FILESYSTEM. Matching
+    `--revision` to `git rev-parse HEAD` therefore proves nothing about the bytes
+    on disk — including in the `--revision == HEAD` and `--revision`-omitted
+    cases the revision guard cannot distinguish. A dirty tree publishes an
+    artifact whose ARTIFACT.json names a revision it is not. All of these are
+    refused BEFORE the binding is read, before anything is copied, and before any
+    `systemctl`: the absent `--config` below is what tells the two gates apart.
+    """
+
+    ABSENT_CONFIG = "/nonexistent/fleet-binding.yaml"
+    ABSENT_ROOT = "/nonexistent/runtime-assets"
+
+    def _run(self, source, *extra):
+        argv = ["install", "--source", str(source), "--config", self.ABSENT_CONFIG,
+                "--runtime-root", self.ABSENT_ROOT,
+                "--composition", "ingress-next", *extra]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                install.main(argv)
+        return err.getvalue()
+
+    # -- refused: the tree is not the commit --------------------------------
+
+    def test_a_dirty_tracked_file_is_refused_before_any_read(self):
+        with _git_repo() as repo:
+            (Path(repo) / "fleet_mcp" / "marker.py").write_text(
+                "x = 2\n", encoding="utf-8")
+            err = self._run(repo)
+        self.assertIn("1 uncommitted path", err)
+        self.assertNotIn("no binding at", err)   # refused before the config read
+
+    def test_an_untracked_file_is_refused(self):
+        with _git_repo() as repo:
+            (Path(repo) / "scratch.txt").write_text("wip\n", encoding="utf-8")
+            err = self._run(repo)
+        self.assertIn("uncommitted", err)
+        self.assertNotIn("no binding at", err)
+
+    def test_the_count_is_per_file_not_per_directory(self):
+        """`--untracked-files=all`: a new directory must not collapse to one row."""
+        with _git_repo() as repo:
+            d = Path(repo) / "newdir"
+            d.mkdir()
+            (d / "a.txt").write_text("1\n", encoding="utf-8")
+            (d / "b.txt").write_text("2\n", encoding="utf-8")
+            err = self._run(repo)
+        self.assertIn("2 uncommitted path", err)
+
+    def test_a_held_index_lock_is_refused(self):
+        with _git_repo() as repo:
+            gitdir = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--absolute-git-dir"],
+                capture_output=True, text=True, check=True).stdout.strip()
+            lock = Path(gitdir) / "index.lock"
+            lock.write_text("", encoding="utf-8")
+            try:
+                err = self._run(repo)
+            finally:
+                lock.unlink()
+        self.assertIn("index.lock", err)
+
+    def test_the_lock_is_found_through_a_linked_worktree_pointer(self):
+        """`.git` is a FILE in a linked worktree; a path guess would miss it."""
+        with _git_repo() as repo:
+            wt = tempfile.mkdtemp(prefix="fleet-install-wt-")
+            subprocess.run(["git", "-C", repo, "worktree", "add", "-q",
+                            wt, "-b", "side"], check=True, capture_output=True)
+            try:
+                self.assertTrue((Path(wt) / ".git").is_file(),
+                                "a linked worktree's .git must be a pointer file")
+                gitdir = subprocess.run(
+                    ["git", "-C", wt, "rev-parse", "--absolute-git-dir"],
+                    capture_output=True, text=True, check=True).stdout.strip()
+                self.assertNotEqual(str(Path(gitdir)), str(Path(wt) / ".git"))
+                lock = Path(gitdir) / "index.lock"
+                lock.write_text("", encoding="utf-8")
+                try:
+                    err = self._run(wt)
+                finally:
+                    lock.unlink()
+            finally:
+                subprocess.run(["git", "-C", repo, "worktree", "remove",
+                                "--force", wt], check=False, capture_output=True)
+        self.assertIn("index.lock", err)
+
+    # -- accepted: nothing was claimed that could be broken -----------------
+
+    def test_ignored_build_residue_is_not_a_dirty_tree(self):
+        """`.gitignore` is where build output belongs; it must not refuse a tree."""
+        with _git_repo() as repo:
+            (Path(repo) / ".gitignore").write_text("build/\n", encoding="utf-8")
+            for a in (["add", ".gitignore"], ["commit", "-qm", "ignore"]):
+                subprocess.run(["git", "-C", repo, *a], check=True,
+                               capture_output=True)
+            (Path(repo) / "build").mkdir()
+            (Path(repo) / "build" / "out.bin").write_bytes(b"\x00" * 16)
+            err = self._run(repo)
+        self.assertIn("no binding at", err)          # reached the NEXT gate
+        self.assertNotIn("uncommitted", err)
+
+    def test_a_clean_git_source_passes_the_tree_check(self):
+        with _git_repo() as repo:
+            err = self._run(repo, "--revision", _head(repo))
+        self.assertIn("no binding at", err)
+        self.assertNotIn("uncommitted", err)
+
+    def test_a_non_git_source_keeps_the_explicit_revision_route(self):
+        """No HEAD means no claim to break; `--revision` stays its only route."""
+        with tempfile.TemporaryDirectory(prefix="fleet-install-nongit-") as plain:
+            err = self._run(plain, "--revision", "c" * 40)
+        self.assertIn("no binding at", err)
+        self.assertNotIn("uncommitted", err)
+
+    # -- none after effect -------------------------------------------------
+
+    def test_the_refusal_creates_no_runtime_tree(self):
+        with _git_repo() as repo, tempfile.TemporaryDirectory() as root:
+            (Path(repo) / "scratch.txt").write_text("wip\n", encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit):
+                    install.main(["install", "--source", repo,
+                                  "--config", self.ABSENT_CONFIG,
+                                  "--runtime-root", root,
+                                  "--composition", "ingress-next"])
+            self.assertEqual(sorted(p.name for p in Path(root).iterdir()), [])
+            self.assertIn("uncommitted", err.getvalue())
+
+
+class ADirtyTreeTakesNoSystemActionTest(unittest.TestCase):
+    """The wrapper pre-checks the tree for the same reason it pre-checks the SHA.
+
+    The shared installer refuses a dirty tree by DYING, and a dying installer is
+    read as an attempted effect — so without this the refusal would run a
+    Next-only stop/rollback. A validation refusal must stop nothing.
+    """
+
+    PROBLEM = ("/src has 1 uncommitted path(s) (tracked edits or untracked "
+               "files); the installer copies the working tree")
+
+    def test_a_dirty_source_on_a_stage_stops_nothing(self):
+        calls = []
+        p = candidate()
+        p["next"]["public_mcp_url"] = None
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        rc, out = _publish("stage", p, tree_problem=self.PROBLEM, record=calls)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["executes"], [])
+        self.assertIn("uncommitted", out["reason"])
+        self.assertEqual(calls, [], "no systemctl call of any kind")
+
+    def test_a_dirty_source_on_a_starting_install_stops_nothing(self):
+        calls = []
+        with mock.patch.object(next_install, "_current_pressure",
+                               return_value=None):
+            rc, out = _publish("install", candidate(),
+                               tree_problem=self.PROBLEM, record=calls)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(calls, [])
+
+    def test_a_clean_tree_is_not_refused_by_the_pre_check(self):
+        rc, out = _publish("install", candidate(),
+                           extra=("--no-start",), accept=True, tree_problem=None)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+
+class APreEffectRefusalDoesNotStopALiveNextTest(unittest.TestCase):
+    """A validation refusal is not an outage.
+
+    `install.py` refuses several things BEFORE it crosses its effect boundary —
+    a `revision_dir` that already exists without `--force`, a payload entry that
+    is missing or not executable, a git source it disagrees with. Each is a
+    `die`, and the wrapper treats a dying installer as an attempted effect and
+    runs a Next-only stop/rollback. That default is right for a death of unknown
+    timing and wrong for a refusal that wrote nothing: it turns a mistyped retry
+    into an outage of a healthy Next.
+
+    The marker the shared installer writes at its boundary is what tells them
+    apart. Neither the exit code (a `daemon-reload` can fail *after* `current`
+    moved) nor the symlinks (a same-revision restart leaves them identical) can.
+    """
+
+    def _dies_at(self, p, calls, *, mark: bool):
+        class FakeMod(_FakeInstallModule):
+            def binding(self, path):
+                old = str(path) == p["v1"]["config_path"]
+                return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
+                        "probe": "http://127.0.0.1:8401" if old
+                        else "http://127.0.0.1:8402"}
+
+            def read_link(self, path):
+                if path.name == "current":
+                    return Path("/rev/fleet-mcp-20261015@aa17512")
+                return None
+
+            def wait_for_health(self, *a, **k):
+                return {"ok": True}
+
+            def point(self, *a):
+                raise AssertionError("a refusal must not move a pointer")
+
+            def systemctl(self, *args, **kw):
+                calls.append(args)
+                return type("Result", (), {"returncode": 0,
+                                           "stdout": "inactive\n"})()
+
+            def main(self, args):
+                if mark:
+                    self.begin_effect(args)   # a death PAST the boundary
+                raise SystemExit(2)           # ...and one BEFORE it, otherwise
+
+        return FakeMod()
+
+    def _run(self, *, mark: bool):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
+            with mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=self._dies_at(p, calls, mark=mark)), \
+                 mock.patch.object(next_install, "_current_pressure",
+                                   return_value=None):
+                rc, out = cli(["install", "--execute", "--owner-approved"], p)
+        stops = [c for c in calls if c[:1] == ("stop",)]
+        return rc, out, stops
+
+    def test_a_refusal_before_the_boundary_leaves_a_live_next_alone(self):
+        rc, out, stops = self._run(mark=False)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["writes"], [])
+        self.assertEqual(out["executes"], [])
+        self.assertIn("before any effect", out["reason"])
+        self.assertEqual(stops, [], "a pre-effect refusal must not stop Next")
+
+    def test_the_marker_is_the_only_thing_separating_the_two(self):
+        """The same fake, the same SystemExit, one marker apart."""
+        _, before, before_stops = self._run(mark=False)
+        _, after, after_stops = self._run(mark=True)
+        self.assertEqual(before["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(before_stops, [])
+        self.assertEqual(after["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
+        self.assertEqual(after["executes"], [gate.NEXT_UNIT])
+        self.assertIn("Next-only stop/rollback", after["reason"])
+        self.assertEqual(after_stops, [("stop", gate.NEXT_UNIT)])
+
+
+class APreEffectSystemExitStillPrintsOneReceiptTest(unittest.TestCase):
+    """`install.py::binding()` refuses by dying, before the installer is driven.
+
+    At rung 0-1 an operator runs `stage --execute` before the Next binding file
+    exists. `binding()` dies with `SystemExit`, which the wrapper's
+    `except Refused` does not catch — so the execute path printed NO document at
+    all, and a caller parsing one document cannot tell that from a crash. The
+    dry run is unaffected (it returns before the binding is read), which made the
+    approved preview work while the execute died silently.
+
+    Exercised with the REAL `install.py`, so the three refusals are its own.
+    """
+
+    def _run_stage_with(self, next_binding: str | None):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
+            v1_cfg = Path(tmp) / "v1-binding.yaml"
+            v1_cfg.write_text("server:\n  bind: 127.0.0.1\n  port: 8401\n",
+                              encoding="utf-8")
+            p["v1"]["config_path"] = str(v1_cfg)
+            if next_binding is not None:
+                cfg = Path(tmp) / "next-binding.yaml"
+                cfg.write_text(next_binding, encoding="utf-8")
+                p["next"]["config_path"] = str(cfg)
+            with _git_repo() as repo:
+                return cli(["stage", "--execute", "--owner-approved",
+                            "--source", repo], p)
+
+    def test_every_pre_effect_binding_refusal_prints_one_receipt(self):
+        cases = {
+            "absent file": None,
+            "invalid YAML": "server: [unclosed\n",
+            "no server.port": "server:\n  bind: 127.0.0.1\n",
+        }
+        for label, body in cases.items():
+            with self.subTest(refusal=label):
+                rc, out = self._run_stage_with(body)
+                self.assertEqual(rc, 2, out)
+                self.assertEqual(out["decision"], "BLOCKED")
+                self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+                self.assertEqual(out["writes"], [])
+                self.assertEqual(out["executes"], [])
+                self.assertFalse(out["v1_action"])
+
+
+class TheRunbookDoesNotSellAStopTheToolWillNotTakeTest(unittest.TestCase):
+    """The remedy for a LIVE Next has to name the operator's own stop step.
+
+    `refresh-stage` requires `is-active == inactive` and a unit that cannot start
+    itself, so recommending it for a running unit recommends a command that will
+    be refused — and implies the tool takes the service down on the way, which
+    none of the publishing verbs ever does. An earlier revision of the note said
+    exactly that, and this is the assertion that keeps it from coming back.
+    """
+
+    RUNBOOK = ROOT / "docs" / "fleet-v1-next-ingress-runbook.md"
+
+    def test_the_live_next_remedy_names_the_operators_own_stop(self):
+        text = self.RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("*What to do.*", text)
+        remedy = text.split("*What to do.*", 1)[1].split("`--revision` also gains", 1)[0]
+        self.assertIn("systemctl --user stop", remedy)
+        self.assertIn("systemctl --user disable", remedy)
+        self.assertIn("maintenance window", remedy)
+        # It must not present the publish verb as the whole remedy.
+        self.assertIn("not a remedy for a live Next", remedy)
+
+
+class TheSharedInstallerMarksItsEffectBoundaryTest(unittest.TestCase):
+    """The marker is written by the REAL `install.py`, at the real boundary.
+
+    The wrapper tests drive fakes, so they prove the wrapper reads the marker —
+    not that the shared installer writes it, and not that it writes it in the
+    right PLACE. This drives `install.py::install()` itself: once with a payload
+    that dies at the pre-boundary validation, once with a death past it.
+    """
+
+    def _args(self, tmp: str, *, executable: bool = True):
+        src = Path(tmp) / "src"
+        (src / "fleet_mcp" / "bin").mkdir(parents=True)
+        entry = src / "fleet_mcp" / "bin" / "serveros-fleet-mcp"
+        entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entry.chmod(0o755 if executable else 0o644)
+        (src / "fleet_mcp" / "deploy").mkdir(parents=True)
+        (src / "fleet_mcp" / "deploy" / "serveros-fleet-mcp.service").write_text(
+            "[Service]\nExecStart=@FLEET_MCP_RUNTIME@ @FLEET_MCP_CONFIG@\n",
+            encoding="utf-8")
+        (src / "fleet").mkdir()
+        (src / "fleet" / "marker.py").write_text("x = 1\n", encoding="utf-8")
+        cfg = Path(tmp) / "binding.yaml"
+        cfg.write_text("server:\n  bind: 127.0.0.1\n  port: 8401\n", encoding="utf-8")
+        root = Path(tmp) / "runtime"
+        args = install.parser().parse_args([
+            "install", "--source", str(src), "--revision", "c" * 40,
+            "--config", str(cfg), "--runtime-root", str(root),
+            "--composition", "ingress", "--unit-dir", str(Path(tmp) / "units"),
+            "--no-start", "--label", "test-label"])
+        return args, root / "ingress"
+
+    def test_a_refusal_before_the_boundary_leaves_no_marker(self):
+        """A payload entry that is not executable refuses BEFORE any publish."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, composition_root = self._args(tmp, executable=False)
+            with self.assertRaises(SystemExit):
+                install.install(args)
+            self.assertFalse((composition_root / install.EFFECT_MARKER).exists())
+            self.assertFalse((composition_root / "current").exists())
+
+    def test_a_death_past_the_boundary_leaves_the_marker_behind(self):
+        """`daemon-reload` fails AFTER `current` moved: recovery is required."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args, composition_root = self._args(tmp)
+            def boom(*a, check=True):
+                install.die("simulated daemon-reload failure")
+            with mock.patch.object(install, "systemctl", boom):
+                with self.assertRaises(SystemExit):
+                    install.install(args)
+            self.assertTrue((composition_root / install.EFFECT_MARKER).exists(),
+                            "a death past the boundary must leave the evidence")
+            self.assertTrue((composition_root / "current").exists())
+
+    def test_a_clean_no_start_run_clears_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args, composition_root = self._args(tmp)
+            with mock.patch.object(install, "systemctl",
+                                   lambda *a, **k: type("R", (), {"returncode": 0,
+                                                                  "stdout": ""})()):
+                self.assertEqual(install.install(args), 0)
+            self.assertFalse((composition_root / install.EFFECT_MARKER).exists(),
+                             "a clean finish must not leave a recovery marker")
 
 
 if __name__ == "__main__":

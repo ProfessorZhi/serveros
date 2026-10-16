@@ -463,6 +463,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--health-timeout", type=float, default=20.0)
     args = p.parse_args(argv)
     effect_started = False
+    #: Did anything need undoing? Distinct from `effect_started`, which only
+    #: says the installer was INVOKED. A refusal that happens before the shared
+    #: installer crosses its own effect boundary changes nothing, and stopping a
+    #: healthy Next for it would be a self-inflicted outage.
+    effect_attempted = False
     if args.health_timeout <= 0 or args.health_timeout > 60:
         p.error("--health-timeout must be within (0, 60]")
     try:
@@ -515,6 +520,18 @@ def main(argv: list[str] | None = None) -> int:
                             f"artifact was built from, and no system action has "
                             f"been taken")
                 args_list.extend(["--revision", args.revision])
+            if args.command in ("stage", "install"):
+                # Same reasoning as the revision check above, and it applies
+                # whether or not `--revision` was given: the shared installer
+                # refuses a dirty tree by DYING, and a dying installer is read
+                # as an attempted effect — so a dirty source would stop a
+                # healthy Next over a validation refusal. Taken here, before any
+                # system action. A non-git source makes no HEAD claim, so
+                # `tree_state` answers None for it and `--revision` stays its
+                # only route.
+                problem = mod.tree_state(Path(args.source).expanduser().resolve())
+                if problem:
+                    raise Refused(problem + " No system action has been taken.")
             if args.label:
                 args_list.extend(["--label", args.label])
             # `--force` is never passed, so the shared installer's own
@@ -612,6 +629,16 @@ def main(argv: list[str] | None = None) -> int:
                     f"re-pointing to the same one would consume `previous` "
                     f"without changing what runs")
         effect_started = True  # no longer a dry-run, even if the install fails
+        # The shared installer writes this marker the instant it is about to
+        # change the host, and clears it when it finishes cleanly. Clearing it
+        # first makes it a statement about THIS attempt; reading it after a
+        # failure is the only honest way to tell a refusal that must be left
+        # alone from a run that must be rolled back. The exit code cannot say it
+        # — `systemctl` can fail *after* `current` moved — and neither can the
+        # symlinks, because a restart of the SAME revision leaves them
+        # byte-identical. Whether `current` moved is not the question.
+        effect_marker = root / mod.EFFECT_MARKER
+        effect_marker.unlink(missing_ok=True)
         # The legacy installer's own stdout is CAPTURED, not forwarded. It
         # prints one JSON receipt per successful operation and the wrapper
         # republishes exactly one Next-only receipt — so a caller parses a
@@ -624,6 +651,11 @@ def main(argv: list[str] | None = None) -> int:
                 result = mod.main(args_list)
         except SystemExit:
             if args.command in STAGING_COMMANDS or args.command == "install":
+                # The installer's own marker answers "did it get past the point
+                # of no return?". A refusal BEFORE its effect boundary leaves no
+                # marker, wrote nothing, moved nothing and stopped nothing — so
+                # a healthy Next must not be stopped for it.
+                effect_attempted = effect_marker.exists()
                 payload, problem = one_receipt(captured.getvalue())
                 if payload is not None:
                     detail = (f" The installer's own receipt said started="
@@ -635,11 +667,16 @@ def main(argv: list[str] | None = None) -> int:
                 _restore_failed_install(
                     mod, root, prior,
                     "installer exited nonzero; status must be inspected." + detail,
-                    effect_attempted=True)
+                    effect_attempted=effect_attempted)
             raise
-        if (args.command in STAGING_COMMANDS or args.command == "install") and result != 0:
-            _restore_failed_install(mod, root, prior, "installer returned nonzero",
-                                    effect_attempted=True)
+        if args.command in STAGING_COMMANDS or args.command == "install":
+            # Reaching here means `mod.main` RETURNED. A zero return means the
+            # installer ran to completion and cleared its own marker; a nonzero
+            # return means it stopped early, and only the marker says how far.
+            effect_attempted = (result == 0) or effect_marker.exists()
+            if result != 0:
+                _restore_failed_install(mod, root, prior, "installer returned nonzero",
+                                        effect_attempted=effect_attempted)
         if args.command == "install" and not args.no_start:
             faults = _effective_limit_errors(mod)
             if faults:
@@ -692,14 +729,42 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         # Never report writes=[] after attempting an install/restart and
         # perhaps a Next-only rollback. The outcome may be partial/unknown.
+        # `effect_attempted`, not `effect_started`: a refusal that never reached
+        # the installer's effect boundary wrote nothing, and reporting a
+        # possible write for it is the same overstatement in the other
+        # direction.
         print(json.dumps({
             "decision": "BLOCKED",
             "reason": str(exc),
-            "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_started
+            "effect_state": ("NEXT_ONLY_ACTION_ATTEMPTED" if effect_attempted
                              else "NO_SYSTEM_ACTION_STARTED"),
-            "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_started else []),
-            "executes": ([UNIT] if effect_started else []),
+            "writes": ("POSSIBLE_OR_ROLLED_BACK" if effect_attempted else []),
+            "executes": ([UNIT] if effect_attempted else []),
             "v1_action": False,
+        }, sort_keys=True))
+        return 2
+    except SystemExit as exc:
+        # A HELPER of the shared installer can refuse before any effect by
+        # dying — `install.py::binding()` does exactly that when the Next
+        # binding file is absent, and it is reached from the cross-check that
+        # runs before the installer is ever driven. Nothing was written, nothing
+        # was started or stopped, and the caller still gets the ONE document
+        # this contract promises; without this the execute path printed no JSON
+        # at all, which is indistinguishable from a crash.
+        #
+        # Once `effect_started` is set, the inner handler has already reported
+        # and its SystemExit must propagate unchanged.
+        if effect_started:
+            raise
+        print(json.dumps({
+            "decision": "BLOCKED",
+            "reason": ("a pre-effect check refused before anything was written, "
+                       "started or stopped; no system action was taken"),
+            "effect_state": "NO_SYSTEM_ACTION_STARTED",
+            "writes": [],
+            "executes": [],
+            "v1_action": False,
+            "refusal_exit": getattr(exc, "code", None),
         }, sort_keys=True))
         return 2
 

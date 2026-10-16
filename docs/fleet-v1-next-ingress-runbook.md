@@ -142,19 +142,25 @@ running / auto-restarting, or in an unreadable state. This replaces an earlier
 precondition, pinned by a test, that `stage` did not consult the unit at all:
 that reasoning covered `is-active` only.
 
-*What to do.* Read the state, then take the step it names — the remedy is not
-the same for "enabled" and "running", and the unit rule does not distinguish
-them for you:
+*What to do.* Read the state, then take the step it names. **These are operator
+actions inside an approved maintenance window, taken one at a time — no
+publishing verb stops, disables or restarts anything, and none is a substitute
+for the other.** The order matters and it is the operator who chooses when:
 
-* **enabled, and Next is meant to be live** — `systemctl --user disable` it
-  first, then publish with `refresh-stage` (which applies the same unit rule
-  plus its own populated-root rule). Disabling is what makes the publish legal;
-  `refresh-stage` alone is refused while the unit is running.
-* **running or auto-restarting** — `systemctl --user stop` it first. The three
-  publishing verbs all require `inactive`, so a live Next is never re-pointed
-  underneath itself; stopping is the operator's decision, not the tool's.
-* **enabled, and Next must not run** — `systemctl --user disable` it, or retire
-  it (`install.py uninstall`). Do not re-point the first-install path at it.
+1. **Own the window.** Next serving traffic means stopping it is an outage you
+   are choosing, not a side effect of a deploy. Get that decision approved
+   before you touch the unit.
+2. **Take the service down deliberately:** `systemctl --user stop <Next unit>`
+   for a running/auto-restarting unit; `systemctl --user disable <Next unit>`
+   for one that is merely enabled.
+3. **Then publish** with `refresh-stage` (it applies the same unit rule plus its
+   own populated-root rule).
+
+A live Next is never re-pointed underneath itself, and `refresh-stage` alone is
+refused while the unit is running or enabled — so "just run `refresh-stage`" is
+not a remedy for a live Next. If Next must not run at all, `systemctl --user
+disable` it, or retire it (`install.py uninstall`); do not re-point the
+first-install path at it.
 
 Uninstalling removes the unit file, which returns the unit to `not-found` — an
 accepted state, so the host can be staged again.
@@ -162,6 +168,34 @@ accepted state, so the host can be staged again.
 `--revision` also gains a rule on the shared installer: on a **git** source it
 may only restate `git rev-parse HEAD`; a differing SHA is refused. A source
 that is not a git repository keeps `--revision` as its only route, unchanged.
+
+#### And the tree must BE that revision, not merely be NAMED by it
+
+`install.py` copies `fleet_mcp/` and `fleet/` **from the filesystem**, not from
+the object store. Matching `--revision` to `HEAD` therefore proves nothing about
+the bytes on disk: a dirty working tree publishes an artifact whose
+`ARTIFACT.json` names a revision it is not — including in the `--revision ==
+HEAD` and `--revision`-omitted cases, which the name check cannot distinguish.
+Every formal publish (`install`, `stage`, `refresh-stage`) now also requires, for
+a **git** source:
+
+* `git status --porcelain --untracked-files=all` to be **empty** — tracked edits
+  and untracked non-ignored files both count, and are counted per file rather
+  than per directory; and
+* no `index.lock` in the repository's **real** git dir, resolved with
+  `git rev-parse --absolute-git-dir`. In a linked worktree `.git` is a *file*
+  holding a `gitdir:` pointer, so a `<source>/.git` path guess looks for a lock
+  that cannot exist there.
+
+Ignored files are deliberately **not** counted: `git status` already excludes
+them, and `.gitignore` is exactly where build residue belongs — requiring a tree
+with no ignored files would refuse every normal checkout.
+
+The refusal happens **before the binding is read, before anything is copied, and
+before any `systemctl`** — and, on the Next side, before the wrapper can treat a
+dying installer as an attempted effect and run a Next-only stop. A source that is
+not a git repository makes no HEAD claim, so none of this applies to it and
+`--revision` stays its only route.
 
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
