@@ -54,3 +54,9 @@ add_subdirectory(supervisor)
 # `supervisor` because it links `nodecore_supervisor` (for `valid_unit_id`) and
 # the shared JSON reader — order is a dependency here, not a preference.
 add_subdirectory(core-lite)
+
+# The Windows native Core. Its own directory so that this one line is the ONLY
+# file it shares with the rest of the tree — the Linux Core lane owns
+# `supervisor/` and `core-lite/`, and a Windows adapter that edited either would
+# be a lane collision rather than a feature.
+add_subdirectory(windows-core)
