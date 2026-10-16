@@ -1,554 +1,346 @@
 # Agent Identity, Session Resources and Multi-Agent Delegation
 
-> **Status: Accepted V2 architecture direction · 2026-10-16**
+> **Status: reviewed V2 design direction · 2026-10-16. DESIGN ONLY, not CODE/INTEGRATION/LIVE.**
 >
-> This document records the next architectural step for ServerOS after the V1
-> Claude Code / Fleet foundation: a stable logical Agent identity, Sessions as
-> replaceable execution resources, explicit Work/Assignment ownership, and
-> hierarchical multi-Agent delegation.
+> This is the minimal-authority refinement of the design merged in [PR #234](https://github.com/ProfessorZhi/serveros/pull/234), informed by an independent source audit. It does **not** authorize a new service, database, account, daemon, plugin installation, or Agent execution.
 >
-> This is a **design contract for V2**. It does not claim that V2 Agent identity,
-> OpenAgents communication, or Codex integration is already implemented or LIVE.
-> V1 contracts remain authoritative until an explicit versioned migration is
-> accepted.
+> **Normative order:** [root architecture](../../ARCHITECTURE.md) is the product authority; [Native Agent Work Environment §6](NATIVE-WORK-ENVIRONMENT.md) already established "Session is a resource; roles can be handed off" on 2026-10-07/08. This document **extends and operationalizes that decision**, rather than inventing another authority. Existing versioned V1 contracts and runtime behavior take precedence until explicitly migrated.
+>
+> **Immediate prerequisite:** [V1 correctness and security gates #237](https://github.com/ProfessorZhi/serveros/issues/237). Expanding Agent orchestration before these gates are satisfied amplifies unsafe behavior.
 
-## 1. Decision
+## 1. Decision: separation without a second system of record
 
-ServerOS separates five things that are easy to conflate:
+**Work is the enduring responsibility; Session is a provider-owned stateful execution context.** A role may persist across Session replacement, but its *right to act* exists only in a current, verified Work-scoped authorization and ownership relation.
 
-1. **Work** — what must be accomplished and what counts as accepted delivery.
-2. **Logical Agent** — who/what is responsible for a class of work or a delegated role.
-3. **Assignment / Activation** — the bounded appointment of an Agent to a Work item.
-4. **Session** — a concrete provider-native execution context that an Agent may use.
-5. **Device / Runtime** — where and through which provider that Session actually runs.
+The separation is:
 
-The core rule is:
-
-> **A Logical Agent is not a Session. A Session is a resource used by an Agent, not the Agent's permanent identity.**
-
-The same Work may therefore continue through multiple Sessions, and an Agent may
-be activated on different compatible Sessions over time.
-
-This separation is the foundation for adding Codex and other native runtimes
-without changing the identity of the Work or rebuilding the coordination layer.
-
-## 2. Product shape
-
-The intended V2 relationship is:
-
-```text
-Human / ChatGPT / Claude Chat / Feishu
-                    |
-                    v
-          Fleet / Work Control Plane
-     durable Work + authorization + routing
-                    |
-          +---------+---------+
-          |                   |
-          v                   v
-   Logical Agents        Agent messaging
-   roles / identity      delegate / ask / result
-          |
-     Assignment / Activation
-          |
-          v
-    Runtime Session Pool
-     +------+------+------+
-     |             |      |
-   Tokyo         Dell   Windows
-   Claude       Claude  native
-   Code         Code    specialist
-     |
-     +-- provider/runtime adapters
-          Claude Code / Codex / future agents
-```
-
-ServerOS remains the control and continuity layer. Native agents remain responsible
-for reasoning, decomposition, investigation, implementation and iteration.
-
-The Fleet layer must **not** become a second LLM planner whose job is to reproduce
-the reasoning already performed by native agents.
-
-## 3. Canonical object model
-
-### 3.1 Work
-
-A Work item is the durable unit of responsibility and delivery.
-
-It owns:
-
-- objective and constraints;
-- acceptance criteria;
-- current checkpoint;
-- evidence and Outcomes;
-- parent/child relationships;
-- authorized effect scope;
-- current Assignment(s).
-
-Work survives a Session ending. A Session ending is therefore not equivalent to
-Work completion.
-
-### 3.2 Logical Agent
-
-A Logical Agent is a stable identity for a responsibility-bearing participant.
-
-Examples:
-
-- `agent:serveros/architecture`
-- `agent:serveros/implementation`
-- `agent:serveros/test`
-- `agent:litellm/observability`
-
-A Logical Agent may have:
-
-- a stable identity;
-- role/capability requirements;
-- owner/principal;
-- allowed Ability classes;
-- model/runtime preferences;
-- concurrency and budget limits;
-- parent/child delegation rules.
-
-A Logical Agent does **not** own:
-
-- a particular PID;
-- a particular tmux pane;
-- a particular Claude Code Session;
-- a particular device;
-- a particular chat window.
-
-Those are execution facts and resources.
-
-### 3.3 Assignment / Activation
-
-An Assignment is the explicit relationship between Work and an Agent for one
-bounded execution period.
-
-It should carry:
-
-- `assignment_ref`;
-- Work reference;
-- logical Agent reference;
-- authorized Ability/scope set;
-- budget and expiry;
-- device/runtime constraints when required;
-- activation epoch;
-- current Session reference;
-- parent Assignment when delegated.
-
-The Assignment is the place where **"this Agent is currently responsible for this
-Work"** becomes an enforceable fact.
-
-A new Session can replace the old Session by creating a new Activation/epoch while
-preserving the same Work and Logical Agent identity.
-
-### 3.4 Session
-
-A Session is a stateful provider-native execution resource.
-
-It may contain:
-
-- provider Session ID;
-- runtime/provider identity;
-- device reference;
-- workspace/cwd;
-- provider state;
-- context/history;
-- current turn information;
-- readiness and lifecycle state.
-
-It does not own the Work, Agent identity or authorization.
-
-A Session can be:
-
-- created;
-- resumed;
-- paused;
-- detached;
-- replaced;
-- closed.
-
-A provider-native Session remains authoritative for its own provider state. ServerOS
-normalizes and admits access to it; it must not invent provider session state.
-
-This extends the existing V1 rule in
-`runtime/agent-session-contract.yaml`: Session lifecycle, Turn lifecycle and
-request acceptance remain separate.
-
-### 3.5 Device and Runtime
-
-A Device is the physical/virtual execution host.
-
-A Runtime is a concrete provider/runtime implementation on that host, such as:
-
-- Claude Code profile A;
-- Claude Code profile B;
-- native Claude Code account;
-- future Codex runtime.
-
-**Two Claude Code accounts on one Tokyo server are therefore two Runtime/Profile
-instances, not two Devices and not automatically two Logical Agents.**
-
-Whether they represent different Logical Agents is an identity/role decision, not
-an account-counting rule.
-
-## 4. Session is a resource, but not a disposable context blob
-
-The phrase "Session is a resource" has an important qualification.
-
-A Session is not merely a free compute slot. It is a **stateful execution resource**
-with provider-owned context and lifecycle.
-
-Therefore ServerOS should treat:
-
-```text
-Logical Agent
-    != Session
-    != Runtime
+~~~text
+Work identity / acceptance
+    != Project role / capability template
+    != Work-scoped responsibility (Item, role, owner epoch, write scope)
+    != Provider-bound Agent instance
+    != Native Session
+    != Turn or provider Run
+    != Runtime account/profile
     != Device
     != Workspace
-    != Work
-```
+~~~
 
-as separate identities.
+This is **not** a proposal for a permanent fleet of persona processes. The stable role is a configuration/vocabulary entry; the current responsibility is an admitted relationship **assembled from existing authority**, not a new mutable Assignment database.
 
-A Session may use a Workspace, but the Workspace is not owned by the Session.
-A Work may use multiple Workspaces over time, but a Workspace is not the Work's
-identity.
+One project role may cover many independent Work items, and a Work item may have several separate child Work items or **non-overlapping** read scopes. For one write scope at a given epoch there must be one authoritative writer. Read-only inspectors do not become writers through proximity.
 
-### Handoff rule
+The user-facing goal remains progressive disclosure and low-friction native Agent work: do not require a hierarchy or a new Session for a simple task.
 
-When work moves from Session A to Session B:
+## 2. Existing authority map — what owns which fact
 
-```text
-Session A
-   |
-   +--> checkpoint / evidence / code revision / open questions
-   |
-   v
-Assignment epoch N closes for writes
-   |
-   v
-Session B activates epoch N+1
-   |
-   +--> verifies checkpoint
-   +--> continues Work
-```
+| Fact or decision | Existing authority | V2 action |
+| --- | --- | --- |
+| Work identity, Item, Activity, Run, Outcome and acceptance | [work-engine](https://github.com/ProfessorZhi/work-engine) and the existing canonical Item card | Reuse; no Mission/WorkItem mirror |
+| Work-scoped owner/epoch, continuation and checkpoint | ServerOS Agent Control / continuation contracts and stores | Add verified consumer/join where missing; no second Parent state database |
+| Signed scope, expiry, revocation, budget and delegation | [context/delegation.py](../../context/delegation.py), Agent Control and trusted issuer | Reference and recheck, **never copy** into editable Assignment fields |
+| Provider-native Session/Turn and actual state | Native Claude Code (later Codex) via existing Provider adapter | Normalize only; do not invent Session state |
+| Immutable Session-to-Item binding | [runtime/coordination.py](../../runtime/coordination.py), [runtime/agent-session-contract.yaml](../../runtime/agent-session-contract.yaml) and Agent Control bindings | Keep write-once; replacement creates a successor, never repoints an old binding |
+| Exclusive Work write ownership | Work Engine resource lease / current owner-epoch (implementation not yet complete) | **V1 P0**: acquire/renew/release + fencing at execution/side-effect boundary |
+| Physical resource occupancy (non-exclusive references) | [runtime/lease_store.py](../../runtime/lease_store.py) | Retain distinct semantics; cannot substitute for Work write lease |
+| Ability identities, provenance, revision, distribution | [ability-management](https://github.com/ProfessorZhi/ability-management) | Resolve project role requirements through current catalog/binding; no new registry |
+| Device, Runtime and local OS principal facts | Fleet registry / authenticated Node and actual Provider | Discover per device/profile; no device identity inferred from a hostname or claimed Agent name |
+| ChatGPT / Claude Chat UI and operator instructions | Client-specific plugin and thin Operator Skills | No separate Work/Agent policy owner |
 
-Do not silently repoint a live Session from one Work item to another.
+**Derived responsibility projection (not an authority store):**
 
-This preserves the V1 invariant that execution bindings are explicit and
-non-mutable, while allowing the **Agent identity** above the Session layer to
-remain stable.
+~~~text
+Project-scoped role config
+          + accepted Work Item/Activity
+          + current owner epoch and checkpoint
+          + fresh signed/revocable grant
+          + exclusive writer lease / bounded resources
+          + immutable provider Session binding
+          |
+          v
+    Active responsibility view
+  (eligible, current writer, allowed next action,
+   evidence, effective runtime, UNKNOWN if missing)
+~~~
 
-## 5. Why this removes the central-Agent bottleneck
+Callers must obtain the relevant **current** facts and validate them again at the actual action boundary. Caching the projection is allowed only with freshness, revision and invalidation controls. Writing a duplicate mutable "Assignment grant" is not.
 
-A flat architecture makes one top-level Agent inspect and coordinate every child:
+This implements the already binding prohibition in [COLLABORATION-CONTRACT.md §7](../COLLABORATION-CONTRACT.md): Work state, actual worker state and grant are joined from their owners, never copied as another independent authority.
 
-```text
-             One giant coordinator
-          /    /    /    /    /    \
-       agent agent agent agent agent agent
-```
+## 3. Terminology compatibility: "logical Agent" in V1
 
-That creates:
+The first line of [runtime/agent-session-contract.yaml](../../runtime/agent-session-contract.yaml) describes a Session as a "live logical Agent instance." In context, it means a **provider-bound logical runtime instance**, contrasted with a PID, tmux pane or process. It is *not* the cross-device, Work-independent Logical Agent proposed here.
 
-- excessive context;
-- serial decision pressure;
-- duplicated summaries;
-- a single reasoning bottleneck;
-- poor failure isolation.
+Keep these two namespaces explicit:
 
-V2 instead uses bounded hierarchy:
+- **Provider Agent / provider-bound agent_ref (V1):** currently scoped to device and provider; no change of identity format.
+- **Role principal (V2):** stable, project-scoped role/capability specification, not a new human-like principal and not automatically an actor credential.
+- **Responsibility:** current Work-role-owner-epoch relation assembled from existing grants and checkpoints, not an invented provider session.
+- **Session:** provider-native context and lifecycle, explicitly bound at creation.
 
-```text
-Human / top-level coordinator
-             |
-       Project Parent
-       /     |      \
-   design  impl    test
-            |
-       specialist(s)
-```
+Do **not** rename/redefine V1 agent_ref, session_ref or existing coordinator/execution binding states in place. Any new optional field or derived view must be versioned, non-authoritative and backwards compatible.
 
-Each Parent receives only the information needed to coordinate its scope.
-Children return structured results and evidence rather than forcing the root Agent
-to inspect every raw turn.
+A name such as "implementation-agent" confers **zero** permissions. Provider account identity, human authority, Work responsibility, runtime capability and current readiness are separately resolved.
 
-The hierarchy is **responsibility-based**, not permission-inheritance based.
+## 4. Session resource policy: pool capacity, not private conversation histories
 
-A child Agent never receives a parent's credentials or broader authority merely
-because it was delegated a task.
+A Session is a **stateful context resource**, not a fungible CPU slot. It can contain project documents, hidden history, provider-private state and retained tool permissions. ServerOS cannot assume that its content can be cleared or made safe for another project.
 
-### Bounded hierarchy
+**V2 pools eligible Runtime capacity and schedules safe Session bindings; it does not pool Session histories across arbitrary Work items.**
 
-The default should remain shallow:
+Default rules:
 
-```text
-Human
-  -> Portfolio / Project Parent
-      -> Specialist Agent
-          -> Session / Runtime
-```
+1. Prefer a currently compatible Session for the **same bound Work**, only if its lifecycle, context provenance, owner, authorization and provider action support are established.
+2. Otherwise create a **clean Session** in an appropriately isolated Workspace. Never quietly reuse a context containing another project's proprietary material.
+3. A Session's provider-native identity remains unchanged. A new Work item gets a new execution binding; old binding remains immutable.
+4. An idle Session is not necessarily eligible. A device with a free model slot is not necessarily authenticated or authorized.
+5. Runtime selection is constrained by data location, device/principal, installed Abilities, effective model/runtime profile, supported verb, freshness, grants, capacity and current leases.
+6. If any needed fact is UNKNOWN, refuse the unsafe mutation and report the missing fact.
 
-A deeper tree is permitted only when it reduces real coordination cost. Infinite
-delegation is not a design goal.
+Current V1 runtime catalogs already mention Claude Code and Codex. That is not evidence of a **live Codex Session/provider end-to-end acceptance**; the latter remains a V2 deliverable.
 
-The central Fleet/Work layer remains the durable source of Work state, authorization,
-leases and evidence. It can therefore coordinate many Agents without itself needing
-to perform every reasoning step.
+### Cardinalities
 
-## 6. Agent-to-Agent communication
+| Relation | Intended rule |
+| --- | --- |
+| Project role → Work | 0..N separate Work responsibilities; role does not mean one resident process |
+| Work → child Work | 0..N bounded subitems with their own ownership/evidence; not a second task database |
+| Work + write scope + current epoch → writable holder | **At most one** authoritative writable holder |
+| Work → read-only reviewer Sessions | 0..N, provided data/access policies permit |
+| Writable holder → native Session | One current admitted binding for its specific effect scope |
+| Provider Session → immutable bound Work | At most one Work bound for execution; never retarget implicitly |
+| Runtime → Sessions | 0..N according to actual provider capability and resource/authorization limits |
+| Device → Runtime profiles | 0..N, independently attributed per OS principal/account |
 
-V2 should support direct Agent communication, but through a governed message model.
+## 5. Handoff and the source-Session trap (V1 P0)
 
-The first semantic operations are:
+The design in [Native Agent Work Environment §6](NATIVE-WORK-ENVIRONMENT.md) correctly requires: read checkpoint → resolve support/readiness/grant → obtain ownership → load bounded context → continue.
 
-| Operation | Meaning | Does it grant execution authority? |
-|---|---|---|
-| `consult` | Ask another Agent for information or judgement | No |
-| `delegate` | Assign bounded Work to another Agent | Only the explicitly delegated scope |
-| `result` | Return a result/evidence package | No |
-| `escalate` | Return an unresolved decision to the Parent | No |
+However, that **design is not fully enforced today**:
 
-Messages should have stable correlation and provenance:
+- [fleet/agent_control_router.py::handoff](../../fleet/agent_control_router.py) preserves the source until the target is usable; that is intentional recovery behavior. It can also leave the source open or leave both Sessions alive if source stop fails.
+- [runtime/coordination.py::admit_work](../../runtime/coordination.py) verifies binding state, Item closure and Item match; it does **not** check the current owner epoch or exclusive write lease at Session send admission.
+- Existing continuation epoch validation in wake/checkpoint code covers those interfaces, **not every Session or external side-effect path**.
 
-- `message_ref`;
-- source Agent;
-- target Agent;
-- Work / Assignment reference;
-- parent message when applicable;
-- input revision;
-- requested scope;
-- created/accepted/completed timestamps;
-- result/evidence reference;
-- expiry or timeout where relevant.
+**Target behavior** (not CODE/LIVE yet):
 
-"Message sent" is not the same state as "task accepted", "task executed" or
-"result accepted".
+~~~text
+Work Item, write scope, current epoch N
+  |
+  +-- Session A (may read existing history/checkpoints as authorized)
+  |     no future writes after authority transfer
+  |
+  +-- durable checkpoint and pending-effect reconciliation
+  |
+  +-- target B passes grant, support, readiness, ownership checks
+  |
+  +-- authoritative epoch/fence moves to N+1
+  |     stale A writes become ineligible
+  |
+  +-- Session B admitted to current write scope
+        B result -> verify -> parent accepts evidence
+~~~
 
-The communication layer must also support idempotency so that a timeout or retry
-does not accidentally create duplicate Work or duplicate external effects.
+Fencing must be checked at **mutation admission and the Work-controlled commit/side-effect boundary**; a check performed once before a long-running remote turn is insufficient. For arbitrary external effects where the downstream service cannot enforce a fence, use explicit effect intent/outcome reconciliation and refuse blind replay; do not claim stronger guarantees than the executor provides.
 
-## 7. Permissions and identity boundaries
+Failure to stop A is **not** failure to revoke A's future writing authority. Conversely, do not stop A before the target has an accepted checkpoint, and do not mistake two live Sessions for two current Work owners. Work handoff and process shutdown are distinct operations.
 
-These rules are mandatory:
+Full tests and implementation owners: [V1 blocker #237](https://github.com/ProfessorZhi/serveros/issues/237).
 
-1. **Role does not equal permission.**
-2. **Logical Agent identity does not equal provider account identity.**
-3. **Delegation does not automatically propagate privileges.**
-4. **Session replacement does not create a new Work identity.**
-5. **A provider Session cannot be silently rebound to another Work.**
-6. **A child Agent cannot approve its own elevation merely because a Parent delegated it.**
-7. **Credentials remain owned by the appropriate Provider/Device boundary.**
-8. **Agent messages carry references to authorized state; they do not carry raw secrets.**
-9. **Every execution-capable Assignment has a bounded scope, epoch and budget.**
-10. **Unknown provider state remains UNKNOWN; coordination must not manufacture success.**
+## 6. V1 safety gates: durable effects and the right kind of lease
 
-These extend the existing ServerOS authorization, Agent Control and evidence rules
-rather than replacing them.
+Before adding V2 multi-Agent concurrency, the following must be verified on actual relevant paths.
 
-## 8. Relationship to the existing V1 contracts
+| Gate | Source-level observation | Required correction |
+| --- | --- | --- |
+| **B1 Writer fencing** | Existing thread admission lacks current owner-epoch/write-lease check; handoff can leave source alive | Fence stale Session sends and real protected writes; current successor only |
+| **B2 Retry/effect idempotency** | [fleet/agent-control-contract.yaml](../../fleet/agent-control-contract.yaml) explicitly uses an in-process replay cache; remote provider cannot promise every effect deduped | Durable attempt/intent; reconcile lost responses and EFFECT_UNKNOWN; never blind re-execute |
+| **B3 Exclusive Work lease** | [work-engine/schema.sql](https://github.com/ProfessorZhi/work-engine/blob/main/workengine/schema.sql) defines a leases table but currently lacks a complete writer API; [context/resolver.py::held_leases](../../context/resolver.py) reads it without filtering expiry | One canonical exclusive lease with atomic renewal/expiry/fence enforcement; separate resource reference occupancy |
+| **B4 Verified remote route** | Old [mcp/agent_mcp.py](../../mcp/agent_mcp.py) constructs NodeControlTransport with connector=None. Independent Fleet Next PRs [#229](https://github.com/ProfessorZhi/serveros/pull/229) and [#231](https://github.com/ProfessorZhi/serveros/pull/231) are **separate candidate code paths** | Verify actual installed revision, real Tokyo→Dell authorized read/write path and client test; do not confuse a legacy gap with missing Fleet Next |
+| **B5 Partition/recovery** | Control plane connectivity is not the source of all Node-local owner grants | Dell/Windows may finish already authorized, bounded work offline; may not mint or extend rights; reconciliation on reconnection |
 
-V1 already has useful lower-level distinctions:
+Work Engine **exclusive owner** leases, ServerOS **resource occupancy** leases and local state-store **file mutation locks** solve different problems. They cannot be interchanged by name. Clock expiry alone cannot fence an old holder with a previously granted write capability; combine authoritative generation/epoch and effect-side enforcement.
 
-```text
-Device
-  -> Runtime
-     -> provider Agent
-        -> Session
-           -> Turn
-```
+A durable idempotency key is an **attempt identity**, not proof that the remote effect happened exactly once. For create/send with no provider-native dedupe, a timed-out call may legitimately remain EFFECT_UNKNOWN until a reliable provider lookup can decide.
 
-V2 adds one logical identity layer above the provider-bound runtime identity:
+**These are V1 release blockers, not V2 features.** No green V2 identity diagram makes these hazards disappear.
 
-```text
-Logical Agent
-      |
-      v
-Assignment / Activation
-      |
-      v
-provider Agent / Runtime
-      |
-      v
-Session
-      |
-      v
-Turn
-```
+## 7. Distributed orchestration without one giant reasoning Agent
 
-Therefore V2 should **not** redefine the existing `agent_ref` and
-`session_ref` semantics in place.
+V1 has a single durable Work authority. V2 should reduce **LLM coordination/context pressure**, not replace that authority:
 
-Instead:
+~~~text
+Human / ChatGPT / Claude Chat
+          |
+          v
+Tokyo: one durable Work / authorization / Fleet control
+          |
+      accepted Work
+          |
+   Project Parent / current responsibility
+     /                |                 \
+Design advice    Implementation     Independent test
+                     |
+               bounded specialist
+                     |
+       approved Node / Runtime / Session
+~~~
 
-- retain current V1 provider/device-bound identifiers;
-- introduce a stable `agent_identity_ref` (name subject to final schema review);
-- map logical identity -> Assignment -> provider Agent/Runtime -> Session;
-- preserve current Session/Turn lifecycle contracts;
-- migrate consumers incrementally.
+A Parent receives bounded Task/Run results, accurate revision/evidence links and outstanding decisions. It need not ingest every child transcript. Parent acceptance is **separate** from child task completion, and authorized scopes/budgets do not propagate automatically.
 
-This avoids making an existing identifier mean two incompatible things.
+Use a shallow default hierarchy; deeper tiers must justify measurable improvements in human burden, context, throughput, latency or correctness. Central **reasoning** bottleneck reduction does not solve Tokyo's **infrastructure** availability. Tokyo retains backup/recovery and auditable Work authority.
 
-## 9. Runtime selection
+## 8. Agent communication: semantics before transport
 
-The Agent chooses work method; ServerOS supplies suitable resources.
+The semantics are distinct from the transport or SDK:
 
-A runtime pool can expose facts such as:
+| Intent | Effect on existing authority |
+| --- | --- |
+| **consult** | Information exchange; does not create Work or grant |
+| **delegate** | Parent offers a scoped existing Work/child Work to an eligible recipient |
+| **accept / decline** | Receiver confirms/refuses responsibility; does not assert completion |
+| **progress / result** | Evidence/correlation update; does not close Parent by itself |
+| **escalate** | Return an unresolved decision/blocked state to its authority |
+| **cancel** | Request cancellation, with explicit worker/effect reconciliation; not equivalent to process stopped |
+| **supersede** | A newer input/owner epoch replaces an older request; late old responses remain historical and cannot commit |
 
-```text
-Runtime
-  provider = claude-code
-  profile = account-A
-  device = tokyo
-  capabilities = [coding, shell, git, ...]
-  readiness = AVAILABLE
-  concurrency = ...
-```
+A message envelope needs stable message/attempt refs, source and target, Work/child Work, input revision, parent correlation, operation intent, authorization **reference**, budget **reference**, target constraints, timeout/expiry, evidence locator, and state. Never embed raw tokens, transcript dumps or writable policy copies.
 
-or:
+Distinguish SENT, RECEIVED, ACCEPTED, EXECUTING, RESULT_READY, PARENT_ACCEPTED, DECLINED, FAILED, CANCEL_REQUESTED, EFFECT_UNKNOWN and SUPERSEDED, as applicable. These are conceptual event meanings, **not a new global Session state machine**. Persist the necessary durable events/effects under existing Work/Agent Control owners, reuse native provider task refs and continuation/receiver mechanisms.
 
-```text
-Runtime
-  provider = codex
-  profile = account-B
-  device = dell-a6000
-  capabilities = [...]
-```
+Do not build a generic broker or durable chat bus before a real consumer requires one. An in-process callback is sufficient for a simple same-Parent result; an externally timed-out mutating dispatch requires durable reconciliation.
 
-Selection should consider:
+## 9. V2 Role Principal and Assignment: minimum viable extension
 
-- required Abilities;
-- provider support;
-- runtime readiness;
-- device resources;
-- workspace locality;
-- data policy;
-- authorization;
-- budget;
-- current load.
+### Role principal
 
-It should **not** select solely by "which Session is already open".
+A project-scoped role/capability template (e.g. ServerOS test/review) may be versioned in current project configuration/Ability metadata. This is a **configuration**, not a new user identity, authentication principal, personality daemon, or mandatory global Agent registry.
 
-That is the practical consequence of making Session a replaceable resource.
+### Responsibility view (formerly "Assignment/Activation" store)
 
-## 10. Codex and OpenAgents are V2 extensions
+The V2 assignment should initially be a **computed, non-authoritative** answer to:
+
+> Who currently owns the next admitted action for this Work/write scope, at which epoch and through which provider Session?
+
+Resolve from existing Work + current Parent/epoch + grant reference + exclusive writer lease + Session binding + provider readiness. Display source revisions and UNKNOWNs.
+
+If an actual missing lifecycle fact is discovered during implementation, add the **smallest versioned field to its existing owner** with a consuming test. Do not create an independent Assignment store with copies of scope, budget or expiry. A revoked grant must immediately invalidate the view.
+
+The above is intentionally thinner than the original PR #234 proposal.
+
+## 10. V2 transport/provider choices
 
 ### Codex
 
-Codex is a V2 Runtime/Provider integration target.
-
-The Work and Logical Agent layers should not care whether a particular execution
-is carried out by Claude Code or Codex.
-
-The provider adapter owns provider-specific session, turn, transport and lifecycle
-details.
+Codex has existing ServerOS runtime contracts and adapter concepts, but **real supported provider/session lifecycle acceptance** is explicitly V2 scope. Build on actual capability and observed installed versions. A provider adapter must never rename a fresh Session "resume" when native continuity is unavailable.
 
 ### OpenAgents
 
-OpenAgents is a candidate V2 communication/delegation substrate, not a replacement
-for ServerOS's Work Engine or authorization authority.
+[openagents-org/openagents-sdk](https://github.com/openagents-org/openagents-sdk) is an **optional, replaceable V2 candidate**, not a roadmap dependency or a ServerOS identity, work, authorization or task-state authority.
 
-The intended boundary is:
+Independent source review found material risks in the candidate SDK:
 
-```text
-ServerOS
-  owns: Work / identity / policy / evidence / device & runtime authority
-                     |
-                     v
-          OpenAgents integration
-  supplies: Agent messaging / discovery / delegation transport
-                     |
-                     v
-          Claude Code / Codex / future agents
-```
+- Local [AgentIdentityManager.validate_agent](https://github.com/openagents-org/openagents-sdk/blob/main/src/openagents/sdk/agent_identity.py) currently returns true without checking a certificate, and IDs can be reclaimed by force. **This is not a trustworthy ServerOS identity admission.**
+- Network registration has some separate secret-based event authentication, so "the SDK has no authentication anywhere" would be false; identity registration and message authentication are separate concerns.
+- [TaskDelegationMod](https://github.com/openagents-org/openagents-sdk/blob/main/src/openagents/mods/coordination/task_delegation/mod.py) can use an in-memory TaskStore. [InMemoryTaskStore](https://github.com/openagents-org/openagents-sdk/blob/main/src/openagents/sdk/a2a_task_store.py) loses task state on restart and evicts records under capacity pressure.
+- The task delegation path does not, by itself, provide ServerOS's current Work-epoch/idempotency/authority requirements.
 
-If OpenAgents is adopted, it must be integrated through a thin adapter and must not
-create a competing Work database, competing authorization root or competing
-definition of Session identity.
+Before adoption: pin a tested SDK revision; isolate local traffic; bind real Node/Agent identity through existing ServerOS trust; reject ID takeovers; map messages to existing Work/Run idempotently; prove durable recovery; prevent host data/credentials from leaking into hosted Workspaces; compare outcomes/costs with existing native delegation.
 
-The current upstream project describes a network/launcher/workspace model with
-Claude Code and Codex support and event/message-based collaboration. These are
-useful implementation references, but ServerOS retains its own authority model:
-https://github.com/openagents-org/openagents
+**Reject direct adoption as the control plane. Retain isolated evaluation only if it produces measurable value.** If a thin adapter cannot meet those boundaries, omit it entirely; V2 correctness must not depend on this SDK.
 
-## 11. V1 acceptance boundary
+## 11. Device and client boundaries
 
-V1 is considered architecturally complete when the existing ServerOS foundation
-can reliably:
+| Node/client | Intended responsibility | Boundary |
+| --- | --- | --- |
+| **Tokyo / vince** | Primary Work Node, Feishu information-to-delivery flow, durable records, main repository development and Fleet ingress | Shared host; isolate OS principals, shared services, confidential content and effective grants |
+| **Dell A6000 / fjd** | Bounded Compute/Ability executor, non-sensitive delegated coding/testing, GPU, approved production observation | Prefer task-scoped clean workspaces; preserve model weights and required local services; return accepted evidence to Tokyo; no default raw production log replication |
+| **Windows** | Light edge client and actual Windows-specific/native tests; truly local-only sensitive work | No automatic fallback for Tokyo/Dell capacity or general development |
+| **ChatGPT / Claude Chat / Tokyo CC** | Client-specific Fleet access and thin Operator Skills | Plugin packaging / OAuth may differ, but no independent Work/Ability/policy authority |
 
-- run the ServerOS Core on managed devices;
-- expose the existing Fleet MCP surfaces;
-- observe and attribute node/runtime/session resources;
-- manage Claude Code Sessions with explicit identity and admission;
-- discover and use the existing Ability families;
-- preserve Work continuity across Session changes where already supported;
-- maintain authorization, evidence and audit boundaries;
-- provide the Plugin/Skill composition needed by the native Agent;
-- complete the local end-to-end test path before adding a public ChatGPT connector.
+The Fleet MCP is a **unified external operator surface**, while local node/agent MCP adapters and CloudCLI/Provider connections remain separate implementation interfaces. The MCP transport's connection-level session is **not** the native Claude Code/Codex work Session.
 
-V1 does **not** require:
+New devices/Runtime instances are admitted only after authenticated identity, ownership, capability, policy floor, readiness and exact tool support are verified. Adding a fourth device does not require a second Work Engine or a new ChatGPT Plugin ID.
 
-- Codex as a fully supported provider;
-- OpenAgents;
-- dynamic logical Agent teams;
-- arbitrary peer-to-peer Agent messaging;
-- automatic Agent-to-Session scheduling across a large pool.
+## 12. V1 / V2 scope and evidence
 
-Those are V2.
+### V1 — delivery first
 
-## 12. V2 implementation sequence
+V1 must demonstrate:
 
-The preferred migration order is:
+- Claude Code + CloudCLI/Fleet integration, independent per-device/per-principal/per-Runtime authorization and supported Session lifecycle;
+- Core on the required devices: actual resource/service monitoring, OS startup and bounded, **owner-approved** recovery of exact services (including relevant CloudCLI/Tailscale/Connector paths) with manual-disable/NeedsLogin/busy-agent protection;
+- Ability discovery/selection, Work continuity, retained evidence, and truthful UNKNOWN/freshness;
+- authenticated and reliable Tokyo↔Dell cross-device coordination with user-granted effects, plus necessary Windows-native acceptance;
+- Feishu source → understanding → accepted Work → real code/test/evidence → reporting/receipt where authorized;
+- one Tokyo-local CC client actually loading MCP + Skills, discovering tools under appropriate credentials, then a separate ChatGPT installation/consent test;
+- safety gates **B1–B5** in [Issue #237](https://github.com/ProfessorZhi/serveros/issues/237).
 
-1. **Identity schema** — add logical Agent identity without changing V1 IDs.
-2. **Assignment/Activation** — introduce bounded Work-to-Agent responsibility.
-3. **Session resource pool** — make Session selection/replacement explicit.
-4. **Handoff** — checkpoint + epoch + verification across Sessions.
-5. **Hierarchical delegation** — Parent/child Work with bounded scope.
-6. **Agent messaging** — consult/delegate/result/escalate with idempotency.
-7. **Codex adapter** — reuse the same Runtime/Session/Assignment model.
-8. **OpenAgents adapter** — evaluate as the communication substrate.
-9. **Multi-Agent acceptance** — verify failure isolation, duplicate suppression,
-   authorization non-propagation, recovery and end-to-end delivery.
+Documentation or an SDK mock alone is **not** this acceptance. Distinguish CODE, MOCK, STAGED, LIVE SERVICE, authenticated CLIENT and real scenario E2E.
 
-Each step requires CODE, INTEGRATION and LIVE evidence separately. A schema commit
-does not prove a running multi-Agent network.
+### V2 — only after V1 foundations
 
-## 13. Non-goals
+- Codex fully accepted as an installed/runtime/session provider;
+- project role principals and derived current responsibilities;
+- runtime capacity selection with safe Session bindings, not arbitrary cross-project context pools;
+- bounded hierarchical Parent/child delegation and governed agent messaging;
+- optional OpenAgents compatibility PoC, adopted only if secure and beneficial.
 
-This architecture does not attempt to:
+Existing V1 schema references to Codex are retained; they do not force live V1 Codex release. The October 2026 V1/V2 **release split** is distinct from the earlier document title "Native Agent Work Environment V2" (a **design revision name**).
 
-- replace Claude Code or Codex's native reasoning loop;
-- turn `serverosd` into an LLM planner;
-- make every Session persistent forever;
-- expose all Agent context to every other Agent;
-- make every device equal;
-- require every task to use multi-Agent delegation;
-- make OpenAgents the system of record;
-- make ChatGPT the internal orchestration authority.
+## 13. Migration plan (minimal, dependency ordered)
 
-The simplest valid path remains the preferred path:
+1. **V1 B1:** wire owner/epoch/fence to real Session-send admission and protected write/effect paths; preserve write-once Session Item bindings.
+2. **V1 B2:** store and reconcile mutation attempts across restart; prove lost-response and duplicate-transport behavior.
+3. **V1 B3:** establish and consume one exclusive Work write-lease authority, expiry, renewal and fencing, without confusing resource occupancy references.
+4. **V1 B4/B5:** verify the actual Fleet Next route and Tokyo/Dell partition/recovery behavior using precise source and running revisions; test the Node/Core/recovery/report chain separately.
+5. **V1 E2E:** run real authorized CC + MCP + Skills test and one source-to-delivery scenario; preserve receipts and unresolved gaps.
+6. **V2 Identity:** expose project role config and a derived current-responsibility view; avoid a new central store.
+7. **V2 Runtime scheduling:** select constrained Runtime capacity, then bind compatible native Sessions with checked context provenance.
+8. **V2 Delegation:** reuse parent/child Work, admission, checkpoint and bounded result acceptance; implement only missing message semantics.
+9. **V2 Providers:** bring Codex to live acceptance, optionally trial OpenAgents in a restricted sandbox.
 
-> **one Agent + one suitable Session + one Work item is enough whenever it is enough.**
+The smallest valid path remains: one accepted Work, one suitable native Agent/Session, one evidence-backed outcome. Multi-Agent coordination is an optimization, not a mandatory workflow stage.
 
-Multi-Agent orchestration exists to reduce real coordination cost, not to make simple
-work look distributed.
+## 14. Acceptance and honest readiness
 
-## 14. Architecture invariants
+Use [Issue #237 T1–T12](https://github.com/ProfessorZhi/serveros/issues/237) as the V1 safety matrix. In addition V2 must prove:
 
-The following statements should remain true in future revisions:
+- one project role can safely serve different Work items through different authorized Sessions **without context leakage or shared writes**;
+- late results after supersede/revoke do not mutate current Work; child success does not self-approve Parent;
+- bounded consultation/message retries do not duplicate durable Work or external effects;
+- role/project identity changes do not weaken device/user/Runtime authorization;
+- expected multi-Agent value is measured against the same Work using native delegation: latency, resource/Token cost, correctness and human attention;
+- any optional SDK failure degrades only its consumer, not the whole Fleet/Work product.
 
-- **Work survives Session replacement.**
-- **Logical Agent survives Session replacement.**
-- **Session does not define Agent identity.**
-- **Runtime does not define Agent identity.**
-- **Device does not define Agent identity.**
-- **Workspace does not define Work identity.**
-- **Assignment defines bounded responsibility.**
-- **Epoch prevents stale executions from writing after handoff.**
-- **Delegation narrows or preserves authority; it never silently widens it.**
-- **Messages are evidence-bearing coordination events, not hidden privilege channels.**
-- **ServerOS retains Work/authorization/evidence authority even if an external Agent network is adopted.**
-- **V1 contracts remain valid until an explicit migration changes them.**
+Every claim must name **repo revision, installed revision, provider, device/principal, test environment, observed outcome and evidence locator**. Red tests become a release gate only when fixed and rerun. Unimplemented and unobserved states remain explicitly NOT_DONE/UNKNOWN.
+
+## 15. Traceability and invariants
+
+| Existing source | Reused here |
+| --- | --- |
+| [NATIVE-WORK-ENVIRONMENT.md §6](NATIVE-WORK-ENVIRONMENT.md) | Session resources, roles, owner lease, context capsule, handoff |
+| [runtime/agent-session-contract.yaml](../../runtime/agent-session-contract.yaml) | V1 provider/session identity, role binding, session/turn/request lifecycle |
+| [runtime/coordination.py](../../runtime/coordination.py) | Current admission and remaining epoch/fencing gap |
+| [fleet/agent_control_router.py](../../fleet/agent_control_router.py) | Handoff and per-process retry, not a durable effect journal |
+| [runtime/continuation_control.py](../../runtime/continuation_control.py) | Current bounded continuation and owner-epoch checks for its own operations |
+| [context/delegation.py](../../context/delegation.py) | Signed grants and delegation policy |
+| [COLLABORATION-CONTRACT.md §7](../COLLABORATION-CONTRACT.md) | One Work, current grant/worker from owners, no policy-state clones |
+| [work-engine](https://github.com/ProfessorZhi/work-engine) | Items, Runs, leases schema, durable work owner |
+| [ability-management](https://github.com/ProfessorZhi/ability-management) | Ability identity/revision/install, not a Work state engine |
+| [Fleet integration PR #231](https://github.com/ProfessorZhi/serveros/pull/231) | Independent candidate Node/Core signed route, **not** V1 main/live proof |
+| [V1 release gate #237](https://github.com/ProfessorZhi/serveros/issues/237) | Testable safety defects and rollout blockers |
+
+**Invariants to preserve:**
+
+- Work and evidence survive Session replacement.
+- Role is not a permission and is not a Provider Session.
+- Native Session context is stateful, and cross-project reuse is never assumed safe.
+- Only current, valid owner/epoch/lease/grant may commit a protected write.
+- Old Sessions may stay readable without remaining writable.
+- Permission, budget and grant revocation are read from current authoritative records at action time.
+- No new Agent/Assignment/Message database duplicates an existing owner.
+- Delegation does not increase authority; message delivery is not result acceptance.
+- Unknown results are not automatically retried; UNKNOWN never becomes DONE.
+- Codex and OpenAgents remain V2 acceptance/optional experiment respectively.
+- Design changes alone do not assert implementation or deployed readiness.

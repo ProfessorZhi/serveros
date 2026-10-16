@@ -123,6 +123,8 @@ flowchart LR
 
 **兼容性约束**：现有 `runtime/agent-session-contract.yaml` 的 thread binding 只有 `coordinator/execution`，`bound_item_ref` 具有不可变约束。新增角色激活须扩展既有 Agent Control owner、以显式后继绑定/epoch 记录迁移，不能直接改旧 binding，也不能另建角色状态数据库。语义角色不是已存在的 CLI 动词。
 
+**2026-10-16 独立审查与实现在位提醒：** 本节的「Session 是资源」「同一 Item/epoch 单写者」早于新 [V2 身份与委派设计](AGENT-IDENTITY-SESSION-DELEGATION.md)，仍是产品目标；V2 只在已有 Work Engine、Agent Control、有效 Grant、Checkpoint、epoch 和互斥租约之上增加最小角色/责任投影，不能复制一套可变授权数据库，也不能把历史 Session 当跨项目的可清空池。本节所写的接任防双写**尚不能由现有 Session send/admit 路径端到端证明**：旧 Session 可存活，而实际准入未校验当前 owner/epoch/写入租约。须按 [V1 安全门禁 #237](https://github.com/ProfessorZhi/serveros/issues/237) 完成 fencing、重启后未知效果幂等对账、真正的排他 Work lease 和跨设备验证；设计条款不等于当前已部署保障。
+
 Context 不兼容、旧私有材料不应进入新范围、工具权限无法收窄或 Provider 无法证明空闲时，选择干净 Session；不抢占未知/活动的别人的会话。复用不会自动获得原 Session 曾用过的凭据或权限。
 
 ## 7. 干净上下文与渐进式披露
