@@ -468,9 +468,14 @@ def main(argv: list[str] | None = None) -> int:
     #: installer crosses its own effect boundary changes nothing, and stopping a
     #: healthy Next for it would be a self-inflicted outage.
     effect_attempted = False
-    if args.health_timeout <= 0 or args.health_timeout > 60:
-        p.error("--health-timeout must be within (0, 60]")
     try:
+        # This command's contract is ONE parseable document on stdout. A bound
+        # check of ours belongs inside it, not in `p.error`, which prints usage
+        # and no document at all. (`argparse`'s own errors — an unknown flag,
+        # a missing `--proposal` — stay usage-level: they are about the shape of
+        # the invocation, not about the host.)
+        if args.health_timeout <= 0 or args.health_timeout > 60:
+            raise Refused("--health-timeout must be within (0, 60]")
         proposal = _load_json(args.proposal)
         preview = plan(proposal, args.command, no_start=args.no_start)
         if preview["decision"] == "BLOCKED":

@@ -154,8 +154,18 @@ def tree_state(source: Path) -> str | None:
         return (f"cannot ask git about {source} ({type(exc).__name__}); "
                 f"refusing to publish blind")
     if inside.returncode != 0 or inside.stdout.strip() != "true":
-        # Not a work tree at all: no HEAD claim is made, so there is nothing to
-        # verify and `--revision` stays this source's documented route.
+        # Not a work tree — UNLESS something here looks like one and git refuses
+        # to read it. A corrupt `.git/HEAD`, and a `.git` FILE whose `gitdir:`
+        # target is gone, both make git answer "not a git repository" (rc 128),
+        # which is otherwise indistinguishable from a plain directory: the
+        # exit code does not differ and the two fatal strings do not generalise.
+        # The `.git` ENTRY is what tells them apart, and for those there IS a
+        # claim that cannot be verified, so `--revision` must not be trusted.
+        if (source / ".git").exists():
+            return (f"{source} has a .git entry that git does not read as a "
+                    f"repository; refusing to publish an unverifiable tree")
+        # A plain directory makes no HEAD claim, so there is nothing to verify
+        # and `--revision` stays this source's documented route.
         return None
     try:
         gitdir = git("rev-parse", "--absolute-git-dir")

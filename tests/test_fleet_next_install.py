@@ -1347,11 +1347,20 @@ class APreEffectSystemExitStillPrintsOneReceiptTest(unittest.TestCase):
                 self.assertEqual(out["writes"], [])
                 self.assertEqual(out["executes"], [])
                 self.assertFalse(out["v1_action"])
-                # Pins the PRE-effect branch specifically. Without it the
-                # post-effect branch emits the same four fields, so the branch
-                # point would be unobservable — and for `rollback`/`status` the
-                # two branches genuinely differ.
+                # Pins the PRE-effect branch specifically, on two axes.
+                # `refusal_exit` is structural: without it the post-effect
+                # branch emits the same four fields, so the branch point would
+                # be unobservable — and for `rollback`/`status` the two branches
+                # genuinely differ.
                 self.assertEqual(out["refusal_exit"], 2)
+                # ...and this is the BEHAVIOURAL half, which is the one that
+                # matters: the two branches share every other field, so a swap
+                # of the reason sentences would otherwise pass the whole suite
+                # and tell an operator "no system action was taken" for a case
+                # where the installer HAD been driven — the exact overstatement
+                # this branch exists to prevent.
+                self.assertIn("pre-effect", out["reason"])
+                self.assertNotIn("after driving the installer", out["reason"])
 
 
 class TheRunbookDoesNotSellAStopTheToolWillNotTakeTest(unittest.TestCase):
@@ -1622,6 +1631,23 @@ class TheTreeRuleAsksWhetherItIsARepositoryAtAllTest(unittest.TestCase):
                                                                 encoding="utf-8")
             self.assertIn("uncommitted", install.tree_state(Path(repo)))
 
+    def test_a_git_entry_git_cannot_read_is_refused_not_exempted(self):
+        """A `.git` FILE whose `gitdir:` target is gone reports "not a repository".
+
+        That answer is indistinguishable from a plain directory by exit code
+        alone (rc 128 either way), and the bytes such a tree holds certainly
+        match no commit — so the `.git` ENTRY is what decides, and it decides
+        refuse rather than exempt.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").write_text("gitdir: /nonexistent/gone\n",
+                                       encoding="utf-8")
+            (root / "fleet_mcp").mkdir()
+            problem = install.tree_state(root)
+            self.assertIsNotNone(problem, "a broken .git must not be exempt")
+            self.assertIn(".git entry", problem)
+
 
 class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase):
     """The wrapper's own post-start verification runs AFTER a successful start.
@@ -1674,6 +1700,29 @@ class AFailureAfterACompletedInstallStillPrintsOneDocumentTest(unittest.TestCase
         self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
         self.assertTrue(out["writes"])
         self.assertIn("OSError", out["reason"])
+        # The post-effect sentence, not the pre-effect one: this failure
+        # followed a COMPLETED install, so "no system action was taken" would be
+        # false in the direction that matters.
+        self.assertIn("after driving the installer", out["reason"])
+        self.assertNotIn("pre-effect", out["reason"])
+
+
+class ABadHealthTimeoutStillPrintsOneDocumentTest(unittest.TestCase):
+    """Our own bound check belongs inside the one-document contract.
+
+    `p.error` prints usage and exits with no JSON at all, so a mistyped
+    `--health-timeout` left a caller with nothing to parse. `argparse`'s own
+    errors (an unknown flag, a missing `--proposal`) stay usage-level: they are
+    about the shape of the invocation, not about the host or the run.
+    """
+
+    def test_the_bound_check_reports_instead_of_printing_usage(self):
+        rc, out = cli(["stage", "--health-timeout", "0"], candidate())
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["writes"], [])
+        self.assertIn("health-timeout", out["reason"])
 
 
 if __name__ == "__main__":
