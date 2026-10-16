@@ -4,12 +4,19 @@
 // WHY THIS EXISTS
 // ---------------
 // `contract/core-lite-status.v1.md` was prose, and a consumer that had to read a
-// prose contract GUESSED. Three of its guesses disagreed with this producer:
-// `psi.*` was assumed flat (`some_avg10`) and is nested (`some.avg10`), `swap`
-// was assumed to carry `used_percent` and carries two page rates instead, and
-// `services`/`gpu.readonly` were assumed to carry no value at all. A schema file
-// is the machine-checkable half of that contract — and this test is what keeps
-// the schema and the producer from drifting apart, in either direction.
+// prose contract had to GUESS — the Fleet reader says as much of its own first
+// revision ("the shapes below are the ones the Linux adapter in native/node-core
+// really writes, confirmed against its source, not the ones a reader might have
+// guessed"). That reader has since been corrected against this producer, so most
+// of what an early version of this comment listed is no longer true: at
+// `feat/fleet-v1-core-lite-readback-20261015 @ 08a7413` and
+// `feat/fleet-v1-core-lite-source-20261016 @ 98cbb80`, `psi.*` nests,
+// `storage.readonly` is two blocks, `services` carries a row list, and
+// `completeness` is a carried member.
+//
+// It is the SCHEMA that is the durable part, not the list of disagreements: a
+// schema is what a consumer reads instead of guessing, and this test is what
+// keeps the schema and the producer from drifting apart in either direction.
 //
 // It READS the schema (the one source), drives the real projections to produce a
 // document, and asserts the two agree: every key the document carries is

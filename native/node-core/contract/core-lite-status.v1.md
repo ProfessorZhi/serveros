@@ -326,39 +326,54 @@ from these numbers will report a working service as dead and a dead one as
 working. Service health comes from a trusted probe that has the right to ask —
 not from this field.
 
-## 6d. The machine-checkable half, and a cross-lane disagreement it settled
+## 6d. The machine-checkable half
 
 `core-lite-status.v1.schema.json` is this document's machine-checkable form,
-draft 2020-12, `additionalProperties: false` at every object. It exists because
-[a consumer](https://github.com/ProfessorZhi/serveros/pull/214) had to read this
-contract as prose and **guessed**, and three of its guesses disagree with what
-this producer emits:
+draft 2020-12, `additionalProperties: false` at every object, every observation
+name bound to its own value shape. It exists because this contract was prose, and
+a consumer reading prose had to guess — the reader on the Fleet side says so of
+its own first revision:
 
-| observation | this producer emits | #214's reader assumed | consequence |
+> Note what changed from the first revision of this reader: the shapes below are
+> the ones the Linux adapter in `native/node-core` really writes, confirmed
+> against its source, not the ones a reader might have guessed.
+
+**That first revision no longer describes the current branches, and neither does
+an earlier version of this section.** Checked field by field at
+`feat/fleet-v1-core-lite-readback-20261015 @ 08a7413` and
+`feat/fleet-v1-core-lite-source-20261016 @ 98cbb80`:
+
+| observation | this producer emits | reader at the current heads | state |
 |---|---|---|---|
-| `psi.*` | nested: `{"some":{"avg10","avg60","avg300"},"full":{…}}` | flat: `{"some_avg10","full_avg10"}` | every PSI reading is stripped |
-| `swap` | `{total_bytes, free_bytes, used_bytes, pages_in_per_second, pages_out_per_second}` | `{total_bytes, used_bytes, free_bytes, used_percent}` | both paging rates are stripped, and the `used_percent` it looks for is deliberately absent |
-| `storage.readonly` | two blocks: `{"filesystems":{"roles":[…]},"disk_io":{"roles":[…]}}` | one list: `{"rows":[…]}` | the whole aggregate is stripped |
-| `services` | `{"services":[{id,unit,state,sub_state,observed_at,age_seconds,source}]}` | permitted key set is **empty** | the whole value is stripped |
-| `gpu.readonly` | `{"gpus":[…],"sample_time":…}` | permitted key set is **empty** | the whole value is stripped |
-| row member | `completeness` (COMPLETE/PARTIAL) | not in the reader's member set | a PARTIAL value is shown with no sign that it is partial |
+| `psi.*` | `{"some":{"avg10","avg60","avg300"},"full":{…}}` | `{"some": "psi_line", "full": "psi_line"}`, `PSI_WINDOWS` = all three, a window that is a marker handled per window | **aligned** |
+| `swap` | `{total_bytes, free_bytes, used_bytes, pages_in_per_second, pages_out_per_second}` | the same five; the reader's own comment records that `used_percent` is withheld on purpose | **aligned** |
+| `storage.readonly` | `{"filesystems":{"roles":[…]},"disk_io":{"roles":[…]}}` | `filesystem_row` = `{role,total_bytes,available_bytes,used_bytes}`, `disk_row` = `{role,read_bytes,write_bytes}` | **aligned** |
+| `services` | `{"services":[{id,unit,state,sub_state,observed_at,age_seconds,source}]}` | `{"services": "service_rows"}` — but only from **#216**; `#214` alone still declares `"services": {}` | **aligned on the stack, not on #214 alone** |
+| `connector` | no `value` at all | permitted key set is empty | **aligned** |
+| row member `completeness` | `COMPLETE`/`PARTIAL` | in `_OBSERVATION_MEMBERS`; `COMPLETENESS_WORDS` matches | **aligned** |
+| `gpu.readonly` | `{"gpus":[{index,label,gpu_util_percent,memory_used_bytes,memory_total_bytes,temperature_c}],"sample_time":…}` | `"gpu.readonly": {}` — an empty permitted key set, at **both** current heads | **STILL A GAP** |
 
-That reader's own comments record two of these as guesses — "No swap block exists
-in the source collector yet, so this is the smallest set consistent with the
-vocabulary the contract already uses for memory" — which is exactly what a prose
-contract invites. **None of this is a defect in either module**: the producer's
-shapes are deliberate and documented here, and the reader was written against a
-document that had no schema. The disagreement is the finding, and this file is
-what makes it checkable rather than a matter of reading the other side's code.
-Reconciling it belongs to that PR's author; nothing in `fleet_mcp/**` is touched
-from here.
+**The one remaining gap is `gpu.readonly`.** `#219` added that observation and
+the reader has not been extended for it, so a Fleet summary built on either
+current head carries an empty permitted key set for it and drops the whole value.
+The reader's own docstring says why that is not a silent failure — an unknown key
+is counted and refused rather than carried — but the reading is lost either way.
+Extending it belongs to that PR's author; nothing in `fleet_mcp/**` is touched
+from here, and the schema now states the exact shape to read.
 
-`tests/test_status_schema.cpp` is what keeps this schema and the producer from
-drifting apart: it READS the schema, drives the real projections to produce a
-document, and asserts every key the document carries is declared, every arm the
-schema declares is reachable, and every object the schema describes is closed. No
-key set is duplicated in the test, because duplicating them would move the drift
-into the test rather than catching it.
+**One deliberate drop, declared rather than accidental.** `sub_state` is in the
+reader's `SERVICE_UNPROJECTED_KEYS`, with its reason on the page: it is
+`SubState=` copied verbatim out of `systemctl show` — free text with no closed
+vocabulary — so it is dropped rather than "bounded-and-hoped". This producer does
+emit it. That is a judgement the reader states and owns, not a gap, and it is
+recorded here so the difference is visible from both sides.
+
+`tests/test_status_schema.cpp` keeps this schema and the producer from drifting
+apart: it READS the schema, drives the real projections to produce a document,
+and asserts every key the document carries is declared, every arm the schema
+declares is reachable, and every object the schema describes is closed. No key
+set is duplicated in the test, because duplicating them would move the drift into
+the test rather than catching it.
 
 Validating this schema against real documents produced by this code found one
 error in the schema itself: `connector` was pinned to `NOT_IMPLEMENTED`, but a
