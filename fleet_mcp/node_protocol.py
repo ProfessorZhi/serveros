@@ -106,6 +106,64 @@ def body_digest(body: bytes) -> str:
     return hashlib.sha256(body or b"").hexdigest()
 
 
+#: The domain separator for a signed Core-Lite RESPONSE.
+#:
+#: Signing the request proves who the CALLER is. It says nothing about the
+#: answer: a server that never looked at the signature, or a different service
+#: that happens to answer 200 on that URL, would still produce a body the client
+#: would otherwise accept. So the Core response carries its own signature, over
+#: a canonical string that is DOMAIN-SEPARATED from every request signature.
+#: Without the separation the two are the same bytes under the same key and a
+#: request signature could be replayed as a response one.
+CORE_RESPONSE_DOMAIN = "serveros/fleet-core-response/v1"
+CORE_SIGNATURE_HEADER = "X-Fleet-Core-Signature"
+
+
+def core_response_base_string(device_ref: str, runtime: str | None,
+                              request_nonce: str, body: bytes) -> str:
+    """What a Core response is signed over, and why each part is in it.
+
+    * `device_ref` — an answer is about one machine; a signature that travelled
+      to another says nothing there.
+    * `runtime` — a machine can serve two accounts and their Cores are separate.
+    * `request_nonce` — THE binding. It is the nonce the CLIENT generated for the
+      request it just sent, so a response is only valid for that one call: a
+      replayed answer from an earlier question fails, and an answer crafted
+      before the question was asked cannot exist.
+    * `body` digest — the signature covers the document, not merely the fact
+      that something answered.
+    """
+    return "\n".join((CORE_RESPONSE_DOMAIN, device_ref, runtime or "",
+                      request_nonce, body_digest(body)))
+
+
+def sign_core_response(secret: str, *, device_ref: str, runtime: str | None,
+                       request_nonce: str, body: bytes) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        core_response_base_string(device_ref, runtime, request_nonce, body).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_core_response(secret: str, *, device_ref: str, runtime: str | None,
+                         request_nonce: str, body: bytes, signature: str | None) -> bool:
+    """Whether THIS response is the answer to THIS request.
+
+    `compare_digest` rather than `==`: a comparison that returns early on the
+    first differing byte leaks how much of a guess was right, and the one place
+    that matters is a surface where an attacker can ask repeatedly.
+
+    A missing signature is `False`, never "unsigned is fine" — the whole point is
+    that an unsigned answer is exactly what a stranger produces.
+    """
+    if not isinstance(signature, str) or not signature:
+        return False
+    expected = sign_core_response(secret, device_ref=device_ref, runtime=runtime,
+                                  request_nonce=request_nonce, body=body)
+    return hmac.compare_digest(expected, signature)
+
+
 def base_string(method: str, path: str, body: bytes, device_ref: str, timestamp: str, nonce: str) -> str:
     return "\n".join((method.upper(), path, body_digest(body), device_ref, timestamp, nonce))
 

@@ -152,6 +152,21 @@ def _placeholder(device_ref: str, binding_account: str | None,
     return summary
 
 
+#: The one marker a connector may answer the Core route with in place of a
+#: document, and the whole of its shape. Closed on purpose: a marker that could
+#: carry free text would be a second, unprojected channel beside the document
+#: reader, which is the thing `CoreLiteRoute.detail` exists as a decoy for.
+NOT_CONFIGURED_MARKER = "NOT_CONFIGURED"
+
+
+def _is_not_configured_marker(document: object) -> bool:
+    if not isinstance(document, dict):
+        return False
+    if set(document) - {"state", "reason"}:
+        return False
+    return document.get("state") == NOT_CONFIGURED_MARKER
+
+
 def admit_core_lite(
     source: CoreLiteStatusSource | None,
     *,
@@ -230,6 +245,16 @@ def admit_core_lite(
             device_ref, binding_account, received_at,
             state="NO_DOCUMENT",
             reason="the authenticated route returned no document")
+    if _is_not_configured_marker(fetch.document):
+        # The connector answered, over an authenticated route, that this machine
+        # has no Core source wired. That is a distinct fact from a failed read
+        # and from an unreachable device, and it is the one an operator fixes by
+        # editing a file on that machine — so it is reported as itself rather
+        # than as `NO_DOCUMENT`, which would send them to the wrong place.
+        return _placeholder(
+            device_ref, binding_account, received_at,
+            state="NOT_CONFIGURED",
+            reason="the device connector has no Core source configured")
 
     # Only here — an authenticated route that NAMED this device — may the
     # document be read. `verified_route=True` is passed because the route, not

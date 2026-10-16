@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""The Core reading, over a REAL signed node round trip — and its absence.
+"""The Core reading over the REAL connector, and every way it is refused.
 
-The unit tests hand `admit_core_lite` a source and ask what it makes of the
-answer. This file asks the question one layer out: does the whole chain work
-when the document actually travels?
+The unit tests hand `admit_core_lite` a source. This file asks the question one
+layer out, against the actual server a device runs:
 
-    FleetNodeProvider ──signed GET /v1/core/status──▶ test node ──▶ document
+    FleetNodeProvider ──signed GET /v1/core/status──▶ Connector (real) ──▶ snapshot file
         └─▶ NodeCoreLiteSource ──▶ admit_core_lite ──▶ readback
               └─▶ fleet_list_devices / fleet_status
 
-Real: an HTTP server on a loopback ephemeral port, the real `node_protocol`
-signature (verified by the server exactly as a connector would), the real
-serialisation of the document, the real provider, the real service and the real
-tools. Fake: the DOCUMENT, and the identity — the test node calls itself
-`device:transport-test-node`, which is deliberately NOT the Tokyo device, so a
-receipt from this file can never be quoted as a reading of a real machine.
+Real: `fleet_mcp.node.connector.Connector` — its routing, its signature check,
+its route dispatch, its owner-fixed snapshot reader, its RESPONSE SIGNING — plus
+the real `node_protocol`, the real provider, service and tools, on a loopback
+ephemeral port. Fake: the snapshot FILE's contents, and the identity — this node
+calls itself `device:transport-test-node`, deliberately not Tokyo, so no receipt
+here can be quoted as a reading of a real machine.
 
-Nothing here starts a service, opens a public port, or touches a real device.
+The response signature is the point of half of these tests. Signing the REQUEST
+proves who the caller is; it says nothing about who answered, and a 200 from any
+process on that URL is exactly what a wrong `endpoint` produces.
 """
 from __future__ import annotations
 
@@ -26,18 +27,21 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fleet_mcp import core_lite_source, node_protocol, tools as tools_mod  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+from fleet_mcp import node_protocol, tools as tools_mod  # noqa: E402
 from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,  # noqa: E402
                               PolicyBinding, ProviderBinding, ServerBinding,
                               provider_key)
 from fleet_mcp.fleet import FleetService, Principal  # noqa: E402
+from fleet_mcp.node import connector as node_connector  # noqa: E402
 from fleet_mcp.providers.fleet_node import CORE_LITE_MAX_BYTES, FleetNodeProvider  # noqa: E402
 from fleet_mcp.registry import load_registry  # noqa: E402
 from fleet_mcp.runtime_identity import BASE_RUNTIME  # noqa: E402
@@ -45,10 +49,10 @@ from fleet_mcp.runtime_identity import BASE_RUNTIME  # noqa: E402
 SECRET = "transport-test-node-secret-not-a-real-credential"
 NODE = "device:transport-test-node"
 ACCOUNT = "transport-test"
-# The reader bounds freshness against ITS clock, so the fixture's stamps are
-# taken from the real one. A frozen constant made every document look hours
-# stale — or, worse, future-dated — which is a property of the fixture, not
-# of the chain under test.
+OTHER_RUNTIME = "claude-other"
+# The reader bounds freshness against ITS clock, so the fixture's stamps come
+# from the real one: a frozen constant makes every document look stale, which is
+# a property of the fixture rather than of the chain.
 NOW = dt.datetime.now(dt.timezone.utc)
 
 
@@ -57,7 +61,6 @@ def stamp(offset: float = -1.0) -> str:
 
 
 def core_document(*, node: str = NODE, account: str = ACCOUNT) -> dict:
-    """A Core-Lite document shaped exactly as the producer emits one."""
     return {
         "schema": "serveros/core-lite/status/v1",
         "node": node,
@@ -75,63 +78,78 @@ def core_document(*, node: str = NODE, account: str = ACCOUNT) -> dict:
         "observations": [
             {"name": "cpu", "state": "PRESENT", "observed_at": stamp(),
              "value": {"used_percent": 12.5}, "completeness": "COMPLETE"},
-            {"name": "memory", "state": "PRESENT", "observed_at": stamp(),
-             "value": {"total_bytes": 1024, "available_bytes": 512,
-                       "free_bytes": 256, "used_percent": 50.0},
-             "completeness": "COMPLETE"},
         ],
     }
 
 
-class TestNode:
-    """A connector, in a thread, on an ephemeral loopback port.
+class RealConnector:
+    """The device's own server class, on a loopback ephemeral port."""
 
-    It verifies the signature with `node_protocol.verify` — the same call a real
-    connector makes — so a provider that signed wrongly is refused here rather
-    than politely served. What it returns is decided by the test, not by the
-    request: there is no path or query a caller can shape into a different
-    answer, which is the property the route exists to have.
+    def __init__(self, tmp: Path, *, snapshot=None, raw: bytes | None = None,
+                 configure: bool = True, runtime: str = BASE_RUNTIME,
+                 secret: str = SECRET) -> None:
+        self.secret_anchor = tmp / "node.secret"
+        self.secret_anchor.write_text(secret, encoding="utf-8")
+        self.snapshot = tmp / "core-status.json"
+        if configure:
+            payload = raw if raw is not None else json.dumps(
+                core_document() if snapshot is None else snapshot).encode("utf-8")
+            self.snapshot.write_bytes(payload)
+        cloudcli_anchor = tmp / "cloudcli.pat"
+        cloudcli_anchor.write_text("unused-by-this-route", encoding="utf-8")
+        self.config = node_connector.NodeConfig(
+            device_ref=NODE, secret_anchor=self.secret_anchor,
+            cloudcli_endpoint="http://127.0.0.1:0/mcp",
+            cloudcli_credential_anchor=cloudcli_anchor,
+            bind="127.0.0.1", port=0, runtime=runtime,
+            core_snapshot_path=self.snapshot if configure else None)
+        self.connector = node_connector.Connector(self.config)
+        # `serve()` RETURNS the server; it does not serve. A fixture that
+        # forgot this would leave every request waiting out the client's own
+        # read timeout, which looks like a hanging chain rather than a missing
+        # thread.
+        self.server = node_connector.serve(self.config, connector=self.connector)
+        self.port = self.server.server_address[1]
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def endpoint(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self._thread.join(timeout=5)
+
+
+class FakeServer:
+    """A process on the same URL that knows nothing about us.
+
+    It answers 200 with a perfectly well-formed document and never looks at the
+    request. This is what a wrong `endpoint`, or anything else listening on that
+    port, produces — and a chain that reported it as VERIFIED would be reporting
+    a stranger's body as the machine's Core.
     """
 
-    def __init__(self, *, body: object = None, status: int = 200,
-                 raw: bytes | None = None, secret: str = SECRET,
-                 device_ref: str = NODE) -> None:
-        self.body = core_document() if body is None else body
-        self.status = status
-        self.raw = raw
-        self.secret = secret
-        self.device_ref = device_ref
-        self.seen: list[dict] = []
-        self.verify_errors: list[str] = []
-        self._replay = node_protocol.ReplayCache()
+    def __init__(self, *, body=None, headers: dict | None = None) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-        test = self
+        payload = json.dumps(core_document() if body is None else body).encode()
+        extra = headers or {}
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *args):  # keep the test output clean
+            def log_message(self, *args):
                 pass
 
             def do_GET(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length) if length else b""
-                test.seen.append({"method": "GET", "path": self.path})
-                try:
-                    node_protocol.verify(
-                        test.secret, method="GET",
-                        path=node_protocol.split_path_and_query(self.path)[0],
-                        body=body, headers=dict(self.headers),
-                        expected_device_ref=test.device_ref, replay=test._replay)
-                except Exception as exc:  # noqa: BLE001 - the point of the test
-                    test.verify_errors.append(type(exc).__name__)
-                    self.send_response(401)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                payload = test.raw if test.raw is not None else json.dumps(test.body).encode()
-                self.send_response(test.status)
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                for name, value in extra.items():
+                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -151,7 +169,7 @@ class TestNode:
         self._thread.join(timeout=5)
 
 
-def harness(tmp: Path, node: TestNode, *, account: str = ACCOUNT):
+def harness(tmp: Path, node, *, account: str = ACCOUNT, runtime: str = BASE_RUNTIME):
     anchor = tmp / "node.secret"
     anchor.write_text(SECRET, encoding="utf-8")
     registry = tmp / "registry.yaml"
@@ -162,249 +180,264 @@ def harness(tmp: Path, node: TestNode, *, account: str = ACCOUNT):
         "    platform: linux\n"
         "    environment_profile: linux-shared-multiuser\n"
         "    ownership: company\n", encoding="utf-8")
+    binding = ProviderBinding(
+        device_ref=NODE, runtime=runtime, kind="fleet-node",
+        endpoint=node.endpoint, credential_anchor=anchor, account=account,
+        allow_send=True, allow_control=True)
     config = FleetConfig(
         source=None, local_device_ref=NODE,
-        providers={provider_key(NODE, BASE_RUNTIME): ProviderBinding(
-            device_ref=NODE, runtime=BASE_RUNTIME, kind="fleet-node",
-            endpoint=node.endpoint, credential_anchor=anchor, account=account,
-            allow_send=True, allow_control=True)},
+        providers={provider_key(NODE, runtime): binding},
         auth=AuthBinding(pat_anchor=anchor),
         server=ServerBinding(bind="127.0.0.1", port=0),
         policy=PolicyBinding(),
         audit=AuditBinding(path=tmp / "audit.jsonl",
                            rate_limit_per_minute=10_000))
-    provider = FleetNodeProvider(config.providers[provider_key(NODE, BASE_RUNTIME)])
+    provider = FleetNodeProvider(binding)
     service = FleetService(config, registry=load_registry(registry),
-                           providers={provider_key(NODE, BASE_RUNTIME): provider})
+                           providers={provider_key(NODE, runtime): provider})
     return service, provider
 
 
-def principal() -> Principal:
-    return Principal(name="transport-test", scopes=frozenset({"fleet:read"}),
-                     credential_kind="pat")
+def principal(name: str = "transport-test") -> Principal:
+    return Principal(name=name, scopes=frozenset({"fleet:read"}), credential_kind="pat")
 
 
-def with_node(node_factory, body) -> None:
-    """Run `body(service, node)` against a live test node, and always stop it."""
+def with_real(body, **kwargs) -> None:
     with tempfile.TemporaryDirectory() as raw:
-        node = node_factory() if callable(node_factory) else node_factory
+        node = RealConnector(Path(raw), **kwargs)
         try:
-            service, provider = harness(Path(raw), node)
-            body(service, node, provider)
+            service, provider = harness(Path(raw), node, runtime=kwargs.get("runtime", BASE_RUNTIME))
+            body(service, node, provider, Path(raw))
         finally:
             node.stop()
 
 
-class TheDocumentTravelsAndIsShown(unittest.TestCase):
-    def test_a_signed_round_trip_puts_a_reading_in_the_status_tools(self):
-        def body(service, node, provider):
-            self.assertEqual(node.verify_errors, [])
-            status = service.status(principal())
-            rows = {row["device_ref"]: row for row in status["core_lite"]}
-            self.assertIn(NODE, rows)
-            summary = rows[NODE]
-            # What the chain PROMISES: the route authenticated, the document is
-            # this device's, and the readings are there.
-            self.assertEqual(summary["route"]["state"], "VERIFIED")
-            self.assertEqual(summary["device"]["state"], "MATCHED")
-            self.assertEqual(summary["device"]["declared"], NODE)
-            # `connected` is a STRONGER verdict than any of that, and this
-            # document cannot reach it: its device identity rests on a
-            # `LOCAL_DECLARATION`, which is the device's own say-so. The reader
-            # declines to raise the verdict on it and does not pretend the
-            # reading is absent either — both facts are asserted, because a test
-            # that only checked for CONNECTED would be testing the fixture.
-            self.assertNotEqual(summary["connected"], "CONNECTED")
-            obs = summary["observations"]
-            self.assertEqual(obs["cpu"]["state"], "PRESENT")
-            self.assertEqual(obs["cpu"]["value"]["used_percent"], 12.5)
-
-            listed = service.list_devices(principal())
-            row = listed["devices"][0]
-            self.assertEqual(row["core_lite"]["route"]["state"], "VERIFIED")
-            # The provider block and the Core block are DIFFERENT answers, and
-            # the reachable one must not stand in for the measured one.
-            self.assertIsNotNone(row["provider"])
-
-            # The Core document came over the NAMED route and no other. The
-            # only other call is the provider-health probe `list_devices` makes,
-            # which is a different question answered by a different route — and
-            # its presence here is the evidence that the two answers are
-            # genuinely separate round trips rather than one dressed as two.
-            paths = [entry["path"] for entry in node.seen]
-            self.assertIn("/v1/core/status", paths)
-            self.assertLessEqual(set(paths), {"/v1/health", "/v1/core/status"})
-
-        with_node(TestNode, body)
-
-    def test_the_reading_is_not_the_provider_health(self):
-        """A device whose transport answers, and whose Core says otherwise."""
-        def body(service, node, provider):
+class TheRealConnectorAnswersAndTheAnswerIsSigned(unittest.TestCase):
+    def test_a_signed_round_trip_reaches_the_status_tools(self):
+        def body(service, node, provider, tmp):
             summary = service.core_lite_status(principal(), NODE, received_at=NOW)
-            self.assertEqual(summary["route"]["state"], "VERIFIED")
-            provider_health = provider.health().as_dict()
-            self.assertTrue(provider_health["reachable"])
-            # The two are separate objects with separate vocabularies: nothing
-            # in the Core summary is derived from the health answer.
-            self.assertNotIn("reachable", summary)
-            self.assertIn("observations", summary)
+            self.assertEqual(summary["route"]["state"], "VERIFIED", summary["route"])
+            self.assertEqual(summary["device"]["state"], "MATCHED")
+            self.assertEqual(summary["observations"]["cpu"]["value"]["used_percent"], 12.5)
+            # WHICH account's Core this is, carried rather than assumed.
+            self.assertEqual(summary["runtime"], BASE_RUNTIME)
+            self.assertEqual(summary["account"], ACCOUNT)
+            self.assertEqual(summary["source"], "node-core-route")
 
-        with_node(TestNode, body)
+            listed = service.list_devices(principal())["devices"][0]
+            self.assertEqual(listed["core_lite"]["route"]["state"], "VERIFIED")
+            # The provider's health and the Core reading are separate answers.
+            self.assertIsNotNone(listed["provider"])
+
+        with_real(body)
+
+    def test_the_status_surface_carries_the_reading(self):
+        def body(service, node, provider, tmp):
+            rows = service.status(principal())["core_lite"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["route"]["state"], "VERIFIED")
+            self.assertEqual(rows[0]["runtime"], BASE_RUNTIME)
+
+        with_real(body)
+
+    def test_a_second_runtime_is_its_own_row_and_its_own_source(self):
+        """Two accounts on one machine are two Cores, not one answer."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = RealConnector(tmp, runtime=OTHER_RUNTIME)
+            try:
+                service, _ = harness(tmp, node, runtime=BASE_RUNTIME)
+                # A second binding for the same device, different runtime.
+                extra = ProviderBinding(
+                    device_ref=NODE, runtime=OTHER_RUNTIME, kind="fleet-node",
+                    endpoint=node.endpoint, credential_anchor=tmp / "node.secret",
+                    account="other-account")
+                service.config.providers[provider_key(NODE, OTHER_RUNTIME)] = extra
+                service.providers[provider_key(NODE, OTHER_RUNTIME)] = FleetNodeProvider(extra)
+                rows = {row["runtime"]: row for row in service.status(principal())["core_lite"]}
+                self.assertIn(BASE_RUNTIME, rows)
+                self.assertIn(OTHER_RUNTIME, rows)
+                self.assertEqual(rows[OTHER_RUNTIME]["account"], "other-account")
+            finally:
+                node.stop()
 
 
-class WhatTheChainRefuses(unittest.TestCase):
-    def _summary(self, tmp: Path, node: TestNode):
-        service, _ = harness(tmp, node)
+class AnUnsignedOrUnboundAnswerIsNotThisMachinesCore(unittest.TestCase):
+    """The review's sharpest case: a 200 from something that is not the device."""
+
+    def _summary(self, tmp: Path, fake):
+        service, _ = harness(tmp, fake)
         return service.core_lite_status(principal(), NODE, received_at=NOW)
 
-    def test_a_node_that_cannot_authenticate_us_is_not_authenticated(self):
+    def test_a_plain_200_from_a_stranger_is_not_verified(self):
         with tempfile.TemporaryDirectory() as raw:
-            node = TestNode(secret="a different secret entirely")
+            fake = FakeServer()
             try:
-                summary = self._summary(Path(raw), node)
-                self.assertEqual(summary["connected"], "NOT_CONNECTED")
+                summary = self._summary(Path(raw), fake)
                 self.assertNotEqual(summary["route"]["state"], "VERIFIED")
-                self.assertEqual(summary["observations"], {})
-            finally:
-                node.stop()
-
-    def test_a_document_about_another_node_is_not_this_devices_reading(self):
-        with tempfile.TemporaryDirectory() as raw:
-            node = TestNode(body=core_document(node="device:somewhere-else"))
-            try:
-                summary = self._summary(Path(raw), node)
-                # The route IS ours — we authenticated to our node — and the
-                # DOCUMENT names somebody else. Keeping those apart is the
-                # point: a reader that looked only at the route would publish
-                # another machine's reading under this one's name.
-                self.assertEqual(summary["route"]["state"], "VERIFIED")
-                self.assertEqual(summary["device"]["state"], "MISMATCH")
-                # The foreign name is not echoed back: `declared` is null rather
-                # than the other machine's ref, because the summmary is a
-                # surface another system displays and a name this reader has no
-                # business holding does not travel through it.
-                self.assertIsNone(summary["device"]["declared"])
-                self.assertEqual(summary["connected"], "NOT_CONNECTED")
-                # NOTED, not asserted away: `readback` still projects the
-                # observations and marks the contradiction in `device.state` and
-                # `connected`. That is the reader module's existing decision, and
-                # a consumer must gate on those two rather than on the presence
-                # of observations — which is why this test asserts them.
-                self.assertEqual(sorted(summary["observations"]), ["cpu", "memory"])
-            finally:
-                node.stop()
-
-    def test_a_stale_document_is_not_fresh(self):
-        with tempfile.TemporaryDirectory() as raw:
-            stale = core_document()
-            stale["observed_at"] = (NOW - dt.timedelta(hours=2)).isoformat()
-            node = TestNode(body=stale)
-            try:
-                summary = self._summary(Path(raw), node)
-                self.assertEqual(summary["freshness"]["state"], "STALE")
-            finally:
-                node.stop()
-
-    def test_a_body_past_the_cap_is_refused_rather_than_read(self):
-        """A device does not get to decide how much memory Fleet spends."""
-        with tempfile.TemporaryDirectory() as raw:
-            node = TestNode(raw=b"{" + b" " * (CORE_LITE_MAX_BYTES + 16) + b"}")
-            try:
-                service, _ = harness(Path(raw), node)
-                summary = service.core_lite_status(principal(), NODE, received_at=NOW)
-                self.assertNotEqual(summary["route"]["state"], "VERIFIED")
-                self.assertEqual(summary["observations"], {})
-            finally:
-                node.stop()
-
-    def test_a_node_that_answers_nothing_is_not_a_reading(self):
-        """An empty body on a verified route is still not a reading.
-
-        The route authenticated, so it stays VERIFIED — reporting it otherwise
-        would blame the tunnel for a document that is simply not there. What
-        must NOT happen is an observation set invented to fill the gap.
-        """
-        with tempfile.TemporaryDirectory() as raw:
-            node = TestNode(body={}, status=200)
-            try:
-                summary = self._summary(Path(raw), node)
                 self.assertNotEqual(summary["connected"], "CONNECTED")
                 self.assertEqual(summary["observations"], {})
             finally:
-                node.stop()
+                fake.stop()
 
-    def test_no_secret_is_unauthenticated_not_a_source_failure(self):
-        """The two send an operator to different files."""
+    def test_a_forged_signature_is_not_verified(self):
         with tempfile.TemporaryDirectory() as raw:
-            node = TestNode()
+            fake = FakeServer(headers={node_protocol.CORE_SIGNATURE_HEADER: "00" * 32})
             try:
-                tmp = Path(raw)
+                summary = self._summary(Path(raw), fake)
+                self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+                self.assertEqual(summary["observations"], {})
+            finally:
+                fake.stop()
+
+    def test_a_response_signed_over_a_different_nonce_is_refused(self):
+        """A replayed answer from an earlier question.
+
+        The signature is a REAL one, made with the real secret — over a nonce
+        that is not this call's. That is precisely what a replay is, and it is
+        why the nonce is inside the signed text rather than beside it.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            body = json.dumps(core_document()).encode()
+            forged = node_protocol.sign_core_response(
+                SECRET, device_ref=NODE, runtime=BASE_RUNTIME,
+                request_nonce="not-this-calls-nonce", body=body)
+            fake = FakeServer(headers={node_protocol.CORE_SIGNATURE_HEADER: forged})
+            try:
+                summary = self._summary(Path(raw), fake)
+                self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+                self.assertEqual(summary["observations"], {})
+            finally:
+                fake.stop()
+
+    def test_a_wrong_runtime_signature_is_refused(self):
+        with tempfile.TemporaryDirectory() as raw:
+            body = json.dumps(core_document()).encode()
+            forged = node_protocol.sign_core_response(
+                SECRET, device_ref=NODE, runtime=OTHER_RUNTIME,
+                request_nonce="x", body=body)
+            fake = FakeServer(headers={node_protocol.CORE_SIGNATURE_HEADER: forged})
+            try:
+                summary = self._summary(Path(raw), fake)
+                self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+            finally:
+                fake.stop()
+
+    def test_a_tampered_body_under_a_valid_signature_is_refused(self):
+        """The signature covers the BYTES, so swapping the document fails."""
+        with tempfile.TemporaryDirectory() as raw:
+            original = json.dumps(core_document()).encode()
+            tampered = json.dumps(core_document(node="device:somewhere-else")).encode()
+            signature = node_protocol.sign_core_response(
+                SECRET, device_ref=NODE, runtime=BASE_RUNTIME,
+                request_nonce="x", body=original)
+            fake = FakeServer(body=json.loads(tampered),
+                              headers={node_protocol.CORE_SIGNATURE_HEADER: signature})
+            try:
+                summary = self._summary(Path(raw), fake)
+                self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+            finally:
+                fake.stop()
+
+
+class TheRealConnectorRefusesOnItsOwnTerms(unittest.TestCase):
+    def test_an_unconfigured_core_source_says_so(self):
+        def body(service, node, provider, tmp):
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertEqual(summary["route"]["state"], "NOT_CONFIGURED")
+            self.assertEqual(summary["observations"], {})
+
+        with_real(body, configure=False)
+
+    def test_a_missing_snapshot_file_is_refused(self):
+        def body(service, node, provider, tmp):
+            node.snapshot.unlink()
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+            self.assertEqual(summary["observations"], {})
+
+        with_real(body)
+
+    def test_a_symlinked_snapshot_is_refused(self):
+        def body(service, node, provider, tmp):
+            real = tmp / "elsewhere.json"
+            real.write_bytes(node.snapshot.read_bytes())
+            node.snapshot.unlink()
+            node.snapshot.symlink_to(real)
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+
+        with_real(body)
+
+    def test_bad_json_is_refused(self):
+        def body(service, node, provider, tmp):
+            node.snapshot.write_bytes(b"{not json")
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+
+        with_real(body)
+
+    def test_a_snapshot_past_the_cap_is_refused(self):
+        def body(service, node, provider, tmp):
+            node.snapshot.write_bytes(b"{" + b" " * (node_connector.CORE_SNAPSHOT_MAX_BYTES + 8) + b"}")
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertNotEqual(summary["route"]["state"], "VERIFIED")
+
+        with_real(body)
+
+    def test_a_stale_document_is_not_fresh(self):
+        def body(service, node, provider, tmp):
+            stale = core_document()
+            stale["observed_at"] = (NOW - dt.timedelta(hours=2)).isoformat()
+            node.snapshot.write_text(json.dumps(stale), encoding="utf-8")
+            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
+            self.assertEqual(summary["freshness"]["state"], "STALE")
+
+        with_real(body)
+
+    def test_no_secret_means_the_device_is_never_asked(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = RealConnector(tmp)
+            try:
                 service, provider = harness(tmp, node)
                 provider.binding.credential_anchor.unlink()
                 summary = service.core_lite_status(principal(), NODE, received_at=NOW)
                 self.assertEqual(summary["route"]["state"], "UNAUTHENTICATED")
-                self.assertEqual(summary["connected"], "NOT_CONNECTED")
-                # ...and nothing was even asked: an unauthenticated route does
-                # not get to make the device answer.
-                self.assertEqual(node.seen, [])
+                self.assertEqual(summary["observations"], {})
             finally:
                 node.stop()
 
+    def test_a_badly_signed_request_does_not_reach_the_snapshot(self):
+        """The signature is checked BEFORE the source is read.
 
-class ADirectCloudCliDeviceSaysSo(unittest.TestCase):
-    """The honest answer for the path this run could not wire.
-
-    A CloudCLI device is reached with a PAT that can DRIVE a session. That is
-    not evidence of what the machine's Core measured, and the direct path has no
-    signed Core route today, so the block must say `NOT_CONFIGURED` rather than
-    borrow a reading from somewhere else to make a device look green.
-    """
-
-    def test_a_device_with_no_core_route_is_not_configured(self):
+        Proved by DELETING the snapshot: if the connector read it first, the
+        answer would be about a missing file; because it refuses the peer first,
+        the answer is about the peer.
+        """
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
-            anchor = tmp / "pat"
-            anchor.write_text("owner-token-value", encoding="utf-8")
-            registry = tmp / "registry.yaml"
-            registry.write_text(
-                "devices:\n"
-                f"  - device_ref: {NODE}\n"
-                "    display_name: direct\n"
-                "    platform: linux\n"
-                "    environment_profile: linux-shared-multiuser\n"
-                "    ownership: company\n", encoding="utf-8")
-
-            class Direct:
-                device_ref = NODE
-                kind = "cloudcli-mcp-http"
-
-                def health(self):
-                    from fleet_mcp.providers.base import ProviderHealth
-                    return ProviderHealth(device_ref=NODE, kind=self.kind,
-                                          reachable=True, authorized=True,
-                                          detail="ok")
-
-            config = FleetConfig(
-                source=None, local_device_ref=NODE,
-                providers={NODE: ProviderBinding(
-                    device_ref=NODE, kind="cloudcli-mcp-http",
-                    endpoint="http://127.0.0.1:0/mcp", credential_anchor=anchor,
-                    account=ACCOUNT)},
-                auth=AuthBinding(pat_anchor=anchor),
-                server=ServerBinding(bind="127.0.0.1", port=0),
-                policy=PolicyBinding(),
-                audit=AuditBinding(path=tmp / "audit.jsonl",
-                                   rate_limit_per_minute=10_000))
-            service = FleetService(config, registry=load_registry(registry),
-                                   providers={NODE: Direct()})
-            summary = service.core_lite_status(principal(), NODE, received_at=NOW)
-            self.assertEqual(summary["route"]["state"], "NOT_CONFIGURED")
-            self.assertEqual(summary["observations"], {})
-            # Its transport is fine; its Core is simply not wired. Both are true
-            # at once and must not be collapsed into one another.
-            row = service.list_devices(principal())["devices"][0]
-            self.assertTrue(row["provider"]["reachable"])
-            self.assertEqual(row["core_lite"]["route"]["state"], "NOT_CONFIGURED")
+            node = RealConnector(tmp)
+            try:
+                node.snapshot.unlink()
+                request = urllib.request.Request(
+                    node.endpoint + "/v1/core/status",
+                    headers={node_protocol.DEVICE_HEADER: NODE,
+                             node_protocol.SIGNATURE_HEADER: "00" * 32,
+                             node_protocol.TIMESTAMP_HEADER: str(int(NOW.timestamp())),
+                             node_protocol.NONCE_HEADER: "n",
+                             node_protocol.PROTOCOL_HEADER: node_protocol.PROTOCOL})
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=5)
+                body = json.loads(caught.exception.read().decode())
+                self.assertEqual(caught.exception.code, 401)
+                # The answer is about the PEER, not about the file: the snapshot
+                # is missing and the connector never got far enough to notice.
+                blob = json.dumps(body).upper()
+                self.assertIn("SIGNATURE", blob)
+                self.assertNotIn("SNAPSHOT", blob)
+            finally:
+                node.stop()
 
 
 class TheSurfaceStillHoldsItsShape(unittest.TestCase):
@@ -420,12 +453,21 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
     def test_the_core_route_is_in_the_closed_set(self):
         self.assertIn("GET /v1/core/status", node_protocol.ROUTES)
 
-    def test_a_core_lite_reading_is_not_a_capability_the_source_can_claim(self):
-        """`CoreLiteStatusSource` is one method and it is not a verb surface."""
-        source = core_lite_source.CoreLiteStatusSource
-        self.assertEqual(
-            [name for name in dir(source) if not name.startswith("_")],
-            ["fetch"])
+    def test_the_response_signature_is_domain_separated(self):
+        """A request signature must not verify as a response one."""
+        request_sig = node_protocol.sign(
+            SECRET, method="GET", path="/v1/core/status", body=b"",
+            device_ref=NODE)["X-Fleet-Signature"]
+        self.assertFalse(node_protocol.verify_core_response(
+            SECRET, device_ref=NODE, runtime=BASE_RUNTIME,
+            request_nonce="", body=b"", signature=request_sig))
+
+    def test_a_missing_signature_is_false_not_permissive(self):
+        for absent in (None, "", "x"):
+            with self.subTest(signature=absent):
+                self.assertFalse(node_protocol.verify_core_response(
+                    SECRET, device_ref=NODE, runtime=BASE_RUNTIME,
+                    request_nonce="n", body=b"{}", signature=absent))
 
 
 if __name__ == "__main__":

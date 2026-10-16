@@ -50,7 +50,9 @@ from ..errors import (
 from ..identity import SessionKey
 from ..runtime_identity import BASE_RUNTIME
 
-from ..node_protocol import PROTOCOL, PROTOCOL_HEADER, body_digest, sign, split_path_and_query
+from ..node_protocol import (PROTOCOL, PROTOCOL_HEADER, CORE_SIGNATURE_HEADER,
+                             NONCE_HEADER, body_digest, sign, split_path_and_query,
+                             verify_core_response)
 from .base import DeviceProvider, ProviderHealth, SessionSummary, summary_from_dict
 
 
@@ -124,7 +126,8 @@ class FleetNodeProvider(DeviceProvider):
         return None if runtime == BASE_RUNTIME else runtime
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None,
-                 *, max_bytes: int | None = None) -> dict[str, Any]:
+                 *, max_bytes: int | None = None, nonce: str | None = None,
+                 capture: dict[str, Any] | None = None) -> dict[str, Any]:
         secret = self.binding.credential()
         if not secret:
             raise refuse(
@@ -139,7 +142,7 @@ class FleetNodeProvider(DeviceProvider):
         # failure, which is a refusal about nothing the caller was authorized to do.
         sign_path, _ = split_path_and_query(path)
         headers = sign(secret, method=method, path=sign_path, body=body,
-                       device_ref=self.device_ref,
+                       device_ref=self.device_ref, nonce=nonce,
                        runtime=self._signed_runtime())
         headers["Content-Type"] = "application/json"
         headers["Accept"] = "application/json"
@@ -148,7 +151,8 @@ class FleetNodeProvider(DeviceProvider):
         try:
             with urllib.request.urlopen(request, timeout=self.binding.read_timeout) as response:
                 if max_bytes is None:
-                    raw = response.read().decode("utf-8", "replace")
+                    blob = response.read()
+                    raw = blob.decode("utf-8", "replace")
                 else:
                     # One byte past the cap is read on purpose: it is what tells
                     # a body that fits from one that was truncated, and the two
@@ -164,6 +168,7 @@ class FleetNodeProvider(DeviceProvider):
                             f"than {max_bytes} bytes; a Core-Lite document is a "
                             f"bounded shape and a body this size is not one",
                         )
+                    blob = payload_bytes
                     raw = payload_bytes.decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             raw = ""
@@ -186,6 +191,12 @@ class FleetNodeProvider(DeviceProvider):
                 f"be up with its connector down — this is a statement about the "
                 f"tunnel, not about the machine.",
             ) from None
+        if capture is not None:
+            # The RAW bytes, because the response signature is over what the
+            # connector actually sent — re-serialising the parsed object would
+            # sign a different byte string and fail for no real reason.
+            capture["body"] = blob
+            capture["headers"] = {k.lower(): v for k, v in response.headers.items()}
         try:
             decoded = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
@@ -200,16 +211,49 @@ class FleetNodeProvider(DeviceProvider):
         return decoded if isinstance(decoded, dict) else {}
 
     def core_status(self) -> dict[str, Any]:
-        """Ask this device for its Core-Lite status. Read-only, bounded.
+        """Ask this device for its Core-Lite status — and check that IT answered.
 
         The route is a NAME, not a parameter: this method takes no path, no
         command and no options, so nothing a caller sends can decide what the
         device runs. The producer is chosen by the CONNECTOR from its own
-        configuration — that is the property that makes a monitoring read safe to
-        expose, and it would be lost the moment this method forwarded an argument
-        into it.
+        configuration — the property that makes a monitoring read safe to expose.
+
+        **The response is verified, and that is not a formality.** Signing the
+        request proves who WE are; it says nothing about who answered. Any
+        process listening on that URL can reply 200 with a plausible document,
+        and a wrong `endpoint` in a binding is a configuration slip nobody would
+        notice. So the connector signs its Core answer over a canonical string
+        that includes THE NONCE THIS CALL GENERATED, and this method refuses the
+        answer unless that signature verifies: a replayed earlier answer is
+        signed over a different nonce, and a stranger never had the secret at
+        all. Holding the secret and talking to loopback is not peer
+        authentication; this is.
         """
-        return self._request("GET", "/v1/core/status", max_bytes=CORE_LITE_MAX_BYTES)
+        import secrets
+
+        nonce = secrets.token_hex(16)
+        capture: dict[str, Any] = {}
+        document = self._request("GET", "/v1/core/status", max_bytes=CORE_LITE_MAX_BYTES,
+                                 nonce=nonce, capture=capture)
+        secret = self.binding.credential()
+        if not secret:
+            raise refuse(PROVIDER_UNAUTHORIZED, "no node secret is configured")
+        if not verify_core_response(
+                secret,
+                device_ref=self.device_ref,
+                runtime=getattr(self.binding, "runtime", BASE_RUNTIME),
+                request_nonce=nonce,
+                body=capture.get("body") or b"",
+                signature=capture.get("headers", {}).get(CORE_SIGNATURE_HEADER.lower())):
+            # Refused as an authorization failure rather than as a bad document:
+            # the document may be perfectly well formed, and that is the point —
+            # what is missing is any evidence that THIS machine produced it.
+            raise refuse(
+                PROVIDER_UNAUTHORIZED,
+                f"the answer from {self.binding.endpoint} carries no valid Core "
+                f"response signature bound to this request's nonce. A body that "
+                f"parses is not evidence that the device sent it.")
+        return document
 
     def core_lite_source(self) -> "NodeCoreLiteSource | None":
         """This device as a `CoreLiteStatusSource`, or `None` when it cannot be.

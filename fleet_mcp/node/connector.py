@@ -88,7 +88,10 @@ from ..local_roots import binding_candidates, refusal_if_closed_root
 from ..runtime_identity import BASE_RUNTIME
 from ..node_protocol import (
     PROTOCOL,
+    CORE_SIGNATURE_HEADER,
+    NONCE_HEADER,
     ROUTES,
+    sign_core_response,
     ReplayCache,
     SignatureError,
     error_payload,
@@ -127,6 +130,12 @@ DEFAULT_CONFIG_PATHS = binding_candidates("fleet-node.local.yaml")
 OWNER_FLOOR_VERBS: tuple[str, ...] = ("send", "control")
 
 
+#: The largest Core snapshot this connector will read, mirroring the caller's
+#: own cap. Enforced on BOTH ends on purpose: the connector refuses to spend the
+#: memory, and the caller refuses to accept a body it did not budget for.
+CORE_SNAPSHOT_MAX_BYTES = 512 * 1024
+
+
 @dataclass
 class NodeConfig:
     device_ref: str
@@ -135,6 +144,16 @@ class NodeConfig:
     cloudcli_credential_anchor: Path
     bind: str = "127.0.0.1"
     port: int = 3402
+    # Where THIS machine's Core writes its status snapshot. `None` is the
+    # default and means "this connector has no Core source", which is reported
+    # as exactly that rather than as a failed read.
+    #
+    # It is OWNER-FIXED, read from this file and nowhere else: no request can
+    # name a path, a command or an option, so a caller cannot make a monitoring
+    # surface read the machine for it. That is the whole reason the route is a
+    # named constant with no parameters rather than a "run this and return the
+    # output" forward.
+    core_snapshot_path: Path | None = None
     connect_timeout: float = 5.0
     read_timeout: float = 45.0
     # Native session ids or full `device:<id>|<provider>|<id>` refs. Empty is
@@ -478,6 +497,30 @@ def _control_sessions(value: Any) -> tuple[str, ...]:
             out.append(name)
     return tuple(out)
 
+def _core_snapshot_path(value: Any) -> Path | None:
+    """The owner's Core snapshot path, or `None`, or a refusal.
+
+    Absent means this connector has no Core source — a real state, reported as
+    `NOT_CONFIGURED` rather than as a failed read. Present means it must be an
+    absolute path: `~` is expanded because an operator writing their own home is
+    not a mistake, but a relative path is refused because it would resolve
+    against a working directory the operator did not choose.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    expanded = Path(text).expanduser()
+    if not expanded.is_absolute():
+        raise FleetRefusal(
+            "BAD_REQUEST",
+            "core_snapshot_path must be absolute; a relative path resolves "
+            "against the connector's working directory, which the operator did "
+            "not choose.")
+    return expanded
+
+
 def _runtime_tag(value: Any) -> str:
     """The runtime this connector serves, validated by the addressing authority.
 
@@ -587,6 +630,12 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_approve=_flag(raw.get("allow_approve"), name="allow_approve"),
         allow_navigate=_flag(raw.get("allow_navigate"), name="allow_navigate"),
         max_body_bytes=int(raw.get("max_body_bytes", 1_000_000)),
+        # The Core source, if this machine has one. Read from the OWNER'S file
+        # and never from a request. Refused outright unless it is an absolute
+        # path: a relative one would resolve against whatever working directory
+        # the connector happened to be started in, which is a path the operator
+        # did not choose and cannot read off their own file.
+        core_snapshot_path=_core_snapshot_path(raw.get("core_snapshot_path")),
         notes=str(raw.get("notes") or ""),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
     )
@@ -740,9 +789,61 @@ class Connector:
             return 200, self._interrupt(parts[2])
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             return 200, self._run(parts[2], args)
+        if parts == ["v1", "core", "status"]:
+            return 200, self._core_status()
         if parts == ["v1", "native", "call"]:
             return 200, self._native_call(payload)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
+
+    def _core_status(self) -> dict[str, Any]:
+        """This machine's Core-Lite status, read from the owner's own file.
+
+        Refusals, and why each is one:
+
+          * no `core_snapshot_path` — this connector was never given a Core
+            source. Reported as its own state, because "nobody configured this"
+            and "the configured thing failed" send an operator to different
+            files, and a status page that showed both as one thing would be
+            unusable on the day it mattered.
+          * a symlink — the path is owner-fixed, so a symlink is either someone
+            having replaced it or the Core writing somewhere the operator did
+            not choose. Both are refusals.
+          * not a regular file, unreadable, or past the cap — refused with the
+            reason, never a truncated read: a JSON body cut in half parses as
+            nothing and would be reported as the Core answering badly.
+          * not a JSON object — refused; this route carries a document, not a
+            number and not a list.
+        """
+        path = self.config.core_snapshot_path
+        if path is None:
+            return {"state": "NOT_CONFIGURED",
+                    "reason": "this connector has no Core snapshot path configured"}
+        try:
+            if path.is_symlink():
+                raise FleetRefusal("BAD_REQUEST",
+                                   "the Core snapshot path is a symlink; it is an "
+                                   "owner-fixed path and must be the file itself")
+            if not path.is_file():
+                raise FleetRefusal("BAD_REQUEST", "no Core snapshot at the configured path")
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            raise FleetRefusal("BAD_REQUEST", "no Core snapshot at the configured path") from None
+        except OSError as exc:
+            raise FleetRefusal("BAD_REQUEST",
+                               f"the Core snapshot could not be read ({type(exc).__name__})") from None
+        if len(raw) > CORE_SNAPSHOT_MAX_BYTES:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                f"the Core snapshot is {len(raw)} bytes, past the {CORE_SNAPSHOT_MAX_BYTES} "
+                f"this route carries; a Core-Lite document is a bounded shape")
+        try:
+            document = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise FleetRefusal("BAD_REQUEST",
+                               f"the Core snapshot is not JSON: {type(exc).__name__}") from None
+        if not isinstance(document, dict):
+            raise FleetRefusal("BAD_REQUEST", "the Core snapshot is not a JSON object")
+        return document
 
     def _native_call(self, payload: dict[str, Any]):
         """One mirrored CloudCLI verb, over the closed route.
@@ -1168,10 +1269,26 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     connector: Connector
 
-    def _respond(self, status: int, payload: dict[str, Any]) -> None:
+    def _respond(self, status: int, payload: dict[str, Any], *,
+                 sign_core: bool = False) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if sign_core:
+            # The Core response is signed over the CLIENT's own request nonce, so
+            # this answer is valid for that one question and no other. Signing
+            # the request proved who the caller is; this proves the answer came
+            # from a connector that holds the same secret AND was answering THIS
+            # call — which is what stops a different service on that URL, or a
+            # replayed earlier answer, from being read as this machine's Core.
+            self.send_header(
+                CORE_SIGNATURE_HEADER,
+                sign_core_response(
+                    self.connector._secret(),
+                    device_ref=self.connector.config.device_ref,
+                    runtime=self.connector.config.runtime,
+                    request_nonce=self.headers.get(NONCE_HEADER) or "",
+                    body=raw))
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -1195,7 +1312,8 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             status, payload = 500, error_payload("INTERNAL", f"{type(exc).__name__}: {exc}")
-        self._respond(status, payload)
+        is_core = split_path_and_query(self.path or "")[0] == "/v1/core/status"
+        self._respond(status, payload, sign_core=is_core)
 
     do_GET = do_POST = _handle
 

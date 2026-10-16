@@ -661,7 +661,8 @@ class FleetService:
                           decision=summary.get("route", {}).get("state"))
         return summary
 
-    def _core_lite_summary(self, device_ref: str, *, received_at=None) -> dict[str, Any]:
+    def _core_lite_summary(self, device_ref: str, runtime: str = BASE_RUNTIME,
+                           *, received_at=None) -> dict[str, Any]:
         """`core_lite_status`'s body, without the scope check or the audit row.
 
         Split out because `list_devices` and `status` embed one of these PER
@@ -678,23 +679,37 @@ class FleetService:
         be published under another's name, because `admit_core_lite` still
         compares the route's device with the one asked about.
         """
-        binding = self.config.provider_for(device_ref)
+        binding = self.config.provider_for(device_ref, runtime)
         account = binding.account if binding is not None else None
         if received_at is None:
             received_at = dt.datetime.now(dt.timezone.utc)
         source = None
-        provider = self._provider(device_ref)
+        provider = self._provider(device_ref, runtime)
         getter = getattr(provider, "core_lite_source", None) if provider is not None else None
         if callable(getter):
             source = getter()
         if source is None:
             source = self.core_lite_source
-        return core_lite_source.admit_core_lite(
+        summary = core_lite_source.admit_core_lite(
             source,
             device_ref=device_ref,
             binding_account=account,
             received_at=received_at,
         )
+        # WHICH account's Core this is, carried beside the reading rather than
+        # assumed from the device. One machine can run several OS accounts and
+        # each has its own Core; a summary that named only the device would let a
+        # second account's readings be read as the machine's one answer, which is
+        # the cross-account substitution the runtime axis exists to prevent.
+        # `runtime` is what was ASKED FOR, `account` what the binding DECLARES —
+        # the same requested/declared split the document already carries for
+        # identity, and neither is inferred from the other.
+        summary["runtime"] = runtime
+        summary["account"] = account
+        summary["source"] = ("node-core-route" if provider is not None
+                             and callable(getattr(provider, "core_lite_source", None))
+                             else "injected" if source is not None else None)
+        return summary
 
     def list_devices(self, principal: Principal, *, include_inactive: bool = True) -> dict[str, Any]:
         principal.require(SCOPE_READ)
@@ -2272,7 +2287,14 @@ class FleetService:
         # it; a device with two runtimes still has one Core.
         core_lite: list[dict[str, Any]] = []
         for device in self.registry.all():
-            core_lite.append(self._core_lite_summary(device.device_ref.ref))
+            ref = device.device_ref.ref
+            # One row per BOUND runtime. A device that serves two accounts has
+            # two Cores, and collapsing them to one row would publish whichever
+            # answered first as the machine's whole answer. The base runtime is
+            # always included when it is bound, so the pre-runtime shape is still
+            # exactly one row for a single-account device.
+            for runtime in self._bound_runtimes(ref) or (BASE_RUNTIME,):
+                core_lite.append(self._core_lite_summary(ref, runtime))
         enrolled = [d.device_ref.ref for d in self.registry.all()]
         bound = sorted(self.providers)
         for ref in sorted(set(enrolled) - set(bound)):
