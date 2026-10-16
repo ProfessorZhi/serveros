@@ -326,6 +326,64 @@ from these numbers will report a working service as dead and a dead one as
 working. Service health comes from a trusted probe that has the right to ask —
 not from this field.
 
+## 6d. The machine-checkable half, and a cross-lane disagreement it settled
+
+`core-lite-status.v1.schema.json` is this document's machine-checkable form,
+draft 2020-12, `additionalProperties: false` at every object. It exists because
+[a consumer](https://github.com/ProfessorZhi/serveros/pull/214) had to read this
+contract as prose and **guessed**, and three of its guesses disagree with what
+this producer emits:
+
+| observation | this producer emits | #214's reader assumed | consequence |
+|---|---|---|---|
+| `psi.*` | nested: `{"some":{"avg10","avg60","avg300"},"full":{…}}` | flat: `{"some_avg10","full_avg10"}` | every PSI reading is stripped |
+| `swap` | `{total_bytes, free_bytes, used_bytes, pages_in_per_second, pages_out_per_second}` | `{total_bytes, used_bytes, free_bytes, used_percent}` | both paging rates are stripped, and the `used_percent` it looks for is deliberately absent |
+| `storage.readonly` | two blocks: `{"filesystems":{"roles":[…]},"disk_io":{"roles":[…]}}` | one list: `{"rows":[…]}` | the whole aggregate is stripped |
+| `services` | `{"services":[{id,unit,state,sub_state,observed_at,age_seconds,source}]}` | permitted key set is **empty** | the whole value is stripped |
+| `gpu.readonly` | `{"gpus":[…],"sample_time":…}` | permitted key set is **empty** | the whole value is stripped |
+| row member | `completeness` (COMPLETE/PARTIAL) | not in the reader's member set | a PARTIAL value is shown with no sign that it is partial |
+
+That reader's own comments record two of these as guesses — "No swap block exists
+in the source collector yet, so this is the smallest set consistent with the
+vocabulary the contract already uses for memory" — which is exactly what a prose
+contract invites. **None of this is a defect in either module**: the producer's
+shapes are deliberate and documented here, and the reader was written against a
+document that had no schema. The disagreement is the finding, and this file is
+what makes it checkable rather than a matter of reading the other side's code.
+Reconciling it belongs to that PR's author; nothing in `fleet_mcp/**` is touched
+from here.
+
+`tests/test_status_schema.cpp` is what keeps this schema and the producer from
+drifting apart: it READS the schema, drives the real projections to produce a
+document, and asserts every key the document carries is declared, every arm the
+schema declares is reachable, and every object the schema describes is closed. No
+key set is duplicated in the test, because duplicating them would move the drift
+into the test rather than catching it.
+
+Validating this schema against real documents produced by this code found one
+error in the schema itself: `connector` was pinned to `NOT_IMPLEMENTED`, but a
+run with no snapshot legitimately reports `NO_SOURCE` — the adapter was asked and
+had nothing. Both are true answers to different questions, and a schema that
+allowed only one would have been wrong.
+
+## 6e. What is still missing on this link of the chain
+
+The chain is **trusted Node provider → Core-Lite status readback → Fleet status
+presentation**. The middle and right links exist as unmerged drafts (#214, #216).
+The left link does not exist at all, and #216's own note says so:
+
+> And there is nothing to connect it to. No live Node exposes a trusted Core API,
+> so a source today could only be one that makes a device look Core-connected
+> without an authenticated route — which is the thing this module refuses.
+
+This document is obtainable today **only** from `core-lite-status`'s stdout. The
+Core does run a trusted read-only route (`supervisor/src/status_socket.hpp`:
+`$XDG_RUNTIME_DIR`, mode 0600, `SO_PEERCRED`, refuse-not-unlink, bounded request),
+but it answers the **supervisor's** status, not this document. Carrying this
+document over that route is a change to the socket's served payload — a contract
+that belongs to the resident-Core review and not to a schema slice, so it is
+named here rather than improvised.
+
 ## 7. How to run it
 
 ```bash

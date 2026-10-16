@@ -99,6 +99,16 @@ add_test(NAME core_lite_status COMMAND test_core_lite_status)
 # The Linux adapter, against the snapshot the repository already ships. The test
 # finds the fixture relative to its working directory and FAILS if it cannot, so
 # a wrong `WORKING_DIRECTORY` cannot pass as a green run.
+# The status document's schema, asserted against the document this producer
+# emits: the schema is READ, not duplicated, so the two cannot drift apart.
+add_executable(test_core_lite_schema tests/test_status_schema.cpp)
+target_link_libraries(test_core_lite_schema PRIVATE core_lite_profile)
+target_include_directories(test_core_lite_schema PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
+add_test(NAME core_lite_schema COMMAND test_core_lite_schema)
+set_tests_properties(core_lite_schema PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
 add_executable(test_core_lite_gpu tests/test_gpu_readings.cpp)
 target_link_libraries(test_core_lite_gpu PRIVATE core_lite_profile)
 add_test(NAME core_lite_gpu COMMAND test_core_lite_gpu)
