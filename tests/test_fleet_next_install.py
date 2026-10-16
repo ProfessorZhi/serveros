@@ -1182,7 +1182,8 @@ class ADirtyTreeTakesNoSystemActionTest(unittest.TestCase):
         p["next"]["public_mcp_url"] = None
         p["next"]["plugin_id"] = None
         p["attestations"]["next_oauth_client_authorized"] = False
-        rc, out = _publish("stage", p, tree_problem=self.PROBLEM, record=calls)
+        rc, out = _publish("stage", p, tree_problem=self.PROBLEM,
+                           head="c" * 40, record=calls)
         self.assertEqual(rc, 2, out)
         self.assertEqual(out["decision"], "BLOCKED")
         self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
@@ -1194,11 +1195,30 @@ class ADirtyTreeTakesNoSystemActionTest(unittest.TestCase):
         calls = []
         with mock.patch.object(next_install, "_current_pressure",
                                return_value=None):
-            rc, out = _publish("install", candidate(),
-                               tree_problem=self.PROBLEM, record=calls)
+            rc, out = _publish("install", candidate(), tree_problem=self.PROBLEM,
+                               head="c" * 40, record=calls)
         self.assertEqual(rc, 2, out)
         self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
         self.assertEqual(calls, [])
+
+    def test_a_non_git_source_keeps_the_revision_route_open(self):
+        """`tree_state` has no answer for a source that is not a repository.
+
+        Ungated it answers "cannot read the git directory", which would close
+        the `--revision` route the installer documents for exactly that source.
+        """
+        calls = []
+        rc, out = _publish("stage", self._bootstrap(), tree_problem=self.PROBLEM,
+                           head=None, accept=True, record=calls)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["decision"], "EXECUTED")
+
+    def _bootstrap(self) -> dict:
+        p = candidate()
+        p["next"]["public_mcp_url"] = None
+        p["next"]["plugin_id"] = None
+        p["attestations"]["next_oauth_client_authorized"] = False
+        return p
 
     def test_a_clean_tree_is_not_refused_by_the_pre_check(self):
         rc, out = _publish("install", candidate(),
@@ -1323,6 +1343,8 @@ class APreEffectSystemExitStillPrintsOneReceiptTest(unittest.TestCase):
             "absent file": None,
             "invalid YAML": "server: [unclosed\n",
             "no server.port": "server:\n  bind: 127.0.0.1\n",
+            "server is not a mapping": "server: hello\n",
+            "server is a sequence": "server:\n  - 1\n",
         }
         for label, body in cases.items():
             with self.subTest(refusal=label):
@@ -1354,8 +1376,10 @@ class TheRunbookDoesNotSellAStopTheToolWillNotTakeTest(unittest.TestCase):
         self.assertIn("systemctl --user stop", remedy)
         self.assertIn("systemctl --user disable", remedy)
         self.assertIn("maintenance window", remedy)
-        # It must not present the publish verb as the whole remedy.
-        self.assertIn("not a remedy for a live Next", remedy)
+        # It must not present one publish verb as the whole remedy, and it must
+        # name the right verb for an EMPTY root, where `refresh-stage` refuses.
+        self.assertIn("neither publish verb is a", remedy)
+        self.assertIn("`stage` when the root is empty", remedy)
 
 
 class TheSharedInstallerMarksItsEffectBoundaryTest(unittest.TestCase):
@@ -1458,6 +1482,110 @@ class TheDirtyTreeGuardReachesV1TooAndIsRecordedTest(unittest.TestCase):
         note = text.split("#### And the tree must BE that revision", 1)[1]
         self.assertIn("V1", note[:6000],
                       "the note must say this reaches V1 as well")
+
+
+class APlainExceptionFromTheInstallerStillReportsTest(unittest.TestCase):
+    """The installer can fail with an ordinary exception, not only `die`.
+
+    A `systemctl` missing from the inherited PATH, an `OSError` writing the
+    unit, an `ENOSPC` on `os.replace` — all of those land AFTER the effect
+    boundary, and all of them used to escape the wrapper as a traceback: no
+    receipt for the caller, and no Next-only recovery for a run that had already
+    moved `current`. The exit code does not exist to consult; the marker does.
+    """
+
+    def _raises(self, p, calls, *, mark: bool):
+        class FakeMod(_FakeInstallModule):
+            def binding(self, path):
+                old = str(path) == p["v1"]["config_path"]
+                return {"port": 8401 if old else 8402, "bind": "127.0.0.1",
+                        "probe": "http://127.0.0.1:8401" if old
+                        else "http://127.0.0.1:8402"}
+
+            def read_link(self, path):
+                if path.name == "current":
+                    return Path("/rev/fleet-mcp-20261015@aa17512")
+                return None
+
+            def wait_for_health(self, *a, **k):
+                return {"ok": True}
+
+            def point(self, *a):
+                raise AssertionError("a constant pointer needs no restore")
+
+            def systemctl(self, *args, **kw):
+                calls.append(args)
+                return type("Result", (), {"returncode": 0,
+                                           "stdout": "inactive\n"})()
+
+            def main(self, args):
+                if mark:
+                    self.begin_effect(args)
+                raise OSError("systemctl: not found")
+
+        return FakeMod()
+
+    def _run(self, *, mark: bool):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            p = candidate()
+            writable_root(p, tmp)
+            with mock.patch.object(next_install, "_load_legacy_installer",
+                                   return_value=self._raises(p, calls, mark=mark)), \
+                 mock.patch.object(next_install, "_current_pressure",
+                                   return_value=None):
+                rc, out = cli(["install", "--execute", "--owner-approved"], p)
+        return rc, out, [c for c in calls if c[:1] == ("stop",)]
+
+    def test_an_oserror_before_the_boundary_stops_nothing_and_reports(self):
+        rc, out, stops = self._run(mark=False)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NO_SYSTEM_ACTION_STARTED")
+        self.assertEqual(out["writes"], [])
+        self.assertEqual(stops, [])
+
+    def test_an_oserror_past_the_boundary_recovers_and_still_reports(self):
+        rc, out, stops = self._run(mark=True)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["decision"], "BLOCKED")
+        self.assertEqual(out["effect_state"], "NEXT_ONLY_ACTION_ATTEMPTED")
+        self.assertTrue(out["writes"])
+        self.assertIn("OSError", out["reason"])
+        self.assertEqual(stops, [("stop", gate.NEXT_UNIT)])
+
+
+class TheBindingRefusesShapesItCannotReadTest(unittest.TestCase):
+    """`install.binding()` refuses; it does not raise.
+
+    Tested DIRECTLY, not through the wrapper: the wrapper now catches ordinary
+    exceptions, so a test that drives it cannot tell a clean `die` from an
+    escaping `AttributeError` — and the V1 path has no such catch. Every shape
+    below used to reach `.get` on something that is not a mapping.
+    """
+
+    SHAPES = {
+        "invalid YAML": "server: [unclosed\n",
+        "a scalar document": "hello\n",
+        "server is a scalar": "server: hello\n",
+        "server is a sequence": "server:\n  - 1\n",
+        "no server.port": "server:\n  bind: 127.0.0.1\n",
+    }
+
+    def _refusal(self, body: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "binding.yaml"
+            cfg.write_text(body, encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit):
+                    install.binding(cfg)
+        return err.getvalue()
+
+    def test_every_unreadable_shape_is_refused_by_die(self):
+        for label, body in self.SHAPES.items():
+            with self.subTest(shape=label):
+                self.assertIn("install.py:", self._refusal(body))
 
 
 if __name__ == "__main__":

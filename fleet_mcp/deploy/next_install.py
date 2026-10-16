@@ -526,12 +526,19 @@ def main(argv: list[str] | None = None) -> int:
                 # refuses a dirty tree by DYING, and a dying installer is read
                 # as an attempted effect — so a dirty source would stop a
                 # healthy Next over a validation refusal. Taken here, before any
-                # system action. A non-git source makes no HEAD claim, so
-                # `tree_state` answers None for it and `--revision` stays its
-                # only route.
-                problem = mod.tree_state(Path(args.source).expanduser().resolve())
-                if problem:
-                    raise Refused(problem + " No system action has been taken.")
+                # system action.
+                #
+                # Gated on a readable HEAD, exactly as `install.py` gates its
+                # own call. `tree_state` only has an answer for a GIT source —
+                # it REFUSES when it cannot resolve a git directory, which is
+                # precisely the non-git source this must leave alone. Calling it
+                # ungated would close the `--revision` route the installer
+                # documents for a non-git artifact.
+                source = Path(args.source).expanduser().resolve()
+                if mod.git_revision(source):
+                    problem = mod.tree_state(source)
+                    if problem:
+                        raise Refused(problem + " No system action has been taken.")
             if args.label:
                 args_list.extend(["--label", args.label])
             # `--force` is never passed, so the shared installer's own
@@ -649,12 +656,19 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with contextlib.redirect_stdout(captured):
                 result = mod.main(args_list)
-        except SystemExit:
+        except (SystemExit, Exception) as exc:
             if args.command in STAGING_COMMANDS or args.command == "install":
                 # The installer's own marker answers "did it get past the point
                 # of no return?". A refusal BEFORE its effect boundary leaves no
                 # marker, wrote nothing, moved nothing and stopped nothing — so
                 # a healthy Next must not be stopped for it.
+                #
+                # `Exception` is caught with `SystemExit` on purpose: a
+                # `systemctl` that is missing from the installer's PATH, an
+                # `OSError` writing the unit, an `ENOSPC` on `os.replace` are
+                # all failures that can land AFTER the boundary, and they used
+                # to escape as a traceback — no receipt and, worse, no recovery
+                # for a run that had already moved `current`.
                 effect_attempted = effect_marker.exists()
                 payload, problem = one_receipt(captured.getvalue())
                 if payload is not None:
@@ -664,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
                     detail = f" It also printed no usable receipt ({problem})."
                 else:
                     detail = ""
+                if not isinstance(exc, SystemExit):
+                    detail += f" The installer raised {type(exc).__name__}."
                 _restore_failed_install(
                     mod, root, prior,
                     "installer exited nonzero; status must be inspected." + detail,
@@ -743,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
             "v1_action": False,
         }, sort_keys=True))
         return 2
-    except SystemExit as exc:
+    except (SystemExit, Exception) as exc:
         # A HELPER of the shared installer can refuse before any effect by
         # dying — `install.py::binding()` does exactly that when the Next
         # binding file is absent, and it is reached from the cross-check that
@@ -752,8 +768,13 @@ def main(argv: list[str] | None = None) -> int:
         # this contract promises; without this the execute path printed no JSON
         # at all, which is indistinguishable from a crash.
         #
+        # `Exception` rides along for the same reason: this command's contract
+        # is one parseable document, and a traceback is not one. The exception
+        # TYPE is reported and its message is not — a message can carry paths,
+        # and a caller that needs the detail has it on stderr.
+        #
         # Once `effect_started` is set, the inner handler has already reported
-        # and its SystemExit must propagate unchanged.
+        # and the exception must propagate unchanged.
         if effect_started:
             raise
         print(json.dumps({
@@ -765,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
             "executes": [],
             "v1_action": False,
             "refusal_exit": getattr(exc, "code", None),
+            "refusal_exception": type(exc).__name__,
         }, sort_keys=True))
         return 2
 
