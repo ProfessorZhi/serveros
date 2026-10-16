@@ -135,19 +135,36 @@ def tree_state(source: Path) -> str | None:
     lists them individually rather than collapsing a directory to one entry.
 
     Every unreadable answer is a refusal: this fails closed.
+
+    "Not a repository" is answered HERE rather than by the caller, and the
+    distinction is load-bearing. A caller that gates this on a readable HEAD
+    exempts a repository whose HEAD is UNBORN — `git init` with nothing
+    committed, or `git checkout --orphan` — and such a tree has exactly the
+    problem this function exists to catch: the bytes are real, no commit
+    describes them, and `--revision` would be taken on trust. Asking
+    "is this a work tree?" first separates "makes no claim" from "makes a claim
+    I cannot verify".
     """
     def git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-C", str(source), *args],
                               capture_output=True, text=True)
+    try:
+        inside = git("rev-parse", "--is-inside-work-tree")
+    except OSError as exc:
+        return (f"cannot ask git about {source} ({type(exc).__name__}); "
+                f"refusing to publish blind")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        # Not a work tree at all: no HEAD claim is made, so there is nothing to
+        # verify and `--revision` stays this source's documented route.
+        return None
     try:
         gitdir = git("rev-parse", "--absolute-git-dir")
     except OSError as exc:
         return (f"cannot read the git directory of {source} "
                 f"({type(exc).__name__}); refusing to publish blind")
     if gitdir.returncode != 0 or not gitdir.stdout.strip():
-        # `git_revision` already read a HEAD from here, so a gitdir that cannot
-        # be resolved now is a repository that changed under us, not a non-git
-        # source. Refuse rather than fall through to publishing.
+        # It IS a work tree, so a gitdir that cannot be resolved is a repository
+        # that changed under us. Refuse rather than fall through to publishing.
         return (f"cannot read the git directory of {source}; refusing to "
                 f"publish an unverifiable tree")
     lock = Path(gitdir.stdout.strip()) / "index.lock"
@@ -314,10 +331,12 @@ def install(args: argparse.Namespace) -> int:
     # running is untouched. The operator remedy is to make the tree clean (or
     # deploy from a clean revision tree), and the refusal says so. See the
     # migration note in `docs/fleet-v1-next-ingress-runbook.md`.
-    if head:
-        problem = tree_state(source)
-        if problem:
-            die(problem)
+    # Unconditional: `tree_state` answers None for a source that is not a work
+    # tree, and gating it on a readable HEAD here would exempt an UNBORN HEAD —
+    # the one tree that has bytes no commit describes.
+    problem = tree_state(source)
+    if problem:
+        die(problem)
     config_path = Path(args.config).expanduser()
     info = binding(config_path)
     label = args.label or f"fleet-mcp-{dt.date.today():%Y%m%d}"
