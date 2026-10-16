@@ -290,6 +290,7 @@ def install(args: argparse.Namespace) -> int:
         die(f"cannot read a git revision from {source}; pass --revision so the "
             f"artifact records which bytes it was built from.")
     # The revision must not only be NAMED right, the tree must BE it. This
+    # The revision must not only be NAMED right, the tree must BE it. This
     # installer copies `PAYLOAD` from the filesystem, so a dirty working tree
     # would publish bytes under a revision name that never described them —
     # including in the `--revision == HEAD` and `--revision`-omitted cases that
@@ -297,6 +298,15 @@ def install(args: argparse.Namespace) -> int:
     # read, before anything is copied, and before any systemctl action. A source
     # that is not a git repository makes no HEAD claim, so this does not apply
     # to it and `--revision` stays its route.
+    #
+    # V1 COMPATIBILITY, deliberately: this installer is SHARED, so this refusal
+    # reaches V1 installs too. That is a real change to what V1 will accept, and
+    # it is the intended one — the alternative is publishing a V1 artifact whose
+    # ARTIFACT.json names a commit its bytes do not match. It refuses; it does
+    # not rewrite, move, stop or replace anything, so a V1 that is already
+    # running is untouched. The operator remedy is to make the tree clean (or
+    # deploy from a clean revision tree), and the refusal says so. See the
+    # migration note in `docs/fleet-v1-next-ingress-runbook.md`.
     if head:
         problem = tree_state(source)
         if problem:

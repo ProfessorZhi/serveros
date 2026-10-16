@@ -197,6 +197,30 @@ dying installer as an attempted effect and run a Next-only stop. A source that i
 not a git repository makes no HEAD claim, so none of this applies to it and
 `--revision` stays its only route.
 
+##### Migration note — this reaches V1 as well
+
+`install.py` is the **shared** installer; `serveros-fleet-mcp.service` (V1) and
+the Next canary both go through it. So this refusal is not Next-only, and saying
+otherwise would be wrong. What it changes for V1:
+
+* **A V1 install from a dirty git source is now refused.** V1's installer
+  defaults `--source` to the tree `install.py` lives in, so an install run from a
+  checkout with uncommitted edits — tracked or untracked, ignored files excepted —
+  stops with a message naming the count. Before, it published an artifact whose
+  `ARTIFACT.json` named a commit those bytes were not.
+* **A V1 that is already running is untouched.** This refuses; it does not stop,
+  restart, move, rewrite or replace anything, and it is reached before the
+  binding is read. There is no path from this change to a live V1 process.
+* **The remedy is the refusal's own text**: make the tree clean, or publish from
+  a clean revision tree. Nothing about V1's installed revision, unit or state
+  changes.
+
+`install.py` is also where a future change would put a **narrower** policy —
+enforcing this only for the Next wrapper is a one-line removal of the
+`tree_state()` call in `install()`. It is not done here because the defect is
+real for V1 too: the same dirty tree publishes the same misnamed artifact, and
+refusing it is the only outcome that does not ship a lie.
+
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
 Confirm the candidate loopback port is free **on the Tokyo host**. The owner's
