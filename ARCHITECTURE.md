@@ -12,6 +12,8 @@
 > These are target requirements, not claims of deployed integration. Load only the
 > relevant section for the current task, not this entire document at session start.
 
+> **Fleet V1/V2 boundary (2026-10-16):** [unified MCP, Agent/Session separation, and hierarchical delegation](docs/architecture/FLEET-V1-V2-AGENT-SESSION.md) records the current Fleet release decision: V1 prioritizes authenticated Claude Code/Node Core/Abilities and real CC-first acceptance; V2 formally onboards Codex and explores OpenAgents messaging. Stable Logical Agent identity is distinct from provider-bound Session. This is DESIGN, not CODE or LIVE evidence; the executable contracts below remain authoritative.
+>
 > **Retained detailed product/implementation baseline — 2026-09-24.**
 >
 > This document owns the intended behavior and boundaries of the broad ServerOS
