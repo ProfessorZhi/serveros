@@ -127,7 +127,7 @@ However, that **design is not fully enforced today**:
 ~~~text
 Work Item, write scope, current epoch N
   |
-  +-- Session A (can read/checkpoint as authorized)
+  +-- Session A (may read existing history/checkpoints as authorized)
   |     no future writes after authority transfer
   |
   +-- durable checkpoint and pending-effect reconciliation
