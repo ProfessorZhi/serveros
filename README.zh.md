@@ -1,10 +1,12 @@
 # ServerOS
 
-[English](README.md) · [完整架构](ARCHITECTURE.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[English](README.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1/V2 与 Agent–Session 架构](docs/architecture/FLEET-V1-V2-AGENT-SESSION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
 实施入口：[唯一P0–P12计划](docs/CC-EXECUTION-PLAN.md) · [2026-09-25现场基线](docs/IMPLEMENTATION-BASELINE-20260925.md) · [交给服务器CC的短提示](docs/CC-IMPLEMENTATION-HANDOFF.md)。计划覆盖实现、获准安装、真实验收、定时启用与目录收口，不代表已执行。
 
 **ServerOS 是个人用户态 Agent 工作操作系统：增强 Claude Code、Codex，而不是在它们上面再套一个更笨的调度者。**
+
+**Fleet 分期决定（2026-10-16）**：V1 优先让 Claude Code、各受管设备 C++ Core、CloudCLI/Fleet MCP、Abilities/Skills、已批准服务的有界自愈和真实工作报告闭环可靠运行；V2 再正式纳入 Codex、逻辑 Agent 身份、OpenAgents 消息/分层委派。历史 Codex 合同可以保留，但不能把未实测的接入算作 V1 通过。Logical Agent 不等于一个永久绑定的 Session；详见上方 Fleet 专题。
 
 ## 你每天实际得到什么
 
