@@ -2,6 +2,14 @@
 
 状态：2026-09-24 产品架构合同。本文基于当日对 Tokyo live ServerOS、飞书应用1、资源采集、Tailscale userspace daemon、Laya shared service、共享 LiteLLM gateway 与当前 alert registry 的只读实测。**DESIGN != LIVE**：本文不修改 timer、sender、threshold、systemd、container 或 Feishu 卡片。
 
+## 2026-10-17 Fleet V1 服务与来源验收补充
+
+[Complete Fleet V1 plan](plans/plan-02-complete-fleet-v1-delivery-campaign.md) 补充三机每授权 OS principal 的 C++ Core 资源/服务观察、实际 CloudCLI + CC/Codex、Tailscale/SSH/Remote Desktop Control 和 Selkies 网络链。监控是来源可验证的状态投影，**不是** Core 的另一份业务/恢复数据库；原 Python serverosd 指的是当前/历史实现，向 C++ 的切换必须 shadow 和单一恢复写方。未经授权的 Windows 私有数据不得投送公司飞书接收方。
+
+Windows 本地 127.0.0.1:16095 / SSH forward / 上游 Selkies- Claude Web / 交互流是分开的可用性层，HTTP 200 并不代表 WebSocket/会话已可用。Tailscale daemon、peer、实际应用健康也必须分开。只有声明为当前 Work 或 standing infrastructure 的设备/服务才进入告警，停用/未安装/未经观测不能错误显示故障或健康。
+
+新版 V13 LIVE/CORE REPORT 的频率、重复快照账本、受众门、真实投递都以当前 [#233](https://github.com/ProfessorZhi/serveros/pull/233) 和 [#239](https://github.com/ProfessorZhi/serveros/pull/239) 所述版本化消费者/验收为准，早期 10 分钟广播口径不能覆盖后来明确的 :00/:30 LIVE PATCH 决策；**10分钟可作为内部采样节拍**，不等于每10分钟发一条消息。尚没有真实发送/当前 Core route 的独立证据则按 NOT_VERIFIED 报告。监控不得为了展示而重启服务或生成有副作用的 Task。
+
 ## 1. 当前 live 基线与问题
 
 2026-09-24 只读实测：
