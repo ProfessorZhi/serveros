@@ -165,7 +165,10 @@ class RuleTest(unittest.TestCase):
         lc = model["lifecycle"]
         self.assertTrue(lc["single_card"])
         self.assertEqual(lc["mode"], "in_place")
-        self.assertEqual(lc["normal_refresh_seconds"], 600)
+        # 1800 s, not the 600 the earlier draft carried: the 2026-10-14
+        # two-surface ruling fixed the half-hour `:00`/`:30` heartbeat, and the
+        # model's lifecycle block restates that one number.
+        self.assertEqual(lc["normal_refresh_seconds"], 1800)
         self.assertEqual(lc["urgent_refresh"], "on_critical_immediately")
         self.assertEqual(lc["physical_rotation"], "on_api_limit")
         self.assertEqual(lc["card_key"], monitor.CARD_KEY)

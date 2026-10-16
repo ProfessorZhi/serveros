@@ -48,8 +48,14 @@ from datetime import datetime, timezone
 
 SCHEMA = "fleet-monitor-card.v1"
 
-#: Normal refresh is ten minutes, in place. A severe alert bypasses it.
-DEFAULT_REFRESH_S = 600
+#: The card's REFRESH cadence, in place: the half-hour heartbeat slot the
+#: 2026-10-14 two-surface ruling fixed (`:00`/`:30`), NOT the ten minutes an
+#: earlier draft carried. `runtime/card_surface.py` owns the cadence itself
+#: (`SLOT_SECONDS = 1800`) and this is the same number restated for the model's
+#: `lifecycle` block, so the footer a person reads and the scheduler that fires
+#: cannot drift apart. A severe alert BYPASSES the slot and patches immediately;
+#: the heartbeat is the floor, not a ceiling on how fast good news travels.
+DEFAULT_REFRESH_S = 1800
 #: A reading older than this is 已过期 rather than current.
 DEFAULT_STALE_AFTER_S = 1800
 #: The byte budget a single card is held under. Feishu's own ceiling is larger;

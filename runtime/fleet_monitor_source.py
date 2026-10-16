@@ -1008,11 +1008,11 @@ def device_from_snapshot(device_ref, snapshot, *, display_name=None,
     }
 
 
-def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
+def fleet_model(*, snapshots=(), services=(), network=None, now, sample=False,
                 refresh_seconds=monitor.DEFAULT_REFRESH_S,
                 stale_after_s=monitor.DEFAULT_STALE_AFTER_S,
                 names=None, platforms=None, accounts=None,
-                inventory=None, audience=None, policy=None):
+                inventory=None, audience=None, policy=None, entries=None):
     """Compose many devices' snapshots into the monitor view model. Read-only.
 
     Every device in `inventory` (default `EXPECTED_DEVICES`) becomes a ROW
@@ -1037,11 +1037,21 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
     snapshot because the two come from different producers — the host reading
     from one, the UID aggregate from the #167 collector — and a device can have
     one without the other.
+
+    `entries` are ALREADY-BUILT device entries, keyed by `device_ref`, that
+    replace whatever a snapshot would have produced for that device. They exist
+    for producers whose reading is not a `card_source.snapshot()` — a peer
+    device read over the Core route, for instance — so that such a device joins
+    the SAME inventory/coverage/audience pipeline instead of a second model
+    builder being written for it. The entry is still validated by the card
+    module, so this is not a hole: it is the same door with a different
+    upstream.
     """
     names = names or {}
     platforms = platforms or {}
     accounts = accounts or {}
     by_ref = {ref: snap for ref, snap in snapshots}
+    pre = {d["device_ref"]: d for d in (entries or [])}
     declared = expected_devices() if inventory is None else [dict(e) for e in inventory]
 
     devices = []
@@ -1049,6 +1059,9 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
     for entry in declared:
         ref = entry["device_ref"]
         seen.add(ref)
+        if ref in pre:
+            devices.append(pre[ref])
+            continue
         snapshot = by_ref.get(ref)
         display_name = (names.get(ref) or entry.get("display_name") or ref)
         platform = platforms.get(ref) or entry.get("platform") or "未知"
@@ -1072,10 +1085,18 @@ def fleet_model(*, snapshots, services=(), network=None, now, sample=False,
     for ref, snapshot in snapshots:
         if ref in seen:
             continue
+        seen.add(ref)
+        if ref in pre:
+            devices.append(pre[ref])
+            continue
         built = device_from_snapshot(ref, snapshot, display_name=names.get(ref),
                                      platform=platforms.get(ref))
         built["accounts"] = list(accounts.get(ref) or [])
         devices.append(built)
+    for ref, built in pre.items():
+        if ref not in seen:
+            seen.add(ref)
+            devices.append(built)
 
     devices, withheld = apply_audience(devices, audience=audience, policy=policy,
                                        declared=declared)

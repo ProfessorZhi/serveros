@@ -37,8 +37,8 @@ def _load(name: str, path: Path):
 plan = _load("serveros_fleet_monitor_plan", ROOT / "runtime" / "fleet_monitor_plan.py")
 
 T0 = "2026-10-13T06:00:00Z"
-T1 = "2026-10-13T06:01:00Z"   # +60s  (early for a 600s cadence)
-T2 = "2026-10-13T06:10:00Z"   # +600s (due)
+T1 = "2026-10-13T06:01:00Z"   # +60s  (early for the 1800s heartbeat)
+T2 = "2026-10-13T06:30:00Z"   # +1800s (the :00/:30 heartbeat, due)
 WINDOW = 14
 
 
@@ -67,7 +67,7 @@ class PlanTest(unittest.TestCase):
 
     def test_an_early_tick_is_a_noop_even_when_changed(self):
         got = plan.plan_update(last=sent("A", at=T0), card=card("B"), at=T1,
-                               cadence_seconds=600, window_days=WINDOW)
+                               cadence_seconds=1800, window_days=WINDOW)
         self.assertEqual(got["action"], plan.NOOP)
         self.assertEqual(got["reason"], plan.NOT_DUE)
         self.assertFalse(got["send"])
@@ -106,7 +106,7 @@ class PlanTest(unittest.TestCase):
 
     def test_urgent_bypasses_the_cadence(self):
         got = plan.plan_update(last=sent("A", at=T0), card=card("B"), at=T1,
-                               cadence_seconds=600, urgent=True,
+                               cadence_seconds=1800, urgent=True,
                                window_days=WINDOW)
         self.assertEqual(got["action"], plan.PATCH_MESSAGE)
         self.assertTrue(got["urgent"])
@@ -196,7 +196,7 @@ class LifecycleTest(unittest.TestCase):
         for tick in ticks:
             body = "A" if tick == T1 else "B" if tick == T2 else "A"
             p = plan.plan_update(last=state["last"], card=card(body), at=tick,
-                                 cadence_seconds=600, window_days=WINDOW)
+                                 cadence_seconds=1800, window_days=WINDOW)
             receipt = plan.apply_plan(p, card(body), at=tick, transport=mock,
                                       authorization=plan.preview_gate())
             results.append((tick, p["action"], p["reason"]))

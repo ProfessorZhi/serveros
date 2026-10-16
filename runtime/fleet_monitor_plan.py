@@ -4,7 +4,10 @@ nothing — computed as a pure function, sent through a mock that sends nothing.
 
 What it decides, and nothing else
 ---------------------------------
-One logical Fleet monitor card is edited in place on a 600-second cadence; a
+One logical Fleet monitor card is edited in place on the half-hour heartbeat
+slot (`:00`/`:30`, 1800 s — the 2026-10-14 two-surface ruling; an earlier draft
+of this module said ten minutes and that period is superseded, not a second
+setting); a
 severe finding skips the wait; and when the message carrying it has aged past
 the service's own update window, the next send is a ROTATION (a new physical
 message for the same logical card). Those are the only three moves, and this
@@ -86,7 +89,12 @@ fleet_audience = _load("serveros_fleet_audience", _HERE / "fleet_audience.py")
 preview_gate = fleet_audience.preview_gate
 
 CARD_KEY = "fleet-monitor"
-NORMAL_REFRESH_S = 600
+#: The heartbeat slot, the same 1800 s `runtime/card_surface.SLOT_SECONDS`
+#: fires on. The two modules must not carry two periods: a card whose footer
+#: says half-hourly and a planner that waits ten minutes is a disagreement a
+#: reader cannot see. Superseded value: 600 s (ten minutes), from before the
+#: 2026-10-14 two-surface ruling.
+NORMAL_REFRESH_S = 1800
 
 #: The three moves, plus the one that is not a move. NOOP is a word of this
 #: module's own; the other two are `card_delivery`'s, reused rather than respelt
