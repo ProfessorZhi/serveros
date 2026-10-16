@@ -82,22 +82,46 @@ AdmissionVerdict admit(const AdmissionInput& input) {
                           "systemd reports it inactive, which is not the same fact");
     }
 
-    // LINK. A disconnected host is not a broken service, and restarting on a
-    // network fault is how one outage becomes a restart storm that outlives it.
-    if (!input.link.known) {
-        return refuse(kAdmitLinkDown,
-                      "whether this host has a working link was not established, so a failure of "
+    // A SERVICE THAT NEEDS A PERSON. Read from the SERVICE's own runtime, not
+    // the unit's: a tunnel can be `active` and still report that its backend
+    // needs login. Checked AFTER the install state, because a service that is
+    // not there cannot be authenticated; and BEFORE the link, because the repair
+    // is a person and not a network — with no link AND a login needed, the reader
+    // must be told to authenticate, not sent to look at a route.
+    if (input.runtime.known && input.runtime.needs_login) {
+        const std::string detail =
+            input.runtime.detail.empty() ? std::string() : " (" + input.runtime.detail + ")";
+        return refuse(kAdmitNeedsLogin,
                       "\"" + input.unit +
-                          "\" cannot be attributed to the service rather than to the network");
+                          "\" reports it needs login" + detail +
+                          ", so it is running and not serving; restarting it would only bring it "
+                          "back needing login again, and the repair is a person authenticating it");
     }
-    if (!input.link.up) {
-        return refuse(kAdmitLinkDown,
-                      input.link.reason.empty()
-                          ? "this host has no working link, so a restart of \"" + input.unit +
-                                "\" would not address what is wrong"
-                          : "this host has no working link (" + input.link.reason +
-                                "), so a restart of \"" + input.unit +
-                                "\" would not address what is wrong");
+
+    // LINK — but only for a service whose recovery DEPENDS on it. A local
+    // tunnel that has crashed is brought back by starting it, which is a local
+    // act whether or not there is a route; the network it serves is the very
+    // thing that is down. So a service the manifest declares
+    // `offline_recoverable` skips these checks rather than being blocked by a
+    // fact that is not about it, and everything else keeps the original rule:
+    // a disconnected host is not a broken service, and restarting on a network
+    // fault is how one outage becomes a restart storm that outlives it.
+    if (input.link_dependent) {
+        if (!input.link.known) {
+            return refuse(kAdmitLinkDown,
+                          "whether this host has a working link was not established, so a failure of "
+                          "\"" + input.unit +
+                              "\" cannot be attributed to the service rather than to the network");
+        }
+        if (!input.link.up) {
+            return refuse(kAdmitLinkDown,
+                          input.link.reason.empty()
+                              ? "this host has no working link, so a restart of \"" + input.unit +
+                                    "\" would not address what is wrong"
+                              : "this host has no working link (" + input.link.reason +
+                                    "), so a restart of \"" + input.unit +
+                                    "\" would not address what is wrong");
+        }
     }
 
     // BUSY. An agent mid-task on the service is a reason to wait. This is the

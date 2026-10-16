@@ -41,6 +41,7 @@
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
 #include "supervisor/plan.hpp"
+#include "supervisor/probe.hpp"
 #include "supervisor/receipt.hpp"
 #include "supervisor/recovery.hpp"
 #include "supervisor/serve.hpp"
@@ -105,6 +106,11 @@ void print_usage(std::FILE* out) {
                  "  --agent-state idle|busy|unknown\n"
                  "                         whether an agent is using the service now. Default\n"
                  "                         unknown, which REFUSES to act.\n"
+                 "  --service-runtime serving|needs-login|unknown\n"
+                 "                         whether the SERVICE's own runtime says it needs a\n"
+                 "                         person (a tunnel that is up but NeedsLogin). Default\n"
+                 "                         unknown; unlike the other facts, an unknown runtime is\n"
+                 "                         NOT a refusal — it is the absence of an optional fact.\n"
                  "  --receipt FILE         write the receipt here instead of stdout.\n"
                  "  --version              print the version and exit.\n"
                  "  --help                 print this text and exit.\n",
@@ -177,6 +183,10 @@ int main(int argc, char** argv) {
     // that wants to act states them.
     nodecore::supervisor::LinkFacts link;
     nodecore::supervisor::AgentFacts agent;
+    // The service's own runtime, when the caller has read one. Its default,
+    // `known = false`, is NOT a refusal — see `ServiceRuntime` for why the one
+    // optional fact is the one whose absence is safe.
+    nodecore::supervisor::ServiceRuntime service_runtime;
     bool act = false;
     bool serve = false;
     bool no_status_socket = false;
@@ -232,6 +242,23 @@ int main(int argc, char** argv) {
                 agent = nodecore::supervisor::AgentFacts{};
             } else {
                 std::fprintf(stderr, "--agent-state is idle, busy or unknown\n");
+                return 2;
+            }
+            continue;
+        }
+        if (flag == "--service-runtime") {
+            const std::string value = has_value ? argv[++i] : std::string();
+            if (value == "serving") {
+                service_runtime.known = true;
+                service_runtime.needs_login = false;
+            } else if (value == "needs-login") {
+                service_runtime.known = true;
+                service_runtime.needs_login = true;
+                service_runtime.detail = "NeedsLogin";
+            } else if (value == "unknown") {
+                service_runtime = nodecore::supervisor::ServiceRuntime{};
+            } else {
+                std::fprintf(stderr, "--service-runtime is serving, needs-login or unknown\n");
                 return 2;
             }
             continue;
@@ -399,6 +426,23 @@ int main(int argc, char** argv) {
     //: was supposed to be guarding.
     nodecore::supervisor::WriterLease writer_lease;
 
+    //: The one place this program opens a socket: a service-level readiness
+    //: probe. Declared once so every reprobe in this run uses the same one.
+    nodecore::supervisor::SocketProbeTransport probe_transport;
+
+    //: The service entry for an id, or null. The gate and the reprobe read the
+    //: SERVICE's own policy (its probe, and whether its recovery is local) from
+    //: this rather than guessing either from the unit name.
+    const auto find_service = [&manifest](const std::string& id)
+        -> const nodecore::supervisor::ServiceDesired* {
+        for (const nodecore::supervisor::ServiceDesired& candidate : manifest.services) {
+            if (candidate.id == id) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    };
+
     const auto observe_and_plan = [&](bool allow_execution) -> nodecore::supervisor::TickOutcome {
         const long tick_started = monotonic_seconds();
         nodecore::supervisor::PlanInput input;
@@ -461,6 +505,15 @@ int main(int argc, char** argv) {
                 }
                 gate.link = link;
                 gate.agent = agent;
+                gate.runtime = service_runtime;
+                // The link gate is per-service: a service declared
+                // `offline_recoverable` is recovered locally and is not refused
+                // on a link that is not about it. Everything else keeps the
+                // default, and the default refuses.
+                if (const nodecore::supervisor::ServiceDesired* service =
+                        find_service(action.service_id)) {
+                    gate.link_dependent = !service->recovery.offline_recoverable;
+                }
                 gate.lease.held_by_us = writer_lease.held();
 
                 const nodecore::supervisor::AdmissionVerdict verdict =
@@ -489,12 +542,46 @@ int main(int argc, char** argv) {
                     result = provider.stop(action.unit);
                 }
                 recovery.record_attempt(action.service_id, tick_started);
-                if (!result.ok) {
-                    for (const nodecore::supervisor::ServiceDesired& candidate : manifest.services) {
-                        if (candidate.id == action.service_id) {
-                            recovery.record_failure(action.service_id, candidate.recovery,
-                                                    tick_started);
-                        }
+
+                // A VERB THAT EXITED 0 IS NOT A SERVICE THAT ANSWERS. The
+                // provider's `ok` says the verb was carried out; it says nothing
+                // about whether the service came back serving. So after a start
+                // or a restart the Core REPROBES the service's own declared
+                // readiness signal, and only READY is counted as a recovery —
+                // which is what the budget and the breaker are informed by.
+                //
+                // The receipt still records the provider's own answer, because
+                // `ExecutionResult` is documented as the provider's word and the
+                // receipt schema is a versioned cross-language contract; whether
+                // the SERVICE recovered is a policy decision and belongs in the
+                // budget, not in a field this receipt never carried. What changes
+                // here is the accounting: a verb that did not bring the service
+                // back spends an attempt and counts toward the breaker, instead
+                // of clearing it.
+                const nodecore::supervisor::ServiceDesired* service =
+                    find_service(action.service_id);
+                bool recovered = result.ok;
+                if (result.ok && service != nullptr) {
+                    const nodecore::supervisor::ProbeSpec spec =
+                        nodecore::supervisor::probe_spec_of(service->health);
+                    const nodecore::supervisor::Observed after = provider.query(action.unit);
+                    const nodecore::supervisor::ProbeOutcome outcome =
+                        nodecore::supervisor::run_probe(spec, probe_transport);
+                    const nodecore::supervisor::Readiness ready =
+                        nodecore::supervisor::readiness_from_probe(spec, after, outcome);
+                    recovered = ready == nodecore::supervisor::Readiness::Ready;
+                    if (!recovered) {
+                        std::fprintf(stderr,
+                                     "%s returned %s but is not ready afterwards: %s (%s)\n",
+                                     action.unit.c_str(), result.code.c_str(),
+                                     nodecore::supervisor::to_word(ready).c_str(),
+                                     outcome.attempted ? outcome.code.c_str()
+                                                       : outcome.reason.c_str());
+                    }
+                }
+                if (!recovered) {
+                    if (service != nullptr) {
+                        recovery.record_failure(action.service_id, service->recovery, tick_started);
                     }
                 } else {
                     recovery.record_success(action.service_id);

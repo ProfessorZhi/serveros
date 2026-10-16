@@ -127,15 +127,49 @@ struct RecoveryPolicy {
     // the Core even when the service needs it, because "recovery" is not a
     // licence to do anything.
     std::vector<std::string> allowed_verbs{"start", "restart"};
+    // Whether this service's recovery is LOCAL — whether starting it again is a
+    // local act that does not depend on the host having a route.
+    //
+    // WHY THIS IS PER-SERVICE AND OFF BY DEFAULT. `admission` refuses to act
+    // while the link is down, because a restart spent on a network fault
+    // outlives the fault. That rule is right for a service that needs the
+    // network to serve. It is WRONG for a crashed local tunnel: the thing that
+    // failed is the tunnel's own process, restarting it is local, and refusing
+    // on the link would leave exactly the broken thing this Core exists to fix
+    // unrestarted — and it would need the network, the one thing that is down,
+    // to come back before the tunnel could be brought back.
+    //
+    // So a manifest that names a crashable LOCAL service (an approved tunnel or
+    // Tailscale unit) says so here, and only that service skips the link gate.
+    // It is deliberately not a global switch: a fleet node or a connector that
+    // reaches the network to serve must not be restarted offline, and a written-
+    // down per-service opt-in is the only way to tell the two apart.
+    bool offline_recoverable = false;
 };
 
 // ---------------------------------------------------------------- service
 
 struct HealthPolicy {
-    // The only probe v1 implements, and it is named rather than assumed: a
-    // manifest that wants a different one gets a refusal, not a silent
-    // fallback to this.
+    // WHICH probe answers "is this service ready". Named rather than assumed: a
+    // manifest that wants a probe this version does not implement gets a
+    // refusal, not a silent fallback to the weakest one.
+    //
+    // `systemd-is-active` is the UNIT's word and it is the WEAKEST answer: a
+    // unit is `active` while the process systemd started is still there, even
+    // when that process's own work has died — a tunnel whose daemon exited but
+    // whose launcher lives, a listener that never bound. The two service-level
+    // probes ask the SERVICE, which is what "ready" has to mean before a
+    // recovery may be counted as one.
     std::string probe = "systemd-is-active";
+    // The target for a service-level probe, kept beside `probe` rather than in a
+    // nested object so the manifest stays flat and the strict reader has one
+    // place to check. A target given with `systemd-is-active` is refused, not
+    // ignored: a field nobody reads is a rule nobody applied.
+    //: `unix-socket-connect`: an absolute path the service listens on.
+    std::string probe_path;
+    //: `tcp-connect`: a LOOPBACK literal (`127.0.0.1` or `::1`) and a port.
+    std::string probe_host;
+    int probe_port = 0;
     // How old a reading may be before it stops being evidence. A stale
     // reading is NOT a failure — it is the absence of one — so it never
     // triggers a restart. Measured: `runtime/graph.py` declares 300 s for

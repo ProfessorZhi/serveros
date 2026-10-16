@@ -227,6 +227,89 @@ int main() {
         CHECK_CONTAINS(verdict.reason, "not readable");
     }
     {
+        // NEEDS LOGIN. Read from the SERVICE's own runtime, not the unit's: it
+        // is running and not serving, and a restart brings it back needing login
+        // again. The one repair is a person, so the Core declines and says so.
+        AdmissionInput input = good();
+        input.runtime.known = true;
+        input.runtime.needs_login = true;
+        input.runtime.detail = "NeedsLogin";
+        const AdmissionVerdict verdict = admit(input);
+        CHECK(!verdict.admitted);
+        CHECK_EQ(verdict.code, std::string(kAdmitNeedsLogin));
+        CHECK_CONTAINS(verdict.reason, "needs login");
+        CHECK_CONTAINS(verdict.reason, "NeedsLogin");
+        CHECK_CONTAINS(verdict.reason, "person authenticating");
+    }
+    {
+        // A runtime that was read and says "serving" blocks nothing, and — the
+        // one place this fact differs from install/link/agent — a runtime that
+        // was NOT read is not a refusal either. It is an absent OPTIONAL fact,
+        // not an unknown that turns a plan into a wrong action: the plan's own
+        // readiness probe is what decides whether the service is serving.
+        AdmissionInput serving = good();
+        serving.runtime.known = true;
+        serving.runtime.needs_login = false;
+        CHECK(admit(serving).admitted);
+
+        AdmissionInput unread = good();
+        CHECK(!unread.runtime.known);
+        const AdmissionVerdict verdict = admit(unread);
+        CHECK(verdict.admitted);
+        CHECK_EQ(verdict.code, std::string(kAdmitOk));
+    }
+    {
+        // OFFLINE LOCAL RECOVERY. A service whose recovery is local — an
+        // approved crashed tunnel or Tailscale unit — is not refused on a link
+        // that is not about it: starting it again is a local act, and the
+        // network it would serve is the very thing that is down. The same world
+        // with the default (link-dependent) service is refused, asserted beside
+        // it so the switch is what is tested.
+        AdmissionInput local_down = good();
+        local_down.link_dependent = false;
+        local_down.link.known = true;
+        local_down.link.up = false;
+        local_down.link.reason = "no route to the default gateway";
+        CHECK(admit(local_down).admitted);
+
+        AdmissionInput local_unknown = good();
+        local_unknown.link_dependent = false;
+        local_unknown.link.known = false;
+        CHECK(admit(local_unknown).admitted);
+
+        // The default is link-dependent, and the default refuses.
+        AdmissionInput plain = good();
+        plain.link.up = false;
+        CHECK_EQ(admit(plain).code, std::string(kAdmitLinkDown));
+    }
+    {
+        // Precedence, stated: a service that needs login is refused even when
+        // the link is down too, because the repair a reader must be sent to is
+        // authentication and not a route.
+        AdmissionInput input = good();
+        input.runtime.known = true;
+        input.runtime.needs_login = true;
+        input.link.up = false;
+        input.agent.busy = true;
+        CHECK_EQ(admit(input).code, std::string(kAdmitNeedsLogin));
+
+        // A unit that is not installed outranks it: a service that is not there
+        // cannot be authenticated.
+        AdmissionInput absent = good();
+        absent.installed = false;
+        absent.runtime.known = true;
+        absent.runtime.needs_login = true;
+        CHECK_EQ(admit(absent).code, std::string(kAdmitNotInstalled));
+
+        // And a runtime fact never makes a second writer legitimate: the lease
+        // is still checked first.
+        AdmissionInput unleased = good();
+        unleased.lease.held_by_us = false;
+        unleased.runtime.known = true;
+        unleased.runtime.needs_login = true;
+        CHECK_EQ(admit(unleased).code, std::string(kAdmitNoLease));
+    }
+    {
         // READINESS. A process that exists is not a service that answers, and
         // this is the only place that judgement is made.
         Observed row;

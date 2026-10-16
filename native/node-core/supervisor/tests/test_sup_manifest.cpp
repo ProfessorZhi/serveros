@@ -206,6 +206,87 @@ int main() {
         CHECK(!outcome.ok);
         CHECK(has_code(outcome, "VOCABULARY"));
     }
+
+    // ------------------------------------------- service-level probes (V1)
+
+    {
+        // A service-level probe parses, and its target travels with it: this is
+        // the probe that asks the SERVICE rather than the unit.
+        const ParseOutcome outcome = parse_manifest(doc_with(service(
+            {{"health", "{" + q("probe") + ":" + q("unix-socket-connect") + "," + q("probe_path") +
+                            ":" + q("/run/user/1000/toy.sock") + "}"}})));
+        CHECK(outcome.ok);
+        CHECK_EQ(outcome.manifest.services[0].health.probe, std::string("unix-socket-connect"));
+        CHECK_EQ(outcome.manifest.services[0].health.probe_path,
+                 std::string("/run/user/1000/toy.sock"));
+    }
+    {
+        const ParseOutcome outcome = parse_manifest(doc_with(service(
+            {{"health", "{" + q("probe") + ":" + q("tcp-connect") + "," + q("probe_host") + ":" +
+                            q("127.0.0.1") + "," + q("probe_port") + ":9200}"}})));
+        CHECK(outcome.ok);
+        CHECK_EQ(outcome.manifest.services[0].health.probe_port, 9200);
+    }
+    {
+        // A probe that names a target this Core will not connect to is refused
+        // by the READER, through the same `validate_probe` the executor calls —
+        // so a spec the reader accepted cannot be one the executor refuses.
+        const ParseOutcome outcome = parse_manifest(doc_with(service(
+            {{"health", "{" + q("probe") + ":" + q("tcp-connect") + "," + q("probe_host") + ":" +
+                            q("10.0.0.1") + "," + q("probe_port") + ":9200}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "VOCABULARY"));
+    }
+    {
+        const ParseOutcome outcome = parse_manifest(doc_with(
+            service({{"health", "{" + q("probe") + ":" + q("unix-socket-connect") + "}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "VOCABULARY"));
+    }
+    {
+        // A target beside the default probe is refused, not ignored: a field
+        // nobody reads is a rule nobody applied.
+        const ParseOutcome outcome = parse_manifest(
+            doc_with(service({{"health", "{" + q("probe_path") + ":" + q("/run/x.sock") + "}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "VOCABULARY"));
+    }
+    {
+        const ParseOutcome outcome = parse_manifest(doc_with(service(
+            {{"health", "{" + q("probe") + ":" + q("unix-socket-connect") + "," + q("probe_path") +
+                            ":" + q("relative.sock") + "}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "VOCABULARY"));
+    }
+    {
+        // The typo this strictness exists for: a mistyped target key is an
+        // unknown field, not a probe that silently has no target.
+        const ParseOutcome outcome = parse_manifest(doc_with(service(
+            {{"health", "{" + q("probe") + ":" + q("unix-socket-connect") + "," + q("probe_socket") +
+                            ":" + q("/run/x.sock") + "}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "UNKNOWN_FIELD"));
+    }
+    {
+        // OFFLINE RECOVERY is a per-service, written-down opt-in. It defaults
+        // off: an unstated fact is not a licence to act offline.
+        const ParseOutcome defaulted = parse_manifest(doc_with(service()));
+        CHECK(defaulted.ok);
+        CHECK(!defaulted.manifest.services[0].recovery.offline_recoverable);
+
+        const ParseOutcome declared = parse_manifest(
+            doc_with(service({{"recovery", "{" + q("offline_recoverable") + ":true}"}})));
+        CHECK(declared.ok);
+        CHECK(declared.manifest.services[0].recovery.offline_recoverable);
+    }
+    {
+        // Refused rather than coerced: the string "true" is truthy, and coercing
+        // it would switch the safe default on.
+        const ParseOutcome outcome = parse_manifest(doc_with(
+            service({{"recovery", "{" + q("offline_recoverable") + ":" + q("true") + "}"}})));
+        CHECK(!outcome.ok);
+        CHECK(has_code(outcome, "TYPE"));
+    }
     {
         const ParseOutcome outcome = parse_manifest(doc_with(service(
             {{"recovery", "{" + q("allowed_verbs") + ":[" + q("start") + "," + q("delete") + "]}"}})));
@@ -381,6 +462,17 @@ int main() {
         CHECK_EQ(outcome.manifest.services[1].depends_on.size(), std::size_t{1});
         CHECK_EQ(outcome.manifest.services[1].depends_on[0], std::string("tunnel"));
         CHECK(outcome.manifest.observe_only);
+        // The example demonstrates BOTH service-level probes: the tunnel asks a
+        // unix socket and is offline-recoverable, the fleet node asks a loopback
+        // port. A committed example that stopped parsing would be documentation
+        // that had drifted from the code.
+        CHECK_EQ(outcome.manifest.services[0].health.probe, std::string("unix-socket-connect"));
+        CHECK_EQ(outcome.manifest.services[0].health.probe_path,
+                 std::string("/run/user/1000/serveros-tunnel.sock"));
+        CHECK(outcome.manifest.services[0].recovery.offline_recoverable);
+        CHECK_EQ(outcome.manifest.services[1].health.probe, std::string("tcp-connect"));
+        CHECK_EQ(outcome.manifest.services[1].health.probe_port, 3401);
+        CHECK(!outcome.manifest.services[1].recovery.offline_recoverable);
     }
 
     return check::report("test_sup_manifest");

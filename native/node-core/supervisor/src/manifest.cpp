@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "json_detail.hpp"
+#include "supervisor/probe.hpp"
 #include "supervisor/sha256.hpp"
 
 namespace nodecore::supervisor {
@@ -154,9 +155,10 @@ const std::vector<const char*> kTopKeys{"schema", "node", "principal", "observe_
                                         "generation", "services"};
 const std::vector<const char*> kServiceKeys{"id",     "owner",          "unit", "desired",
                                             "start_on_boot", "depends_on", "health", "recovery"};
-const std::vector<const char*> kHealthKeys{"probe", "stale_after_seconds"};
+const std::vector<const char*> kHealthKeys{"probe", "probe_path", "probe_host", "probe_port",
+                                           "stale_after_seconds"};
 const std::vector<const char*> kRecoveryKeys{"max_attempts", "window_seconds", "backoff_seconds",
-                                             "circuit", "allowed_verbs"};
+                                             "circuit", "allowed_verbs", "offline_recoverable"};
 const std::vector<const char*> kCircuitKeys{"consecutive_failures", "cooldown_seconds"};
 
 bool parse_health(const Json& parent, const std::string& scope, HealthPolicy& out,
@@ -172,13 +174,15 @@ bool parse_health(const Json& parent, const std::string& scope, HealthPolicy& ou
     if (!only_allowed_keys(*health, kHealthKeys, scope, refusals)) {
         return false;
     }
-    // `probe` is OPTIONAL and defaults to the one probe this version implements.
-    // Requiring it would make `"health": {"stale_after_seconds": 60}` a refusal
-    // for omitting a field whose only legal value is the default — ceremony
-    // that stops an author without protecting anything. What is NOT optional is
-    // the vocabulary: a probe that is named and is not this one is refused, so
-    // a manifest that asked for a different check cannot be read as having
-    // asked for this one.
+    // `probe` is OPTIONAL and defaults to the weakest probe this version
+    // implements. Requiring it would make `"health": {"stale_after_seconds": 60}`
+    // a refusal for omitting a field whose only legal value is the default —
+    // ceremony that stops an author without protecting anything. What is NOT
+    // optional is the vocabulary AND THE TARGET: a probe named that this version
+    // does not know is refused, and a probe whose target is missing, is of the
+    // wrong kind, or points somewhere this Core will not connect is refused too.
+    // All of that goes through `validate_probe`, the SAME function the executor
+    // calls, so a spec the reader accepted cannot be one the executor refuses.
     bool ok = true;
     if (const Json* probe = health->find("probe")) {
         if (!probe->is_string() || probe->text.empty()) {
@@ -189,15 +193,42 @@ bool parse_health(const Json& parent, const std::string& scope, HealthPolicy& ou
             out.probe = probe->text;
         }
     }
-    if (ok && out.probe != "systemd-is-active") {
-        refuse(refusals, scope, "VOCABULARY",
-               "health.probe is \"" + out.probe +
-                   "\"; this version implements only \"systemd-is-active\"");
-        ok = false;
+    if (const Json* path = health->find("probe_path")) {
+        if (!path->is_string() || path->text.empty()) {
+            refuse(refusals, scope, "TYPE",
+                   "field \"health.probe_path\" must be a non-empty string");
+            ok = false;
+        } else {
+            out.probe_path = path->text;
+        }
     }
+    if (const Json* host = health->find("probe_host")) {
+        if (!host->is_string() || host->text.empty()) {
+            refuse(refusals, scope, "TYPE",
+                   "field \"health.probe_host\" must be a non-empty string");
+            ok = false;
+        } else {
+            out.probe_host = host->text;
+        }
+    }
+    long long port = 0;
+    // `1` as the minimum and `0` as the fallback, so an absent port reads as
+    // "no port given" and a present one is at least 1. The loopback range and
+    // the kind/target agreement are `validate_probe`'s, not duplicated here.
+    ok = optional_positive_int(*health, "probe_port", scope, 1, 0, port, refusals) && ok;
+    out.probe_port = static_cast<int>(port);
+
     long long stale = 0;
     ok = optional_positive_int(*health, "stale_after_seconds", scope, 1, 120, stale, refusals) && ok;
     out.stale_after_seconds = static_cast<int>(stale);
+
+    if (ok) {
+        const std::string invalid = validate_probe(probe_spec_of(out));
+        if (!invalid.empty()) {
+            refuse(refusals, scope, "VOCABULARY", invalid);
+            ok = false;
+        }
+    }
     return ok;
 }
 
@@ -240,6 +271,18 @@ bool parse_recovery(const Json& parent, const std::string& scope, RecoveryPolicy
                     ok = false;
                 }
             }
+        }
+    }
+    if (const Json* offline = recovery->find("offline_recoverable")) {
+        // A boolean, refused rather than coerced. "false" as a string is truthy,
+        // and coercing it would switch the safe default off — the same reason
+        // `observe_only` refuses its string form.
+        if (!offline->is_bool()) {
+            refuse(refusals, scope, "TYPE",
+                   "field \"recovery.offline_recoverable\" must be a boolean");
+            ok = false;
+        } else {
+            out.offline_recoverable = offline->boolean;
         }
     }
     if (const Json* circuit = recovery->find("circuit")) {
