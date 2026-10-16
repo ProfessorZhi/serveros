@@ -108,6 +108,61 @@ python3 -I fleet_mcp/deploy/next_install.py stage \
 ```
 Read back: the Next revision root holds the bytes and **no Next unit is running**.
 
+#### Migration note — a non-starting publish needs a unit that cannot start itself
+
+All **three** verbs that publish a revision *without starting it* — `stage`,
+`install --no-start`, and `refresh-stage` — now read the Next unit's state
+first and require **both**:
+
+* `systemctl --user is-active <Next unit>` to be exactly `inactive`; and
+* `systemctl --user is-enabled <Next unit>` to be exactly `disabled`, **or**
+  `not-found` (no unit file yet).
+
+Anything else is refused, including an empty or unreadable answer.
+
+*Why.* This account has `Linger=yes`, so an ENABLED unit is started by the user
+manager at boot/login — a non-starting publish into it becomes a **start** later,
+with no activation approval. `is-active` alone does not cover that (a unit can be
+inactive and enabled at once), and `is-enabled` alone does not cover the other
+half: the unit template sets `Restart=on-failure`, so a unit in
+`activating (auto-restart)` re-evaluates `ExecStart` and can pick the new
+revision up within `RestartSec`. `stage` and `install --no-start` previously read
+no unit state at all.
+
+*`not-found` is accepted on purpose.* `systemctl --user is-enabled` answers
+`not-found` (rc=4, measured on this host) for a unit file that does not exist —
+the state of every host that has never installed Next. That is strictly **safer**
+than `disabled`, because a unit that does not exist cannot start at all; refusing
+it would refuse the first `stage`, which is the command that creates the unit
+file.
+
+*Who is affected.* A host with no Next unit yet, or one that is `inactive` **and**
+`disabled`, is unaffected. The new refusals fire when the unit is enabled, or
+running / auto-restarting, or in an unreadable state. This replaces an earlier
+precondition, pinned by a test, that `stage` did not consult the unit at all:
+that reasoning covered `is-active` only.
+
+*What to do.* Read the state, then take the step it names — the remedy is not
+the same for "enabled" and "running", and the unit rule does not distinguish
+them for you:
+
+* **enabled, and Next is meant to be live** — `systemctl --user disable` it
+  first, then publish with `refresh-stage` (which applies the same unit rule
+  plus its own populated-root rule). Disabling is what makes the publish legal;
+  `refresh-stage` alone is refused while the unit is running.
+* **running or auto-restarting** — `systemctl --user stop` it first. The three
+  publishing verbs all require `inactive`, so a live Next is never re-pointed
+  underneath itself; stopping is the operator's decision, not the tool's.
+* **enabled, and Next must not run** — `systemctl --user disable` it, or retire
+  it (`install.py uninstall`). Do not re-point the first-install path at it.
+
+Uninstalling removes the unit file, which returns the unit to `not-found` — an
+accepted state, so the host can be staged again.
+
+`--revision` also gains a rule on the shared installer: on a **git** source it
+may only restate `git rev-parse HEAD`; a differing SHA is refused. A source
+that is not a git repository keeps `--revision` as its only route, unchanged.
+
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
 Confirm the candidate loopback port is free **on the Tokyo host**. The owner's

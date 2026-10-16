@@ -207,7 +207,8 @@ class RefreshStageAcceptsAnIncrementalPublishTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(out["decision"], "DRY_RUN_READY")
         requires = " ".join(out["requires"])
-        self.assertIn("DISABLED", requires)
+        self.assertIn("INACTIVE", requires)
+        self.assertIn("disabled", requires)
         self.assertIn("byte-for-byte", requires)
 
     def test_refresh_writes_only_next_paths_and_keeps_the_old_current(self):
@@ -456,28 +457,33 @@ class TheFirstStageIsUnchangedTest(unittest.TestCase):
         self.assertEqual(out["decision"], "EXECUTED")
         self.assertTrue(out["current"].endswith(f"@{'c' * 7}"))
 
-    def test_the_unit_state_guard_belongs_to_refresh_and_not_to_stage(self):
-        """The contrast, on the SAME running unit.
+    def test_both_publish_verbs_refuse_a_unit_that_could_start_itself(self):
+        """The SAME rule on both, on the SAME running unit.
 
-        `refresh-stage` refuses an active unit; `stage` does not consult it at
-        all, because an empty revision root already means no Next process can
-        be serving from this tree. Pinning both halves here is what keeps the
-        new guard from being quietly extended onto the first-install path.
+        This replaces an earlier contrast that pinned `stage` as NOT consulting
+        the unit at all, reasoning that an empty revision root already meant no
+        Next process could be serving from this tree. That reasoning covers
+        `is-active` only, and it is false for the two ways a unit starts itself:
+        `Linger=yes` starts an ENABLED unit at boot/login, and a unit in
+        `activating (auto-restart)` re-evaluates `ExecStart` on every attempt
+        (the template sets `Restart=on-failure`). Either way the first-install
+        path could publish bytes systemd then runs with no activation approval.
+        Both verbs now share `_next_unit_state`; the empty-root rule stays
+        `stage`'s own.
         """
         with gitrepo() as repo:
-            refreshing = FakeMod(current=f"/rev/{OLD_LABEL}", unit_state="active",
-                                 revision="c" * 40)
-            rc, out = run(["refresh-stage", "--execute", "--owner-approved"],
-                          candidate(), mod=refreshing, source=repo)
-            self.assertEqual(rc, 2)
-            self.assertIn("active", out["reason"])
-            self.assertEqual(refreshing.calls, [])
-
-            first = FakeMod(current=None, unit_state="active", revision="c" * 40)
-            rc, out = run(["stage", "--execute", "--owner-approved"],
-                          candidate(), mod=first, source=repo)
-            self.assertEqual(rc, 0, out)
-            self.assertEqual(len(first.calls), 1)
+            for verb, mod in (
+                ("refresh-stage", FakeMod(current=f"/rev/{OLD_LABEL}",
+                                          unit_state="active", revision="c" * 40)),
+                ("stage", FakeMod(current=None, unit_state="active",
+                                  revision="c" * 40)),
+            ):
+                with self.subTest(verb=verb):
+                    rc, out = run([verb, "--execute", "--owner-approved"],
+                                  candidate(), mod=mod, source=repo)
+                    self.assertEqual(rc, 2, out)
+                    self.assertIn("active", out["reason"])
+                    self.assertEqual(mod.calls, [])
 
 
 class FailureIsReportedAsNextOnlyRecoveryTest(unittest.TestCase):

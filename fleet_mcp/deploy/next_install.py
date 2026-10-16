@@ -67,7 +67,7 @@ def _load_json(path: str) -> dict:
     return item
 
 
-def plan(proposal: dict, command: str) -> dict:
+def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
     if command == "uninstall":
         return {"decision": "BLOCKED",
                 "blockers": ["Next uninstall requires separate reviewed retirement"],
@@ -122,11 +122,23 @@ def plan(proposal: dict, command: str) -> dict:
              "remain unassigned only for this non-starting bootstrap stage"
              if bootstrap else
              "Next owner authorization and distinct real App/Plugin registration"),
-            ("An INACTIVE and DISABLED Next unit, a clean `--source`, and a "
-             "revision that differs from the one `current` already names; an "
-             "explicit `--revision` must restate the clean HEAD byte-for-byte; "
-             "the revision being replaced is kept as `previous`"
+            ("An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet), a clean `--source`, and a revision that "
+             "differs from the one `current` already names; an explicit "
+             "`--revision` must restate the clean HEAD byte-for-byte; the "
+             "revision being replaced is kept as `previous`"
              if refresh else
+             "An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet), and an empty Next revision root; the bytes "
+             "are published without being started, so a unit that could start "
+             "itself — enabled, or auto-restarting — is refused rather than "
+             "silently re-pointed"
+             if bootstrap else
+             "An INACTIVE Next unit that cannot start on its own (`disabled`, "
+             "or not installed yet): `--no-start` publishes without starting, "
+             "so a unit that could start itself would run the new revision at "
+             "the next boot/login with no activation approval"
+             if command == "install" and no_start else
              "Short live memory-PSI/swap-IO probe before Next start"),
             "systemctl --user show confirms effective cgroup limits after start",
             "V1 /health remains healthy throughout canary and Next-only rollback",
@@ -256,8 +268,56 @@ def _source_state(source: str) -> tuple[str | None, str | None]:
     return revision.strip(), None
 
 
+#: The enablement states in which the Next unit cannot start on its own.
+#:
+#: `disabled` is the explicit case. `not-found` is a unit FILE that does not
+#: exist yet — the state of every host that has never installed Next, and the
+#: state in which `systemctl --user is-enabled` answers `not-found` rather than
+#: `disabled` (verified: rc=4, stdout `not-found`). It is strictly SAFER than
+#: `disabled`, because a unit that does not exist cannot be started at all.
+#: Refusing it would refuse the very first `stage` — the command that creates
+#: the unit file — so it is accepted, not treated as an unknown.
+_NEVER_STARTS_BY_ENABLEMENT = ("disabled", "not-found")
+
+
+def _next_unit_enablement(mod) -> tuple[str | None, str | None]:
+    """The Next unit's enablement, or why a revision may not be published to it.
+
+    Publishing a revision without starting it — by `stage`, by `install
+    --no-start`, or by `refresh-stage` — is safe only while the unit cannot
+    start on its own. `is-active` does not answer that question: a unit can be
+    inactive and ENABLED at the same time. This account has `Linger=yes`, so an
+    enabled unit is started by the user manager at boot/login with no further
+    approval, and a revision published now would run later without an
+    activation approval — the one outcome a non-starting flow exists to prevent.
+
+    This is a distinct audit fact, not a restatement of activation: `stage` and
+    `install --no-start` never inspected the unit at all, and an operator who
+    left a unit enabled after an earlier `install` needs that named rather than
+    silently worked around.
+
+    Only the two states in `_NEVER_STARTS_BY_ENABLEMENT` are accepted; anything
+    else — including an empty or unreadable answer — is refused. This guard
+    fails closed.
+    """
+    try:
+        result = mod.systemctl("is-enabled", UNIT, check=False)
+    except (OSError, RuntimeError) as exc:
+        return None, ("Next unit enablement could not be read ("
+                      + type(exc).__name__ + "); refusing to publish blind")
+    state = (result.stdout or "").strip()
+    if state not in _NEVER_STARTS_BY_ENABLEMENT:
+        return None, (
+            f"Next unit is {state or 'unknown'!r}, not one of "
+            f"{list(_NEVER_STARTS_BY_ENABLEMENT)}; an enabled unit is started "
+            f"by the user manager at boot/login (Linger is on for this "
+            f"account), so a revision published now would run later without a "
+            f"separate activation approval")
+    return state, None
+
+
 def _next_unit_state(mod) -> tuple[str | None, str | None]:
-    """The Next unit's activation AND enablement state, or why it may not be refreshed.
+    """The Next unit's activation AND enablement state, or why it may not be published to.
 
     Two facts are required and they are different facts; neither implies the
     other.
@@ -268,12 +328,12 @@ def _next_unit_state(mod) -> tuple[str | None, str | None]:
     reason: a unit that already tried and did not come up is a fact an operator
     has to read, and silently repointing it would overwrite the evidence.
 
-    `is-enabled` must be `disabled`. This is NOT implied by `inactive` — a unit
-    can be inactive and enabled at the same time — and the account that runs
-    Next has `Linger=yes`, so an ENABLED unit is started by the user manager at
-    boot/login with no further approval. Repointing it would therefore run the
-    moved revision the next time the manager restarts, which is exactly the
-    activation this non-starting flow exists to avoid.
+    Enablement is checked by `_next_unit_enablement`.
+
+    All three non-starting publishes share this: `stage`, `install --no-start`
+    and `refresh-stage`. The wording below therefore speaks of publishing, not
+    of refreshing — an operator running `stage` must not be told about a verb
+    they did not run.
 
     Anything unreadable, and anything that is not the exact expected string, is
     refused: an unknown state is not a safe one, and this guard fails closed.
@@ -282,23 +342,15 @@ def _next_unit_state(mod) -> tuple[str | None, str | None]:
         result = mod.systemctl("is-active", UNIT, check=False)
     except (OSError, RuntimeError) as exc:
         return None, ("Next unit state could not be read ("
-                      + type(exc).__name__ + "); refusing to refresh blind")
+                      + type(exc).__name__ + "); refusing to publish blind")
     state = (result.stdout or "").strip()
     if state != "inactive":
         return None, (f"Next unit is {state or 'unknown'!r}, not 'inactive'; "
-                      f"only an inactive Next may be refreshed without starting it")
-    try:
-        enabled = mod.systemctl("is-enabled", UNIT, check=False)
-    except (OSError, RuntimeError) as exc:
-        return None, ("Next unit enablement could not be read ("
-                      + type(exc).__name__ + "); refusing to refresh blind")
-    enablement = (enabled.stdout or "").strip()
-    if enablement != "disabled":
-        return None, (
-            f"Next unit is {enablement or 'unknown'!r}, not 'disabled'; an "
-            f"enabled unit is started by the user manager at boot/login "
-            f"(Linger is on for this account), so the repointed revision would "
-            f"run without a separate activation approval")
+                      f"only an inactive Next may be published to without "
+                      f"starting it")
+    _, problem = _next_unit_enablement(mod)
+    if problem:
+        return None, problem
     return state, None
 
 
@@ -415,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--health-timeout must be within (0, 60]")
     try:
         proposal = _load_json(args.proposal)
-        preview = plan(proposal, args.command)
+        preview = plan(proposal, args.command, no_start=args.no_start)
         if preview["decision"] == "BLOCKED":
             print(json.dumps(preview, indent=2, sort_keys=True))
             return 2
@@ -443,6 +495,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in STAGING_COMMANDS or args.command == "install":
             args_list.extend(["--source", args.source])
             if args.revision:
+                # Refuse a caller-named revision the source's HEAD disagrees with
+                # HERE, before any effect — not only inside the shared installer.
+                # The installer refuses it too, but it refuses by DYING, and this
+                # wrapper treats a dying installer as an attempted effect (it may
+                # have died after writing) and runs a Next-only stop/rollback.
+                # That is the right default for a death of unknown timing, but it
+                # is the wrong answer for a mistyped SHA: a validation refusal
+                # must not stop a healthy Next. `refresh-stage` checks the same
+                # thing against its own clean-source rules a little further down.
+                # A source that is not a git repository has no HEAD to disagree
+                # with, and `--revision` stays its only route.
+                if args.command in ("stage", "install"):
+                    head = mod.git_revision(Path(args.source).expanduser().resolve())
+                    if head and args.revision != head:
+                        raise Refused(
+                            f"--revision {args.revision!r} is not the source's HEAD "
+                            f"{head!r}; a revision name records which bytes the "
+                            f"artifact was built from, and no system action has "
+                            f"been taken")
                 args_list.extend(["--revision", args.revision])
             if args.label:
                 args_list.extend(["--label", args.label])
@@ -474,6 +545,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stage" and prior[0] is not None:
             raise Refused("bootstrap stage requires an empty Next revision root; "
                           "do not repoint an existing Next instance")
+        if args.command == "stage":
+            # The empty root establishes that nothing is SERVING from this tree.
+            # It establishes nothing about the unit, and `stage` used to read no
+            # unit state at all. Two distinct ways that bites:
+            #   * a unit left ENABLED by an earlier `install` (its revision tree
+            #     since emptied) is started by the user manager at boot/login
+            #     (Linger is on), so the revision published here would run with
+            #     no activation approval;
+            #   * a unit in `activating (auto-restart)` (the template sets
+            #     `Restart=on-failure`) re-evaluates `ExecStart` on every attempt,
+            #     so it can pick the revision up within `RestartSec` — while
+            #     `is-enabled` still reads `disabled`.
+            # Both are answered by the same rule `refresh-stage` uses: inactive
+            # AND unable to start on its own.
+            state, problem = _next_unit_state(mod)
+            if problem:
+                raise Refused(problem)
+        if args.command == "install" and args.no_start:
+            # `install --no-start` is a THIRD non-starting publish: it writes the
+            # revision and the unit file and starts nothing. It is therefore in
+            # exactly the same hazard class as `stage`, and reading no unit
+            # state here would leave the invariant this file states — a
+            # non-starting publish is safe only while the unit cannot start
+            # itself — true for two of the three verbs that do it.
+            state, problem = _next_unit_state(mod)
+            if problem:
+                raise Refused(problem)
         if args.command == "refresh-stage":
             # A refresh is the ONE flow that deliberately moves `current`, so
             # every guard that makes that safe is checked here, before any
