@@ -68,6 +68,16 @@ UNIT_TEMPLATE = "fleet_mcp/deploy/serveros-fleet-mcp.service"
 DEFAULT_CONFIG = "~/.config/serveros-fleet-mcp/fleet-mcp.local.yaml"
 MANIFEST = "ARTIFACT.json"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
+#: Written the instant `install()` is about to make its FIRST change to the
+#: host, and removed when it finishes. A caller that finds it after a nonzero
+#: exit knows the run went past the point of no return and needs recovery. That
+#: question cannot be answered from the exit code — `systemctl` can fail *after*
+#: `current` moved — nor from the symlinks, because an install over a live unit
+#: takes the restart path and a restart of the SAME revision leaves them
+#: byte-identical. Absence of this file, after an attempt that reached the
+#: boundary, is the honest answer; presence is the honest answer in the other
+#: direction.
+EFFECT_MARKER = ".fleet-mcp-effect-begun"
 
 
 def die(message: str, code: int = 2) -> None:
@@ -101,6 +111,168 @@ def git_revision(source: Path) -> str | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     return result.stdout.strip() or None
+
+
+def tree_state(source: Path) -> str | None:
+    """Why a git source cannot be published as-is, or None when it is clean.
+
+    A revision name is a claim about BYTES, and this installer copies `fleet_mcp/`
+    and `fleet/` from the FILESYSTEM, not from the object store. So matching
+    `--revision` to `HEAD` is not enough: if the working tree carries uncommitted
+    edits, the copied bytes are not the commit, and `ARTIFACT.json` would name a
+    revision those bytes do not match. This is the check that makes the claim
+    true rather than merely well-typed.
+
+    The REAL git dir is resolved with `git rev-parse --absolute-git-dir` instead
+    of assuming `<source>/.git`: in a linked worktree `.git` is a FILE holding a
+    `gitdir:` pointer, so the index lock lives wherever that pointer leads, and a
+    path guess would look for a lock that cannot exist there.
+
+    Ignored files are deliberately NOT counted. `git status` excludes them, and
+    `.gitignore` is exactly where build residue belongs — requiring a tree with
+    no ignored files would refuse every normal checkout. Tracked edits and
+    untracked non-ignored paths are the dirty tree; `--untracked-files=all`
+    lists them individually rather than collapsing a directory to one entry.
+
+    Every unreadable answer is a refusal: this fails closed.
+
+    "Not a repository" is answered HERE rather than by the caller, and the
+    distinction is load-bearing. A caller that gates this on a readable HEAD
+    exempts a repository whose HEAD is UNBORN — `git init` with nothing
+    committed, or `git checkout --orphan` — and such a tree has exactly the
+    problem this function exists to catch: the bytes are real, no commit
+    describes them, and `--revision` would be taken on trust. Asking
+    "is this a work tree?" first separates "makes no claim" from "makes a claim
+    I cannot verify".
+    """
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(source), *args],
+                              capture_output=True, text=True)
+    try:
+        inside = git("rev-parse", "--is-inside-work-tree")
+    except OSError as exc:
+        return (f"cannot ask git about {source} ({type(exc).__name__}); "
+                f"refusing to publish blind")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        # Not a work tree — UNLESS something here looks like one and git refuses
+        # to read it. A corrupt `.git/HEAD`, and a `.git` FILE whose `gitdir:`
+        # target is gone, both make git answer "not a git repository" (rc 128),
+        # which is otherwise indistinguishable from a plain directory: the
+        # exit code does not differ and the two fatal strings do not generalise.
+        # The `.git` ENTRY is what tells them apart, and for those there IS a
+        # claim that cannot be verified, so `--revision` must not be trusted.
+        # `exists()` follows symlinks, so a `.git` that is a BROKEN symlink
+        # answers False to both git and this check and would be exempted. The
+        # entry is what decides, in every form it takes.
+        entry = source / ".git"
+        if entry.exists() or entry.is_symlink():
+            return (f"{source} has a .git entry that git does not read as a "
+                    f"repository; refusing to publish an unverifiable tree")
+        # A plain directory makes no HEAD claim, so there is nothing to verify
+        # and `--revision` stays this source's documented route.
+        return None
+    try:
+        gitdir = git("rev-parse", "--absolute-git-dir")
+    except OSError as exc:
+        return (f"cannot read the git directory of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if gitdir.returncode != 0 or not gitdir.stdout.strip():
+        # It IS a work tree, so a gitdir that cannot be resolved is a repository
+        # that changed under us. Refuse rather than fall through to publishing.
+        return (f"cannot read the git directory of {source}; refusing to "
+                f"publish an unverifiable tree")
+    lock = Path(gitdir.stdout.strip()) / "index.lock"
+    if lock.exists():
+        return (f"another git process holds {lock}; the tree can change during "
+                f"the copy, so the artifact would not be the revision it names")
+    try:
+        status = git("status", "--porcelain", "--untracked-files=all")
+    except OSError as exc:
+        return (f"cannot read the working-tree state of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if status.returncode != 0:
+        return (f"cannot read the working-tree state of {source} "
+                f"(git status exited {status.returncode})")
+    if status.stdout.strip():
+        count = len(status.stdout.splitlines())
+        return (f"{source} has {count} uncommitted path(s) (tracked edits or "
+                f"untracked files); the installer copies the working tree, so "
+                f"the artifact would carry a revision name those bytes do not "
+                f"match. Commit them, or point --source at a clean tree.")
+    return None
+
+
+def payload_audit(source: Path, staging: Path) -> str | None:
+    """Why the bytes actually COPIED out of a git source are not all tracked.
+
+    `tree_state()` proves the WORKING TREE is clean, and `git status` does not
+    report ignored files — so a `.gitignore`d secret under `fleet_mcp/` leaves
+    that check passing while `copytree` copies it verbatim into the artifact.
+    The revision would then name bytes no commit describes, and a local
+    credential or PAT can ship inside the release. That is the leak this
+    closes.
+
+    The tree that matters is the one that was COPIED, so this asks about
+    `staging`, not about `source`. That also makes the rule precise rather than
+    broad: `IGNORE` already drops `__pycache__`, `*.pyc` and `.pytest_cache`
+    from the copy, so ordinary build residue never reaches `staging` and is
+    never counted. Only a member that would actually SHIP is refused.
+
+    A source that is not a work tree makes no claim about its bytes and
+    `--revision` stays its documented route, so this answers None for it.
+
+    Every unreadable answer is a refusal: this fails closed.
+    """
+    try:
+        inside = subprocess.run(["git", "-C", str(source),
+                                 "rev-parse", "--is-inside-work-tree"],
+                                capture_output=True, text=True)
+    except OSError as exc:
+        return (f"cannot ask git about {source} ({type(exc).__name__}); "
+                f"refusing to publish blind")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+    try:
+        listed = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "-z",
+                                 "--", *PAYLOAD],
+                                capture_output=True, text=True)
+    except OSError as exc:
+        return (f"cannot list the tracked payload of {source} "
+                f"({type(exc).__name__}); refusing to publish blind")
+    if listed.returncode != 0:
+        return (f"cannot list the tracked payload of {source} "
+                f"(git ls-files exited {listed.returncode})")
+    tracked, symlinked = set(), []
+    for entry in listed.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        if not name:
+            continue
+        tracked.add(name)
+        if meta.split(" ", 1)[0] == "120000":
+            symlinked.append(name)
+    if symlinked:
+        # Being TRACKED is not the same as being the commit's BYTES. A symlink's
+        # blob is its TARGET PATH, and `copytree` dereferences it — so the
+        # artifact ships the target's content under a name the commit says is a
+        # link. That target can be anything on this host, a git-ignored secret
+        # included, and the shipped bytes are then described by no commit.
+        return (f"{len(symlinked)} path(s) under {PAYLOAD} are symlinks in "
+                f"{source}; the installer dereferences them, so the artifact "
+                f"would carry the target's bytes under a tracked name — bytes "
+                f"no commit describes. Replace them with regular files.")
+    untracked = [str(path.relative_to(staging))
+                 for path in sorted(staging.rglob("*"))
+                 if path.is_file() and str(path.relative_to(staging)) not in tracked]
+    if untracked:
+        # The paths are counted, not listed: a name can itself be the sensitive
+        # thing, and this refusal is republished into a receipt.
+        return (f"{len(untracked)} path(s) under {PAYLOAD} were copied from "
+                f"{source} but are not tracked by the repository (git-ignored, "
+                f"or untracked in a way `git status` did not report); the "
+                f"artifact would carry bytes no commit describes. Remove them, "
+                f"or point --source at a clean checkout — `git status --ignored` "
+                f"names them.")
+    return None
 
 
 def read_link(path: Path) -> Path | None:
@@ -148,8 +320,28 @@ def binding(config_path: Path) -> dict:
         die(f"no binding at {config_path}. This installer does not create one: a "
             f"service started without a binding refuses at startup, and a binding "
             f"it invented would be a claim about devices nothing verified.")
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    server = data.get("server") or {}
+    # A binding that cannot be PARSED is refused the same way as one that is
+    # absent: `die` rather than let a parser exception escape as a traceback.
+    # An escaping exception skips every caller's refusal path — the wrapper
+    # prints no receipt at all — and a traceback is not a refusal an operator
+    # can act on. The file's CONTENT is never echoed, only the failure kind.
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+        die(f"the binding at {config_path} is not readable YAML "
+            f"({type(exc).__name__}); refusing rather than starting a service "
+            f"from a binding nothing could parse.")
+    if data is not None and not isinstance(data, dict):
+        die(f"the binding at {config_path} is not a mapping; refusing rather "
+            f"than reading a shape nothing declared.")
+    server = (data or {}).get("server") or {}
+    if not isinstance(server, dict):
+        # `server: hello` and `server:\n  - 1` both parse as YAML and both used
+        # to reach `.get` and raise AttributeError — the same escaping-traceback
+        # shape the checks above exist to close, one level down.
+        die(f"the binding at {config_path} declares `server` as "
+            f"{type(server).__name__}, not a mapping; refusing rather than "
+            f"reading a shape nothing declared.")
     bind = str(server.get("bind") or "127.0.0.1")
     port = server.get("port")
     if not isinstance(port, int):
@@ -189,10 +381,49 @@ def wait_for_health(base: str, seconds: float = 20.0) -> dict | None:
 
 def install(args: argparse.Namespace) -> int:
     source = Path(args.source).expanduser().resolve()
-    revision = args.revision or git_revision(source)
+    head = git_revision(source)
+    # `--revision` is the route for a source that is NOT a git repository: there
+    # is no HEAD to read, so the caller must name the bytes. On a git source it
+    # is not an override. The revision names the directory and is written into
+    # ARTIFACT.json, so a caller-chosen SHA would tie those bytes to a commit
+    # that never described them — and, for a starting install, would be the
+    # identity the running service reports. A mismatch is refused rather than
+    # ignored: silently publishing HEAD under the caller's name would be a
+    # different lie, about which revision was asked for.
+    if args.revision and head and args.revision != head:
+        die(f"--revision {args.revision!r} is not the git HEAD of {source} "
+            f"({head!r}). A revision name records which bytes the artifact was "
+            f"built from; drop --revision to use the HEAD, or point --source at "
+            f"the tree those bytes are in. --revision stays available for a "
+            f"source that is not a git repository at all.")
+    revision = args.revision or head
     if not revision:
         die(f"cannot read a git revision from {source}; pass --revision so the "
             f"artifact records which bytes it was built from.")
+    # The revision must not only be NAMED right, the tree must BE it. This
+    # The revision must not only be NAMED right, the tree must BE it. This
+    # installer copies `PAYLOAD` from the filesystem, so a dirty working tree
+    # would publish bytes under a revision name that never described them —
+    # including in the `--revision == HEAD` and `--revision`-omitted cases that
+    # the check above cannot distinguish. Refuse here: before the binding is
+    # read, before anything is copied, and before any systemctl action. A source
+    # that is not a git repository makes no HEAD claim, so this does not apply
+    # to it and `--revision` stays its route.
+    #
+    # V1 COMPATIBILITY, deliberately: this installer is SHARED, so this refusal
+    # reaches V1 installs too. That is a real change to what V1 will accept, and
+    # it is the intended one — the alternative is publishing a V1 artifact whose
+    # ARTIFACT.json names a commit its bytes do not match. It refuses; it does
+    # not rewrite, move, stop or replace anything, so a V1 that is already
+    # running is untouched. The operator remedy is to make the tree clean (or
+    # deploy from a clean revision tree), and the refusal says so. See the
+    # migration note in `docs/fleet-v1-next-ingress-runbook.md`.
+    # Unconditional: `tree_state` answers None for a source that is not a work
+    # tree, and gating it on a readable HEAD here would exempt an UNBORN HEAD —
+    # the one tree that has bytes no commit describes.
+    problem = tree_state(source)
+    if problem:
+        die(problem)
     config_path = Path(args.config).expanduser()
     info = binding(config_path)
     label = args.label or f"fleet-mcp-{dt.date.today():%Y%m%d}"
@@ -227,8 +458,27 @@ def install(args: argparse.Namespace) -> int:
     composition_root.mkdir(parents=True, exist_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
-    for name in PAYLOAD:
-        shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    try:
+        for name in PAYLOAD:
+            shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    except BaseException:
+        # A copy that fails HALFWAY has already written whatever it got to, and
+        # the members it did not reach include the ones this exists to keep out
+        # of an artifact. Removing the staging tree on every failure keeps a
+        # `.gitignore`d secret from being left behind just because an unrelated
+        # path was unreadable.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    # A clean `git status` is not the same as "every copied byte is tracked":
+    # ignored members never appear there, and `copytree` copies them. This is
+    # the first thing checked after the copy and the last thing before anything
+    # is published, and the staging tree is removed first if it carries one —
+    # so a `.gitignore`d secret is neither shipped nor left lying in a staging
+    # directory.
+    problem = payload_audit(source, staging)
+    if problem:
+        shutil.rmtree(staging, ignore_errors=True)
+        die(problem)
     entry = staging / ENTRY
     if not entry.is_file():
         die(f"the payload has no {ENTRY}; the repository declares one, so this is "
@@ -253,7 +503,19 @@ def install(args: argparse.Namespace) -> int:
         **manifest_of(staging),
     }
     (staging / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    # EFFECT BOUNDARY. Everything above this line only REFUSED, or built into
+    # the throwaway `.staging-*` directory: nothing was published, no pointer
+    # moved, no unit was rewritten and no service was touched, so a failure
+    # above here needs no recovery and must not stop a healthy Next. The marker
+    # is written immediately before the first PUBLISHING act — after the
+    # `revisions/` directory exists, so a failure to create it (which changes
+    # nothing observable) is not reported as an effect — and it is removed only
+    # on the success paths. That is what lets the caller tell a refusal it must
+    # leave alone from a run it must roll back.
     revision_dir.parent.mkdir(parents=True, exist_ok=True)
+    marker = composition_root / EFFECT_MARKER
+    marker.write_text(f"{os.getpid()}\n", encoding="utf-8")
     staging.replace(revision_dir)
 
     previous = read_link(composition_root / "current")
@@ -277,6 +539,7 @@ def install(args: argparse.Namespace) -> int:
                           "unit_path": str(unit_path), "started": False,
                           "next": f"systemctl --user start {UNIT_NAME}"},
                          indent=2))
+        marker.unlink(missing_ok=True)   # finished cleanly: nothing to recover
         return 0
 
     # `enable --now` is a START, and a start on a unit that is ALREADY running is
@@ -301,8 +564,12 @@ def install(args: argparse.Namespace) -> int:
                       "unit_path": str(unit_path), "started": started, "health": health},
                      indent=2))
     if not started:
+        # The marker is deliberately LEFT here: the install changed the host and
+        # the service did not come back, which is exactly the state the caller
+        # must recover rather than walk away from.
         die(f"{UNIT_NAME} is installed and did not answer on {plan['health']}; "
             f"`journalctl --user -u {UNIT_NAME} -n 40` has the reason", code=3)
+    marker.unlink(missing_ok=True)       # finished cleanly: nothing to recover
     return 0
 
 
