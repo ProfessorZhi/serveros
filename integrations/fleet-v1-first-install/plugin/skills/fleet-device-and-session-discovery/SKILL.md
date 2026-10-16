@@ -31,6 +31,12 @@ often collapsed into one word and must not be:
 `UNKNOWN`, `NOT_EXPOSED` and `UNAVAILABLE` are different answers with different
 fixes. A device that did not answer is not a device that does not exist.
 
+An `UNKNOWN` is **never** a permission. A gate whose state could not be read is
+not an open gate: "I could not tell" resolves to *do not act, and say so*, never
+to *proceed*. The same rule holds at every layer below — presence, reachability,
+inventory, and the node's own floor. A refusal outranks an unknown, and an
+unknown outranks nothing at all.
+
 ## OS user and credential profile are part of the address
 
 One physical machine can run several Linux accounts, and one account can hold
@@ -54,7 +60,7 @@ from another:
 | Layer | What it is | What it decides |
 |---|---|---|
 | the **central Fleet control plane** | this MCP surface: the ingress holding the device registry, the session index and the run index | who may be reached at all, and what the calling credential carries |
-| the **ServerOS core on each device** | the node runtime *on that machine* | what the machine is, which OS accounts and runtimes exist, and its own floor |
+| the **ServerOS core on each device** | the node runtime *on that machine* — the **Core-Lite** observed today is **per-OS-user and observe-only** | what the machine is, which OS accounts and runtimes exist, and its own floor. A reading, never a control channel |
 | the **Ability family inside the device's agent** | the capabilities the coding agent on that machine can actually invoke | *how* the work is done there |
 | the **cloud-side Work handoff** | the message and the run: dispatch, tracking, read-back | whether what you asked for happened |
 

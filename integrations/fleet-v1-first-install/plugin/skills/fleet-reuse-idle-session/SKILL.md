@@ -17,7 +17,7 @@ starts with no project context, no prior turns, and a fresh grant requirement.
 3. `fleet_read_session` to confirm what it is actually doing before you add to
    it. A session that looks idle in a listing may be between turns of a long
    run.
-4. `fleet_send_session` with a bounded, self-contained message. The receiving
+4. `fleet_send_to_session` with a bounded, self-contained message. The receiving
    agent has none of this conversation.
 
 ## Sending well

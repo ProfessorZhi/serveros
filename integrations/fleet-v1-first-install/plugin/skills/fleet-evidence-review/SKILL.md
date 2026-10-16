@@ -32,6 +32,10 @@ about what happened next. Close every Fleet task by reading, not by asking:
 - A receipt you did not open.
 - The absence of an error. A refused action and an action that never ran look
   the same from the outside.
+- A listing, a resolution or a status that came back `UNKNOWN`. **Listed is not
+  resolvable**, and an `UNKNOWN` is not a pass: it is the absence of a reading,
+  so it discharges nothing and decides nothing. Report it as `UNKNOWN` and say
+  which input was missing.
 
 ## Report the UNKNOWNs
 

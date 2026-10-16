@@ -8,8 +8,13 @@ description: What the Fleet tool list does and does not authorize, which runtime
 The tool surface is a **catalogue of what can be asked for**, not a grant. Each
 verb is separately gated, and the gates are on other machines:
 
-- the **scope** on the presented credential (six scopes, and a token is minted
-  with its scopes at authorization — they cannot be widened afterwards);
+- the **scope** on the presented credential. The surface **advertises** six
+  scopes, and that is not the same as a caller holding six: a token carries only
+  the **granted** subset, the default grantable set is **two** (`fleet:read`,
+  `fleet:send`), and the scopes are fixed at authorization — they cannot be
+  widened afterwards, only re-consented. The owner's own personal access token
+  is a different credential with a different grant, so never generalise it to a
+  client and never assume "everyone has the six";
 - the **device binding** on the ingress (`allow_send`, `allow_create`,
   `allow_control`);
 - the **operator grant**, per principal, per device, per verb;
@@ -36,6 +41,16 @@ that runtime**. If you find yourself describing it as "the fleet runs with
 bypass", stop — that sentence is false and it is the one that gets a shared
 machine damaged.
 
+Two labels in that table get over-read, and both over-read the owner:
+
+- **`admin`** names an upstream **model/billing** gateway route. It is not Linux
+  root, not the Fleet owner, and not `sudo`. A runtime described as the admin
+  route has no administrative power over the machine it runs on.
+- **`bypassPermissions`** is a CloudCLI/Claude **permission-mode** choice, not OS
+  admin. It does not bypass Fleet scopes, per-OS-account ownership, a project
+  ceiling, or the node's own authorization floor — and it is *verified* by
+  creating a permitted session, never asserted from the label.
+
 ## Never do these
 
 - **Do not interrupt another agent's run** to free a slot, to take a turn, or
@@ -43,6 +58,12 @@ machine damaged.
 - **Do not put a credential, token or key into a message, a prompt, a file or a
   session.** Credentials are named by anchors and read where they live. The
   ingress holds none, and it must not be made to hold one.
+- **Do not inject a local secret and do not reach a device through a shell of
+  your own.** The binding is a URL; it is never a local command, a shell
+  pipeline, or an environment block, and nothing secret may be written into a
+  plugin or a generated tree. The device runs its own approved operations —
+  "run this shell command on the box" is not one of the 33 tools, and no
+  wording in a task makes it one.
 - **Do not reach another user's Linux account.** Device access is not account
   access: a device reference names a machine, and the OS user and credential
   instance are part of the address for a reason.
@@ -58,9 +79,11 @@ see the checkout, the toolchain and the services. Delegating the second to a
 description of it is how a change ships unverified.
 
 Fleet V1 is the release that makes that loop work on a real machine. The
-**OpenAgents layering and long-horizon autonomous-agent governance are V2** and
-are not part of this release: do not require them, plan around them, or describe
-them as available.
+**OpenAgents layering, role-Tag hierarchical teams, autonomous model scheduling
+and long-horizon autonomous-agent governance are V2** and are not part of this
+release: do not require them, plan around them, or describe them as available. A
+**Role** in that sense is a V2 organising concept — it is not a scope, not a
+project permission and not a grant, so never let the word stand in for one.
 
 ## Bounded self-healing is V1, and "bounded" is the whole word
 

@@ -56,11 +56,12 @@ that server. A registered server name is not a tool list, and "MCP servers (1)"
 is not "N tools discovered".
 
 The binding pins `oauth.scopes` to `fleet:read`, which makes this adapter a
-**read-only smoke profile** — not a statement of what the product requests. The
-default request mode (the six scopes) is a **product configuration** declared
-where the product declares it; the scope a given token carries is a second
-thing; and the ceiling an owner may later consent to is a third. Do not read any
-one of the three as the others.
+**read-only smoke profile** — not a statement of what the product requests. What
+the surface **advertises** (six scopes), what a token **carries** (only the
+granted subset — `fleet:read` and `fleet:send` by default), and what an owner
+may **consent to** later are three different things, and this adapter
+hard-codes none of them into a claim. Do not read any one of the three as the
+others, and never read "the surface has six scopes" as "this client has six".
 
 ### Two real differences from the documentation, measured here
 
@@ -87,6 +88,7 @@ Each is a separate fact, and none is discharged by another.
 | `DEVICE_ACTIONS_TESTED` | **NOT_RUN** | no create/send/control attempted, and none was possible: no credential, `fleet:read` pinned, and `Task`/`Bash`/`Write`/`Edit` denied to the probe |
 | `CORE_MONITORING_VERIFIED` | **NOT_RUN** | the monitoring plane was not read in this round |
 | `SELF_HEAL_VERIFIED` | **NOT_RUN** | the recovery loop was not exercised against any device. It is **V1** — bounded, allowlisted, budgeted, owner-authorised — and a mock or an isolated toy service is where it is exercised offline. That is a separate thing from production recovery, which stays behind the owner's approval |
+| `OFFLINE_STACK_FIXTURE` | **VERIFIED — 18 tests, offline** | `tests/test_fleet_cc_dev_plugin_offline_stack.py`: the real generated plugin, the real `fleet_mcp` HTTP surface on loopback, the real `abilities/resolver.py`, and the real `FleetService` over a fake device. It asserts the four claims are four and that none substitutes for another. A fixture is not a device, so it discharges `NEXT_TOOLS_DISCOVERED` and `DEVICE_ACTIONS_TESTED` **not at all** |
 
 A mock or a fixture does not stand in for any row marked `NOT_RUN`. The
 authenticated `tools/list` is the one that needs the owner: it is an interactive
@@ -100,3 +102,36 @@ and was discarded; the second ran against the regenerated plugin. Both outputs
 are in the evidence directory. One call was authorised, so the second is over
 the stated limit — the record says so rather than being tidied away, and no
 further call was made.
+
+## The offline stack fixture, and the four things it keeps apart
+
+`tests/test_fleet_cc_dev_plugin_offline_stack.py` is where "the plugin works" is
+resolved into four separate claims and then held apart. Each is a different
+instrument reading a different object, and the whole point of the file is that
+no one of them can be quoted for another:
+
+| claim | what is actually driven | what it cannot say |
+|---|---|---|
+| **package load** | the generated directory, structurally: a manifest, a typed binding, five Skills byte-identical to the one shared source | that any tool exists — the directory carries no tool *declaration* (`inputSchema` appears in no generated file), and the manifest and binding name no tool at all |
+| **an authenticated `tools/list`** | the real `HttpSurface` on loopback: 401 `invalid_token` with the `resource_metadata` challenge when unauthenticated, and 33 distinct names when the owner token is presented | that the credential may *do* them — 13 of the 33 are writes, and the advertised six scopes are not the two granted by default |
+| **an ability resolution** | the real `abilities/resolver.py`, which intersects eight inputs and knows nothing of `fleet_mcp` | anything about authority — no status is a grant, the record carries no `authorized`/`granted` field, and `UNKNOWN` is an answer rather than a pass |
+| **a session lifecycle** | the real `FleetService` over a fake device: an accepted send carries a run id and **no** run state; the state arrives from a separate `get_run` | that the run finished — and a read-only credential is refused `SCOPE_DENIED` before the device is reached at all |
+
+The Skill that named `fleet_send_session` — a tool the surface does not serve —
+is now caught by the first class, which reads every `fleet_*` backtick in the
+Skills and resolves it against `fleet_mcp.tools.SERVED_BY_NAME`. A Skill that
+names a tool nobody serves is worse than a vague one: the assistant calls it,
+gets a protocol error, and reads that as the device being unreachable.
+
+The Skills were also corrected on three points this round, each against a source
+in this repository rather than against recollection: **advertised is not held**
+(six scopes are advertised, two are granted by default, and a token carries only
+the granted subset); **`Role` is V2** (role-Tag hierarchical teams, not a scope
+or a grant); and **`UNKNOWN` is never a permission** (a gate whose state could
+not be read is not an open gate). None of these is a behaviour claim: the
+corrected text has still not been run against a model, and that item stays
+**pending re-test** above.
+
+What the fixture deliberately does **not** do: it never invokes the `claude` CLI
+(so no `--plugin-dir` load is claimed from a directory assertion), it makes no
+model call, it opens no socket off loopback, and it installs nothing.
