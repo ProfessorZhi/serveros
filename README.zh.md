@@ -1,6 +1,6 @@
 # ServerOS
 
-[English](README.md) · [完整架构](ARCHITECTURE.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[English](README.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1 设备/MCP 运行架构](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Agent/Session V2](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
 实施入口：[唯一P0–P12计划](docs/CC-EXECUTION-PLAN.md) · [2026-09-25现场基线](docs/IMPLEMENTATION-BASELINE-20260925.md) · [交给服务器CC的短提示](docs/CC-IMPLEMENTATION-HANDOFF.md)。计划覆盖实现、获准安装、真实验收、定时启用与目录收口，不代表已执行。
 

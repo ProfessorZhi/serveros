@@ -1,6 +1,6 @@
 # ServerOS
 
-[中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Fleet V1 topology and MCP/Skills](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [V2 Agent/Session architecture](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
 Current target: [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md).
 Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-environment.md),
