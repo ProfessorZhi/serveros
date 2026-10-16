@@ -233,7 +233,7 @@ def payload_audit(source: Path, staging: Path) -> str | None:
     if inside.returncode != 0 or inside.stdout.strip() != "true":
         return None
     try:
-        listed = subprocess.run(["git", "-C", str(source), "ls-files", "-z",
+        listed = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "-z",
                                  "--", *PAYLOAD],
                                 capture_output=True, text=True)
     except OSError as exc:
@@ -242,7 +242,24 @@ def payload_audit(source: Path, staging: Path) -> str | None:
     if listed.returncode != 0:
         return (f"cannot list the tracked payload of {source} "
                 f"(git ls-files exited {listed.returncode})")
-    tracked = {name for name in listed.stdout.split("\0") if name}
+    tracked, symlinked = set(), []
+    for entry in listed.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        if not name:
+            continue
+        tracked.add(name)
+        if meta.split(" ", 1)[0] == "120000":
+            symlinked.append(name)
+    if symlinked:
+        # Being TRACKED is not the same as being the commit's BYTES. A symlink's
+        # blob is its TARGET PATH, and `copytree` dereferences it — so the
+        # artifact ships the target's content under a name the commit says is a
+        # link. That target can be anything on this host, a git-ignored secret
+        # included, and the shipped bytes are then described by no commit.
+        return (f"{len(symlinked)} path(s) under {PAYLOAD} are symlinks in "
+                f"{source}; the installer dereferences them, so the artifact "
+                f"would carry the target's bytes under a tracked name — bytes "
+                f"no commit describes. Replace them with regular files.")
     untracked = [str(path.relative_to(staging))
                  for path in sorted(staging.rglob("*"))
                  if path.is_file() and str(path.relative_to(staging)) not in tracked]
@@ -441,8 +458,17 @@ def install(args: argparse.Namespace) -> int:
     composition_root.mkdir(parents=True, exist_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
-    for name in PAYLOAD:
-        shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    try:
+        for name in PAYLOAD:
+            shutil.copytree(source / name, staging / name, ignore=IGNORE)
+    except BaseException:
+        # A copy that fails HALFWAY has already written whatever it got to, and
+        # the members it did not reach include the ones this exists to keep out
+        # of an artifact. Removing the staging tree on every failure keeps a
+        # `.gitignore`d secret from being left behind just because an unrelated
+        # path was unreadable.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     # A clean `git status` is not the same as "every copied byte is tracked":
     # ignored members never appear there, and `copytree` copies them. This is
     # the first thing checked after the copy and the last thing before anything

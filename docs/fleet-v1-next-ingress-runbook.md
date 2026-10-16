@@ -207,9 +207,13 @@ otherwise would be wrong. What it changes for V1:
 
 * **A V1 install from a dirty git source is now refused.** V1's installer
   defaults `--source` to the tree `install.py` lives in, so an install run from a
-  checkout with uncommitted edits — tracked or untracked, ignored files excepted —
-  stops with a message naming the count. Before, it published an artifact whose
-  `ARTIFACT.json` named a commit those bytes were not.
+  checkout with uncommitted edits — tracked or untracked — stops with a message
+  naming the count. Before, it published an artifact whose `ARTIFACT.json` named
+  a commit those bytes were not.
+* **A V1 install whose payload carries a git-ignored member, or a symlink, is
+  now refused too** — see the next subsection. A normal checkout is unaffected:
+  the only files that are present-but-untracked under `fleet_mcp/` and `fleet/`
+  on this host are `__pycache__/*.pyc`, which the copy already drops.
 * **A V1 that is already running is untouched.** This refuses; it does not stop,
   restart, move, rewrite or replace anything, and it is reached before the
   binding is read. There is no path from this change to a live V1 process.
@@ -222,6 +226,34 @@ enforcing this only for the Next wrapper is a one-line removal of the
 `tree_state()` call in `install()`. It is not done here because the defect is
 real for V1 too: the same dirty tree publishes the same misnamed artifact, and
 refusing it is the only outcome that does not ship a lie.
+
+#### And the copied bytes must be the TRACKED ones
+
+A clean `git status` is not the same claim. `git status` never reports ignored
+files, and `copytree` copies them — so a `.gitignore`d secret sitting under
+`fleet_mcp/` left the tree looking clean while the artifact carried it and
+`ARTIFACT.json` listed it. `payload_audit()` closes that: it compares the tree
+that was actually **COPIED** against `git ls-files`, and refuses any member the
+repository does not track.
+
+Two things follow, and both are deliberate:
+
+* **Ordinary build residue is not a refusal.** `IGNORE` already drops
+  `__pycache__`, `*.pyc` and `.pytest_cache` from the copy, so they never reach
+  the staging tree and are never counted. Measured on this host, the only
+  present-but-untracked files under the payload of either real V1 source are
+  `__pycache__/*.pyc` — so **no normal checkout is refused by this rule.**
+* **A symlink under the payload is a refusal.** A symlink's tracked blob is its
+  *target path*, and the copy *dereferences* it — so the artifact would ship the
+  target's content under a name the commit says is a link, and that target can
+  be anything on the host, a git-ignored secret included.
+
+A source that is not a git repository makes no claim about its bytes at all, so
+none of this applies to it and `--revision` stays its route. The refusal names
+the **count**, never the paths: a filename can itself be the sensitive thing, and
+the reason is republished into the receipt. The staging tree is removed before
+the refusal is raised, so a refused member is neither shipped nor left in a
+`.staging-*` directory — including when the copy itself fails partway.
 
 ### Rung 2 → `NEW_NODE_REGISTERED` ⚠️ **owner browser required**
 
