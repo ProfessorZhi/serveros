@@ -290,11 +290,30 @@ write_scope:
 # implement against instead of a sentence to rediscover.
 # ---------------------------------------------------------------------------
 durable_effects:
-  implemented: false
+  implemented: partial
+  what_exists: >-
+    A durable attempt record keyed by the idempotency key, in the existing Agent
+    Control store (`runtime/agent_control_store.py#dispatch_attempts`), with the
+    five phases and the reconcile decision owned by
+    `runtime/dispatch_attempts.py`. The router's replay guard now (a) CONFLICTS
+    on the same key with a different payload — it compared `action` and
+    `device_ref` and never the payload before, so a changed instruction was
+    answered as a replay of the first call (#237 T5) — and (b) consults the
+    durable record when it is given one, so a recorded EFFECT_UNKNOWN refuses a
+    retry instead of dispatching it a second time (#237 T4/T9).
+  what_remains: >-
+    The CALL_NOT_SENT phase must be written at the DISPATCH SITE that owns the
+    send — BEFORE the effect — so that "crashed before sending" and "crashed
+    after sending with the answer lost" are distinguishable; a record written
+    only after the effect cannot tell them apart. And the provider/owner-backed
+    RECONCILE that turns an EFFECT_UNKNOWN back into SETTLED. Wiring the durable
+    store into the deployed construction site (the daemon/MCP path) is the other
+    remaining step: today `attempts` is optional, so a router built without one
+    keeps the in-process guard it always had.
   blocker: >-
-    A lost response to a mutating dispatch cannot be reconciled today: restart
-    the router and the same intent is a second effect. This is #237 B2 and it is
-    NOT closed by this revision.
+    A lost response to a mutating dispatch is not fully reconciled today: restart
+    the router WITHOUT a durable store and the same intent is a second effect.
+    This is #237 B2/#245 and it is PARTLY closed by this revision, not closed.
   required_interface:
     attempt_identity: >-
       A stable id per intended EFFECT, persisted before the dispatch and

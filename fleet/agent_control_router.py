@@ -82,6 +82,11 @@ actor = _load("_serveros_context_actor", _ROOT / "context" / "actor.py")
 # this boundary, and two module instances would be two exception classes with
 # one name — a `except` clause that silently stops matching.
 coordination = _load("serveros_runtime_coordination", _RUNTIME / "coordination.py")
+# #245 / S2. The dispatch-attempt kernel: intent identity, phases and the
+# reconcile decision. Loaded under the same synthetic name everywhere, so the
+# `AttemptRefused` class caught here is the one the store raises.
+dispatch_attempts = _load("serveros_runtime_dispatch_attempts",
+                          _RUNTIME / "dispatch_attempts.py")
 
 SCHEMA = "serveros/agent-control-router.v1"
 CONTRACT = _HERE / "agent-control-contract.yaml"
@@ -896,7 +901,8 @@ class FleetAgentControlRouter:
 
     def __init__(self, *, local_device_ref: str,
                  transports: list[AgentControlTransport] | None = None,
-                 registry=None, clock=None, context_store: dict | None = None) -> None:
+                 registry=None, clock=None, context_store: dict | None = None,
+                 attempts=None) -> None:
         if not str(local_device_ref).startswith("device:"):
             raise TargetError(
                 f"{local_device_ref!r} is not a device ref. This router is the "
@@ -924,6 +930,14 @@ class FleetAgentControlRouter:
         # than left for a reader to assume the stronger thing.
         self._seen_keys: dict[str, dict] = {}
         self._max_seen = 512
+        # #245 / S2. The DURABLE half, when one is given: an object with
+        # `get_dispatch_attempt(key)` / `put_dispatch_attempt(record)` — the
+        # existing Agent Control store satisfies both. It is optional so that a
+        # router built without a store keeps the in-process guard rather than
+        # silently gaining a durable claim it cannot honour; and when it IS
+        # given, the guard reads the record that survives a restart, so a retry
+        # after a lost response is refused instead of dispatched a second time.
+        self._attempts = attempts
 
     # -- evidence ----------------------------------------------------------
 
@@ -1137,27 +1151,69 @@ class FleetAgentControlRouter:
 
     # -- idempotency -------------------------------------------------------
 
-    def _replay(self, request: AgentControlRequest) -> AgentControlResponse | None:
-        """A retry of the same intent, answered from the first attempt.
+    def _intent_digest(self, request: AgentControlRequest) -> str:
+        """The identity of this request's INTENT — the payload, not just the key.
 
-        Scoped to one router instance and to mutations. A read replayed from
-        memory would answer with a stale observation, which is worse than
-        answering slowly; a mutation replayed from memory is the one case where
-        the caller's intent is that the second attempt have no second effect.
+        #237 T5. The guard used to compare only `action` and `device_ref`, which
+        two different sends on one session share — so a retry that kept the key
+        but changed the instruction was answered with the first call's result.
+        The digest is what makes that a CONFLICT.
+        """
+        return dispatch_attempts.intent_digest(
+            action=request.action, device_ref=request.device_ref,
+            verb=request.verb, params=request.params,
+            workspace=request.workspace, work_item=request.work_item)
+
+    def _replay(self, request: AgentControlRequest) -> AgentControlResponse | None:
+        """A retry of the same intent, answered from the record of the first.
+
+        Two records, one decision. When a durable store was given (`attempts`),
+        the record it holds — which survives a restart — decides, and a recorded
+        UNKNOWN outcome refuses the retry instead of dispatching it again (#237
+        T4/T9). Without one, the in-process dict decides, and the limitation is
+        the one the contract already declares.
+
+        A read is never replayed: answering one from memory would answer with an
+        observation that has aged, which is worse than answering slowly.
         """
         if not request.idempotency_key or not _mutating(request.verb):
             return None
+        digest = self._intent_digest(request)
+
+        if self._attempts is not None:
+            recorded = self._attempts.get_dispatch_attempt(request.idempotency_key)
+            verdict = dispatch_attempts.reconcile(recorded, digest=digest)
+            if verdict["verdict"] == dispatch_attempts.PROCEED:
+                return None
+            if verdict["verdict"] == dispatch_attempts.REPLAY:
+                return AgentControlResponse(
+                    ok=True, action=request.action, verb=request.verb,
+                    device_ref=request.device_ref,
+                    correlation_id=request.correlation_id,
+                    result=dict(recorded.get("result") or {},
+                                idempotent_replay=True),
+                    dispatched=False)
+            # CONFLICT / IN_FLIGHT / REFUSE_UNKNOWN / REFUSE_SUPERSEDED all
+            # refuse, each saying why in the kernel's own sentence. A caller
+            # told only "no" could not tell a settled replay from an unknown
+            # outcome, and the repair differs.
+            raise Rejected(
+                f"idempotency key {request.idempotency_key!r}: "
+                f"{verdict['because']}")
+
         seen = self._seen_keys.get(request.idempotency_key)
         if seen is None:
             return None
-        if seen["action"] != request.action or seen["device_ref"] != request.device_ref:
+        if (seen["action"] != request.action
+                or seen["device_ref"] != request.device_ref
+                or seen.get("intent_digest") != digest):
             # The same key on a different intent is a caller bug, and silently
             # answering it with the other call's result would report an effect
             # that never happened for this request.
             raise Rejected(
                 f"idempotency key {request.idempotency_key!r} was already used for "
-                f"{seen['action']} on {seen['device_ref']}; a key identifies one "
-                f"intent, not one caller")
+                f"{seen['action']} on {seen['device_ref']} with a different "
+                f"payload; a key identifies one intent, not one caller")
         return AgentControlResponse(
             ok=True, action=request.action, verb=request.verb,
             device_ref=request.device_ref, correlation_id=request.correlation_id,
@@ -1169,9 +1225,24 @@ class FleetAgentControlRouter:
     def _remember(self, request: AgentControlRequest, result: dict) -> None:
         if not request.idempotency_key or not _mutating(request.verb):
             return
+        digest = self._intent_digest(request)
+        if self._attempts is not None:
+            # The durable record. Written AFTER the effect here because this
+            # router records a SETTLED outcome; the CALL_NOT_SENT phase (the one
+            # written BEFORE dispatch, which is what distinguishes "crashed
+            # before sending" from "crashed after sending") belongs to the
+            # dispatch site that owns the send, and wiring it is the remaining
+            # step #245 names. A store that refuses the write is NOT swallowed:
+            # the caller would otherwise believe a retry will be recognised when
+            # nothing recorded it.
+            self._attempts.put_dispatch_attempt(dispatch_attempts.attempt_record(
+                key=request.idempotency_key, action=request.action,
+                device_ref=request.device_ref, verb=request.verb,
+                intent_digest=digest, phase=dispatch_attempts.SETTLED,
+                work_item=request.work_item, result=result, at=_now()))
         self._seen_keys[request.idempotency_key] = {
             "action": request.action, "device_ref": request.device_ref,
-            "result": result,
+            "intent_digest": digest, "result": result,
         }
         if len(self._seen_keys) > self._max_seen:
             for key in list(self._seen_keys)[: len(self._seen_keys) - self._max_seen]:

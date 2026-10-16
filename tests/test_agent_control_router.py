@@ -39,6 +39,12 @@ provider_instance = _load("serveros_abilities_provider_instance",
                           ROOT / "abilities" / "provider_instance.py")
 actor = _load("_serveros_context_actor", ROOT / "context" / "actor.py")
 approval = _load("serveros_runtime_approval", ROOT / "runtime" / "approval.py")
+# #245 / S2. The durable attempt store and the kernel the router's replay guard
+# now reads, so a retry after a restart is refused from the RECORD.
+store_mod = _load("serveros_runtime_agent_control_store",
+                  ROOT / "runtime" / "agent_control_store.py")
+attempts_mod = _load("serveros_runtime_dispatch_attempts",
+                     ROOT / "runtime" / "dispatch_attempts.py")
 
 
 # A context ServerOS really minted, from a report a HumanControlProvider really
@@ -236,7 +242,7 @@ def _read_with_timeout(proc, seconds: float = 1.0) -> str:
 
 
 def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE,
-           bindings=None):
+           bindings=None, attempts=None):
     # §17. `assume-bound` because these are tests about ROUTING, not about the
     # thread boundary — `tests/test_coordination.py` is where the boundary is
     # tested, and it uses the refusing mode. The mode is named here rather than
@@ -247,7 +253,8 @@ def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE,
     if node is not None:
         nodes.append(node)
     return router_mod.FleetAgentControlRouter(
-        local_device_ref=local, transports=nodes, context_store=context_store)
+        local_device_ref=local, transports=nodes, context_store=context_store,
+        attempts=attempts)
 
 
 def deployed_router(service, **kwargs):
@@ -998,6 +1005,59 @@ class TestIdempotency(unittest.TestCase):
         source = (ROOT / "fleet" / "agent-control-contract.yaml").read_text(encoding="utf-8")
         self.assertIn("take no key", source)
         self.assertIn("this guard cannot see it", source)
+
+    def test_the_same_key_with_a_different_payload_is_a_conflict(self):
+        """#237 T5. Same key, same action, same device — a DIFFERENT payload.
+
+        The guard compared `action` and `device_ref` and never the payload, so a
+        retry that changed the instruction was answered with the first call's
+        result: a second intent reported as a replay of the first, and the
+        second instruction was dropped with no error.
+        """
+        r = router(RecordingService())
+        r.route(router_mod.request_from_payload(payload(
+            MUTATING, LOCAL, context_ref=CONTEXT_REF,
+            params={"instruction": "more", "turn_idempotency_key": "t-pay"})))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(payload(
+                MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                params={"instruction": "a DIFFERENT thing",
+                        "turn_idempotency_key": "t-pay"})))
+        self.assertIn("different", str(caught.exception))
+
+    def test_a_durable_attempt_refuses_a_retry_across_a_restart(self):
+        """#245. An outcome the record does not know is not retried blind.
+
+        A FRESH router over the SAME store — a restart — and the recorded attempt
+        is what refuses the second dispatch, not a dict that died with the first
+        router. The provider is never reached.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = store_mod.AgentControlStore(Path(td) / "control.json")
+            request = router_mod.request_from_payload(payload(
+                MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                params={"instruction": "more", "turn_idempotency_key": "t-dur"}))
+            store.put_dispatch_attempt(attempts_mod.attempt_record(
+                key=request.idempotency_key, action=request.action,
+                device_ref=request.device_ref, verb=request.verb,
+                intent_digest=attempts_mod.intent_digest(
+                    action=request.action, device_ref=request.device_ref,
+                    verb=request.verb, params=request.params,
+                    workspace=request.workspace, work_item=request.work_item),
+                phase=attempts_mod.EFFECT_UNKNOWN))
+
+            svc = RecordingService()
+            restarted = router(svc, attempts=store)
+            with self.assertRaises(target.Rejected) as caught:
+                restarted.route(router_mod.request_from_payload(payload(
+                    MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                    params={"instruction": "more",
+                            "turn_idempotency_key": "t-dur"})))
+            self.assertIn("not known", str(caught.exception))
+            self.assertEqual(svc.names(), [],
+                            "the retry reached the provider despite an unknown "
+                            "recorded outcome")
 
 
 # ---------------------------------------------------------------------------

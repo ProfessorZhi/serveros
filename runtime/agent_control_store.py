@@ -686,7 +686,8 @@ class AgentControlStore:
                     f"had never been granted.")
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
-                    "admissions": {}, "checkpoints": {}}
+                    "admissions": {}, "checkpoints": {},
+                    "dispatch_attempts": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -707,6 +708,11 @@ class AgentControlStore:
         data.setdefault("grants", {})
         data.setdefault("admissions", {})
         data.setdefault("checkpoints", {})
+        # #245. Durable dispatch attempts, added the same additive way every
+        # other section was: an older store document simply lacks the key and
+        # gets an empty section, so this is a forward-compatible read of an
+        # existing file rather than a migration.
+        data.setdefault("dispatch_attempts", {})
         data["schema"] = SCHEMA
         return data
 
@@ -874,6 +880,58 @@ class AgentControlStore:
 
     def bindings(self) -> dict:
         return dict(self._read()["bindings"])
+
+    # -- durable dispatch attempts (#245 / S2) ------------------------------
+    #
+    # The record `runtime/dispatch_attempts.py#reconcile` reads. It lives HERE,
+    # in the existing Agent Control store, because #245 names Agent Control as
+    # its owner and because a second attempt store is the "new-lease-system"
+    # shape `integration/components.yaml` refuses by name.
+
+    def put_dispatch_attempt(self, record: dict) -> dict:
+        """Record one dispatch attempt, durably, keyed by its idempotency key.
+
+        The record is written BEFORE the effect is attempted (phase
+        CALL_NOT_SENT), because "we crashed before sending" and "we crashed
+        after sending and do not know" are the same bytes on disk and opposite
+        answers — and only a record that exists first can tell them apart.
+
+        NOT write-once, and that is the point: an attempt MOVES through phases
+        (`CALL_NOT_SENT` -> `ACCEPTED` -> `SETTLED`/`EFFECT_UNKNOWN`), and a
+        record that could not move could not say the one thing it exists for.
+        What IS refused is a change of INTENT: a second record under the same key
+        with a different `intent_digest` is the same-key-different-payload case,
+        refused here as well as in the kernel — the write point must not be a
+        way to overwrite a different intent.
+        """
+        key = str(record.get("key") or "")
+        if not key:
+            raise StoreError(
+                "a dispatch attempt without a key cannot be stored: there is "
+                "nothing for a retry to be matched to")
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            existing = section.get(key)
+            if (existing is not None
+                    and str(existing.get("intent_digest"))
+                    != str(record.get("intent_digest"))):
+                raise StoreError(
+                    f"dispatch key {key!r} already records a DIFFERENT intent "
+                    f"(payload digest {existing.get('intent_digest')!r} vs "
+                    f"{record.get('intent_digest')!r}). A key identifies one "
+                    f"intent, and a different payload under it is a conflict, "
+                    f"not an update")
+            stored = dict(record)
+            section[key] = stored
+            self._flush()
+            return stored
+
+    def get_dispatch_attempt(self, key: str) -> dict | None:
+        """The recorded attempt for a key, or None if nothing was recorded."""
+        return self._read().get("dispatch_attempts", {}).get(str(key))
+
+    def dispatch_attempts(self) -> dict:
+        return dict(self._read().get("dispatch_attempts", {}))
 
     def close_binding(self, ref: str, *, at: str, reason: str | None = None) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
