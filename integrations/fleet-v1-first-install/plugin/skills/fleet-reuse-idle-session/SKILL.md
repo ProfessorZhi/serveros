@@ -40,3 +40,19 @@ session has been quiet, because your own turn is ending, or because you want
 to change the subject. Someone else's agent may be mid-task behind that
 session, and stopping it is not recoverable by you. Interrupt is for a run you
 started and know is wrong.
+
+## Close the loop the same way you opened it
+
+Dispatch is the middle of the task, not the end of it. After you send:
+
+1. **Keep the run id** and read it back (`fleet_get_run`) until it settles.
+   A message that was accepted is not a task that finished.
+2. **Read the later turns and the artefact** — `fleet-evidence-review` says
+   what counts as evidence and what only looks like it.
+3. **Read the resolved runtime, model and mode back** from the session or the
+   run record, and report *those*. Reporting the values you asked for is
+   reporting your own request back to yourself.
+
+A reused session is still somebody's session. Do not resume, restart or nudge
+it to make your own read-back tidier — a second writer is how a clean checkout
+stops being one.

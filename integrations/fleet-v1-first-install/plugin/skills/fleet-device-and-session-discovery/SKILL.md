@@ -44,3 +44,43 @@ only names the device is not enough.
 If the answer you need is not in the listing, say so. Do not infer a device, a
 user or a session from a friendly name, a screenshot or a previous
 conversation.
+
+## The four layers, and which one you are talking to
+
+"Fleet" is one word for four different things. A request that collapses them
+cannot be routed, and a refusal from one layer will be misread as a refusal
+from another:
+
+| Layer | What it is | What it decides |
+|---|---|---|
+| the **central Fleet control plane** | this MCP surface: the ingress holding the device registry, the session index and the run index | who may be reached at all, and what the calling credential carries |
+| the **ServerOS core on each device** | the node runtime *on that machine* | what the machine is, which OS accounts and runtimes exist, and its own floor |
+| the **Ability family inside the device's agent** | the capabilities the coding agent on that machine can actually invoke | *how* the work is done there |
+| the **cloud-side Work handoff** | the message and the run: dispatch, tracking, read-back | whether what you asked for happened |
+
+The first is the only one you can call; the second is authoritative about
+itself and answers *through* the first; the third is not exposed here at all —
+it belongs to the agent on the device. The fourth is what you actually do.
+
+**This surface routes; it does not carry the work.** These Skills decide where
+work belongs and how to tell whether it happened. The device agent's own
+ability family owns the doing, with its own registry and its own
+responsibilities. Do not restate those responsibilities here, do not keep a
+second copy of them, and do not describe a capability as available because a
+similar-sounding one exists on the machine you are running on.
+
+## Verify the five coordinates, not the two you can see
+
+Before dispatch, be able to name all five — **device × runtime × model ×
+project × grant** — because each is decided somewhere different and a request
+missing any one of them will be answered with a refusal that names that one:
+
+- **device** — from `fleet_list_devices`, never from a hostname;
+- **runtime** — the credential instance on that device, not the agent family,
+  and not the account name;
+- **model** — the *effective* model for that runtime's owner-approved entry,
+  read back, not assumed from the default;
+- **project** — an approved project id, which is what selects the working tree
+  and the credentials the session inherits;
+- **grant** — the scope on the calling credential *and* the device's own
+  binding, which are two different gates in two different places.
