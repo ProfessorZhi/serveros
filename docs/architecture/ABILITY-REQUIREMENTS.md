@@ -2,6 +2,12 @@
 
 2026-10-08。本文定义必须达到的产品行为，不声明当前实现全部完成。产品词表以 ability-management 的 `product-tree.yaml` 为准，artifact 身份以 `abilities-manifest.yaml` 为准；本文不新增 registry。总架构见 [Native Work Environment](NATIVE-WORK-ENVIRONMENT.md)，实施次序见 [唯一执行计划](../plans/plan-01-native-work-environment.md)。
 
+## Fleet V1 节点范围补充 · 2026-10-17
+
+本文件的 21 类稳定语义职责和权威来源不变。当前 Fleet V1 接受目标扩展为：Tokyo/Dell/Windows 每个授权 principal 的 C++ Native Core + CloudCLI/CC+Codex 实际 Runtime + Node/Fleet 受控路由 + 设备实现的 EffectiveAbility。Ability 的概念存在不代表每台设备已安装：三类设备按用途（Tokyo Work/Feishu/Dev/Git，Dell GPU/Compute/Test，Windows GUI/SCM/Tailscale/SSH/Selkies/RDC）选择实现，逐设备报告 Supported/Installed/Ready/Authorized/Consumed/Accepted。
+
+本地 Claude Code Fleet Operator Skills 负责如何发现/选定 Device/Runtime/Ability/Grants、正确委派、回读结果；不复制设备实际 Ability 正文，也不自动授权工具执行。真实 Node/Agent/Work receipt 验收与 hosted GitHub Actions quota waiver 分开。参考 [完整 V1 交付计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 和 [设备 Ability #249](https://github.com/ProfessorZhi/serveros/issues/249)。
+
 ## 共同要求
 
 - 实现可由 Native Agent、原生工具、共享代码、Skill、MCP、Provider 和 Core 组合承担；21 项不要求 21 个 Skill、服务或阶段。
