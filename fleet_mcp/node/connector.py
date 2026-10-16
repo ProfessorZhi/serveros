@@ -70,7 +70,10 @@ and is not, and does not become, this.
 """
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 import sys
 import time
 import traceback
@@ -134,6 +137,95 @@ OWNER_FLOOR_VERBS: tuple[str, ...] = ("send", "control")
 #: own cap. Enforced on BOTH ends on purpose: the connector refuses to spend the
 #: memory, and the caller refuses to accept a body it did not budget for.
 CORE_SNAPSHOT_MAX_BYTES = 512 * 1024
+
+
+def _read_bounded_no_follow(path: Path, cap: int) -> bytes:
+    """At most `cap + 1` bytes from a file that is WHAT IT SAYS IT IS.
+
+    Every check is taken on the OPEN DESCRIPTOR rather than on the path, because
+    a path is a question that can be answered differently a microsecond later.
+    The descriptor cannot be swapped underneath the answer.
+
+    The ancestor check is a comparison rather than a walk: `O_NOFOLLOW` protects
+    the last component only, so a symlinked parent directory would still be
+    followed. If the configured path is not its own resolved form, some
+    component is a link, and this refuses instead of resolving it — the whole
+    point of an owner-fixed path is that the operator chose it.
+    """
+    o_nofollow = getattr(os, "O_NOFOLLOW", None)
+    if o_nofollow is None:
+        # Windows has no O_NOFOLLOW, and this route is reached from Windows
+        # connectors. On such a platform this cannot be done safely, so it is
+        # refused BY NAME rather than done without the protection: a silent
+        # weakening is exactly the failure this function exists to prevent.
+        raise FleetRefusal(
+            "UNSUPPORTED",
+            f"this platform has no O_NOFOLLOW, so the Core snapshot cannot be "
+            f"opened without the risk of a substituted file; the route refuses "
+            f"rather than reading a path it cannot verify")
+    try:
+        if path.resolve() != path:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "the Core snapshot path does not resolve to itself, so one of "
+                "its components is a symlink; it is an owner-fixed path and must "
+                "be the file the operator chose")
+        fd = os.open(path, os.O_RDONLY | o_nofollow | getattr(os, "O_CLOEXEC", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        raise FleetRefusal("BAD_REQUEST", "no Core snapshot at the configured path") from None
+    except FleetRefusal:
+        raise
+    except OSError as exc:
+        # `ELOOP` is the kernel's own answer to a symlink under O_NOFOLLOW, and
+        # it arrives here rather than as a symlink check because the check and
+        # the open are now the same syscall.
+        if exc.errno == getattr(errno, "ELOOP", None):
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "the Core snapshot path is a symlink; it is an owner-fixed path "
+                "and must be the file itself") from None
+        raise FleetRefusal(
+            "BAD_REQUEST",
+            f"the Core snapshot could not be opened ({type(exc).__name__})") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise FleetRefusal("BAD_REQUEST",
+                               "the Core snapshot is not a regular file")
+        if info.st_uid != os.geteuid():
+            # Another account's file is another account's Core. This is the
+            # check that keeps a readable-by-accident path from being published
+            # as this user's own reading.
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "the Core snapshot is owned by a different OS account than the "
+                "one this connector runs as")
+        if info.st_mode & 0o022:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "the Core snapshot is readable by group or other; a Core "
+                "snapshot is this account's own and must not be shared")
+        chunks: list[bytes] = []
+        remaining = cap + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    raw = b"".join(chunks)
+    if len(raw) > cap:
+        # Refused on the BYTES READ, not on a size reported before reading: a
+        # sparse file can report a length it will never deliver, and a length
+        # that shrinks or grows between two calls is not a bound.
+        raise FleetRefusal(
+            "BAD_REQUEST",
+            f"the Core snapshot is past the {cap} bytes this route carries; a "
+            f"Core-Lite document is a bounded shape")
+    return raw
 
 
 @dataclass
@@ -798,44 +890,31 @@ class Connector:
     def _core_status(self) -> dict[str, Any]:
         """This machine's Core-Lite status, read from the owner's own file.
 
-        Refusals, and why each is one:
+        The read is BOUNDED and the file is VERIFIED, and both had to be fixed:
+        the first version called `read_bytes()` and then compared the length, so
+        a large file was loaded in full before being refused; and it checked
+        `is_symlink()`/`is_file()` in one syscall and read in another, so what it
+        finally read was not necessarily what it had checked.
 
-          * no `core_snapshot_path` — this connector was never given a Core
-            source. Reported as its own state, because "nobody configured this"
-            and "the configured thing failed" send an operator to different
-            files, and a status page that showed both as one thing would be
-            unusable on the day it mattered.
-          * a symlink — the path is owner-fixed, so a symlink is either someone
-            having replaced it or the Core writing somewhere the operator did
-            not choose. Both are refusals.
-          * not a regular file, unreadable, or past the cap — refused with the
-            reason, never a truncated read: a JSON body cut in half parses as
-            nothing and would be reported as the Core answering badly.
-          * not a JSON object — refused; this route carries a document, not a
-            number and not a list.
+        So: ONE open, with `O_NOFOLLOW` and non-blocking, and every subsequent
+        decision taken on THAT file descriptor. `fstat` on it — never `stat` on
+        the path — decides whether it is a regular file and whose it is. The read
+        stops one byte past the cap, so a file that is too large is refused
+        without being read. And the configured path is compared with its own
+        resolved form, which is what catches a symlinked ANCESTOR directory:
+        `O_NOFOLLOW` covers the last component only.
+
+        Refusals, each its own reason: unconfigured; a symlink or a symlinked
+        ancestor; not a regular file; owned by another account; readable by
+        group or other; past the cap; not JSON; not an object. The messages name
+        the KIND of failure and never the path or anything read from it.
         """
         path = self.config.core_snapshot_path
         if path is None:
             return {"state": "NOT_CONFIGURED",
                     "reason": "this connector has no Core snapshot path configured"}
-        try:
-            if path.is_symlink():
-                raise FleetRefusal("BAD_REQUEST",
-                                   "the Core snapshot path is a symlink; it is an "
-                                   "owner-fixed path and must be the file itself")
-            if not path.is_file():
-                raise FleetRefusal("BAD_REQUEST", "no Core snapshot at the configured path")
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            raise FleetRefusal("BAD_REQUEST", "no Core snapshot at the configured path") from None
-        except OSError as exc:
-            raise FleetRefusal("BAD_REQUEST",
-                               f"the Core snapshot could not be read ({type(exc).__name__})") from None
-        if len(raw) > CORE_SNAPSHOT_MAX_BYTES:
-            raise FleetRefusal(
-                "BAD_REQUEST",
-                f"the Core snapshot is {len(raw)} bytes, past the {CORE_SNAPSHOT_MAX_BYTES} "
-                f"this route carries; a Core-Lite document is a bounded shape")
+
+        raw = _read_bounded_no_follow(path, CORE_SNAPSHOT_MAX_BYTES)
         try:
             document = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

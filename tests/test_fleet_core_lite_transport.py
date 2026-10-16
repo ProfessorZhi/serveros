@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -41,6 +43,7 @@ from fleet_mcp.config import (AuditBinding, AuthBinding, FleetConfig,  # noqa: E
                               PolicyBinding, ProviderBinding, ServerBinding,
                               provider_key)
 from fleet_mcp.fleet import FleetService, Principal  # noqa: E402
+from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.node import connector as node_connector  # noqa: E402
 from fleet_mcp.providers.fleet_node import CORE_LITE_MAX_BYTES, FleetNodeProvider  # noqa: E402
 from fleet_mcp.registry import load_registry  # noqa: E402
@@ -95,6 +98,10 @@ class RealConnector:
             payload = raw if raw is not None else json.dumps(
                 core_document() if snapshot is None else snapshot).encode("utf-8")
             self.snapshot.write_bytes(payload)
+            # 0600, because that is what a Core snapshot is: this account's
+            # own. The reader refuses a group- or world-writable one, and the
+            # fixture must not be looser than the thing it stands for.
+            self.snapshot.chmod(0o600)
         cloudcli_anchor = tmp / "cloudcli.pat"
         cloudcli_anchor.write_text("unused-by-this-route", encoding="utf-8")
         self.config = node_connector.NodeConfig(
@@ -371,7 +378,7 @@ class TheRealConnectorRefusesOnItsOwnTerms(unittest.TestCase):
 
     def test_bad_json_is_refused(self):
         def body(service, node, provider, tmp):
-            node.snapshot.write_bytes(b"{not json")
+            node.snapshot.write_bytes(b"{not json"); node.snapshot.chmod(0o600)
             summary = service.core_lite_status(principal(), NODE, received_at=NOW)
             self.assertNotEqual(summary["route"]["state"], "VERIFIED")
 
@@ -379,7 +386,7 @@ class TheRealConnectorRefusesOnItsOwnTerms(unittest.TestCase):
 
     def test_a_snapshot_past_the_cap_is_refused(self):
         def body(service, node, provider, tmp):
-            node.snapshot.write_bytes(b"{" + b" " * (node_connector.CORE_SNAPSHOT_MAX_BYTES + 8) + b"}")
+            node.snapshot.write_bytes(b"{" + b" " * (node_connector.CORE_SNAPSHOT_MAX_BYTES + 8) + b"}"); node.snapshot.chmod(0o600)
             summary = service.core_lite_status(principal(), NODE, received_at=NOW)
             self.assertNotEqual(summary["route"]["state"], "VERIFIED")
 
@@ -390,6 +397,7 @@ class TheRealConnectorRefusesOnItsOwnTerms(unittest.TestCase):
             stale = core_document()
             stale["observed_at"] = (NOW - dt.timedelta(hours=2)).isoformat()
             node.snapshot.write_text(json.dumps(stale), encoding="utf-8")
+            node.snapshot.chmod(0o600)
             summary = service.core_lite_status(principal(), NODE, received_at=NOW)
             self.assertEqual(summary["freshness"]["state"], "STALE")
 
@@ -472,3 +480,159 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSnapshotReadIsBoundedAndVerified(unittest.TestCase):
+    """The reader's own guarantees, tested at the reader.
+
+    Every fixture here lives in a fresh temporary directory. Nothing in this
+    class opens a real snapshot, a real home, or any path it did not create —
+    the point is the READER's behaviour, and reaching outside the test's own
+    directory to demonstrate it would be the same mistake in the test.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def snapshot(self, payload: bytes = b'{"ok": true}', *, mode: int = 0o600) -> Path:
+        path = self.tmp / "core-status.json"
+        path.write_bytes(payload)
+        path.chmod(mode)
+        return path
+
+    def test_a_normal_snapshot_is_read(self):
+        path = self.snapshot()
+        self.assertEqual(node_connector._read_bounded_no_follow(path, 1024),
+                         b'{"ok": true}')
+
+    def test_at_most_one_byte_past_the_cap_is_ever_read(self):
+        """A spy on `os.read`, because "bounded" is a claim about the KERNEL
+        calls, not about the length of the list afterwards.
+
+        The file is well under the cap and the cap is small, so the assertion is
+        about the requested size: no call may ask for more than cap + 1, which is
+        what makes an oversized file impossible to load on the way to refusing it.
+        """
+        cap = 16
+        path = self.snapshot(b"x" * (cap * 4))
+        seen: list[int] = []
+        real_read = os.read
+
+        def spy(fd, size):
+            seen.append(size)
+            return real_read(fd, size)
+
+        with mock.patch.object(os, "read", spy):
+            with self.assertRaises(FleetRefusal):
+                node_connector._read_bounded_no_follow(path, cap)
+        self.assertTrue(seen)
+        self.assertLessEqual(max(seen), cap + 1, seen)
+        self.assertLessEqual(sum(seen), cap + 1, seen)
+
+    def test_a_sparse_oversized_snapshot_is_refused(self):
+        """A file whose SIZE is large and whose content is not.
+
+        `read_bytes()` would allocate the whole apparent length before the
+        comparison. The bounded loop cannot: it stops one byte past the cap
+        whatever the file claims to be.
+        """
+        cap = 1024
+        path = self.tmp / "sparse.json"
+        with open(path, "wb") as handle:
+            handle.truncate(8 * 1024 * 1024)      # sparse: 8 MiB of nothing
+        path.chmod(0o600)
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(path, cap)
+        self.assertIn("past the", caught.exception.detail)
+
+    def test_a_symlinked_snapshot_is_refused(self):
+        real = self.snapshot()
+        link = self.tmp / "link.json"
+        link.symlink_to(real)
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(link, 1024)
+        self.assertIn("symlink", caught.exception.detail.lower())
+
+    def test_a_symlinked_ancestor_directory_is_refused(self):
+        """`O_NOFOLLOW` covers the last component only, so this is the case it
+        does NOT catch — and the one the resolved-path comparison exists for."""
+        real_dir = self.tmp / "real"
+        real_dir.mkdir()
+        target = real_dir / "core-status.json"
+        target.write_bytes(b'{"ok": true}')
+        target.chmod(0o600)
+        linked_dir = self.tmp / "linked"
+        linked_dir.symlink_to(real_dir)
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(linked_dir / "core-status.json", 1024)
+        self.assertIn("resolve to itself", caught.exception.detail)
+
+    def test_a_non_regular_file_is_refused(self):
+        fifo = self.tmp / "pipe"
+        os.mkfifo(fifo)
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(fifo, 1024)
+        self.assertIn("regular file", caught.exception.detail)
+
+    def test_a_snapshot_owned_by_another_account_is_refused(self):
+        """The owner check, driven without needing a second account.
+
+        `geteuid` is the thing being compared against, so it is what is moved —
+        which is also the honest way to test it: the reader compares the FILE's
+        uid with the PROCESS's, and this makes those differ.
+        """
+        path = self.snapshot()
+        with mock.patch.object(os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaises(FleetRefusal) as caught:
+                node_connector._read_bounded_no_follow(path, 1024)
+        self.assertIn("different OS account", caught.exception.detail)
+
+    def test_a_group_or_world_writable_snapshot_is_refused(self):
+        for mode in (0o660, 0o664, 0o666, 0o606, 0o622):
+            with self.subTest(mode=oct(mode)):
+                path = self.snapshot(mode=mode)
+                with self.assertRaises(FleetRefusal) as caught:
+                    node_connector._read_bounded_no_follow(path, 1024)
+                self.assertIn("group or other", caught.exception.detail)
+
+    def test_a_missing_snapshot_is_refused(self):
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(self.tmp / "absent.json", 1024)
+        self.assertIn("no Core snapshot", caught.exception.detail)
+
+    def test_an_atomic_replacement_is_read_as_the_new_file(self):
+        """The write the producer actually does: rename over the path.
+
+        `os.replace` is atomic, so a reader either sees the old file or the new
+        one and never a half-written one. Reading the SAME path twice around the
+        swap must yield the two documents, which is what "a normal atomic
+        replacement reads cleanly" means.
+        """
+        path = self.snapshot(b'{"generation": 1}')
+        self.assertEqual(json.loads(node_connector._read_bounded_no_follow(path, 1024)),
+                         {"generation": 1})
+        pending = self.tmp / "core-status.json.new"
+        pending.write_bytes(b'{"generation": 2}')
+        pending.chmod(0o600)
+        os.replace(pending, path)
+        self.assertEqual(json.loads(node_connector._read_bounded_no_follow(path, 1024)),
+                         {"generation": 2})
+
+    def test_the_refusals_do_not_echo_the_path_or_the_content(self):
+        """A message is a surface. It names the KIND of failure and stops."""
+        secret = b'{"secret": "do-not-echo-me"}'
+        path = self.snapshot(secret, mode=0o666)
+        with self.assertRaises(FleetRefusal) as caught:
+            node_connector._read_bounded_no_follow(path, 1024)
+        self.assertNotIn(str(path), caught.exception.detail)
+        self.assertNotIn("do-not-echo-me", caught.exception.detail)
+
+    def test_a_platform_without_o_nofollow_is_refused_by_name(self):
+        """No silent weakening: the route refuses rather than reading unverified."""
+        path = self.snapshot()
+        with mock.patch.object(os, "O_NOFOLLOW", None, create=True):
+            with self.assertRaises(FleetRefusal) as caught:
+                node_connector._read_bounded_no_follow(path, 1024)
+        self.assertEqual(caught.exception.code, "UNSUPPORTED")
