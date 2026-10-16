@@ -74,7 +74,38 @@ class MemoryBindings:
                 record["bound_item_ref"], ("UNKNOWN", None))
             item = {"state": state, "outcome": outcome,
                     "item_ref": record["bound_item_ref"]}
-        return {"binding": record, "item": item}
+        # #237 B1. The CURRENT writer for this thread's write scope, joined at
+        # the same moment as the binding — the same two-facts-in-one-read shape
+        # the daemon's `agent.binding.resolve` provides. A test double that
+        # omitted it would make the writer gate unreachable from every routing
+        # test, which is the shape `tests/threads.py` exists to prevent one
+        # plane over.
+        return {"binding": record, "item": item,
+                "current_writer": self._current_writer(record)}
+
+    def _current_writer(self, record):
+        """The open binding for the same Item with the highest writer epoch.
+
+        Mirrors what the production handle computes from the scope's owner: the
+        current writer is the newest claim on the Item, and a thread whose claim
+        is older is STALE. Returns None when nothing claims a writer, which the
+        kernel reads as UNKNOWN and does not gate on.
+        """
+        if not record or not record.get("bound_item_ref"):
+            return None
+        item = str(record["bound_item_ref"])
+        best = None
+        for other in list(self._records.values()):
+            if str(other.get("bound_item_ref")) != item:
+                continue
+            if str(other.get("state") or "").upper() == "CLOSED":
+                continue
+            claim = other.get("writer")
+            if not claim:
+                continue
+            if best is None or int(claim.get("epoch", 0)) > int(best.get("epoch", 0)):
+                best = claim
+        return dict(best) if best is not None else None
 
     def put(self, record):
         ref = str(record["session_ref"])
@@ -111,12 +142,20 @@ class MemoryBindings:
         return record
 
     def bind(self, ref, *, session_role="execution",
-             bound_item_ref="LIT-0101", state="OPEN") -> dict:
-        """Record a binding directly, for a test that needs one in place."""
-        record = {"schema": "serveros/thread-binding.v1", "session_ref": str(ref),
-                  "session_role": session_role,
+             bound_item_ref="LIT-0101", state="OPEN", writer=None) -> dict:
+        """Record a binding directly, for a test that needs one in place.
+
+        `writer` records a claim of write authority (#237 B1), which is what
+        makes the binding a v2 one and what the writer gate checks. Omitting it
+        leaves a v1 binding, which claims nothing and is not gated.
+        """
+        record = {"schema": ("serveros/thread-binding.v2" if writer
+                             else "serveros/thread-binding.v1"),
+                  "session_ref": str(ref), "session_role": session_role,
                   "bound_item_ref": bound_item_ref,
                   "bound_item_ref_frozen": True, "state": state}
+        if writer:
+            record["writer"] = dict(writer)
         self._records[str(ref)] = record
         return record
 

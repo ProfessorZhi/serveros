@@ -128,8 +128,12 @@ actions:
 #                    `bound_item_ref` is required for `execution` and forbidden
 #                    for `coordinator`. Validated before the provider is asked,
 #                    so a create that cannot be bound never starts a session.
-#   session.send     ADMITS. The thread's binding and its Item's state are read
-#                    and `admit_work` decides.
+#   session.send     ADMITS. The thread's binding, its Item's state AND the
+#                    current writer for the Item's write scope (#237 B1) are
+#                    read in one call, and `admit_work` decides. A thread that
+#                    RECORDS a writer and is not the current one is refused with
+#                    NOT_CURRENT_WRITER; a thread that records none claims no
+#                    write authority and is not gated.
 #   session.resume   ADMITS. A resume starts a turn in the thread, so it is
 #                    gated with `send`. The gate reads the THREAD's state, not
 #                    the provider session's: a thread is closed by a person, and
@@ -234,6 +238,44 @@ idempotency:
     effect that never happened for this request.
 
 # ---------------------------------------------------------------------------
+# #237 B2 — the durable-effect interface this contract does NOT yet implement.
+#
+# Stated as an interface and a blocker, NOT as done. `idempotency.durability`
+# above is honest that the router's replay is in-process; this block is what a
+# durable form would have to provide, so that the next PR has a contract to
+# implement against instead of a sentence to rediscover.
+# ---------------------------------------------------------------------------
+durable_effects:
+  implemented: false
+  blocker: >-
+    A lost response to a mutating dispatch cannot be reconciled today: restart
+    the router and the same intent is a second effect. This is #237 B2 and it is
+    NOT closed by this revision.
+  required_interface:
+    attempt_identity: >-
+      A stable id per intended EFFECT, persisted before the dispatch and
+      surviving a restart — distinct from the provider's own key, which may not
+      exist (`CloudCLI` does not accept one).
+    effect_status: >-
+      For each attempt, one of: NOT_SENT, SENT, CONFIRMED, FAILED,
+      EFFECT_UNKNOWN. A timeout lands in EFFECT_UNKNOWN and STAYS there until a
+      provider/owner-backed lookup decides it — never promoted to CONFIRMED by
+      the passage of time.
+    reconcile: >-
+      On a retry of the same attempt_identity, return the recorded outcome, or
+      EFFECT_UNKNOWN — never a second dispatch. A retry of a DIFFERENT payload
+      under the SAME identity is a conflict, refused.
+    owner: >-
+      The record belongs to whoever owns the effect (provider/Agent Control),
+      not to a new store here. Inventing one would be the second record of what
+      the provider did that `idempotency.durability` already refuses.
+  not_claimed: >-
+    No effect is exactly-once. Where a provider cannot natively deduplicate, the
+    only honest answer is EFFECT_UNKNOWN plus reconciliation, and a control
+    plane that claimed stronger would be claiming a guarantee the executor
+    cannot give.
+
+# ---------------------------------------------------------------------------
 # Handoff order. The order is the safety property.
 # ---------------------------------------------------------------------------
 handoff:
@@ -295,14 +337,28 @@ handoff:
   # AUTHORITY does move — and the two are separate operations.
   authority_transfer:
     when: >-
-      At `context_handed_off` — the step at which the target is KNOWN to hold a
-      session for this Work — and INDEPENDENTLY of `release_source`.
+      After `context_handed_off`, AND only once the target is ESTABLISHED as
+      this Item's writer, and INDEPENDENTLY of `release_source`.
     what: >-
       The source session's thread binding is closed. Closing the binding is what
       transfers write authority: `session.send` and `session.resume` on the
       source then refuse with THREAD_CLOSED_FOR_NEW_WORK, while `inspect`,
       `result`, `interrupt` and `stop` stay available, so the closed thread
       remains readable.
+    established_before_revoked: >-
+      `context_handed_off` proves the target ANSWERED with a session. It does NOT
+      prove the target has been RECORDED as the writer of this Item, and revoking
+      the source on a session alone leaves ZERO authorized writers — the one
+      failure a handoff cannot recover from. So the target's own binding is read
+      first, and the source is closed only when that binding exists and is bound
+      to the SAME Item. Every other outcome leaves the source's write authority
+      intact: two writers is visible and correctable, zero writers is a stall.
+    not_yet_wired: >-
+      Recording the target's writer tuple (owner/epoch/token) at transfer — so
+      that the successor is the scope's CURRENT writer and not merely bound to the
+      Item — is the continuation/Agent-Control join, and it is NOT in this
+      revision. Until it is, the transfer's guarantee is "the target is bound to
+      this Item", not "the target holds the current epoch/token".
     why_not_a_process_stop: >-
       Stopping the source is a separate operation, still governed by
       `release_default` and the §22 approval gate. "Failure to stop A is not

@@ -133,10 +133,12 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
     def setUp(self):
         self.service = rt.RecordingService()
         self.bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
-        # The source Session was created through `session.create`, so a binding
-        # for it is recorded — which is the real shape, and the one a close can
-        # act on.
+        # Both Sessions were created through `session.create`, so bindings for
+        # both are recorded — which is the real shape, and it is what the
+        # transfer requires: the target must be ESTABLISHED (recorded as this
+        # Item's writer) before the source loses its authority (#237 B1).
         self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM)
+        self.bindings.bind(self.TARGET, bound_item_ref=rt.ITEM)
         self.router = rt.router(self.service, bindings=self.bindings)
 
     def _send(self, instruction="more", key="k1"):
@@ -145,7 +147,7 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
             session_ref=self.SOURCE,
             params={"instruction": instruction, "turn_idempotency_key": key})))
 
-    def _handoff(self, **params):
+    def _handoff(self, target=None, **params):
         return self.router.handoff(
             rt.router_mod.request_from_payload(rt.payload(
                 "agent.session.handoff", rt.LOCAL, context_ref=rt.CONTEXT_REF,
@@ -153,7 +155,7 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
                 params={"checkpoint": rt.CHECKPOINT, **params})),
             create_request=rt.router_mod.request_from_payload(rt.payload(
                 "agent.session.resume", rt.LOCAL, context_ref=rt.CONTEXT_REF,
-                session_ref=self.TARGET)))
+                session_ref=target or self.TARGET)))
 
     # -- the control: the source IS a writer before the handoff -------------
 
@@ -223,6 +225,120 @@ def writer(*, owner="agent:A", epoch=1, token="1", expires_at=None):
     if expires_at is not None:
         w["expires_at"] = expires_at
     return w
+
+
+class TestHandoffWindow(unittest.TestCase):
+    """#237 B1 — the source is revoked only once the TARGET is established.
+
+    The window this closes: a handoff whose target ANSWERED with a session but
+    was never RECORDED as the Item's writer. Closing the source on that alone
+    leaves zero authorized writers, which a handoff cannot recover from.
+    """
+
+    SOURCE = "session:src:1"
+
+    def setUp(self):
+        self.service = rt.RecordingService()
+        self.bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
+        self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM)
+        self.router = rt.router(self.service, bindings=self.bindings)
+
+    def _send(self):
+        return self.router.route(rt.router_mod.request_from_payload(rt.payload(
+            "agent.session.send", rt.LOCAL, context_ref=rt.CONTEXT_REF,
+            session_ref=self.SOURCE,
+            params={"instruction": "more", "turn_idempotency_key": "k"})))
+
+    def _handoff(self, target):
+        return self.router.handoff(
+            rt.router_mod.request_from_payload(rt.payload(
+                "agent.session.handoff", rt.LOCAL, context_ref=rt.CONTEXT_REF,
+                session_ref=self.SOURCE,
+                params={"checkpoint": rt.CHECKPOINT})),
+            create_request=rt.router_mod.request_from_payload(rt.payload(
+                "agent.session.resume", rt.LOCAL, context_ref=rt.CONTEXT_REF,
+                session_ref=target)))
+
+    def test_a_target_with_a_session_but_no_binding_does_not_revoke_the_source(self):
+        outcome = self._handoff("session:ghost:9")     # never bound
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertIn("context_handed_off", outcome.completed)
+        self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "OPEN")
+        self.assertTrue(self._send().ok,
+                        "the source was revoked on a session alone, leaving no "
+                        "authorized writer")
+
+    def test_a_target_bound_to_another_item_does_not_revoke_the_source(self):
+        self.bindings.bind("session:elsewhere:7", bound_item_ref="LIT-0205")
+        outcome = self._handoff("session:elsewhere:7")
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "OPEN")
+
+    def test_an_established_target_does_revoke_the_source(self):
+        # The positive control: the same handoff, a target that IS recorded.
+        self.bindings.bind("session:dst:2", bound_item_ref=rt.ITEM)
+        outcome = self._handoff("session:dst:2")
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "CLOSED")
+
+
+class TestWriterGateAtAdmission(unittest.TestCase):
+    """#237 B1/T3 at the ROUTER seam — the writer gate wired into `_admit`.
+
+    The kernel is tested in `TestWriterFenceKernel`. This is the wiring: the
+    bindings handle supplies the current writer in the same read as the binding,
+    and a `session.send` whose thread claims a superseded writer is refused with
+    the transport's own word.
+    """
+
+    ITEM = "LIT-0101"
+    SOURCE = "session:src:1"
+    RIVAL = "session:rival:2"
+
+    def setUp(self):
+        self.service = rt.RecordingService()
+        self.bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
+
+    def _router(self):
+        return rt.router(self.service, bindings=self.bindings)
+
+    def _send(self, ref):
+        return self._router().route(rt.router_mod.request_from_payload(rt.payload(
+            "agent.session.send", rt.LOCAL, context_ref=rt.CONTEXT_REF,
+            session_ref=ref,
+            params={"instruction": "more", "turn_idempotency_key": "k"})))
+
+    def test_the_current_writer_is_admitted(self):
+        self.bindings.bind(self.SOURCE, bound_item_ref=self.ITEM,
+                           writer=writer(owner="agent:A", epoch=2, token="2"))
+        response = self._send(self.SOURCE)
+        self.assertTrue(response.ok, response.reason)
+
+    def test_a_superseded_writer_is_refused(self):
+        # The SOURCE claims epoch 1; a RIVAL holds epoch 2 for the same Item.
+        self.bindings.bind(self.SOURCE, bound_item_ref=self.ITEM,
+                           writer=writer(owner="agent:A", epoch=1, token="1"))
+        self.bindings.bind(self.RIVAL, bound_item_ref=self.ITEM,
+                           writer=writer(owner="agent:B", epoch=2, token="2"))
+        response = self._send(self.SOURCE)
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "NOT_CURRENT_WRITER")
+
+    def test_a_thread_that_claims_no_writer_is_not_gated(self):
+        # Compatibility: a v1 binding claims nothing and every existing path
+        # keeps working.
+        self.bindings.bind(self.SOURCE, bound_item_ref=self.ITEM)
+        response = self._send(self.SOURCE)
+        self.assertTrue(response.ok, response.reason)
+
+    def test_a_closed_rival_does_not_hold_the_scope(self):
+        # The current writer is the highest OPEN claim; a closed binding's claim
+        # is history, not authority.
+        self.bindings.bind(self.SOURCE, bound_item_ref=self.ITEM,
+                           writer=writer(owner="agent:A", epoch=3, token="3"))
+        self.bindings.bind(self.RIVAL, bound_item_ref=self.ITEM, state="CLOSED",
+                           writer=writer(owner="agent:B", epoch=4, token="4"))
+        self.assertTrue(self._send(self.SOURCE).ok)
 
 
 class TestWriterFenceKernel(unittest.TestCase):

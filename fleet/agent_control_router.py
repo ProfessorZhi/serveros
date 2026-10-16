@@ -533,7 +533,10 @@ class LocalLoopbackTransport(AgentControlTransport):
         One read, not two. The binding and the bound Item's state come back
         from a single call, because a caller that fetched them separately would
         be joining two records taken at two moments and the refusal it makes
-        would be about neither of them.
+        would be about neither of them. The current writer for the thread's
+        write scope travels in the SAME read (#237 B1): the claim on the binding
+        and the authoritative current writer must be joined at one moment, or
+        the gate decides on two records that were never both true.
         """
         read = self.bindings.get(request.session_ref) or {}
         try:
@@ -541,7 +544,15 @@ class LocalLoopbackTransport(AgentControlTransport):
                 binding_record=read.get("binding"),
                 work_item=request.work_item,
                 item_state=(read.get("item") or {}).get("state"),
-                outcome=(read.get("item") or {}).get("outcome"))
+                outcome=(read.get("item") or {}).get("outcome"),
+                # A handle that cannot supply a current writer leaves this None,
+                # and `admit_work` then refuses any thread that CLAIMS write
+                # authority rather than admitting it unchecked: "no verifiable
+                # source" is a refusal, not a pass. A thread that claims nothing
+                # is unaffected, which is what keeps every pre-existing thread
+                # working.
+                current_writer=read.get("current_writer"),
+                now=_writer_now())
         except coordination.ThreadRefused as exc:
             # Translated rather than propagated, and translated here rather
             # than caught in `route()`: `TransportFailure` validates the reason
@@ -849,6 +860,20 @@ class NodeControlTransport(AgentControlTransport):
 def _now() -> str:
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _writer_now() -> str:
+    """The stamp a writer TTL is compared against (#237 T3).
+
+    NOT `_now()`. That one is an `isoformat()`, which drops the microsecond
+    field when it is zero, so `...:00Z` and `...:00.123456Z` sort wrongly at the
+    same second under a string comparison — and the writer's `expires_at` IS
+    compared as a string, in `runtime/coordination.py#writer_axis`. Fixed width,
+    second precision, Z: the same contract the exclusive Work lease pins.
+    """
+    import datetime
+    return datetime.datetime.now(
+        datetime.timezone.utc).strftime(coordination.WRITER_STAMP)
 
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1289,8 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                     "malformed rather than refused"},
             checkpoint=checkpoint)
 
-    created = router.route(create_request or _resume_request(request))
+    target_request = create_request or _resume_request(request)
+    created = router.route(target_request)
     if not created.ok:
         # Nothing was stopped. The source session is exactly as it was, and the
         # reason is the target's own — not a handoff-specific rewording of it.
@@ -1297,22 +1323,27 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
             checkpoint=checkpoint)
     completed.append("context_handed_off")
 
-    # #237 B1 / architecture doc §5. Authority has moved: the target now holds a
-    # session for this Work. Revoke the SOURCE's future WRITE authority here,
-    # and independently of `release_source` below. "Failure to stop A is not
-    # failure to revoke A's future writing authority" — and a handoff that
-    # stopped the source by default is a handoff that loses it whenever the
-    # target turns out to be unsuitable an hour later.
+    # #237 B1 / architecture doc §5. The source's future WRITE authority is
+    # revoked here — independently of `release_source` below — but ONLY once the
+    # TARGET is ESTABLISHED, which `context_handed_off` by itself does NOT prove.
     #
-    # Closing the source's BINDING — not the session — is what makes the
-    # existing word `THREAD_CLOSED_FOR_NEW_WORK` answerable for the stale
-    # source: it means exactly "the thread was closed while its provider session
-    # is still alive and accepting turns". The source stays READABLE (`inspect`,
-    # `result`, `interrupt`, `stop` are not gated), and its provider session may
-    # stay alive; a new `session.send` or `session.resume` on it refuses. The
-    # binding is write-once on `session_ref`, so the source can never be
-    # silently retargeted; a real successor needs a new session.
-    _revoke_source_write_authority(router, request)
+    # `context_handed_off` says the target ANSWERED with a session. It does NOT
+    # say the target has been recorded as the writer of this Item, and revoking
+    # the source on a session alone leaves a window with NO authorized writer —
+    # the one failure a handoff cannot recover from. `_revoke...` therefore
+    # checks the target's OWN binding first and refuses to revoke until the
+    # target is established; the source then keeps its authority, which is the
+    # recoverable direction.
+    #
+    # Closing the source's BINDING — not the session — is what makes the existing
+    # word `THREAD_CLOSED_FOR_NEW_WORK` answerable for the stale source: it means
+    # exactly "the thread was closed while its provider session is still alive
+    # and accepting turns". The source stays READABLE (`inspect`, `result`,
+    # `interrupt`, `stop` are not gated). The binding is write-once on
+    # `session_ref`, so the source can never be silently retargeted.
+    _revoke_source_write_authority(
+        router, request, target_ref=handed.get("session_ref"),
+        target_device=target_request.device_ref)
 
     release = (request.params or {}).get("release_source")
     if not release:
@@ -1397,37 +1428,71 @@ def _stop_step(answer: AgentControlResponse) -> str:
     return "target_ready"
 
 
-def _revoke_source_write_authority(router, request: AgentControlRequest):
-    """Close the SOURCE thread's binding after a handoff transferred authority.
+def _revoke_source_write_authority(router, request: AgentControlRequest, *,
+                                   target_ref, target_device):
+    """Close the SOURCE thread's binding, once the TARGET is ESTABLISHED.
 
-    §9 / #237 B1. Called once `context_handed_off` has been reached, i.e. the
-    target holds a session, so authority has moved. A thread is closed by
-    closing its binding; the provider session is untouched and the closure is
-    what `THREAD_CLOSED_FOR_NEW_WORK` reports to a later `session.send`.
+    §9 / #237 B1. Called once `context_handed_off` has been reached. The ORDER
+    is the safety property, and it is not the order the design's steps were
+    written in:
 
-    Reached through the SOURCE device's own transport, so the binding that is
-    closed is the one the source's admission will later read — never a second
-    store. Returns the closed record, or None when there was nothing to close.
+      * `context_handed_off` proves the target ANSWERED with a session;
+      * it does NOT prove the target has been RECORDED as the writer of this
+        Item — a session with no binding is not an established writer;
+      * revoking the source on a session alone leaves a window with NO
+        authorized writer, and a handoff cannot recover from that state.
 
-    A thread whose binding was never recorded has nothing to revoke: closing it
-    would record a closure of a statement ServerOS does not hold. That is
-    reported by returning None rather than raising, because one unbound thread
-    is not a reason to fail a handoff that otherwise succeeded.
+    So the target's OWN binding is read first, and the source is closed only
+    when that binding exists and is bound to the SAME Item. Every other outcome
+    leaves the source's write authority intact, which is the recoverable
+    direction to be wrong in: two writers is visible and correctable, zero
+    writers is a stall.
+
+    Reached through each device's OWN transport, so the bindings read and closed
+    are the ones each side's admission will later read — never a second store.
+    Returns {"revoked": <record|None>, "because": <str>}. The handoff does not
+    turn a non-revocation into a failure: the target is up and the source is
+    intact, which is exactly the state `HandoffOutcome.source_preserved` already
+    describes.
     """
-    transport = router.transport_for(request.device_ref)
-    bindings = getattr(transport, "bindings", None)
-    if bindings is None or not hasattr(bindings, "close"):
-        return None
-    existing = None
-    if hasattr(bindings, "get"):
-        existing = (bindings.get(request.session_ref) or {}).get("binding")
-    if not existing:
-        return None
-    if str(existing.get("state") or "").upper() == "CLOSED":
-        return existing
-    return bindings.close(
+    source_transport = router.transport_for(request.device_ref)
+    source_bindings = getattr(source_transport, "bindings", None)
+    if source_bindings is None or not hasattr(source_bindings, "close"):
+        return {"revoked": None,
+                "because": "the source device has no bindings handle here"}
+    source = None
+    if hasattr(source_bindings, "get"):
+        source = (source_bindings.get(request.session_ref) or {}).get("binding")
+    if not source:
+        return {"revoked": None,
+                "because": "the source thread has no recorded binding to revoke"}
+    if str(source.get("state") or "").upper() == "CLOSED":
+        return {"revoked": source, "because": "the source thread was already closed"}
+    item = str(source.get("bound_item_ref") or "")
+    if not item:
+        return {"revoked": None,
+                "because": "the source thread has no bound Item, so there is no "
+                           "write scope to transfer"}
+
+    target_transport = router.transport_for(target_device) if target_device else None
+    target_bindings = (getattr(target_transport, "bindings", None)
+                       if target_transport is not None else None)
+    target = None
+    if target_ref and target_bindings is not None and hasattr(target_bindings, "get"):
+        target = (target_bindings.get(target_ref) or {}).get("binding")
+    if not target or str(target.get("bound_item_ref") or "") != item:
+        return {"revoked": None,
+                "because": (f"the target is not established as the writer of "
+                            f"{item!r}: it answered with a session, but no binding "
+                            f"records it as this Item's writer, and revoking the "
+                            f"source now would leave no authorized writer. The "
+                            f"source keeps its write authority")}
+
+    closed = source_bindings.close(
         request.session_ref, at=_now(),
-        reason="handoff moved write authority to the target session")
+        reason="handoff moved write authority to the established target session")
+    return {"revoked": closed,
+            "because": "the target was established, so the source thread was closed"}
 
 
 def _resume_request(request: AgentControlRequest) -> AgentControlRequest:
