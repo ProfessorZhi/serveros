@@ -479,9 +479,14 @@ def peer_model_source(core_readbacks, *, local_device_ref, local_display_name,
     `fleet_mcp.core_lite_source` draws for itself). A device the reader does not
     name is carried UNKNOWN by the inventory, never dropped.
 
-    `archive`, when given, is the shared `fleet_monitor_source.TrendArchive`: the
-    Core readings are recorded there and the SAME store is what a trend is later
-    drawn from, so the card and the hourly report cannot disagree about it.
+    ***DO NOT WIRE `archive=` TO A NEW CALLER.*** It takes a
+    `fleet_monitor_source.TrendArchive`, which is SUPERSEDED: the V13 sample
+    ledger is `runtime/snapshot_journal.py`, and a second store is the
+    duplication this lane forbids. The keyword is kept only so the existing test
+    keeps compiling; the next green-light round repoints it at the journal and
+    removes the old store. Leaving it unwired means the Core readings reach the
+    card and the report path with no sample ledger written at all, which is the
+    safe direction — a missing trend is visible, a second trend is not.
     """
     card_source = _load("serveros_runtime_card_source", _HERE / "card_source.py")
     pairs = [(ref, name) for ref, name in peers]

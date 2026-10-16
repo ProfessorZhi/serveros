@@ -837,6 +837,24 @@ class TrendArchive:
     and none of its authority: it records measurements, it does not decide
     whether anything is due. `KEEP` bounds each series so a chatty label cannot
     evict the day.
+
+    ***SUPERSEDED — DO NOT WIRE A NEW CALLER, AND DO NOT LET TWO RUN.***
+
+    `runtime/snapshot_journal.py` (`serveros/snapshot-journal.v1`) is the V13
+    surface's sample ledger: it is the one `runtime/surface_cli.py` writes and
+    `tests/test_v13_integration.py` covers, and it is the store the REPORT's
+    coverage/mean/peak are built from. This class was written before that one
+    was known to this lane and is now a SECOND sample store with the same file
+    discipline and a different schema — the duplication the lane's own rule
+    forbids (`绝不重写第二套 ledger`). Nothing in the tree consumes it: its only
+    writers were this module's tests and the optional `archive=` seam in
+    `runtime/fleet_core_bridge.peer_model_source`, which is marked the same way.
+
+    It is left in place rather than deleted because deleting it is a behaviour
+    change whose tests cannot be run in the round that found it (the host is
+    red on swap/PSI). The removal — and the repointing of every caller to
+    `snapshot_journal` — is listed as the next green-light task; until then this
+    sentence is what stops a reader from wiring a third one.
     """
 
     def __init__(self, path, *, keep=TREND_KEEP_PER_DAY):
@@ -938,7 +956,12 @@ class TrendArchive:
 
 
 def trend_archive_path(state_path) -> Path:
-    """The archive's file, beside the delivery ledger, named for what it holds."""
+    """The archive's file, beside the delivery ledger, named for what it holds.
+
+    SUPERSEDED with `TrendArchive`: the V13 sample ledger is
+    `runtime/snapshot_journal.py`'s `journal_path`. Named here so the two are
+    not confused; see the class docstring for why the old one is still present.
+    """
     return Path(state_path).parent / "fleet-trend.json"
 
 
