@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -44,12 +45,53 @@ COMPOSITION = "ingress-next"
 #: unchanged rather than subtly widened by a flag.
 STAGING_COMMANDS = ("stage", "refresh-stage")
 
+#: The one verb that STARTS the already-staged Next unit and nothing else.
+#:
+#: It exists because the two facts `install` demands before it will start —
+#: a real `next.plugin_id` and `attestations.next_oauth_client_authorized` —
+#: are facts about a client registered against a *running* public origin. A
+#: first start cannot have them, and the only way to obtain them is to start
+#: the service, so `install` alone leaves the fixed Next unit permanently
+#: unstartable. `canary-start` closes that ordering gap without widening
+#: anything else:
+#:
+#:   * it publishes NOTHING — no revision is copied, no `current`/`previous`
+#:     pointer moves and no unit file is written, so it cannot misname bytes
+#:     or repoint a service (the class of defect `install.py`'s guards and the
+#:     refresh-stage work exist to close);
+#:   * it never `enable`s (or `disable`s) the unit. `install` uses
+#:     `enable --now`; this account has `Linger=yes`, so an enabled unit is
+#:     started by the user manager at boot/login with no approval. A canary
+#:     that enabled would convert a supervised start into an unsupervised one;
+#:   * it never touches V1: V1 is read for its health and its MainPID, and for
+#:     nothing else.
+#:
+#: What it does NOT excuse is every other precondition to serving: the staged
+#: revision and its manifest, a binding the service itself accepts, a present
+#: 0600 owner PAT anchor outside V1's roots, a *measured* public TLS origin,
+#: the owner's reviewed attestations other than the two above, live memory
+#: headroom, and the unit's inactive-and-unable-to-self-start state.
+CANARY_START = "canary-start"
+
 BUDGET = {
     "memory_max_mib": 1536,
     "memory_swap_max_mib": 0,
     "cpu_quota_pct": 40,
     "tasks_max": 96,
 }
+
+#: Mirrors of `install.py`'s own names, which are NOT imported at module load:
+#: the shared installer is loaded lazily by `_load_legacy_installer()` precisely
+#: so that importing this wrapper has no effect and no dependency. The mirrors
+#: are asserted against the real module by the tests, so a rename on either side
+#: fails loudly rather than silently checking for a file that is never written.
+MANIFEST = "ARTIFACT.json"
+ARTIFACT_SCHEMA = "serveros/fleet-mcp-artifact/v1"
+
+#: The mode the owner's personal access token anchor must carry. It is a check
+#: on the FILE, never on its contents: this module does not read the token, and
+#: nothing in this package should.
+PAT_ANCHOR_MODE = 0o600
 
 
 class Refused(Exception):
@@ -74,10 +116,14 @@ def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
                 "writes": [], "executes": []}
     recovery = command in ("rollback", "status")
     bootstrap = command in STAGING_COMMANDS
+    canary = command == CANARY_START
     refresh = command == "refresh-stage"
-    preflight = gate.evaluate(proposal, recovery=recovery, bootstrap=bootstrap)
+    preflight = gate.evaluate(proposal, recovery=recovery, bootstrap=bootstrap,
+                              canary=canary)
     ready = ("RECOVERY_PLAN_READY" if recovery else
-             "BOOTSTRAP_PLAN_READY" if bootstrap else "PRECHECK_READY_FOR_HUMAN_CANARY")
+             "BOOTSTRAP_PLAN_READY" if bootstrap else
+             "CANARY_START_READY" if canary else
+             "PRECHECK_READY_FOR_HUMAN_CANARY")
     if preflight["decision"] != ready:
         return {"decision": "BLOCKED", "blockers": preflight["blockers"],
                 "writes": [], "executes": []}
@@ -108,9 +154,10 @@ def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
                         "writes": [], "executes": []}
     return {
         "decision": "DRY_RUN_READY",
-        "mode": "NEXT_ONLY_RECOVERY" if recovery else
-                "NEXT_ONLY_REFRESH_STAGE_NO_START" if refresh else
-                "NEXT_ONLY_STAGE_NO_START" if bootstrap else "NEXT_CANARY_INSTALL",
+        "mode": ("NEXT_ONLY_RECOVERY" if recovery else
+                 "NEXT_ONLY_CANARY_START" if canary else
+                 "NEXT_ONLY_REFRESH_STAGE_NO_START" if refresh else
+                 "NEXT_ONLY_STAGE_NO_START" if bootstrap else "NEXT_CANARY_INSTALL"),
         "command": command,
         "unit": UNIT,
         "composition": COMPOSITION,
@@ -118,7 +165,14 @@ def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
         "limits": dict(BUDGET) if not recovery else None,
         "writes": [], "executes": [],
         "requires": [
-            ("Owner-reviewed Next-only binding; public URL and Plugin ID may "
+            ("A Next-only binding the SERVICE accepts, a public HTTPS /mcp "
+             "origin whose certificate is measured at start time, and a present "
+             "0600 owner token anchor outside V1's roots. The Next Plugin ID "
+             "and the Next OAuth client authorization may still be unassigned: "
+             "this start is what makes them obtainable. Nothing is published, "
+             "no pointer moves and the unit is not enabled"
+             if canary else
+             "Owner-reviewed Next-only binding; public URL and Plugin ID may "
              "remain unassigned only for this non-starting bootstrap stage"
              if bootstrap else
              "Next owner authorization and distinct real App/Plugin registration"),
@@ -403,6 +457,445 @@ def _real_path_isolation(proposal: dict) -> None:
                 raise Refused("Next path resolves inside V1; refusing effect")
 
 
+def _tls_readback(host: str, *, timeout: float = 10.0, port: int = 443) -> dict:
+    """A REAL handshake with the public origin, not a flag a proposal can set.
+
+    `ssl.create_default_context()` verifies the chain against the system trust
+    store AND checks the hostname, so a `verified` result is the conjunction of
+    both — it is not a report about a configuration file. The SAN list is read
+    back from the certificate that was actually served, which is what makes
+    "the certificate names this host" a measurement.
+
+    Every failure mode is returned as `verified: False` with a reason the
+    caller can print. A readback that could not be taken is NEVER a pass, and
+    it is never reported as a 200 anywhere upstream.
+    """
+    import socket
+    import ssl
+
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                cert = tls.getpeercert() or {}
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        return {"host": host, "verified": False, "reason": type(exc).__name__}
+    sans = sorted(value for kind, value in cert.get("subjectAltName", ()) if kind == "DNS")
+    return {
+        "host": host,
+        "verified": True,
+        "subject_alt_names": sans,
+        "not_after": cert.get("notAfter"),
+        "issuer": [dict(part) for part in cert.get("issuer", ())][-1:]
+                            if cert.get("issuer") else [],
+    }
+
+
+def _http_status(url: str, *, timeout: float = 8.0) -> int | None:
+    """The status line for one URL, or `None` when the question went unanswered.
+
+    `None` and a status are different answers and are kept apart: an
+    unanswerable probe must not be folded into a 200, and it must not be
+    fabricated into a number the caller can pass to a threshold.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _tree_sha256(files: dict) -> str:
+    """`install.py::manifest_of`'s tree hash, recomputed from a file list.
+
+    A mirror, and a mirror of a hash is worth exactly as much as the proof that
+    it is the same function. The test suite asserts this against
+    `install.manifest_of` on a real tree, so a change to the formula upstream
+    fails a test here rather than quietly making every staged revision look
+    corrupt — or, worse, making a corrupt one look sound.
+    """
+    return hashlib.sha256(
+        "\n".join(f"{name} {digest}" for name, digest in sorted(files.items())).encode()
+    ).hexdigest()
+
+
+def _staged_revision(mod, root: Path) -> tuple[dict | None, str | None]:
+    """The revision `current` names, or why it may not be started.
+
+    Three refusals, all about the same claim: `current` names bytes. A missing
+    link means nothing is staged. A link that does not resolve, or resolves to
+    something that is not a directory, means the name points at nothing. And a
+    manifest that does not describe the tree it sits in means the revision is
+    not the artifact its own name says it is — which is exactly the state a
+    partial copy or an interrupted write leaves behind, and the one a start
+    must not paper over by starting it anyway.
+
+    The tree hash is RECOMPUTED rather than read back, because reading the
+    manifest's own hash only proves the manifest agrees with itself.
+    """
+    current = root / "current"
+    if not current.is_symlink():
+        return None, (f"no staged Next revision at {current}; a canary start "
+                      f"starts what `stage` published and publishes nothing "
+                      f"itself")
+    try:
+        target = current.resolve()
+    except OSError:
+        return None, f"the staged Next revision link at {current} is unreadable"
+    if not target.is_dir():
+        return None, f"the staged Next revision {target} is not a directory"
+    manifest_path = target / MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, (f"the staged Next revision {target} carries no {MANIFEST}; "
+                      f"it is not an artifact this wrapper may start")
+    except (OSError, ValueError) as exc:
+        return None, (f"the manifest of the staged Next revision {target} is "
+                      f"unreadable ({type(exc).__name__})")
+    if not isinstance(manifest, dict) or manifest.get("schema") != ARTIFACT_SCHEMA:
+        return None, (f"the manifest of the staged Next revision {target} does "
+                      f"not declare schema {ARTIFACT_SCHEMA!r}")
+    recorded = manifest.get("tree_sha256")
+    if not isinstance(recorded, str) or not re.fullmatch(r"[0-9a-f]{64}", recorded):
+        return None, (f"the manifest of the staged Next revision {target} carries "
+                      f"no usable tree_sha256")
+    recorded_files = manifest.get("files")
+    if not isinstance(recorded_files, dict) or not recorded_files:
+        return None, (f"the manifest of the staged Next revision {target} carries "
+                      f"no file list, so its tree hash names nothing")
+    # The manifest is written AFTER `manifest_of()` hashed the tree, so it is
+    # absent from its own file list. Re-hashing the directory as it stands now
+    # would therefore never agree with a healthy revision, and a check that can
+    # only fail is not a check — it is the same class of defect the wrapper
+    # refuses elsewhere. The manifest is dropped from the recomputation, not
+    # from the comparison.
+    actual = dict(mod.manifest_of(target)["files"])
+    actual.pop(MANIFEST, None)
+    if actual != recorded_files:
+        missing = sorted(set(recorded_files) - set(actual))
+        unlisted = sorted(set(actual) - set(recorded_files))
+        altered = sorted(name for name in set(actual) & set(recorded_files)
+                         if actual[name] != recorded_files[name])
+        return None, (f"the staged Next revision {target} does not match its own "
+                      f"manifest: {len(missing)} listed file(s) absent, "
+                      f"{len(unlisted)} file(s) unlisted, {len(altered)} altered. "
+                      f"These bytes are not the artifact the revision names")
+    if _tree_sha256(recorded_files) != recorded:
+        return None, (f"the manifest of the staged Next revision {target} records "
+                      f"a tree hash that is not the hash of its own file list")
+    return {"path": str(target), "tree_sha256": recorded,
+            "files": len(recorded_files)}, None
+
+
+def _next_binding(config_path: Path) -> tuple[dict | None, str | None]:
+    """The binding as the SERVICE ITSELF reads it, or why it may not be started.
+
+    Deliberately the real loader and not a private re-parse: the question is
+    whether the Next service will accept this binding at startup, and only
+    `fleet_mcp.config.load_config` answers that. A wrapper-side YAML read that
+    agreed with itself while the service refused would produce the worst
+    receipt of all — a start reported against a process that exited.
+
+    The refusal carries the exception TYPE, never a value from the file. The
+    loader's own message goes to stderr, where the operator can read it and a
+    published receipt cannot.
+    """
+    try:
+        from fleet_mcp.config import load_config  # noqa: PLC0415 - lazy on purpose
+    except Exception as exc:  # pragma: no cover - an unimportable package
+        return None, (f"the binding loader is unavailable ({type(exc).__name__}); "
+                      f"refusing to start a service whose configuration could "
+                      f"not be validated")
+    try:
+        config = load_config(config_path)
+    except Exception as exc:
+        sys.stderr.write(f"next_install.py: {type(exc).__name__}: "
+                         f"{getattr(exc, 'detail', '')}\n")
+        return None, (f"the Next binding at {config_path} is not acceptable to the "
+                      f"service ({type(exc).__name__}); the service would refuse "
+                      f"it at startup")
+    return {
+        "device_ref": config.local_device_ref,
+        "bind": config.server.bind,
+        "port": config.server.port,
+        "mcp_path": config.server.mcp_path,
+        "public_base_url": config.server.public_base_url,
+        "pat_anchor": config.auth.pat_anchor,
+        "oauth_enabled": config.auth.oauth_enabled,
+    }, None
+
+
+def _pat_anchor_state(anchor: Path | None) -> tuple[dict | None, str | None]:
+    """Whether the owner's token anchor is present and private — never its value.
+
+    The token is the owner's, it is what makes the human consent step real, and
+    this module does not read a byte of it. What a start can establish without
+    it is the three things an owner has to be able to rely on: that the file is
+    THERE (otherwise the OAuth issuer builds nothing and the public surface
+    degrades silently), that it is a REGULAR FILE and not a symlink (a symlink
+    is how another deployment's token gets borrowed by accident), and that its
+    mode is 0600 (a group- or world-readable owner token is a token that has
+    already leaked).
+    """
+    if anchor is None:
+        return None, ("auth.pat_anchor is unset in the Next binding; the OAuth "
+                      "issuer refuses to build without it and the public surface "
+                      "would come up degraded")
+    if anchor.is_symlink():
+        return None, (f"the owner token anchor {anchor} is a symlink; a start must "
+                      f"not follow it to a file that may belong to another "
+                      f"deployment")
+    try:
+        info = anchor.stat()
+    except FileNotFoundError:
+        return None, (f"the owner token anchor {anchor} does not exist; the owner "
+                      f"supplies it, this tooling never creates it")
+    except OSError as exc:
+        return None, (f"the owner token anchor {anchor} is unreadable "
+                      f"({type(exc).__name__})")
+    if not anchor.is_file():
+        return None, f"the owner token anchor {anchor} is not a regular file"
+    mode = info.st_mode & 0o777
+    if mode != PAT_ANCHOR_MODE:
+        return None, (f"the owner token anchor {anchor} is mode {mode:04o}, not "
+                      f"{PAT_ANCHOR_MODE:04o}")
+    return {"path": str(anchor), "mode": f"{mode:04o}", "bytes": info.st_size}, None
+
+
+def _canary_instance_errors(mod, before: dict) -> list[str]:
+    """Exactly one Next instance, and the same V1 that was there before.
+
+    "Exactly one" is asked of the unit rather than of a process list: the unit
+    is the thing that was started, `MainPID` is its single main process, and a
+    non-zero `NRestarts` means what is running is the tail of a restart loop
+    rather than one supervised instance. V1 is compared by `MainPID` because
+    "V1 still answers" is answered by a process that a cutover may have
+    replaced with one that also answers.
+    """
+    info = mod.systemctl(
+        "show", UNIT, "-p", "ActiveState", "-p", "MainPID", "-p", "NRestarts",
+        check=False)
+    if info.returncode != 0:
+        return ["the Next unit state could not be read back"]
+    props = dict(line.split("=", 1) for line in info.stdout.splitlines() if "=" in line)
+    problems: list[str] = []
+    if props.get("ActiveState") != "active":
+        problems.append("the Next unit is not active after the start")
+    try:
+        main_pid = int(props.get("MainPID", ""))
+        restarts = int(props.get("NRestarts", ""))
+    except ValueError:
+        return problems + ["the Next unit's MainPID/NRestarts are unavailable"]
+    if main_pid <= 0:
+        problems.append("the Next unit reports no main process")
+    elif not Path(f"/proc/{main_pid}").is_dir():
+        problems.append("the Next unit's main process is gone")
+    if restarts != before.get("restarts"):
+        problems.append("the Next unit restarted during the canary")
+    return problems
+
+
+def _public_base(public_mcp_url: str) -> str:
+    """The origin a public MCP URL is served from. `/mcp` is a path, not a host."""
+    base = public_mcp_url.rstrip("/")
+    return base[: -len("/mcp")] if base.endswith("/mcp") else base
+
+
+def _canary_preconditions(mod, proposal: dict) -> dict:
+    """Every check that must pass BEFORE the Next unit is started, or a refusal.
+
+    Ordered cheapest-and-most-fundamental first, so the operator is told about
+    the configuration before being told about the host. Nothing here writes,
+    starts, stops or enables anything: the caller takes that boundary itself,
+    which is why this returns evidence rather than acting.
+    """
+    nxt = proposal["next"]
+
+    # 1. The unit must be exactly the state a non-starting publish requires:
+    #    inactive, and unable to start on its own. A canary start on an enabled
+    #    unit would be an unsupervised start wearing a supervised name.
+    _state, problem = _next_unit_state(mod)
+    if problem:
+        raise Refused(problem)
+
+    # 2. Something reviewed must actually be staged, and its manifest must
+    #    describe it. Starting bytes that are not the artifact they name is the
+    #    failure a revision name exists to prevent.
+    root = Path(nxt["runtime_root"])
+    revision, problem = _staged_revision(mod, root)
+    if problem:
+        raise Refused(problem)
+
+    # 3. The binding is read by the SERVICE's own loader, so "the service will
+    #    accept it" is a measurement rather than a hope.
+    binding, problem = _next_binding(Path(nxt["config_path"]))
+    if problem:
+        raise Refused(problem)
+    if not binding["oauth_enabled"]:
+        raise Refused("auth.oauth_enabled is false in the Next binding; a ChatGPT "
+                      "connector cannot authenticate without it, and a canary "
+                      "start has nothing else to bring up")
+    if (binding["port"] != nxt["local_listen"]["port"]
+            or binding["bind"] != nxt["local_listen"]["host"]):
+        raise Refused("the Next binding the service reads does not match the "
+                      "reviewed proposal's local_listen")
+
+    # 4. V1 is read for two facts and changed for none: its own binding is used
+    #    only to prove the two ports differ.
+    old = mod.binding(Path(proposal["v1"]["config_path"]))
+    if (old["port"] != proposal["v1"]["local_listen"]["port"]
+            or old["bind"] != proposal["v1"]["local_listen"]["host"]):
+        raise Refused("live V1 binding differs from the reviewed proposal")
+    if binding["port"] == old["port"]:
+        raise Refused("Next would reuse V1's local listening port")
+
+    # 5. The owner's token: present, private, and not a borrowed one.
+    anchor, problem = _pat_anchor_state(binding["pat_anchor"])
+    if problem:
+        raise Refused(problem)
+    oauth_root = Path(binding["pat_anchor"]).parent / "fleet-mcp-oauth"
+    for key in gate.PATH_FIELDS:
+        v1_path = Path(proposal["v1"][key]).resolve()
+        candidate = oauth_root.resolve()
+        if (candidate == v1_path or candidate in v1_path.parents
+                or v1_path in candidate.parents):
+            raise Refused("the Next OAuth store would resolve inside a V1 root; "
+                          "an owner token written there would be V1's")
+
+    # 6. The public origin, MEASURED. A proposal cannot assert this: the
+    #    certificate has to be served, chain to a trusted root and name this
+    #    host, and the only way to know that is to ask for it.
+    public_base = _public_base(str(nxt["public_mcp_url"]))
+    host = public_base.split("://", 1)[-1].split("/", 1)[0]
+    tls = _tls_readback(host)
+    if not tls["verified"]:
+        raise Refused(f"the public origin {host} did not complete a verified TLS "
+                      f"handshake ({tls['reason']}); a canary start would publish "
+                      f"a route with no certificate behind it")
+    if host not in tls["subject_alt_names"]:
+        raise Refused(f"the certificate served for {host} does not name {host} "
+                      f"in its subjectAltName; it is another host's certificate")
+
+    # 7. Live memory headroom, then V1's health, both immediately before start.
+    reason = _current_pressure()
+    if reason:
+        raise Refused(reason)
+    info = mod.systemctl("show", UNIT, "-p", "NRestarts", check=False)
+    props = dict(line.split("=", 1) for line in info.stdout.splitlines() if "=" in line)
+    try:
+        restarts = int(props.get("NRestarts", ""))
+    except ValueError:
+        raise Refused("the Next unit's restart count is unavailable; a start "
+                      "cannot be judged against an unknown baseline") from None
+    before_v1 = mod.systemctl(
+        "show", proposal["v1"]["service_unit"], "-p", "MainPID", check=False)
+    v1_props = dict(line.split("=", 1)
+                    for line in before_v1.stdout.splitlines() if "=" in line)
+    try:
+        v1_main_pid = int(v1_props.get("MainPID", ""))
+    except ValueError:
+        raise Refused("the V1 unit's MainPID is unreadable; a canary start must "
+                      "know which V1 process it is promising not to lose") from None
+    if mod.wait_for_health(old["probe"], 3.0) is None:
+        raise Refused("V1 /health did not answer before the Next canary start; "
+                      "do not risk a cutover")
+
+    return {"unit_state": "inactive", "revision": revision, "binding": binding,
+            "pat_anchor": anchor, "tls": tls, "restarts": restarts,
+            "v1_main_pid": v1_main_pid, "v1_probe": old["probe"],
+            "public_base": public_base}
+
+
+def _canary_postcondition(mod, proposal: dict, before: dict, *,
+                          health_timeout: float) -> dict:
+    """What the started Next actually does, and what V1 is still doing.
+
+    Every field is a measurement. A probe that could not be taken is `None` and
+    is also a problem — the two are reported together so a reader cannot mistake
+    an unanswerable question for a passing one. No status here is ever invented:
+    in particular this function has no way to report a 200 it did not receive.
+    """
+    from fleet_mcp.version import (  # noqa: PLC0415 - authoritative route names
+        AUTHORIZATION_SERVER_PATH,
+        PROTECTED_RESOURCE_PATH,
+    )
+
+    nxt = proposal["next"]
+    problems: list[str] = []
+    problems.extend(_effective_limit_errors(mod))
+    problems.extend(_canary_instance_errors(mod, before))
+
+    probe = f"http://{nxt['local_listen']['host']}:{nxt['local_listen']['port']}"
+    local_health = mod.wait_for_health(probe, health_timeout)
+    if local_health is None:
+        problems.append(f"the Next unit answered nothing on {probe}/health")
+    public_base = before["public_base"]
+    public = {
+        "/health": _http_status(f"{public_base}/health"),
+        PROTECTED_RESOURCE_PATH: _http_status(public_base + PROTECTED_RESOURCE_PATH),
+        AUTHORIZATION_SERVER_PATH: _http_status(public_base + AUTHORIZATION_SERVER_PATH),
+    }
+    for name, status in public.items():
+        if status != 200:
+            problems.append(f"the public route {public_base}{name} answered "
+                            f"{status!r}, not 200")
+
+    v1_after = mod.systemctl(
+        "show", proposal["v1"]["service_unit"], "-p", "MainPID", check=False)
+    v1_props = dict(line.split("=", 1)
+                    for line in v1_after.stdout.splitlines() if "=" in line)
+    try:
+        v1_main_pid = int(v1_props.get("MainPID", ""))
+    except ValueError:
+        v1_main_pid = None
+    if v1_main_pid != before["v1_main_pid"]:
+        problems.append("V1's MainPID changed across the Next canary")
+    if mod.wait_for_health(before["v1_probe"], 3.0) is None:
+        problems.append("V1 /health stopped answering during the Next canary")
+
+    return {
+        "local_health": local_health,
+        "public": public,
+        "v1_main_pid": v1_main_pid,
+        "v1_main_pid_unchanged": v1_main_pid == before["v1_main_pid"],
+        # The MCP tool surface is an AUTHENTICATED readback (`tools/list` needs
+        # an OAuth client or the owner token). It is deliberately not asserted
+        # here: an unauthenticated canary cannot measure it, and a number this
+        # module did not receive is not one it may report.
+        "tool_declarations": None,
+        "tool_declarations_reason": ("requires an authenticated MCP tools/list; "
+                                     "not read by this unauthenticated canary"),
+        "problems": problems,
+    }
+
+
+def _restore_failed_canary(mod, reason: str) -> None:
+    """Stop ONLY Next; leave the staged revision and V1 exactly as they were.
+
+    There are no pointers to restore, because a canary start moved none. What
+    it changed is one activation state, and stopping is the inverse of that and
+    of nothing else. The revision is deliberately left in place: it was
+    reviewed, it is what the next attempt will start, and deleting it would
+    destroy the evidence for the failure being reported.
+    """
+    stop_error = ""
+    try:
+        stopped = mod.systemctl("stop", UNIT, check=False)
+        if stopped.returncode != 0:
+            stop_error = " Next stop reported nonzero status."
+    except (OSError, RuntimeError):
+        stop_error = " Next stop could not be confirmed."
+    raise Refused("the Next canary did not come up; Next-only stop attempted; "
+                  "Next service state is UNKNOWN until read back: "
+                  + reason + stop_error)
+
+
 def _restore_failed_install(mod, root: Path, before: tuple, reason: str,
                             *, effect_attempted: bool) -> None:
     """Stop only Next, restore its previous pointers, never restart V1.
@@ -451,8 +944,8 @@ def _restore_failed_install(mod, root: Path, before: tuple, reason: str,
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("command",
-                   choices=("stage", "refresh-stage", "install", "status",
-                            "rollback", "uninstall"))
+                   choices=("stage", "refresh-stage", "install", CANARY_START,
+                            "status", "rollback", "uninstall"))
     p.add_argument("--proposal", required=True, help="non-secret, freshly reviewed JSON")
     p.add_argument("--source", default=str(_ROOT))
     p.add_argument("--revision")
@@ -485,6 +978,61 @@ def main(argv: list[str] | None = None) -> int:
         # Consent is per-operator intent. It must not be replaced with a
         # platform-wide permission switch or inherited from the V1 token.
         _real_path_isolation(proposal)
+        if args.command == CANARY_START:
+            # The whole of the canary path, and it differs from `install` in
+            # what it does NOT do: no revision is copied, no `current`/`previous`
+            # pointer moves, no unit file is written and the unit is not
+            # `enable`d. The only system action is one `systemctl start`.
+            mod = _load_legacy_installer()
+            before = _canary_preconditions(mod, proposal)
+            # EFFECT BOUNDARY. Everything above only read; from here a failure
+            # must undo Next and must not touch V1 or the staged revision.
+            effect_attempted = True
+            effect_started = True
+            try:
+                started = mod.systemctl("start", UNIT, check=False)
+                if started.returncode != 0:
+                    _restore_failed_canary(mod, "systemctl start reported "
+                                                "nonzero status")
+                after = _canary_postcondition(mod, proposal, before,
+                                              health_timeout=args.health_timeout)
+            except Refused:
+                raise
+            except (SystemExit, Exception) as exc:  # noqa: BLE001 - see below
+                # The start or the readback died. `install.py` treats a death of
+                # unknown timing as an attempted effect and this does the same,
+                # for the same reason: the unit may be running the revision right
+                # now, and "it probably did not start" is not a state.
+                _restore_failed_canary(mod, f"{type(exc).__name__} during start "
+                                            f"or readback")
+            if after["problems"]:
+                _restore_failed_canary(mod, "; ".join(after["problems"]))
+            print(json.dumps({
+                "decision": "EXECUTED",
+                "command": args.command,
+                "unit": UNIT,
+                "mode": "NEXT_ONLY_CANARY_START",
+                "effect_state": "NEXT_ONLY_ACTION_ATTEMPTED",
+                "writes": [],
+                "executes": [UNIT],
+                "v1_action": False,
+                "enabled": False,
+                "revision": before["revision"]["path"],
+                "tree_sha256": before["revision"]["tree_sha256"],
+                "binding": {"device_ref": before["binding"]["device_ref"],
+                            "bind": before["binding"]["bind"],
+                            "port": before["binding"]["port"],
+                            "public_base_url": before["binding"]["public_base_url"]},
+                "owner_token_anchor": before["pat_anchor"],
+                "tls": before["tls"],
+                "local_health": after["local_health"],
+                "public_readback": after["public"],
+                "v1_main_pid": after["v1_main_pid"],
+                "v1_main_pid_unchanged": after["v1_main_pid_unchanged"],
+                "tool_declarations": after["tool_declarations"],
+                "tool_declarations_reason": after["tool_declarations_reason"],
+            }, indent=2, sort_keys=True))
+            return 0
         if args.command == "install" and not args.no_start:
             reason = _current_pressure()
             if reason:
