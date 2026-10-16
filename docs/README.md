@@ -35,6 +35,7 @@ OpenViking **已于 2026-09-27 在这台节点上绑定并运行**（独立 unit
 | 文档 | 范围 |
 |---|---|
 | [Collaboration](COLLABORATION-CONTRACT.md) | Parent继续责任、receiver接受、授权/预算/恢复 |
+| [Agent Identity / Session / Delegation V2](architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) | V2：Logical Agent 与 Session 解耦、Assignment/Activation、层级委派、Agent 间通信、Codex/OpenAgents 边界 |
 | [Daily Work Cycle](daily-work-cycle.md) | 两水位、最多两root焦点、GPT/Quay与必需交付 |
 | [Ability Operating Model](ABILITY-OPERATING-MODEL.md) | 21稳定职责→子Ability/实现层；定时节点owner、Session/Workspace显式位置、serverosd与scheduler边界、自迭代入口 |
 | [Scenario Acceptance](SCENARIO-ACCEPTANCE.md) | J01–J10；本轮REF/DEEP追加到对应用户场景 |
