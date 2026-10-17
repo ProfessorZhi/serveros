@@ -1,7 +1,11 @@
 # Fleet V1 verdict/evidence seam — #237 T10
 
-**Status:** `SOURCE / OFFLINE` consumer seam implemented and fixture-tested.
-**T10 production closure:** **BLOCKED_WIRING — not closed.**
+**Status:** `SOURCE / OFFLINE`. The admitted `work dispatch` producer now
+records the canonical T10 binding and a `receipt_sha256` anchor; the consumer
+reconciles them with the real runner receipt. The continuation engineering path
+and Work Engine consumption remain owner-blocked.
+**T10 production closure:** **BLOCKED_WIRING — not closed**
+(`work_engine_consumption=NOT_WIRED`).
 **May this sign a V1 QA verdict?** **No.** Every decision returns
 `qa_signature=False`, `parent_accepted=False`, `requires_independent_qa=True`.
 
@@ -93,34 +97,51 @@ A nonzero receipt exit is `DENY` even when the child's text says `PASS` and even
 when a forged Work Engine row says exit 0 (`PROCESS_EXIT_NONZERO`,
 `EXIT_CODE_DISAGREEMENT`).
 
-## 3. Current production is BLOCKED_WIRING
+## 3. Producer wiring: what is now real, and what is still BLOCKED_WIRING
 
-The existing producer does **not** record what the consumer needs:
+The admitted `work dispatch` path is now wired. When the four T10 flags are
+supplied, `runtime/cli.py`:
 
-* `runtime/cli.py::_dispatch_answer` records only `action_key`, `status` and
-  `input_digest` as the DISPATCHED evidence — no receipt-file/artifact anchor;
-* `mcp/continuation_mcp.py::_mutate` uses the work-verb arguments as stdin; it
-  does not put the T10 binding (work_run, commit SHA, principal, runner
-  identity) into the receipt;
-* `runtime/cli.py::cmd_work_dispatch` passes `--input-file` or empty stdin; no
-  binding and no anchor.
+* requires all four `--t10-work-item / --t10-work-run / --t10-commit-sha /
+  --t10-runner-identity` flags and refuses a partial binding before spawning;
+* takes `cycle_ref`, `action_key` and `grant_ref` from the admission, the
+  principal from `grant.delegated_by`, and the Item from the admission's
+  selection;
+* requires `--t10-commit-sha` to equal the `--cwd` worktree's HEAD and the
+  tracked tree to be clean;
+* writes the canonical binding as the dispatch stdin and as
+  `env["SERVEROS_DISPATCH_BINDING"]`, so it is inside `invoke_once`'s
+  `input_digest`;
+* records `receipt_sha256` (receipt + stdin/stdout/stderr bytes) in the
+  DISPATCHED evidence through the fields the store already accepts.
 
-Therefore a **real** exit 0 receipt produced by current production answers
-`BLOCKED_WIRING`, not `ELIGIBLE`. The failing end-to-end fixture is:
+The real end-to-end fixture is:
 
 ```bash
-python -m pytest \
-  tests/test_fleet_v1_verdict_evidence.py::test_current_production_receipt_is_blocked_wiring \
-  -q
+python -m pytest tests/test_fleet_v1_t10_producer_binding.py -q
 ```
 
-It calls the real `runtime/bounded_invocation.invoke_once`, gets a real exit 0,
-and still gets `BLOCKED_WIRING` with `MISSING_DISPATCH_BINDING` and
-`MISSING_RECEIPT_ANCHOR`. That is the precise wiring gap, not a green T10.
+It drives the real CLI, the real `runtime/bounded_invocation.invoke_once`, and a
+real offline runner. The runner prints `ALL TESTS PASSED` and exits 1; the
+producer records exit 1 and the consumer returns `DENY / PROCESS_EXIT_NONZERO`.
+The exit-0 case is `ELIGIBLE` for independent QA review only.
 
-The legitimate-eligible fixture (`test_real_runner_exit_zero_with_exact_binding_is_eligible`)
-uses the same real executor but supplies the producer-contract shape. It proves
-the consumer seam is correct once the producer patch lands.
+What is **still** blocked:
+
+* **Non-T10 dispatch** keeps the legacy stdin/env and therefore answers
+  `BLOCKED_WIRING` (`MISSING_DISPATCH_BINDING`). The old fixture
+  `test_current_production_receipt_is_blocked_wiring` still pins that.
+* **`continuation.execute` engineering** cannot be wired from
+  `mcp/continuation_mcp.py` alone: its `invoke_once` call is inside
+  `runtime/bounded_executor.execute`, which accepts only `key/argv/receipts`,
+  and the wake envelope carries `work_item_ref`, `grant_ref` and
+  `delegation_ref` but not `work_run_id`, `commit_sha` or `runner_identity`.
+  This is `BLOCKED_ORIGINAL_OWNER`; the exact patch is in §4.5.
+* **Work Engine finalization does not consume the producer proof.** Even the
+  local producer/consumer pair that reaches `ELIGIBLE` reports
+  `t10_status=BLOCKED_WIRING` and `work_engine_consumption=NOT_WIRED`. A real
+  `finalize_run` that refuses an absent/contradictory linked receipt is the
+  remaining owner change in §4.6.
 
 ## 4. Producer contract and exact owner patch
 
@@ -172,26 +193,33 @@ This is the only value that detects a receipt edited after the phase was
 confirmed. Without it, a forger who rewrites `process_exit_code` and the
 artifacts consistently cannot be distinguished from an honest runner.
 
-### 4.3 `runtime/cli.py::_dispatch_answer` (owner patch A)
+### 4.3 `runtime/cli.py::_dispatch_answer` — implemented in this milestone
 
-After reading `receipt`, compute the anchor above from `path` and the three
-sibling artifacts, and add it to the evidence:
+`_receipt_sha256(path, key)` computes the anchor above from the receipt file and
+the three sibling artifacts; `_dispatch_answer` records it beside the three
+fields the phase already compares on:
 
 ```python
 return {"evidence": {
     "action_key": receipt.get("action_key"),
     "status": receipt.get("status"),
     "input_digest": receipt.get("input_digest"),
-    "receipt_sha256": _receipt_anchor(path, admission["action_key"]),
+    "receipt_sha256": _receipt_sha256(path, admission["action_key"]),
     "store": str(Path(receipts_root)),
     "receipt": str(path),
 }, "receipt": receipt}
 ```
 
-`_receipt_anchor` returns `None` when any artifact is missing or is a symlink:
-an anchor over invented bytes is worse than no anchor.
+It returns `None` when any artifact is missing or is a symlink: an anchor over
+invented bytes is worse than no anchor. The existing store accepts the extra
+key without a schema change.
 
-### 4.4 `runtime/agent_control_store.py::dispatch_evidence_conflict` (owner patch B)
+### 4.4 `runtime/agent_control_store.py::dispatch_evidence_conflict` — still an owner patch
+
+Store-side validation of the anchor is **not applied** in this milestone
+(`agent_control_store.py` is outside the authorized file set and the S1 owner is
+concurrently working there). The store records the extra key as-is; the
+consumer enforces it. The stronger store-side check would be:
 
 When `receipt_sha256` is present, refuse anything that is not a 64-hex digest.
 Keep the field optional at the store layer so existing admissions remain
@@ -206,42 +234,58 @@ if anchor is not None and (
             "64-hex digest; a value a consumer cannot check is not an anchor")
 ```
 
-### 4.5 Dispatchers (owner patch C)
+### 4.5 Dispatchers
 
-`mcp/continuation_mcp.py::_mutate` (`continuation.execute`) and
-`runtime/cli.py::cmd_work_dispatch` must build the binding from trusted inputs
-and pass it into `invoke_once`:
+#### `runtime/cli.py::cmd_work_dispatch` — implemented in this milestone
+
+The four new flags are opt-in: no `--t10-*` flag keeps the legacy dispatch
+unchanged (and therefore `BLOCKED_WIRING` for T10). Supplying any flag requires
+all four and builds:
 
 ```python
 binding = {
-    "cycle_ref": <admission cycle ref>,
-    "action_key": key,
-    "work_item_id": <envelope work_item_ref / Work Engine item_id>,
-    "work_run_id": <Work Engine run_id>,
-    "commit_sha": <exact 40-hex revision>,
-    "principal": <delegated_by / trusted context>,
-    "grant_ref": <envelope grant_ref>,
-    "runner_identity": <Work Engine runs.worker / provider runtime identity>,
+    "cycle_ref": admission["cycle_ref"],
+    "action_key": admission["action_key"],
+    "work_item_id": args.t10_work_item,       # must be in admission.selected
+    "work_run_id": args.t10_work_run,         # Parent accepted scope
+    "commit_sha": args.t10_commit_sha,        # must equal `git rev-parse HEAD`
+    "principal": grant["delegated_by"],       # never a flag
+    "grant_ref": admission["grant_ref"],
+    "runner_identity": args.t10_runner_identity,
 }
 canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"))
 invoke_once(..., input_text=canonical,
-            env={**existing_env, "SERVEROS_DISPATCH_BINDING": canonical})
+            env={"SERVEROS_DISPATCH_BINDING": canonical})
 ```
 
-`work_run_id`, `commit_sha`, `principal` and `runner_identity` must be accepted
-from the Parent's accepted scope / the live envelope, never from the child's
-report. `continuation.execute`'s schema and `work dispatch`'s CLI therefore
-need explicit `work_run` / `commit_sha` / `principal` / `runner_identity`
-inputs (or the envelope must carry them). The existing envelope already carries
-`work_item_ref`, `grant_ref` and `delegation_ref`; the Run id and exact SHA are
-the missing producer inputs.
+The commit SHA is checked against the real worktree HEAD and the tracked tree
+must be clean; the Item must be one the admission selected; a partial binding or
+`--input-file` alongside it refuses before the spawn. The producer never takes
+`work_run_id` or `runner_identity` from the child's argv/env; they come from the
+operator's accepted-scope flags.
 
-The seam's admission checks target the existing Agent Control `work dispatch`
-admission (the record that owns `action_key`, `grant_ref`, reservation and
-selection). `continuation.execute` is a different surface and does not by
-itself create that admission; a caller that wants this gate on that surface must
-also supply the corresponding admission snapshot, or the integration must add
-one. Without it the gate answers `MISSING_ADMISSION / UNKNOWN`, never eligible.
+#### `mcp/continuation_mcp.py` engineering path — BLOCKED_ORIGINAL_OWNER
+
+`continuation.execute` does not call `invoke_once` directly. It calls
+`runtime/bounded_executor.execute`, which accepts only `key`, `argv` and
+`receipts` and constructs its own `input_text=json.dumps(config)`. The wake
+envelope carries `work_item_ref`, `grant_ref` and `delegation_ref`, but not
+`work_run_id`, `commit_sha` or `runner_identity`. Binding from
+`continuation_mcp.py` alone would therefore require guessing three trust
+operands or changing a file outside this milestone's ownership. It is not
+faked. The exact owner patch is:
+
+1. `runtime/wake.py::capability_envelope` — carry `work_run_ref`, the exact
+   `commit_sha` and `runner_identity` from the trusted wake record.
+2. `runtime/bounded_executor.execute` — accept an optional trusted `binding`
+   and pass it into `invoke_once` as `input_text` plus
+   `env["SERVEROS_DISPATCH_BINDING"]`.
+3. `mcp/continuation_mcp.py::execute` — pass the envelope-derived binding to
+   `executor.execute`; refuse if any of the three is absent (fail closed).
+
+The control-verb `_mutate` path is a different surface: it dispatches
+`serverosctl work …`, not a test runner, and its envelope does not carry a Work
+Engine Run id or SHA. It is not test evidence and is not admitted by this gate.
 
 ### 4.6 Work Engine (owner patch D, optional for this consumer)
 
@@ -260,33 +304,53 @@ That is a Work Engine API/schema change and is not made by this PR.
   and its anchor.
 * It never turns `ELIGIBLE` into a Parent acceptance or a QA signature.
 * It never writes a Work Engine board, ledger, admission, grant or receipt.
-* It never edits `runtime/**`, `work-engine/**`, `fleet_mcp/**`,
-  `integrations/fleet-v1-qa/**`, the I1 manifest, credentials, providers or
-  another Agent's worktree.
+* It never edits Work Engine, `runtime/agent_control_store.py`,
+  `runtime/daemon.py`, `runtime/coordination.py`, `context/resolver.py`,
+  `fleet/agent_control_router.py`, `fleet_mcp/**`,
+  `integrations/fleet-v1-qa/**`, Native, F1, the I1 manifest, credentials,
+  providers or another Agent's worktree. The only runtime file edited by this
+  milestone is `runtime/cli.py`, under the explicit T10 producer grant; the
+  S1/S2 owners' files are untouched.
 
 ## 6. Test evidence
 
+Bounded by cgroup v2 (not just a ulimit), plus a 10-minute timeout:
+
 ```bash
 cd /data/home/vince/workspace/worktrees/serveros/fleet-v1-t10-verdict-evidence-20261018
-ulimit -v 1048576                    # <= 1 GiB address space
-timeout 600 taskset -c 0-31 nice -n 10 \
+timeout 620 systemd-run --user --scope \
+  -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
   /data/home/vince/toolchains/serveros-test/bin/python -m pytest \
-  tests/test_fleet_v1_verdict_evidence.py -q --no-header -p no:cacheprovider
+  tests/test_fleet_v1_t10_producer_binding.py -q --no-header -p no:cacheprovider
 ```
 
-Measured on Tokyo, 2026-10-18: **48 passed**, exit 0, `pswpout` delta 0 (no
-swap), 32 of 128 CPUs (25%). The T10 product tests spawn a real offline
-synthetic runner through the unmodified `runtime/bounded_invocation.invoke_once`;
-the runner prints `ALL TESTS PASSED` and exits 1 in the denial case, and exits
-0 in the eligible case. Git commits are pinned to the exact 40-hex SHA in the
-binding.
+Measured on Tokyo, 2026-10-18: **9 passed in 40.41s**, exit 0, `pswpout` delta 0
+(no swap). The same cgroup, on the focused regression
+`tests/test_admission.py::TestTheDispatchVerb` plus
+`tests/test_fleet_v1_verdict_evidence.py`: **64 passed in 90.60s**, exit 0,
+`pswpout` delta 0.
+
+The producer tests drive the real CLI `work dispatch` and the real unmodified
+`runtime/bounded_invocation.invoke_once`. The runner prints `ALL TESTS PASSED`
+and exits 1 in the denial case; the producer records exit 1, the canonical
+binding in stdin/env and `receipt_sha256` in the DISPATCHED evidence; the
+consumer returns `DENY / PROCESS_EXIT_NONZERO`. The exit-0 case returns
+`ELIGIBLE` for independent QA only, with `t10_status=BLOCKED_WIRING` and
+`work_engine_consumption=NOT_WIRED`.
 
 The fixture suite covers:
 
 * text-only success without a receipt → `UNKNOWN / MISSING_RECEIPT`;
 * real runner exit 1 with `ALL TESTS PASSED` text → `DENY / PROCESS_EXIT_NONZERO`;
+* real `work dispatch` exit 1 with `ALL TESTS PASSED` text → `DENY`, and the
+  DISPATCHED evidence carries the canonical binding plus `receipt_sha256`;
+* real `work dispatch` exit 0 with the exact binding → `ELIGIBLE` for QA review
+  only, `t10_status=BLOCKED_WIRING`;
+* partial T10 binding, changed SHA, revoked grant → refused **before spawn**
+  (`Nothing was run`, no receipt);
+* non-T10 dispatch → `BLOCKED_WIRING / MISSING_DISPATCH_BINDING`;
 * forged Work Engine exit 0 against a real exit 1 receipt → `DENY / EXIT_CODE_DISAGREEMENT`;
-* forged receipt edited to exit 0 after the anchor → `DENY / RECEIPT_ANCHOR_MISMATCH`;
+* forged receipt edited to exit 0 after the producer anchor → `DENY / RECEIPT_ANCHOR_MISMATCH`;
 * output digest tampering → `DENY / OUTPUT_DIGEST_MISMATCH`;
 * stale receipt, expired/revoked grant, cross-principal, cross-run, stale SHA,
   cross-grant, runner mismatch, unrecognized Work Engine runner → `DENY`;
@@ -303,5 +367,6 @@ integrations/fleet-v1-verdict-evidence/
 ├── bounded_provenance.py      # bounded-invocation receipt + admission + Work Engine
 └── fixtures/
     └── negative_cases.json    # Work Engine negative matrix
-tests/test_fleet_v1_verdict_evidence.py
+tests/test_fleet_v1_verdict_evidence.py       # consumer matrix
+tests/test_fleet_v1_t10_producer_binding.py   # real CLI + invoke_once producer
 ```

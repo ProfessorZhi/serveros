@@ -66,6 +66,14 @@ DECISION_UNKNOWN = "UNKNOWN"
 DECISION_BLOCKED_WIRING = "BLOCKED_WIRING"
 DECISION_ELIGIBLE = "ELIGIBLE"
 
+#: T10 is a release gate, not a local green light. Even when the producer and
+#: consumer reconcile every local fact, a real Work Engine finalization does
+#: not yet consume the producer proof (its `finalize_run` does not refuse a
+#: finalize whose linked runner receipt is absent or contradictory). The
+#: product status therefore stays BLOCKED_WIRING until that owner change lands.
+T10_STATUS_BLOCKED_WIRING = "BLOCKED_WIRING"
+WORK_ENGINE_CONSUMPTION_NOT_WIRED = "NOT_WIRED"
+
 _DENY = "DENY"
 _UNKNOWN = "UNKNOWN"
 _BLOCKED = "BLOCKED_WIRING"
@@ -247,6 +255,8 @@ class DispatchDecision:
     run_state_advanced: bool
     qa_gate_advanced: bool
     wiring: str
+    t10_status: str
+    work_engine_consumption: str
     evidence_level: str
     authority: str
 
@@ -268,6 +278,8 @@ class DispatchDecision:
             "run_state_advanced": self.run_state_advanced,
             "qa_gate_advanced": self.qa_gate_advanced,
             "wiring": self.wiring,
+            "t10_status": self.t10_status,
+            "work_engine_consumption": self.work_engine_consumption,
             "evidence_level": self.evidence_level,
             "authority": self.authority,
         }
@@ -529,6 +541,8 @@ def _decision(expected, reasons, receipt, admission, work, anchor,
         run_state_advanced=False,
         qa_gate_advanced=False,
         wiring=wiring,
+        t10_status=T10_STATUS_BLOCKED_WIRING,
+        work_engine_consumption=WORK_ENGINE_CONSUMPTION_NOT_WIRED,
         evidence_level="LOCAL_BOUNDED_INVOCATION",
         authority=(
             "runtime/bounded_invocation.invoke_once + "

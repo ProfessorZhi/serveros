@@ -45,10 +45,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import getpass
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import socket
+import subprocess
 import sys
 import textwrap
 import time
@@ -9435,6 +9438,42 @@ def _refuse_a_grant_that_no_longer_stands(admission: dict, control,
     return True
 
 
+def _receipt_sha256(path: Path, key: str) -> str | None:
+    """The bytes-anchor of one receipt and its three artifacts, or None.
+
+    The T10 consumer recomputes this exact value from the same four files and
+    refuses a receipt whose bytes have moved since the phase was recorded. It
+    is written into the DISPATCHED evidence as `receipt_sha256` — the store
+    accepts the extra key and this file already records `store`/`receipt`
+    beside the three fields the phase compares on.
+
+    None is a refusal, not a digest of invented bytes: a missing artifact or a
+    symlink means the producer cannot say what the receipt was, and a consumer
+    that treated empty bytes as an anchor would accept a receipt that was never
+    complete.
+    """
+    if path.is_symlink() or not path.is_file():
+        return None
+    artifacts = {}
+    for name in ("stdin", "stdout", "stderr"):
+        item = path.parent / (key + "." + name)
+        if item.is_symlink() or not item.is_file():
+            return None
+        artifacts[name] = item.read_bytes()
+    digest = hashlib.sha256()
+    for label, data in (
+        ("receipt", path.read_bytes()),
+        ("stdin", artifacts["stdin"]),
+        ("stdout", artifacts["stdout"]),
+        ("stderr", artifacts["stderr"]),
+    ):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(data)
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
     """What the receipts directory says about this admission's action key.
 
@@ -9499,6 +9538,8 @@ def _dispatch_answer(admission: dict, receipts_root: str) -> dict:
     return {"evidence": {"action_key": receipt.get("action_key"),
                          "status": receipt.get("status"),
                          "input_digest": receipt.get("input_digest"),
+                         "receipt_sha256": _receipt_sha256(
+                             path, admission["action_key"]),
                          "store": str(Path(receipts_root)), "receipt": str(path)},
             "receipt": receipt}
 
@@ -9683,6 +9724,139 @@ def _dispatch_already_done(control, admission: dict, args) -> int:
     return EXIT_OK
 
 
+_T10_BINDING_FLAGS = (
+    "t10_work_item",
+    "t10_work_run",
+    "t10_commit_sha",
+    "t10_runner_identity",
+)
+
+
+def _git_output(cwd: Path, *argv: str) -> str:
+    """One read-only git answer for the T10 binding, with no ambient GIT_*.
+
+    The binding must describe the tree the command runs in. `GIT_DIR` and its
+    relatives in the parent's environment would let that answer be about some
+    other repository, so they are removed rather than inherited. The command
+    is a local `git` read with a timeout; nothing here mutates the worktree.
+    """
+    env = {name: value for name, value in os.environ.items()
+           if not name.startswith("GIT_")}
+    try:
+        done = subprocess.run(
+            ["git", *argv], cwd=str(cwd), capture_output=True, text=True,
+            timeout=15, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            f"T10 dispatch cannot read the git worktree at {cwd}: "
+            f"{type(exc).__name__}: {exc}. Nothing was run") from exc
+    if done.returncode != 0:
+        raise ValueError(
+            f"T10 dispatch cannot read the git worktree at {cwd}: "
+            f"{done.stderr.strip() or 'git exited ' + str(done.returncode)}. "
+            f"Nothing was run")
+    return done.stdout.strip()
+
+
+def _t10_dispatch_binding(args, admission: dict, control) -> str | None:
+    """The canonical T10 binding for this dispatch, or None when not requested.
+
+    ALL-OR-NOTHING, and each operand comes from the authority that already
+    answers it rather than from the caller's prose:
+
+      * `cycle_ref`, `action_key` and `grant_ref` are the admission's own;
+      * `work_item_id` must be one the admission selected;
+      * `principal` is the grant's `delegated_by`, never a flag;
+      * `commit_sha` must equal the worktree's HEAD, and the tracked tree must
+        be clean — a SHA that does not describe the tree is not a binding;
+      * `work_run_id` and `runner_identity` are the operator's accepted-scope
+        inputs, and the consumer later reconciles them with Work Engine.
+
+    No T10 flag means the legacy dispatch, unchanged. Some but not all means a
+    refusal before anything is spawned: a partial binding would name an
+    authority the receipt does not carry, which is exactly the false-success
+    shape T10 exists to reject.
+    """
+    requested = [name for name in _T10_BINDING_FLAGS
+                 if str(getattr(args, name, "") or "").strip()]
+    if not requested:
+        return None
+    missing = [name for name in _T10_BINDING_FLAGS
+               if not str(getattr(args, name, "") or "").strip()]
+    if missing:
+        flags = ", ".join("--" + name.replace("_", "-") for name in missing)
+        raise ValueError(
+            f"T10 dispatch binding is incomplete: missing {flags}. A partial "
+            f"binding would name an authority the receipt does not carry. "
+            f"Nothing was run")
+    if getattr(args, "input_file", ""):
+        raise ValueError(
+            "T10 dispatch refuses --input-file: the canonical binding is the "
+            "dispatch's stdin, and two claims about one stdin cannot both be "
+            "the input digest. Nothing was run")
+
+    cycle = str(admission.get("cycle_ref") or "")
+    action = str(admission.get("action_key") or "")
+    grant_ref = str(admission.get("grant_ref") or "")
+    selection = admission.get("selection") or {}
+    selected = {str(item) for item in (selection.get("selected") or [])
+                if isinstance(item, str)}
+    item = str(args.t10_work_item).strip()
+    if item not in selected:
+        raise ValueError(
+            f"T10 work item {item!r} is not in this admission's selection "
+            f"{sorted(selected)}. A binding for an Item the cycle did not "
+            f"select is not this cycle's work. Nothing was run")
+
+    run = str(args.t10_work_run).strip()
+    runner = str(args.t10_runner_identity).strip()
+    sha = str(args.t10_commit_sha).strip().lower()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        raise ValueError(
+            "T10 commit SHA must be an exact full 40-hex git SHA; a branch "
+            "name, short SHA or moving ref cannot identify what was tested. "
+            "Nothing was run")
+    cwd = Path(str(args.cwd))
+    if not cwd.is_absolute() or not cwd.is_dir():
+        raise ValueError(
+            f"T10 dispatch needs an absolute existing --cwd; "
+            f"{str(args.cwd)!r} is not one. Nothing was run")
+    head = _git_output(cwd, "rev-parse", "HEAD")
+    if head.lower() != sha.lower():
+        raise ValueError(
+            f"T10 commit SHA {sha} is not the worktree HEAD {head}. A "
+            f"dispatch that runs in a different tree than the SHA it binds "
+            f"cannot be evidence about that SHA. Nothing was run")
+    dirty = _git_output(cwd, "status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise ValueError(
+            "T10 dispatch requires a clean tracked worktree; the SHA does not "
+            f"describe the dirty tree: {dirty.splitlines()[:5]}. Nothing was run")
+
+    grant = control.grants().get(grant_ref)
+    if not isinstance(grant, dict):
+        raise ValueError(
+            f"T10 dispatch cannot bind a principal: {grant_ref!r} is not a "
+            f"grant this store holds. Nothing was run")
+    principal = str(grant.get("delegated_by") or "").strip()
+    if not principal:
+        raise ValueError(
+            f"T10 dispatch cannot bind a principal: {grant_ref!r} carries no "
+            f"delegated_by. Nothing was run")
+
+    binding = {
+        "cycle_ref": cycle,
+        "action_key": action,
+        "work_item_id": item,
+        "work_run_id": run,
+        "commit_sha": sha,
+        "principal": principal,
+        "grant_ref": grant_ref,
+        "runner_identity": runner,
+    }
+    return json.dumps(binding, sort_keys=True, separators=(",", ":"))
+
+
 def cmd_work_dispatch(args) -> int:
     """§12/P7 — perform the dispatch one admitted cycle is holding a key for.
 
@@ -9806,8 +9980,16 @@ def cmd_work_dispatch(args) -> int:
     if argv is None:
         return EXIT_FAULT
 
+    try:
+        t10_binding = _t10_dispatch_binding(args, admission, control)
+    except ValueError as exc:
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        return EXIT_FAULT
+
     input_text = ""
-    if args.input_file:
+    if t10_binding is not None:
+        input_text = t10_binding
+    elif args.input_file:
         try:
             input_text = Path(args.input_file).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
@@ -9829,7 +10011,9 @@ def cmd_work_dispatch(args) -> int:
             receipts=Path(receipts_root), input_text=input_text,
             timeout=reservation["wall_seconds"],
             readonly=bool(args.read_only),
-            max_output_bytes=reservation["max_output_bytes"])
+            max_output_bytes=reservation["max_output_bytes"],
+            env=({"SERVEROS_DISPATCH_BINDING": t10_binding}
+                 if t10_binding is not None else None))
     except ValueError as exc:
         # Every `raise ValueError` in that helper is on the near side of the
         # spawn — the argument checks, the symlink refusal, the
@@ -14344,6 +14528,24 @@ def build_parser() -> argparse.ArgumentParser:
                                   "input digest, and `invoke_once` does not "
                                   "enforce it — a declaration to the next "
                                   "reader, not a sandbox")
+    wk_dispatch.add_argument(
+        "--t10-work-item", default="",
+        help="T10 producer binding: the selected Item this dispatch runs for. "
+             "Must be one of the admission's selected items. Supplying any "
+             "--t10-* flag requires all four; none means the legacy dispatch")
+    wk_dispatch.add_argument(
+        "--t10-work-run", default="",
+        help="T10 producer binding: the Work Engine run_id the Parent accepted "
+             "for this dispatch. Reconciled with Work Engine later")
+    wk_dispatch.add_argument(
+        "--t10-commit-sha", default="",
+        help="T10 producer binding: the exact full 40-hex SHA the command "
+             "tests. Must equal the --cwd worktree HEAD and the tracked tree "
+             "must be clean")
+    wk_dispatch.add_argument(
+        "--t10-runner-identity", default="",
+        help="T10 producer binding: the runner identity Work Engine records as "
+             "runs.worker. Reconciled with Work Engine later")
     wk_dispatch.set_defaults(func=_workchain_refusals(cmd_work_dispatch),
                              accepts_unknown_argv=True)
 
