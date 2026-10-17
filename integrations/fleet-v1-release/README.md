@@ -49,6 +49,9 @@ The checker is deliberately narrow and mechanical. It rejects:
 - a missing drift guard, or `COMPLETE_V1` resting on a pin older than the
   snapshot (`E110`–`E115`);
 - a source merge performed before every gate passes (`E095`);
+- a `PASS` carrying a `BLOCKED_*` code (`E059`);
+- a dependency opportunity recorded as a release receipt (`E132`);
+- `COMPLETE_V1` without a SIGNED independent `qa_triage` (`E128`, `E129`);
 - credential-like material in the manifest (`E100`).
 
 Warnings are not passes. `W011` (`stacks_on` names a PR not pinned here) is

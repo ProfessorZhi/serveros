@@ -21,19 +21,40 @@ A higher level never substitutes for a different axis. `LOCAL` cannot satisfy a
 
 - **Integrator**: Tokyo Integration Owner Session. Owns this manifest, the
   conflict audit and the RC composition. Must not sign QA.
-- **Independent QA**: assigned but **PENDING**. Session
+- **Independent QA**: **`INDEPENDENT_QA_PARTIAL`** — not `SIGNED`. Session
   `device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02`,
-  Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`. It owns every PASS in this matrix
-  and the `signature` field. Until it produces receipts it is **PENDING** — not
-  a PASS, not an independent signature, and not a reason to advance a gate.
+  Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`; triage artifact is **PR #256**
+  at `2c4fe87b5776202b19b4cdaeb682bbaa048b2a55` (Snapshot B; the earlier
+  `a4d7131` was superseded). It owns every PASS in this matrix and the
+  `signature` field. A partial triage is **not** a PASS and **not** a
+  signature.
 - **Lane owners** (`S1`, `S2`, `F1`, `N1`, `N2`, `P1`, `M1`, `G1`, `R1`): own
   their source and their local receipts. The integrator does not re-run or
   re-sign them.
 
-`qa.independent_of_integrator` is `true` because the assigned session is a
-different session, and `qa.status` is `PENDING` with `signature: null`. The
-checker refuses `COMPLETE_V1` unless `qa.status == SIGNED` (`E018`) and the
-signature is present (`E014`, `E016`).
+`qa.status` is `INDEPENDENT_QA_PARTIAL` with `signature: null`. The checker
+refuses `COMPLETE_V1` unless `qa.status == SIGNED` (`E018`), the signature is
+present (`E014`, `E016`), and an independent `qa_triage` object is `SIGNED`
+(`E128`, `E129`).
+
+## Independent QA findings (P0, not closed)
+
+Snapshot B re-audited the live heads: #252 `f2b89e1`, #243 `4a5d0a0`,
+#255 `619cf63`.
+
+| ID | Sev | Candidate | Finding | State |
+|---|---|---|---|---|
+| QA-P0-1 | P0 | #252 | `intent_digest` omits `session_ref` and `agent_runtime`, so the same key sent to another session/runtime is answered as a replay | **OPEN** — signature is `(action, device_ref, verb, params, workspace, work_item)` |
+| QA-P0-2 | P0 | #252 | `agent.dispatch.record` accepts caller `phase`/`principal` and writes SETTLED directly; router records omit `principal`; `reconcile_dispatch_attempt` has no production caller | **OPEN** |
+| QA-P0-3 | P0 | #243 | `test_no_node_paths_in_product_data.py` failed at `494f452` on an absolute home literal | **CLOSED (LOCAL)** — full guard re-run at `4a5d0a0`: 10 tests OK, exit 0 |
+| QA-P1-1 | P1 | #255 | Present-but-null is read as affirmative: `{"health": null, "policy": null}` → `READY/ALLOWED` with a non-null `effective` | **OPEN** |
+| QA-P2-1 | P2 | #252 | `_same_writer` matches an empty/partial writer record (`current_writer={}`) | **OPEN** |
+| QA-P1-2 | P1 | #254 | Manifest pinned stale #252/#243 heads and omitted #255 | **CLOSED** — fixed in manifest `-c` |
+| QA-P2-2 | P2 | #254 | `FLEET_NEXT_33_6` requires `REAL_DEVICE` while its rows are `SOURCE` | **OPEN by design** — a gate may require more than it has and then reports BLOCKED; it is not a near-PASS |
+
+The `f2b89e1` delta adds observation provenance (`source` required) and removes
+`NOT_APPLIED` synonyms. That is a real improvement on the
+`BLOCKED_PROVIDER_SOURCE` axis, and it is **not** a fix for QA-P0-1 or P0-2.
 
 ## P0 Work/effect safety — issue #237
 
@@ -42,8 +63,8 @@ signature is present (`E014`, `E016`).
 | T1 | Hand off A→B, leave A alive, stale A writes | LOCAL | #241 | lane-reported closed; integrator has no receipt | NOT_RUN |
 | T2 | A and B race the same write scope | LOCAL | #241 | lane-reported closed | NOT_RUN |
 | T3 | Expired/revoked grant or lease during a long turn | LOCAL | #241 + WE#13 | lane-reported closed | NOT_RUN |
-| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `dac3088` | lane-reported closed | NOT_RUN |
-| T5 | Same idempotency key, modified payload | LOCAL | #252 `dac3088` | lane-reported closed (`_replay` now compares payload) | NOT_RUN |
+| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `f2b89e1` | lane-reported closed; QA-P0-2 open | NOT_RUN |
+| T5 | Same idempotency key, modified payload | LOCAL | #252 `f2b89e1` | **QA-P0-1 open**: digest omits session/runtime, so a cross-session same-key send is still a replay | **BLOCKED** |
 | T6 | Work Engine lease expired but still in DB | LOCAL | WE#13 + #241 | lane-reported closed (`held_leases` filters `expires_at`) | NOT_RUN |
 | T7 | Cross-user / cross-runtime Session ref and stale grant | LOCAL | #241 | lane-reported **half** | NOT_RUN |
 | T8 | Real Tokyo → Dell session send / get_run under grant | REAL_DEVICE | #241 + Fleet | no trusted transport observed | **BLOCKED** |
@@ -136,15 +157,31 @@ importance. Only step 1 is immediately landable.
 Steps 2–3 and 4 are file-disjoint, so they may be prepared in parallel, but
 each must still be landed by its **owner**, never by I1.
 
+## R1 runtime — dependency opportunity, not a receipt
+
+Runtime/CloudCLI provider mapping work is recorded as a **dependency
+opportunity only**: no PR and no reusable pin were observed at snapshot time,
+and the manifest carries it as `pin: null, is_release_receipt: false`. The
+checker rejects any attempt to record a dependency opportunity as a receipt
+(`E132`). `RUNTIME_CC_CODEX_CLOUDCLI` stays `BLOCKED_PROVIDER_SOURCE` until an
+observed effect can be resolved by the provider's own native turn id.
+
 ## Smallest next integration slice
 
-1. The assigned QA session signs a **snapshot**, or records a superseding one
-   with fresh `observed_at` values. PENDING is not a signature.
-2. Collect **LOCAL** receipts for T1–T7 and T9 from the lane owners at the exact
+1. Independent QA re-runs its triage against **this** snapshot — #252 `f2b89e1`,
+   #243 `4a5d0a0`, #254 `3e23ef2` — and signs it, or records a superseding one.
+   `INDEPENDENT_QA_PARTIAL` is not a signature, and a triage of `dac3088` /
+   `494f452` is not a statement about the current heads.
+2. S2 owner closes **QA-P0-1** (add `session_ref` and `agent_runtime` to
+   `intent_digest`) and **QA-P0-2** (no caller-written SETTLED; derive principal
+   server-side), each with a negative test. T5 and T4 stay BLOCKED until then.
+3. F1 owner obtains an independent re-run of `test_no_node_paths_in_product_data`
+   at `4a5d0a0`; G1 owner treats present-null as unknown (QA-P0-4).
+4. Collect **LOCAL** receipts for T1–T7 and T9 from the lane owners at the exact
    SHAs in the manifest (runner, command, environment, exit code, per row).
-3. Re-pin every head and base immediately before composition.
-4. Land step 1 above: serveros #241 + work-engine #13, in that order.
-5. Only then prepare F1 → G1 → P1. Do not merge, cherry-pick or rewrite an owner
+5. Re-pin every head and base immediately before composition.
+6. Land step 1 above: serveros #241 + work-engine #13, in that order.
+7. Only then prepare F1 → G1 → P1. Do not merge, cherry-pick or rewrite an owner
    branch inside I1.
 
 ## Reviewer actions

@@ -13,6 +13,8 @@ serveros:main 4a31628
 │
 ├─ M1      #196 … ── #233 36a206d                  consumer of F1
 │
+├─ QA      #256 2c4fe87                            base = main; integrations/fleet-v1-qa/** only
+│
 ├─ F1      #146 ─ #149 ─ #150 ─ #154 ─ #155 ─ #163 ─ #164 ─ #177
 │          ─ #182 ─ #184 ─ #192 ─ #198 ─ #200 008a3360
 │              ├─ #214 ─ #216 ─ #228 ─ #229 b0f5480 ─ #231 ─ #243 494f452
@@ -73,7 +75,9 @@ Two consequences, both easy to get wrong:
 | PR | Body says | Real head | Delta |
 |---|---|---|---|
 | #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
-| #252 | milestone 1 `00bb701` | `dac3088` | moved twice: `00bb701 → d49342b → dac3088` |
+| #252 | milestone 1 `00bb701` | `f2b89e1` | moved three times: `00bb701 → d49342b → dac3088 → f2b89e1` |
+| #243 | (none) | `4a5d0a0` | advanced `494f452 → 4a5d0a0` (guard fix) |
+| #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot B `2c4fe87` re-audited `f2b89e1` / `4a5d0a0` / `619cf63` | current; verdict still QA_PARTIAL |
 
 Never copy a SHA out of a PR body. Re-pin from the API immediately before any
 composition.

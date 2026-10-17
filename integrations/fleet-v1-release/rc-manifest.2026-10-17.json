@@ -1,8 +1,8 @@
 {
   "schema": "serveros/fleet-v1-rc-manifest.v1",
-  "manifest_id": "fleet-v1-rc-20261017-b",
-  "supersedes": "fleet-v1-rc-20261017-a",
-  "generated_at": "2026-10-17T17:33:08Z",
+  "manifest_id": "fleet-v1-rc-20261017-c",
+  "supersedes": "fleet-v1-rc-20261017-b",
+  "generated_at": "2026-10-17T23:20:00Z",
   "campaign_ref": "ProfessorZhi/serveros#244",
   "integration_ref": "ProfessorZhi/serveros#250",
   "state": "RC_CANDIDATE",
@@ -12,16 +12,74 @@
     "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
   },
   "qa": {
-    "owner": "PENDING — independent QA session assigned, no receipt yet",
-    "status": "PENDING",
+    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, no signature",
+    "status": "INDEPENDENT_QA_PARTIAL",
     "independent_of_integrator": true,
     "session_ref": "device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02",
     "run_ref": "8384fcda-97c0-4d38-820d-4778f8ce5c8d",
     "signature": null
   },
+  "qa_triage": {
+    "repo": "ProfessorZhi/serveros",
+    "pr": 256,
+    "head": "2c4fe87b5776202b19b4cdaeb682bbaa048b2a55",
+    "status": "INDEPENDENT_QA_PARTIAL",
+    "pins_are_snapshot_of": "Snapshot B of the independent triage, re-audited at the exact heads f2b89e1 / 4a5d0a0 / 619cf63. It is a QA_PARTIAL verdict with no signature and no PASS; the requested pin a4d7131 was superseded by 2c4fe87 before this manifest was written.",
+    "findings": [
+      {
+        "id": "QA-P0-1",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "intent_digest omits session_ref and agent_runtime, so the same key sent to another session or runtime is answered as a REPLAY of the first intent. Still open at f2b89e1: the signature is (action, device_ref, verb, params, workspace, work_item) only.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-2",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "The observation-to-SETTLED judgment is not wired into the production path: agent.dispatch.record accepts a caller-supplied phase and principal and writes SETTLED directly, router-written records omit principal, and reconcile_dispatch_attempt has no production caller.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-3",
+        "severity": "P0",
+        "candidate": "#243",
+        "summary": "test_no_node_paths_in_product_data.py failed at 494f452 on an inherited absolute home literal in fleet_mcp/deploy/release_plan.py. Snapshot B re-ran the full guard independently at 4a5d0a0: 10 tests OK, exit 0 (LOCAL). Closed at that SHA.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P1-1",
+        "severity": "P1",
+        "candidate": "#255",
+        "summary": "G1 present-but-null is read as an affirmative answer: {\"health\": null, \"policy\": null} yields READY/ALLOWED and a non-null effective, so a negative invariant is bypassed. The QA artifact rates this P1; the campaign brief called it P0 — recorded here at the rate the evidence supports.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P2-1",
+        "severity": "P2",
+        "candidate": "#252",
+        "summary": "_same_writer matches an empty or partial writer record: current_writer={} equals a reconciler with every field absent. A real daemon derivation does not produce {}, but the store method is publicly callable.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P1-2",
+        "severity": "P1",
+        "candidate": "#254",
+        "summary": "I1 manifest drift: the manifest pinned #252 dac3088 and #243 494f452 and omitted #255. Fixed in manifest -c, which pins f2b89e1, 4a5d0a0 and 619cf63.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P2-2",
+        "severity": "P2",
+        "candidate": "#254",
+        "summary": "Gate level inconsistency: FLEET_NEXT_33_6 requires REAL_DEVICE while its supporting rows are SOURCE. This is intentional — a gate may require more than it has and then reports BLOCKED — but it must not be read as a near-PASS.",
+        "state_at_snapshot": "OPEN"
+      }
+    ]
+  },
   "drift_guard": {
-    "snapshot_time": "2026-10-17T17:33:08Z",
-    "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. The QA session signs the same snapshot or records a superseding one.",
+    "snapshot_time": "2026-10-17T23:20:00Z",
+    "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. An independent QA triage signs a snapshot, not a branch name.",
     "recheck_before": ["push", "composition", "qa_signature"]
   },
   "repos": [
@@ -64,36 +122,36 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
+      "observed_at": "2026-10-17T23:20:00Z",
       "notes": "Only candidate whose base is current main (behind_by 0)."
     },
     {
       "lane": "S2",
       "repo": "ProfessorZhi/serveros",
       "pr": 252,
-      "head": "dac308801b16db18dd01c5e6e316fd3fd546178b",
+      "head": "f2b89e1275a0fdc0b460be0f8c1b82369c75686f",
       "base_ref": "feat/v1-session-write-fence-20261016",
       "base_is_pr": true,
       "stacks_on": 241,
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
-      "notes": "Head advanced 00bb701 -> d49342b -> dac3088; the last two are different commits and the manifest pins only the newest."
+      "observed_at": "2026-10-17T23:20:00Z",
+      "notes": "Head moved dac3088 -> f2b89e1. Snapshot B confirms at this SHA (LOCAL): NOT_FOUND/MISSING/ABSENT no longer settle NOT_APPLIED and an observation must name its source. It does NOT change intent_digest; QA-P0-1 and QA-P0-2 remain open."
     },
     {
       "lane": "F1",
       "repo": "ProfessorZhi/serveros",
       "pr": 243,
-      "head": "494f45293e53bc8e84e2025f7ac567e6cfb607d8",
+      "head": "4a5d0a06f2452424972d66399b7c2b60dc8d03a1",
       "base_ref": "feat/fleet-v1-core-lite-status-wiring-20261016",
       "base_is_pr": true,
       "stacks_on": 231,
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
-      "notes": "Declared base of #231 is stack/fleet-v1-pre-core-lite-wiring (a11a9dd), which is not a PR head; ancestry of #243 still contains #229 head b0f5480."
+      "observed_at": "2026-10-17T23:20:00Z",
+      "notes": "Head moved 494f452 -> 4a5d0a0: release_plan.py replaces an absolute home literal with ~/runtime-assets via expanduser, and adds a test asserting the Fleet Core block is not an Ability registry. Snapshot B re-ran the full guard independently at this SHA: 10 tests OK, exit 0 (LOCAL), QA-P0-3 closed."
     },
     {
       "lane": "N1",
@@ -106,7 +164,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z"
+      "observed_at": "2026-10-17T23:20:00Z"
     },
     {
       "lane": "N2",
@@ -119,7 +177,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
+      "observed_at": "2026-10-17T23:20:00Z",
       "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed."
     },
     {
@@ -133,7 +191,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
+      "observed_at": "2026-10-17T23:20:00Z",
       "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction."
     },
     {
@@ -147,8 +205,8 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
-      "notes": "Child of F1: base is #243's head. Adds integrations/device-ability-projection/** and one test; its own-commit surface does not intersect #243's. It cannot land before #243 and a re-base of #243 invalidates its base."
+      "observed_at": "2026-10-17T23:20:00Z",
+      "notes": "Child of F1: base is #243's head. QA-P0-4 (present-null fail-open) is open here. A re-base of #243 invalidates this base."
     },
     {
       "lane": "M1",
@@ -161,7 +219,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
+      "observed_at": "2026-10-17T23:20:00Z",
       "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition."
     },
     {
@@ -175,19 +233,19 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T17:33:08Z",
+      "observed_at": "2026-10-17T23:20:00Z",
       "notes": "Cross-repo pair of serveros #241; must land as a pair, not independently."
     }
   ],
   "source_merge": {
     "performed": false,
-    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins and conflicts; composition is a later, separately authorized step and follows BRANCH-TOPOLOGY.md.",
+    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins, deltas and conflicts; composition is a later, separately authorized step and follows BRANCH-TOPOLOGY.md.",
     "conflict_audit": [
       {
         "left": "#243 (F1)",
         "right": "#230 (P1)",
         "shared_own_commit_files": 0,
-        "conclusion": "Siblings from merge-base 008a3360 (#200 head). Their own-commit surfaces are 22 and 13 files with an empty intersection; 163 files shared in the net sets are inherited ancestry, not collision."
+        "conclusion": "Siblings from merge-base 008a3360 (#200 head). Their own-commit surfaces are 22 and 13 files with an empty intersection; 163 files shared in the net sets are inherited ancestry, not collision. #243 has since advanced by one guard commit."
       },
       {
         "left": "#243 (F1)",
@@ -212,17 +270,44 @@
         "right": "#243 (F1)",
         "shared_own_commit_files": 0,
         "conclusion": "G1 is a child of F1, not a sibling: it adds integrations/device-ability-projection/** and one test. Disjoint from F1's own commits, but ordering is forced (F1 first)."
+      },
+      {
+        "left": "#256 (independent QA)",
+        "right": "#254 (I1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "QA writes only integrations/fleet-v1-qa/**; I1 writes only integrations/fleet-v1-release/**. Neither edits the other, and the QA triage is not a signature on this manifest."
       }
     ]
   },
   "gates": [
     {
-      "id": "P0_T1_T7_T9_T10_T11_LOCAL",
+      "id": "P0_T1_T7_T9_LOCAL",
       "required_level": "LOCAL",
       "achieved_level": "NOT_RUN",
       "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
       "owner": "S1/S2 lane owners",
-      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator has not re-run them and records no receipt. T10 has no named candidate.",
+      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator records no receipt. T7 remains reported as half. QA-P0-1 and QA-P0-2 are open against #252.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T10_SELF_REPORT",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_NO_CANDIDATE",
+      "owner": "unassigned",
+      "blocker": "No candidate owns the child-self-report row. An unowned row is a coverage gap, not a scheduling detail.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T11_OFFLINE_RECOVERY",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
+      "owner": "N1 lane owner",
+      "blocker": "Bounded local recovery exists as source in #242 only; native/node-core is absent from main and no offline recovery run was performed.",
       "receipt": null
     },
     {
@@ -230,6 +315,7 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "NOT_RUN",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
       "owner": "S1 lane owner + device owner",
       "blocker": "No trusted Tokyo to Dell transport was observed; T8 and T12 require a real cross-device effect.",
       "receipt": null
@@ -239,6 +325,7 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "SOURCE",
       "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
       "owner": "N1 lane owner",
       "blocker": "native/node-core is absent from main; no Linux binary or readback was observed by this integrator.",
       "receipt": null
@@ -248,6 +335,7 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "SOURCE",
       "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
       "owner": "N1 lane owner",
       "blocker": "A toy proves the mechanism; it is not an authorized production recovery receipt.",
       "receipt": null
@@ -257,8 +345,9 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "SOURCE",
       "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
       "owner": "N2 lane owner",
-      "blocker": "PR #253 adds Windows Core status source only; no Windows build, SCM probe or run exists.",
+      "blocker": "PR #253 adds Windows Core status source only; no Windows build, SCM probe or run exists on this host.",
       "receipt": null
     },
     {
@@ -266,6 +355,7 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "NOT_RUN",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
       "owner": "N3 lane owner",
       "blocker": "No listener, tunnel or upstream observation was produced in this milestone.",
       "receipt": null
@@ -275,8 +365,9 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "NOT_RUN",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_PROVIDER_SOURCE",
       "owner": "R1 lane owner",
-      "blocker": "Effective model, provider and permission mode were not measured; static config is not evidence.",
+      "blocker": "Ambiguous provider effect: an observation can only be resolved by the native turn id returned in the send response. R1 runtime source-only work exists as a dependency opportunity with no pin or PR; it is not a release receipt.",
       "receipt": null
     },
     {
@@ -284,6 +375,7 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "SOURCE",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
       "owner": "F1 lane owner",
       "blocker": "33 is a catalogue (9 authored Fleet + 22 CloudCLI mirror + 2 capability reads) over six scopes; #243 serves nine authored tools, and the installed canary fleet-mcp-20261016@008a336 is the A line, so none of #243 is installed.",
       "receipt": null
@@ -293,8 +385,9 @@
       "required_level": "REAL_DEVICE",
       "achieved_level": "SOURCE",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
       "owner": "G1 lane owner",
-      "blocker": "G1 now has a source candidate (#255 at 619cf63) plus the pinned ability-management registry, but nothing was executed on a device and G1 still sits on an unlanded F1.",
+      "blocker": "G1 has a source candidate (#255) and a pinned registry, but QA-P0-4 (present-null fail-open) is open and nothing was executed on a device.",
       "receipt": null
     },
     {
@@ -302,8 +395,9 @@
       "required_level": "CLIENT_E2E",
       "achieved_level": "SOURCE",
       "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_AUTH_CLIENT_E2E",
       "owner": "P1 lane owner",
-      "blocker": "BLOCKED_CLIENT_E2E: the gate is owner consent plus an authenticated client; neither exists in this milestone.",
+      "blocker": "AUTH_CLIENT_E2E blocked on owner OAuth consent plus an authenticated client; neither exists in this milestone.",
       "receipt": null
     },
     {
@@ -311,14 +405,15 @@
       "required_level": "LOCAL",
       "achieved_level": "SOURCE",
       "verdict": "PARTIAL",
-      "owner": "independent QA session 6955184a (Run 8384fcda) — PENDING, no signature",
-      "blocker": "This manifest and checker exist at SOURCE. The QA session is assigned but has produced no receipt and no signature; it is PENDING, not PASS.",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "independent QA session 6955184a (PR #256, INDEPENDENT_QA_PARTIAL)",
+      "blocker": "Manifest and checker exist at SOURCE, and an independent triage exists at a4d7131, but it pins an older snapshot and carries no signature. No isolated local test run at the current exact SHAs.",
       "receipt": null
     }
   ],
   "hosted_ci": {
     "status": "QUOTA_WAIVED",
-    "evidence": "check-runs returned empty for all nine candidate heads when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
+    "evidence": "check-runs returned empty for every candidate head when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
   },
   "open_p0": [
     {
@@ -328,7 +423,7 @@
     },
     {
       "id": "B2-NO-RC",
-      "summary": "No integration release candidate branch existed before #254 and no multi-repo manifest existed before this file.",
+      "summary": "No release candidate branch existed before #254 and no multi-repo manifest existed before this file.",
       "owner_action": "Create the single RC only after B1 and the gate owners agree; do not branch off an owner head."
     },
     {
@@ -343,7 +438,7 @@
     },
     {
       "id": "B5-NO-REAL-DEVICE",
-      "summary": "No Tokyo to Dell transport and no real device effect was observed. T8, T12, T10 and T11 have no receipt; Windows and Local CC E2E have none either.",
+      "summary": "No Tokyo to Dell transport and no real device effect was observed. T8, T12, T10 and T11 have no receipt; real Windows and Local CC E2E have none either.",
       "owner_action": "Those gates stay BLOCKED until a device owner or the independent QA session produces a receipt."
     },
     {
@@ -355,6 +450,34 @@
       "id": "B7-G1-AFTER-F1",
       "summary": "#255 (G1) is a child of #243 and its base is #243's head. Any re-base of #243 changes #255's base and forces a G1 re-pin.",
       "owner_action": "Compose F1 before G1 and re-pin G1 after every F1 change; never merge G1 against a stale F1."
+    },
+    {
+      "id": "B8-QA-P0-1-DIGEST",
+      "summary": "QA-P0-1 is OPEN at #252 f2b89e1: intent_digest covers action, device_ref, verb, params, workspace, work_item but not session_ref or agent_runtime, so a same-key instruction in another session/runtime is treated as a replay.",
+      "owner_action": "S2 owner must add both target fields to the digest and add a negative test; QA rechecks at the new head."
+    },
+    {
+      "id": "B9-QA-P0-2-SETTLED",
+      "summary": "QA-P0-2 is OPEN at #252 f2b89e1: agent.dispatch.record accepts a caller-supplied phase and principal and writes SETTLED directly, router records omit principal, and reconcile_dispatch_attempt has no production caller.",
+      "owner_action": "S2 owner and the daemon write-entry owner must make SETTLED reachable only from an observed effect with provenance and derive principal server-side."
+    },
+    {
+      "id": "B10-QA-P1-1-G1-NULL",
+      "summary": "QA-P1-1 is OPEN at #255: a present-but-null field is accepted as affirmative, so {\"health\": null, \"policy\": null} yields READY/ALLOWED and a non-null effective. The QA artifact rates this P1.",
+      "owner_action": "G1 owner must treat present-null as unknown; QA rechecks after the fix."
+    },
+    {
+      "id": "B11-QA-SIGNATURE",
+      "summary": "Independent QA is at Snapshot B (2c4fe87) and its verdict is QA_PARTIAL: no signature and no PASS. Its release-hygiene finding about this manifest's stale pins is closed by manifest -c.",
+      "owner_action": "Independent QA must re-run against the exact heads in this manifest and sign that snapshot, or record a superseding one."
+    }
+  ],
+  "dependency_opportunities": [
+    {
+      "lane": "R1",
+      "description": "Runtime/CloudCLI provider mapping and adapter work exists as source only; no PR or reusable pin was observed at snapshot time. It is an opportunity to unblock RUNTIME_CC_CODEX_CLOUDCLI, not a release receipt, and it must not be recorded as one.",
+      "pin": null,
+      "is_release_receipt": false
     }
   ],
   "rollback": {

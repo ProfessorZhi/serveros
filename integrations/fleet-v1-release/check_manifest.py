@@ -119,14 +119,73 @@ def check(doc, raw_text: str = "") -> Report:
     if state == "COMPLETE_V1" and not qa.get("signature"):
         r.error("E014", "qa.signature", "COMPLETE_V1 requires an independent QA signature")
     qa_status = qa.get("status")
-    if qa_status not in {"PENDING", "ACTIVE", "SIGNED"}:
+    if qa_status not in {"PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL", "SIGNED"}:
         r.error("E015", "qa.status", f"unknown QA status {qa_status!r}")
     if qa_status == "SIGNED" and not qa.get("signature"):
         r.error("E016", "qa.signature", "status SIGNED requires a signature")
-    if qa_status in {"PENDING", "ACTIVE"} and qa.get("signature"):
+    if qa_status in {"PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL"} and qa.get("signature"):
         r.error("E017", "qa.signature", f"status {qa_status} cannot carry a signature")
     if state == "COMPLETE_V1" and qa_status != "SIGNED":
         r.error("E018", "qa.status", "COMPLETE_V1 requires qa.status == SIGNED")
+
+    # ---- independent QA triage artifact ----------------------------------
+    triage = doc.get("qa_triage")
+    triage_status = None
+    if triage is not None:
+        if not isinstance(triage, dict):
+            r.error("E019", "qa_triage", "must be an object")
+            triage = {}
+        triage_status = triage.get("status")
+        if triage_status not in {"PENDING", "INDEPENDENT_QA_PARTIAL", "SIGNED"}:
+            r.error("E120", "qa_triage.status", f"unknown QA triage status {triage_status!r}")
+        tr_head = triage.get("head")
+        if not isinstance(tr_head, str) or not SHA40.match(tr_head):
+            r.error("E121", "qa_triage.head", "must be a full 40-hex head SHA")
+        if not isinstance(triage.get("pr"), int) or triage["pr"] < 1:
+            r.error("E122", "qa_triage.pr", "must be a positive PR number")
+        findings = triage.get("findings")
+        if not isinstance(findings, list) or not findings:
+            r.error("E123", "qa_triage.findings", "an independent triage must record its findings")
+            findings = []
+        for i, finding in enumerate(findings):
+            w = f"qa_triage.findings[{i}]"
+            if not isinstance(finding, dict):
+                r.error("E124", w, "must be an object")
+                continue
+            if finding.get("severity") not in {"P0", "P1", "P2"}:
+                r.error("E125", f"{w}.severity", "must be P0, P1 or P2")
+            if finding.get("state_at_snapshot") not in {
+                "OPEN",
+                "FIXED_PENDING_RECHECK",
+                "RECHECK_REQUIRED",
+                "CLOSED",
+            }:
+                r.error("E126", f"{w}.state_at_snapshot", "unknown finding state")
+            if not isinstance(finding.get("summary"), str) or len(finding["summary"]) < 10:
+                r.error("E127", f"{w}.summary", "summary is required")
+    if state == "COMPLETE_V1" and triage is None:
+        r.error("E128", "qa_triage", "COMPLETE_V1 requires an independent QA triage object")
+    if state == "COMPLETE_V1" and triage is not None and triage_status != "SIGNED":
+        r.error("E129", "qa_triage.status", "COMPLETE_V1 requires a SIGNED independent triage")
+
+    # ---- dependency opportunities (never receipts) ------------------------
+    deps = doc.get("dependency_opportunities", [])
+    if not isinstance(deps, list):
+        r.error("E130", "dependency_opportunities", "must be an array")
+        deps = []
+    for i, dep in enumerate(deps):
+        w = f"dependency_opportunities[{i}]"
+        if not isinstance(dep, dict):
+            r.error("E131", w, "must be an object")
+            continue
+        if dep.get("is_release_receipt") is not False:
+            r.error(
+                "E132",
+                f"{w}.is_release_receipt",
+                "a dependency opportunity is never a release receipt",
+            )
+        if not isinstance(dep.get("description"), str) or len(dep["description"]) < 10:
+            r.error("E133", f"{w}.description", "description is required")
 
     # ---- version drift guard ---------------------------------------------
     drift = doc.get("drift_guard")
@@ -278,6 +337,19 @@ def check(doc, raw_text: str = "") -> Report:
             r.error("E055", f"{where}.achieved_level", f"unknown level {achieved!r}")
         if verdict not in {"PASS", "FAIL", "NOT_RUN", "BLOCKED", "PARTIAL"}:
             r.error("E056", f"{where}.verdict", f"unknown verdict {verdict!r}")
+        code = gate.get("blocker_code", "NONE")
+        if code not in {
+            "NONE",
+            "BLOCKED_PROVIDER_SOURCE",
+            "BLOCKED_AUTH_CLIENT_E2E",
+            "BLOCKED_REAL_DEVICE",
+            "BLOCKED_NO_CANDIDATE",
+            "BLOCKED_UNLANDED_CHAIN",
+            "BLOCKED_OWNER_ACTION",
+        }:
+            r.error("E058", f"{where}.blocker_code", f"unknown blocker code {code!r}")
+        if verdict == "PASS" and code != "NONE":
+            r.error("E059", where, f"verdict PASS cannot carry blocker code {code}")
         if verdict != "PASS":
             all_gates_pass = False
         if (
@@ -554,6 +626,57 @@ def self_test() -> int:
             d["candidates"][0].update(observed_at="2026-10-16T00:00:00Z"),
         ),
         {"E115"},
+    )
+    expect(
+        "dependency-is-not-a-receipt",
+        lambda d: d.update(
+            dependency_opportunities=[
+                {
+                    "lane": "R1",
+                    "description": "source-only runtime work, no pin yet",
+                    "pin": None,
+                    "is_release_receipt": True,
+                }
+            ]
+        ),
+        {"E132"},
+    )
+    expect(
+        "triage-bad-severity",
+        lambda d: d.update(
+            qa_triage={
+                "repo": "Owner/repo",
+                "pr": 9,
+                "head": "c" * 40,
+                "status": "INDEPENDENT_QA_PARTIAL",
+                "findings": [
+                    {
+                        "id": "P0-1",
+                        "severity": "P9",
+                        "candidate": "#1",
+                        "summary": "a finding with an invalid severity",
+                        "state_at_snapshot": "OPEN",
+                    }
+                ],
+                "pins_are_snapshot_of": "an earlier snapshot",
+            }
+        ),
+        {"E125"},
+    )
+    expect(
+        "pass-carrying-blocker",
+        lambda d: d["gates"][0].update(verdict="PASS", achieved_level="LOCAL", blocker_code="BLOCKED_REAL_DEVICE"),
+        {"E059"},
+    )
+    expect(
+        "complete-without-triage",
+        lambda d: (
+            d.update(state="COMPLETE_V1", open_p0=[]),
+            d["gates"][0].update(verdict="PASS", achieved_level="LOCAL"),
+            d["claims"].update(live_device=True, client_e2e=True, production=True),
+            d["qa"].update(status="SIGNED", signature="sig"),
+        ),
+        {"E128"},
     )
     expect(
         "secret",
