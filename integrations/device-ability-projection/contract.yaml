@@ -1,0 +1,99 @@
+# device-ability-projection-contract — G1 的四个词，以及 effective 为什么是 null。
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `CAPABILITY-PROJECTION.md` 说 Fleet Next 完全没有 Device Ability 的投影，并给出了形状：
+# 一个读取工具，回答「对某一台设备，哪些 Ability 是 installed / ready / supported、
+# 在哪个 source revision 上」。它还给了两条纪律：`effective` 只有在设备**真的报过**时
+# 才非 null；而「能调用」是 Ability × Provider × Device Binding × Runtime × Target ×
+# Health × Authorization 的合取，只报第一项的投影会被读成整句。
+#
+# 这四个词如果只活在代码的 `if` 里，就会在第一次改动时各自漂移。所以它们在这里是闭集，
+# 并且每一个都写着**它是从哪来的** —— 一个说不出自己来源的词，读起来和猜的一样。
+schema: serveros/device-ability-projection-contract.v1
+module: integrations/device-ability-projection/effective.py
+
+authority:
+  manifest: ProfessorZhi/ability-management abilities-manifest.yaml
+  read_from: >-
+    `runtime/ability_projection.py#read_manifest` —— 从**git object** 读，不读工作树。
+    一个脏 checkout 不能成为节点相信的东西。
+  never: >-
+    本模块不注册任何 Ability，不写任何 registry，不缓存任何 manifest。它是投影，不是存储。
+
+# ── 四个词 ────────────────────────────────────────────────────────────────────
+words:
+  installed:
+    source: authority-manifest
+    means: >-
+      权威在 `revisions[].installations[]` 里为这台设备记了一条安装记录。这是**权威的事实**，
+      不是设备的观察，所以它不在 `observations` 里，也不受观测缺失影响。
+    unknown_when: never
+  supported:
+    source: observation
+    terms: [device_capabilities, profile]
+    values: [SUPPORTED, DENIED, UNKNOWN]
+    means: >-
+      设备是否声明了这项 Ability 所需的能力与路径。两个 term 都报过才可能答 SUPPORTED；
+      缺任一个就是 UNKNOWN。resolver 的 `DEVICE_DEPENDENCY_MISSING` / `NETWORK_UNAVAILABLE`
+      是 DENIED 的判据。
+    unknown_when: 设备没有同时报 `device_capabilities` 与 `profile`
+  ready:
+    source: observation
+    terms: [health]
+    values: [READY, NOT_READY, UNKNOWN]
+    means: >-
+      设备此刻是否健康到可以跑它。`RUNTIME_UNHEALTHY` 是 NOT_READY 的判据。
+    unknown_when: 设备没有报 `health`
+  grant:
+    source: observation
+    terms: [policy]
+    values: [ALLOWED, DENIED, UNKNOWN]
+    means: >-
+      针对**这个 principal** 的授权决定。`POLICY_DENIED` 是 DENIED 的判据。
+    unknown_when: 设备没有报 `policy`
+
+# ── effective ─────────────────────────────────────────────────────────────────
+#
+# 这一条是整份契约的重点，也是它与 resolver 的 `status` **不是**同一个问题的原因。
+#
+# resolver 可以对缺席的 policy / health **不拒绝**，而且这是对的：它必须能在没有它们的
+# 情况下回答。`abilities/resolver.py#_input_policy` 的原话是 "policy is a filter over an
+# answer, not a capability input"。但 G1 的 `effective` 问的是更窄的一句：
+# **这台设备把「能调用」所需的所有项都报过吗？**
+#
+# 两句答案并排放，谁也不覆盖谁。
+effective:
+  not_the_definition_of: resolver.status
+  rule: >-
+    `effective` 取 resolver 的 `provider`，当且仅当
+    resolver.status ∈ {AVAILABLE, DEGRADED} **且** supported / ready / grant 都不是 UNKNOWN。
+  otherwise: null
+  why_recorded: >-
+    只报 status 的投影会被读成「可以调用」；只报 effective 的投影会丢掉 resolver 已经
+    算出的理由。所以两个都报，并各自带自己的 why。
+  never_a_boolean: >-
+    `effective` 是 provider id 或 null，永远不是 true。一个 true 说不出「由谁提供」。
+
+# ── 三个词与 resolver 八轴的关系 ──────────────────────────────────────────────
+#
+# 「能调用」= Ability × Provider × Device Binding × Runtime × Target × Health × Authorization。
+# 这条合取由 `abilities/resolver.py#resolve` 执行，本模块不重算。映射如下，
+# 写下来是为了让「投影少报一项」这件事在评审时是可见的，而不是隐含的。
+resolver_axes:
+  ability: 权威 catalogue（`resolution_catalogue(installed_abilities(...))`）
+  device_capability: supported 的判据之一
+  device_profile: supported 的判据之一
+  device_binding: resolver 的 instances / runtime_binding
+  agent_runtime: resolver 的 runtime_record / runtime_binding
+  runtime_health: ready 的判据
+  policy: grant 的判据
+  task_context: 已声明、本版本未实现（resolver 自己记录这一点）
+
+# ── 不做什么 ──────────────────────────────────────────────────────────────────
+not_this:
+  - 不是第二个 registry：manifest 只读，不注册、不缓存、不写。
+  - 不是第二个 resolver：每一次能力判断都走 `resolver.resolve(...)`。
+  - 不是 store：输出是纯 dict，落盘是调用方的事。
+  - 不是第 34 个 Fleet 工具：不 import `fleet_mcp/`，不改任何 served surface。
+  - 不是「可调用」的声明：见 `effective`。

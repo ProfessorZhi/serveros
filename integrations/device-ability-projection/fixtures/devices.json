@@ -1,0 +1,127 @@
+[
+  {
+    "_scenario": "full — the device reports every axis. This is the only one allowed to produce a non-null `effective`.",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_ids": ["tokyo-shared-dev-01"],
+    "principal": "person:vince",
+    "runtime": "claude-code",
+    "observations": {
+      "providers": [
+        {"id": "provider:alpha", "ability": "ability:alpha-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "alpha-ability"}},
+        {"id": "provider:beta", "ability": "ability:beta-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "beta-ability"}}
+      ],
+      "instances": [
+        {"provider": "provider:alpha", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"},
+        {"provider": "provider:beta", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"}
+      ],
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}},
+      "runtime_record": {"id": "claude-code", "consumable_provider_kinds": ["skill"]},
+      "device_capabilities": {"network": true},
+      "health": {"provider:alpha": {"functional": "OK"},
+                 "provider:beta": {"functional": "OK"}},
+      "policy": {"denied_abilities": []}
+    }
+  },
+  {
+    "_scenario": "no health, no policy — exactly the case the resolver answers AVAILABLE for, and exactly the case `effective` must refuse to call callable.",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_ids": ["tokyo-shared-dev-01"],
+    "principal": "person:vince",
+    "runtime": "claude-code",
+    "observations": {
+      "providers": [
+        {"id": "provider:alpha", "ability": "ability:alpha-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "alpha-ability"}},
+        {"id": "provider:beta", "ability": "ability:beta-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "beta-ability"}}
+      ],
+      "instances": [
+        {"provider": "provider:alpha", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"},
+        {"provider": "provider:beta", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"}
+      ],
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}},
+      "runtime_record": {"id": "claude-code", "consumable_provider_kinds": ["skill"]},
+      "device_capabilities": {"network": true}
+    }
+  },
+  {
+    "_scenario": "denied — policy forbids alpha for this principal.",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_ids": ["tokyo-shared-dev-01"],
+    "principal": "person:vince",
+    "runtime": "claude-code",
+    "observations": {
+      "providers": [
+        {"id": "provider:alpha", "ability": "ability:alpha-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "alpha-ability"}},
+        {"id": "provider:beta", "ability": "ability:beta-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "beta-ability"}}
+      ],
+      "instances": [
+        {"provider": "provider:alpha", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"},
+        {"provider": "provider:beta", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"}
+      ],
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}},
+      "runtime_record": {"id": "claude-code", "consumable_provider_kinds": ["skill"]},
+      "device_capabilities": {"network": true},
+      "health": {"provider:alpha": {"functional": "OK"},
+                 "provider:beta": {"functional": "OK"}},
+      "policy": {"denied_abilities": ["ability:alpha-ability"]}
+    }
+  },
+  {
+    "_scenario": "unhealthy — alpha's provider is installed and fails its functional probe.",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_ids": ["tokyo-shared-dev-01"],
+    "principal": "person:vince",
+    "runtime": "claude-code",
+    "observations": {
+      "providers": [
+        {"id": "provider:alpha", "ability": "ability:alpha-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "alpha-ability"}},
+        {"id": "provider:beta", "ability": "ability:beta-ability", "kind": "skill",
+         "materialization": {"path_role": "toolchains", "relative": "beta-ability"}}
+      ],
+      "instances": [
+        {"provider": "provider:alpha", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"},
+        {"provider": "provider:beta", "device_ref": "device:tokyo-shared-dev-01",
+         "observed_at": "2026-10-17T00:00:00Z", "status": "AVAILABLE"}
+      ],
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}},
+      "runtime_record": {"id": "claude-code", "consumable_provider_kinds": ["skill"]},
+      "device_capabilities": {"network": true},
+      "health": {"provider:alpha": {"functional": "FAILED"},
+                 "provider:beta": {"functional": "OK"}},
+      "policy": {"denied_abilities": []}
+    }
+  },
+  {
+    "_scenario": "another device the manifest DOES know — gamma is installed here, and only gamma. This is the per-device correctness half.",
+    "device_ref": "device:some-other-device",
+    "device_ids": ["some-other-device"],
+    "principal": "person:someone",
+    "runtime": "codex",
+    "observations": {
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}}
+    }
+  },
+  {
+    "_scenario": "not this device — no installation names it at all. Zero here is a fact about the manifest, not a claim that none exist anywhere.",
+    "device_ref": "device:unheard-of",
+    "device_ids": ["unheard-of"],
+    "principal": "person:nobody",
+    "runtime": "codex",
+    "observations": {
+      "profile": {"paths": {"toolchains": {"path": "/opt/toolchains", "state": "BOUND"}}}
+    }
+  }
+]
