@@ -17,6 +17,7 @@ serveros:main 4a31628
 │          ─ #182 ─ #184 ─ #192 ─ #198 ─ #200 008a3360
 │              ├─ #214 ─ #216 ─ #228 ─ #229 b0f5480 ─ #231 ─ #243 494f452
 │              │                                          (+ #225 merged in)
+│              │                                              └─ #255 619cf63   (G1)
 │              └─ #227 7712e64d ─ … ─ #230 a934bee
 │
 └─ N1/N2   #161 9dca6fd ─ #176 ─ #180 ─ #206 ─ #213 ─ #215
@@ -34,6 +35,7 @@ Depths, counted from the PR whose base is `main`:
 | P1 (#230) | 14 + 2 | `fix/fleet-v1-build-outside-source-20261016` |
 | N1 (#242) | 12 | `feat/native-bounded-recovery-20261016` |
 | N2 (#253) | 13 | `feat/c-line-bounded-recovery-v1-20261016` (= #242 head) |
+| G1 (#255) | 15 + 5 | `integration/fleet-v1-candidate-20261017` (= #243 head) |
 
 `native/node-core` is **absent from `main`** (contents API 404). The whole N
 tower is unlanded, not partially landed.
@@ -71,7 +73,7 @@ Two consequences, both easy to get wrong:
 | PR | Body says | Real head | Delta |
 |---|---|---|---|
 | #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
-| #252 | milestone 1 `00bb701` | `d49342b` | 1 milestone ahead |
+| #252 | milestone 1 `00bb701` | `dac3088` | moved twice: `00bb701 → d49342b → dac3088` |
 
 Never copy a SHA out of a PR body. Re-pin from the API immediately before any
 composition.
@@ -82,16 +84,32 @@ This branch is **additive only** (`integrations/fleet-v1-release/**`). It does
 not merge, cherry-pick, rebase or rewrite any owner branch, and it does not
 touch `fleet_mcp/`, `native/`, `runtime/`, `Skills/` or any other owner area.
 
+`#255` (G1) is a **child**, not a sibling: its base is #243's head. Two
+consequences that a naive merge order gets wrong:
+
+1. G1 cannot land before F1.
+2. Any re-base of #243 changes #255's base, so G1 must be re-pinned — and its
+   reviewed SHA changes — after every F1 move.
+
 When composition is eventually authorized, the order is forced by ancestry:
 
 1. **S1 pair** — serveros #241 then work-engine #13 (the only tower based on
    current `main`; `behind_by: 0`).
-2. **F1 and P1** — textual intersection is empty, but both sit above a 14-link
-   unlanded chain. The owner must re-base; I1 must not.
-3. **N1 then N2** — #253 is one commit above #242 and depends on its CMake
-   layout.
-4. **M1 last** — it consumes F1 readback.
+2. **N1 (#242)** — 11-link chain, file-disjoint from every other lane.
+3. **N2 (#253)** — one commit above #242; depends on its CMake layout.
+4. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
+5. **G1 (#255)** — after F1, re-pinned against the F1 revision that landed.
+6. **P1 (#230)** — sibling of #243; deps are F1/S1 contracts per the plan.
+7. **M1 (#233)** — consumes F1 readback.
 
 `source_merge.performed` stays `false` in the manifest until every gate that
 authorizes composition has a PASS with a receipt. The checker rejects the
 opposite as `E095`.
+
+## Drift guard
+
+`drift_guard.snapshot_time` is the instant all pins were read. Every candidate
+carries the same `observed_at`. Re-read the provider before **push**,
+**composition** and the **QA signature**; a mismatch is `W030` and blocks
+`COMPLETE_V1` as `E115`. `#252` moved twice during this campaign, which is the
+concrete reason this field exists.

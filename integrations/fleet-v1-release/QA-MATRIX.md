@@ -21,15 +21,19 @@ A higher level never substitutes for a different axis. `LOCAL` cannot satisfy a
 
 - **Integrator**: Tokyo Integration Owner Session. Owns this manifest, the
   conflict audit and the RC composition. Must not sign QA.
-- **Independent QA**: a separate Session, not yet assigned. Owns every PASS in
-  this matrix and the signature field in the manifest.
+- **Independent QA**: assigned but **PENDING**. Session
+  `device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02`,
+  Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`. It owns every PASS in this matrix
+  and the `signature` field. Until it produces receipts it is **PENDING** — not
+  a PASS, not an independent signature, and not a reason to advance a gate.
 - **Lane owners** (`S1`, `S2`, `F1`, `N1`, `N2`, `P1`, `M1`, `G1`, `R1`): own
   their source and their local receipts. The integrator does not re-run or
   re-sign them.
 
-`qa.independent_of_integrator` is `false` in the current manifest precisely
-because no independent QA Session has accepted the matrix yet. The checker
-refuses `COMPLETE_V1` while that is still the case.
+`qa.independent_of_integrator` is `true` because the assigned session is a
+different session, and `qa.status` is `PENDING` with `signature: null`. The
+checker refuses `COMPLETE_V1` unless `qa.status == SIGNED` (`E018`) and the
+signature is present (`E014`, `E016`).
 
 ## P0 Work/effect safety — issue #237
 
@@ -38,14 +42,14 @@ refuses `COMPLETE_V1` while that is still the case.
 | T1 | Hand off A→B, leave A alive, stale A writes | LOCAL | #241 | lane-reported closed; integrator has no receipt | NOT_RUN |
 | T2 | A and B race the same write scope | LOCAL | #241 | lane-reported closed | NOT_RUN |
 | T3 | Expired/revoked grant or lease during a long turn | LOCAL | #241 + WE#13 | lane-reported closed | NOT_RUN |
-| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 | lane-reported closed | NOT_RUN |
-| T5 | Same idempotency key, modified payload | LOCAL | #252 | lane-reported closed (`_replay` now compares payload) | NOT_RUN |
+| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `dac3088` | lane-reported closed | NOT_RUN |
+| T5 | Same idempotency key, modified payload | LOCAL | #252 `dac3088` | lane-reported closed (`_replay` now compares payload) | NOT_RUN |
 | T6 | Work Engine lease expired but still in DB | LOCAL | WE#13 + #241 | lane-reported closed (`held_leases` filters `expires_at`) | NOT_RUN |
 | T7 | Cross-user / cross-runtime Session ref and stale grant | LOCAL | #241 | lane-reported **half** | NOT_RUN |
 | T8 | Real Tokyo → Dell session send / get_run under grant | REAL_DEVICE | #241 + Fleet | no trusted transport observed | **BLOCKED** |
 | T9 | Provider unreachable / partial dispatch | LOCAL | #252 | lane-reported `EFFECT_UNKNOWN` path; no receipt here | NOT_RUN |
 | T10 | Child self-reports success while tests fail | LOCAL | none | no candidate owns this row | **BLOCKED** |
-| T11 | Local bounded recovery during control-plane disconnection | LOCAL | #242 | source only | NOT_RUN |
+| T11 | Local bounded recovery during control-plane disconnection | LOCAL | #242 | source only; no local run | **BLOCKED** |
 | T12 | Tokyo loss, Dell continues bounded work, reconnect | REAL_DEVICE | #241 + WE#13 | requires T8 transport | **BLOCKED** |
 
 Rows T10 and T11 have **no named candidate**. That is a coverage gap, not a
@@ -90,21 +94,57 @@ no longer "no candidate", it is "source only". It is still not a Windows result.
 | Item | Level | Observed |
 |---|---|---|
 | Canonical registry pinned | SOURCE | ability-management `27df5748`, `abilities-manifest.yaml`, `schema_version: 3` |
-| Ability bound and executed on a device | REAL_DEVICE | **BLOCKED** — G1 depends on N1 and R1, neither landed |
+| Effective-ability projection source | SOURCE | **#255 `619cf63`**, child of #243; adds `integrations/device-ability-projection/**` + one test |
+| Projection disagrees with the resolver by being narrower | LOCAL | not run here |
+| Ability bound and executed on a device | REAL_DEVICE | **BLOCKED** — #255 sits on an unlanded F1, and no device executed anything |
 
-A pinned registry SHA is a locator. It is not an installation, readiness or
-execution receipt.
+Two facts that must not be merged: #255 is a **source** candidate and a **child**
+of #243. A re-base of #243 changes #255's base and forces a G1 re-pin. And a
+pinned registry SHA is a locator — not an installation, readiness or execution
+receipt.
+
+## Version drift guard
+
+The manifest records one `drift_guard.snapshot_time` and one `observed_at` per
+candidate. Every pin must be re-read from the provider API:
+
+- **before push** of a manifest change,
+- **before composition** of any lane,
+- **before the QA signature**.
+
+A candidate whose `observed_at` differs from the snapshot earns `W030`; a
+`COMPLETE_V1` resting on stale pins is rejected (`E115`). The point is that
+`#252` moved `00bb701 → d49342b → dac3088` during this campaign, and `#230`'s own
+body still names a head two commits behind its branch. A pin that is not
+re-read is a guess.
+
+## Minimal source-composition order
+
+Order is forced by ancestry and by the parent/child relation, not by lane
+importance. Only step 1 is immediately landable.
+
+| Step | Composition | Why here |
+|---|---|---|
+| 1 | serveros **#241** then work-engine **#13** | only tower based on current `main` (`behind_by: 0`); cross-repo pair |
+| 2 | **#242** (N1) | 11-link chain, file-disjoint from every other lane |
+| 3 | **#253** (N2) | one commit above #242; inherits its CMake layout |
+| 4 | **#243** (F1) | 14-link chain; must precede G1 |
+| 5 | **#255** (G1) | child of #243; re-pin after any F1 re-base |
+| 6 | **#230** (P1) | sibling of #243; depends on F1/S1 contracts per the plan |
+| 7 | **#233** (M1) | consumes F1 readback |
+
+Steps 2–3 and 4 are file-disjoint, so they may be prepared in parallel, but
+each must still be landed by its **owner**, never by I1.
 
 ## Smallest next integration slice
 
-1. Assign the independent QA Session and set `qa.owner` / `independent_of_integrator`.
-2. Collect **LOCAL** receipts for T1–T7, T9 from the lane owners at the exact
+1. The assigned QA session signs a **snapshot**, or records a superseding one
+   with fresh `observed_at` values. PENDING is not a signature.
+2. Collect **LOCAL** receipts for T1–T7 and T9 from the lane owners at the exact
    SHAs in the manifest (runner, command, environment, exit code, per row).
-3. Re-pin every head and base immediately before composition (see
-   `BRANCH-TOPOLOGY.md`; the `#230` body pin is already stale).
-4. Land S1 as a **cross-repo pair**: serveros #241 + work-engine #13, in that
-   order, onto `main`. This is the only tower whose base is current `main`.
-5. Only then compose F1/N1/P1. Do not merge, cherry-pick or rewrite an owner
+3. Re-pin every head and base immediately before composition.
+4. Land step 1 above: serveros #241 + work-engine #13, in that order.
+5. Only then prepare F1 → G1 → P1. Do not merge, cherry-pick or rewrite an owner
    branch inside I1.
 
 ## Reviewer actions

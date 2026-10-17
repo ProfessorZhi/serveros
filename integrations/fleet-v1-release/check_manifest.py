@@ -118,6 +118,30 @@ def check(doc, raw_text: str = "") -> Report:
         r.error("E013", "qa", "COMPLETE_V1 requires a QA owner independent of the integrator")
     if state == "COMPLETE_V1" and not qa.get("signature"):
         r.error("E014", "qa.signature", "COMPLETE_V1 requires an independent QA signature")
+    qa_status = qa.get("status")
+    if qa_status not in {"PENDING", "ACTIVE", "SIGNED"}:
+        r.error("E015", "qa.status", f"unknown QA status {qa_status!r}")
+    if qa_status == "SIGNED" and not qa.get("signature"):
+        r.error("E016", "qa.signature", "status SIGNED requires a signature")
+    if qa_status in {"PENDING", "ACTIVE"} and qa.get("signature"):
+        r.error("E017", "qa.signature", f"status {qa_status} cannot carry a signature")
+    if state == "COMPLETE_V1" and qa_status != "SIGNED":
+        r.error("E018", "qa.status", "COMPLETE_V1 requires qa.status == SIGNED")
+
+    # ---- version drift guard ---------------------------------------------
+    drift = doc.get("drift_guard")
+    if not isinstance(drift, dict):
+        r.error("E110", "drift_guard", "a drift guard recording the snapshot time is required")
+        drift = {}
+    snapshot = drift.get("snapshot_time")
+    if not isinstance(snapshot, str) or not ISO_Z.match(snapshot):
+        r.error("E111", "drift_guard.snapshot_time", "must be an ISO-8601 UTC timestamp ending in Z")
+    if not isinstance(drift.get("policy"), str) or len(drift["policy"]) < 20:
+        r.error("E112", "drift_guard.policy", "must state the re-pin policy")
+    recheck = drift.get("recheck_before")
+    if not isinstance(recheck, list) or not recheck:
+        r.error("E113", "drift_guard.recheck_before", "must list at least one recheck point")
+    stale_pins: list[str] = []
 
     # ---- repo pins --------------------------------------------------------
     repos = doc.get("repos")
@@ -180,6 +204,16 @@ def check(doc, raw_text: str = "") -> Report:
                 "E037",
                 f"{where}.installed",
                 "an installed claim cannot rest on SOURCE evidence alone",
+            )
+        observed = cand.get("observed_at")
+        if not isinstance(observed, str) or not ISO_Z.match(observed):
+            r.error("E114", f"{where}.observed_at", "must be an ISO-8601 UTC timestamp ending in Z")
+        elif isinstance(snapshot, str) and observed != snapshot:
+            stale_pins.append(f"{repo}#{pr} observed {observed} != snapshot {snapshot}")
+            r.warn(
+                "W030",
+                f"{where}.observed_at",
+                f"pin observed at {observed}, snapshot is {snapshot}; re-pin before use",
             )
         if not isinstance(cand.get("base_ref"), str) or not cand["base_ref"]:
             r.error("E038", f"{where}.base_ref", "base_ref is required")
@@ -337,6 +371,12 @@ def check(doc, raw_text: str = "") -> Report:
             "source_merge.performed",
             "a source merge before every gate passes is forbidden by the I1 policy",
         )
+    if state == "COMPLETE_V1" and stale_pins:
+        r.error(
+            "E115",
+            "drift_guard",
+            "COMPLETE_V1 cannot rest on pins older than the snapshot: " + "; ".join(stale_pins),
+        )
 
     # ---- credential hygiene ----------------------------------------------
     if raw_text:
@@ -356,7 +396,19 @@ def _valid_fixture() -> dict:
         "integration_ref": "Owner/repo#2",
         "state": "RC_CANDIDATE",
         "integrator": {"owner": "integrator-a", "device_ref": "device:x", "authority": "read-only"},
-        "qa": {"owner": "qa-b", "independent_of_integrator": True, "signature": None},
+        "qa": {
+            "owner": "qa-b",
+            "status": "PENDING",
+            "independent_of_integrator": True,
+            "session_ref": "device:x|claude|sess-b",
+            "run_ref": "run-b",
+            "signature": None,
+        },
+        "drift_guard": {
+            "snapshot_time": "2026-10-17T00:00:00Z",
+            "policy": "re-read every pin from the provider immediately before push and composition",
+            "recheck_before": ["push", "composition"],
+        },
         "repos": [
             {"name": "r", "repo": "Owner/repo", "revision": "a" * 40, "role": "host", "reachable": True}
         ],
@@ -372,6 +424,7 @@ def _valid_fixture() -> dict:
                 "draft": True,
                 "evidence_level": "SOURCE",
                 "installed": False,
+                "observed_at": "2026-10-17T00:00:00Z",
             }
         ],
         "source_merge": {
@@ -469,6 +522,38 @@ def self_test() -> int:
         "claim-while-candidate",
         lambda d: d["claims"].update(live_device=True),
         {"E083"},
+    )
+    expect(
+        "qa-signed-without-signature",
+        lambda d: d["qa"].update(status="SIGNED"),
+        {"E016"},
+    )
+    expect(
+        "qa-pending-with-signature",
+        lambda d: d["qa"].update(signature="sig"),
+        {"E017"},
+    )
+    expect(
+        "qa-bad-status",
+        lambda d: d["qa"].update(status="DONE"),
+        {"E015"},
+    )
+    expect("missing-drift-guard", lambda d: d.pop("drift_guard"), {"E110"})
+    expect(
+        "missing-observed-at",
+        lambda d: d["candidates"][0].pop("observed_at"),
+        {"E114"},
+    )
+    expect(
+        "complete-on-stale-pin",
+        lambda d: (
+            d.update(state="COMPLETE_V1", open_p0=[]),
+            d["gates"][0].update(verdict="PASS", achieved_level="LOCAL"),
+            d["claims"].update(live_device=True, client_e2e=True, production=True),
+            d["qa"].update(status="SIGNED", signature="sig"),
+            d["candidates"][0].update(observed_at="2026-10-16T00:00:00Z"),
+        ),
+        {"E115"},
     )
     expect(
         "secret",

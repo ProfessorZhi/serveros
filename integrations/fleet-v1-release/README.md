@@ -45,6 +45,9 @@ The checker is deliberately narrow and mechanical. It rejects:
 - `COMPLETE_V1` with open P0 items (`E093`) or without live/client/production
   claims (`E094`);
 - an integrator signing its own QA (`E012`, `E013`, `E014`);
+- a QA status that contradicts its signature (`E015`–`E018`);
+- a missing drift guard, or `COMPLETE_V1` resting on a pin older than the
+  snapshot (`E110`–`E115`);
 - a source merge performed before every gate passes (`E095`);
 - credential-like material in the manifest (`E100`).
 

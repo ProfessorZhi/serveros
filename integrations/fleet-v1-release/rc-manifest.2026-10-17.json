@@ -1,7 +1,8 @@
 {
   "schema": "serveros/fleet-v1-rc-manifest.v1",
-  "manifest_id": "fleet-v1-rc-20261017-a",
-  "generated_at": "2026-10-17T11:12:00Z",
+  "manifest_id": "fleet-v1-rc-20261017-b",
+  "supersedes": "fleet-v1-rc-20261017-a",
+  "generated_at": "2026-10-17T17:33:08Z",
   "campaign_ref": "ProfessorZhi/serveros#244",
   "integration_ref": "ProfessorZhi/serveros#250",
   "state": "RC_CANDIDATE",
@@ -11,9 +12,17 @@
     "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
   },
   "qa": {
-    "owner": "independent QA Session (not yet assigned)",
-    "independent_of_integrator": false,
+    "owner": "PENDING — independent QA session assigned, no receipt yet",
+    "status": "PENDING",
+    "independent_of_integrator": true,
+    "session_ref": "device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02",
+    "run_ref": "8384fcda-97c0-4d38-820d-4778f8ce5c8d",
     "signature": null
+  },
+  "drift_guard": {
+    "snapshot_time": "2026-10-17T17:33:08Z",
+    "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. The QA session signs the same snapshot or records a superseding one.",
+    "recheck_before": ["push", "composition", "qa_signature"]
   },
   "repos": [
     {
@@ -55,20 +64,22 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "Only candidate whose base is current main (behind_by 0)."
     },
     {
       "lane": "S2",
       "repo": "ProfessorZhi/serveros",
       "pr": 252,
-      "head": "d49342bb7b5acdc90072f17c49b0bde88ac603ef",
+      "head": "dac308801b16db18dd01c5e6e316fd3fd546178b",
       "base_ref": "feat/v1-session-write-fence-20261016",
       "base_is_pr": true,
       "stacks_on": 241,
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "notes": "Head advanced from 00bb701 to d49342b; the manifest pins the new head, not the milestone-1 SHA."
+      "observed_at": "2026-10-17T17:33:08Z",
+      "notes": "Head advanced 00bb701 -> d49342b -> dac3088; the last two are different commits and the manifest pins only the newest."
     },
     {
       "lane": "F1",
@@ -81,6 +92,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "Declared base of #231 is stack/fleet-v1-pre-core-lite-wiring (a11a9dd), which is not a PR head; ancestry of #243 still contains #229 head b0f5480."
     },
     {
@@ -93,7 +105,8 @@
       "stacks_on": 232,
       "draft": true,
       "evidence_level": "SOURCE",
-      "installed": false
+      "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z"
     },
     {
       "lane": "N2",
@@ -106,6 +119,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed."
     },
     {
@@ -119,7 +133,22 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction."
+    },
+    {
+      "lane": "G1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 255,
+      "head": "619cf637cbdba3020f989cee3d9f72b7f2b25ce5",
+      "base_ref": "integration/fleet-v1-candidate-20261017",
+      "base_is_pr": true,
+      "stacks_on": 243,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
+      "notes": "Child of F1: base is #243's head. Adds integrations/device-ability-projection/** and one test; its own-commit surface does not intersect #243's. It cannot land before #243 and a re-base of #243 invalidates its base."
     },
     {
       "lane": "M1",
@@ -132,6 +161,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition."
     },
     {
@@ -145,12 +175,13 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
+      "observed_at": "2026-10-17T17:33:08Z",
       "notes": "Cross-repo pair of serveros #241; must land as a pair, not independently."
     }
   ],
   "source_merge": {
     "performed": false,
-    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins and conflicts; composition is a later, separately authorized step.",
+    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins and conflicts; composition is a later, separately authorized step and follows BRANCH-TOPOLOGY.md.",
     "conflict_audit": [
       {
         "left": "#243 (F1)",
@@ -172,9 +203,15 @@
       },
       {
         "left": "#241/#252 (S1/S2)",
-        "right": "#243, #230, #242",
+        "right": "#243, #230, #242, #255",
         "shared_own_commit_files": 0,
-        "conclusion": "The safety line is file-disjoint from the Fleet and Core lanes. Semantic coupling remains: #241 edits fleet/agent-control-contract.yaml while F1 adds fleet/fleet-mcp-contract.yaml."
+        "conclusion": "The safety line is file-disjoint from the Fleet, G1 and Core lanes. Semantic coupling remains: #241 edits fleet/agent-control-contract.yaml while F1 adds fleet/fleet-mcp-contract.yaml."
+      },
+      {
+        "left": "#255 (G1)",
+        "right": "#243 (F1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "G1 is a child of F1, not a sibling: it adds integrations/device-ability-projection/** and one test. Disjoint from F1's own commits, but ordering is forced (F1 first)."
       }
     ]
   },
@@ -185,7 +222,7 @@
       "achieved_level": "NOT_RUN",
       "verdict": "NOT_RUN",
       "owner": "S1/S2 lane owners",
-      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator has not re-run them and records no receipt.",
+      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator has not re-run them and records no receipt. T10 has no named candidate.",
       "receipt": null
     },
     {
@@ -254,10 +291,10 @@
     {
       "id": "DEVICE_ABILITIES",
       "required_level": "REAL_DEVICE",
-      "achieved_level": "NOT_RUN",
+      "achieved_level": "SOURCE",
       "verdict": "BLOCKED",
       "owner": "G1 lane owner",
-      "blocker": "G1 depends on N1 and R1, both unlanded; the ability-management SHA is pinned but nothing was executed.",
+      "blocker": "G1 now has a source candidate (#255 at 619cf63) plus the pinned ability-management registry, but nothing was executed on a device and G1 still sits on an unlanded F1.",
       "receipt": null
     },
     {
@@ -274,14 +311,14 @@
       "required_level": "LOCAL",
       "achieved_level": "SOURCE",
       "verdict": "PARTIAL",
-      "owner": "independent QA Session (must not be the integrator)",
-      "blocker": "This manifest and checker exist at SOURCE. No isolated local test run at the exact SHAs, no rollback rehearsal, and no independent QA signature yet.",
+      "owner": "independent QA session 6955184a (Run 8384fcda) — PENDING, no signature",
+      "blocker": "This manifest and checker exist at SOURCE. The QA session is assigned but has produced no receipt and no signature; it is PENDING, not PASS.",
       "receipt": null
     }
   ],
   "hosted_ci": {
     "status": "QUOTA_WAIVED",
-    "evidence": "check-runs returned empty for all eight candidate heads when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
+    "evidence": "check-runs returned empty for all nine candidate heads when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
   },
   "open_p0": [
     {
@@ -291,7 +328,7 @@
     },
     {
       "id": "B2-NO-RC",
-      "summary": "No integration/v1-rc-* branch exists and no multi-repo manifest existed before this one.",
+      "summary": "No integration release candidate branch existed before #254 and no multi-repo manifest existed before this file.",
       "owner_action": "Create the single RC only after B1 and the gate owners agree; do not branch off an owner head."
     },
     {
@@ -306,13 +343,18 @@
     },
     {
       "id": "B5-NO-REAL-DEVICE",
-      "summary": "No Tokyo to Dell transport and no real device effect was observed.",
-      "owner_action": "T8/T12, Windows, network, runtime and ability gates stay BLOCKED until a device owner produces a receipt."
+      "summary": "No Tokyo to Dell transport and no real device effect was observed. T8, T12, T10 and T11 have no receipt; Windows and Local CC E2E have none either.",
+      "owner_action": "Those gates stay BLOCKED until a device owner or the independent QA session produces a receipt."
     },
     {
       "id": "B6-NON-PR-BASE",
       "summary": "#231, and therefore #243, declares a base branch (stack/fleet-v1-pre-core-lite-wiring) that is not a PR head; #230 declares #227, which is a PR, but its own body pin is stale.",
       "owner_action": "Re-pin base refs and heads immediately before composition; do not trust PR bodies or branch names."
+    },
+    {
+      "id": "B7-G1-AFTER-F1",
+      "summary": "#255 (G1) is a child of #243 and its base is #243's head. Any re-base of #243 changes #255's base and forces a G1 re-pin.",
+      "owner_action": "Compose F1 before G1 and re-pin G1 after every F1 change; never merge G1 against a stale F1."
     }
   ],
   "rollback": {
