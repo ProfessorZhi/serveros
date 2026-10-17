@@ -1,8 +1,8 @@
 {
   "schema": "serveros/fleet-v1-rc-manifest.v1",
-  "manifest_id": "fleet-v1-rc-20261017-f",
-  "supersedes": "fleet-v1-rc-20261017-e",
-  "generated_at": "2026-10-17T22:17:29Z",
+  "manifest_id": "fleet-v1-rc-20261017-g",
+  "supersedes": "fleet-v1-rc-20261017-f",
+  "generated_at": "2026-10-17T22:26:37Z",
   "campaign_ref": "ProfessorZhi/serveros#244",
   "integration_ref": "ProfessorZhi/serveros#250",
   "state": "RC_CANDIDATE",
@@ -12,7 +12,7 @@
     "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
   },
   "qa": {
-    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, Snapshot C, no signature",
+    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, Snapshot E, no signature",
     "status": "INDEPENDENT_QA_PARTIAL",
     "independent_of_integrator": true,
     "session_ref": "device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02",
@@ -22,9 +22,9 @@
   "qa_triage": {
     "repo": "ProfessorZhi/serveros",
     "pr": 256,
-    "head": "3ac74d5a030cafe86ff27ff95cc72bc793a14768",
+    "head": "07e58ea2ff81e418ee05e9bcfc225d9d964de16f",
     "status": "INDEPENDENT_QA_PARTIAL",
-    "pins_are_snapshot_of": "Snapshot D: an independent exact-SHA LOCAL rerun at the real daemon boundary, with a red->green control. The same probe exits 1 on fdc223f (10 failures) and 0 on 7a87e5c with 33/33 checks. QA_PARTIAL with no signature and no PASS.",
+    "pins_are_snapshot_of": "Snapshot E: a cross-repo LOCAL probe at serveros #241 d0754ed and work-engine #13 40b0622. The real serveros daemon records a caller-supplied binding writer and send admission returns ADMITTED while the live Work Engine lease on the same resource names a different owner/token. Command exit 1: 22 checks held, 1 SECURITY_FAIL (E5). Snapshot D's S2 33/33 LOCAL green is carried separately and remains valid for S2.",
     "findings": [
       {
         "id": "QA-P0-1",
@@ -39,6 +39,13 @@
         "candidate": "#252",
         "summary": "The observation-to-SETTLED judgment was not wired into the production path and the write entry could self-attest. Snapshot D closes the effect-safety half at LOCAL with a red->green control: D3, D4 and D10 are closed and regressions D1/D2/D5-D9/D11-D14 hold. The residual is P1: owner-observation reconcile still has no production caller.",
         "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P0-7-E5",
+        "severity": "P0",
+        "candidate": "#241 + work-engine#13",
+        "summary": "E5: the S1 pair is individually green but NOT authoritatively joined at send admission. agent.binding.record accepts a caller-forged writer (EVIL/999), then LocalLoopbackTransport sends ADMITTED even though the live Work Engine lease on the same resource is held by a different owner/token (A/1). held_leases is not on the send path. Exit 1: 22 held, 1 SECURITY_FAIL.",
+        "state_at_snapshot": "OPEN"
       },
       {
         "id": "QA-P0-5-D3",
@@ -86,7 +93,7 @@
         "id": "QA-P1-2",
         "severity": "P1",
         "candidate": "#254",
-        "summary": "I1 manifest drift: earlier manifests pinned stale heads and omitted new candidates. Fixed in manifest -e, which pins fdc223f, 4a5d0a0, 619cf63, c2e2e8d and QA Snapshot C a9c3ea5.",
+        "summary": "I1 manifest drift: earlier manifests pinned stale heads and omitted new candidates. Fixed in manifest -g.",
         "state_at_snapshot": "CLOSED"
       },
       {
@@ -99,9 +106,13 @@
     ]
   },
   "drift_guard": {
-    "snapshot_time": "2026-10-17T22:17:29Z",
+    "snapshot_time": "2026-10-17T22:26:37Z",
     "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. An independent QA triage signs a snapshot, not a branch name.",
-    "recheck_before": ["push", "composition", "qa_signature"]
+    "recheck_before": [
+      "push",
+      "composition",
+      "qa_signature"
+    ]
   },
   "repos": [
     {
@@ -143,8 +154,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Only candidate whose base is current main (behind_by 0)."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Individually LOCAL-green, but the pair is NOT authoritatively joined: QA Snapshot E shows a forged binding writer admitted while the live Work Engine lease names another owner/token. Do not land or label landable until the S1 corrective SHA passes an independent negative proof.",
+      "evidence_class": "LOCAL_PASS"
     },
     {
       "lane": "S2",
@@ -157,8 +169,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Head moved fdc223f -> 7a87e5c and claims D3/D4/D10 repaired (attempt mutation bound to the same actor; dispatch transition table enforced atomically; terminal states cannot reopen; empty writer no longer compares equal). QA Snapshot C tested only fdc223f, so every repair is FIXED_PENDING_RECHECK until Snapshot D exists."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Head moved fdc223f -> 7a87e5c and claims D3/D4/D10 repaired (attempt mutation bound to the same actor; dispatch transition table enforced atomically; terminal states cannot reopen; empty writer no longer compares equal). QA Snapshot C tested only fdc223f, so every repair is FIXED_PENDING_RECHECK until Snapshot D exists.",
+      "evidence_class": "LOCAL_PASS"
     },
     {
       "lane": "F1",
@@ -171,8 +184,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Head moved 494f452 -> 4a5d0a0: release_plan.py replaces an absolute home literal with ~/runtime-assets via expanduser, and adds a test asserting the Fleet Core block is not an Ability registry. Snapshot B re-ran the full guard independently at this SHA: 10 tests OK, exit 0 (LOCAL), QA-P0-3 closed."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Head moved 494f452 -> 4a5d0a0: release_plan.py replaces an absolute home literal with ~/runtime-assets via expanduser, and adds a test asserting the Fleet Core block is not an Ability registry. Snapshot B re-ran the full guard independently at this SHA: 10 tests OK, exit 0 (LOCAL), QA-P0-3 closed.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "N1",
@@ -185,7 +199,8 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z"
+      "observed_at": "2026-10-17T22:26:37Z",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "N2",
@@ -198,8 +213,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "P1",
@@ -212,8 +228,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "G1",
@@ -226,22 +243,24 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Child of F1: base is #243's head. The present-but-null fail-open (QA-P1-1) is uncorrected at this head, and the G1 owner dispatch is platform-blocked. A re-base of #243 invalidates this base."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Child of F1: base is #243's head. The present-but-null fail-open (QA-P1-1) is uncorrected at this head, and the G1 owner dispatch is platform-blocked. A re-base of #243 invalidates this base.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "R1",
       "repo": "ProfessorZhi/serveros",
       "pr": 257,
-      "head": "c2e2e8d75f5658c2a9b19887cdfc24e185fc64ef",
+      "head": "4045d16b64a20527a1e9587e753f4d16f94e2f24",
       "base_ref": "main",
       "base_is_pr": false,
       "stacks_on": null,
       "draft": true,
-      "evidence_level": "SOURCE",
+      "evidence_level": "REAL_DEVICE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "New since the last snapshot: a pure CC/Codex runtime parity projection under integrations/fleet-v1-runtime-parity/** plus one test. The lane reports 34 local fixture tests; that is SOURCE/OFFLINE evidence and NOT a REAL_DEVICE result. No provider call, credential read or model call is part of it."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Head moved c2e2e8d -> 4045d16 and now carries a real read-only observation (OBSERVED-2026-10-18.md, snapshot 2026-10-17T22:16:25Z-22:17:00Z on device:tokyo-shared-dev-01). Codex is observed online but UNBOUND in the device registry; Claude Code has no direct provider adapter and NEEDS_LOGIN at BotMux. Per-surface states are kept separate: READ_AUTHORIZED for metadata, REFUSED/PROVIDER_UNBOUND for new work. This is REAL_READ_ONLY, not ACTUAL_DEV_PASS.",
+      "evidence_class": "REAL_READ_ONLY"
     },
     {
       "lane": "N3",
@@ -254,22 +273,24 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "New: SOURCE_ONLY/OFFLINE network-health profiles and bounded recovery plans under integrations/fleet-v1-network-health/**. Six dependency profiles, five separate axes, fail-closed verdicts, synthetic fixtures only. A profile that measures only local layers reports LOCAL_ONLY, never HEALTHY. No listener, tunnel or remote application was observed."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "New: SOURCE_ONLY/OFFLINE network-health profiles and bounded recovery plans under integrations/fleet-v1-network-health/**. Six dependency profiles, five separate axes, fail-closed verdicts, synthetic fixtures only. A profile that measures only local layers reports LOCAL_ONLY, never HEALTHY. No listener, tunnel or remote application was observed.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "T10",
       "repo": "ProfessorZhi/serveros",
       "pr": 258,
-      "head": "4156572fad7a804915c2e5a814db77a05d246a6e",
+      "head": "5043ba14232adff86dddbd444597c76865db5f41",
       "base_ref": "main",
       "base_is_pr": false,
       "stacks_on": null,
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "New: a pure offline verdict-evidence acceptance seam for T10 under integrations/fleet-v1-verdict-evidence/**. It is NOT wired to the trusted runner, so it cannot yet be cited as a T10 gate; it is a source seam plus negative fixtures."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Head moved 4156572 -> 5043ba1: adds bounded_provenance.py and expands the test suite. Still a pure offline seam, NOT wired to the trusted runner. A source seam with negative fixtures is not a T10 gate.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "M1",
@@ -282,8 +303,9 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition.",
+      "evidence_class": "CODE_CANDIDATE"
     },
     {
       "lane": "S1",
@@ -296,13 +318,14 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-17T22:17:29Z",
-      "notes": "Cross-repo pair of serveros #241; must land as a pair, not independently."
+      "observed_at": "2026-10-17T22:26:37Z",
+      "notes": "Cross-repo pair of serveros #241. The lease writer is correct at LOCAL (exclusivity, token, TTL, release, renewal fencing), but nothing on the serveros send path reads it. Pair status: UNJOINED.",
+      "evidence_class": "LOCAL_PASS"
     }
   ],
   "source_merge": {
     "performed": false,
-    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins, deltas and conflicts; composition is a later, separately authorized step and follows BRANCH-TOPOLOGY.md.",
+    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch. Composition is BLOCKED at the semantic layer: an unbound send-admission lease forbids landing the S1 pair regardless of structural cleanliness. The manifest records pins, conflicts and gates only.",
     "conflict_audit": [
       {
         "left": "#243 (F1)",
@@ -350,7 +373,19 @@
   },
   "composition_preflight": {
     "performed": true,
-    "verdict": "CLEAN_PREFLIGHT",
+    "verdict": "BLOCKED_SEMANTIC",
+    "work_lease": {
+      "status": "SEND_ADMISSION_UNBOUND",
+      "authority": "The live Work Engine lease (owner, token, expires_at) is the only authority that may admit a write to a protected Work scope.",
+      "observed_authority": "serveros agent.binding.record accepts a caller-supplied writer and send admission does not read the lease: LocalLoopbackTransport returns ADMITTED while the live lease is held by another owner/token.",
+      "negative_proof": {
+        "sha": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+        "qa_snapshot": "07e58ea (Snapshot E)",
+        "exit": 1,
+        "held": 22,
+        "security_fail": 1
+      }
+    },
     "pairs": [
       {
         "left": "#241 (serveros S1)",
@@ -358,8 +393,13 @@
         "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
         "merge_base_right": "19d9520eabcbd713933515543d128bee35ef336d",
         "shared_files": 0,
-        "repo_dependency": "Different repositories, so there is no textual conflict. The dependency is a database contract: the leases(resource, owner, token, expires_at) table plus a fixed-width %Y-%m-%dT%H:%M:%SZ expires_at compared as a string. serveros does not import the work-engine package and work-engine does not import serveros.",
-        "order": ["work-engine#13 (writer)", "serveros#241 (reader)"],
+        "semantic_status": "UNJOINED",
+        "repo_dependency": "Different repositories, so there is no textual conflict. The contract is the leases table plus %Y-%m-%dT%H:%M:%SZ. Structurally clean, semantically unjoined: admission does not consult the lease authority, so branch compatibility does NOT authorize composition.",
+        "order": [
+          "work-engine#13 (writer)",
+          "serveros#241 (reader)",
+          "S1 corrective (before any landing)"
+        ],
         "test_roots": [
           "work-engine/tests/test_lease.py",
           "serveros/tests/test_v1_write_fence.py",
@@ -376,8 +416,12 @@
         "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
         "merge_base_right": "4a3162864911420309665e92ec38fb68e9ef76ec",
         "shared_files": 0,
-        "repo_dependency": "Same repository, disjoint directories: the seams write only integrations/fleet-v1-{runtime-parity,verdict-evidence,network-health}/** plus one test each, and no lane candidate writes those paths.",
-        "order": ["S1 pair first", "then lane owners land their own towers"],
+        "semantic_status": "NOT_APPLICABLE",
+        "repo_dependency": "Same repository, disjoint directories under integrations/. They do not write each other and do not join the lease path.",
+        "order": [
+          "independent of the S1 landing",
+          "owner-landed"
+        ],
         "test_roots": [
           "tests/test_fleet_v1_runtime_parity.py",
           "tests/test_fleet_v1_verdict_evidence.py",
@@ -521,6 +565,16 @@
       "owner": "independent QA session 6955184a (PR #256 Snapshot C a9c3ea5, INDEPENDENT_QA_PARTIAL)",
       "blocker": "Manifest and checker exist at SOURCE, and an independent Snapshot C probe exists at LOCAL for #252 fdc223f. It carries no signature and does not cover the real-device, Windows, network or client gates.",
       "receipt": null
+    },
+    {
+      "id": "S1_SEND_ADMISSION_BOUND",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_SEMANTIC_JOIN",
+      "owner": "Security A owner (S1 corrective milestone)",
+      "blocker": "Send admission does not read the Work lease authority. QA Snapshot E: exit 1, 22 held, 1 SECURITY_FAIL — a caller-forged binding writer is admitted while the live lease names another owner/token. The S1 pair must not land until an independent QA run at the corrective SHA proves the negative (forged writer refused, lease mismatch refused) with exit 0.",
+      "receipt": null
     }
   ],
   "hosted_ci": {
@@ -587,6 +641,16 @@
       "id": "B13-MANIFEST-IS-NOT-AN-RC",
       "summary": "PR #254 is docs-only. This manifest describes pins, conflicts and gates; it is not a code-composed release candidate. claims.code_composed_rc is false and the checker refuses to let it be true without a performed source merge.",
       "owner_action": "Do not cite #254 as an RC. A code-composed RC requires owner-landed merges and QA approval, then a new manifest that sets code_composed_rc only after source_merge.performed is true."
+    },
+    {
+      "id": "B14-S1-SEND-ADMISSION-UNBOUND",
+      "summary": "S1 #241 + WE #13 are individually LOCAL-green but semantically unjoined: agent.binding.record accepts a caller-supplied writer and send admission returns ADMITTED without reading the live lease. QA Snapshot E is exit 1 with 22 held / 1 SECURITY_FAIL.",
+      "owner_action": "Security A owner lands the isolated S1 corrective milestone, then independent QA must produce a same-SHA negative proof (forged writer refused, lease mismatch refused, exit 0, security_fail 0). Only then may SEND_ADMISSION_BOUND be claimed."
+    },
+    {
+      "id": "B15-CORRECTIVE-IN-PROGRESS",
+      "summary": "Security A is executing a separate isolated S1 corrective milestone and the T10 owner is working on different product files. Neither has a published PR or SHA, so neither is a candidate.",
+      "owner_action": "Record them as work in progress in prose only; do not pin, cite or compose them until a PR and head SHA exist."
     }
   ],
   "dependency_opportunities": [
@@ -606,6 +670,7 @@
     "live_device": false,
     "client_e2e": false,
     "production": false,
-    "code_composed_rc": false
+    "code_composed_rc": false,
+    "final_acceptance": false
   }
 }

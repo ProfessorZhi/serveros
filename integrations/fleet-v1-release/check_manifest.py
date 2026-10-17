@@ -283,6 +283,16 @@ def check(doc, raw_text: str = "") -> Report:
         level = cand.get("evidence_level")
         if level not in RANK or level == "NOT_RUN":
             r.error("E036", f"{where}.evidence_level", f"unknown evidence level {level!r}")
+        eclass = cand.get("evidence_class")
+        if eclass not in {
+            "CODE_CANDIDATE",
+            "LOCAL_PASS",
+            "REAL_READ_ONLY",
+            "ACTUAL_DEV_PASS",
+            "OAUTH_CLIENT_E2E",
+            "FINAL_ACCEPTANCE",
+        }:
+            r.error("E161", f"{where}.evidence_class", f"unknown evidence class {eclass!r}")
         if cand.get("installed") is True and level == "SOURCE":
             r.error(
                 "E037",
@@ -340,8 +350,79 @@ def check(doc, raw_text: str = "") -> Report:
         r.error("E150", "composition_preflight", "a read-only composition preflight is required")
     else:
         pre_verdict = pre.get("verdict")
-        if pre_verdict not in {"CLEAN_PREFLIGHT", "CONFLICT", "BLOCKED_DEPENDENCY", "NOT_ATTEMPTED"}:
+        if pre_verdict not in {
+            "CLEAN_PREFLIGHT",
+            "BLOCKED_SEMANTIC",
+            "CONFLICT",
+            "BLOCKED_DEPENDENCY",
+            "NOT_ATTEMPTED",
+        }:
             r.error("E151", "composition_preflight.verdict", f"unknown verdict {pre_verdict!r}")
+
+        # A structurally clean preflight is not a semantic join. The Work lease
+        # authority is the thing that decides whether a send may be admitted.
+        wl = pre.get("work_lease")
+        wl_status = None
+        if not isinstance(wl, dict):
+            r.error(
+                "E162",
+                "composition_preflight.work_lease",
+                "a work-lease authority record is required",
+            )
+            wl = {}
+        else:
+            wl_status = wl.get("status")
+            if wl_status not in {"SEND_ADMISSION_BOUND", "SEND_ADMISSION_UNBOUND"}:
+                r.error(
+                    "E163",
+                    "composition_preflight.work_lease.status",
+                    f"unknown work-lease status {wl_status!r}",
+                )
+            for key in ("authority", "observed_authority"):
+                v = wl.get(key)
+                if not isinstance(v, str) or len(v) < 10:
+                    r.error("E164", f"composition_preflight.work_lease.{key}", "must be recorded")
+            if wl_status == "SEND_ADMISSION_BOUND":
+                proof = wl.get("negative_proof")
+                if not isinstance(proof, dict):
+                    r.error(
+                        "E165",
+                        "composition_preflight.work_lease.negative_proof",
+                        "SEND_ADMISSION_BOUND requires a verified same-SHA negative proof",
+                    )
+                else:
+                    sha = proof.get("sha")
+                    if not isinstance(sha, str) or not SHA40.match(sha):
+                        r.error(
+                            "E166",
+                            "composition_preflight.work_lease.negative_proof.sha",
+                            "must name a full 40-hex SHA",
+                        )
+                    if proof.get("exit") != 0:
+                        r.error(
+                            "E167",
+                            "composition_preflight.work_lease.negative_proof.exit",
+                            "the negative proof did not pass (exit != 0)",
+                        )
+                    if proof.get("security_fail") != 0:
+                        r.error(
+                            "E168",
+                            "composition_preflight.work_lease.negative_proof.security_fail",
+                            "security_fail must be 0 before send admission is called bound",
+                        )
+            elif wl_status == "SEND_ADMISSION_UNBOUND":
+                if pre_verdict == "CLEAN_PREFLIGHT":
+                    r.error(
+                        "E169",
+                        "composition_preflight.verdict",
+                        "an unbound send-admission lease cannot be CLEAN_PREFLIGHT",
+                    )
+                if performed is True:
+                    r.error(
+                        "E170",
+                        "source_merge.performed",
+                        "composition is blocked while send admission does not read the Work lease",
+                    )
         if not isinstance(pre.get("performed"), bool):
             r.error("E152", "composition_preflight.performed", "must be a boolean")
         pairs = pre.get("pairs")
@@ -378,6 +459,15 @@ def check(doc, raw_text: str = "") -> Report:
                     "E158",
                     f"{w}",
                     "CLEAN_PREFLIGHT cannot be claimed when the pair shares files",
+                )
+            sem = pair.get("semantic_status")
+            if sem not in {"JOINED", "UNJOINED", "NOT_APPLICABLE", "UNKNOWN"}:
+                r.error("E171", f"{w}.semantic_status", f"unknown semantic status {sem!r}")
+            if pre_verdict == "CLEAN_PREFLIGHT" and sem == "UNJOINED":
+                r.error(
+                    "E172",
+                    w,
+                    "a pair whose semantics are UNJOINED cannot be CLEAN_PREFLIGHT",
                 )
 
     # ---- gates ------------------------------------------------------------
@@ -418,6 +508,7 @@ def check(doc, raw_text: str = "") -> Report:
             "BLOCKED_NO_CANDIDATE",
             "BLOCKED_UNLANDED_CHAIN",
             "BLOCKED_OWNER_ACTION",
+            "BLOCKED_SEMANTIC_JOIN",
         }:
             r.error("E058", f"{where}.blocker_code", f"unknown blocker code {code!r}")
         if verdict == "PASS" and code != "NONE":
@@ -476,9 +567,15 @@ def check(doc, raw_text: str = "") -> Report:
         r.error("E081", "rollback.verified", "must be a boolean")
 
     claims = doc.get("claims") or {}
-    for key in ("live_device", "client_e2e", "production", "code_composed_rc"):
+    for key in ("live_device", "client_e2e", "production", "code_composed_rc", "final_acceptance"):
         if not isinstance(claims.get(key), bool):
             r.error("E082", f"claims.{key}", "must be a boolean")
+    if claims.get("final_acceptance") is True and state != "COMPLETE_V1":
+        r.error(
+            "E173",
+            "claims.final_acceptance",
+            "final acceptance cannot be claimed before COMPLETE_V1",
+        )
     if claims.get("code_composed_rc") is True and performed is not True:
         r.error(
             "E159",
@@ -573,6 +670,7 @@ def _valid_fixture() -> dict:
                 "stacks_on": None,
                 "draft": True,
                 "evidence_level": "SOURCE",
+                "evidence_class": "CODE_CANDIDATE",
                 "installed": False,
                 "observed_at": "2026-10-17T00:00:00Z",
             }
@@ -592,6 +690,18 @@ def _valid_fixture() -> dict:
         "composition_preflight": {
             "performed": True,
             "verdict": "CLEAN_PREFLIGHT",
+            "work_lease": {
+                "status": "SEND_ADMISSION_BOUND",
+                "authority": "the live Work Engine lease at send admission",
+                "observed_authority": "the same lease was read on the real path",
+                "negative_proof": {
+                    "sha": "e" * 40,
+                    "qa_snapshot": "snapshot-1",
+                    "exit": 0,
+                    "held": 22,
+                    "security_fail": 0,
+                },
+            },
             "pairs": [
                 {
                     "left": "#1",
@@ -599,6 +709,7 @@ def _valid_fixture() -> dict:
                     "merge_base_left": "a" * 40,
                     "merge_base_right": "b" * 40,
                     "shared_files": 0,
+                    "semantic_status": "JOINED",
                     "repo_dependency": "different repositories; shared database contract",
                     "order": ["#1", "#2"],
                     "test_roots": ["tests/test_a.py", "tests/test_b.py"],
@@ -625,6 +736,7 @@ def _valid_fixture() -> dict:
             "client_e2e": False,
             "production": False,
             "code_composed_rc": False,
+            "final_acceptance": False,
         },
     }
 
@@ -740,6 +852,31 @@ def self_test() -> int:
             ]
         ),
         {"E132"},
+    )
+    expect(
+        "bound-without-negative-proof",
+        lambda d: d["composition_preflight"]["work_lease"].update(negative_proof=None),
+        {"E165"},
+    )
+    expect(
+        "unbound-clean-preflight",
+        lambda d: d["composition_preflight"]["work_lease"].update(status="SEND_ADMISSION_UNBOUND"),
+        {"E169"},
+    )
+    expect(
+        "unjoined-clean-preflight",
+        lambda d: d["composition_preflight"]["pairs"][0].update(semantic_status="UNJOINED"),
+        {"E172"},
+    )
+    expect(
+        "unknown-evidence-class",
+        lambda d: d["candidates"][0].update(evidence_class="LOOKS_FINE"),
+        {"E161"},
+    )
+    expect(
+        "final-acceptance-early",
+        lambda d: d["claims"].update(final_acceptance=True),
+        {"E173"},
     )
     expect(
         "manifest-claims-code-composed-rc",

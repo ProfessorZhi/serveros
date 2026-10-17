@@ -17,6 +17,25 @@ required evidence level.
 A higher level never substitutes for a different axis. `LOCAL` cannot satisfy a
 `REAL_DEVICE` row; `REAL_DEVICE` cannot satisfy `CLIENT_E2E`.
 
+## Release ladder — what a candidate has actually achieved
+
+The transport axis above says how evidence was gathered. This ladder says how
+far a **candidate** has been accepted. They are separate; a candidate can be
+`LOCAL` on the first axis and only `CODE_CANDIDATE` on this one.
+
+| Class | Means | Does **not** mean |
+|---|---|---|
+| `CODE_CANDIDATE` | a reviewed source change at a pinned SHA | it was ever executed |
+| `LOCAL_PASS` | the owner or QA ran it on this host at that SHA with a recorded exit | it joins another component |
+| `REAL_READ_ONLY` | a real device/runtime was read through an existing read-only surface | anything was written, sent or created |
+| `ACTUAL_DEV_PASS` | a real device performed the new action and produced a readback | a user-facing client path works |
+| `OAUTH_CLIENT_E2E` | an authenticated owner client completed the workflow | production release |
+| `FINAL_ACCEPTANCE` | every gate passed at its required class with a QA signature | — |
+
+**A structural preflight cannot promote a candidate up this ladder.** It only
+answers "do the branches conflict". Snapshot E is the worked example: the S1
+pair is `LOCAL_PASS` on both sides and still fails to join.
+
 ## Owners
 
 - **Integrator**: Tokyo Integration Owner Session. Owns this manifest, the
@@ -24,11 +43,11 @@ A higher level never substitutes for a different axis. `LOCAL` cannot satisfy a
 - **Independent QA**: **`INDEPENDENT_QA_PARTIAL`** — not `SIGNED`. Session
   `device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02`,
   Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`; triage artifact is **PR #256**
-  at `3ac74d5a030cafe86ff27ff95cc72bc793a14768` (**Snapshot D**, an exact-SHA
-  LOCAL rerun at `7a87e5c` with a red→green control; Snapshots A `a4d7131`,
-  B `2c4fe87` and C `a9c3ea5` were superseded). It owns every PASS in this
-  matrix and the `signature` field. A partial triage is **not** a PASS and
-  **not** a signature.
+  at `07e58ea2ff81e418ee05e9bcfc225d9d964de16f` (**Snapshot E**, a cross-repo
+  LOCAL probe at #241 `d0754ed` + WE #13 `40b0622`; Snapshots A `a4d7131`,
+  B `2c4fe87`, C `a9c3ea5` and D `3ac74d5` were superseded). It owns every PASS
+  in this matrix and the `signature` field. A partial triage is **not** a PASS
+  and **not** a signature.
 - **Lane owners** (`S1`, `S2`, `F1`, `N1`, `N2`, `P1`, `M1`, `G1`, `R1`): own
   their source and their local receipts. The integrator does not re-run or
   re-sign them.
@@ -48,6 +67,7 @@ snapshot saw.
 |---|---|---|---|---|
 | QA-P0-1 | P0 | #252 | `intent_digest` omitted `session_ref`/`agent_runtime`, so a same-key send to another session/runtime was a replay | **CLOSED (LOCAL)** — target/runtime/principal in the digest; all three axes CONFLICT; no/expired context and self-asserted principal refused |
 | QA-P0-2 | P0 | #252 | Caller `phase`/`principal` could write SETTLED; router records omitted `principal` | **CLOSED (LOCAL)** — D3/D4/D10 closed; regressions D1/D2/D5–D9/D11–D14 hold; residual is P1 below |
+| QA-P0-7-E5 | **P0** | **#241 + WE#13** | The S1 pair is individually green but **not authoritatively joined at send admission**: `agent.binding.record` accepts a caller-forged writer (EVIL/999), then `LocalLoopbackTransport` sends **ADMITTED** while the live WE lease is held by a different owner/token (A/1). `held_leases` is not on the send path. | **OPEN** — Snapshot E exit 1, 22 held, 1 `SECURITY_FAIL` |
 | QA-P0-5-D3 | P0 | #252 | Another trusted actor can settle A's attempt with A's copied digest and a fabricated result | **CLOSED (LOCAL)** — refused `UNTRUSTED_ACTOR`; the attempt is unchanged |
 | QA-P0-6-D4 | P0 | #252 | A terminal SETTLED can be written back to `CALL_NOT_SENT`, after which the kernel returns `PROCEED` | **CLOSED (LOCAL)** — terminal moves are refused; `EFFECT_UNKNOWN` cannot move back; terminal retry is `REPLAY` |
 | QA-P1-3 | P1 | #252 | Owner-observation reconcile has no production caller; grant enforcement not exercised | **OPEN** |
@@ -67,15 +87,15 @@ exactly-once is not asserted.
 | ID | Required test | Level | Candidate | Observed | Verdict |
 |---|---|---|---|---|---|
 | T1 | Hand off A→B, leave A alive, stale A writes | LOCAL | #241 | lane-reported closed; integrator has no receipt | NOT_RUN |
-| T2 | A and B race the same write scope | LOCAL | #241 | lane-reported closed | NOT_RUN |
-| T3 | Expired/revoked grant or lease during a long turn | LOCAL | #241 + WE#13 | lane-reported closed | NOT_RUN |
+| T2 | A and B race the same write scope | LOCAL | #241 + WE#13 | **PARTIAL** — Snapshot E: no cross-layer atomicity between the binding record and the lease | PARTIAL |
+| T3 | Expired/revoked grant or lease during a long turn | LOCAL | #241 + WE#13 | **PARTIAL** — lease expiry and refusal verified; no cross-layer atomicity, no revoked tombstone in the WE schema | PARTIAL |
 | T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `7a87e5c` | **CLOSED (LOCAL)** — Snapshot D: terminal retry is REPLAY; D3/D4/D10 closed with a red→green control | CLOSED (LOCAL) |
 | T5 | Same idempotency key, modified payload | LOCAL | #252 `fdc223f` | **CLOSED (LOCAL)** — QA Snapshot C: digest carries target/runtime/principal and all three axes return CONFLICT; `7a87e5c` does not change the digest | CLOSED (LOCAL) |
-| T6 | Work Engine lease expired but still in DB | LOCAL | WE#13 + #241 | lane-reported closed (`held_leases` filters `expires_at`) | NOT_RUN |
-| T7 | Cross-user / cross-runtime Session ref and stale grant | LOCAL | #241 | lane-reported **half** | NOT_RUN |
+| T6 | Work Engine lease expired but still in DB | LOCAL | WE#13 + #241 | **CLOSED (LOCAL)** — `held_leases` filters expired rows and keeps the row as evidence; WE exclusivity/token/TTL/release verified | CLOSED (LOCAL) |
+| T7 | Cross-user / cross-runtime Session ref and stale grant | LOCAL | #241 | **OPEN** — the binding write accepts an unauthenticated caller-supplied writer | **BLOCKED** |
 | T8 | Real Tokyo → Dell session send / get_run under grant | REAL_DEVICE | #241 + Fleet | no trusted transport observed | **BLOCKED** |
-| T9 | Provider unreachable / partial dispatch | LOCAL | #252 | lane-reported `EFFECT_UNKNOWN` path; no receipt here | NOT_RUN |
-| T10 | Child self-reports success while tests fail | LOCAL | none | no candidate owns this row | **BLOCKED** |
+| T9 | Provider unreachable / partial dispatch | LOCAL | #252 | `EFFECT_UNKNOWN` path verified; provider observation source is synthetic | **BLOCKED** (`BLOCKED_PROVIDER_SOURCE`) |
+| T10 | Child self-reports success while tests fail | LOCAL | #258 `5043ba1` | offline seam present, **not wired to the trusted runner** | **BLOCKED** |
 | T11 | Local bounded recovery during control-plane disconnection | LOCAL | #242 | source only; no local run | **BLOCKED** |
 | T12 | Tokyo loss, Dell continues bounded work, reconnect | REAL_DEVICE | #241 + WE#13 | requires T8 transport | **BLOCKED** |
 
@@ -152,7 +172,8 @@ importance. Only step 1 is immediately landable.
 
 | Step | Composition | Why here |
 |---|---|---|
-| 1 | serveros **#241** then work-engine **#13** | only tower based on current `main` (`behind_by: 0`); cross-repo pair; preflight CLEAN |
+| **0** | **S1 corrective (no PR/SHA yet)** | **BLOCKS step 1.** Send admission must read the lease authority before the pair may land |
+| 1 | serveros **#241** then work-engine **#13** | structurally clean, **semantically `UNJOINED`** — blocked by step 0 |
 | 2 | **#258** (T10) and **#259** (N3) | both base `main`, disjoint `integrations/**` directories; may land in parallel with step 1 |
 | 3 | **#242** (N1) | 11-link chain, file-disjoint from every other lane |
 | 4 | **#253** (N2) | one commit above #242; inherits its CMake layout |
@@ -165,25 +186,34 @@ importance. Only step 1 is immediately landable.
 Steps 2–3 and 4 are file-disjoint, so they may be prepared in parallel, but
 each must still be landed by its **owner**, never by I1.
 
-## R1 runtime — source candidate, still not a receipt
+## R1 runtime — `REAL_READ_ONLY`, not an accepted runtime
 
-R1 materialized as **PR #257 `c2e2e8d`** (base `main`): a pure CC/Codex runtime
-parity projection under `integrations/fleet-v1-runtime-parity/**` plus one test.
-The lane reports 34 local fixture tests. That is `SOURCE`/offline evidence —
-**not** a provider, session or device result. It is recorded in the manifest as
-a dependency opportunity with `is_release_receipt: false`, and the checker
-rejects promoting it (`E132`).
+R1 is at **#257 `4045d16`** and now carries a bounded read-only observation
+(`OBSERVED-2026-10-18.md`, snapshot `2026-10-17T22:16:25Z`–`22:17:00Z` on
+`device:tokyo-shared-dev-01`, principal `vince`). It reads only existing
+read-only surfaces: Agent MCP metadata, `serverosctl device agents --probe`,
+`--version`, and session **metadata** (no transcript, no argv/environment, no
+credential read, no send/model call).
 
-`RUNTIME_CC_CODEX_CLOUDCLI` stays `BLOCKED_PROVIDER_SOURCE` until an ambiguous
-effect can be resolved by the provider's own native turn id.
+| runtime | CLI | device binding | direct provider | metadata read | effective model | new work |
+|---|---|---|---|---|---|---|
+| Claude Code | `INSTALLED_ONLY` 2.1.272 | `BOUND` | `ABSENT` | `NEEDS_LOGIN` (BotMux) | `UNKNOWN` | `UNKNOWN` (`PROVIDER_ADAPTER_ABSENT` + `NEEDS_LOGIN`) |
+| Codex | `INSTALLED_ONLY` 0.160.0 | **`UNBOUND`** | `READ_AUTHORIZED` (`provider:codex-app-server`) | `READ_AUTHORIZED` | `FACT` `gpt-6-astra` via `codex:thread/list` | **`REFUSED`** `PROVIDER_UNBOUND` |
+
+Codex is **observed but unbound**: the registry declares only `claude-code`, so
+every new-work verb is refused and there is no fallback. This is
+`REAL_READ_ONLY` — **not** `ACTUAL_DEV_PASS`, not `OAUTH_CLIENT_E2E`. Nothing
+was created, sent or resumed. `RUNTIME_CC_CODEX_CLOUDCLI` stays
+`BLOCKED_PROVIDER_SOURCE`.
 
 ## T10 verdict evidence — offline seam, not a gate
 
-**#258 `4156572`** adds `integrations/fleet-v1-verdict-evidence/**` plus one
-test: a pure verdict-evidence acceptance seam and negative fixtures. It is
-**not wired to the trusted runner**. A source seam with negative fixtures is not
-a T10 gate; the parent-acceptance path has no end-to-end receipt. `T10` stays
-`BLOCKED` (`BLOCKED_OWNER_ACTION`).
+**#258 `5043ba1`** adds `integrations/fleet-v1-verdict-evidence/**` plus
+`bounded_provenance.py` and an expanded test suite: a pure verdict-evidence
+acceptance seam and negative fixtures. It is **not wired to the trusted
+runner**. A source seam with negative fixtures is not a T10 gate; the
+parent-acceptance path has no end-to-end receipt. `T10` stays `BLOCKED`
+(`BLOCKED_OWNER_ACTION`).
 
 ## N3 network health — source-only profiles
 
@@ -193,9 +223,9 @@ fixtures only. A profile that measures only local layers reports `LOCAL_ONLY`,
 never `HEALTHY`. No listener, tunnel, Tailscale state or remote Selkies/RDC
 application was observed, so `NETWORK_SSH_SELKIES_RDC` stays `BLOCKED_REAL_DEVICE`.
 
-## Composition preflight — S1 pair (read-only, CLEAN)
+## Composition preflight — S1 pair: **BLOCKED_SEMANTIC**
 
-`#241` + work-engine `#13`, measured from the trusted API:
+Structural facts are clean. **Semantics are not, and that is what decides.**
 
 | Fact | Value |
 |---|---|
@@ -203,18 +233,31 @@ application was observed, so `NETWORK_SSH_SELKIES_RDC` stays `BLOCKED_REAL_DEVIC
 | merge-base(#13, work-engine main) | `19d9520` (behind 0) |
 | shared files | **0** — different repositories |
 | dependency | database contract, not a module import |
-| contract | `leases(resource, owner, token, expires_at)` + `%Y-%m-%dT%H:%M:%SZ` compared as a string, `math.ceil` rounding, pinned identically in both files |
-| order | work-engine `#13` (writer) → serveros `#241` (reader) |
-| tests | `work-engine/tests/test_lease.py`; `serveros/tests/test_v1_write_fence.py`, `tests/test_coordination.py` |
+| contract | `leases(resource, owner, token, expires_at)` + `%Y-%m-%dT%H:%M:%SZ`, `math.ceil` rounding, pinned identically on both sides |
+| **semantic status** | **`UNJOINED`** |
+| **work-lease authority** | **`SEND_ADMISSION_UNBOUND`** |
+| Snapshot E evidence | **exit 1, 22 checks held, 1 `SECURITY_FAIL` (E5)** |
+| order | work-engine `#13` (writer) → serveros `#241` (reader) → **S1 corrective before any landing** |
 
-`serveros/context/resolver.py::held_leases` filters with
-`SELECT resource FROM leases WHERE expires_at > ?`; `work-engine/workengine/store.py`
-writes that column with the same stamp helper. Neither imports the other, so
-there is no textual conflict and no install-order dependency beyond the shared
-database file. The serveros test builds a real sqlite `leases` table rather than
-importing work-engine.
+What Snapshot E measured on the real daemon: `agent.binding.record` accepts a
+caller-supplied writer (EVIL/999), and `LocalLoopbackTransport` returns
+**ADMITTED** even though the live Work Engine lease on the same resource names a
+different owner/token (A/1). `held_leases` is not on the send path.
 
-Next safe commands after QA and owner approval (the owner runs them, not I1):
+Verified LOCAL and still true: WE lease exclusivity/token/TTL/release and
+renewal fencing; `held_leases` filters expired rows and keeps the row as
+evidence; a closed source thread refuses after handoff; same-Item token ordering
+refuses a stale claim; an expired claim refuses.
+
+**Therefore:** the pair is not landable, and no source-only preflight can
+promote it. The checker enforces this as `E169`/`E170` (an unbound lease cannot
+be `CLEAN_PREFLIGHT` and cannot authorize a source merge) and `E172` (an
+`UNJOINED` pair cannot be `CLEAN_PREFLIGHT`). `SEND_ADMISSION_BOUND` additionally
+requires a same-SHA negative proof with `exit 0` and `security_fail 0`
+(`E165`–`E168`).
+
+Next safe commands — only after the S1 corrective SHA exists and independent QA
+has produced the passing negative proof (the owner runs them, not I1):
 
 ```sh
 # 1. writer first, in its own worktree at 40b0622
@@ -222,6 +265,9 @@ cd <work-engine-worktree> && python3 -m unittest tests.test_lease -v
 
 # 2. reader second, in its own worktree at d0754ed
 cd <serveros-worktree> && python3 -m unittest tests.test_v1_write_fence tests.test_coordination -v
+
+# 3. the join itself: forged writer refused, lease mismatch refused, exit 0
+#    (this is the receipt the corrective milestone must produce)
 ```
 
 ## Work in flight — none at this snapshot
@@ -245,10 +291,12 @@ a candidate, pinned, evidence or landable without a PR and a SHA
    no production caller.
 3. F1's guard re-run at `4a5d0a0` is already CLOSED at LOCAL; G1 must still fix
    present-null (QA-P1-1), and its owner dispatch is platform-blocked.
-4. The S1 pair is the only pair with a CLEAN composition preflight. Its owner
-   may land work-engine `#13` then serveros `#241` in their own worktrees and
-   run the three test roots above — after QA signs and the owner approves.
-   I1 does not merge, push or compose it.
+4. **The S1 pair is NOT landable.** Its structural preflight is clean and its
+   semantics are `UNJOINED` (Snapshot E: exit 1, 22 held, 1 `SECURITY_FAIL`).
+   Security A must land the isolated corrective first; independent QA must then
+   reproduce the negative at the corrective SHA (forged writer refused, lease
+   mismatch refused, `exit 0`, `security_fail 0`). Only then can the pair be
+   scheduled. I1 does not merge, push or compose it.
 4. Collect **LOCAL** receipts for T1–T7 and T9 from the lane owners at the exact
    SHAs in the manifest (runner, command, environment, exit code, per row).
 5. Re-pin every head and base immediately before composition.

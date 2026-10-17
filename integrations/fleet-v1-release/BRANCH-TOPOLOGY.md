@@ -104,10 +104,16 @@ consequences that a naive merge order gets wrong:
 
 When composition is eventually authorized, the order is forced by ancestry:
 
-1. **S1 pair** — work-engine #13 (writer) then serveros #241 (reader). Both are
-   based on current `main` (`behind_by: 0`) and the pair has a CLEAN preflight.
+0. **S1 corrective — BLOCKING, no PR/SHA yet.** Send admission must read the
+   Work lease authority before the pair may land. Nothing below step 0 may be
+   composed in the S1 line until it exists.
+1. **S1 pair** — work-engine #13 (writer) then serveros #241 (reader). Both base
+   current `main` (`behind_by: 0`) and share **0 files**, but the pair is
+   **semantically `UNJOINED`**: Snapshot E measured a forged binding writer
+   admitted while the live lease named another owner/token (exit 1, 22 held,
+   1 `SECURITY_FAIL`). Structural cleanliness is not landing approval.
 2. **T10 (#258)** and **N3 (#259)** — both base `main`, disjoint `integrations/**`
-   directories; may land in parallel with step 1.
+   directories; independent of the S1 line.
 3. **N1 (#242)** — 11-link chain, file-disjoint from every other lane.
 4. **N2 (#253)** — one commit above #242; depends on its CMake layout.
 5. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
@@ -120,8 +126,14 @@ The S1 pair is a **cross-repo database contract**, not a module dependency:
 `serveros/context/resolver.py::held_leases` reads `leases` with
 `expires_at > ?`, and `work-engine/workengine/store.py` writes that column with
 the same `%Y-%m-%dT%H:%M:%SZ` helper (`math.ceil` rounding). Neither imports the
-other, so the pair has zero shared files and the writer must land first only so
-the reader has real claims to filter.
+other, so the pair has zero shared files.
+
+**Zero shared files is not a join.** `held_leases` is a reader used for
+`protected` occupancy; it is not called on the send path. The send path accepts a
+caller-supplied binding writer and never consults the lease, which is exactly
+what Snapshot E measured. A preflight can therefore be `CLEAN` structurally and
+`BLOCKED_SEMANTIC` in fact; the manifest records both and the checker refuses to
+let the structural result authorize composition (`E169`, `E170`, `E172`).
 
 Two accepted Owner runs (N3 network-source, T10 test-evidence) are **work in
 flight**: sessions and Run ids exist, but no PR and no SHA. They are not on this

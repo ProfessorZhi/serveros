@@ -56,7 +56,18 @@ The checker is deliberately narrow and mechanical. It rejects:
   (`E143`–`E147`);
 - a manifest claiming to be a code-composed RC without a performed source merge
   (`E159`), or claiming `CLEAN_PREFLIGHT` where the pair shares files (`E158`);
+- an **unbound send-admission lease** marked `CLEAN_PREFLIGHT` (`E169`) or used
+  to authorize a source merge (`E170`);
+- `SEND_ADMISSION_BOUND` without a same-SHA negative proof that exited 0 with
+  `security_fail: 0` (`E165`–`E168`);
+- a pair whose `semantic_status` is `UNJOINED` marked `CLEAN_PREFLIGHT` (`E172`);
+- `final_acceptance: true` before `COMPLETE_V1` (`E173`);
+- an unknown evidence class (`E161`);
 - credential-like material in the manifest (`E100`).
+
+**Structural cleanliness never authorizes composition.** The checker separates
+"the branches do not conflict" from "the components actually join", because the
+S1 pair was structurally clean and semantically unjoined.
 
 Warnings are not passes. `W011` (`stacks_on` names a PR not pinned here) is
 expected in this milestone: the intermediate links of the F1 and N1 chains are
