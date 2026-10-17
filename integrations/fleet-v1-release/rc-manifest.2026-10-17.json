@@ -1,8 +1,8 @@
 {
   "schema": "serveros/fleet-v1-rc-manifest.v1",
-  "manifest_id": "fleet-v1-rc-20261018-d",
-  "supersedes": "fleet-v1-rc-20261017-c",
-  "generated_at": "2026-10-18T01:46:14Z",
+  "manifest_id": "fleet-v1-rc-20261017-e",
+  "supersedes": "fleet-v1-rc-20261018-d",
+  "generated_at": "2026-10-17T17:49:00Z",
   "campaign_ref": "ProfessorZhi/serveros#244",
   "integration_ref": "ProfessorZhi/serveros#250",
   "state": "RC_CANDIDATE",
@@ -12,7 +12,7 @@
     "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
   },
   "qa": {
-    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, recheck of fdc223f PENDING, no signature",
+    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, Snapshot C, no signature",
     "status": "INDEPENDENT_QA_PARTIAL",
     "independent_of_integrator": true,
     "session_ref": "device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02",
@@ -22,23 +22,37 @@
   "qa_triage": {
     "repo": "ProfessorZhi/serveros",
     "pr": 256,
-    "head": "2c4fe87b5776202b19b4cdaeb682bbaa048b2a55",
+    "head": "a9c3ea5388251f7788c073d719956f905432db30",
     "status": "INDEPENDENT_QA_PARTIAL",
-    "pins_are_snapshot_of": "Snapshot B of the independent triage, re-audited at f2b89e1 / 4a5d0a0 / 619cf63. It is a QA_PARTIAL verdict with no signature and no PASS. QA is now rechecking fdc223f on its own run; until that receipt exists this manifest treats the claimed fixes as pending, not closed.",
+    "pins_are_snapshot_of": "Snapshot C of the independent triage: an exact-SHA LOCAL probe at #252 fdc223f on the real daemon boundary. QA_PARTIAL with no signature and no PASS. Its new open P0s supersede the 'pending recheck' state recorded in manifest -d.",
     "findings": [
       {
         "id": "QA-P0-1",
         "severity": "P0",
         "candidate": "#252",
-        "summary": "intent_digest omitted session_ref and agent_runtime, so the same key sent to another session or runtime was answered as a REPLAY. fdc223f adds both fields plus principal to the digest; the claim is source-level only and has not been rechecked by independent QA.",
-        "state_at_snapshot": "FIXED_PENDING_RECHECK"
+        "summary": "intent_digest omitted session_ref and agent_runtime, so the same key sent to another session or runtime was answered as a REPLAY. Snapshot C closes this at LOCAL: target, runtime and principal are in the digest, all three axes return CONFLICT, and no/expired context and self-asserted principal are refused.",
+        "state_at_snapshot": "CLOSED"
       },
       {
         "id": "QA-P0-2",
         "severity": "P0",
         "candidate": "#252",
-        "summary": "The observation-to-SETTLED judgment was not wired into the production path and the write entry could self-attest. fdc223f resolves principal from a fresh trusted context_ref, refuses a forged principal and an unattributed phase; the claim is source-level only and independent QA has not re-run at that head.",
-        "state_at_snapshot": "FIXED_PENDING_RECHECK"
+        "summary": "The observation-to-SETTLED judgment was not wired into the production path and the write entry could self-attest. Snapshot C rates this PARTIAL: no/expired context and self-asserted principal are refused, a settle needs a result and a prior attempt, and restart retry is fenced — but D3 and D4 below remain open.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-5-D3",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "D3 cross-actor forgery: another trusted actor can settle A's attempt using A's copied digest and a fabricated result. The write is accepted and the principal becomes the settler.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-6-D4",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "D4 terminal-state regression: a terminal SETTLED can be written back to CALL_NOT_SENT, after which the kernel returns PROCEED, so a retry becomes a second effect.",
+        "state_at_snapshot": "OPEN"
       },
       {
         "id": "QA-P0-3",
@@ -58,14 +72,14 @@
         "id": "QA-P2-1",
         "severity": "P2",
         "candidate": "#252",
-        "summary": "_same_writer matches an empty or partial writer record: current_writer={} equals a reconciler with every field absent. A real daemon derivation does not produce {}, but the store method is publicly callable.",
+        "summary": "_same_writer matches an empty or partial writer record: current_writer={} equals a reconciler with every field absent. Snapshot C keeps this OPEN and adds that reconcile has no production caller.",
         "state_at_snapshot": "OPEN"
       },
       {
         "id": "QA-P1-2",
         "severity": "P1",
         "candidate": "#254",
-        "summary": "I1 manifest drift: the manifest pinned #252 dac3088 and #243 494f452 and omitted #255. Fixed in manifest -c, which pins f2b89e1, 4a5d0a0 and 619cf63.",
+        "summary": "I1 manifest drift: earlier manifests pinned stale heads and omitted new candidates. Fixed in manifest -e, which pins fdc223f, 4a5d0a0, 619cf63, c2e2e8d and QA Snapshot C a9c3ea5.",
         "state_at_snapshot": "CLOSED"
       },
       {
@@ -78,7 +92,7 @@
     ]
   },
   "drift_guard": {
-    "snapshot_time": "2026-10-18T01:46:14Z",
+    "snapshot_time": "2026-10-17T17:49:00Z",
     "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. An independent QA triage signs a snapshot, not a branch name.",
     "recheck_before": ["push", "composition", "qa_signature"]
   },
@@ -122,7 +136,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Only candidate whose base is current main (behind_by 0)."
     },
     {
@@ -136,8 +150,8 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
-      "notes": "Head moved f2b89e1 -> fdc223f. Source at this head adds session_ref/agent_runtime/principal to intent_digest and makes the daemon resolve principal from a FRESH trusted context_ref, refusing a forged principal and an unattributed phase. These are CLAIMED fixes for QA-P0-1 and QA-P0-2; no fresh independent QA has run at fdc223f, so both stay FIXED_PENDING_RECHECK."
+      "observed_at": "2026-10-17T17:49:00Z",
+      "notes": "Head moved f2b89e1 -> fdc223f. QA Snapshot C probes this exact SHA at the real daemon boundary: P0-1 CLOSED (LOCAL) — target/runtime/principal in the digest, all three axes CONFLICT, no/expired context and self-asserted principal refused; P0-2 PARTIAL. Two P0 remain open (D3 cross-actor forged settle, D4 SETTLED rolled back to CALL_NOT_SENT then PROCEED)."
     },
     {
       "lane": "F1",
@@ -150,7 +164,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Head moved 494f452 -> 4a5d0a0: release_plan.py replaces an absolute home literal with ~/runtime-assets via expanduser, and adds a test asserting the Fleet Core block is not an Ability registry. Snapshot B re-ran the full guard independently at this SHA: 10 tests OK, exit 0 (LOCAL), QA-P0-3 closed."
     },
     {
@@ -164,7 +178,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z"
+      "observed_at": "2026-10-17T17:49:00Z"
     },
     {
       "lane": "N2",
@@ -177,7 +191,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed."
     },
     {
@@ -191,7 +205,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction."
     },
     {
@@ -205,7 +219,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Child of F1: base is #243's head. The present-but-null fail-open (QA-P1-1) is uncorrected at this head, and the G1 owner dispatch is platform-blocked. A re-base of #243 invalidates this base."
     },
     {
@@ -219,7 +233,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "New since the last snapshot: a pure CC/Codex runtime parity projection under integrations/fleet-v1-runtime-parity/** plus one test. The lane reports 34 local fixture tests; that is SOURCE/OFFLINE evidence and NOT a REAL_DEVICE result. No provider call, credential read or model call is part of it."
     },
     {
@@ -233,7 +247,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition."
     },
     {
@@ -247,7 +261,7 @@
       "draft": true,
       "evidence_level": "SOURCE",
       "installed": false,
-      "observed_at": "2026-10-18T01:46:14Z",
+      "observed_at": "2026-10-17T17:49:00Z",
       "notes": "Cross-repo pair of serveros #241; must land as a pair, not independently."
     }
   ],
@@ -307,7 +321,7 @@
       "verdict": "NOT_RUN",
       "blocker_code": "BLOCKED_OWNER_ACTION",
       "owner": "S1/S2 lane owners",
-      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator records no receipt. T7 remains reported as half. T5's claimed fix is at fdc223f (digest target/runtime) and is FIXED_PENDING_RECHECK: independent QA has not re-run there. T8/T12 are separate rows.",
+      "blocker": "QA Snapshot C closes T5 at LOCAL (digest target/runtime/principal, all three axes CONFLICT). T1/T2/T3/T6 remain lane-reported without an integrator receipt; T7 is reported as half. T4/T9 stay blocked by QA-P0-5-D3 and QA-P0-6-D4, which are open at fdc223f. T8/T12 are separate rows.",
       "receipt": null
     },
     {
@@ -426,8 +440,8 @@
       "achieved_level": "SOURCE",
       "verdict": "PARTIAL",
       "blocker_code": "BLOCKED_OWNER_ACTION",
-      "owner": "independent QA session 6955184a (PR #256, INDEPENDENT_QA_PARTIAL)",
-      "blocker": "Manifest and checker exist at SOURCE, and an independent triage exists at a4d7131, but it pins an older snapshot and carries no signature. No isolated local test run at the current exact SHAs.",
+      "owner": "independent QA session 6955184a (PR #256 Snapshot C a9c3ea5, INDEPENDENT_QA_PARTIAL)",
+      "blocker": "Manifest and checker exist at SOURCE, and an independent Snapshot C probe exists at LOCAL for #252 fdc223f. It carries no signature and does not cover the real-device, Windows, network or client gates.",
       "receipt": null
     }
   ],
@@ -472,14 +486,9 @@
       "owner_action": "Compose F1 before G1 and re-pin G1 after every F1 change; never merge G1 against a stale F1."
     },
     {
-      "id": "B8-QA-P0-1-DIGEST",
-      "summary": "QA-P0-1 is FIXED_PENDING_RECHECK: fdc223f adds session_ref, agent_runtime and principal to intent_digest at source. No independent QA has run at fdc223f, and QA snapshot B only covers f2b89e1.",
-      "owner_action": "Independent QA must re-run the same-key cross-session/runtime test at fdc223f and record a receipt before T5 moves."
-    },
-    {
-      "id": "B9-QA-P0-2-SETTLED",
-      "summary": "QA-P0-2 is FIXED_PENDING_RECHECK: fdc223f resolves principal from a fresh trusted context_ref, refuses a forged principal and an unattributed phase, and restricts the dispatch-side phases. No independent QA has run at fdc223f.",
-      "owner_action": "Independent QA must re-run the forged-principal and unattributed-phase negative tests at fdc223f before T4/T9/T7 move."
+      "id": "B9-QA-P0-2-SETTLED-PARTIAL",
+      "summary": "QA-P0-2 is PARTIAL at fdc223f: no/expired context and self-asserted principal are refused, a settle needs a result and a prior attempt, and restart retry is fenced. Two P0 remain open: D3, another trusted actor settling A's attempt with a copied digest and fabricated result; D4, a terminal SETTLED written back to CALL_NOT_SENT after which the kernel returns PROCEED.",
+      "owner_action": "S2 owner and the daemon write-entry owner must bind the settle to the originating actor and make terminal phases monotonic; QA rechecks both negatives at the new head."
     },
     {
       "id": "B10-QA-P1-1-G1-NULL",
@@ -488,7 +497,7 @@
     },
     {
       "id": "B11-QA-SIGNATURE",
-      "summary": "Independent QA is at Snapshot B (2c4fe87) and its verdict is QA_PARTIAL: no signature and no PASS. Its release-hygiene finding about this manifest's stale pins is closed by manifest -c.",
+      "summary": "Independent QA is at Snapshot C (a9c3ea5) and its verdict is QA_PARTIAL: no signature and no PASS. Its release-hygiene finding about this manifest's stale pins is closed by manifest -e.",
       "owner_action": "Independent QA must re-run against the exact heads in this manifest and sign that snapshot, or record a superseding one."
     },
     {

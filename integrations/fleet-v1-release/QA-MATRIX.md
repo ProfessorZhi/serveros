@@ -24,11 +24,10 @@ A higher level never substitutes for a different axis. `LOCAL` cannot satisfy a
 - **Independent QA**: **`INDEPENDENT_QA_PARTIAL`** — not `SIGNED`. Session
   `device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02`,
   Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`; triage artifact is **PR #256**
-  at `2c4fe87b5776202b19b4cdaeb682bbaa048b2a55` (Snapshot B; the earlier
-  `a4d7131` was superseded). It is now rechecking **`fdc223f`** on its own
-  independent run — that recheck is **PENDING**. It owns every PASS in this
-  matrix and the `signature` field. A partial triage is **not** a PASS and
-  **not** a signature.
+  at `a9c3ea5388251f7788c073d719956f905432db30` (Snapshot C, an exact-SHA LOCAL
+  probe at `fdc223f`; Snapshots A `a4d7131` and B `2c4fe87` were superseded).
+  It owns every PASS in this matrix and the `signature` field. A partial triage
+  is **not** a PASS and **not** a signature.
 - **Lane owners** (`S1`, `S2`, `F1`, `N1`, `N2`, `P1`, `M1`, `G1`, `R1`): own
   their source and their local receipts. The integrator does not re-run or
   re-sign them.
@@ -40,23 +39,26 @@ present (`E014`, `E016`), and an independent `qa_triage` object is `SIGNED`
 
 ## Independent QA findings (P0, not closed)
 
-Snapshot B re-audited `f2b89e1` / `4a5d0a0` / `619cf63`. S2 has since advanced
-to **`fdc223f`**, which changes the picture at source but has **no independent
-receipt yet**.
+Snapshot C probed **`fdc223f`** at the real daemon boundary. It closes one
+finding, downgrades another to partial, and opens two new P0s that no earlier
+snapshot saw.
 
 | ID | Sev | Candidate | Finding | State |
 |---|---|---|---|---|
-| QA-P0-1 | P0 | #252 | `intent_digest` omitted `session_ref`/`agent_runtime`, so a same-key send to another session/runtime was a replay | **FIXED_PENDING_RECHECK** — `fdc223f` adds session_ref, agent_runtime and principal to the digest; no independent run at that head |
-| QA-P0-2 | P0 | #252 | Caller `phase`/`principal` could write SETTLED; router records omitted `principal` | **FIXED_PENDING_RECHECK** — `fdc223f` resolves principal from a fresh trusted `context_ref`, refuses a forged principal and an unattributed phase; no independent run |
-| QA-P0-3 | P0 | #243 | `test_no_node_paths_in_product_data.py` failed at `494f452` on an absolute home literal | **CLOSED (LOCAL)** — full guard re-run at `4a5d0a0`: 10 tests OK, exit 0 |
-| QA-P1-1 | P1 | #255 | Present-but-null is read as affirmative: `{"health": null, "policy": null}` → `READY/ALLOWED` with a non-null `effective` | **OPEN** — uncorrected at `619cf63`; the G1 owner dispatch is platform-blocked |
-| QA-P2-1 | P2 | #252 | `_same_writer` matches an empty/partial writer record | **OPEN** |
-| QA-P1-2 | P1 | #254 | Manifest pinned stale heads and omitted new candidates | **CLOSED** — fixed in manifest `-d` |
+| QA-P0-1 | P0 | #252 | `intent_digest` omitted `session_ref`/`agent_runtime`, so a same-key send to another session/runtime was a replay | **CLOSED (LOCAL)** — target/runtime/principal in the digest; all three axes CONFLICT; no/expired context and self-asserted principal refused |
+| QA-P0-2 | P0 | #252 | Caller `phase`/`principal` could write SETTLED; router records omitted `principal` | **PARTIAL** — core guards hold; D3 and D4 below stay open |
+| QA-P0-5-D3 | P0 | #252 | Another trusted actor can settle A's attempt with A's copied digest and a fabricated result; the write is accepted and the principal becomes the settler | **OPEN** |
+| QA-P0-6-D4 | P0 | #252 | A terminal SETTLED can be written back to `CALL_NOT_SENT`, after which the kernel returns `PROCEED`, so a retry becomes a second effect | **OPEN** |
+| QA-P0-3 | P0 | #243 | `test_no_node_paths_in_product_data.py` failed at `494f452` on an absolute home literal | **CLOSED (LOCAL)** — guard re-run at `4a5d0a0`: 10 tests OK, exit 0 |
+| QA-P1-1 | P1 | #255 | Present-but-null is read as affirmative: `{"health": null, "policy": null}` → `READY/ALLOWED` with a non-null `effective` | **OPEN** — uncorrected at `619cf63`; G1 owner dispatch platform-blocked |
+| QA-P2-1 | P2 | #252 | `_same_writer` matches an empty/partial writer record; reconcile has no production caller | **OPEN** |
+| QA-P1-2 | P1 | #254 | Manifest pinned stale heads and omitted new candidates | **CLOSED** — fixed in manifest `-e` |
 | QA-P2-2 | P2 | #254 | `FLEET_NEXT_33_6` requires `REAL_DEVICE` while its rows are `SOURCE` | **OPEN by design** — a gate may require more than it has and then reports BLOCKED; it is not a near-PASS |
 
-A claimed fix is not a closed finding. QA-P0-1 and QA-P0-2 move only when the
-independent session reproduces the negative tests at `fdc223f` and records a
-receipt.
+The author's 501-pass/171-subtest run is not independently rerun and does not
+cover the two open negatives. Synthetic contexts and observations are `LOCAL`,
+not `REAL_DEVICE`; provider observation source remains `BLOCKED` and
+exactly-once is not asserted.
 
 ## P0 Work/effect safety — issue #237
 
@@ -65,8 +67,8 @@ receipt.
 | T1 | Hand off A→B, leave A alive, stale A writes | LOCAL | #241 | lane-reported closed; integrator has no receipt | NOT_RUN |
 | T2 | A and B race the same write scope | LOCAL | #241 | lane-reported closed | NOT_RUN |
 | T3 | Expired/revoked grant or lease during a long turn | LOCAL | #241 + WE#13 | lane-reported closed | NOT_RUN |
-| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `fdc223f` | QA-P0-2 claimed fixed at this head; no independent receipt | NOT_RUN |
-| T5 | Same idempotency key, modified payload | LOCAL | #252 `fdc223f` | QA-P0-1 claimed fixed (digest now carries session/runtime/principal); no independent receipt | NOT_RUN |
+| T4 | Duplicate delegation after unknown HTTP result + router restart | LOCAL | #252 `fdc223f` | QA-P0-2 PARTIAL; D3 forged settle and D4 terminal rollback remain open | **BLOCKED** |
+| T5 | Same idempotency key, modified payload | LOCAL | #252 `fdc223f` | **CLOSED (LOCAL)** — QA Snapshot C: digest carries target/runtime/principal and all three axes return CONFLICT | CLOSED (LOCAL) |
 | T6 | Work Engine lease expired but still in DB | LOCAL | WE#13 + #241 | lane-reported closed (`held_leases` filters `expires_at`) | NOT_RUN |
 | T7 | Cross-user / cross-runtime Session ref and stale grant | LOCAL | #241 | lane-reported **half** | NOT_RUN |
 | T8 | Real Tokyo → Dell session send / get_run under grant | REAL_DEVICE | #241 + Fleet | no trusted transport observed | **BLOCKED** |
@@ -191,10 +193,10 @@ enforces this as `E143`–`E147`.
    #243 `4a5d0a0`, #257 `c2e2e8d`, #254 `5a07df2` — and signs it, or records a
    superseding one. `INDEPENDENT_QA_PARTIAL` is not a signature, and Snapshot B
    (`f2b89e1`) is not a statement about `fdc223f`.
-2. S2's claimed fixes of **QA-P0-1** (digest target/runtime/principal) and
-   **QA-P0-2** (trusted `context_ref`, forged-principal refusal, unattributed
-   phase refused) are at `fdc223f` but unverified. T5 and T4 stay NOT_RUN until
-   the independent receipt exists.
+2. **QA-P0-1 is CLOSED at LOCAL** on `fdc223f`; T5 may move at LOCAL, not
+   higher. **QA-P0-2 is PARTIAL**: S2 must bind a settle to the originating
+   actor (D3) and make terminal phases monotonic (D4). T4/T9/T7 stay BLOCKED
+   until QA rechecks both negatives.
 3. F1's guard re-run at `4a5d0a0` is already CLOSED at LOCAL; G1 must still fix
    present-null (QA-P1-1), and its owner dispatch is platform-blocked.
 4. Collect **LOCAL** receipts for T1–T7 and T9 from the lane owners at the exact

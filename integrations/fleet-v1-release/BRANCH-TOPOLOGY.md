@@ -80,7 +80,7 @@ Two consequences, both easy to get wrong:
 | #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
 | #252 | milestone 1 `00bb701` | `fdc223f` | moved four times: `00bb701 → d49342b → dac3088 → f2b89e1 → fdc223f` |
 | #243 | (none) | `4a5d0a0` | advanced `494f452 → 4a5d0a0` (guard fix) |
-| #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot B `2c4fe87` re-audited `f2b89e1` / `4a5d0a0` / `619cf63` | current; verdict still QA_PARTIAL |
+| #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot C `a9c3ea5` probed `fdc223f` at the daemon boundary | current; verdict still QA_PARTIAL |
 
 Never copy a SHA out of a PR body. Re-pin from the API immediately before any
 composition.
