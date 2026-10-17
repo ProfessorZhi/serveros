@@ -1,0 +1,199 @@
+{
+  "base": {
+    "evaluated_at": "2026-10-17T12:00:00Z",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_owner": "vince",
+    "device_bindings": [
+      {"agent_runtime": "agent-runtime:claude-code", "family": "claude", "runtime_tag": "claude-primary"},
+      {"agent_runtime": "agent-runtime:codex", "family": "codex", "runtime_tag": "codex-primary"},
+      {"agent_runtime": "agent-runtime:claude-code", "family": "claude", "runtime_tag": "claude"}
+    ],
+    "provider": {
+      "family": "claude",
+      "agent_runtime": "agent-runtime:claude-code",
+      "transport": "cloudcli-mcp-http",
+      "runtime_tag": "claude-primary",
+      "os_principal": "vince",
+      "profile": "primary",
+      "credential_instance_ref": "credential-instance:tokyo-shared-dev-01/vince/primary",
+      "installed": true,
+      "readiness": "AVAILABLE",
+      "readiness_detail": null,
+      "declared_native_tools": [
+        "sessions_list", "session_get", "session_read", "run_get",
+        "session_create", "session_send", "session_interrupt",
+        "session_start", "session_close", "approvals_list"
+      ]
+    },
+    "project": {"id": "p-fleet-r1-fixture", "bound": true},
+    "session": {
+      "ref": "agent-session:device%3Atokyo-shared-dev-01/claude-primary/native-fixture-001",
+      "observed_at": "2026-10-17T11:59:30Z",
+      "status": "IDLE"
+    },
+    "defaults": {
+      "requested": {"model": "claude-fixture-model", "permissionMode": "plan"},
+      "resolved": {"model": "claude-fixture-model", "permissionMode": "plan", "by": "caller"},
+      "effective": {
+        "model": null,
+        "model_source": null,
+        "model_provenance": "UNKNOWN",
+        "permissionMode": null,
+        "permissionMode_source": null,
+        "permissionMode_provenance": "UNKNOWN"
+      }
+    },
+    "grant": {
+      "scopes": ["fleet:read", "fleet:create", "fleet:send", "fleet:control"],
+      "allow_create": true,
+      "allow_send": true,
+      "allow_control": true,
+      "epoch": "grant-epoch:fixture-1"
+    }
+  },
+  "cases": [
+    {
+      "name": "tokyo-node-claude-cloudcli",
+      "patch": {},
+      "expect": {
+        "family": "claude",
+        "agent_runtime": "agent-runtime:claude-code",
+        "runtime_tag": "claude-primary",
+        "lifecycle": {
+          "read": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "create": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "send": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "get_run": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "resume": {"support": "UNSUPPORTED", "dispatch": "REFUSED"},
+          "interrupt": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"}
+        },
+        "effective": {
+          "model": null,
+          "model_provenance": "UNKNOWN",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        }
+      }
+    },
+    {
+      "name": "tokyo-node-codex-cloudcli",
+      "patch": {
+        "provider": {
+          "family": "codex",
+          "agent_runtime": "agent-runtime:codex",
+          "runtime_tag": "codex-primary"
+        },
+        "session": {
+          "ref": "agent-session:device%3Atokyo-shared-dev-01/codex-primary/native-fixture-002"
+        },
+        "defaults": {
+          "requested": {"model": "codex-fixture-model", "permissionMode": "codex-fixture-mode"},
+          "resolved": {"model": "codex-fixture-model", "permissionMode": "codex-fixture-mode", "by": "caller"}
+        }
+      },
+      "expect": {
+        "family": "codex",
+        "agent_runtime": "agent-runtime:codex",
+        "runtime_tag": "codex-primary",
+        "lifecycle": {
+          "read": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "create": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "send": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "get_run": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "resume": {"support": "UNSUPPORTED", "dispatch": "REFUSED"},
+          "interrupt": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"}
+        },
+        "effective": {
+          "model": null,
+          "model_provenance": "UNKNOWN",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        }
+      }
+    },
+    {
+      "name": "tokyo-node-codex-app-server",
+      "patch": {
+        "provider": {
+          "family": "codex",
+          "agent_runtime": "agent-runtime:codex",
+          "transport": "codex-app-server",
+          "runtime_tag": "codex-primary",
+          "declared_native_tools": null
+        },
+        "session": {
+          "ref": "agent-session:device%3Atokyo-shared-dev-01/codex-primary/native-fixture-003"
+        },
+        "defaults": {
+          "requested": {"model": "codex-fixture-model", "permissionMode": "codex-fixture-mode"},
+          "resolved": {"model": "codex-fixture-model", "permissionMode": "codex-fixture-mode", "by": "caller"},
+          "effective": {
+            "model": "codex-fixture-model",
+            "model_source": "codex:thread/model",
+            "model_provenance": "FACT",
+            "permissionMode": null,
+            "permissionMode_source": null,
+            "permissionMode_provenance": "UNKNOWN"
+          }
+        }
+      },
+      "expect": {
+        "family": "codex",
+        "agent_runtime": "agent-runtime:codex",
+        "runtime_tag": "codex-primary",
+        "lifecycle": {
+          "read": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "create": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "send": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "get_run": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "resume": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "interrupt": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"}
+        },
+        "effective": {
+          "model": "codex-fixture-model",
+          "model_provenance": "FACT",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        }
+      }
+    },
+    {
+      "name": "dell-fjd-claude-cloudcli",
+      "patch": {
+        "device_ref": "device:llm-lab-dell",
+        "device_owner": "fjd",
+        "device_bindings": [
+          {"agent_runtime": "agent-runtime:claude-code", "family": "claude", "runtime_tag": "claude-primary"},
+          {"agent_runtime": "agent-runtime:codex", "family": "codex", "runtime_tag": "codex-primary"}
+        ],
+        "provider": {
+          "runtime_tag": "claude-primary",
+          "os_principal": "fjd",
+          "credential_instance_ref": "credential-instance:llm-lab-dell/fjd/primary"
+        },
+        "session": {
+          "ref": "agent-session:device%3Allm-lab-dell/claude-primary/native-fixture-004"
+        }
+      },
+      "expect": {
+        "family": "claude",
+        "agent_runtime": "agent-runtime:claude-code",
+        "runtime_tag": "claude-primary",
+        "lifecycle": {
+          "read": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "create": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "send": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "get_run": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"},
+          "resume": {"support": "UNSUPPORTED", "dispatch": "REFUSED"},
+          "interrupt": {"support": "SUPPORTED", "dispatch": "PRECONDITIONS_MET"}
+        },
+        "effective": {
+          "model": null,
+          "model_provenance": "UNKNOWN",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        }
+      }
+    }
+  ]
+}
