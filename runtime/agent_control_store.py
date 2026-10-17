@@ -390,6 +390,21 @@ class StoreError(RuntimeError):
     pass
 
 
+class AttemptRefused(StoreError):
+    """A dispatch attempt the store will not write, and the word for why.
+
+    Its own type because the daemon has to return a reason the caller can act
+    on: an identity failure (`UNTRUSTED_ACTOR`) and a transition failure
+    (`INVALID_CONTEXT`) are different repairs, and reporting both as one would
+    send the caller to fix the wrong thing.
+    """
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        self.reason_code = str(reason_code)
+        self.detail = str(detail)
+        super().__init__(detail)
+
+
 def _actor_module():
     """`context/actor.py`, under the name the rest of ServerOS loads it as.
 
@@ -906,7 +921,8 @@ class AgentControlStore:
     # its owner and because a second attempt store is the "new-lease-system"
     # shape `integration/components.yaml` refuses by name.
 
-    def put_dispatch_attempt(self, record: dict, *, context_ref=None) -> dict:
+    def put_dispatch_attempt(self, record: dict, *, context_ref=None,
+                             actor=None) -> dict:
         """Record one dispatch attempt, durably, keyed by its idempotency key.
 
         The record is written BEFORE the effect is attempted (phase
@@ -914,38 +930,61 @@ class AgentControlStore:
         after sending and do not know" are the same bytes on disk and opposite
         answers — and only a record that exists first can tell them apart.
 
-        NOT write-once, and that is the point: an attempt MOVES through phases
-        (`CALL_NOT_SENT` -> `ACCEPTED` -> `SETTLED`/`EFFECT_UNKNOWN`), and a
-        record that could not move could not say the one thing it exists for.
-        What IS refused is a change of INTENT: a second record under the same key
-        with a different `intent_digest` is the same-key-different-payload case,
-        refused here as well as in the kernel — the write point must not be a
-        way to overwrite a different intent.
+        NOT write-once: an attempt MOVES through phases. Three rules are
+        enforced HERE, under the mutation lock, so the check and the write are
+        one step rather than a read a second writer can slip between:
+
+        * a change of INTENT under one key is refused (different
+          `intent_digest`) — the same-key-different-payload conflict;
+        * QA D3 — only the actor that DISPATCHED an attempt may mutate it.
+          Knowing the digest is not owning the attempt, so `actor` is compared
+          with the stored principal and a mismatch is `UNTRUSTED_ACTOR`. A
+          stored record with no principal cannot be mutated by anybody;
+        * QA D4 — only the moves in `dispatch_transitions` are allowed. A
+          terminal SETTLED is not reopened and EFFECT_UNKNOWN is not turned back
+          into a sendable CALL_NOT_SENT, because either would make the next
+          retry PROCEED and send the same external effect twice.
 
         `context_ref` is accepted for interface uniformity with the daemon
-        handle, and is NOT enforced here: this store is behind the trust
-        boundary, and the identity check belongs to `agent.dispatch.record`,
-        which resolves the actor from the context and refuses a self-asserted
-        principal. A direct caller of this method is already inside that
-        boundary; a caller over the socket is not.
+        handle and is not read here; `actor` is the resolved principal the
+        daemon derived from it, and is what the identity rule compares.
         """
         key = str(record.get("key") or "")
         if not key:
             raise StoreError(
                 "a dispatch attempt without a key cannot be stored: there is "
                 "nothing for a retry to be matched to")
+        kernel = _dispatch_attempts()
         with self._mutation():
             section = self._data.setdefault("dispatch_attempts", {})
             existing = section.get(key)
-            if (existing is not None
-                    and str(existing.get("intent_digest"))
-                    != str(record.get("intent_digest"))):
-                raise StoreError(
-                    f"dispatch key {key!r} already records a DIFFERENT intent "
-                    f"(payload digest {existing.get('intent_digest')!r} vs "
-                    f"{record.get('intent_digest')!r}). A key identifies one "
-                    f"intent, and a different payload under it is a conflict, "
-                    f"not an update")
+            if existing is not None:
+                if actor is not None:
+                    owner = str(existing.get("principal") or "").strip()
+                    if not owner or owner != str(actor).strip():
+                        raise AttemptRefused(
+                            "UNTRUSTED_ACTOR",
+                            f"dispatch key {key!r} was dispatched by {owner or 'nobody'} "
+                            f"and {actor!r} is not that actor. An attempt is mutated "
+                            f"by the actor that made it; knowing the digest is not "
+                            f"owning it")
+                if (str(existing.get("intent_digest"))
+                        != str(record.get("intent_digest"))):
+                    raise AttemptRefused(
+                        "INVALID_CONTEXT",
+                        f"dispatch key {key!r} already records a DIFFERENT intent "
+                        f"(payload digest {existing.get('intent_digest')!r} vs "
+                        f"{record.get('intent_digest')!r}). A key identifies one "
+                        f"intent, and a different payload under it is a conflict, "
+                        f"not an update")
+                if not kernel.dispatch_transition_allowed(
+                        existing.get("phase"), record.get("phase")):
+                    raise AttemptRefused(
+                        "INVALID_CONTEXT",
+                        f"dispatch key {key!r} is {existing.get('phase')!r} and the "
+                        f"dispatch side may not move it to {record.get('phase')!r}. "
+                        f"A terminal outcome is not reopened, and an unknown one is "
+                        f"not turned back into a sendable attempt")
             stored = dict(record)
             section[key] = stored
             self._flush()

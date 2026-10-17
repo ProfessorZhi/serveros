@@ -988,6 +988,61 @@ def test_a_settle_after_a_proven_dispatch_is_recorded(daemon):
     assert answer["attempt"]["principal"] == "human:hwz"
 
 
+def _digest_for(principal, *, session_ref="session:one",
+                runtime="agent-runtime:claude-code"):
+    return attempts.intent_digest(
+        action="agent.session.send", device_ref="device:x", verb="session.send",
+        params={"instruction": "more"}, session_ref=session_ref,
+        agent_runtime=runtime, principal=principal)
+
+
+def test_another_trusted_actor_cannot_settle_someone_elses_attempt(daemon):
+    """QA D3. Knowing the digest is not owning the attempt.
+
+    Actor B presents its OWN valid context and a copy of A's intent digest. The
+    daemon must refuse: an attempt belongs to the actor that dispatched it, and
+    the stored principal and result must not be overwritten by anybody else.
+    """
+    a = a_trusted_context(daemon, actor_ref="human:A")
+    b = a_trusted_context(daemon, actor_ref="human:B")
+    digest = _digest_for("human:A")
+    first = _record(daemon, a["context_ref"],
+                    _attempt("k1", digest, attempts.CALL_NOT_SENT))
+    assert first["recorded"] is True
+    assert first["attempt"]["principal"] == "human:A"
+
+    forged = _record(daemon, b["context_ref"],
+                     _attempt("k1", digest, attempts.SETTLED,
+                              result={"ok": True, "provider_result": "fabricated"}))
+    assert forged["recorded"] is False
+    assert forged["reason"] == "UNTRUSTED_ACTOR"
+
+    stored = daemon.control_store().get_dispatch_attempt("k1")
+    assert stored["phase"] == attempts.CALL_NOT_SENT
+    assert stored["principal"] == "human:A"
+    assert "result" not in stored
+
+
+def test_a_terminal_settle_cannot_be_reopened(daemon):
+    """QA D4. SETTLED -> CALL_NOT_SENT would make the next retry PROCEED."""
+    ctx = a_trusted_context(daemon, actor_ref="human:A")
+    digest = _digest_for("human:A")
+    _record(daemon, ctx["context_ref"],
+            _attempt("k2", digest, attempts.CALL_NOT_SENT))
+    assert _record(daemon, ctx["context_ref"],
+                   _attempt("k2", digest, attempts.SETTLED,
+                            result={"ok": True}))["recorded"] is True
+
+    reopened = _record(daemon, ctx["context_ref"],
+                       _attempt("k2", digest, attempts.CALL_NOT_SENT))
+    assert reopened["recorded"] is False
+    assert reopened["reason"] == "INVALID_CONTEXT"
+
+    stored = daemon.control_store().get_dispatch_attempt("k2")
+    assert stored["phase"] == attempts.SETTLED
+    assert attempts.reconcile(stored, digest=digest)["verdict"] == attempts.REPLAY
+
+
 def test_the_store_refuses_a_binding_keyed_by_anything_but_a_session(store):
     """There is no actor key here, and the same test in `test_actor_context.py`
     forbids the method names that would make one.

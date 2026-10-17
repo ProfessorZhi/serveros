@@ -75,6 +75,38 @@ PHASES = (CALL_NOT_SENT, ACCEPTED, EFFECT_UNKNOWN, SETTLED, SUPERSEDED)
 #: the set separate from PHASES is what makes that a rule rather than a comment.
 DISPATCH_SIDE_PHASES = (CALL_NOT_SENT, ACCEPTED, EFFECT_UNKNOWN, SETTLED)
 
+#: The phase moves the DISPATCH side may make, keyed by the CURRENT phase
+#: (`None` = no record yet). QA D4: a terminal SETTLED that could be reopened as
+#: CALL_NOT_SENT would make the next retry PROCEED and send the same external
+#: effect twice, so the terminal phases move only to themselves (an idempotent
+#: re-report). EFFECT_UNKNOWN -> CALL_NOT_SENT is likewise refused: that is the
+#: retry door. The OWNER-observation path is separate — `reconcile_observation`
+#: may move EFFECT_UNKNOWN to CALL_NOT_SENT when an owner PROVES the effect was
+#: never applied, and it does not come through this table.
+DISPATCH_TRANSITIONS = {
+    None: (CALL_NOT_SENT,),
+    CALL_NOT_SENT: (CALL_NOT_SENT, ACCEPTED, EFFECT_UNKNOWN, SETTLED),
+    ACCEPTED: (ACCEPTED, EFFECT_UNKNOWN, SETTLED),
+    EFFECT_UNKNOWN: (EFFECT_UNKNOWN, SETTLED),
+    # Terminal: the dispatch side writes nothing more. A second write to a
+    # settled attempt is not an idempotent re-report either — the record already
+    # holds its answer, and the safe direction is to refuse.
+    SETTLED: (),
+    SUPERSEDED: (),
+}
+
+
+def dispatch_transition_allowed(current_phase, target_phase) -> bool:
+    """Whether the dispatch side may move `current_phase` to `target_phase`.
+
+    PURE, and the one place the rule lives. The store checks it under its
+    mutation lock, so the decision and the write are one step rather than a
+    read followed by a write that a second writer can slip between.
+    """
+    current = str(current_phase or "").strip().upper() or None
+    target = str(target_phase or "").strip().upper()
+    return target in DISPATCH_TRANSITIONS.get(current, ())
+
 # The verdicts `reconcile` returns. They are what a caller branches on, and
 # they are deliberately finer than a boolean: "do not send" is one answer with
 # several reasons, and a caller told only "no" cannot tell a settled replay
@@ -328,8 +360,15 @@ def reconcile_observation(recorded, *, observation, reconciler,
                             f"one of those must not overwrite it")}
 
     reconciler = dict(reconciler or {})
-    recorded_principal = recorded.get("principal")
-    if recorded_principal and str(recorded_principal) != str(reconciler.get("principal")):
+    recorded_principal = str(recorded.get("principal") or "").strip()
+    if not recorded_principal:
+        # QA D10-adjacent. A record with no principal has nobody to attribute a
+        # settle to, and "no recorded actor" is not permission for any actor.
+        return {"verdict": REFUSE_PRINCIPAL,
+                "because": ("the attempt records no principal, so nobody can be "
+                            "shown to be the actor that dispatched it. A settle "
+                            "needs an actor to attribute it to")}
+    if recorded_principal != str(reconciler.get("principal") or "").strip():
         return {"verdict": REFUSE_PRINCIPAL,
                 "because": (f"this attempt was dispatched by {recorded_principal!r} "
                             f"and {reconciler.get('principal')!r} is not that "
@@ -403,11 +442,21 @@ def reconcile_observation(recorded, *, observation, reconciler,
 
 
 def _same_writer(reconciler, current_writer) -> bool:
-    """The reconciler IS the current writer — owner, epoch and token alike."""
+    """The reconciler IS the current writer — owner, epoch and token alike.
+
+    QA D10. A MISSING identity is NOT a match. `{}` and `{}` compare
+    field-for-field equal, which made an absent writer the current writer — the
+    one answer that authorizes a settle with no writer at all. Every one of the
+    three fields must be present on BOTH sides and equal.
+    """
+    reconciler = reconciler or {}
     current_writer = current_writer or {}
-    return (str(reconciler.get("owner")) == str(current_writer.get("owner"))
-            and str(reconciler.get("epoch")) == str(current_writer.get("epoch"))
-            and str(reconciler.get("token")) == str(current_writer.get("token")))
+    for field in ("owner", "epoch", "token"):
+        mine = str(reconciler.get(field) or "").strip()
+        theirs = str(current_writer.get(field) or "").strip()
+        if not mine or not theirs or mine != theirs:
+            return False
+    return True
 
 
 def tree_shape() -> dict:

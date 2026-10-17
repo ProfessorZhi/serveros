@@ -3278,7 +3278,15 @@ class Daemon:
                                    "CALL_NOT_SENT or EFFECT_UNKNOWN attempt; "
                                    "nothing was dispatched under this key")}
         try:
-            stored = store.put_dispatch_attempt(record)
+            # `actor` is what makes the store's identity check real: it compares
+            # the resolved principal with the one recorded when the attempt was
+            # first dispatched, so a different trusted actor cannot mutate it
+            # even with the digest (QA D3). The transition table is checked in
+            # the same mutation, so a terminal SETTLED cannot be reopened (D4).
+            stored = store.put_dispatch_attempt(record, actor=principal)
+        except agent_control_store_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": exc.reason_code,
+                    "detail": exc.detail}
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "reason": "INVALID_CONTEXT",
                     "detail": str(exc)}

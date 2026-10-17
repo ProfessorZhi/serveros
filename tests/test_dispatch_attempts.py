@@ -222,6 +222,74 @@ class TestIntentIdentity(unittest.TestCase):
                             self._d(session_ref=""))
 
 
+class TestDispatchTransitions(unittest.TestCase):
+    """QA D4. The dispatch side may not move an attempt backwards.
+
+    A terminal SETTLED that could be reopened as CALL_NOT_SENT would make the
+    next retry PROCEED and send the same external effect twice — the whole point
+    of the module, undone by a second write.
+    """
+
+    def test_a_first_write_must_be_call_not_sent(self):
+        self.assertTrue(attempts.dispatch_transition_allowed(
+            None, attempts.CALL_NOT_SENT))
+        self.assertFalse(attempts.dispatch_transition_allowed(
+            None, attempts.SETTLED))
+
+    def test_a_settled_attempt_cannot_be_reopened(self):
+        for target in (attempts.CALL_NOT_SENT, attempts.EFFECT_UNKNOWN,
+                       attempts.ACCEPTED, attempts.SUPERSEDED):
+            self.assertFalse(attempts.dispatch_transition_allowed(
+                attempts.SETTLED, target), target)
+        # Not even a re-report: the record already holds its answer, and a
+        # second write is refused rather than allowed as an "idempotent" one.
+        self.assertFalse(attempts.dispatch_transition_allowed(
+            attempts.SETTLED, attempts.SETTLED))
+
+    def test_an_unknown_outcome_cannot_become_call_not_sent(self):
+        # The retry door: EFFECT_UNKNOWN -> CALL_NOT_SENT would authorize PROCEED.
+        self.assertFalse(attempts.dispatch_transition_allowed(
+            attempts.EFFECT_UNKNOWN, attempts.CALL_NOT_SENT))
+        self.assertTrue(attempts.dispatch_transition_allowed(
+            attempts.EFFECT_UNKNOWN, attempts.SETTLED))
+
+    def test_a_superseded_attempt_may_not_be_revived(self):
+        self.assertFalse(attempts.dispatch_transition_allowed(
+            attempts.SUPERSEDED, attempts.CALL_NOT_SENT))
+        self.assertFalse(attempts.dispatch_transition_allowed(
+            attempts.SUPERSEDED, attempts.SETTLED))
+
+
+class TestEmptyWriterIsNotAWriter(unittest.TestCase):
+    """QA D10. An absent writer must never compare equal to an absent writer."""
+
+    def test_empty_identity_is_not_a_match(self):
+        self.assertFalse(attempts._same_writer({}, {}))
+        self.assertFalse(attempts._same_writer(
+            {"owner": "a", "epoch": 1, "token": "1"}, {}))
+        self.assertFalse(attempts._same_writer(
+            {}, {"owner": "a", "epoch": 1, "token": "1"}))
+        self.assertFalse(attempts._same_writer(
+            {"owner": "", "epoch": 1, "token": "1"},
+            {"owner": "", "epoch": 1, "token": "1"}))
+        self.assertTrue(attempts._same_writer(
+            {"owner": "a", "epoch": 1, "token": "1"},
+            {"owner": "a", "epoch": 1, "token": "1"}))
+
+    def test_an_absent_writer_cannot_reconcile(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(), observation=observation(),
+            reconciler={"principal": "agent:A"}, current_writer={})
+        self.assertEqual(v["verdict"], attempts.REFUSE_STALE_WRITER)
+
+    def test_a_record_with_no_principal_cannot_be_reconciled(self):
+        rec = recorded_unknown(principal=None)
+        v = attempts.reconcile_observation(
+            rec, observation=observation(), reconciler=reconciler(),
+            current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.REFUSE_PRINCIPAL)
+
+
 class TestReconcileObservation(unittest.TestCase):
     """#245. EFFECT_UNKNOWN -> SETTLED only when an owner proves it.
 
