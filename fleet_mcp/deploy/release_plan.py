@@ -37,7 +37,20 @@ _ROOT = _HERE.parents[1]
 
 #: Where `fleet_mcp/deploy/install.py` publishes revisions, and the symlink a
 #: unit's ExecStart resolves through.
-INGRESS_ROOT = Path("/data/home/vince/runtime-assets/serveros-fleet-mcp/ingress")
+#:
+#: Written the way the installer already writes it — `~/runtime-assets/...`,
+#: expanded at use — rather than as an absolute path naming this account's home.
+#: The absolute form was a literal `/data/home/vince/...`, and a product-data
+#: module that names a node is the thing `test_no_node_paths_in_product_data`
+#: exists to catch: the same file installed for a different operator would carry
+#: this one's home in its text. The declaration table in that test is empty on
+#: purpose — "a place to put a file until the scanner is quiet" — so this is
+#: fixed here rather than declared there.
+#:
+#: `~` is the operator running the plan, which is who `install.py --runtime-root`
+#: means by its own default (`~/runtime-assets/serveros-fleet-mcp`), and a caller
+#: that wants another root passes `--runtime-root` as it always could.
+INGRESS_ROOT = Path("~/runtime-assets/serveros-fleet-mcp/ingress").expanduser()
 CURRENT = INGRESS_ROOT / "current"
 REVISIONS = INGRESS_ROOT / "revisions"
 

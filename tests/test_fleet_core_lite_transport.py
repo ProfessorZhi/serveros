@@ -671,3 +671,94 @@ class TheSnapshotReadIsBoundedAndVerified(unittest.TestCase):
             with self.assertRaises(FleetRefusal) as caught:
                 node_connector._read_bounded_no_follow(path, 1024)
         self.assertEqual(caught.exception.code, "UNSUPPORTED")
+
+
+class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
+    """The bridge contract between Fleet and G1, asserted from Fleet's side.
+
+    `FLEET-V1-TOPOLOGY-OPERATIONS.md` §2 puts Device Ability (G1) at "the actual
+    Skill/Plugin/MCP/CLI/Provider implementations and their source revisions",
+    with one express anti-goal: it must not become *a second registry copied per
+    device*. G1 owns that projection and this lane does not edit it.
+
+    The risk this test exists for is the quiet one: Fleet already carries a
+    per-device block (`core_lite`) in two of its 33 tools, so the cheapest way to
+    "support Device Ability" would be to grow that block until it answered
+    questions G1 owns. Then two surfaces would answer "what can this device do",
+    and the one that is not the authority would be the one somebody read.
+
+    So the block's shape is CLOSED here, and the keys that would make it an
+    Ability answer are named and forbidden explicitly rather than left to the
+    subset check alone -- a subset of a set that quietly grew would pass.
+    """
+
+    #: Every key this lane's per-device Core summary is allowed to carry. Adding
+    #: one is a contract decision, and this list is where it is written down.
+    ALLOWED_SUMMARY_KEYS = frozenset({
+        "schema", "device_ref", "device", "principal", "connected", "freshness",
+        "integrity", "live", "observations", "observations_unavailable",
+        "refusals", "route", "source", "runtime", "account",
+    })
+
+    #: Anything shaped like a Device Ability answer. None of these may appear in
+    #: Fleet's Core block: G1 is the authority for all of them.
+    FORBIDDEN_KEYS = frozenset({
+        "abilities", "ability", "effective_ability", "effective_abilities",
+        "skills", "plugins", "providers_installed", "installed_abilities",
+    })
+
+    def _summaries(self, service):
+        rows = []
+        for entry in service.list_devices(principal())["devices"]:
+            rows.extend(entry["core_lite"])
+        rows.extend(service.status(principal())["core_lite"])
+        return rows
+
+    def test_the_core_block_carries_no_ability_shaped_key(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = RealConnector(tmp)
+            try:
+                service, _ = harness(tmp, node)
+                rows = self._summaries(service)
+                self.assertTrue(rows, "no summary was produced, so this proves nothing")
+                for row in rows:
+                    keys = set(row)
+                    with self.subTest(keys=sorted(keys)):
+                        self.assertLessEqual(keys, self.ALLOWED_SUMMARY_KEYS,
+                                             f"undeclared key(s): {sorted(keys - self.ALLOWED_SUMMARY_KEYS)}")
+                        self.assertEqual(keys & self.FORBIDDEN_KEYS, set(),
+                                         "Fleet's Core block must not answer a "
+                                         "Device Ability question; G1 owns that")
+            finally:
+                node.stop()
+
+    def test_no_core_observation_claims_a_capability(self):
+        """`observations` is CPU/memory/PSI/gpu/services -- measurements, not a
+        list of what the machine can do. An observation named like an ability
+        would be the same substitution one level down."""
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = RealConnector(tmp)
+            try:
+                service, _ = harness(tmp, node)
+                for row in self._summaries(service):
+                    for name in row.get("observations") or {}:
+                        with self.subTest(observation=name):
+                            self.assertNotIn(name.lower(), self.FORBIDDEN_KEYS)
+            finally:
+                node.stop()
+
+    def test_fleet_exposes_no_device_ability_tool(self):
+        """The catalogue is 33 and none of them is an Ability projection."""
+        names = [tool.name for tool in tools_mod.SERVED_TOOLS]
+        self.assertEqual(len(names), 33)
+        # TOKENS, not substrings: `fleet_cloudcli_native_capability` is the
+        # CloudCLI capability read and contains "ability" inside "capability".
+        # A substring check would fail on the one word it must not confuse, and
+        # the fix for that is to say what is meant rather than to drop the test.
+        words = {word for name in names for word in name.split("_")}
+        self.assertNotIn("ability", words)
+        self.assertNotIn("abilities", words)
+        self.assertNotIn("effective", words)
+        self.assertIn("capability", words)   # the two reads are still there
