@@ -1,0 +1,327 @@
+{
+  "schema": "serveros/fleet-v1-rc-manifest.v1",
+  "manifest_id": "fleet-v1-rc-20261017-a",
+  "generated_at": "2026-10-17T11:12:00Z",
+  "campaign_ref": "ProfessorZhi/serveros#244",
+  "integration_ref": "ProfessorZhi/serveros#250",
+  "state": "RC_CANDIDATE",
+  "integrator": {
+    "owner": "Tokyo Integration Owner Session (I1)",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
+  },
+  "qa": {
+    "owner": "independent QA Session (not yet assigned)",
+    "independent_of_integrator": false,
+    "signature": null
+  },
+  "repos": [
+    {
+      "name": "serveros",
+      "repo": "ProfessorZhi/serveros",
+      "revision": "4a3162864911420309665e92ec38fb68e9ef76ec",
+      "role": "host, fleet_mcp, runtime, native/node-core, fleet contracts",
+      "reachable": true,
+      "designated_release_ref": null,
+      "note": "main tip used as the I1 base; no release ref designated."
+    },
+    {
+      "name": "work-engine",
+      "repo": "ProfessorZhi/work-engine",
+      "revision": "19d9520eabcbd713933515543d128bee35ef336d",
+      "role": "exclusive Work write lease (S1 cross-repo pair)",
+      "reachable": true,
+      "designated_release_ref": null
+    },
+    {
+      "name": "ability-management",
+      "repo": "ProfessorZhi/ability-management",
+      "revision": "27df5748c88b496a3934fd776f0a729f3cd2e822",
+      "role": "canonical ability registry (abilities-manifest.yaml, schema_version 3)",
+      "reachable": true,
+      "designated_release_ref": null,
+      "note": "Authoritative SHA read from the repository API; it is a pin, not a G1 acceptance receipt."
+    }
+  ],
+  "candidates": [
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 241,
+      "head": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Only candidate whose base is current main (behind_by 0)."
+    },
+    {
+      "lane": "S2",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 252,
+      "head": "d49342bb7b5acdc90072f17c49b0bde88ac603ef",
+      "base_ref": "feat/v1-session-write-fence-20261016",
+      "base_is_pr": true,
+      "stacks_on": 241,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Head advanced from 00bb701 to d49342b; the manifest pins the new head, not the milestone-1 SHA."
+    },
+    {
+      "lane": "F1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 243,
+      "head": "494f45293e53bc8e84e2025f7ac567e6cfb607d8",
+      "base_ref": "feat/fleet-v1-core-lite-status-wiring-20261016",
+      "base_is_pr": true,
+      "stacks_on": 231,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Declared base of #231 is stack/fleet-v1-pre-core-lite-wiring (a11a9dd), which is not a PR head; ancestry of #243 still contains #229 head b0f5480."
+    },
+    {
+      "lane": "N1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 242,
+      "head": "bec4835cf3c54066850808278d86de81ddedf561",
+      "base_ref": "feat/native-bounded-recovery-20261016",
+      "base_is_pr": true,
+      "stacks_on": 232,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false
+    },
+    {
+      "lane": "N2",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 253,
+      "head": "5e7d074850ad873e00809eca329e3792833cc656",
+      "base_ref": "feat/c-line-bounded-recovery-v1-20261016",
+      "base_is_pr": true,
+      "stacks_on": 242,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed."
+    },
+    {
+      "lane": "P1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 230,
+      "head": "a934beece13af429808f04c1bd5b887e9c19ae91",
+      "base_ref": "fix/fleet-v1-build-outside-source-20261016",
+      "base_is_pr": true,
+      "stacks_on": 227,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction."
+    },
+    {
+      "lane": "M1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 233,
+      "head": "36a206d3ac42f7b28ad815a5e8c9d6013dcb0bd8",
+      "base_ref": "feat/v13-two-surface-integration-candidate-20261014",
+      "base_is_pr": true,
+      "stacks_on": 196,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition."
+    },
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/work-engine",
+      "pr": 13,
+      "head": "40b062209de4a989a84b04ea57b6cc8657e1be1e",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "notes": "Cross-repo pair of serveros #241; must land as a pair, not independently."
+    }
+  ],
+  "source_merge": {
+    "performed": false,
+    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch in this milestone. The manifest records pins and conflicts; composition is a later, separately authorized step.",
+    "conflict_audit": [
+      {
+        "left": "#243 (F1)",
+        "right": "#230 (P1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Siblings from merge-base 008a3360 (#200 head). Their own-commit surfaces are 22 and 13 files with an empty intersection; 163 files shared in the net sets are inherited ancestry, not collision."
+      },
+      {
+        "left": "#243 (F1)",
+        "right": "#242 (N1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Disjoint file surfaces."
+      },
+      {
+        "left": "#230 (P1)",
+        "right": "#242 (N1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Disjoint file surfaces."
+      },
+      {
+        "left": "#241/#252 (S1/S2)",
+        "right": "#243, #230, #242",
+        "shared_own_commit_files": 0,
+        "conclusion": "The safety line is file-disjoint from the Fleet and Core lanes. Semantic coupling remains: #241 edits fleet/agent-control-contract.yaml while F1 adds fleet/fleet-mcp-contract.yaml."
+      }
+    ]
+  },
+  "gates": [
+    {
+      "id": "P0_T1_T7_T9_T10_T11_LOCAL",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "NOT_RUN",
+      "owner": "S1/S2 lane owners",
+      "blocker": "Lane owners report T1/T2/T3/T5/T6 closed at LOCAL in their own sessions; this integrator has not re-run them and records no receipt.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T8_T12_REAL_DEVICE",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "owner": "S1 lane owner + device owner",
+      "blocker": "No trusted Tokyo to Dell transport was observed; T8 and T12 require a real cross-device effect.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_CORE_LINUX",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "owner": "N1 lane owner",
+      "blocker": "native/node-core is absent from main; no Linux binary or readback was observed by this integrator.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_SELF_HEALING",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "owner": "N1 lane owner",
+      "blocker": "A toy proves the mechanism; it is not an authorized production recovery receipt.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_CORE_WINDOWS",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "owner": "N2 lane owner",
+      "blocker": "PR #253 adds Windows Core status source only; no Windows build, SCM probe or run exists.",
+      "receipt": null
+    },
+    {
+      "id": "NETWORK_SSH_SELKIES_RDC",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "owner": "N3 lane owner",
+      "blocker": "No listener, tunnel or upstream observation was produced in this milestone.",
+      "receipt": null
+    },
+    {
+      "id": "RUNTIME_CC_CODEX_CLOUDCLI",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "owner": "R1 lane owner",
+      "blocker": "Effective model, provider and permission mode were not measured; static config is not evidence.",
+      "receipt": null
+    },
+    {
+      "id": "FLEET_NEXT_33_6",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "owner": "F1 lane owner",
+      "blocker": "33 is a catalogue (9 authored Fleet + 22 CloudCLI mirror + 2 capability reads) over six scopes; #243 serves nine authored tools, and the installed canary fleet-mcp-20261016@008a336 is the A line, so none of #243 is installed.",
+      "receipt": null
+    },
+    {
+      "id": "DEVICE_ABILITIES",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "owner": "G1 lane owner",
+      "blocker": "G1 depends on N1 and R1, both unlanded; the ability-management SHA is pinned but nothing was executed.",
+      "receipt": null
+    },
+    {
+      "id": "LOCAL_CC_PLUGIN",
+      "required_level": "CLIENT_E2E",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "owner": "P1 lane owner",
+      "blocker": "BLOCKED_CLIENT_E2E: the gate is owner consent plus an authenticated client; neither exists in this milestone.",
+      "receipt": null
+    },
+    {
+      "id": "INTEGRATION_QA",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "PARTIAL",
+      "owner": "independent QA Session (must not be the integrator)",
+      "blocker": "This manifest and checker exist at SOURCE. No isolated local test run at the exact SHAs, no rollback rehearsal, and no independent QA signature yet.",
+      "receipt": null
+    }
+  ],
+  "hosted_ci": {
+    "status": "QUOTA_WAIVED",
+    "evidence": "check-runs returned empty for all eight candidate heads when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
+  },
+  "open_p0": [
+    {
+      "id": "B1-LANDING-DEPTH",
+      "summary": "F1 needs a 14-link unmerged chain plus two branches; N1 needs an 11-link chain. Every link is a Draft and each rebase changes a reviewed SHA.",
+      "owner_action": "Integrator must choose chain-merge vs single squashed RC, in writing, before any composition run."
+    },
+    {
+      "id": "B2-NO-RC",
+      "summary": "No integration/v1-rc-* branch exists and no multi-repo manifest existed before this one.",
+      "owner_action": "Create the single RC only after B1 and the gate owners agree; do not branch off an owner head."
+    },
+    {
+      "id": "B3-HOSTED-CI",
+      "summary": "All candidate heads have zero hosted check runs.",
+      "owner_action": "Record runner, command, environment and exit code for each bounded local test; never report waived as green."
+    },
+    {
+      "id": "B4-README-CONFLICT",
+      "summary": "main changed README.md in the first lines while #243 and #230 inherit an adjacent first-lines change; a small rebase conflict is probable.",
+      "owner_action": "Resolve at rebase time inside the lane owner branch, never inside an I1 file."
+    },
+    {
+      "id": "B5-NO-REAL-DEVICE",
+      "summary": "No Tokyo to Dell transport and no real device effect was observed.",
+      "owner_action": "T8/T12, Windows, network, runtime and ability gates stay BLOCKED until a device owner produces a receipt."
+    },
+    {
+      "id": "B6-NON-PR-BASE",
+      "summary": "#231, and therefore #243, declares a base branch (stack/fleet-v1-pre-core-lite-wiring) that is not a PR head; #230 declares #227, which is a PR, but its own body pin is stale.",
+      "owner_action": "Re-pin base refs and heads immediately before composition; do not trust PR bodies or branch names."
+    }
+  ],
+  "rollback": {
+    "design": "This branch is additive only: every file lives under integrations/fleet-v1-release/. Reverting the single I1 commit removes the manifest and checker without touching any lane-owned file. No lane branch, ref or worktree is modified by this PR.",
+    "verified": false
+  },
+  "claims": {
+    "live_device": false,
+    "client_e2e": false,
+    "production": false
+  }
+}

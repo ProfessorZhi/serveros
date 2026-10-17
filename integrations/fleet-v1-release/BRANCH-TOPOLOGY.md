@@ -1,0 +1,97 @@
+# Fleet V1 — measured branch topology
+
+All values below were read from the GitHub API on 2026-10-17. This file records
+**ancestry**, not intent. Where a PR body disagrees with its own head, the head
+wins and the disagreement is recorded.
+
+## Four towers, one of them already on `main`
+
+```text
+serveros:main 4a31628
+│
+├─ S1/S2   #241 d0754ed ── #252 d49342b            base = main (behind 0)
+│
+├─ M1      #196 … ── #233 36a206d                  consumer of F1
+│
+├─ F1      #146 ─ #149 ─ #150 ─ #154 ─ #155 ─ #163 ─ #164 ─ #177
+│          ─ #182 ─ #184 ─ #192 ─ #198 ─ #200 008a3360
+│              ├─ #214 ─ #216 ─ #228 ─ #229 b0f5480 ─ #231 ─ #243 494f452
+│              │                                          (+ #225 merged in)
+│              └─ #227 7712e64d ─ … ─ #230 a934bee
+│
+└─ N1/N2   #161 9dca6fd ─ #176 ─ #180 ─ #206 ─ #213 ─ #215
+           ─ #217 ─ #219 ─ #226 ─ #232 ─ #242 bec4835 ─ #253 5e7d074
+
+work-engine:main 19d9520 ── #13 40b0622             cross-repo pair of #241
+```
+
+Depths, counted from the PR whose base is `main`:
+
+| Tower | Links above `main` | Base of the deepest link |
+|---|---|---|
+| S1/S2 | 2 | `main` |
+| F1 (#243) | 14 + 5 | `stack/fleet-v1-pre-core-lite-wiring` → see below |
+| P1 (#230) | 14 + 2 | `fix/fleet-v1-build-outside-source-20261016` |
+| N1 (#242) | 12 | `feat/native-bounded-recovery-20261016` |
+| N2 (#253) | 13 | `feat/c-line-bounded-recovery-v1-20261016` (= #242 head) |
+
+`native/node-core` is **absent from `main`** (contents API 404). The whole N
+tower is unlanded, not partially landed.
+
+## F1 and P1 are siblings, not a stack
+
+- `merge-base(#243, #230) = 008a3360` (= #200 head).
+- #243 is **19** commits ahead of that point; #230 is **5**.
+- Their own-commit file surfaces are **22** and **13** files with an **empty
+  intersection**.
+- The 163 files common to their net change sets are **inherited ancestry**, not
+  collision. Reading that overlap as a conflict is the error this section exists
+  to prevent.
+
+Conclusion: F1 and P1 are textually composable. That does **not** authorize a
+merge here — see the policy below.
+
+## Declared bases that are not PR heads
+
+`#231` declares `stack/fleet-v1-pre-core-lite-wiring` (`a11a9dd`). That branch is
+not the head of any PR; it is **one commit behind** #229's head `b0f5480`, and
+it is contained in #229, #231 and #243.
+
+Two consequences, both easy to get wrong:
+
+1. #243's **content** is complete relative to #229 (the compare against `b0f5480`
+   reports `behind_by: 0`). The gap is in the **declared ref**, not the tree.
+2. A PR whose base is a non-PR branch cannot merge into `main` as-is. The chain
+   must be re-based by the lane owner, which changes the reviewed SHA. That
+   directly tensions the "immutable verified PR" requirement in #250 and is
+   recorded as P0 `B6-NON-PR-BASE`.
+
+## Stale pins found in PR bodies
+
+| PR | Body says | Real head | Delta |
+|---|---|---|---|
+| #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
+| #252 | milestone 1 `00bb701` | `d49342b` | 1 milestone ahead |
+
+Never copy a SHA out of a PR body. Re-pin from the API immediately before any
+composition.
+
+## Merge policy for this directory
+
+This branch is **additive only** (`integrations/fleet-v1-release/**`). It does
+not merge, cherry-pick, rebase or rewrite any owner branch, and it does not
+touch `fleet_mcp/`, `native/`, `runtime/`, `Skills/` or any other owner area.
+
+When composition is eventually authorized, the order is forced by ancestry:
+
+1. **S1 pair** — serveros #241 then work-engine #13 (the only tower based on
+   current `main`; `behind_by: 0`).
+2. **F1 and P1** — textual intersection is empty, but both sit above a 14-link
+   unlanded chain. The owner must re-base; I1 must not.
+3. **N1 then N2** — #253 is one commit above #242 and depends on its CMake
+   layout.
+4. **M1 last** — it consumes F1 readback.
+
+`source_merge.performed` stays `false` in the manifest until every gate that
+authorizes composition has a PASS with a receipt. The checker rejects the
+opposite as `E095`.

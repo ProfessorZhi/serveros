@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ProfessorZhi/serveros/integrations/fleet-v1-release/rc-manifest.v1.schema.json",
+  "title": "ServerOS Fleet V1 integration release manifest",
+  "description": "One multi-repo, SHA-pinned release candidate manifest. It records what was pinned, what was observed, and what is still unproven. It never asserts a device, client or production result that has no receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_id",
+    "generated_at",
+    "campaign_ref",
+    "integration_ref",
+    "state",
+    "integrator",
+    "qa",
+    "repos",
+    "candidates",
+    "source_merge",
+    "gates",
+    "hosted_ci",
+    "open_p0",
+    "rollback",
+    "claims"
+  ],
+  "properties": {
+    "schema": { "const": "serveros/fleet-v1-rc-manifest.v1" },
+    "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+    "generated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "campaign_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
+    "integration_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
+    "state": { "enum": ["RC_CANDIDATE", "COMPLETE_V1", "BLOCKED", "ABORTED"] },
+    "integrator": { "$ref": "#/$defs/principal" },
+    "qa": { "$ref": "#/$defs/qa" },
+    "repos": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/repoPin" }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "source_merge": { "$ref": "#/$defs/sourceMerge" },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "hosted_ci": { "$ref": "#/$defs/hostedCi" },
+    "open_p0": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/openP0" }
+    },
+    "rollback": { "$ref": "#/$defs/rollback" },
+    "claims": { "$ref": "#/$defs/claims" }
+  },
+  "$defs": {
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "device_ref", "authority"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 3 },
+        "device_ref": { "type": "string", "minLength": 3 },
+        "authority": { "type": "string", "minLength": 3 }
+      }
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "independent_of_integrator", "signature"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 3 },
+        "independent_of_integrator": { "type": "boolean" },
+        "signature": { "type": ["string", "null"] }
+      }
+    },
+    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "evidenceLevel": { "enum": ["SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
+    "repoPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repo", "revision", "role", "reachable"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "revision": { "$ref": "#/$defs/sha40" },
+        "role": { "type": "string", "minLength": 1 },
+        "reachable": { "type": "boolean" },
+        "designated_release_ref": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "repo",
+        "pr",
+        "head",
+        "base_ref",
+        "base_is_pr",
+        "stacks_on",
+        "draft",
+        "evidence_level",
+        "installed"
+      ],
+      "properties": {
+        "lane": { "type": "string", "pattern": "^[A-Z][0-9]$" },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "pr": { "type": "integer", "minimum": 1 },
+        "head": { "$ref": "#/$defs/sha40" },
+        "base_ref": { "type": "string", "minLength": 1 },
+        "base_is_pr": { "type": "boolean" },
+        "stacks_on": { "type": ["integer", "null"] },
+        "draft": { "const": true },
+        "evidence_level": { "$ref": "#/$defs/evidenceLevel" },
+        "installed": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "sourceMerge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "policy", "conflict_audit"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "policy": { "type": "string", "minLength": 10 },
+        "conflict_audit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["left", "right", "shared_own_commit_files", "conclusion"],
+            "properties": {
+              "left": { "type": "string", "minLength": 1 },
+              "right": { "type": "string", "minLength": 1 },
+              "shared_own_commit_files": { "type": "integer", "minimum": 0 },
+              "conclusion": { "type": "string", "minLength": 3 }
+            }
+          }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "required_level", "achieved_level", "verdict", "owner"],
+      "properties": {
+        "id": { "type": "string", "minLength": 2 },
+        "required_level": { "$ref": "#/$defs/evidenceLevel" },
+        "achieved_level": { "enum": ["NOT_RUN", "SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
+        "verdict": { "enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED", "PARTIAL"] },
+        "owner": { "type": "string", "minLength": 3 },
+        "blocker": { "type": "string" },
+        "receipt": { "type": ["string", "null"] }
+      }
+    },
+    "hostedCi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": { "enum": ["GREEN", "FAILED", "QUOTA_WAIVED", "NOT_CONFIGURED", "UNKNOWN"] },
+        "evidence": { "type": "string", "minLength": 3 }
+      }
+    },
+    "openP0": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary", "owner_action"],
+      "properties": {
+        "id": { "type": "string", "minLength": 2 },
+        "summary": { "type": "string", "minLength": 10 },
+        "owner_action": { "type": "string", "minLength": 10 }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["design", "verified"],
+      "properties": {
+        "design": { "type": "string", "minLength": 10 },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["live_device", "client_e2e", "production"],
+      "properties": {
+        "live_device": { "type": "boolean" },
+        "client_e2e": { "type": "boolean" },
+        "production": { "type": "boolean" }
+      }
+    }
+  }
+}
