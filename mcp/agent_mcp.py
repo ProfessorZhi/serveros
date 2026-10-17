@@ -603,8 +603,24 @@ class DaemonAttempts:
         answer = self._call("agent.dispatch.resolve", {"key": str(key)})
         return answer.get("attempt")
 
-    def put_dispatch_attempt(self, record) -> dict:
-        answer = self._call("agent.dispatch.record", {"attempt": dict(record)})
+    def put_dispatch_attempt(self, record, *, context_ref=None) -> dict:
+        """Write one attempt, against the trusted context of the call that did it.
+
+        `context_ref` is NOT optional here: the daemon resolves the actor from it
+        and takes the record's principal from that, so a write presented without
+        one cannot be attributed — and an unattributed phase is exactly the
+        self-asserted `SETTLED` the independent QA found (#245 P0-2). Refused
+        before the call rather than letting the daemon answer for nobody.
+        """
+        if not context_ref:
+            raise router_mod.TransportFailure(
+                "UNTRUSTED_ACTOR",
+                "a dispatch attempt is written against the trusted context of the "
+                "call that dispatched it. Without one the daemon cannot tell who "
+                "is asserting the phase, and it will not take the principal from "
+                "the payload")
+        answer = self._call("agent.dispatch.record", {
+            "context_ref": str(context_ref), "attempt": dict(record)})
         if not answer.get("recorded"):
             raise router_mod.TransportFailure(
                 str(answer.get("reason") or "INVALID_CONTEXT"),

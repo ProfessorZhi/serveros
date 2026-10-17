@@ -183,6 +183,45 @@ def reconciler(**over):
 CURRENT_WRITER = {"owner": "agent:A", "epoch": 1, "token": "1"}
 
 
+class TestIntentIdentity(unittest.TestCase):
+    """#237 T5 / QA P0-1. The KEY identifies a TARGET, not just a payload.
+
+    `intent_digest` compared action/device/verb/params and omitted the session,
+    the runtime and the principal — so two sends to DIFFERENT sessions under one
+    key digested identically and the second was answered as a replay of the
+    first. The typed envelope that identifies an intent now includes them.
+    """
+
+    def _d(self, **over):
+        base = dict(action="agent.session.send", device_ref="device:tokyo",
+                    verb="session.send", params={"instruction": "x"})
+        base.update(over)
+        return attempts.intent_digest(**base)
+
+    def test_a_different_session_target_is_a_different_intent(self):
+        self.assertNotEqual(self._d(session_ref="session:a"),
+                            self._d(session_ref="session:b"))
+
+    def test_a_different_runtime_is_a_different_intent(self):
+        self.assertNotEqual(self._d(agent_runtime="agent-runtime:codex"),
+                            self._d(agent_runtime="agent-runtime:claude-code"))
+
+    def test_a_different_principal_is_a_different_intent(self):
+        self.assertNotEqual(self._d(principal="human:a"),
+                            self._d(principal="human:b"))
+
+    def test_the_same_target_and_principal_is_the_same_intent(self):
+        self.assertEqual(
+            self._d(session_ref="s", agent_runtime="r", principal="h"),
+            self._d(session_ref="s", agent_runtime="r", principal="h"))
+
+    def test_a_missing_target_is_not_the_same_as_an_empty_one(self):
+        # `None` and "" are different claims; the canonical form must not
+        # collapse them into one intent.
+        self.assertNotEqual(self._d(session_ref=None),
+                            self._d(session_ref=""))
+
+
 class TestReconcileObservation(unittest.TestCase):
     """#245. EFFECT_UNKNOWN -> SETTLED only when an owner proves it.
 

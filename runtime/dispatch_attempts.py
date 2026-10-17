@@ -69,6 +69,12 @@ SETTLED = "SETTLED"
 SUPERSEDED = "SUPERSEDED"
 PHASES = (CALL_NOT_SENT, ACCEPTED, EFFECT_UNKNOWN, SETTLED, SUPERSEDED)
 
+#: The phases the DISPATCH side may write. `SUPERSEDED` is not here: it is a
+#: policy transition about a newer decision replacing this attempt, and a caller
+#: that dispatched something does not get to declare itself historical. Keeping
+#: the set separate from PHASES is what makes that a rule rather than a comment.
+DISPATCH_SIDE_PHASES = (CALL_NOT_SENT, ACCEPTED, EFFECT_UNKNOWN, SETTLED)
+
 # The verdicts `reconcile` returns. They are what a caller branches on, and
 # they are deliberately finer than a boolean: "do not send" is one answer with
 # several reasons, and a caller told only "no" cannot tell a settled replay
@@ -88,7 +94,8 @@ class AttemptRefused(ValueError):
 
 
 def intent_digest(*, action, device_ref, verb, params=None, workspace=None,
-                  work_item=None) -> str:
+                  work_item=None, session_ref=None, agent_runtime=None,
+                  principal=None) -> str:
     """The identity of an INTENT — the payload, not just the key.
 
     Canonical and order-insensitive (`sort_keys`), so two spellings of the same
@@ -104,15 +111,25 @@ def intent_digest(*, action, device_ref, verb, params=None, workspace=None,
     canonical = json.dumps(
         {"action": str(action), "device_ref": str(device_ref), "verb": str(verb),
          "params": dict(params or {}), "workspace": workspace,
-         "work_item": work_item},
+         "work_item": work_item,
+         # #237 T5 / independent-QA P0-1. The TARGET is part of the intent. A
+         # key that named one session and then another was answered as a replay,
+         # because the digest stopped at the payload and two `session.send`
+         # calls differ only here. `None` and `""` stay distinct (JSON `null` vs
+         # `""`): they are different claims, not one claim spelled twice.
+         "session_ref": session_ref, "agent_runtime": agent_runtime,
+         # Which principal issued it. Same key from a different actor is a
+         # different intent, and answering it with the first actor's result
+         # would attribute an effect to the wrong person.
+         "principal": principal},
         sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def attempt_record(*, key, action, device_ref, verb, intent_digest, phase,
-                   work_item=None, principal=None, runtime=None, grant_ref=None,
-                   provider_locator=None, result=None, because=None,
-                   at=None) -> dict:
+                   work_item=None, principal=None, runtime=None, session_ref=None,
+                   grant_ref=None, provider_locator=None, result=None,
+                   because=None, at=None) -> dict:
     """One durable dispatch attempt. Raises `AttemptRefused` on a bad phase.
 
     The fields are the ones #245 lists — work/item identity, the intent digest,
@@ -151,7 +168,8 @@ def attempt_record(*, key, action, device_ref, verb, intent_digest, phase,
         "phase": phase,
     }
     for field, value in (("work_item", work_item), ("principal", principal),
-                         ("runtime", runtime), ("grant_ref", grant_ref),
+                         ("runtime", runtime), ("session_ref", session_ref),
+                         ("grant_ref", grant_ref),
                          ("provider_locator", provider_locator),
                          ("because", because)):
         if value:

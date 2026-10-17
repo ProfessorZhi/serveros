@@ -3189,30 +3189,96 @@ class Daemon:
         rebuilt by `dispatch_attempts.attempt_record`, so a phase nobody
         declared is refused here rather than stored as a word.
 
-        A second record under one key with a DIFFERENT intent digest is refused
-        by the store — the same-key-different-payload conflict (#237 T5) — so
-        this cannot be used to overwrite one intent with another.
+        IDENTITY IS RESOLVED, NEVER ASSERTED (independent-QA P0-2). The caller
+        presents a `context_ref`; this method resolves it against what ServerOS
+        actually minted, requires it to be FRESH, and takes the principal from
+        THAT record. A record that claims a different principal is refused rather
+        than quietly overwritten — a forged principal is worth saying out loud.
+        With no resolvable, fresh context the write is refused as
+        `UNTRUSTED_ACTOR`: an unattributed phase is exactly the self-asserted
+        `SETTLED` the QA found.
+
+        TRANSITIONS. Only `DISPATCH_SIDE_PHASES` may be written here —
+        `SUPERSEDED` is a policy decision, not a dispatch outcome. A `SETTLED`
+        must carry the provider's answer (a settle with nothing attached is not a
+        settle) and must MOVE an existing `CALL_NOT_SENT`/`EFFECT_UNKNOWN`
+        attempt; nothing is settled that was never dispatched.
         """
+        context_ref = str(params.get("context_ref") or "").strip()
+        if not context_ref:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": ("a dispatch attempt is written against the trusted "
+                               "context_ref of the call that dispatched it; none "
+                               "was presented, so nobody can be attributed")}
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": resolved["because"]}
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": str(exc)}
+        freshness = actor_mod.freshness(trusted, _iso(self._now()))
+        if freshness.get("state") != "FRESH":
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the presented context is {freshness.get('state')!r}, "
+                               f"which authorizes nothing: {freshness.get('because')}")}
+        principal = trusted["actor_ref"]
+
         incoming = params.get("attempt")
         if not isinstance(incoming, dict):
             return {"recorded": False, "reason": "INVALID_CONTEXT",
                     "detail": ("a dispatch attempt is a record; there is nothing "
                                "here to store")}
+        claimed = str(incoming.get("principal") or "").strip()
+        if claimed and claimed != principal:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the record claims principal {claimed!r} and the "
+                               f"trusted context is {principal!r}. A principal is "
+                               f"taken from the resolved context, never from the "
+                               f"payload")}
         try:
             record = dispatch_attempts_mod.attempt_record(
                 key=incoming.get("key"), action=incoming.get("action"),
                 device_ref=incoming.get("device_ref"), verb=incoming.get("verb"),
                 intent_digest=incoming.get("intent_digest"),
                 phase=incoming.get("phase"), work_item=incoming.get("work_item"),
-                principal=incoming.get("principal"),
-                runtime=incoming.get("runtime"), grant_ref=incoming.get("grant_ref"),
+                # The resolved actor, not the payload's string.
+                principal=principal,
+                runtime=incoming.get("runtime"),
+                session_ref=incoming.get("session_ref"),
+                grant_ref=incoming.get("grant_ref"),
                 provider_locator=incoming.get("provider_locator"),
                 result=incoming.get("result"), at=incoming.get("recorded_at"))
         except dispatch_attempts_mod.AttemptRefused as exc:
             return {"recorded": False, "reason": "INVALID_CONTEXT",
                     "detail": str(exc)}
+
+        phase = record["phase"]
+        if phase not in dispatch_attempts_mod.DISPATCH_SIDE_PHASES:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": (f"{phase!r} is not a phase the dispatch side writes. "
+                               f"A supersede is a policy decision about a newer "
+                               f"attempt, not an outcome of this one")}
+        store = self.control_store()
+        if phase == dispatch_attempts_mod.SETTLED:
+            if incoming.get("result") is None:
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a SETTLED must carry the provider's answer. A "
+                                   "settle with nothing attached is not a settle; it "
+                                   "is a caller asserting success")}
+            existing = store.get_dispatch_attempt(record["key"])
+            if (existing is None or existing.get("phase") not in
+                    (dispatch_attempts_mod.CALL_NOT_SENT,
+                     dispatch_attempts_mod.EFFECT_UNKNOWN)):
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a dispatch-side settle must move an existing "
+                                   "CALL_NOT_SENT or EFFECT_UNKNOWN attempt; "
+                                   "nothing was dispatched under this key")}
         try:
-            stored = self.control_store().put_dispatch_attempt(record)
+            stored = store.put_dispatch_attempt(record)
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "reason": "INVALID_CONTEXT",
                     "detail": str(exc)}

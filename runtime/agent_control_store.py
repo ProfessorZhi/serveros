@@ -906,7 +906,7 @@ class AgentControlStore:
     # its owner and because a second attempt store is the "new-lease-system"
     # shape `integration/components.yaml` refuses by name.
 
-    def put_dispatch_attempt(self, record: dict) -> dict:
+    def put_dispatch_attempt(self, record: dict, *, context_ref=None) -> dict:
         """Record one dispatch attempt, durably, keyed by its idempotency key.
 
         The record is written BEFORE the effect is attempted (phase
@@ -921,6 +921,13 @@ class AgentControlStore:
         with a different `intent_digest` is the same-key-different-payload case,
         refused here as well as in the kernel — the write point must not be a
         way to overwrite a different intent.
+
+        `context_ref` is accepted for interface uniformity with the daemon
+        handle, and is NOT enforced here: this store is behind the trust
+        boundary, and the identity check belongs to `agent.dispatch.record`,
+        which resolves the actor from the context and refuses a self-asserted
+        principal. A direct caller of this method is already inside that
+        boundary; a caller over the socket is not.
         """
         key = str(record.get("key") or "")
         if not key:

@@ -1044,7 +1044,13 @@ class TestIdempotency(unittest.TestCase):
                 intent_digest=attempts_mod.intent_digest(
                     action=request.action, device_ref=request.device_ref,
                     verb=request.verb, params=request.params,
-                    workspace=request.workspace, work_item=request.work_item),
+                    workspace=request.workspace, work_item=request.work_item,
+                    # The target and the principal are part of the intent now
+                    # (#237 T5 / QA P0-1); a digest that omitted them would be a
+                    # different intent and this attempt would not match it.
+                    session_ref=request.session_ref,
+                    agent_runtime=request.agent_runtime,
+                    principal="human:hwz"),
                 phase=attempts_mod.EFFECT_UNKNOWN))
 
             svc = RecordingService()
@@ -1058,6 +1064,54 @@ class TestIdempotency(unittest.TestCase):
             self.assertEqual(svc.names(), [],
                             "the retry reached the provider despite an unknown "
                             "recorded outcome")
+
+
+class TestIntentTargetIsPartOfTheKey(unittest.TestCase):
+    """#237 T5 / independent-QA P0-1. Same key, different TARGET -> CONFLICT.
+
+    The guard compared action + device + payload and omitted the session, the
+    runtime and the principal, so two sends to different sessions under one key
+    were answered as a replay of the first — the second target never ran.
+    """
+
+    def test_the_same_key_on_a_different_session_target_is_a_conflict(self):
+        r = router(RecordingService())
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more",
+                                "turn_idempotency_key": "t-target"})
+        second = dict(first, session_ref="session:b")
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
+
+    def test_the_same_key_on_a_different_runtime_is_a_conflict(self):
+        r = router(RecordingService())
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more", "turn_idempotency_key": "t-rt"})
+        second = payload(MUTATING, LOCAL, runtime="agent-runtime:claude-code",
+                         context_ref=CONTEXT_REF, session_ref="session:a",
+                         params={"instruction": "more", "turn_idempotency_key": "t-rt"})
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
+
+    def test_the_same_key_from_a_different_principal_is_a_conflict(self):
+        other = minted_context(actor_id="human:someone-else")
+        store = dict(CONTEXT_STORE)
+        store[other["context_ref"]] = other
+        r = router(RecordingService(), context_store=store)
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more", "turn_idempotency_key": "t-princ"})
+        second = dict(first, context_ref=other["context_ref"])
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
 
 
 class _CrashLoopback(router_mod.LocalLoopbackTransport):
