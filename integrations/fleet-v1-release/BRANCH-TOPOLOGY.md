@@ -16,6 +16,8 @@ serveros:main 4a31628
 ├─ QA      #256 2c4fe87                            base = main; integrations/fleet-v1-qa/** only
 │
 ├─ R1      #257 c2e2e8d                            base = main; integrations/fleet-v1-runtime-parity/** only
+├─ T10     #258 4156572                            base = main; integrations/fleet-v1-verdict-evidence/** only
+├─ N3      #259 f81ad9d                            base = main; integrations/fleet-v1-network-health/** only
 │
 ├─ F1      #146 ─ #149 ─ #150 ─ #154 ─ #155 ─ #163 ─ #164 ─ #177
 │          ─ #182 ─ #184 ─ #192 ─ #198 ─ #200 008a3360
@@ -41,6 +43,8 @@ Depths, counted from the PR whose base is `main`:
 | N2 (#253) | 13 | `feat/c-line-bounded-recovery-v1-20261016` (= #242 head) |
 | G1 (#255) | 15 + 5 | `integration/fleet-v1-candidate-20261017` (= #243 head) |
 | R1 (#257) | 1 | `main` |
+| T10 (#258) | 1 | `main` |
+| N3 (#259) | 1 | `main` |
 
 `native/node-core` is **absent from `main`** (contents API 404). The whole N
 tower is unlanded, not partially landed.
@@ -78,9 +82,9 @@ Two consequences, both easy to get wrong:
 | PR | Body says | Real head | Delta |
 |---|---|---|---|
 | #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
-| #252 | milestone 1 `00bb701` | `fdc223f` | moved four times: `00bb701 → d49342b → dac3088 → f2b89e1 → fdc223f` |
+| #252 | milestone 1 `00bb701` | `7a87e5c` | moved five times: `00bb701 → d49342b → dac3088 → f2b89e1 → fdc223f → 7a87e5c` |
 | #243 | (none) | `4a5d0a0` | advanced `494f452 → 4a5d0a0` (guard fix) |
-| #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot C `a9c3ea5` probed `fdc223f` at the daemon boundary | current; verdict still QA_PARTIAL |
+| #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot D `3ac74d5` reran `7a87e5c` with a red→green control | current; verdict still QA_PARTIAL |
 
 Never copy a SHA out of a PR body. Re-pin from the API immediately before any
 composition.
@@ -100,15 +104,24 @@ consequences that a naive merge order gets wrong:
 
 When composition is eventually authorized, the order is forced by ancestry:
 
-1. **S1 pair** — serveros #241 then work-engine #13 (the only tower based on
-   current `main`; `behind_by: 0`).
-2. **N1 (#242)** — 11-link chain, file-disjoint from every other lane.
-3. **N2 (#253)** — one commit above #242; depends on its CMake layout.
-4. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
-5. **G1 (#255)** — after F1, re-pinned against the F1 revision that landed.
-6. **R1 (#257)** — base `main`, file-disjoint; deps are the F1/S1 contracts.
-7. **P1 (#230)** — sibling of #243; deps are F1/R1/S1 contracts per the plan.
-8. **M1 (#233)** — consumes F1 readback.
+1. **S1 pair** — work-engine #13 (writer) then serveros #241 (reader). Both are
+   based on current `main` (`behind_by: 0`) and the pair has a CLEAN preflight.
+2. **T10 (#258)** and **N3 (#259)** — both base `main`, disjoint `integrations/**`
+   directories; may land in parallel with step 1.
+3. **N1 (#242)** — 11-link chain, file-disjoint from every other lane.
+4. **N2 (#253)** — one commit above #242; depends on its CMake layout.
+5. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
+6. **G1 (#255)** — after F1, re-pinned against the F1 revision that landed.
+7. **R1 (#257)** — base `main`, file-disjoint; deps are the F1/S1 contracts.
+8. **P1 (#230)** — sibling of #243; deps are F1/R1/S1 contracts per the plan.
+9. **M1 (#233)** — consumes F1 readback.
+
+The S1 pair is a **cross-repo database contract**, not a module dependency:
+`serveros/context/resolver.py::held_leases` reads `leases` with
+`expires_at > ?`, and `work-engine/workengine/store.py` writes that column with
+the same `%Y-%m-%dT%H:%M:%SZ` helper (`math.ceil` rounding). Neither imports the
+other, so the pair has zero shared files and the writer must land first only so
+the reader has real claims to filter.
 
 Two accepted Owner runs (N3 network-source, T10 test-evidence) are **work in
 flight**: sessions and Run ids exist, but no PR and no SHA. They are not on this

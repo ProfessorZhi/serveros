@@ -55,6 +55,7 @@
       "items": { "$ref": "#/$defs/candidate" }
     },
     "source_merge": { "$ref": "#/$defs/sourceMerge" },
+    "composition_preflight": { "$ref": "#/$defs/compositionPreflight" },
     "gates": {
       "type": "array",
       "minItems": 1,
@@ -203,7 +204,7 @@
         "observed_at"
       ],
       "properties": {
-        "lane": { "type": "string", "pattern": "^[A-Z][0-9]$" },
+        "lane": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,3}$" },
         "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
         "pr": { "type": "integer", "minimum": 1 },
         "head": { "$ref": "#/$defs/sha40" },
@@ -215,6 +216,46 @@
         "installed": { "type": "boolean" },
         "observed_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
         "notes": { "type": "string" }
+      }
+    },
+    "compositionPreflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "verdict", "pairs"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "verdict": {
+          "enum": ["CLEAN_PREFLIGHT", "CONFLICT", "BLOCKED_DEPENDENCY", "NOT_ATTEMPTED"]
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "left",
+              "right",
+              "merge_base_left",
+              "merge_base_right",
+              "shared_files",
+              "repo_dependency",
+              "order",
+              "test_roots",
+              "commands"
+            ],
+            "properties": {
+              "left": { "type": "string", "minLength": 1 },
+              "right": { "type": "string", "minLength": 1 },
+              "merge_base_left": { "$ref": "#/$defs/sha40" },
+              "merge_base_right": { "$ref": "#/$defs/sha40" },
+              "shared_files": { "type": "integer", "minimum": 0 },
+              "repo_dependency": { "type": "string", "minLength": 10 },
+              "order": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "test_roots": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "commands": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+            }
+          }
+        }
       }
     },
     "sourceMerge": {
@@ -296,11 +337,12 @@
     "claims": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["live_device", "client_e2e", "production"],
+      "required": ["live_device", "client_e2e", "production", "code_composed_rc"],
       "properties": {
         "live_device": { "type": "boolean" },
         "client_e2e": { "type": "boolean" },
-        "production": { "type": "boolean" }
+        "production": { "type": "boolean" },
+        "code_composed_rc": { "type": "boolean" }
       }
     }
   }

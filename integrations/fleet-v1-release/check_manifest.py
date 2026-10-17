@@ -333,6 +333,53 @@ def check(doc, raw_text: str = "") -> Report:
         if not isinstance(row.get("conclusion"), str) or len(row["conclusion"]) < 3:
             r.error("E045", f"{where}.conclusion", "conclusion is required")
 
+    # ---- composition preflight -------------------------------------------
+    pre = doc.get("composition_preflight")
+    pre_verdict = None
+    if not isinstance(pre, dict):
+        r.error("E150", "composition_preflight", "a read-only composition preflight is required")
+    else:
+        pre_verdict = pre.get("verdict")
+        if pre_verdict not in {"CLEAN_PREFLIGHT", "CONFLICT", "BLOCKED_DEPENDENCY", "NOT_ATTEMPTED"}:
+            r.error("E151", "composition_preflight.verdict", f"unknown verdict {pre_verdict!r}")
+        if not isinstance(pre.get("performed"), bool):
+            r.error("E152", "composition_preflight.performed", "must be a boolean")
+        pairs = pre.get("pairs")
+        if not isinstance(pairs, list) or not pairs:
+            r.error("E153", "composition_preflight.pairs", "must record at least one pair")
+            pairs = []
+        for i, pair in enumerate(pairs):
+            w = f"composition_preflight.pairs[{i}]"
+            if not isinstance(pair, dict):
+                r.error("E154", w, "must be an object")
+                continue
+            for key in ("merge_base_left", "merge_base_right"):
+                v = pair.get(key)
+                if not isinstance(v, str) or not SHA40.match(v):
+                    r.error("E155", f"{w}.{key}", "must be a full 40-hex merge base")
+            shared = pair.get("shared_files")
+            if not isinstance(shared, int) or shared < 0:
+                r.error("E156", f"{w}.shared_files", "must be a non-negative integer")
+            dep = pair.get("repo_dependency")
+            if not isinstance(dep, str) or len(dep) < 10:
+                r.error(
+                    "E157",
+                    f"{w}.repo_dependency",
+                    "must describe the dependency in at least 10 chars",
+                )
+            for key, minimum in (("order", 1), ("test_roots", 1), ("commands", 2)):
+                v = pair.get(key)
+                if not isinstance(v, list):
+                    r.error("E160", f"{w}.{key}", "must be an array")
+                elif len(v) < minimum:
+                    r.error("E160", f"{w}.{key}", f"needs at least {minimum} entries")
+            if pre_verdict == "CLEAN_PREFLIGHT" and isinstance(shared, int) and shared > 0:
+                r.error(
+                    "E158",
+                    f"{w}",
+                    "CLEAN_PREFLIGHT cannot be claimed when the pair shares files",
+                )
+
     # ---- gates ------------------------------------------------------------
     gates = doc.get("gates")
     if not isinstance(gates, list) or not gates:
@@ -429,9 +476,15 @@ def check(doc, raw_text: str = "") -> Report:
         r.error("E081", "rollback.verified", "must be a boolean")
 
     claims = doc.get("claims") or {}
-    for key in ("live_device", "client_e2e", "production"):
+    for key in ("live_device", "client_e2e", "production", "code_composed_rc"):
         if not isinstance(claims.get(key), bool):
             r.error("E082", f"claims.{key}", "must be a boolean")
+    if claims.get("code_composed_rc") is True and performed is not True:
+        r.error(
+            "E159",
+            "claims.code_composed_rc",
+            "a manifest is not a code-composed RC; this claim requires source_merge.performed",
+        )
     if state != "COMPLETE_V1" and any(claims.get(k) is True for k in ("live_device", "client_e2e", "production")):
         r.error(
             "E083",
@@ -536,6 +589,23 @@ def _valid_fixture() -> dict:
                 }
             ],
         },
+        "composition_preflight": {
+            "performed": True,
+            "verdict": "CLEAN_PREFLIGHT",
+            "pairs": [
+                {
+                    "left": "#1",
+                    "right": "#2",
+                    "merge_base_left": "a" * 40,
+                    "merge_base_right": "b" * 40,
+                    "shared_files": 0,
+                    "repo_dependency": "different repositories; shared database contract",
+                    "order": ["#1", "#2"],
+                    "test_roots": ["tests/test_a.py", "tests/test_b.py"],
+                    "commands": ["python3 -m unittest tests.test_a", "python3 -m unittest tests.test_b"],
+                }
+            ],
+        },
         "gates": [
             {
                 "id": "G1",
@@ -550,7 +620,12 @@ def _valid_fixture() -> dict:
         "hosted_ci": {"status": "QUOTA_WAIVED", "evidence": "no check runs observed"},
         "open_p0": [{"id": "P0", "summary": "not complete yet", "owner_action": "run the gate"}],
         "rollback": {"design": "revert one additive commit", "verified": False},
-        "claims": {"live_device": False, "client_e2e": False, "production": False},
+        "claims": {
+            "live_device": False,
+            "client_e2e": False,
+            "production": False,
+            "code_composed_rc": False,
+        },
     }
 
 
@@ -665,6 +740,16 @@ def self_test() -> int:
             ]
         ),
         {"E132"},
+    )
+    expect(
+        "manifest-claims-code-composed-rc",
+        lambda d: d["claims"].update(code_composed_rc=True),
+        {"E159"},
+    )
+    expect(
+        "clean-preflight-with-shared-files",
+        lambda d: d["composition_preflight"]["pairs"][0].update(shared_files=3),
+        {"E158"},
     )
     expect(
         "work-in-flight-counted-as-evidence",
