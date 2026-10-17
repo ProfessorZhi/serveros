@@ -1,0 +1,100 @@
+{
+  "profile": {
+    "profile_id": "windows-16095-selkies/fixture",
+    "service_kind": "windows_loopback_selkies",
+    "platform": "windows",
+    "owner_device_ref": "device:fixture-windows",
+    "owner_principal_ref": "fixture-windows-user",
+    "required_axes": ["liveness", "listener", "transport", "identity"],
+    "identity": {
+      "declared_by": "user_stated",
+      "service_name": null,
+      "identity_ref": "identity:windows-local-fixture",
+      "listener_address": "127.0.0.1",
+      "listener_port": 16095,
+      "remote_device_ref": null,
+      "tunnel_id": null,
+      "pid": null,
+      "fixture_only": true
+    },
+    "required_grants": ["grant:network-health:read"],
+    "recovery_grant": "grant:network-health:recover",
+    "recovery_domain": "local_device",
+    "allowed_verbs": ["restart_local_service", "reestablish_local_tunnel"],
+    "retry": {
+      "max_attempts": 3,
+      "base_delay_s": 5.0,
+      "factor": 2.0,
+      "max_delay_s": 20.0,
+      "window_s": 3600.0
+    },
+    "requires_listener": true,
+    "requires_remote_identity": false,
+    "requires_tunnel_identity": false,
+    "requires_service_identity": true,
+    "claims_authenticated_health": false,
+    "offline_recoverable": true,
+    "link_dependent": true,
+    "local_tunnel": true,
+    "human_only": false,
+    "stream_scope": null,
+    "fixture_only": true
+  },
+  "readings": [
+    {
+      "axis": "liveness",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "mock-windows-task-scheduler"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "TASK_RUNNING"
+    },
+    {
+      "axis": "listener",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "mock-windows-loopback"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "LISTENER_ACCEPTING"
+    },
+    {
+      "axis": "transport",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "mock-windows-ssh-forward"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "SSH_FORWARD_OK"
+    },
+    {
+      "axis": "identity",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "mock-windows-principal"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "WINDOWS_PRINCIPAL_OK"
+    },
+    {
+      "axis": "functional",
+      "state": "UNKNOWN",
+      "observed_by": {"type": "none", "id": "not-measured"},
+      "observed_at": null,
+      "evidence": {"type": "none", "why": "NOT_OBSERVED"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "NOT_OBSERVED"
+    }
+  ]
+}

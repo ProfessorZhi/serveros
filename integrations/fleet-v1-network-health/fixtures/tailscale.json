@@ -1,0 +1,89 @@
+{
+  "profile": {
+    "profile_id": "tailscale/tokyo-node-fixture",
+    "service_kind": "tailscale",
+    "platform": "linux",
+    "owner_device_ref": "device:tokyo-shared-dev-01",
+    "owner_principal_ref": "vince",
+    "required_axes": ["liveness", "transport", "identity", "functional"],
+    "identity": {
+      "declared_by": "owner_declared",
+      "service_name": "owner-declared-tailscale-unit",
+      "identity_ref": "identity:tailnet-fixture-self",
+      "listener_address": null,
+      "listener_port": null,
+      "remote_device_ref": null,
+      "tunnel_id": null,
+      "pid": 4242,
+      "fixture_only": true
+    },
+    "required_grants": ["grant:network-health:read"],
+    "recovery_grant": "grant:network-health:recover",
+    "recovery_domain": "local_device",
+    "allowed_verbs": ["restart_local_service"],
+    "retry": {
+      "max_attempts": 3,
+      "base_delay_s": 5.0,
+      "factor": 2.0,
+      "max_delay_s": 20.0,
+      "window_s": 3600.0
+    },
+    "requires_listener": false,
+    "requires_remote_identity": false,
+    "requires_tunnel_identity": false,
+    "requires_service_identity": true,
+    "claims_authenticated_health": true,
+    "offline_recoverable": true,
+    "link_dependent": false,
+    "local_tunnel": false,
+    "human_only": false,
+    "stream_scope": null,
+    "fixture_only": true
+  },
+  "readings": [
+    {
+      "axis": "liveness",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-os-manager"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "UNIT_RUNNING"
+    },
+    {
+      "axis": "transport",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-tailnet-route"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "TAILNET_TRANSPORT_OK"
+    },
+    {
+      "axis": "identity",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-tailnet-control"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "provider-response"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "TAILNET_IDENTITY_OK"
+    },
+    {
+      "axis": "functional",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-tailnet-health"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "provider-response"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "TAILNET_READY"
+    }
+  ]
+}
