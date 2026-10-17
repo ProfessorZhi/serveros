@@ -552,6 +552,12 @@ class LocalLoopbackTransport(AgentControlTransport):
                 # is unaffected, which is what keeps every pre-existing thread
                 # working.
                 current_writer=read.get("current_writer"),
+                # The WORK ENGINE lease, when the handle can supply it. Passed
+                # through rather than re-derived: the router does not hold the
+                # lease store, and a second derivation of "who owns this scope"
+                # is the second answer #237 is about. When it is supplied it is
+                # the ONLY authority the kernel checks the claim against.
+                authority=read.get("write_authority"),
                 now=_writer_now())
         except coordination.ThreadRefused as exc:
             # Translated rather than propagated, and translated here rather

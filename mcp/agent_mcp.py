@@ -494,6 +494,10 @@ class DaemonBindings:
         # never existed.
         return {"binding": answer.get("binding"), "item": answer.get("item"),
                 "current_writer": answer.get("current_writer"),
+                # The Work Engine lease the admission checks the claim against
+                # (#237 B3). Forwarded, never re-derived here: this process does
+                # not hold the lease store.
+                "write_authority": answer.get("write_authority"),
                 "found": bool(answer.get("found"))}
 
     def put(self, record) -> dict:

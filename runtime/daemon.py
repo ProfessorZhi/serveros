@@ -3044,6 +3044,17 @@ class Daemon:
                 # that claims nothing while the scope is owned by another; an
                 # unowned scope is left ungated so pre-existing threads keep
                 # working.
+                # The WORK ENGINE LEASE for this thread's Item, read from the
+                # `leases` table the writer (work-engine #13) writes. This is the
+                # authority the send admission checks the claim against (#237 B3
+                # / QA Snapshot E): an expired, revoked or absent lease is `None`
+                # and authorizes nothing. `current_writer` below is the
+                # binding-store derivation, kept for callers that read it, but it
+                # is not the authority — a claim is something a caller can write.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)},
                 "current_writer": (coordination_mod.current_writer(
                     store.bindings(), bound) if bound else None),
                 "item_axis": coordination_mod.item_axis(
@@ -3097,26 +3108,29 @@ class Daemon:
     def _writer_claim(self, store, ref, params):
         """The write-scope claim to record with this binding, or None.
 
-        THE PRODUCER HALF of the v2 writer-binding (#237 B1). Three rules, each
-        a deliberate decision:
+        THE PRODUCER HALF of the v2 writer-binding (#237 B1), and since QA
+        Snapshot E it mints from the WORK ENGINE LEASE — the same `leases` row
+        `workengine/store.py#acquire_lease` writes — so the binding and the send
+        admission name ONE authority instead of two that can disagree.
 
-          * an EXPLICIT claim in `params["writer"]` is used as given (validated
-            by `coordination.binding`/`normalize_writer`). This is how a scope
-            is armed by hand — the CLI path, and a re-arm of a scope whose
-            threads predate this field.
+          * an EXPLICIT claim in `params["writer"]` is REFUSED. This RPC carries
+            no trusted actor, and a caller-chosen owner/token is exactly the
+            spoof E4 recorded: `agent.binding.record` accepted
+            `writer={owner: agent:EVIL, token: 999}` with nothing behind it.
           * a RE-RECORD of the same session reuses the claim already stored, so
-            `put_binding`'s idempotency holds: a retried create must not become
-            a second, different record.
-          * a NEW session claims the scope ONLY when no thread claims it yet. A
-            thread arriving at an ALREADY-OWNED scope does not take it: a
-            transfer is what revokes the incumbent (the router's handoff), and a
-            create is not a transfer. This is what keeps an old source's write
-            authority intact until the handoff actually moves it, and it is what
-            stops a new session from silently becoming a second writer.
+            `put_binding`'s idempotency holds.
+          * a NEW session claims the scope ONLY when the Work Engine holds a live
+            lease for that Item and no thread claims it yet. No lease ⇒ no claim,
+            and admission will refuse the send — a scope nobody acquired
+            authorizes nobody.
         """
-        explicit = params.get("writer")
-        if isinstance(explicit, dict):
-            return explicit
+        if params.get("writer") is not None:
+            raise coordination_mod.ThreadRefused(
+                "UNTRUSTED_ACTOR",
+                "agent.binding.record does not accept a caller-supplied writer. "
+                "The write scope's owner is the Work Engine lease; a writer this "
+                "RPC was told to record would be a claim with no authority "
+                "behind it")
         if str(params.get("session_role") or "") != "execution":
             return None
         item = str(params.get("bound_item_ref") or "").strip()
@@ -3128,7 +3142,15 @@ class Daemon:
         bindings = store.bindings()
         if coordination_mod.scope_has_writer(bindings, item):
             return None
-        return coordination_mod.mint_writer(bindings, item, owner=ref)
+        lease = resolver_mod.live_lease(self._item_roots(), item)
+        if lease is None:
+            return None
+        claim = coordination_mod.mint_writer(bindings, item, owner=lease["owner"])
+        # The token is the LEASE's fence, not a second counter's. A binding that
+        # minted its own token could never agree with the lease it is checked
+        # against.
+        claim["token"] = str(lease["token"])
+        return claim
 
     def _r_agent_binding_close(self, params) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.

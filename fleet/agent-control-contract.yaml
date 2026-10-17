@@ -245,37 +245,50 @@ idempotency:
 # ---------------------------------------------------------------------------
 write_scope:
   authority: >-
-    The Agent Control binding records, and nothing else. There is no second
-    store: a binding for an execution thread carries a `writer` claim (owner,
-    epoch, token, optional expiry), and the CURRENT WRITER of an Item is derived
-    from those records by `runtime/coordination.py#current_writer` — the OPEN
-    claim with the highest `(epoch, token, session_ref)`. The session ref is the
-    final tiebreak, so two claims minted identically still resolve to ONE winner
-    rather than to whichever was iterated last.
+    The WORK ENGINE lease, and nothing else. The exclusive write authority for an
+    Item is the LIVE row in the `leases` table that
+    `workengine/store.py#acquire_lease` writes; `context/resolver.py#live_lease`
+    reads it from the same `serveros.db`, with the same fixed-width
+    `%Y-%m-%dT%H:%M:%SZ` stamp, and `admit_work` checks a thread's claim against
+    its owner and token. The Agent Control binding's `writer` claim is a
+    REFERENCE to that lease, not a second authority: it is minted from the lease,
+    and a claim that disagrees with it is a stale or spoofed writer.
+  why_not_the_binding: >-
+    A binding claim is something a caller can write. Before this correction
+    `agent.binding.record` accepted `writer={owner: agent:EVIL, token: 999}` with
+    no actor behind it, `agent.binding.resolve` reported it as the current
+    writer, and the send admission returned ADMITTED while the Work Engine held
+    A/1 and refused a second writer (independent QA Snapshot E, E4/E5). A gate on
+    a claim is a gate on nothing.
   producer: >-
-    `serverosd`'s `agent.binding.record` MINTS the claim (`_writer_claim`). The
-    FIRST execution thread on an Item claims it; a later thread arriving at an
-    ALREADY-OWNED scope records no claim, because a create is not a transfer. A
-    re-record of the same session reuses its stored claim, so a retried create
-    stays idempotent. An explicit `writer` in the request arms a scope by hand
-    (a scope whose threads predate this field).
+    `serverosd`'s `agent.binding.record` MINTS the claim FROM the live lease:
+    owner and token are the lease's, and a scope with no live lease gets no
+    claim. A caller-supplied `writer` is REFUSED (`UNTRUSTED_ACTOR`) — this RPC
+    carries no trusted actor, and a writer it was told to record would be a claim
+    with no authority behind it. A re-record reuses the stored claim; a later
+    thread on an already-owned scope records none.
   consumer: >-
-    `agent.binding.resolve` returns `current_writer` beside the binding and the
-    Item state, in ONE read, and `DaemonBindings.get` carries it to the router's
-    admission. `admit_work` then refuses a thread whose claim is STALE or
-    EXPIRED, and refuses a thread that claims NOTHING while the scope is owned
-    by another.
+    `agent.binding.resolve` returns `write_authority` — `{source:
+    work-engine:leases, lease: {owner, token, expires_at} | null}` — beside the
+    binding and the Item state, in ONE read. `DaemonBindings.get` carries it to
+    the router and `admit_work` uses it as the ONLY writer authority:
+    no live lease (absent, expired, or revoked-and-deleted) refuses the send;
+    a claim that disagrees with the lease refuses; a thread claiming nothing on a
+    leased scope refuses.
   transfer: >-
-    A handoff moves authority by REVOKING the incumbent, which frees the scope:
-    once the closed source is the only claim, `current_writer` is None and the
-    established target may write. A new thread never takes an owned scope by
-    being created — that is the "the source must not lose authority early" rule
-    and the "one writer per scope" rule at the same time.
-  unowned_is_ungated: >-
-    A scope nobody claims gates nobody. That is the compatibility rule that
-    keeps every pre-existing (v1) thread working after this field was
-    introduced; the moment a scope gets a writer, every other thread on it is
-    fenced.
+    A handoff moves authority by REVOKING the incumbent (closing its binding),
+    and the successor must hold the lease. A create is not a transfer.
+  no_lease_is_no_writer: >-
+    This REPLACES the earlier "an unowned scope gates nobody" rule. A scope with
+    no live Work lease has no current writer, and a send is REFUSED. That is
+    fail-closed on purpose: a thread that predates the lease cannot be shown to
+    hold the write scope. It is a behaviour change, stated here rather than left
+    to be discovered.
+  production_producer_missing: >-
+    NOT YET WIRED: no production caller acquires the Work lease when a session is
+    created, so on the deployed path an execution send is currently refused until
+    `acquire_lease` is called for that Item. That is the remaining integration
+    step (S1 × work-engine #13) — and it is a REFUSAL, not a spoofable admission.
   not_claimed: >-
     This fences the CONTROL-PLANE admission and the binding record. It does NOT
     claim to stop a shell side-effect inside a provider that offers no native

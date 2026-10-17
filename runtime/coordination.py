@@ -463,7 +463,8 @@ def mint_writer(bindings, item_ref, *, owner, expires_at=None) -> dict:
 
 
 def admit_work(*, binding_record, work_item=None, item_state=None,
-               outcome=None, current_writer=None, now=None) -> dict:
+               outcome=None, current_writer=None, now=None,
+               authority=None) -> dict:
     """Whether this call may hand work to this thread. Raises `ThreadRefused`.
 
     The order below is the order the answers matter in, and it is not the order
@@ -528,6 +529,51 @@ def admit_work(*, binding_record, work_item=None, item_state=None,
     # it never claimed write authority — and refusing it would break every
     # thread created before this field existed. Gating is armed by the claim,
     # and it is `admit_work`'s callers that decide which threads make one.
+    # #237 B3 / QA Snapshot E (E5). When the caller supplies the WORK ENGINE
+    # LEASE, it is the ONLY writer authority — the same `leases` row
+    # `workengine/store.py#acquire_lease` writes. The binding's claim is checked
+    # AGAINST it, with no fallback to the claim itself: a claim can be written by
+    # the caller, so a gate that trusts it is a gate on nothing (E4).
+    #
+    # No live lease means no current writer. A lapsed, revoked (row deleted) or
+    # never-acquired lease authorizes nothing, which is what makes the two
+    # exclusive authorities say the same thing.
+    if authority is not None:
+        lease = (authority or {}).get("lease")
+        claim = (binding_record or {}).get("writer") if binding_record else None
+        if not claim:
+            raise ThreadRefused(
+                "NOT_CURRENT_WRITER",
+                f"{bound!r} has a Work lease and this thread claims no writer, so "
+                f"admitting it would be a second writer. The lease holder is "
+                f"{(lease or {}).get('owner')!r}")
+        if lease is None:
+            raise ThreadRefused(
+                "NOT_CURRENT_WRITER",
+                f"no live Work lease is recorded for {bound!r}, so the scope has no "
+                f"current writer. A lapsed, revoked or never-acquired lease "
+                f"authorizes nothing; acquire it in work-engine before sending")
+        expires = lease.get("expires_at")
+        if expires and now is not None and str(expires) <= str(now):
+            raise ThreadRefused(
+                "NOT_CURRENT_WRITER",
+                f"the Work lease for {bound!r} expired at {expires}, so it no longer "
+                f"authorizes a write")
+        if (str(claim.get("owner")) != str(lease.get("owner"))
+                or str(claim.get("token")) != str(lease.get("token"))):
+            raise ThreadRefused(
+                "NOT_CURRENT_WRITER",
+                f"this thread claims {bound!r} as {claim.get('owner')!r} token "
+                f"{claim.get('token')!r}, and the Work Engine lease is "
+                f"{lease.get('owner')!r} token {lease.get('token')!r}. The lease is "
+                f"the exclusive write authority; a binding claim that disagrees "
+                f"with it is a stale or spoofed writer")
+        return {"state": "ADMITTED", "session_role": binding_record.get("session_role"),
+                "bound_item_ref": bound, "item_axis": axis,
+                "item_state": (str(item_state).strip().upper() if item_state else None),
+                "work_item_named": named, "writer_axis": "CURRENT",
+                "write_authority": str((authority or {}).get("source") or "")}
+
     claim = (binding_record or {}).get("writer") if binding_record else None
     writer_state = writer_axis(binding_record, current_writer=current_writer,
                                now=now)

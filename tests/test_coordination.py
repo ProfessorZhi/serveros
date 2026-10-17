@@ -743,36 +743,60 @@ def test_the_binding_list_reports_roles_and_counts_never_records(daemon):
     assert "LIT-0101" not in json.dumps(listing["by_role"])
 
 
-def test_the_daemon_produces_a_write_scope_claim_and_serves_it_back(daemon):
-    """#237 B1. The v2 writer-binding, produced and consumed on the REAL path.
+def a_work_lease(root: Path, *, owner="agent:A", token="1", ttl_s=600):
+    """A live Work Engine lease row, where THIS daemon reads it (#237 B3).
 
-    This is the P0 the router's own PR left open: a binding was recorded with no
-    claim, so the admission gate could never fire in production. Now the daemon
-    MINTS a claim for the first execution thread on an Item and serves the
-    scope's current writer back on `resolve` — the producer and the consumer of
-    the v2 writer-binding, on the daemon surface rather than only in tests.
+    `_item_roots` derives `<state_dir>/../serveros.db`, so the row goes there.
+    Written directly rather than through work-engine because this repository
+    must not import that one; the writer's own suite proves the producer, and
+    the reader here reads the same table and the same fixed-width stamp.
     """
+    import datetime
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db = root / "serveros.db"
+    expires = datetime.datetime.fromtimestamp(
+        datetime.datetime.now(datetime.timezone.utc).timestamp() + ttl_s,
+        datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, "
+        "owner TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL)")
+    conn.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?)",
+                 ("LIT-0101", owner, token, expires))
+    conn.commit()
+    conn.close()
+
+
+def test_the_daemon_produces_a_write_scope_claim_and_serves_it_back(daemon, tmp_path):
+    """#237 B1/B3. The claim is minted FROM the Work Engine lease.
+
+    Since QA Snapshot E the producer does not mint a token of its own: the claim
+    carries the lease's owner and token, so the binding and the send admission
+    name ONE authority instead of two that can disagree.
+    """
+    a_work_lease(tmp_path, owner="agent:A", token="1")
     first = daemon.handle({"method": "agent.binding.record", "params": {
         "session_ref": "session-1", "session_role": "execution",
         "bound_item_ref": "LIT-0101"}})["result"]
     assert first["recorded"] is True
     assert first["binding"]["schema"] == coordination.SCHEMA_WRITER
-    assert first["binding"]["writer"]["owner"] == "session-1"
+    assert first["binding"]["writer"]["owner"] == "agent:A"
+    assert first["binding"]["writer"]["token"] == "1"
 
     read = daemon.handle({"method": "agent.binding.resolve",
                           "params": {"session_ref": "session-1"}})["result"]
-    assert read["current_writer"]["owner"] == "session-1"
-    assert read["current_writer"]["epoch"] == 1
+    assert read["current_writer"]["owner"] == "agent:A"
+    assert read["write_authority"]["lease"]["token"] == "1"
 
 
-def test_a_second_thread_on_an_owned_scope_does_not_take_it(daemon):
+def test_a_second_thread_on_an_owned_scope_does_not_take_it(daemon, tmp_path):
     """A create is not a transfer (#237: the source must not lose it early).
 
     The second execution thread on the same Item records NO claim — the scope is
-    already owned — so it is not the writer until the incumbent is revoked. It
-    claims nothing and is not gated by that alone; the gate fences it because
-    the scope HAS an owner.
+    already owned — so it is not the writer until the incumbent is revoked.
     """
+    a_work_lease(tmp_path, owner="agent:A", token="1")
     daemon.handle({"method": "agent.binding.record", "params": {
         "session_ref": "session-1", "session_role": "execution",
         "bound_item_ref": "LIT-0101"}})
@@ -785,7 +809,9 @@ def test_a_second_thread_on_an_owned_scope_does_not_take_it(daemon):
 
     read = daemon.handle({"method": "agent.binding.resolve",
                           "params": {"session_ref": "session-2"}})["result"]
-    assert read["current_writer"]["owner"] == "session-1"
+    # The incumbent's claim is the LEASE's owner, not the session ref — that is
+    # the whole point of minting from the lease (QA Snapshot E).
+    assert read["current_writer"]["owner"] == "agent:A"
 
 
 def test_closing_the_incumbent_frees_the_scope(daemon):
@@ -809,15 +835,20 @@ def test_closing_the_incumbent_frees_the_scope(daemon):
     assert read["current_writer"] is None
 
 
-def test_an_explicit_claim_arms_a_scope_by_hand(daemon):
-    """A scope whose threads predate the field is armed by naming the writer."""
-    daemon.handle({"method": "agent.binding.record", "params": {
+def test_a_caller_supplied_writer_is_refused(daemon):
+    """QA Snapshot E E4. This RPC has no trusted actor, so it takes no writer.
+
+    `agent.binding.record` used to return a caller's `writer` dict verbatim, so
+    `writer={owner: agent:EVIL, token: 999}` became the scope's current writer
+    with nothing behind it. The owner of a write scope is the Work Engine lease;
+    a writer this RPC was told to record is a claim with no authority.
+    """
+    answer = daemon.handle({"method": "agent.binding.record", "params": {
         "session_ref": "session-1", "session_role": "execution",
         "bound_item_ref": "LIT-0101",
-        "writer": {"owner": "operator", "epoch": 7, "token": "7"}}})
-    read = daemon.handle({"method": "agent.binding.resolve",
-                          "params": {"session_ref": "session-1"}})["result"]
-    assert read["current_writer"] == {"owner": "operator", "epoch": 7, "token": "7"}
+        "writer": {"owner": "agent:EVIL", "epoch": 1, "token": "999"}}})["result"]
+    assert answer["recorded"] is False
+    assert answer["reason"] == "UNTRUSTED_ACTOR"
 
 
 def test_the_store_refuses_a_binding_keyed_by_anything_but_a_session(store):

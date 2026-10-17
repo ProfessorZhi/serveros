@@ -377,6 +377,36 @@ def held_leases(roots: Roots, *, now=None) -> list[str]:
             (expires_after,)))
 
 
+def live_lease(roots: Roots, resource: str, *, now=None) -> dict | None:
+    """The LIVE Work Engine lease for one resource, or None.
+
+    Same table and same fixed-width stamp as `held_leases`; the difference is
+    that this returns the owner and the token, because the send admission must
+    COMPARE them rather than merely count the resource. `held_leases` answers
+    "which resources are claimed" for the capsule's `protected` list; this
+    answers "who holds THIS one, and with which fence", which is the question a
+    send asks (#237 B3 / QA Snapshot E E5).
+
+    The row is written by `work-engine/workengine/store.py#acquire_lease` — the
+    one authority for exclusive Work write ownership — so this is a READ of that
+    authority, not a second one. An expired row is not a lease: it is a crashed
+    or finished holder, and a scope whose lease has lapsed has no current writer.
+    """
+    if now is None:
+        now = time.time()
+    expires_after = datetime.datetime.fromtimestamp(
+        math.ceil(float(now)), datetime.timezone.utc).strftime(_LEASE_STAMP)
+    rows = _query_state(
+        roots,
+        "SELECT resource, owner, token, expires_at FROM leases "
+        "WHERE resource=? AND expires_at > ?",
+        (str(resource), expires_after))
+    for row in rows:
+        return {"resource": row["resource"], "owner": row["owner"],
+                "token": row["token"], "expires_at": row["expires_at"]}
+    return None
+
+
 def _development(roots: Roots, project_cfg: dict, item_id: str) -> dict:
     """The repo that owns this Item's development worktree, and its live Git state."""
     repo = project_cfg.get("worktrees_under")
