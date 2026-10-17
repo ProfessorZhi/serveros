@@ -258,12 +258,20 @@ def phase_after_transport_failure(reason) -> str:
 
 OBSERVED_APPLIED = "APPLIED"
 OBSERVED_NOT_APPLIED = "NOT_APPLIED"
-#: The words an owner may use for the two definite answers. Kept slightly wider
-#: than our own spelling because the observer is another subsystem describing
-#: its own state, and a synonym is not a different fact — while an unrecognised
-#: word IS undecidable, and falls through to UNKNOWN below.
+#: The words an owner may use for the APPLIED answer. Slightly wider than our own
+#: spelling because the observer is another subsystem describing its own state,
+#: and a synonym is not a different fact — while an unrecognised word IS
+#: undecidable and falls through to UNKNOWN below.
 _APPLIED_WORDS = (OBSERVED_APPLIED, "COMPLETED", "PRESENT", "DONE")
-_NOT_APPLIED_WORDS = (OBSERVED_NOT_APPLIED, "ABSENT", "NOT_FOUND", "MISSING")
+#: NOT_APPLIED HAS NO SYNONYMS, and that asymmetry is deliberate. An observer
+#: that "did not find" a turn has established a LOOKUP MISS, not an absence of
+#: the effect: the turn may be queued, the read may be stale, or the lookup may
+#: be keyed by something this attempt does not have. So `ABSENT`, `NOT_FOUND`,
+#: `MISSING` and a provider's own `TURN_NOT_FOUND` are NOT accepted here — they
+#: fall through to UNKNOWN, which keeps the effect fenced. Only a caller that
+#: holds an AUTHORITATIVE record that the effect was never applied may say
+#: `NOT_APPLIED`, and it must also name where that record is (`source`).
+_NOT_APPLIED_WORDS = (OBSERVED_NOT_APPLIED,)
 
 SETTLE_APPLIED = "SETTLE_APPLIED"
 SETTLE_NOT_APPLIED = "SETTLE_NOT_APPLIED"
@@ -349,6 +357,17 @@ def reconcile_observation(recorded, *, observation, reconciler,
                             "digest and its provider locator both differ from the "
                             "recorded attempt's. An observation about another call "
                             "proves nothing about this one")}
+
+    # Where the observation came from. Required, and required BEFORE its state
+    # is read: an observation with no provenance cannot be told from a guess, and
+    # a guess is not evidence about whether an effect happened.
+    source = str(observation.get("source") or "").strip()
+    if not source:
+        return {"verdict": REFUSE_UNKNOWN,
+                "because": ("the observation does not name its source. An "
+                            "observation that cannot say where it came from "
+                            "cannot be told from a guess, and a guess does not "
+                            "settle an effect")}
 
     state = str(observation.get("state") or "").strip().upper()
     if state in _APPLIED_WORDS:

@@ -168,7 +168,8 @@ def recorded_unknown(*, principal="agent:A", owner="agent:A", work_item="SRV-000
 
 
 def observation(**over):
-    obs = {"state": attempts.OBSERVED_APPLIED, "intent_digest": digest()}
+    obs = {"state": attempts.OBSERVED_APPLIED, "intent_digest": digest(),
+           "source": "provider:turn-journal"}
     obs.update(over)
     return obs
 
@@ -244,7 +245,8 @@ class TestReconcileObservation(unittest.TestCase):
     def test_a_matching_provider_locator_identifies_the_intent(self):
         rec = recorded_unknown(provider_locator="provider-session:xyz")
         obs = {"state": attempts.OBSERVED_APPLIED,
-               "provider_locator": "provider-session:xyz"}
+               "provider_locator": "provider-session:xyz",
+               "source": "provider:turn-journal"}
         v = attempts.reconcile_observation(
             rec, observation=obs, reconciler=reconciler(),
             current_writer=CURRENT_WRITER)
@@ -277,6 +279,44 @@ class TestReconcileObservation(unittest.TestCase):
             recorded_unknown(work_item=None), observation=observation(),
             reconciler=reconciler(), current_writer=None)
         self.assertEqual(v["verdict"], attempts.SETTLE_APPLIED)
+
+
+class TestObservationProvenance(unittest.TestCase):
+    """#245. An observation must say WHERE it came from, and a lookup MISS is not
+    proof that the effect did not happen.
+
+    These are the two rules that stop an adapter turning "I could not find it"
+    into "it did not happen" — which would free the scope and let the next retry
+    send the same effect a second time.
+    """
+
+    def test_an_observation_without_a_source_proves_nothing(self):
+        for state in (attempts.OBSERVED_APPLIED, attempts.OBSERVED_NOT_APPLIED):
+            obs = {"state": state, "intent_digest": digest()}   # no `source`
+            v = attempts.reconcile_observation(
+                recorded_unknown(), observation=obs, reconciler=reconciler(),
+                current_writer=CURRENT_WRITER)
+            self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN, state)
+
+    def test_a_lookup_miss_is_not_proof_of_absence(self):
+        # The provider's own absence words describe a MISS, not a fact about the
+        # effect. None of them may free the scope.
+        for state in ("ABSENT", "NOT_FOUND", "MISSING", "TURN_NOT_FOUND"):
+            obs = {"state": state, "intent_digest": digest(),
+                   "source": "provider:trigger-result"}
+            v = attempts.reconcile_observation(
+                recorded_unknown(), observation=obs, reconciler=reconciler(),
+                current_writer=CURRENT_WRITER)
+            self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN, state)
+
+    def test_only_an_affirmative_not_applied_settles(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(),
+            observation={"state": attempts.OBSERVED_NOT_APPLIED,
+                         "intent_digest": digest(),
+                         "source": "provider:durable-journal"},
+            reconciler=reconciler(), current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.SETTLE_NOT_APPLIED)
 
 
 class TestTheAttemptIsDurable(unittest.TestCase):
