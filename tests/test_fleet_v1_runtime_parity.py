@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,22 @@ def _load_parity():
 
 parity = _load_parity()
 CONTRACT = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+
+OBSERVED_PATH = PKG / "observed.py"
+OBSERVATION_PATH = PKG / "observed" / "tokyo-2026-10-18.json"
+
+
+def _load_observed():
+    spec = importlib.util.spec_from_file_location("fleet_v1_runtime_parity_observed",
+                                                  OBSERVED_PATH)
+    assert spec is not None and spec.loader is not None, f"cannot load {OBSERVED_PATH}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+observed = _load_observed()
+OBSERVATION = json.loads(OBSERVATION_PATH.read_text(encoding="utf-8"))
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -319,3 +336,137 @@ def test_contract_and_module_vocabularies_do_not_drift():
 def test_every_lifecycle_verb_has_a_grant_requirement():
     assert set(parity.REQUIRED_GRANT) == set(parity.LIFECYCLE_VERBS)
     assert set(CONTRACT["required_grants"]) == set(parity.LIFECYCLE_VERBS)
+
+
+# ---------------------------------------------------------------------------
+# Observed-vs-declared: the real read-only Tokyo snapshot of 2026-10-18.
+#
+# Everything below is offline. It projects a recorded snapshot; it does not
+# contact a provider, read a credential, or claim a live Runtime.
+# ---------------------------------------------------------------------------
+
+def test_tokyo_observed_states_are_distinct_and_honest():
+    out = observed.project_observed(OBSERVATION)
+    assert out["schema"] == observed.SCHEMA
+    assert out["evidence_level"] == "REAL_READ_ONLY"
+    assert out["runtimes"]["claude-code"]["binding"] == "BOUND"
+    assert out["runtimes"]["codex"]["binding"] == "UNBOUND"
+    assert out["runtimes"]["claude-code"]["states"] == {
+        "cli": "INSTALLED_ONLY",
+        "direct_provider": "ABSENT",
+        "agent_list": "NEEDS_LOGIN",
+        "session_list": "READ_AUTHORIZED",
+    }
+    assert out["runtimes"]["codex"]["states"] == {
+        "cli": "INSTALLED_ONLY",
+        "direct_provider": "READ_AUTHORIZED",
+        "agent_list": "READ_AUTHORIZED",
+        "session_list": "READ_AUTHORIZED",
+    }
+
+
+def test_codex_effective_model_is_readback_but_mode_is_unknown():
+    out = observed.project_observed(OBSERVATION)
+    codex = out["runtimes"]["codex"]["effective"]
+    assert codex["model"] == {
+        "value": "gpt-6-astra",
+        "provenance": "FACT",
+        "source": "codex:thread/list",
+    }
+    assert codex["permissionMode"]["value"] is None
+    assert codex["permissionMode"]["provenance"] == "UNKNOWN"
+
+    claude = out["runtimes"]["claude-code"]["effective"]
+    assert claude["model"]["value"] is None
+    assert claude["model"]["provenance"] == "UNKNOWN"
+    assert claude["permissionMode"]["value"] is None
+    assert claude["permissionMode"]["provenance"] == "UNKNOWN"
+
+
+def test_session_read_never_becomes_new_work_entitlement():
+    out = observed.project_observed(OBSERVATION)
+    assert out["entitlement"] == "NOT_INFERRED_FROM_SESSION_READ"
+    for runtime in ("claude-code", "codex"):
+        block = out["runtimes"][runtime]
+        assert block["entitlement"] == "NOT_INFERRED_FROM_SESSION_READ"
+        for verb in observed.NEW_WORK_VERBS:
+            assert block["new_work"][verb]["dispatch"] != "PRECONDITIONS_MET"
+
+
+def test_unbound_codex_is_refused_without_fallback():
+    out = observed.project_observed(OBSERVATION)
+    codex = out["runtimes"]["codex"]
+    assert codex["binding"] == "UNBOUND"
+    for verb in observed.NEW_WORK_VERBS:
+        row = codex["new_work"][verb]
+        assert row["dispatch"] == "REFUSED"
+        assert "PROVIDER_UNBOUND" in row["reasons"]
+    assert out["fallback"] is None
+
+
+def test_needs_login_is_not_absent_or_authorized():
+    out = observed.project_observed(OBSERVATION)
+    claude = out["runtimes"]["claude-code"]
+    assert claude["states"]["agent_list"] == "NEEDS_LOGIN"
+    assert claude["states"]["session_list"] == "READ_AUTHORIZED"
+    for verb in observed.NEW_WORK_VERBS:
+        reasons = claude["new_work"][verb]["reasons"]
+        assert "NEEDS_LOGIN" in reasons
+        assert "PROVIDER_ADAPTER_ABSENT" in reasons
+
+
+def test_structural_conformant_is_not_behavioral_live():
+    out = observed.project_observed(OBSERVATION)
+    assert out["structural_parity"]["verdict"] == "CONFORMANT"
+    assert "structural" in out["structural_parity"]["scope"].lower()
+    assert out["behavioral"]["state"] == "NOT_RUN"
+    assert out["behavioral"]["live"] is False
+
+
+def test_observed_snapshot_is_redacted():
+    raw = OBSERVATION_PATH.read_text(encoding="utf-8")
+    for forbidden in (
+        "sk-",
+        "Bearer ",
+        '"TOKEN"',
+        '"title":',
+        '"cwd":',
+        '"argv"',
+        '"environment"',
+    ):
+        assert forbidden not in raw, forbidden
+    # No full native session id (UUID) survives into the committed snapshot.
+    assert re.search(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        raw,
+    ) is None
+    sessions = (OBSERVATION["runtimes"]["codex"]["session_metadata"]
+                + OBSERVATION["runtimes"]["claude-code"]["session_metadata"])
+    assert sessions
+    for session in sessions:
+        assert re.fullmatch(r"sha256:[0-9a-f]{12}", session["session_id"])
+
+
+def test_observed_contract_and_module_do_not_drift():
+    block = CONTRACT["observed_vs_declared"]
+    assert block["observation_schema"] == observed.OBSERVATION_SCHEMA
+    assert block["projection_schema"] == observed.SCHEMA
+    assert block["evidence_level"] == observed.EVIDENCE_LEVEL
+    assert list(block["observed_states"]) == list(observed.OBSERVED_STATES)
+    assert list(block["binding_states"]) == list(observed.BINDING_STATES)
+    assert list(block["new_work_verbs"]) == list(observed.NEW_WORK_VERBS)
+    assert block["entitlement"] == observed.ENTITLEMENT
+
+
+def test_snapshot_declared_states_match_the_projection():
+    out = observed.project_observed(OBSERVATION)
+    for key in ("claude-code", "codex"):
+        assert OBSERVATION["runtimes"][key]["states"] == out["runtimes"][key]["states"]
+
+
+def test_observed_projection_is_pure_and_deterministic():
+    before = json.dumps(OBSERVATION, sort_keys=True)
+    first = observed.project_observed(OBSERVATION)
+    second = observed.project_observed(OBSERVATION)
+    assert first == second
+    assert json.dumps(OBSERVATION, sort_keys=True) == before

@@ -243,6 +243,62 @@ defaults:
     per_field: "model and permissionMode have separate provenance and source"
 
 # Dispatch is a projection of preconditions in the source contract's order:
-# support -> readiness -> session freshness -> grant. It is not authorization,
+# support -> readiness -> session-freshness -> grant. It is not authorization,
 # and UNKNOWN is not a refusal.
 dispatch_order: [support, readiness, session-freshness, grant]
+
+# ---------------------------------------------------------------------------
+# Observed vs declared (real read-only snapshot, 2026-10-18).
+#
+# The five observed states are per surface, not per runtime, because one runtime
+# can be INSTALLED_ONLY while an existing session on it is READ_AUTHORIZED and a
+# different read surface (the agent inventory) is NEEDS_LOGIN. Collapsing them
+# into one word would lose the distinction the milestone exists to make.
+# ---------------------------------------------------------------------------
+observed_vs_declared:
+  observation_schema: serveros/fleet-v1-runtime-parity-observation.v1
+  projection_schema: serveros/fleet-v1-runtime-parity-observed.v1
+  evidence_level: REAL_READ_ONLY
+  observed_states: [ABSENT, INSTALLED_ONLY, READ_AUTHORIZED, NEEDS_LOGIN, UNKNOWN]
+  binding_states: [BOUND, UNBOUND, UNKNOWN]
+  new_work_verbs: [create, send, resume, interrupt]
+  entitlement: NOT_INFERRED_FROM_SESSION_READ
+
+  rules:
+    ABSENT: >-
+      the provider inventory contains no such instance. It is not inferred from
+      a failed read; a failed read is UNKNOWN and keeps its reason.
+    INSTALLED_ONLY: >-
+      a benign version/presence command established a CLI and its version with
+      FACT provenance. The CLI existing is not a provider instance, a session
+      entitlement, or execution readiness.
+    READ_AUTHORIZED: >-
+      a documented read-only provider/session read answered with authoritative
+      provider-response evidence. It covers exactly the surface that was read;
+      it does not promote a different surface at the same provider.
+    NEEDS_LOGIN: >-
+      the provider itself answered that authentication is required. It is not
+      ABSENT and it is not READ_AUTHORIZED; a human can change it, so new work is
+      UNKNOWN with NEEDS_LOGIN rather than a capability refusal. No credential is
+      read, copied or injected to discharge it.
+    UNKNOWN: >-
+      nobody established the fact. Absence of an observation is not a no.
+
+  invariants:
+    session_read_is_not_entitlement: >-
+      An already-authorized session list is not a new Claude Code or Codex
+      account entitlement. create/send/resume/interrupt never become
+      PRECONDITIONS_MET from a read; they stay UNKNOWN or REFUSED with the
+      observed blocker named.
+    declared_or_desired_model_is_not_effective: >-
+      Effective model and permission mode are accepted per field only from a
+      provider-native field with FACT provenance and a named source. A declared,
+      desired, requested, resolved or config-default value is not effective.
+    structural_conformant_is_not_behavioral_live: >-
+      `CONFORMANT` from `serverosctl device agents --probe` is a structural
+      verdict over declared ids, surfaces and presence. It is carried with that
+      scope; behavioural session lifecycle remains NOT_RUN and `live` is false.
+    observed_but_unbound_is_refused: >-
+      A provider that answers reads but is absent from the device's
+      `runtime_bindings` is observed and unbound. New work is REFUSED with
+      PROVIDER_UNBOUND; no other family, account or runtime is tried.

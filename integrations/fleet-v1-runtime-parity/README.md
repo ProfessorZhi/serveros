@@ -16,9 +16,12 @@ requested/resolved/effective model + permissionMode × Session lifecycle
 | --- | --- |
 | `contract.yaml` | 闭集词表、拒绝码、grant 要求、capability matrix（每格标注 pinned source） |
 | `parity.py` | 纯投影：无 IO、无时钟、无 provider import；只做映射、拒绝与 UNKNOWN |
+| `observed.py` | observed-vs-declared 纯投影：五个观测状态按 surface 分开，不合并 |
+| `observed/tokyo-2026-10-18.json` | 2026-10-18 Tokyo 真实只读快照（已脱敏） |
+| `OBSERVED-2026-10-18.md` | 真实只读观测报告、矩阵、脱敏与外部批准清单 |
 | `fixtures/positive.json` | 4 个正向 profile：Tokyo/vince Claude+Codex、Tokyo/vince Codex app-server、Dell/fjd Claude |
 | `fixtures/negative.json` | 14 个负向 profile：principal、installed CLI、grant、stale session、unbound provider、NEEDS_LOGIN、secret-shaped ref、runtime tag/family 轴、project、session ref、adapter absent、readiness absent |
-| `tests/test_fleet_v1_runtime_parity.py` | 34 个断言/参数化用例 |
+| `tests/test_fleet_v1_runtime_parity.py` | 44 个断言/参数化用例 |
 
 ## 两个不变量
 
@@ -57,6 +60,23 @@ requested/resolved/effective model + permissionMode × Session lifecycle
   `integrations/fleet-cc-dev-plugin` 是 client plugin，不是 Session provider；
   因此 CC native lifecycle 是 `UNKNOWN` + `PROVIDER_ADAPTER_ABSENT` blocker，
   不是被推断出来的 SUPPORTED。
+
+## 真实只读观测（2026-10-18）
+
+见 [`OBSERVED-2026-10-18.md`](OBSERVED-2026-10-18.md)。一次有界的只读快照，
+证据级别 `REAL_READ_ONLY`：
+
+- Tokyo registry 实际只绑定 `agent-runtime:claude-code`。
+- Claude Code CLI `2.1.272` 安装、binding `BOUND`，但**没有直接 provider 实例**；
+  只有 BotMux dashboard adapter：session metadata `READ_AUTHORIZED`，
+  agent inventory `NEEDS_LOGIN`。
+- Codex CLI `0.160.0` 安装，`provider:codex-app-server` 在线且 session metadata
+  `READ_AUTHORIZED`；2 个既有 session 的 model `gpt-6-astra` 为 `FACT` readback。
+  **但 registry 未绑定 codex → new work `REFUSED` / `PROVIDER_UNBOUND`**，无 fallback。
+- effective `permissionMode` 两侧均 `UNKNOWN`；没有把 config/sandbox 当作 effective。
+- `CONFORMANT` 只是结构性结论；`behavioral.state = NOT_RUN`，`live = false`。
+
+既有 session list 不等于新的 Claude Code / Codex 账号 entitlement。
 
 ## 拒绝与 UNKNOWN
 
@@ -103,7 +123,7 @@ flock -n /tmp/serveros-fleet-v1-runtime-parity.lock \
     tests/test_fleet_v1_runtime_parity.py -q -p no:cacheprovider
 ```
 
-本机实测：RED = `FileNotFoundError: parity.py`，exit 2；GREEN = 34 passed，exit 0。
+本机实测：RED = `FileNotFoundError: parity.py`，exit 2；GREEN = 44 passed，exit 0。
 
 ## 非目标 / 未验证
 
