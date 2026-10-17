@@ -236,6 +236,143 @@ def phase_after_transport_failure(reason) -> str:
     return EFFECT_UNKNOWN
 
 
+# ---------------------------------------------------------------------------
+# OBSERVATIONAL RECONCILIATION — turning EFFECT_UNKNOWN into a decision.
+#
+# EFFECT_UNKNOWN means "we sent it and did not see the answer". It is resolved
+# only by an INDEPENDENT observation from the party that owns the effect (the
+# provider or its owner), and never by re-sending. The observation is
+# three-valued on purpose:
+#
+#   APPLIED       the effect is there — settle the attempt
+#   NOT_APPLIED   the effect is provably NOT there — the scope is free again
+#   UNKNOWN       the observation decided nothing, which is not the same as
+#                 either of the above and leaves the attempt where it was
+#
+# A reconciler is not whoever happens to call: it must be the principal that
+# dispatched the attempt AND the current writer of its write scope, because
+# reconciliation is a protected write. A stale writer and a different principal
+# are refused in their own words — collapsing either into "unknown" would hide
+# an authorization failure inside a data-quality one.
+# ---------------------------------------------------------------------------
+
+OBSERVED_APPLIED = "APPLIED"
+OBSERVED_NOT_APPLIED = "NOT_APPLIED"
+#: The words an owner may use for the two definite answers. Kept slightly wider
+#: than our own spelling because the observer is another subsystem describing
+#: its own state, and a synonym is not a different fact — while an unrecognised
+#: word IS undecidable, and falls through to UNKNOWN below.
+_APPLIED_WORDS = (OBSERVED_APPLIED, "COMPLETED", "PRESENT", "DONE")
+_NOT_APPLIED_WORDS = (OBSERVED_NOT_APPLIED, "ABSENT", "NOT_FOUND", "MISSING")
+
+SETTLE_APPLIED = "SETTLE_APPLIED"
+SETTLE_NOT_APPLIED = "SETTLE_NOT_APPLIED"
+REFUSE_NOT_UNKNOWN = "REFUSE_NOT_UNKNOWN"
+REFUSE_PRINCIPAL = "REFUSE_PRINCIPAL"
+REFUSE_STALE_WRITER = "REFUSE_STALE_WRITER"
+REFUSE_UNKNOWN = "REFUSE_UNKNOWN"
+OBSERVATION_VERDICTS = (SETTLE_APPLIED, SETTLE_NOT_APPLIED, REFUSE_NOT_UNKNOWN,
+                        REFUSE_PRINCIPAL, REFUSE_STALE_WRITER, REFUSE_UNKNOWN)
+
+
+def reconcile_observation(recorded, *, observation, reconciler,
+                          current_writer=None, now=None) -> dict:
+    """What an owner's observation authorizes for an EFFECT_UNKNOWN attempt.
+
+    PURE. The checks run in the order the answers matter in: whether there is
+    anything to reconcile, whether this caller may, whether it still holds the
+    write scope, whether the observation is even about THIS intent, and only
+    then what the observation says.
+
+    Fail closed at every step. An observation that cannot be tied to this
+    attempt, from a caller that cannot be authorized, settles nothing — and the
+    attempt stays EFFECT_UNKNOWN, which is the state that refuses a retry.
+    """
+    if recorded is None:
+        return {"verdict": REFUSE_UNKNOWN,
+                "because": ("no attempt is recorded under this key, so there is "
+                            "no unknown outcome to reconcile")}
+    phase = str(recorded.get("phase") or "").strip().upper()
+    if phase != EFFECT_UNKNOWN:
+        return {"verdict": REFUSE_NOT_UNKNOWN,
+                "because": (f"this attempt is {phase or 'unphased'}, not "
+                            f"EFFECT_UNKNOWN. Only an outcome nobody knows is "
+                            f"reconciled; a settled, in-flight or superseded "
+                            f"attempt has its own answer — and a LATE reply to "
+                            f"one of those must not overwrite it")}
+
+    reconciler = dict(reconciler or {})
+    recorded_principal = recorded.get("principal")
+    if recorded_principal and str(recorded_principal) != str(reconciler.get("principal")):
+        return {"verdict": REFUSE_PRINCIPAL,
+                "because": (f"this attempt was dispatched by {recorded_principal!r} "
+                            f"and {reconciler.get('principal')!r} is not that "
+                            f"principal. An observation from a different principal "
+                            f"is not evidence about this effect")}
+
+    # Reconciliation is a protected write, so it needs the writer gate. A scope
+    # with no Item has no write authority to hold (a coordinator send), so the
+    # gate does not apply to it; every scope WITH an Item does.
+    if recorded.get("work_item"):
+        if current_writer is None:
+            return {"verdict": REFUSE_UNKNOWN,
+                    "because": ("no current-writer record was available, so the "
+                                "caller cannot be shown to still hold the write "
+                                "scope. Reconciliation is a write, and a write "
+                                "nobody could authorize is refused")}
+        if not _same_writer(reconciler, current_writer):
+            return {"verdict": REFUSE_STALE_WRITER,
+                    "because": (f"the current writer of {recorded.get('work_item')!r} "
+                                f"is {current_writer.get('owner')!r} at epoch "
+                                f"{current_writer.get('epoch')!r} token "
+                                f"{current_writer.get('token')!r}; this caller "
+                                f"presents {reconciler.get('owner')!r} at epoch "
+                                f"{reconciler.get('epoch')!r} token "
+                                f"{reconciler.get('token')!r}. A superseded writer "
+                                f"does not get to settle the successor's scope")}
+
+    # The observation must be about THIS intent. The digest proves it directly;
+    # a matching provider-native locator proves it when the observer knows the
+    # locator and not our digest. Neither present (or neither matching) means
+    # the observation could be about any call at all.
+    observation = dict(observation or {})
+    observed_digest = str(observation.get("intent_digest") or "")
+    observed_locator = str(observation.get("provider_locator") or "")
+    recorded_locator = str(recorded.get("provider_locator") or "")
+    same_intent = (observed_digest and
+                   observed_digest == str(recorded.get("intent_digest") or ""))
+    same_locator = (observed_locator and recorded_locator
+                    and observed_locator == recorded_locator)
+    if not (same_intent or same_locator):
+        return {"verdict": REFUSE_UNKNOWN,
+                "because": ("the observation cannot be tied to THIS intent — its "
+                            "digest and its provider locator both differ from the "
+                            "recorded attempt's. An observation about another call "
+                            "proves nothing about this one")}
+
+    state = str(observation.get("state") or "").strip().upper()
+    if state in _APPLIED_WORDS:
+        return {"verdict": SETTLE_APPLIED, "phase": SETTLED,
+                "result": observation.get("result"),
+                "because": "the owner observes the effect applied; the attempt settles"}
+    if state in _NOT_APPLIED_WORDS:
+        return {"verdict": SETTLE_NOT_APPLIED, "phase": CALL_NOT_SENT,
+                "because": ("the owner observes the effect absent, so the scope is "
+                            "free and a retry is safe")}
+    return {"verdict": REFUSE_UNKNOWN,
+            "because": (f"the observation says {state!r}, which decides nothing. An "
+                        f"effect nobody proved is left EFFECT_UNKNOWN, which is "
+                        f"what refuses a retry")}
+
+
+def _same_writer(reconciler, current_writer) -> bool:
+    """The reconciler IS the current writer — owner, epoch and token alike."""
+    current_writer = current_writer or {}
+    return (str(reconciler.get("owner")) == str(current_writer.get("owner"))
+            and str(reconciler.get("epoch")) == str(current_writer.get("epoch"))
+            and str(reconciler.get("token")) == str(current_writer.get("token")))
+
+
 def tree_shape() -> dict:
     """What this module declares, for a caller that reads contracts."""
     return {
@@ -243,6 +380,9 @@ def tree_shape() -> dict:
         "phases": list(PHASES),
         "verdicts": list(VERDICTS),
         "identity": "intent_digest(action, device_ref, verb, params, workspace, work_item)",
+        "reconciliation": "reconcile_observation(recorded, observation, reconciler, current_writer)",
+        "observation_verdicts": list(OBSERVATION_VERDICTS),
+        "observed_states": list(_APPLIED_WORDS) + list(_NOT_APPLIED_WORDS) + ["UNKNOWN"],
         "owner": "runtime/agent_control_store.py#dispatch_attempts",
         "not_claimed": ("a durable key is an attempt identity, not proof the "
                         "remote effect happened exactly once; an unknown outcome "

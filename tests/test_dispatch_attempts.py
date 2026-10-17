@@ -157,6 +157,128 @@ class TestTheRecordShape(unittest.TestCase):
                                     intent_digest="x", phase="MAYBE")
 
 
+def recorded_unknown(*, principal="agent:A", owner="agent:A", work_item="SRV-0001",
+                     **over):
+    rec = attempts.attempt_record(
+        key=KEY, action=SEND["action"], device_ref=SEND["device_ref"],
+        verb=SEND["verb"], intent_digest=digest(), phase=attempts.EFFECT_UNKNOWN,
+        work_item=work_item, principal=principal)
+    rec.update(over)
+    return rec
+
+
+def observation(**over):
+    obs = {"state": attempts.OBSERVED_APPLIED, "intent_digest": digest()}
+    obs.update(over)
+    return obs
+
+
+def reconciler(**over):
+    rec = {"principal": "agent:A", "owner": "agent:A", "epoch": 1, "token": "1"}
+    rec.update(over)
+    return rec
+
+
+CURRENT_WRITER = {"owner": "agent:A", "epoch": 1, "token": "1"}
+
+
+class TestReconcileObservation(unittest.TestCase):
+    """#245. EFFECT_UNKNOWN -> SETTLED only when an owner proves it.
+
+    Fail closed: anything that is not an independent, same-intent, current-writer
+    observation leaves the attempt at EFFECT_UNKNOWN.
+    """
+
+    def test_only_an_unknown_outcome_is_reconcilable(self):
+        for phase in (attempts.CALL_NOT_SENT, attempts.ACCEPTED,
+                      attempts.SETTLED, attempts.SUPERSEDED):
+            rec = recorded_unknown()
+            rec["phase"] = phase
+            v = attempts.reconcile_observation(
+                rec, observation=observation(), reconciler=reconciler(),
+                current_writer=CURRENT_WRITER)
+            self.assertEqual(v["verdict"], attempts.REFUSE_NOT_UNKNOWN, phase)
+
+    def test_an_owner_observation_that_proves_applied_settles(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(), observation=observation(result={"turn": "t1"}),
+            reconciler=reconciler(), current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.SETTLE_APPLIED)
+        self.assertEqual(v["phase"], attempts.SETTLED)
+        self.assertEqual(v["result"], {"turn": "t1"})
+
+    def test_an_observation_that_proves_not_applied_frees_the_scope(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(), observation=observation(state=attempts.OBSERVED_NOT_APPLIED),
+            reconciler=reconciler(), current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.SETTLE_NOT_APPLIED)
+        self.assertEqual(v["phase"], attempts.CALL_NOT_SENT)
+
+    def test_a_non_owner_may_not_reconcile(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(principal="agent:A"),
+            observation=observation(), reconciler=reconciler(principal="agent:B"),
+            current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.REFUSE_PRINCIPAL)
+
+    def test_a_stale_writer_may_not_reconcile(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(), observation=observation(),
+            reconciler=reconciler(epoch=1, token="1"),
+            current_writer={"owner": "agent:A", "epoch": 2, "token": "2"})
+        self.assertEqual(v["verdict"], attempts.REFUSE_STALE_WRITER)
+
+    def test_no_current_writer_source_fails_closed(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(), observation=observation(), reconciler=reconciler(),
+            current_writer=None)
+        self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN)
+
+    def test_an_observation_about_another_intent_proves_nothing(self):
+        v = attempts.reconcile_observation(
+            recorded_unknown(),
+            observation=observation(intent_digest=digest(params={"instruction": "x"})),
+            reconciler=reconciler(), current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN)
+
+    def test_a_matching_provider_locator_identifies_the_intent(self):
+        rec = recorded_unknown(provider_locator="provider-session:xyz")
+        obs = {"state": attempts.OBSERVED_APPLIED,
+               "provider_locator": "provider-session:xyz"}
+        v = attempts.reconcile_observation(
+            rec, observation=obs, reconciler=reconciler(),
+            current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.SETTLE_APPLIED)
+
+    def test_an_undecidable_observation_stays_unknown(self):
+        for state in ("UNKNOWN", "", None, "MAYBE"):
+            v = attempts.reconcile_observation(
+                recorded_unknown(), observation=observation(state=state),
+                reconciler=reconciler(), current_writer=CURRENT_WRITER)
+            self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN, state)
+
+    def test_a_late_reply_after_supersede_is_refused(self):
+        rec = recorded_unknown()
+        rec["phase"] = attempts.SUPERSEDED
+        v = attempts.reconcile_observation(
+            rec, observation=observation(), reconciler=reconciler(),
+            current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.REFUSE_NOT_UNKNOWN)
+
+    def test_nothing_recorded_cannot_be_reconciled(self):
+        v = attempts.reconcile_observation(
+            None, observation=observation(), reconciler=reconciler(),
+            current_writer=CURRENT_WRITER)
+        self.assertEqual(v["verdict"], attempts.REFUSE_UNKNOWN)
+
+    def test_a_scope_with_no_work_item_skips_the_writer_check(self):
+        # A coordinator send has no write scope; the principal check still holds.
+        v = attempts.reconcile_observation(
+            recorded_unknown(work_item=None), observation=observation(),
+            reconciler=reconciler(), current_writer=None)
+        self.assertEqual(v["verdict"], attempts.SETTLE_APPLIED)
+
+
 class TestTheAttemptIsDurable(unittest.TestCase):
     """The record survives a restart because the STORE holds it (#245)."""
 
@@ -178,6 +300,28 @@ class TestTheAttemptIsDurable(unittest.TestCase):
             self.assertEqual(
                 attempts.reconcile(recorded, digest=digest())["verdict"],
                 "REFUSE_UNKNOWN")
+
+    def test_a_reconciled_attempt_is_settled_on_disk_across_a_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._store(td).put_dispatch_attempt(recorded_unknown())
+            verdict = self._store(td).reconcile_dispatch_attempt(
+                KEY, observation=observation(result={"turn": "t1"}),
+                reconciler=reconciler(), current_writer=CURRENT_WRITER)
+            self.assertEqual(verdict["verdict"], attempts.SETTLE_APPLIED)
+            # A different instance over the same file — a restart.
+            self.assertEqual(self._store(td).get_dispatch_attempt(KEY)["phase"],
+                             attempts.SETTLED)
+
+    def test_a_refused_reconciliation_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._store(td).put_dispatch_attempt(recorded_unknown())
+            verdict = self._store(td).reconcile_dispatch_attempt(
+                KEY, observation=observation(),
+                reconciler=reconciler(principal="agent:B"),
+                current_writer=CURRENT_WRITER)
+            self.assertEqual(verdict["verdict"], attempts.REFUSE_PRINCIPAL)
+            self.assertEqual(self._store(td).get_dispatch_attempt(KEY)["phase"],
+                             attempts.EFFECT_UNKNOWN)
 
     def test_the_store_defaults_the_section_without_migrating(self):
         with tempfile.TemporaryDirectory() as td:

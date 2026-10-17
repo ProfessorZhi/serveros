@@ -302,9 +302,34 @@ durable_effects:
     durable record when it is given one, so a recorded EFFECT_UNKNOWN refuses a
     retry instead of dispatching it a second time (#237 T4/T9).
   what_remains: >-
-    The provider/owner-backed RECONCILE that turns an EFFECT_UNKNOWN back into
-    SETTLED: today an unknown outcome is refused and stays refused until a human
-    or an owner lookup resolves it, which is honest but not yet recovery.
+    The SOURCE of the observation. The kernel and the store can now resolve an
+    EFFECT_UNKNOWN from an owner's observation, atomically and fail-closed, but
+    nothing in the deployed path yet ASKS the provider/owner for one — that read,
+    and the wiring that calls it after a timeout, is the remaining step. Until it
+    exists an unknown outcome is refused and STAYS refused.
+  reconciliation:
+    kind: observational
+    input: >-
+      An OWNER's observation, three-valued: APPLIED / NOT_APPLIED / anything else
+      (which decides nothing). It must be tied to THIS intent by the payload
+      digest or by the provider-native locator; an observation about another call
+      proves nothing.
+    authority: >-
+      The recorded principal AND the current writer of the write scope. A
+      different principal is REFUSE_PRINCIPAL; a superseded writer is
+      REFUSE_STALE_WRITER. The two are kept apart because one is an identity
+      failure and the other a fencing failure, and collapsing them would hide an
+      authorization problem inside a data-quality one.
+    effect: >-
+      APPLIED -> SETTLED (the attempt settles; no retry). NOT_APPLIED ->
+      CALL_NOT_SENT (the scope is free; a retry is safe). Anything else -> stays
+      EFFECT_UNKNOWN, which refuses a retry.
+    atomic: >-
+      Read, decide and write under ONE store mutation lock; a refused observation
+      writes nothing.
+    no_exactly_once_claim: >-
+      Where the provider cannot prove one of the two definite states, the answer
+      is EFFECT_UNKNOWN. This never claims exactly-once.
   what_now_exists_too: >-
     CALL_NOT_SENT is written at the dispatch site, BEFORE `node.send`, so
     "crashed before sending" and "crashed after sending with the answer lost" are

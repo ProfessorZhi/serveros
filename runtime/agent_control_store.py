@@ -149,6 +149,24 @@ from pathlib import Path
 
 SCHEMA = "serveros/agent-control-store.v1"
 
+
+def _dispatch_attempts():
+    """The dispatch-attempt kernel, under the name every sibling loader uses.
+
+    Loaded lazily rather than imported at module scope: this store is imported by
+    the kernel's own tests and by the daemon, and a module-level import here
+    would make one of those the other's import-time dependency for no gain.
+    """
+    name = "serveros_runtime_dispatch_attempts"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().with_name("dispatch_attempts.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
 # The sidecar a write lock is taken on: the store's own name with this appended,
 # beside it rather than in a `locks/` directory. `locks/` already means something
 # else in this root — a HOLDER'S CLAIM about a lease, recorded in a file — and a
@@ -925,6 +943,44 @@ class AgentControlStore:
             section[key] = stored
             self._flush()
             return stored
+
+    def reconcile_dispatch_attempt(self, key: str, *, observation, reconciler,
+                                   current_writer=None, now=None) -> dict:
+        """Resolve an EFFECT_UNKNOWN attempt from an OWNER's observation. #245.
+
+        Read, decide and write under ONE mutation lock, so the decision cannot be
+        made about a record that changed between the read and the write — which
+        is what `_mutation` exists to prevent, and the reason this is a method
+        here rather than two calls from outside.
+
+        A REFUSED observation writes nothing: the attempt stays EFFECT_UNKNOWN,
+        which is what refuses a retry. Only a definite observation, from the
+        recorded principal, holding the current writer scope, about THIS intent,
+        moves it — to SETTLED (`SETTLE_APPLIED`) or back to CALL_NOT_SENT
+        (`SETTLE_NOT_APPLIED`).
+
+        Returns the kernel's verdict, plus the updated record when it settled.
+        """
+        kernel = _dispatch_attempts()
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            recorded = section.get(str(key))
+            verdict = kernel.reconcile_observation(
+                recorded, observation=observation, reconciler=reconciler,
+                current_writer=current_writer, now=now)
+            if verdict["verdict"] not in (kernel.SETTLE_APPLIED,
+                                          kernel.SETTLE_NOT_APPLIED):
+                return verdict
+            updated = dict(recorded)
+            updated["phase"] = verdict["phase"]
+            updated["reconciled_by"] = str((reconciler or {}).get("principal") or "")
+            if now:
+                updated["reconciled_at"] = str(now)
+            if verdict.get("result") is not None:
+                updated["result"] = verdict["result"]
+            section[str(key)] = updated
+            self._flush()
+            return dict(verdict, attempt=updated)
 
     def get_dispatch_attempt(self, key: str) -> dict | None:
         """The recorded attempt for a key, or None if nothing was recorded."""
