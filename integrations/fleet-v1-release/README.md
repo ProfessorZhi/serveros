@@ -52,6 +52,8 @@ The checker is deliberately narrow and mechanical. It rejects:
 - a `PASS` carrying a `BLOCKED_*` code (`E059`);
 - a dependency opportunity recorded as a release receipt (`E132`);
 - `COMPLETE_V1` without a SIGNED independent `qa_triage` (`E128`, `E129`);
+- a work-in-flight run given a PR, a pin, evidence status or landability
+  (`E143`–`E147`);
 - credential-like material in the manifest (`E100`).
 
 Warnings are not passes. `W011` (`stacks_on` names a PR not pinned here) is

@@ -40,6 +40,10 @@
       "type": "array",
       "items": { "$ref": "#/$defs/dependencyOpportunity" }
     },
+    "work_in_flight": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workInFlight" }
+    },
     "repos": {
       "type": "array",
       "minItems": 1,
@@ -114,6 +118,31 @@
           }
         },
         "pins_are_snapshot_of": { "type": "string", "minLength": 10 }
+      }
+    },
+    "workInFlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "owner_session",
+        "run_ref",
+        "status",
+        "has_pr",
+        "pin",
+        "is_evidence",
+        "is_landable"
+      ],
+      "properties": {
+        "lane": { "type": "string", "minLength": 1 },
+        "owner_session": { "type": "string", "minLength": 8 },
+        "run_ref": { "type": "string", "minLength": 8 },
+        "status": { "const": "WORK_IN_FLIGHT" },
+        "has_pr": { "const": false },
+        "pin": { "type": "null" },
+        "is_evidence": { "const": false },
+        "is_landable": { "const": false },
+        "note": { "type": "string" }
       }
     },
     "dependencyOpportunity": {

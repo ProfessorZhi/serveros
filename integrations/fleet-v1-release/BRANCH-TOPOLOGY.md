@@ -15,6 +15,8 @@ serveros:main 4a31628
 │
 ├─ QA      #256 2c4fe87                            base = main; integrations/fleet-v1-qa/** only
 │
+├─ R1      #257 c2e2e8d                            base = main; integrations/fleet-v1-runtime-parity/** only
+│
 ├─ F1      #146 ─ #149 ─ #150 ─ #154 ─ #155 ─ #163 ─ #164 ─ #177
 │          ─ #182 ─ #184 ─ #192 ─ #198 ─ #200 008a3360
 │              ├─ #214 ─ #216 ─ #228 ─ #229 b0f5480 ─ #231 ─ #243 494f452
@@ -38,6 +40,7 @@ Depths, counted from the PR whose base is `main`:
 | N1 (#242) | 12 | `feat/native-bounded-recovery-20261016` |
 | N2 (#253) | 13 | `feat/c-line-bounded-recovery-v1-20261016` (= #242 head) |
 | G1 (#255) | 15 + 5 | `integration/fleet-v1-candidate-20261017` (= #243 head) |
+| R1 (#257) | 1 | `main` |
 
 `native/node-core` is **absent from `main`** (contents API 404). The whole N
 tower is unlanded, not partially landed.
@@ -75,7 +78,7 @@ Two consequences, both easy to get wrong:
 | PR | Body says | Real head | Delta |
 |---|---|---|---|
 | #230 | corrective head `43a9555f` | `a934bee` | 2 commits behind |
-| #252 | milestone 1 `00bb701` | `f2b89e1` | moved three times: `00bb701 → d49342b → dac3088 → f2b89e1` |
+| #252 | milestone 1 `00bb701` | `fdc223f` | moved four times: `00bb701 → d49342b → dac3088 → f2b89e1 → fdc223f` |
 | #243 | (none) | `4a5d0a0` | advanced `494f452 → 4a5d0a0` (guard fix) |
 | #256 (QA triage) | `a4d7131` named #252 `dac3088`, #243 `494f452`, #254 `07f44ad` | Snapshot B `2c4fe87` re-audited `f2b89e1` / `4a5d0a0` / `619cf63` | current; verdict still QA_PARTIAL |
 
@@ -103,8 +106,13 @@ When composition is eventually authorized, the order is forced by ancestry:
 3. **N2 (#253)** — one commit above #242; depends on its CMake layout.
 4. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
 5. **G1 (#255)** — after F1, re-pinned against the F1 revision that landed.
-6. **P1 (#230)** — sibling of #243; deps are F1/S1 contracts per the plan.
-7. **M1 (#233)** — consumes F1 readback.
+6. **R1 (#257)** — base `main`, file-disjoint; deps are the F1/S1 contracts.
+7. **P1 (#230)** — sibling of #243; deps are F1/R1/S1 contracts per the plan.
+8. **M1 (#233)** — consumes F1 readback.
+
+Two accepted Owner runs (N3 network-source, T10 test-evidence) are **work in
+flight**: sessions and Run ids exist, but no PR and no SHA. They are not on this
+graph and must not be composed, cited or counted as evidence.
 
 `source_merge.performed` stays `false` in the manifest until every gate that
 authorizes composition has a PASS with a receipt. The checker rejects the

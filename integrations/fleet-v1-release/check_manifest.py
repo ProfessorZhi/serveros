@@ -187,6 +187,31 @@ def check(doc, raw_text: str = "") -> Report:
         if not isinstance(dep.get("description"), str) or len(dep["description"]) < 10:
             r.error("E133", f"{w}.description", "description is required")
 
+    # ---- work in flight (accepted runs with no artifact yet) --------------
+    wif = doc.get("work_in_flight", [])
+    if not isinstance(wif, list):
+        r.error("E140", "work_in_flight", "must be an array")
+        wif = []
+    for i, item in enumerate(wif):
+        w = f"work_in_flight[{i}]"
+        if not isinstance(item, dict):
+            r.error("E141", w, "must be an object")
+            continue
+        if item.get("status") != "WORK_IN_FLIGHT":
+            r.error("E142", f"{w}.status", "must be WORK_IN_FLIGHT")
+        if item.get("has_pr") is not False:
+            r.error("E143", f"{w}.has_pr", "a work-in-flight run has no PR yet")
+        if item.get("pin") is not None:
+            r.error("E144", f"{w}.pin", "a work-in-flight run has no pinnable revision")
+        if item.get("is_evidence") is not False:
+            r.error("E145", f"{w}.is_evidence", "an accepted run is not evidence")
+        if item.get("is_landable") is not False:
+            r.error("E146", f"{w}.is_landable", "a work-in-flight run is not a landable candidate")
+        for key, minimum in (("lane", 1), ("owner_session", 8), ("run_ref", 8)):
+            v = item.get(key)
+            if not isinstance(v, str) or len(v) < minimum:
+                r.error("E147", f"{w}.{key}", f"must be a string of at least {minimum} chars")
+
     # ---- version drift guard ---------------------------------------------
     drift = doc.get("drift_guard")
     if not isinstance(drift, dict):
@@ -640,6 +665,42 @@ def self_test() -> int:
             ]
         ),
         {"E132"},
+    )
+    expect(
+        "work-in-flight-counted-as-evidence",
+        lambda d: d.update(
+            work_in_flight=[
+                {
+                    "lane": "T10",
+                    "owner_session": "session-xyz",
+                    "run_ref": "run-xyz",
+                    "status": "WORK_IN_FLIGHT",
+                    "has_pr": False,
+                    "pin": None,
+                    "is_evidence": True,
+                    "is_landable": False,
+                }
+            ]
+        ),
+        {"E145"},
+    )
+    expect(
+        "work-in-flight-with-pin",
+        lambda d: d.update(
+            work_in_flight=[
+                {
+                    "lane": "N3",
+                    "owner_session": "session-xyz",
+                    "run_ref": "run-xyz",
+                    "status": "WORK_IN_FLIGHT",
+                    "has_pr": False,
+                    "pin": "d" * 40,
+                    "is_evidence": False,
+                    "is_landable": False,
+                }
+            ]
+        ),
+        {"E144"},
     )
     expect(
         "triage-bad-severity",
