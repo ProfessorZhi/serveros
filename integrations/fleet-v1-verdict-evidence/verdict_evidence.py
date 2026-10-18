@@ -109,6 +109,15 @@ EVIDENCE_OUTSIDE_RUN_ARTIFACTS = "EVIDENCE_OUTSIDE_RUN_ARTIFACTS"
 MISSING_ARTIFACT = "MISSING_ARTIFACT"
 DIGEST_MISMATCH = "DIGEST_MISMATCH"
 ARTIFACT_CONTRADICTION = "ARTIFACT_CONTRADICTION"
+UNSIGNED_FINALIZATION = "UNSIGNED_FINALIZATION"
+AUTHORIZATION_NOT_T10_VERIFIED = "AUTHORIZATION_NOT_T10_VERIFIED"
+T10_NOT_ACCEPTABLE = "T10_NOT_ACCEPTABLE"
+MISSING_SOURCE_PROOF = "MISSING_SOURCE_PROOF"
+NO_VERIFIED_ZERO_EXIT = "NO_VERIFIED_ZERO_EXIT"
+COMMIT_MISMATCH = "COMMIT_MISMATCH"
+ACTOR_MISMATCH = "ACTOR_MISMATCH"
+RUNNER_MISMATCH = "RUNNER_MISMATCH"
+INVALID_SIGNED_RECEIPT = "INVALID_SIGNED_RECEIPT"
 
 _DENY_REASONS = frozenset({
     INVALID_RUN_RECORD, RUN_FAILED, UNRECOGNIZED_RUNNER, CROSS_PRINCIPAL,
@@ -116,6 +125,9 @@ _DENY_REASONS = frozenset({
     CROSS_RUN_RECEIPT, COMMAND_MISMATCH, TESTS_FAILED, VERDICT_NOT_PASS,
     INVALID_REVISION, STALE_REVISION, DIRTY_REVISION,
     EVIDENCE_OUTSIDE_RUN_ARTIFACTS, DIGEST_MISMATCH, ARTIFACT_CONTRADICTION,
+    UNSIGNED_FINALIZATION, AUTHORIZATION_NOT_T10_VERIFIED, T10_NOT_ACCEPTABLE,
+    MISSING_SOURCE_PROOF, NO_VERIFIED_ZERO_EXIT, COMMIT_MISMATCH,
+    ACTOR_MISMATCH, RUNNER_MISMATCH, INVALID_SIGNED_RECEIPT,
 })
 _UNKNOWN_REASONS = frozenset({
     MISSING_RUN, RUN_NOT_TERMINAL, MISSING_RECEIPT, MISSING_ARTIFACT,
@@ -143,6 +155,15 @@ _BECAUSE = {
     MISSING_ARTIFACT: "the receipt's artifact is not readable, so its digest cannot be checked",
     DIGEST_MISMATCH: "the artifact bytes do not hash to the receipt's recorded SHA-256",
     ARTIFACT_CONTRADICTION: "the artifact payload disagrees with the evidence row",
+    UNSIGNED_FINALIZATION: "the durable finalize.json is labelled UNSIGNED",
+    AUTHORIZATION_NOT_T10_VERIFIED: "the durable finalize.json is not T10_VERIFIED",
+    T10_NOT_ACCEPTABLE: "the finalization is not t10_acceptable",
+    MISSING_SOURCE_PROOF: "the T10_VERIFIED label carries no runner_receipt proof",
+    NO_VERIFIED_ZERO_EXIT: "the runner_receipt has no verified process_exit_code == 0",
+    COMMIT_MISMATCH: "the runner_receipt commit is not the expected exact SHA",
+    ACTOR_MISMATCH: "the runner_receipt actor is not the expected principal",
+    RUNNER_MISMATCH: "the runner_receipt runner is not the Run's expected worker",
+    INVALID_SIGNED_RECEIPT: "the runner_receipt fields are not usable evidence",
 }
 
 _ELIGIBLE_BECAUSE = (
@@ -447,6 +468,62 @@ def _check_receipt(
         return
     if not _artifact_matches_row(data, row):
         add(ARTIFACT_CONTRADICTION)
+    _check_signed_finalization_artifact(data, expected, run, add)
+
+
+def _check_signed_finalization_artifact(
+        data: bytes, expected: ExpectedAcceptance,
+        run: Mapping[str, Any] | None, add) -> None:
+    """Refuse a #15 finalize.json whose label is not T10_VERIFIED.
+
+    Work Engine #15 writes `authorization: "UNSIGNED" | "T10_VERIFIED"` into
+    the durable finalize.json. A consumer that reads only `runs.state` would
+    accept an UNSIGNED record. This check is the low-level half; the strict
+    `finalization_result.evaluate_signed_finalization` is the current
+    full-result gate. A pre-#15 fixture with no `authorization` key is left to
+    that strict gate; every labelled record is checked here.
+    """
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    authorization = payload.get("authorization")
+    if authorization is None:
+        return
+    if authorization == "UNSIGNED":
+        add(UNSIGNED_FINALIZATION)
+        return
+    if authorization != "T10_VERIFIED":
+        add(AUTHORIZATION_NOT_T10_VERIFIED)
+        return
+    if "t10_acceptable" in payload and payload.get("t10_acceptable") is not True:
+        add(T10_NOT_ACCEPTABLE)
+    receipt = payload.get("runner_receipt")
+    if not isinstance(receipt, Mapping):
+        add(MISSING_SOURCE_PROOF)
+        return
+    if (type(receipt.get("process_exit_code")) is not int
+            or receipt.get("process_exit_code") != 0):
+        add(NO_VERIFIED_ZERO_EXIT)
+    if (not _SHA_RE.fullmatch(str(receipt.get("commit_sha") or ""))
+            or str(receipt.get("commit_sha")) != expected.revision):
+        add(COMMIT_MISMATCH)
+    if (not str(receipt.get("actor_ref") or "").strip()
+            or str(receipt.get("actor_ref")) != expected.principal):
+        add(ACTOR_MISMATCH)
+    runner = str(receipt.get("runner_identity") or "").strip()
+    workers = {str(item) for item in
+               expected.recognized_runners.get(expected.principal, ())}
+    run_worker = str(run.get("worker") or "") if isinstance(run, Mapping) else ""
+    if not runner or runner not in workers or (run_worker and runner != run_worker):
+        add(RUNNER_MISMATCH)
+    if not str(receipt.get("action_key") or "").strip():
+        add(INVALID_SIGNED_RECEIPT)
+    for field in ("input_digest", "receipt_sha256"):
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", str(receipt.get(field) or "")):
+            add(INVALID_SIGNED_RECEIPT)
 
 
 def _is_within(path: Path, directory: Path) -> bool:

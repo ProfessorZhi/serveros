@@ -1,18 +1,23 @@
 # Fleet V1 verdict/evidence seam — #237 T10
 
-**Status:** `SOURCE / OFFLINE` plus a `LOCAL / PREVIEW_ONLY` authority bridge.
-The admitted `work dispatch` producer and the continuation engineering executor
-record/reconcile the canonical T10 binding and a `receipt_sha256` anchor. A
-PREVIEW-only `RunnerReceiptAuthority` now proves a real local `invoke_once`
-receipt can serve Work Engine #14 `finalize_run_verified` — and that a child
-printing `ALL TESTS PASSED` while exiting 1 cannot conclude success.
+**Status:** `SOURCE / OFFLINE` plus `LOCAL / PREVIEW_ONLY` authority and
+finalization gates. The admitted `work dispatch` producer and the continuation
+engineering executor record/reconcile the canonical T10 binding and a
+`receipt_sha256` anchor. A PREVIEW-only `RunnerReceiptAuthority` proves a real
+local `invoke_once` receipt can serve Work Engine #15 `finalize_run` — and that
+a child printing `ALL TESTS PASSED` while exiting 1 cannot conclude success.
+The new `finalization_result.py` gate refuses a downstream `runs.state ==
+SUCCEEDED` unless the durable finalize evidence is **both** `T10_VERIFIED` and
+`t10_acceptable=true` with a verified zero-exit receipt. The existing
+`verdict_evidence.py` consumer is hardened for Work Engine #15's labelled
+`finalize.json`; a legacy `UNSIGNED` `state=SUCCEEDED` is `DENY`.
 **Production is still blocked:** there is no production Work Engine finalize
-call site, no OS-attested cross-process parent boundary for that call, and no
+call site, no OS-attested cross-process parent/verifier boundary, and no
 independent QA signature. Continuation production also remains
 `BLOCKED_ORIGINAL_OWNER` because the wake/checkpoint does not create or attach
 the Work Engine Run + `execution_contexts` row the binding requires.
-**T10 production closure:** **BLOCKED_WIRING / BLOCKED_ORIGINAL_OWNER — not
-closed** (`work_engine_consumption=NOT_WIRED`).
+**T10 production closure:** **BLOCKED_WIRING / BLOCKED_ORIGINAL_OWNER /
+BLOCKED_TRUST_SOURCE — not closed** (`work_engine_consumption=NOT_WIRED`).
 **May this sign a V1 QA verdict?** **No.** Every decision returns
 `qa_signature=False`, `parent_accepted=False`, `requires_independent_qa=True`.
 
@@ -420,6 +425,50 @@ The remaining original-owner API is explicit:
 The legacy `finalize_run` is not switched and no permission is elevated. This
 is a provenance proof, not a production acceptance.
 
+### 4.9 Signed finalization-result gate (P0)
+
+`finalization_result.py` is the strict downstream gate for a Work Engine
+finalization result:
+
+* `read_work_engine_finalization(state_db, item_ref, run_ref)` opens
+  `serveros.db` read-only, reads the exact `runs` row and the last
+  `kind='finalize'` evidence row, and requires the evidence locator to be the
+  Run's own `<artifact_dir>/finalize.json` (no caller path, no symlink). It
+  re-hashes the file and compares it to the evidence row's `sha256`.
+* `evaluate_signed_finalization(expected, readback)` requires **both**
+  `authorization == "T10_VERIFIED"` and `t10_acceptable == true` in the durable
+  readback, `run_state == SUCCEEDED`, the evidence bytes still matching the
+  evidence row, and the exact Item / Run / commit SHA / actor / action /
+  `input_digest` / `receipt_sha256` / `runner_identity` / `process_exit_code ==
+  0` in the `runner_receipt`. The expected binding is the parent-held #269
+  offline receipt and Work Run facts.
+* A caller JSON label (`{"authorization": "T10_VERIFIED", ...}`) is `DENY`;
+  an absent/unreadable authoritative readback is `BLOCKED_TRUST_SOURCE`; a
+  tampered finalize file, `UNSIGNED`, missing `t10_acceptable`, a weaker label,
+  an inconsistent Item/Run/commit/actor, a missing/contradictory receipt block,
+  a non-zero process exit, or a `SUCCEEDED` state with no finalize evidence is
+  `DENY`.
+* `ELIGIBLE` is for independent QA only: `parent_accepted=False`,
+  `qa_signature=False`, `requires_independent_qa=True`,
+  `production_status="BLOCKED_TRUST_SOURCE"`, `evidence_level="LOCAL_HERMETIC"`.
+
+The existing lower-level `verdict_evidence.evaluate_acceptance` consumer is
+hardened too: when a finalize artifact carries Work Engine #15's
+`authorization` label, `UNSIGNED` / a weaker label / a `T10_VERIFIED` label
+without a matching `runner_receipt`, non-zero process exit, or mismatched
+commit/actor/runner is `DENY`. Pre-#15 fixtures with no `authorization` key
+remain compatible with the historical receipt-vs-prose tests; the strict
+`finalization_result` gate is the current finalization-result path.
+
+**What is still blocked.** Work Engine #15 leaves the production
+`RunnerReceiptAuthority` / OS-attested parent unbound
+(`BLOCKED_TRUST_SOURCE`). The positive test uses the exact Work Engine #15
+source with a clearly labelled **test-double** wrapper around the #269 PREVIEW
+receipt verifier and a real offline `invoke_once` receipt; it is LOCAL/HERMETIC,
+not production. No production finalize call site consumes the gate, the legacy
+`finalize_run` is not switched, no independent QA signature exists, and no
+second ledger/signature is created.
+
 ## 5. What the gate never does
 
 * It never parses the child's stdout/stderr as a verdict; it hashes them.
@@ -436,7 +485,8 @@ is a provenance proof, not a production acceptance.
   `runtime/bounded_executor.py` (continuation binding/executor) and
   `mcp/continuation_mcp.py` (state DB pass-through), under the explicit T10
   grants; `runtime/wake.py` was inspected but not edited. The S1/S2 owners'
-  files are untouched.
+  files are untouched. The signed-finalization milestone edits only this
+  integration package and its new test; no runtime file is touched.
 
 ## 6. Test evidence
 
@@ -508,6 +558,34 @@ trusted context / missing parent anchor → `BLOCKED_TRUST_SOURCE`; stale SHA,
 revoked grant, cross-run, cross-principal and checksum tampering → refused.
 Evidence level: **LOCAL / PREVIEW_ONLY**, not production.
 
+Signed finalization gate, same cgroup and non-blocking `flock -n`:
+
+```bash
+flock -n /tmp/serveros-t10-signed-finalization.lock \
+  systemd-run --user --scope -q \
+    -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
+    timeout 600 python -m pytest \
+    tests/test_fleet_v1_t10_signed_finalization.py -q
+```
+
+Measured on Tokyo, 2026-10-18: **13 passed in 3.10s**, exit 0, `pswpout` delta
+0. Focused T10 regression (signed gate + prior verdict/producer/continuation/
+authority-bridge suites): **77 passed in 45.61s**, exit 0, `pswpout` delta 0.
+
+The test extracts the exact Work Engine #15 source (`4bd9e8a`) with
+`git archive` (read-only; the Work Engine repo is not edited), uses its real
+`ServerOSStore.finalize_run` to write both a legacy `UNSIGNED` `SUCCEEDED`
+result and a `T10_VERIFIED`/`t10_acceptable=true` result, and uses the real
+#269 offline `invoke_once` receipt through a clearly labelled #15 test-double
+verifier. It pins: legacy `SUCCEEDED`/`UNSIGNED` → `DENY`; exact
+`T10_VERIFIED` → `ELIGIBLE` for QA only; missing `t10_acceptable`, caller JSON
+label, tampered finalize bytes, inconsistent commit/actor/run, non-zero process
+exit, weaker authorization, missing receipt anchor/source, and a `SUCCEEDED`
+state without finalize evidence → `DENY` or `BLOCKED_TRUST_SOURCE`. The
+existing `verdict_evidence` consumer is also tested directly against the same
+real #15 evidence: `UNSIGNED` → `DENY`, `T10_VERIFIED` → `ELIGIBLE`.
+Evidence level: **LOCAL / HERMETIC**, not production.
+
 The fixture suite covers:
 
 * text-only success without a receipt → `UNKNOWN / MISSING_RECEIPT`;
@@ -535,7 +613,8 @@ integrations/fleet-v1-verdict-evidence/
 ├── README.md
 ├── verdict_evidence.py        # Work Engine receipt vs prose
 ├── bounded_provenance.py      # bounded-invocation receipt + admission + Work Engine
-├── authority_bridge.py        # PREVIEW RunnerReceiptAuthority for WE #14
+├── authority_bridge.py        # PREVIEW RunnerReceiptAuthority for WE #14/#15
+├── finalization_result.py     # strict signed Work Engine finalization gate
 └── fixtures/
     └── negative_cases.json    # Work Engine negative matrix
 tests/test_fleet_v1_verdict_evidence.py       # consumer matrix
@@ -545,4 +624,7 @@ tests/test_fleet_v1_t10_continuation_provenance.py
                                               # + execution_context binding
 tests/test_fleet_v1_t10_authority_bridge.py   # real WE #14 finalize_run_verified
                                               # + real offline receipt
+tests/test_fleet_v1_t10_signed_finalization.py
+                                              # real WE #15 finalize_run
+                                              # + durable T10_VERIFIED gate
 ```
