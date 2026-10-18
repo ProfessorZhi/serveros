@@ -55,16 +55,15 @@ def _load(name: str, path: Path):
 board = _load("serveros_global_board", REPO / "intake" / "global_board.py")
 paths_mod = _load("serveros_runtime_paths", REPO / "runtime" / "paths.py")
 
-# The authority's checkout, located by the ROOT CONTRACT and not by counting
-# `..` from this file. `REPO.parent.parent / "src"` is right in a canonical
-# checkout and wrong in every worktree — this file runs from
-# `worktrees/serveros/<item>/`, one level deeper than that arithmetic assumes,
-# and the first version of this file computed it that way and SKIPPED. A skip
-# is the worst outcome available here: the test that checks the board's
-# completion states against the authority's would have reported "cannot check"
-# forever while reading as a deliberate, satisfied condition.
-WORK_ENGINE = (paths_mod.Paths().root("workspace") / "src" / "work-engine"
-               / "workengine")
+# The authority now ships in this repository (`workengine/`, after the
+# 2026-10-19 merge of `work-engine@19d9520`). It was previously located through
+# the ROOT CONTRACT as a sibling checkout; that made this file depend on a
+# directory no clone is guaranteed to carry, and the test SKIPPED where the
+# engine was absent. A skip is the worst outcome available here: the test that
+# checks the board's completion states against the authority's would have
+# reported "cannot check" forever while reading as a deliberate, satisfied
+# condition.
+WORK_ENGINE = REPO / "workengine"
 
 
 def a_board(project: str, items: list[dict]) -> dict:

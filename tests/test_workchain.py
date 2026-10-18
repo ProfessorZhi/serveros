@@ -59,8 +59,12 @@ def _load(name: str, path: Path):
 chain = _load("serveros_intake_workchain", REPO / "intake" / "workchain.py")
 paths_mod = _load("serveros_runtime_paths", REPO / "runtime" / "paths.py")
 
-WORK_ENGINE = (paths_mod.Paths().root("workspace") / "src" / "work-engine"
-               / "workengine")
+# The engine ships inside this repository since the 2026-10-19 merge, so the
+# authority is `REPO/workengine` and no longer a sibling checkout found through
+# the workspace root. Resolving the package through the root contract made this
+# test skip on every node without that checkout — and a skip here reads as a
+# satisfied condition, which is the outcome this test exists to prevent.
+WORK_ENGINE = REPO / "workengine"
 
 #: The fixture, and the three roots it is read with. Absolute, because the
 #: command refuses a relative root — a board composed from whatever directory

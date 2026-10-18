@@ -213,9 +213,17 @@ ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN)
 # the plugin list is §9's, expressed in the layout `build.py` actually produces
 # (the artifact root IS the plugin payload — there is no nested `dist/`, and
 # inventing one here would put a path in the release tool that no build writes).
+#
+# `workengine/` joined the node list when the Work Engine moved inside this
+# repository (`work-engine@19d9520`). The requirement names its schema rather
+# than the bare directory because `verify_revision` below compares against
+# FILES; `schema.sql` is the package asset whose absence makes an installed
+# engine unable to open its store, so it is the member that proves the
+# directory actually shipped.
 REQUIRED_MEMBERS = {
     NODE_RUNTIME: ("bin/serverosd", "bin/serverosctl", "runtime/daemon.py",
-                   "runtime/cli.py", f"runtime/{UNIT_NAME}"),
+                   "runtime/cli.py", f"runtime/{UNIT_NAME}",
+                   "workengine/schema.sql"),
     PLUGIN: (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"),
 }
 

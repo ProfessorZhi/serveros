@@ -82,6 +82,8 @@ def make_artifact(base: Path, marker: str, *, with_daemon: bool = True,
     art = base / f"artifact-{marker}"
     (art / "bin").mkdir(parents=True)
     (art / "runtime").mkdir(parents=True)
+    (art / "workengine").mkdir(parents=True)
+    (art / "workengine" / "schema.sql").write_text("-- engine schema\n")
     (art / "README.md").write_text(f"marker {marker}\n")
     (art / "runtime" / "serverosd.service").write_text(UNIT_TEMPLATE)
     (art / "runtime" / "cli.py").write_text(CLI_MODULE)

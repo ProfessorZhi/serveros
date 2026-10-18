@@ -210,6 +210,16 @@ runtime:
 bin:
   path: bin
 
+# The Work Engine, in the same repository since `work-engine@19d9520` was
+# merged in (2026-10-19). It ships verbatim next to the runtime because the
+# engine and the node are one product now: a node that had to be pointed at an
+# external `--work-engine` checkout could not be reproduced from its own
+# revision. `python -m workengine` is the internal/compatibility entry; the
+# public dispatcher remains `bin/serverosctl`, and neither package declares a
+# second `serverosctl`.
+workengine:
+  path: workengine
+
 # The MCP payload. `path` is copied into the artifact; `servers` are declared
 # at the plugin root. Node observation and Agent Session control stay separate.
 #
