@@ -138,14 +138,20 @@ def chain_rows(report: dict) -> list[dict]:
 # `test_the_two_copies_of_the_root_resolver_agree` compares
 # `set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES)`, an INTERSECTION: a row
 # one table carries and the other does not is not compared there, not counted,
-# and not named. Measured 2026-10-09, that is 6 rows of the 8 the two tables
+# and not named. Measured 2026-10-19, that is 5 rows of the 7 the two tables
 # name between them — the gate covers 2. The two tables do different jobs
 # (a runtime gauge's inputs and a conformance checker's), so differing is
 # legitimate; the reason each individual row sits on one side only is recorded
 # nowhere, and this declaration does not invent one. What it does is make a
 # row that moves from one side to the other, or a new row added to either
 # table, fail where it is written instead of drifting.
-ONLY_IN_RUNTIME_TRUTH = ("engine_repo", "marketplace_path", "runtime_root")
+#
+# `engine_repo` left the runtime-truth table on 2026-10-19, when
+# `work-engine@19d9520` was merged and the engine source became this
+# repository's `workengine/`. It has no profile row any more; its default is
+# `default_engine_repo()` (this repository, or an explicit
+# $SERVEROS_ENGINE_REPO).
+ONLY_IN_RUNTIME_TRUTH = ("marketplace_path", "runtime_root")
 ONLY_IN_ARCHITECTURE_CHECK = ("data_root", "ops_repo", "workspace_root")
 
 
@@ -2251,7 +2257,7 @@ class RuntimeTruthTests(unittest.TestCase):
 
         self.assertTrue(truth.ROOT_SOURCES, "runtime_truth's table is empty")
         self.assertTrue(check.ROOT_SOURCES, "architecture_check's table is empty")
-        self.assertEqual(len(ONLY_IN_RUNTIME_TRUTH), 3)
+        self.assertEqual(len(ONLY_IN_RUNTIME_TRUTH), 2)
         self.assertEqual(len(ONLY_IN_ARCHITECTURE_CHECK), 3)
         shared = set(truth.ROOT_SOURCES) & set(check.ROOT_SOURCES)
         self.assertEqual(len(shared), 2,
@@ -2291,6 +2297,24 @@ class RuntimeTruthTests(unittest.TestCase):
             expected = self.base / "home/workspace/src" / "ability-management"
             self.assertEqual(truth.default_root("ability_repo"), expected)
             self.assertEqual(check.default_root("ability_repo"), expected)
+
+    def test_the_engine_repo_defaults_to_this_repository(self):
+        """The engine source is `workengine/` here since the 2026-10-19 merge.
+
+        The default used to be profile-derived (`workspace_src/work-engine`),
+        which named a sibling checkout no clone of serveros carries. On a node
+        without that checkout the canonical row reported "not a git checkout"
+        about a directory that was never the authority, while the real engine
+        sat inside the repository the inspector had just read. An explicit
+        $SERVEROS_ENGINE_REPO survives for the node that still builds from a
+        separate tree; it is the override, not the default.
+        """
+        self.assertEqual(truth.REPO_ROOT, ROOT)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(truth.ENGINE_REPO_ENV, None)
+            self.assertEqual(truth.default_engine_repo(), ROOT)
+            os.environ[truth.ENGINE_REPO_ENV] = str(self.engine_repo)
+            self.assertEqual(truth.default_engine_repo(), self.engine_repo)
 
 
 if __name__ == "__main__":

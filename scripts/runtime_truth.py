@@ -2454,6 +2454,28 @@ def render(report: dict) -> None:
 HOST_PROFILE_ENV = "SERVEROS_HOST_PROFILE"
 DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
 
+#: The repository this inspector ships in. Since `work-engine@19d9520` was
+#: merged into serveros, the engine's source is `workengine/` HERE; the
+#: profile's `workspace_src/work-engine` was the pre-merge layout, and on a
+#: node that no longer carries that checkout the inspector called the engine
+#: missing even though it was one directory up, beside this file.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_REPO_ENV = "SERVEROS_ENGINE_REPO"
+
+
+def default_engine_repo() -> Path:
+    """Where the canonical `workengine/` source lives.
+
+    This repository, unless the node explicitly says otherwise. The
+    `SERVEROS_ENGINE_REPO` override survives for the one case that still has
+    two copies to compare — a node building the engine from a separate
+    checkout — but it is an OVERRIDE, not the default: a default that resolves
+    `workspace_src/work-engine` describes a layout the merge retired.
+    """
+    raw = os.environ.get(ENGINE_REPO_ENV)
+    return Path(raw) if raw else REPO_ROOT
+
+
 #: argument -> (environment variable, profile root keys, path under that root).
 #:
 #: The suffixes are product layout — the bundle name, the control-plane venv's
@@ -2474,10 +2496,15 @@ DEFAULT_HOST_PROFILE = Path("~/.config/serveros/host-profile.yaml")
 #: made "is the control plane installed here" answerable by this file rather than
 #: by the node, so a node that had never declared one was reported as missing a
 #: piece of itself. It is a declaration, and it has no default. See `collect()`.
+#:
+#: `engine_repo` is not in this table for the same kind of reason: since the
+#: `work-engine@19d9520` merge the engine source is `workengine/` inside the
+#: bundle source, so its default is this repository (`default_engine_repo()`)
+#: rather than a profile-derived sibling checkout. `SERVEROS_ENGINE_REPO` still
+#: overrides it explicitly.
 ROOT_SOURCES = {
     "serveros_repo": ("SERVEROS_REPO", ("workspace_src",), ("serveros",)),
     "ability_repo": ("SERVEROS_ABILITY_REPO", ("workspace_src",), ("ability-management",)),
-    "engine_repo": ("SERVEROS_ENGINE_REPO", ("workspace_src",), ("work-engine",)),
     "marketplace_path": ("SERVEROS_MARKETPLACE", ("runtime_assets_root",),
                          (BUNDLE_NAME, ".agents", "plugins", "marketplace.json")),
     "runtime_root": ("SERVEROS_RUNTIME_ROOT", ("runtime_assets_root",), (BUNDLE_NAME,)),
@@ -2631,7 +2658,11 @@ def main() -> int:
     ap.add_argument("--marketplace-path", type=Path,
                     default=default_root("marketplace_path"))
     ap.add_argument("--engine-repo", type=Path,
-                    default=default_root("engine_repo"))
+                    default=default_engine_repo(),
+                    help="canonical work-engine checkout; default is this "
+                         "repository, whose workengine/ package is the engine "
+                         "since work-engine@19d9520 was merged. "
+                         "$SERVEROS_ENGINE_REPO overrides it")
     ap.add_argument("--engine-installed", type=Path,
                     default=(Path(os.environ["SERVEROS_ENGINE_INSTALLED"])
                              if os.environ.get("SERVEROS_ENGINE_INSTALLED") else None),
