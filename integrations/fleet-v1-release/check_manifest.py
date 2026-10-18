@@ -101,8 +101,8 @@ def check(doc, raw_text: str = "") -> Report:
             r.error("E188", "preview", "must be an object")
             preview = None
         else:
-            if preview.get("label") != "INTEGRATION_PREVIEW":
-                r.error("E189", "preview.label", "must be INTEGRATION_PREVIEW")
+            if preview.get("label") not in {"INTEGRATION_PREVIEW", "INTEGRATION_PREVIEW_V2"}:
+                r.error("E189", "preview.label", "must be INTEGRATION_PREVIEW[_V2]")
             if preview.get("all_release_gates") is not False:
                 r.error("E190", "preview.all_release_gates", "must be false")
             if preview.get("not_release") is not True:
@@ -629,6 +629,7 @@ def check(doc, raw_text: str = "") -> Report:
             "BLOCKED_UNLANDED_CHAIN",
             "BLOCKED_OWNER_ACTION",
             "BLOCKED_SEMANTIC_JOIN",
+            "BLOCKED_TRUST_SOURCE",
         }:
             r.error("E058", f"{where}.blocker_code", f"unknown blocker code {code!r}")
         if verdict == "PASS" and code != "NONE":

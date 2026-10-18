@@ -25,102 +25,259 @@
     "claims"
   ],
   "properties": {
-    "schema": { "const": "serveros/fleet-v1-rc-manifest.v1" },
-    "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
-    "supersedes": { "type": ["string", "null"] },
-    "generated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
-    "campaign_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
-    "integration_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
-    "state": { "enum": ["RC_CANDIDATE", "COMPLETE_V1", "BLOCKED", "ABORTED"] },
-    "integrator": { "$ref": "#/$defs/principal" },
-    "qa": { "$ref": "#/$defs/qa" },
-    "qa_triage": { "$ref": "#/$defs/qaTriage" },
-    "drift_guard": { "$ref": "#/$defs/driftGuard" },
+    "schema": {
+      "const": "serveros/fleet-v1-rc-manifest.v1"
+    },
+    "manifest_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$"
+    },
+    "supersedes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "campaign_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$"
+    },
+    "integration_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$"
+    },
+    "state": {
+      "enum": [
+        "RC_CANDIDATE",
+        "COMPLETE_V1",
+        "BLOCKED",
+        "ABORTED"
+      ]
+    },
+    "integrator": {
+      "$ref": "#/$defs/principal"
+    },
+    "qa": {
+      "$ref": "#/$defs/qa"
+    },
+    "qa_triage": {
+      "$ref": "#/$defs/qaTriage"
+    },
+    "drift_guard": {
+      "$ref": "#/$defs/driftGuard"
+    },
     "dependency_opportunities": {
       "type": "array",
-      "items": { "$ref": "#/$defs/dependencyOpportunity" }
+      "items": {
+        "$ref": "#/$defs/dependencyOpportunity"
+      }
     },
     "work_in_flight": {
       "type": "array",
-      "items": { "$ref": "#/$defs/workInFlight" }
+      "items": {
+        "$ref": "#/$defs/workInFlight"
+      }
     },
     "repos": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/repoPin" }
+      "items": {
+        "$ref": "#/$defs/repoPin"
+      }
     },
     "candidates": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/candidate" }
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
     },
-    "source_merge": { "$ref": "#/$defs/sourceMerge" },
-    "composition_preflight": { "$ref": "#/$defs/compositionPreflight" },
-    "proof_requirements": { "$ref": "#/$defs/proofRequirements" },
-    "preview": { "$ref": "#/$defs/preview" },
+    "source_merge": {
+      "$ref": "#/$defs/sourceMerge"
+    },
+    "composition_preflight": {
+      "$ref": "#/$defs/compositionPreflight"
+    },
+    "proof_requirements": {
+      "$ref": "#/$defs/proofRequirements"
+    },
+    "preview": {
+      "$ref": "#/$defs/preview"
+    },
     "gates": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/gate" }
+      "items": {
+        "$ref": "#/$defs/gate"
+      }
     },
-    "hosted_ci": { "$ref": "#/$defs/hostedCi" },
+    "hosted_ci": {
+      "$ref": "#/$defs/hostedCi"
+    },
     "open_p0": {
       "type": "array",
-      "items": { "$ref": "#/$defs/openP0" }
+      "items": {
+        "$ref": "#/$defs/openP0"
+      }
     },
-    "rollback": { "$ref": "#/$defs/rollback" },
-    "claims": { "$ref": "#/$defs/claims" }
+    "rollback": {
+      "$ref": "#/$defs/rollback"
+    },
+    "claims": {
+      "$ref": "#/$defs/claims"
+    }
   },
   "$defs": {
     "principal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["owner", "device_ref", "authority"],
+      "required": [
+        "owner",
+        "device_ref",
+        "authority"
+      ],
       "properties": {
-        "owner": { "type": "string", "minLength": 3 },
-        "device_ref": { "type": "string", "minLength": 3 },
-        "authority": { "type": "string", "minLength": 3 }
+        "owner": {
+          "type": "string",
+          "minLength": 3
+        },
+        "device_ref": {
+          "type": "string",
+          "minLength": 3
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 3
+        }
       }
     },
     "qa": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["owner", "status", "independent_of_integrator", "signature"],
+      "required": [
+        "owner",
+        "status",
+        "independent_of_integrator",
+        "signature"
+      ],
       "properties": {
-        "owner": { "type": "string", "minLength": 3 },
-        "status": { "enum": ["PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL", "SIGNED"] },
-        "independent_of_integrator": { "type": "boolean" },
-        "session_ref": { "type": ["string", "null"] },
-        "run_ref": { "type": ["string", "null"] },
-        "signature": { "type": ["string", "null"] }
+        "owner": {
+          "type": "string",
+          "minLength": 3
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "ACTIVE",
+            "INDEPENDENT_QA_PARTIAL",
+            "SIGNED"
+          ]
+        },
+        "independent_of_integrator": {
+          "type": "boolean"
+        },
+        "session_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "qaTriage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo", "pr", "head", "status", "findings", "pins_are_snapshot_of"],
+      "required": [
+        "repo",
+        "pr",
+        "head",
+        "status",
+        "findings",
+        "pins_are_snapshot_of"
+      ],
       "properties": {
-        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
-        "pr": { "type": "integer", "minimum": 1 },
-        "head": { "$ref": "#/$defs/sha40" },
-        "status": { "enum": ["PENDING", "INDEPENDENT_QA_PARTIAL", "SIGNED"] },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "head": {
+          "$ref": "#/$defs/sha40"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "INDEPENDENT_QA_PARTIAL",
+            "SIGNED"
+          ]
+        },
         "findings": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "severity", "candidate", "summary", "state_at_snapshot"],
+            "required": [
+              "id",
+              "severity",
+              "candidate",
+              "summary",
+              "state_at_snapshot"
+            ],
             "properties": {
-              "id": { "type": "string", "minLength": 2 },
-              "severity": { "enum": ["P0", "P1", "P2"] },
-              "candidate": { "type": "string", "minLength": 2 },
-              "summary": { "type": "string", "minLength": 10 },
-              "state_at_snapshot": { "enum": ["OPEN", "FIXED_PENDING_RECHECK", "RECHECK_REQUIRED", "CLOSED"] }
+              "id": {
+                "type": "string",
+                "minLength": 2
+              },
+              "severity": {
+                "enum": [
+                  "P0",
+                  "P1",
+                  "P2"
+                ]
+              },
+              "candidate": {
+                "type": "string",
+                "minLength": 2
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 10
+              },
+              "state_at_snapshot": {
+                "enum": [
+                  "OPEN",
+                  "FIXED_PENDING_RECHECK",
+                  "RECHECK_REQUIRED",
+                  "CLOSED"
+                ]
+              }
             }
           }
         },
-        "pins_are_snapshot_of": { "type": "string", "minLength": 10 }
+        "pins_are_snapshot_of": {
+          "type": "string",
+          "minLength": 10
+        }
       }
     },
     "workInFlight": {
@@ -137,44 +294,111 @@
         "is_landable"
       ],
       "properties": {
-        "lane": { "type": "string", "minLength": 1 },
-        "owner_session": { "type": "string", "minLength": 8 },
-        "run_ref": { "type": "string", "minLength": 8 },
-        "status": { "const": "WORK_IN_FLIGHT" },
-        "has_pr": { "const": false },
-        "pin": { "type": "null" },
-        "is_evidence": { "const": false },
-        "is_landable": { "const": false },
-        "note": { "type": "string" }
+        "lane": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_session": {
+          "type": "string",
+          "minLength": 8
+        },
+        "run_ref": {
+          "type": "string",
+          "minLength": 8
+        },
+        "status": {
+          "const": "WORK_IN_FLIGHT"
+        },
+        "has_pr": {
+          "const": false
+        },
+        "pin": {
+          "type": "null"
+        },
+        "is_evidence": {
+          "const": false
+        },
+        "is_landable": {
+          "const": false
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
     "dependencyOpportunity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["lane", "description", "pin", "is_release_receipt"],
+      "required": [
+        "lane",
+        "description",
+        "pin",
+        "is_release_receipt"
+      ],
       "properties": {
-        "lane": { "type": "string", "minLength": 1 },
-        "description": { "type": "string", "minLength": 10 },
-        "pin": { "type": ["string", "null"] },
-        "is_release_receipt": { "const": false }
+        "lane": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10
+        },
+        "pin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_release_receipt": {
+          "const": false
+        }
       }
     },
     "driftGuard": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["snapshot_time", "policy", "recheck_before"],
+      "required": [
+        "snapshot_time",
+        "policy",
+        "recheck_before"
+      ],
       "properties": {
-        "snapshot_time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
-        "policy": { "type": "string", "minLength": 20 },
+        "snapshot_time": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "policy": {
+          "type": "string",
+          "minLength": 20
+        },
         "recheck_before": {
           "type": "array",
           "minItems": 1,
-          "items": { "enum": ["push", "composition", "qa_signature", "release"] }
+          "items": {
+            "enum": [
+              "push",
+              "composition",
+              "qa_signature",
+              "release"
+            ]
+          }
         }
       }
     },
-    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "evidenceLevel": { "enum": ["SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
+    "sha40": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "evidenceLevel": {
+      "enum": [
+        "SOURCE",
+        "MOCK",
+        "LOCAL",
+        "REAL_DEVICE",
+        "CLIENT_E2E"
+      ]
+    },
     "evidenceClass": {
       "enum": [
         "CODE_CANDIDATE",
@@ -188,15 +412,41 @@
     "repoPin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repo", "revision", "role", "reachable"],
+      "required": [
+        "name",
+        "repo",
+        "revision",
+        "role",
+        "reachable"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
-        "revision": { "$ref": "#/$defs/sha40" },
-        "role": { "type": "string", "minLength": 1 },
-        "reachable": { "type": "boolean" },
-        "designated_release_ref": { "type": ["string", "null"] },
-        "note": { "type": "string" }
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "revision": {
+          "$ref": "#/$defs/sha40"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reachable": {
+          "type": "boolean"
+        },
+        "designated_release_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
     "candidate": {
@@ -217,19 +467,53 @@
         "observed_at"
       ],
       "properties": {
-        "lane": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,3}$" },
-        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
-        "pr": { "type": "integer", "minimum": 1 },
-        "head": { "$ref": "#/$defs/sha40" },
-        "base_ref": { "type": "string", "minLength": 1 },
-        "base_is_pr": { "type": "boolean" },
-        "stacks_on": { "type": ["integer", "null"] },
-        "draft": { "const": true },
-        "evidence_level": { "$ref": "#/$defs/evidenceLevel" },
-        "evidence_class": { "$ref": "#/$defs/evidenceClass" },
-        "installed": { "type": "boolean" },
-        "observed_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
-        "notes": { "type": "string" }
+        "lane": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]{0,3}$"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "pr": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "head": {
+          "$ref": "#/$defs/sha40"
+        },
+        "base_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_is_pr": {
+          "type": "boolean"
+        },
+        "stacks_on": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "draft": {
+          "const": true
+        },
+        "evidence_level": {
+          "$ref": "#/$defs/evidenceLevel"
+        },
+        "evidence_class": {
+          "$ref": "#/$defs/evidenceClass"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "notes": {
+          "type": "string"
+        }
       }
     },
     "preview": {
@@ -245,17 +529,34 @@
         "composed_revision"
       ],
       "properties": {
-        "label": { "const": "INTEGRATION_PREVIEW" },
-        "all_release_gates": { "const": false },
-        "not_release": { "const": true },
-        "composed": { "const": true },
+        "label": {
+          "enum": [
+            "INTEGRATION_PREVIEW",
+            "INTEGRATION_PREVIEW_V2"
+          ]
+        },
+        "all_release_gates": {
+          "const": false
+        },
+        "not_release": {
+          "const": true
+        },
+        "composed": {
+          "const": true
+        },
         "composed_from": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/sha40" }
+          "items": {
+            "$ref": "#/$defs/sha40"
+          }
         },
-        "base_revision": { "$ref": "#/$defs/sha40" },
-        "composed_revision": { "$ref": "#/$defs/sha40" }
+        "base_revision": {
+          "$ref": "#/$defs/sha40"
+        },
+        "composed_revision": {
+          "$ref": "#/$defs/sha40"
+        }
       }
     },
     "proofRequirements": {
@@ -270,32 +571,77 @@
         "authenticated_lease_producer": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["required", "present", "sha"],
+          "required": [
+            "required",
+            "present",
+            "sha"
+          ],
           "properties": {
-            "required": { "const": true },
-            "present": { "type": "boolean" },
-            "sha": { "type": ["string", "null"] }
+            "required": {
+              "const": true
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         },
         "t10_we_finalize_link": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["required", "present", "evidence_sha"],
+          "required": [
+            "required",
+            "present",
+            "evidence_sha"
+          ],
           "properties": {
-            "required": { "const": true },
-            "present": { "type": "boolean" },
-            "evidence_sha": { "type": ["string", "null"] }
+            "required": {
+              "const": true
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "evidence_sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         },
         "independent_exact_sha_negative_qa": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["required", "present", "sha", "qa_snapshot"],
+          "required": [
+            "required",
+            "present",
+            "sha",
+            "qa_snapshot"
+          ],
           "properties": {
-            "required": { "const": true },
-            "present": { "type": "boolean" },
-            "sha": { "type": ["string", "null"] },
-            "qa_snapshot": { "type": ["string", "null"] }
+            "required": {
+              "const": true
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "sha": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "qa_snapshot": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         }
       }
@@ -303,9 +649,16 @@
     "compositionPreflight": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["performed", "verdict", "work_lease", "pairs"],
+      "required": [
+        "performed",
+        "verdict",
+        "work_lease",
+        "pairs"
+      ],
       "properties": {
-        "performed": { "type": "boolean" },
+        "performed": {
+          "type": "boolean"
+        },
         "verdict": {
           "enum": [
             "CLEAN_PREFLIGHT",
@@ -326,29 +679,75 @@
             "negative_proof"
           ],
           "properties": {
-            "status": { "enum": ["SEND_ADMISSION_BOUND", "SEND_ADMISSION_UNBOUND"] },
-            "authority": { "type": "string", "minLength": 10 },
-            "observed_authority": { "type": "string", "minLength": 10 },
+            "status": {
+              "enum": [
+                "SEND_ADMISSION_BOUND",
+                "SEND_ADMISSION_UNBOUND"
+              ]
+            },
+            "authority": {
+              "type": "string",
+              "minLength": 10
+            },
+            "observed_authority": {
+              "type": "string",
+              "minLength": 10
+            },
             "session_create_producer": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["present", "sha", "authenticated_writer"],
+              "required": [
+                "present",
+                "sha",
+                "authenticated_writer"
+              ],
               "properties": {
-                "present": { "type": "boolean" },
-                "sha": { "type": ["string", "null"] },
-                "authenticated_writer": { "type": "boolean" }
+                "present": {
+                  "type": "boolean"
+                },
+                "sha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "authenticated_writer": {
+                  "type": "boolean"
+                }
               }
             },
             "negative_proof": {
-              "type": ["object", "null"],
+              "type": [
+                "object",
+                "null"
+              ],
               "additionalProperties": false,
-              "required": ["sha", "qa_snapshot", "exit", "held", "security_fail"],
+              "required": [
+                "sha",
+                "qa_snapshot",
+                "exit",
+                "held",
+                "security_fail"
+              ],
               "properties": {
-                "sha": { "$ref": "#/$defs/sha40" },
-                "qa_snapshot": { "type": "string", "minLength": 7 },
-                "exit": { "type": "integer" },
-                "held": { "type": "integer", "minimum": 0 },
-                "security_fail": { "type": "integer", "minimum": 0 }
+                "sha": {
+                  "$ref": "#/$defs/sha40"
+                },
+                "qa_snapshot": {
+                  "type": "string",
+                  "minLength": 7
+                },
+                "exit": {
+                  "type": "integer"
+                },
+                "held": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "security_fail": {
+                  "type": "integer",
+                  "minimum": 0
+                }
               }
             }
           }
@@ -371,18 +770,57 @@
               "commands"
             ],
             "properties": {
-              "left": { "type": "string", "minLength": 1 },
-              "right": { "type": "string", "minLength": 1 },
-              "merge_base_left": { "$ref": "#/$defs/sha40" },
-              "merge_base_right": { "$ref": "#/$defs/sha40" },
-              "shared_files": { "type": "integer", "minimum": 0 },
-              "semantic_status": {
-                "enum": ["JOINED", "UNJOINED", "NOT_APPLICABLE", "UNKNOWN"]
+              "left": {
+                "type": "string",
+                "minLength": 1
               },
-              "repo_dependency": { "type": "string", "minLength": 10 },
-              "order": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-              "test_roots": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-              "commands": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+              "right": {
+                "type": "string",
+                "minLength": 1
+              },
+              "merge_base_left": {
+                "$ref": "#/$defs/sha40"
+              },
+              "merge_base_right": {
+                "$ref": "#/$defs/sha40"
+              },
+              "shared_files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "semantic_status": {
+                "enum": [
+                  "JOINED",
+                  "UNJOINED",
+                  "NOT_APPLICABLE",
+                  "UNKNOWN"
+                ]
+              },
+              "repo_dependency": {
+                "type": "string",
+                "minLength": 10
+              },
+              "order": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "test_roots": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "commands": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -391,21 +829,47 @@
     "sourceMerge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["performed", "policy", "conflict_audit"],
+      "required": [
+        "performed",
+        "policy",
+        "conflict_audit"
+      ],
       "properties": {
-        "performed": { "type": "boolean" },
-        "policy": { "type": "string", "minLength": 10 },
+        "performed": {
+          "type": "boolean"
+        },
+        "policy": {
+          "type": "string",
+          "minLength": 10
+        },
         "conflict_audit": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["left", "right", "shared_own_commit_files", "conclusion"],
+            "required": [
+              "left",
+              "right",
+              "shared_own_commit_files",
+              "conclusion"
+            ],
             "properties": {
-              "left": { "type": "string", "minLength": 1 },
-              "right": { "type": "string", "minLength": 1 },
-              "shared_own_commit_files": { "type": "integer", "minimum": 0 },
-              "conclusion": { "type": "string", "minLength": 3 }
+              "left": {
+                "type": "string",
+                "minLength": 1
+              },
+              "right": {
+                "type": "string",
+                "minLength": 1
+              },
+              "shared_own_commit_files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "conclusion": {
+                "type": "string",
+                "minLength": 3
+              }
             }
           }
         }
@@ -414,12 +878,40 @@
     "gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "required_level", "achieved_level", "verdict", "owner"],
+      "required": [
+        "id",
+        "required_level",
+        "achieved_level",
+        "verdict",
+        "owner"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 2 },
-        "required_level": { "$ref": "#/$defs/evidenceLevel" },
-        "achieved_level": { "enum": ["NOT_RUN", "SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
-        "verdict": { "enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED", "PARTIAL"] },
+        "id": {
+          "type": "string",
+          "minLength": 2
+        },
+        "required_level": {
+          "$ref": "#/$defs/evidenceLevel"
+        },
+        "achieved_level": {
+          "enum": [
+            "NOT_RUN",
+            "SOURCE",
+            "MOCK",
+            "LOCAL",
+            "REAL_DEVICE",
+            "CLIENT_E2E"
+          ]
+        },
+        "verdict": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_RUN",
+            "BLOCKED",
+            "PARTIAL"
+          ]
+        },
         "blocker_code": {
           "enum": [
             "NONE",
@@ -429,40 +921,86 @@
             "BLOCKED_NO_CANDIDATE",
             "BLOCKED_UNLANDED_CHAIN",
             "BLOCKED_OWNER_ACTION",
-            "BLOCKED_SEMANTIC_JOIN"
+            "BLOCKED_SEMANTIC_JOIN",
+            "BLOCKED_TRUST_SOURCE"
           ]
         },
-        "owner": { "type": "string", "minLength": 3 },
-        "blocker": { "type": "string" },
-        "receipt": { "type": ["string", "null"] }
+        "owner": {
+          "type": "string",
+          "minLength": 3
+        },
+        "blocker": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "hostedCi": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "evidence"],
+      "required": [
+        "status",
+        "evidence"
+      ],
       "properties": {
-        "status": { "enum": ["GREEN", "FAILED", "QUOTA_WAIVED", "NOT_CONFIGURED", "UNKNOWN"] },
-        "evidence": { "type": "string", "minLength": 3 }
+        "status": {
+          "enum": [
+            "GREEN",
+            "FAILED",
+            "QUOTA_WAIVED",
+            "NOT_CONFIGURED",
+            "UNKNOWN"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 3
+        }
       }
     },
     "openP0": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "summary", "owner_action"],
+      "required": [
+        "id",
+        "summary",
+        "owner_action"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 2 },
-        "summary": { "type": "string", "minLength": 10 },
-        "owner_action": { "type": "string", "minLength": 10 }
+        "id": {
+          "type": "string",
+          "minLength": 2
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 10
+        },
+        "owner_action": {
+          "type": "string",
+          "minLength": 10
+        }
       }
     },
     "rollback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["design", "verified"],
+      "required": [
+        "design",
+        "verified"
+      ],
       "properties": {
-        "design": { "type": "string", "minLength": 10 },
-        "verified": { "type": "boolean" }
+        "design": {
+          "type": "string",
+          "minLength": 10
+        },
+        "verified": {
+          "type": "boolean"
+        }
       }
     },
     "claims": {
@@ -476,11 +1014,21 @@
         "final_acceptance"
       ],
       "properties": {
-        "live_device": { "type": "boolean" },
-        "client_e2e": { "type": "boolean" },
-        "production": { "type": "boolean" },
-        "code_composed_rc": { "type": "boolean" },
-        "final_acceptance": { "type": "boolean" }
+        "live_device": {
+          "type": "boolean"
+        },
+        "client_e2e": {
+          "type": "boolean"
+        },
+        "production": {
+          "type": "boolean"
+        },
+        "code_composed_rc": {
+          "type": "boolean"
+        },
+        "final_acceptance": {
+          "type": "boolean"
+        }
       }
     }
   }

@@ -1,46 +1,51 @@
-# INTEGRATION_PREVIEW — 2026-10-18
+# INTEGRATION_PREVIEW_V2 — 2026-10-18
 
-**Label: `INTEGRATION_PREVIEW` / `BLOCKED_SEMANTIC` / `NOT_RELEASE`.**
+**Label: `INTEGRATION_PREVIEW_V2` / `NOT_RELEASE` / `BLOCKED_SEMANTIC`.**
 This is a source composition, not a release candidate, not a deployment, and not
 an authorization to merge anything.
 
-## What was composed
+## Composition
 
-| Step | Commit | Parents | Content |
+| Step | Commit | Parent(s) | Content |
 |---|---|---|---|
-| base | `4a31628` | — | serveros `main` |
-| 1 | `67bd3d5` | `4a31628`, `aee38cb` | security tree #264 (`#262` + `#252`) |
-| 2 | `cda4915` | `67bd3d5`, `c9fb802` | T10 chain #263 (`#258` → `#260` → `#263`) |
+| base | `905c472` | — | preview V1 (#264 security + #263 T10 + I1 manifest) |
+| 1 | `5ea53b3` | `905c472`, `f4eade1` | resource-key fix **#268** |
+| 2 | `fb411de` | `5ea53b3`, `322a8ce` | T10 receipt bridge **#269** |
+| 3 | (this commit) | `fb411de` | V2 manifest / checker / readme |
 
-Both merges were `--no-ff` into this isolated worktree. Original commits,
-authorship and branches are preserved. No owner branch, no Work Engine source and
-no protected branch was modified; nothing was force-pushed.
+Both merges were `--no-ff` into a new isolated worktree. Original commits,
+authorship and branches are preserved. No owner branch, no product branch, no
+Work Engine source and no protected branch was modified; nothing was force-pushed.
+`#267` and `#254` are untouched.
 
-## Targeted negative tests (LOCAL, composed tree)
+## Pinned external dependency (not merged)
 
-| Set | Command | Result |
+**work-engine #14 `e4c4a2b`** is pinned read-only. The cross-repo contract is
+asserted at source:
+
+- WE `workengine/authority.py::OwnerVerifiedLease._resource` → `f"work-write:{item}"`, strips, refuses empty.
+- serveros `context/resolver.py::work_write_resource` → `WORK_WRITE_PREFIX = "work-write:"` + item, strips, refuses empty.
+
+The string is identical. **The verifier is still a test-only fake**, so this is a
+source-level contract, not a production authority.
+
+## Focused regressions (LOCAL, composed tree)
+
+| Suite | Command | Result |
 |---|---|---|
-| A/B/C | `pytest -q tests/test_v1_lease_authority_gate.py tests/test_v1_lease_acquire_producer.py tests/test_dispatch_attempts.py` | **63 passed**, exit 0 |
-| A/B/C named | 9 named negative tests (spoofed claim vs live lease, explicit writer refused, no-lease create reports no authority, unknown outcome never retried, settled not reopened, unknown cannot become call-not-sent) | **9 passed**, exit 0 |
-| D | `pytest -q tests/test_fleet_v1_t10_continuation_provenance.py tests/test_fleet_v1_t10_producer_binding.py` | **6 passed**, exit 0 |
-| D named | child `PASS` text with true exit 1 denied; exit 0 only `ELIGIBLE`; forged anchor denied; missing anchor `BLOCKED_WIRING` | **6 passed**, exit 0 |
+| S1/S2 | `pytest -q test_v1_lease_authority_gate test_v1_lease_acquire_producer test_dispatch_attempts test_v1_work_engine_resource_contract` | **76 passed**, exit 0 |
+| T10 | `pytest -q test_fleet_v1_t10_authority_bridge test_fleet_v1_t10_continuation_provenance test_fleet_v1_t10_producer_binding` | **29 passed**, exit 0 |
 
-All runs used `systemd-run --user` with `MemoryMax=1G`, `MemorySwapMax=0`,
-`CPUQuota=25%`, `timeout 600`, and a non-blocking `flock`. No real provider send,
-account operation, credential, network call or device was touched.
+Both under `systemd-run --user` with `MemoryMax=1G`, `MemorySwapMax=0`,
+`CPUQuota=25%`, `timeout 600`, non-blocking `flock`. No real session send,
+provider call, credential, network or device.
 
-## What remains blocked
+## QA status (not a signature)
 
-- **S1**: no authenticated Work Engine lease producer. `create` reports
-  `write_authority` but records no claim without a lease; the producer is
-  `BLOCKED_PRODUCER_BOUNDARY` (WE exposes only Python methods; no CLI/MCP; no
-  actor/grant).
-- **S2**: no provider-owned idempotency readback — `BLOCKED_PROVIDER_SOURCE`;
-  not exactly-once.
-- **T10**: the local producer/consumer path is fail-closed, but Work Engine
-  `finalize_run` does not ingest the proof (`BLOCKED_WIRING`).
-- G1 present-null unchanged (prior dispatch `BLOCKED_ACTION`, not retried).
-- Real Dell/Windows device and authenticated CC client E2E absent.
+- **Snapshot J `769991f`** (landed during this milestone; the brief said "running"): old #264 exit 1 with 6 `SECURITY_FAIL`, new #268 exit 0 with 37 checks. `QA_PARTIAL`, no signature.
+- **#269 has no independent QA at its SHA.** The author reports 10+77 focused checks; that is not a receipt.
+- The composed V2 SHA itself has **no independent QA**.
 
-Independent QA Snapshot I (`997a8f5`) measured this merged tree: 41 checks exit 0,
-`QA_PARTIAL`, no signature. `all_release_gates=false`.
+## Still blocked
+
+`BLOCKED_TRUST_SOURCE` (no OS-attested LeaseAuthority parent; grant lacks epoch and `lease.*` actions; no out-of-process verifier), `BLOCKED_PRODUCER_BOUNDARY`, no production finalization caller, unknown provider result (`BLOCKED_PROVIDER_SOURCE`), G1 present-null (prior dispatch `BLOCKED_ACTION`, not retried), Windows/Dell native E2E and owner OAuth client E2E absent.
