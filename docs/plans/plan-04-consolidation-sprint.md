@@ -96,3 +96,19 @@
 - 每个会话只推送自己名下的新分支，**不推送、不 rebase、不 force-push 别人的分支**，也不推送 main。
 - 每个会话的产出是一个 **Draft PR** 加一份回执，回执格式见第 3 节。合并由所有者决定。
 - 发现自己的车道已经被别人做了，停下来并在回执里说明，不重复做。
+
+## 8. 已派出的云端会话（2026-10-18 16:57 UTC）
+
+云端会话**只产出分支和 Draft PR，不合并**。合并、车道 E 各分支的集成、推送到 `llmlab`、以及所有收尾操作，都由**所有者的本地 CC** 执行。
+
+| 车道 | 会话 | 仓库 | 产出分支 |
+|---|---|---|---|
+| D1 | `session_018BiVCfkXeEP8sgmaLPkBbr` | `marketops` | `consolidate/marketops-d1` |
+| D2 | `session_01BntpCEBsCGsH1nx5dMJNEg` | `marketops-session` | `consolidate/marketops-session-d2` |
+| E1 基线 + 合入 #62/#70/#71/#127 | `session_016qmPjJAas76MEXsWGkPK6P` | `llm-lab-portal` | `consolidate/llmlab-e1-base` |
+| E2 Python 已知失败 | `session_01HUsxMcGBD1Ge9DbWkg8mDh` | `llm-lab-portal` | `consolidate/llmlab-e2-pytests` |
+| E3 浏览器已知失败 | `session_01V98z687vXu6Sty4ryngKG7` | `llm-lab-portal` | `consolidate/llmlab-e3-browser` |
+| E4 旧 llm-lab 脱敏导入（只新增目录） | `session_01JcLZThXzmCzuUmjHDUbLbL` | `llm-lab-portal` | `consolidate/llmlab-e4-import` |
+| F 第三方副本核对 | `session_01CdHv7poaMXBqwztsDJKWXk` | 只读 | 无，结论在会话回执 |
+
+**本地 CC 集成车道 E 的建议顺序**：以 E1 为基础，依次合入 E2（只改测试和后端 Python）、E3（只改 `tests/browser/`）、E4（只新增目录）。三者改动的文件互不重叠，预期没有冲突。合完后在全新 clone 里跑第 3 节的全部测试，然后用一个初始提交推送到 `llmlab`。
