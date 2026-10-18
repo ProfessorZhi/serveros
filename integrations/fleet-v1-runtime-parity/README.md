@@ -18,10 +18,12 @@ requested/resolved/effective model + permissionMode × Session lifecycle
 | `parity.py` | 纯投影：无 IO、无时钟、无 provider import；只做映射、拒绝与 UNKNOWN |
 | `observed.py` | observed-vs-declared 纯投影：五个观测状态按 surface 分开，不合并 |
 | `observed/tokyo-2026-10-18.json` | 2026-10-18 Tokyo 真实只读快照（已脱敏） |
-| `OBSERVED-2026-10-18.md` | 真实只读观测报告、矩阵、脱敏与外部批准清单 |
+| `observed/tri-node-2026-10-18.json` | Tokyo / Dell A6000 ref / Windows 三节点真实只读矩阵（已脱敏） |
+| `OBSERVED-2026-10-18.md` | Tokyo 真实只读观测报告、矩阵、脱敏与外部批准清单 |
+| `TRINODE-2026-10-18.md` | 三节点 capability/entitlement 矩阵与外部批准清单 |
 | `fixtures/positive.json` | 4 个正向 profile：Tokyo/vince Claude+Codex、Tokyo/vince Codex app-server、Dell/fjd Claude |
 | `fixtures/negative.json` | 14 个负向 profile：principal、installed CLI、grant、stale session、unbound provider、NEEDS_LOGIN、secret-shaped ref、runtime tag/family 轴、project、session ref、adapter absent、readiness absent |
-| `tests/test_fleet_v1_runtime_parity.py` | 44 个断言/参数化用例 |
+| `tests/test_fleet_v1_runtime_parity.py` | 52 个断言/参数化用例 |
 
 ## 两个不变量
 
@@ -78,6 +80,24 @@ requested/resolved/effective model + permissionMode × Session lifecycle
 
 既有 session list 不等于新的 Claude Code / Codex 账号 entitlement。
 
+### 三节点只读矩阵（2026-10-18）
+
+见 [`TRINODE-2026-10-18.md`](TRINODE-2026-10-18.md)：
+
+- Tokyo：`ENROLLED_REACHABLE`；registry 只绑定 claude-code；BotMux session
+  metadata `READ_AUTHORIZED`、agent inventory `NEEDS_LOGIN`；Codex provider
+  `READ_AUTHORIZED` 但 **UNBOUND**；Codex effective model `gpt-6-astra` 为 FACT，
+  effective permissionMode 两侧 `UNKNOWN`。
+- Windows `device:work-fj`：`ENROLLED_UNREACHABLE` / `NODE_RUNTIME_UNAVAILABLE`；
+  只有 claude-code + codex 声明，无 provider inventory、无 session、无 grant。
+- Dell A6000 `device:llm-lab-dell`：**`DEVICE_NOT_ENROLLED`**（UnknownDevice）；
+  不 fallback 到任何其他设备；既有 A6000 只读 terminal proof 不是 lifecycle test。
+- Fleet MCP `127.0.0.1:3401`（`serveros-fleet-mcp/0.1.0`）无 token
+  `initialize` → **401 `invalid_token`**；`create_allow` / `session_create`
+  三节点均 `GRANT_UNKNOWN`，未读取 token 或 raw policy。
+- Lifecycle verb 全部是 `DECLARED_ONLY` / `UNSUPPORTED` / `UNKNOWN`，
+  没有 `OBSERVED`；实际 lifecycle 仍 `BLOCKED_BY_OWNER`。
+
 ## 拒绝与 UNKNOWN
 
 - 拒绝码是闭集（`contract.yaml#refusal_codes`）：principal/credential 不匹配、
@@ -123,7 +143,7 @@ flock -n /tmp/serveros-fleet-v1-runtime-parity.lock \
     tests/test_fleet_v1_runtime_parity.py -q -p no:cacheprovider
 ```
 
-本机实测：RED = `FileNotFoundError: parity.py`，exit 2；GREEN = 44 passed，exit 0。
+本机实测：RED = `FileNotFoundError: parity.py`，exit 2；GREEN = 52 passed，exit 0。
 
 ## 非目标 / 未验证
 

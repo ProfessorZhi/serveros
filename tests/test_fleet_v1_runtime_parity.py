@@ -50,6 +50,7 @@ CONTRACT = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
 
 OBSERVED_PATH = PKG / "observed.py"
 OBSERVATION_PATH = PKG / "observed" / "tokyo-2026-10-18.json"
+TRINODE_PATH = PKG / "observed" / "tri-node-2026-10-18.json"
 
 
 def _load_observed():
@@ -63,6 +64,7 @@ def _load_observed():
 
 observed = _load_observed()
 OBSERVATION = json.loads(OBSERVATION_PATH.read_text(encoding="utf-8"))
+TRINODE_OBSERVATION = json.loads(TRINODE_PATH.read_text(encoding="utf-8"))
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -470,3 +472,140 @@ def test_observed_projection_is_pure_and_deterministic():
     second = observed.project_observed(OBSERVATION)
     assert first == second
     assert json.dumps(OBSERVATION, sort_keys=True) == before
+
+
+# ---------------------------------------------------------------------------
+# Tri-node observed-vs-declared matrix (Tokyo / Dell A6000 / Windows FJPCOS).
+#
+# The A6000 ref requested for this milestone is not enrolled. That is recorded
+# as DEVICE_NOT_ENROLLED and is never repaired by substituting another Dell.
+# ---------------------------------------------------------------------------
+
+def test_tri_node_connector_states_are_distinct():
+    out = observed.project_tri_node(TRINODE_OBSERVATION)
+    assert out["schema"] == observed.TRI_NODE_SCHEMA
+    assert out["evidence_level"] == "REAL_READ_ONLY"
+    assert set(out["devices"]) == {
+        "device:tokyo-shared-dev-01",
+        "device:work-fj",
+        "device:llm-lab-dell",
+    }
+    assert out["devices"]["device:tokyo-shared-dev-01"]["connector"] == "ENROLLED_REACHABLE"
+    assert out["devices"]["device:work-fj"]["connector"] == "ENROLLED_UNREACHABLE"
+    assert out["devices"]["device:llm-lab-dell"]["connector"] == "DEVICE_NOT_ENROLLED"
+    assert out["no_fallback"] is True
+    assert out["fallback"] is None
+
+
+def test_tri_node_policy_status_is_auth_required_and_grant_unknown():
+    out = observed.project_tri_node(TRINODE_OBSERVATION)
+    policy = out["fleet_policy_read"]
+    assert policy["state"] == "READ_AUTH_REQUIRED"
+    assert policy["http_status"] == 401
+    assert policy["error"] == "invalid_token"
+    assert policy["credential_read"] is False
+    assert policy["credential_used"] is False
+    for device in out["devices"].values():
+        assert device["create_allow"]["state"] == "GRANT_UNKNOWN"
+        assert device["session_create"]["state"] == "GRANT_UNKNOWN"
+
+
+def test_tri_node_declared_verbs_are_not_observed_lifecycle():
+    out = observed.project_tri_node(TRINODE_OBSERVATION)
+    tokyo = out["devices"]["device:tokyo-shared-dev-01"]
+    by_provider = {p["provider"]: p for p in tokyo["providers"]}
+
+    codex = by_provider["provider:codex-app-server"]
+    assert codex["bound"] is False
+    for verb in ("create", "send", "get_run", "resume", "interrupt"):
+        assert codex["verbs"][verb] == "DECLARED_ONLY"
+    assert codex["verbs"]["end"] == "UNSUPPORTED"
+
+    botmux = by_provider["provider:botmux-agent-session"]
+    assert botmux["bound"] is True
+    for verb in ("send", "get_run", "end"):
+        assert botmux["verbs"][verb] == "DECLARED_ONLY"
+    for verb in ("resume", "interrupt"):
+        assert botmux["verbs"][verb] == "UNSUPPORTED"
+    assert botmux["verbs"]["create"] == "UNKNOWN"
+
+    for provider in tokyo["providers"]:
+        assert "OBSERVED" not in provider["verbs"].values()
+
+
+def test_tri_node_effective_matrix():
+    out = observed.project_tri_node(TRINODE_OBSERVATION)
+    tokyo = out["devices"]["device:tokyo-shared-dev-01"]
+    by_provider = {p["provider"]: p for p in tokyo["providers"]}
+
+    codex = by_provider["provider:codex-app-server"]["effective"]
+    assert codex["model"] == {
+        "value": "gpt-6-astra",
+        "provenance": "FACT",
+        "source": "codex:thread/list",
+    }
+    assert codex["permissionMode"]["value"] is None
+    assert codex["permissionMode"]["provenance"] == "UNKNOWN"
+
+    botmux = by_provider["provider:botmux-agent-session"]["effective"]
+    assert botmux["model"]["value"] is None
+    assert botmux["model"]["provenance"] == "UNKNOWN"
+    assert botmux["permissionMode"]["value"] is None
+    assert botmux["permissionMode"]["provenance"] == "UNKNOWN"
+
+
+def test_tri_node_windows_and_dell_have_no_provider_claims():
+    out = observed.project_tri_node(TRINODE_OBSERVATION)
+
+    windows = out["devices"]["device:work-fj"]
+    assert windows["provider_inventory"]["state"] == "UNKNOWN"
+    assert windows["providers"] == []
+    assert windows["sessions_observed"] == 0
+    assert "DECLARED_BINDING_ONLY" in windows["states"]
+    assert windows["declared_bindings"] == [
+        "agent-runtime:claude-code", "agent-runtime:codex"
+    ]
+
+    dell = out["devices"]["device:llm-lab-dell"]
+    assert dell["enrollment"] == "NOT_ENROLLED"
+    assert dell["provider_inventory"]["state"] == "REFUSED"
+    assert dell["providers"] == []
+    assert dell["sessions_observed"] == 0
+    assert dell["states"][0] == "DEVICE_NOT_ENROLLED"
+
+
+def test_tri_node_snapshot_is_redacted():
+    raw = TRINODE_PATH.read_text(encoding="utf-8")
+    for forbidden in (
+        "sk-",
+        "Bearer ",
+        '"TOKEN"',
+        '"title":',
+        '"cwd":',
+        '"argv"',
+        '"environment"',
+    ):
+        assert forbidden not in raw, forbidden
+    assert re.search(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        raw,
+    ) is None
+
+
+def test_tri_node_contract_and_module_do_not_drift():
+    block = CONTRACT["tri_node_matrix"]
+    assert block["observation_schema"] == observed.TRI_NODE_OBSERVATION_SCHEMA
+    assert block["projection_schema"] == observed.TRI_NODE_SCHEMA
+    assert block["evidence_level"] == observed.EVIDENCE_LEVEL
+    assert list(block["connector_states"]) == list(observed.CONNECTOR_STATES)
+    assert list(block["policy_states"]) == list(observed.POLICY_STATES)
+    assert list(block["verb_states"]) == list(observed.VERB_STATES)
+    assert list(block["lifecycle_verbs"]) == list(observed.LIFECYCLE_MATRIX_VERBS)
+
+
+def test_tri_node_projection_is_pure_and_deterministic():
+    before = json.dumps(TRINODE_OBSERVATION, sort_keys=True)
+    first = observed.project_tri_node(TRINODE_OBSERVATION)
+    second = observed.project_tri_node(TRINODE_OBSERVATION)
+    assert first == second
+    assert json.dumps(TRINODE_OBSERVATION, sort_keys=True) == before

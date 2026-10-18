@@ -150,6 +150,204 @@ def _new_work(states: dict, binding_state: str) -> dict:
             for verb in NEW_WORK_VERBS}
 
 
+TRI_NODE_SCHEMA = "serveros/fleet-v1-runtime-parity-tri-node.v1"
+TRI_NODE_OBSERVATION_SCHEMA = (
+    "serveros/fleet-v1-runtime-parity-tri-node-observation.v1")
+
+CONNECTOR_STATES = ("ENROLLED_REACHABLE", "ENROLLED_UNREACHABLE",
+                    "DEVICE_NOT_ENROLLED", "UNKNOWN")
+POLICY_STATES = ("GRANT_OBSERVED", "GRANT_UNKNOWN", "READ_AUTH_REQUIRED",
+                 "READ_UNAVAILABLE")
+VERB_STATES = ("OBSERVED", "DECLARED_ONLY", "UNSUPPORTED", "UNKNOWN")
+LIFECYCLE_MATRIX_VERBS = ("create", "send", "get_run", "resume",
+                          "interrupt", "end")
+STATE_ORDER = (
+    "DEVICE_NOT_ENROLLED", "ENROLLED_UNREACHABLE", "ENROLLED_REACHABLE",
+    "DECLARED_BINDING_ONLY", "INSTALLED_ONLY", "READ_AUTHORIZED",
+    "NEEDS_LOGIN", "OBSERVED_UNBOUND", "GRANT_UNKNOWN", "UNKNOWN",
+)
+
+
+def _connector_state(device: dict) -> str:
+    enrollment = device.get("enrollment")
+    reachability = device.get("reachability")
+    reachability = reachability if isinstance(reachability, dict) else {}
+    state = reachability.get("state")
+    if enrollment == "NOT_ENROLLED" or state == "DEVICE_NOT_ENROLLED":
+        return "DEVICE_NOT_ENROLLED"
+    if state == "KNOWN_ONLINE":
+        return "ENROLLED_REACHABLE"
+    if enrollment == "enrolled" and state == "UNKNOWN":
+        return "ENROLLED_UNREACHABLE"
+    return "UNKNOWN"
+
+
+def _verb_states(provider: dict) -> dict:
+    """Declared versus observed, per verb, without promoting one to the other."""
+    declared = provider.get("declared_verbs")
+    declared = declared if isinstance(declared, dict) else {}
+    observed = set(provider.get("observed_verbs") or [])
+    out = {}
+    for verb in LIFECYCLE_MATRIX_VERBS:
+        if verb in observed:
+            out[verb] = "OBSERVED"
+        elif declared.get(verb) == "UNSUPPORTED":
+            out[verb] = "UNSUPPORTED"
+        elif declared.get(verb) == "SUPPORTED":
+            out[verb] = "DECLARED_ONLY"
+        else:
+            out[verb] = "UNKNOWN"
+    return out
+
+
+def _provider_effective(provider: dict, field: str) -> dict:
+    block = provider.get(
+        "effective_model" if field == "model" else "effective_permission_mode")
+    block = block if isinstance(block, dict) else {}
+    value = block.get("value")
+    source = block.get("source")
+    if _text(value) and block.get("provenance") == "FACT" and _text(source):
+        return {"value": value, "provenance": "FACT", "source": source}
+    return {
+        "value": None,
+        "provenance": "UNKNOWN",
+        "reason": block.get("reason") or (
+            f"no provider-native {field} field with FACT provenance was observed"),
+    }
+
+
+def _bound(family, bindings) -> bool:
+    return f"agent-runtime:{family}" in (bindings or [])
+
+
+def _policy_word(block, policy_state: str) -> dict:
+    """A grant is only GRANT_OBSERVED when a policy read actually established it."""
+    block = block if isinstance(block, dict) else {}
+    state = block.get("state")
+    if policy_state == "GRANT_OBSERVED" and state in POLICY_STATES:
+        return {"state": state, "reason": block.get("reason")}
+    return {
+        "state": "GRANT_UNKNOWN",
+        "reason": block.get("reason") or "no authorized policy status read",
+    }
+
+
+def project_tri_node(observation: dict) -> dict:
+    """One read-only cross-device capability/entitlement matrix. Pure."""
+    if not isinstance(observation, dict):
+        raise ValueError("observation must be a mapping")
+    if observation.get("schema") != TRI_NODE_OBSERVATION_SCHEMA:
+        raise ValueError(
+            f"observation schema must be {TRI_NODE_OBSERVATION_SCHEMA!r}; "
+            f"got {observation.get('schema')!r}")
+
+    policy = observation.get("fleet_policy_read")
+    policy = policy if isinstance(policy, dict) else {}
+    policy_state = policy.get("state")
+    if policy_state not in POLICY_STATES:
+        policy_state = "GRANT_UNKNOWN"
+
+    devices_out = {}
+    for device in observation.get("devices") or []:
+        if not isinstance(device, dict):
+            continue
+        ref = device.get("device_ref")
+        if not _text(ref):
+            continue
+
+        connector = _connector_state(device)
+        bindings = list(device.get("declared_bindings") or [])
+        providers = []
+        for provider in device.get("providers") or []:
+            if not isinstance(provider, dict):
+                continue
+            providers.append({
+                "provider": provider.get("provider"),
+                "family": provider.get("family"),
+                "bound": _bound(provider.get("family"), bindings),
+                "control_plane": provider.get("control_plane"),
+                "execution_readiness": provider.get("execution_readiness"),
+                "reads": {
+                    "agent_list": provider.get("agent_list"),
+                    "session_list": provider.get("session_list"),
+                },
+                "sessions_observed": provider.get("sessions_observed", 0),
+                "verbs": _verb_states(provider),
+                "effective": {
+                    "model": _provider_effective(provider, "model"),
+                    "permissionMode": _provider_effective(provider, "permissionMode"),
+                },
+            })
+
+        states = [connector]
+        if (device.get("enrollment") == "enrolled" and not providers
+                and bindings):
+            states.append("DECLARED_BINDING_ONLY")
+        if providers:
+            reads = ([p["reads"]["agent_list"] for p in providers]
+                     + [p["reads"]["session_list"] for p in providers])
+            if "READ_AUTHORIZED" in reads:
+                states.append("READ_AUTHORIZED")
+            if "NEEDS_LOGIN" in reads:
+                states.append("NEEDS_LOGIN")
+            cli = device.get("cli")
+            if isinstance(cli, dict) and cli.get("provenance") == "FACT":
+                states.append("INSTALLED_ONLY")
+            if any(not p["bound"] for p in providers):
+                states.append("OBSERVED_UNBOUND")
+        states.append("GRANT_UNKNOWN")
+        selected = set(states)
+        states = [state for state in STATE_ORDER if state in selected]
+
+        devices_out[ref] = {
+            "display_name": device.get("display_name"),
+            "platform": device.get("platform"),
+            "environment_profile": device.get("environment_profile"),
+            "enrollment": device.get("enrollment"),
+            "connector": connector,
+            "reachability": device.get("reachability"),
+            "node_runtime": device.get("node_runtime"),
+            "os_principal": device.get("os_principal"),
+            "declared_bindings": bindings,
+            "declared_agents": device.get("declared_agents"),
+            "provider_inventory": device.get("provider_inventory"),
+            "providers": providers,
+            "sessions_observed": len(device.get("sessions") or []),
+            "project": device.get("project") or {"state": "UNKNOWN"},
+            "create_allow": _policy_word(device.get("create_allow"), policy_state),
+            "session_create": _policy_word(device.get("session_create"), policy_state),
+            "states": states,
+        }
+
+    return {
+        "schema": TRI_NODE_SCHEMA,
+        "evidence_level": EVIDENCE_LEVEL,
+        "recorded_at": observation.get("recorded_at"),
+        "scope": observation.get("scope"),
+        "fleet_policy_read": {
+            "state": policy_state,
+            "endpoint": policy.get("endpoint"),
+            "server": policy.get("server"),
+            "http_status": policy.get("http_status"),
+            "error": policy.get("error"),
+            "error_description": policy.get("error_description"),
+            "credential_read": policy.get("credential_read", False),
+            "credential_used": policy.get("credential_used", False),
+            "observed_at": policy.get("observed_at"),
+            "consequence": policy.get("consequence"),
+        },
+        "devices": devices_out,
+        "behavioral": observation.get("behavioral") or {
+            "state": "UNKNOWN", "live": False,
+            "reason": "no behavioral observation was supplied",
+        },
+        "no_fallback": observation.get("no_fallback") is True,
+        "fallback": None,
+        "approval_required": observation.get("approval_required") or [],
+        "redactions": observation.get("redactions") or [],
+    }
+
+
 def project_observed(observation: dict) -> dict:
     """One observed-vs-declared record from one recorded snapshot. Pure."""
     if not isinstance(observation, dict):

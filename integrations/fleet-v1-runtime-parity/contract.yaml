@@ -302,3 +302,46 @@ observed_vs_declared:
       A provider that answers reads but is absent from the device's
       `runtime_bindings` is observed and unbound. New work is REFUSED with
       PROVIDER_UNBOUND; no other family, account or runtime is tried.
+
+# ---------------------------------------------------------------------------
+# Tri-node capability/entitlement matrix (2026-10-18).
+#
+# A connector state, a runtime binding, a provider declaration and a grant are
+# four different facts. This block keeps them apart for Tokyo, the requested
+# Dell A6000 ref and Windows FJPCOS.
+# ---------------------------------------------------------------------------
+tri_node_matrix:
+  observation_schema: serveros/fleet-v1-runtime-parity-tri-node-observation.v1
+  projection_schema: serveros/fleet-v1-runtime-parity-tri-node.v1
+  evidence_level: REAL_READ_ONLY
+  connector_states: [ENROLLED_REACHABLE, ENROLLED_UNREACHABLE, DEVICE_NOT_ENROLLED, UNKNOWN]
+  policy_states: [GRANT_OBSERVED, GRANT_UNKNOWN, READ_AUTH_REQUIRED, READ_UNAVAILABLE]
+  verb_states: [OBSERVED, DECLARED_ONLY, UNSUPPORTED, UNKNOWN]
+  lifecycle_verbs: [create, send, get_run, resume, interrupt, end]
+
+  invariants:
+    declared_is_not_observed: >-
+      A provider that declares `session.create` SUPPORTED has told us what its
+      protocol can do. It has not performed a create, and the matrix records
+      DECLARED_ONLY until an actual observation names the verb. An existing
+      thread listing is not a create observation.
+    grant_requires_a_policy_read: >-
+      create_allow / session_create are GRANT_UNKNOWN unless an authorized
+      policy status read established them. A declared binding, a provider
+      capability and an existing session are not a grant. The deployed Fleet
+      MCP requires owner OAuth; an unauthenticated initialize returning 401 is
+      READ_AUTH_REQUIRED, not an assumed allow or deny.
+    unknown_device_is_not_unreachable: >-
+      A device ref that is not enrolled is DEVICE_NOT_ENROLLED. It is not
+      repaired by substituting another enrolled Dell, server or personal device.
+    unreachable_device_has_no_provider_claims: >-
+      A device with no node runtime and no provider inventory contributes no
+      verbs, no sessions, no OS principal, no project and no grant. Nothing is
+      filled in from its declared bindings.
+    no_fallback: >-
+      No device, family, account or runtime is substituted for a missing or
+      unbound one. `fallback` is null.
+    a6000_readonly_proof_is_not_lifecycle: >-
+      An existing read-only terminal proof on the A6000 is not create/send/
+      resume/interrupt/end acceptance. The actual lifecycle run remains
+      BLOCKED_BY_OWNER and is not claimed here.
