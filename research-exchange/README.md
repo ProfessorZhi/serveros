@@ -2,7 +2,8 @@
 
 本目录是 [研究交接协议](../docs/architecture/RESEARCH-EXCHANGE.md) 的**协议实现**：契约 schema、
 空模板、标准库结构检查器和它的机制测试。从原 `ProfessorZhi/serveros-research-exchange`
-（提交 `bdde66b349076467c05d9c3848b7f54dc81a5558`）迁入；原仓库已归档。
+（提交 `bdde66b349076467c05d9c3848b7f54dc81a5558`）迁入；原仓库待验收后归档，
+当前**尚未归档**。
 
 ## 材料包不放在这里
 
@@ -31,7 +32,7 @@ templates/
   result.json
   report.md
 tools/check_packet.py           仅用标准库的结构/完整性检查器
-tests/test_check_packet.py      检查器的机制测试（合成 fixtures）
+tests/check_packet.py           检查器的机制测试（合成 fixtures）
 ```
 
 packet 的布局约定（在私有仓库内）是：
@@ -90,12 +91,14 @@ result 一致时才把它标记为版本匹配已验证，否则不会声称匹�
 测试：
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s research-exchange/tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 research-exchange/tests/check_packet.py -v
 ```
 
-本目录的测试不在仓库根 `tests/` 下，因此**不进入** `pytest` 默认套件
-（`pytest.ini` 的 `testpaths = tests`）与 `scripts/verify.py` 的 census；这是有意的：
-它们是协议实现的机制测试，按上面的命令单独运行。
+测试文件名为 `check_packet.py`，而不是 `test_*.py` 或 `*_test.py`：它在仓库根
+`tests/` 之外，若按 pytest 的默认收集 glob 命名，裸 `pytest` 会把整个文件当测试收集，
+与 `pytest.ini` 的 `testpaths = tests` 和 `scripts/verify.py` 的 census 不一致
+（`tests/test_collection_scope.py` 守着这条边界）。因此它**不进入** `pytest` 默认套件，
+按上面的命令单独运行。
 
 ## 权威规范
 

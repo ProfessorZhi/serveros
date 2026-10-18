@@ -1569,3 +1569,39 @@ actuators:
       that a declaration layer running behind the code is the pathology.
     sites:
       - {file: context/trust_binding.py, symbols: [_write]}
+
+  # ---------------------------------------------------------------------
+  # The research-exchange protocol checker's mechanism test. It lives under
+  # `research-exchange/tests/`, which is NOT the root `tests/` scope the
+  # scanner inventories (`_scope_of` matches the literal prefix `tests/`), so
+  # its call sites are product-scope and are declared here by name like any
+  # other reach. The test asserts the checker's CLI contract — exit code 0
+  # with `ok: true` for a valid packet+result, nonzero with `ok: false` for a
+  # packet whose required input list is empty — by running the checker as a
+  # subprocess over fixtures it just wrote into a `TemporaryDirectory`.
+  # ---------------------------------------------------------------------
+  - id: research-exchange-checker-mechanism-test
+    kind: unresolved_argv
+    verb: "<argv0>"
+    why: >-
+      Two `subprocess.run([sys.executable, str(script), ...])` sites in
+      `PacketCase.test_cli_exit_codes` in
+      `research-exchange/tests/check_packet.py`. `script` is
+      `ROOT / "tools" / "check_packet.py"`: this subtree's own checker,
+      resolved from the test file's location, not a caller-supplied command.
+      The scanner reads neither `sys.executable` nor `str(script)`, so the
+      argv is reported as `unresolved_argv` and the verb is the `<argv0>`
+      placeholder, exactly as the `release-verifies-with-the-shipped-
+      interpreter` and `architecture-check-invokes-reused-checkers` entries
+      do. What the scanner cannot show is the part that bounds the reach:
+      the remaining words are literals `--packet`, `--result`,
+      `--input-revision`, and paths under the test's own
+      `tempfile.TemporaryDirectory`; the checker reads JSON manifests,
+      resolves relative paths, and hashes declared inputs — it opens no
+      socket, writes no file, and runs no command of its own (the module's
+      only `os` use is `islink`/`realpath`). The grant is therefore "run this
+      subtree's own read-only verifier", not "run a command". These are
+      mechanism tests in the protocol subtree, not evidence about any real
+      packet.
+    sites:
+      - {file: research-exchange/tests/check_packet.py, symbols: [PacketCase.test_cli_exit_codes]}
