@@ -372,4 +372,4 @@ git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
 - P-g1-T ／ P-g1-D ／ P-g1-W：根据 G0 的盘点表，为每台设备写好 G1 脚本：备份、S 类改 remote、X 类挪到 `_retired-20261019/`、R 类新旧并存安装。脚本只带 `--dry-run` 模式，**不执行**，放进 `hwz-records` 的 `consolidate/g1-scripts` 分支，等所有者批准。
 - P-archive：列出 10 个待归档旧仓库各自的顶层路径，以及它们在新仓库里的位置（给验收 V1 用）。
 
-**云端 Claude 会话同时做验收**：已经完成的 PR（hwz-records #12、#13、#14；serveros #280、#281；ability-management #30、#31、#32）由云端会话按第 7 节先验收，结论写进进度文件的「验收」一节。Dell 主控不用等。
+**云端 Claude 会话同时做验收**：已经完成的 PR（hwz-records #12、#13、#14；serveros #280、#281；ability-management #30、#31、#32）由云端会话按第 7 节先验收。结论写在 `hwz-records` 分支 `status/acceptance` 的 `ACCEPTANCE.md`（云端会话是它唯一的写入者，进度文件仍只由 Dell 主控写）。Dell 主控不用等，读这个文件即可。
