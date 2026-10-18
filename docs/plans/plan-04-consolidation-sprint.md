@@ -404,3 +404,40 @@ Windows 要交的东西：
 - **D1（marketops，Public）**：从 `marketops-private` 的 `consolidate/d1-marketops-wip` 接着做。所有真实人名、公司名、邮箱、电话、社交账号都换成合成数据，脱敏扫描为 0，新提交用 noreply 邮箱，然后才推到公开的 `marketops` 的 `consolidate/d1-marketops` 分支、开 Draft PR，再派独立验收。
 - **D2（marketops-session，现已 Private）**：第一轮停下来，是因为当时仓库是公开的、里面有真实会话数据。现在仓库已改成私有，**D2 重新开工**：把 `marketops-session-private` 的有用内容并入 `marketops-session`，真实会话数据可以保留，但凭据和密钥不能入库。完成后开 Draft PR，派独立验收。
 - **D-int**：D1、D2 都通过后，按 P-issues 清单列出 `marketops-private` 里要转移的 Issue / PR，交给所有者决定。
+
+### 9.9 并发拉满，重点 MarketOps（2026-10-18 19:20 UTC 起）
+
+**目标：同时 25–30 个子 agent。** 前提不变：每个 agent 只写自己的分支和路径，每完成一个提交就推送，每个结果都派独立 agent 验收。
+
+#### 一、MarketOps D1 拆成流水线（约 10 个 agent）
+
+D1 是把私有仓库 `marketops-private` 的内容迁到**公开**仓库 `marketops`。难点是公开前必须全部换成合成数据，而且**同一个真实值在全仓库必须换成同一个假值**，否则测试和数据引用会对不上。所以先做一张共享的替换表，其余 agent 都按这张表替换。
+
+| ID | 做什么 | 写在哪（全部在私有的 `marketops-private`） | 依赖 |
+|---|---|---|---|
+| D1-map | 10 分钟内完成：对比 `marketops-private` main、WIP 分支 `consolidate/d1-marketops-wip`、公开 `marketops` main，按顶层目录列出「要迁 / 已迁 / 不迁」，并把要迁的目录分成 5–8 份，写成 `D1-SPLIT.md` | `consolidate/d1-map` | — |
+| D1-synth | 扫描所有要迁的内容，提取真实人名、公司名、邮箱、电话、社交账号、URL、ID，生成**确定性**的替换表 `synthetic-map.json`（同一个真实值永远映射到同一个假值），再写一个替换脚本 `apply-synthetic.py`。替换表含真实值，**只放在私有仓库，绝不进 marketops** | `consolidate/d1-synth` | — |
+| D1-a … D1-h | 每个 agent 负责 `D1-SPLIT.md` 里的一份目录：迁入、用 `apply-synthetic.py` 替换、修好这部分的测试 | 各自的 `consolidate/d1-part-<x>` | D1-map；替换表更新了就重新跑脚本 |
+| D1-scan | 常驻扫描：每隔 15 分钟拉取所有 `d1-part-*` 分支，跑 gitleaks、trufflehog，再用替换表里的**真实值**反向 grep（命中 = 漏换），把漏换清单写进进度文件，交回对应 agent | 只读 | — |
+| D1-int | 所有 part 完成、D1-scan 为 0 后合成一个分支；在全新 clone 上跑全部测试；**确认零命中后**，才以 noreply 作者推到公开 `marketops` 的 `consolidate/d1-marketops`，开 Draft PR | 公开 `marketops` | 全部 part、D1-scan=0 |
+| D1-acc | 独立验收（全新 clone，不复用任何作者的目录）：V1 落点、V2 测试、V3 公开脱敏（含真实值反向 grep）、作者邮箱 | 只读 | D1-int |
+| D-port | 按 P-issues 的建议，在 `marketops` 上为 #70、#78 和部分覆盖的 #73、#74 各准备一个移植分支，开 Draft PR，**不合并、不关闭任何 PR**，等所有者确认 | 公开 `marketops` 的 `port/*` 分支（同样必须先过 D1-synth 替换和 D1-scan） | D1-synth |
+
+**MarketOps 红线**：任何内容推到公开 `marketops` 之前，必须先过「替换表反向 grep = 0」。`synthetic-map.json`、`D1-SPLIT.md`、扫描结果都只放在私有仓库。
+
+#### 二、给慢测试分片（解决 serveros 等测试 1 小时以上的问题）
+
+- 先检查那几个等 pytest 超过 1 小时的 agent 是不是卡住了：看进程的 CPU 占用和日志最后一行。卡住的话，给 pytest 加 `--timeout=300`，找出挂住的测试，记进进度文件。
+- serveros 和 llmlab 的完整测试改成**分片并行**：按测试目录或文件把测试分成 6–8 份，每份一个 agent，同时跑；或者如果环境里装了 pytest-xdist，就用 `-n 8`。每份结果和 main 的同一份基线比较。
+- A1w、A-int、E-int 都用这种分片方式跑测试。
+
+#### 三、其他可以同时做的
+
+- **#12 小修**：`ops/scripts/release_publish.py:141` 的 `generator.path` 补上 `ops/` 前缀，然后派复验。
+- **#33 核对**：确认 ability-management #33 是否完整包含 #30、#31、#32，结论写进进度文件，告诉所有者「只合 #33」还是「按顺序四个都合」。
+- **收尾准备**（只写不执行）：
+  - 归档脚本：列出 10 个旧仓库，每个用 `gh repo archive` 归档；
+  - Issue 转移脚本：按 P-issues 清单逐条写好 `gh issue transfer` 命令。
+
+  两个脚本都只带 `--dry-run`，放进 `hwz-records` 的 `consolidate/closing-scripts` 分支，等所有者执行。
+- **进度文件**：把车道表刷新到最新状态。表里有几行还停在旧状态，例如 B-int 还写着「阻塞」。
