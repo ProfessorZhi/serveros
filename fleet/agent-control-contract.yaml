@@ -253,6 +253,31 @@ write_scope:
     its owner and token. The Agent Control binding's `writer` claim is a
     REFERENCE to that lease, not a second authority: it is minted from the lease,
     and a claim that disagrees with it is a stale or spoofed writer.
+  lease_resource_namespace: >-
+    ONE spelling: `work-write:<item_ref>`. Work Engine #14's
+    `OwnerVerifiedLease._resource(item_ref)` derives exactly that and stores it
+    in `leases.resource`; `context/resolver.py#work_write_resource` is the same
+    derivation on the reading side, and `live_lease(items, …)` looks up that name
+    and nothing else. A row stored under the naked Item (`SRV-0001`) is NOT read:
+    a silent fallback would be a second spelling of one scope, which is the
+    double-authority failure this whole section exists to prevent. `held_leases`
+    remains the generic reader and returns the table's raw resources, so under
+    #14 those are `work-write:<item>`; `item_from_work_write_resource` is how a
+    caller gets the Item back.
+  verified_producer_bridge_blocked: >-
+    BLOCKED_TRUST_SOURCE (Work Engine #14's `LeaseAuthority.verify`). serveros
+    HAS the pieces that look like a trusted parent — a `context_ref` resolved by
+    the daemon from its own store, a kernel `SO_PEERCRED` peer carried on every
+    request, and a live grant whose `revoked` / `expires_at` / `projects` /
+    `items` / `actions` are written by the store and never by this module. Two
+    required fields are MISSING, so no bridge is built and no verifier is
+    fabricated: (1) a serveros grant carries NO `epoch`, while `LeaseGrant.epoch`
+    must be sourced; (2) the grant action vocabulary does NOT contain
+    `lease.acquire` / `lease.renew` / `lease.release` / `work.commit`, so no
+    grant today can authorize a lease verb. There is also no out-of-process
+    verifier component, and none is in this file's ownership. An in-process
+    Python caller can instantiate its own verifier; that is NOT authentication
+    and must not be offered as a public lease verb.
   why_not_the_binding: >-
     A binding claim is something a caller can write. Before this correction
     `agent.binding.record` accepted `writer={owner: agent:EVIL, token: 999}` with

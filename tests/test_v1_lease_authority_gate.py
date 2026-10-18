@@ -94,14 +94,14 @@ def roots(root: Path) -> "resolver.Roots":
 # ---------------------------------------------------------------------------
 
 def test_a_live_lease_is_returned_with_owner_and_token(tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(now_epoch() + 600))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(now_epoch() + 600))])
     lease = resolver.live_lease(roots(tmp_path), ITEM)
     assert lease["owner"] == "agent:A"
     assert lease["token"] == "1"
 
 
 def test_an_expired_lease_is_not_a_live_lease(tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(now_epoch() - 60))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(now_epoch() - 60))])
     assert resolver.live_lease(roots(tmp_path), ITEM) is None
 
 
@@ -187,7 +187,7 @@ def test_an_explicit_writer_is_refused(daemon):
 
 
 def test_the_claim_is_minted_from_the_live_lease(daemon, tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(now_epoch() + 600))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(now_epoch() + 600))])
     answer = _record(daemon, session_ref="session-1", session_role="execution",
                      bound_item_ref=ITEM)
     assert answer["recorded"] is True
@@ -196,7 +196,7 @@ def test_the_claim_is_minted_from_the_live_lease(daemon, tmp_path):
 
 
 def test_resolve_reports_the_lease_as_the_write_authority(daemon, tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(now_epoch() + 600))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(now_epoch() + 600))])
     _record(daemon, session_ref="session-1", session_role="execution",
             bound_item_ref=ITEM)
     read = daemon.handle({"method": "agent.binding.resolve",

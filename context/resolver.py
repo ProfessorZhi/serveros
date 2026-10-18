@@ -359,6 +359,12 @@ def held_leases(roots: Roots, *, now=None) -> list[str]:
     row would erase the only evidence that a holder ever existed, which is the
     crash case the record is meant to answer.
 
+    Returns the table's RAW `resource` strings, and under Work Engine #14 those
+    are `work-write:<item_ref>` (see `work_write_resource`). It is the generic
+    "what is claimed" reading for the capsule's `protected` list; a caller that
+    needs the Item or the holder uses `item_from_work_write_resource` or
+    `live_lease`, never a second lookup of its own.
+
     `now` is epoch seconds and defaults to the wall clock. The comparison is a
     plain string comparison on `expires_at`, which is why that column is pinned
     to fixed-width `YYYY-MM-DDTHH:MM:SSZ` in `work-engine/workengine/store.py` —
@@ -377,21 +383,62 @@ def held_leases(roots: Roots, *, now=None) -> list[str]:
             (expires_after,)))
 
 
-def live_lease(roots: Roots, resource: str, *, now=None) -> dict | None:
-    """The LIVE Work Engine lease for one resource, or None.
+#: THE canonical Work write resource. Work Engine #14's
+#: `OwnerVerifiedLease._resource(item_ref)` derives exactly `work-write:<item>`
+#: and stores THAT in `leases.resource`; this is the same function, written on
+#: the reading side. There is no second spelling and no fallback: a scope is
+#: `work-write:<item>` or it is not this scope.
+WORK_WRITE_PREFIX = "work-write:"
+
+
+def work_write_resource(item_ref) -> str:
+    """The one resource name a Work write scope has. Raises on an empty Item.
+
+    Declared here rather than spelled at each call site so that the writer's
+    derivation and the reader's lookup cannot drift — which is exactly what they
+    had done before this function existed (`work-write:SRV-0001` vs `SRV-0001`).
+    """
+    item = str(item_ref or "").strip()
+    if not item:
+        raise ValueError(
+            "a Work write lease names an Item; '' names none. A resource with no "
+            "Item would be a lock on nothing")
+    return f"{WORK_WRITE_PREFIX}{item}"
+
+
+def item_from_work_write_resource(resource) -> str | None:
+    """The Item a lease resource names, or None for a foreign namespace.
+
+    None is a reading, not a refusal: `held_leases` also sees rows that are not
+    Work write scopes, and a caller that needs an Item has to be able to tell.
+    """
+    text = str(resource or "")
+    if not text.startswith(WORK_WRITE_PREFIX):
+        return None
+    item = text[len(WORK_WRITE_PREFIX):].strip()
+    return item or None
+
+
+def live_lease(roots: Roots, item_ref: str, *, now=None) -> dict | None:
+    """The LIVE Work Engine lease for one ITEM, or None.
+
+    The lookup is by the canonical `work-write:<item>` resource — the name Work
+    Engine #14's owner-verified producer writes. A lease stored under the naked
+    Item is NOT read: a silent fallback would be a second spelling of one scope,
+    and the whole point of this reader is that the two sides agree on one.
 
     Same table and same fixed-width stamp as `held_leases`; the difference is
     that this returns the owner and the token, because the send admission must
-    COMPARE them rather than merely count the resource. `held_leases` answers
-    "which resources are claimed" for the capsule's `protected` list; this
-    answers "who holds THIS one, and with which fence", which is the question a
-    send asks (#237 B3 / QA Snapshot E E5).
+    COMPARE them rather than merely count the resource (#237 B3 / QA E5).
 
-    The row is written by `work-engine/workengine/store.py#acquire_lease` — the
-    one authority for exclusive Work write ownership — so this is a READ of that
-    authority, not a second one. An expired row is not a lease: it is a crashed
-    or finished holder, and a scope whose lease has lapsed has no current writer.
+    The row is written by the Work Engine lease authority — the one authority for
+    exclusive Work write ownership — so this is a READ of that authority, not a
+    second one. An expired row is not a lease: it is a crashed or finished
+    holder, and a scope whose lease has lapsed has no current writer.
     """
+    item = str(item_ref or "").strip()
+    if not item:
+        return None
     if now is None:
         now = time.time()
     expires_after = datetime.datetime.fromtimestamp(
@@ -400,7 +447,7 @@ def live_lease(roots: Roots, resource: str, *, now=None) -> dict | None:
         roots,
         "SELECT resource, owner, token, expires_at FROM leases "
         "WHERE resource=? AND expires_at > ?",
-        (str(resource), expires_after))
+        (f"{WORK_WRITE_PREFIX}{item}", expires_after))
     for row in rows:
         return {"resource": row["resource"], "owner": row["owner"],
                 "token": row["token"], "expires_at": row["expires_at"]}

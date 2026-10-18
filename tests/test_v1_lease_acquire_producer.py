@@ -99,7 +99,7 @@ def test_create_reports_no_write_authority_without_a_lease(daemon, tmp_path):
 
 
 def test_create_reports_the_live_lease_when_one_exists(daemon, tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(600))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(600))])
     answer = _record(daemon, session_ref="session-1", session_role="execution",
                      bound_item_ref=ITEM)
     assert answer["recorded"] is True
@@ -108,7 +108,7 @@ def test_create_reports_the_live_lease_when_one_exists(daemon, tmp_path):
 
 
 def test_an_expired_lease_is_reported_as_no_authority(daemon, tmp_path):
-    make_leases(tmp_path, [(ITEM, "agent:A", "1", stamp(-60))])
+    make_leases(tmp_path, [(f"work-write:{ITEM}", "agent:A", "1", stamp(-60))])
     answer = _record(daemon, session_ref="session-1", session_role="execution",
                      bound_item_ref=ITEM)
     assert answer["recorded"] is True
