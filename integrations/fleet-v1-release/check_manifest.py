@@ -1,0 +1,1249 @@
+#!/usr/bin/env python3
+"""Check one Fleet V1 integration release manifest.
+
+Dependency-free on purpose: this runs on a shared host where installing a
+validator is itself a change. It enforces the invariants a release manifest
+must never violate, and it refuses the specific over-claims this programme
+keeps producing:
+
+  * a SOURCE pin printed as if it were a device or client result;
+  * ``COMPLETE_V1`` while a gate is NOT_RUN or its evidence level is lower
+    than the gate requires;
+  * a source merge performed before the gates that authorize it;
+  * an integrator signing its own QA;
+  * a credential pasted into a manifest.
+
+Usage:
+    python3 check_manifest.py <manifest.json> [--json]
+    python3 check_manifest.py --self-test
+
+Exit: 0 = no errors (warnings allowed), 1 = at least one error, 2 = usage.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+
+RANK = {
+    "NOT_RUN": 0,
+    "SOURCE": 1,
+    "MOCK": 2,
+    "LOCAL": 3,
+    "REAL_DEVICE": 4,
+    "CLIENT_E2E": 5,
+}
+
+SCHEMA = "serveros/fleet-v1-rc-manifest.v1"
+STATES = {"RC_CANDIDATE", "COMPLETE_V1", "BLOCKED", "ABORTED"}
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+ISO_Z = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+SECRET_PATTERNS = [
+    ("github-token", re.compile(r"gh[opsu]_[A-Za-z0-9]{20,}")),
+    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
+    ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("aws-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}")),
+]
+
+
+class Report:
+    def __init__(self) -> None:
+        self.errors: list[dict] = []
+        self.warnings: list[dict] = []
+
+    def error(self, code: str, where: str, message: str) -> None:
+        self.errors.append({"code": code, "where": where, "message": message})
+
+    def warn(self, code: str, where: str, message: str) -> None:
+        self.warnings.append({"code": code, "where": where, "message": message})
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def _req(obj, key, where, report: Report):
+    if not isinstance(obj, dict) or key not in obj:
+        report.error("E100", where, f"missing required key {key!r}")
+        return None
+    return obj[key]
+
+
+def check(doc, raw_text: str = "") -> Report:
+    r = Report()
+    if not isinstance(doc, dict):
+        r.error("E001", "$", "manifest must be a JSON object")
+        return r
+
+    if doc.get("schema") != SCHEMA:
+        r.error("E002", "schema", f"expected {SCHEMA!r}, got {doc.get('schema')!r}")
+
+    mid = doc.get("manifest_id")
+    if not isinstance(mid, str) or not re.match(r"^[a-z0-9][a-z0-9._-]{2,63}$", mid or ""):
+        r.error("E003", "manifest_id", "must be a lowercase id of 3..64 characters")
+
+    gen = doc.get("generated_at")
+    if not isinstance(gen, str) or not ISO_Z.match(gen):
+        r.error("E004", "generated_at", "must be an ISO-8601 UTC timestamp ending in Z")
+
+    state = doc.get("state")
+    if state not in STATES:
+        r.error("E005", "state", f"must be one of {sorted(STATES)}")
+
+    # ---- integration preview (a composition that is explicitly NOT a release)
+    preview = doc.get("preview")
+    if preview is not None:
+        if not isinstance(preview, dict):
+            r.error("E188", "preview", "must be an object")
+            preview = None
+        else:
+            if preview.get("label") != "INTEGRATION_PREVIEW":
+                r.error("E189", "preview.label", "must be INTEGRATION_PREVIEW")
+            if preview.get("all_release_gates") is not False:
+                r.error("E190", "preview.all_release_gates", "must be false")
+            if preview.get("not_release") is not True:
+                r.error("E191", "preview.not_release", "must be true")
+            if preview.get("composed") is not True:
+                r.error("E192", "preview.composed", "must be true")
+            composed = preview.get("composed_from")
+            if not isinstance(composed, list) or not composed:
+                r.error("E193", "preview.composed_from", "must list at least one SHA")
+            else:
+                for i, sha in enumerate(composed):
+                    if not isinstance(sha, str) or not SHA40.match(sha):
+                        r.error(
+                            "E193",
+                            f"preview.composed_from[{i}]",
+                            "must be a full 40-hex SHA",
+                        )
+            for key in ("base_revision", "composed_revision"):
+                v = preview.get(key)
+                if not isinstance(v, str) or not SHA40.match(v):
+                    r.error("E194", f"preview.{key}", "must be a full 40-hex SHA")
+
+    # A preview may perform a source merge while every release gate is still
+    # open, because it is explicitly not a release and makes no release claim.
+    preview_ok = (
+        isinstance(preview, dict)
+        and preview.get("not_release") is True
+        and preview.get("all_release_gates") is False
+        and state != "COMPLETE_V1"
+        and (doc.get("claims") or {}).get("code_composed_rc") is not True
+        and (doc.get("claims") or {}).get("final_acceptance") is not True
+    )
+
+    for field in ("campaign_ref", "integration_ref"):
+        v = doc.get(field)
+        if not isinstance(v, str) or not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$", v or ""):
+            r.error("E006", field, "must look like owner/repo#number")
+
+    # ---- principals -------------------------------------------------------
+    integrator = doc.get("integrator") or {}
+    qa = doc.get("qa") or {}
+    integrator_owner = integrator.get("owner")
+    qa_owner = qa.get("owner")
+    if not isinstance(integrator_owner, str) or len(integrator_owner) < 3:
+        r.error("E010", "integrator.owner", "must name the integrating session")
+    if not isinstance(qa_owner, str) or len(qa_owner) < 3:
+        r.error("E011", "qa.owner", "must name the QA session")
+    if qa.get("independent_of_integrator") and qa_owner == integrator_owner:
+        r.error(
+            "E012",
+            "qa",
+            "independent_of_integrator is true but qa.owner equals integrator.owner",
+        )
+    if state == "COMPLETE_V1" and not qa.get("independent_of_integrator"):
+        r.error("E013", "qa", "COMPLETE_V1 requires a QA owner independent of the integrator")
+    if state == "COMPLETE_V1" and not qa.get("signature"):
+        r.error("E014", "qa.signature", "COMPLETE_V1 requires an independent QA signature")
+    qa_status = qa.get("status")
+    if qa_status not in {"PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL", "SIGNED"}:
+        r.error("E015", "qa.status", f"unknown QA status {qa_status!r}")
+    if qa_status == "SIGNED" and not qa.get("signature"):
+        r.error("E016", "qa.signature", "status SIGNED requires a signature")
+    if qa_status in {"PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL"} and qa.get("signature"):
+        r.error("E017", "qa.signature", f"status {qa_status} cannot carry a signature")
+    if state == "COMPLETE_V1" and qa_status != "SIGNED":
+        r.error("E018", "qa.status", "COMPLETE_V1 requires qa.status == SIGNED")
+
+    # ---- independent QA triage artifact ----------------------------------
+    triage = doc.get("qa_triage")
+    triage_status = None
+    if triage is not None:
+        if not isinstance(triage, dict):
+            r.error("E019", "qa_triage", "must be an object")
+            triage = {}
+        triage_status = triage.get("status")
+        if triage_status not in {"PENDING", "INDEPENDENT_QA_PARTIAL", "SIGNED"}:
+            r.error("E120", "qa_triage.status", f"unknown QA triage status {triage_status!r}")
+        tr_head = triage.get("head")
+        if not isinstance(tr_head, str) or not SHA40.match(tr_head):
+            r.error("E121", "qa_triage.head", "must be a full 40-hex head SHA")
+        if not isinstance(triage.get("pr"), int) or triage["pr"] < 1:
+            r.error("E122", "qa_triage.pr", "must be a positive PR number")
+        findings = triage.get("findings")
+        if not isinstance(findings, list) or not findings:
+            r.error("E123", "qa_triage.findings", "an independent triage must record its findings")
+            findings = []
+        for i, finding in enumerate(findings):
+            w = f"qa_triage.findings[{i}]"
+            if not isinstance(finding, dict):
+                r.error("E124", w, "must be an object")
+                continue
+            if finding.get("severity") not in {"P0", "P1", "P2"}:
+                r.error("E125", f"{w}.severity", "must be P0, P1 or P2")
+            if finding.get("state_at_snapshot") not in {
+                "OPEN",
+                "FIXED_PENDING_RECHECK",
+                "RECHECK_REQUIRED",
+                "CLOSED",
+            }:
+                r.error("E126", f"{w}.state_at_snapshot", "unknown finding state")
+            if not isinstance(finding.get("summary"), str) or len(finding["summary"]) < 10:
+                r.error("E127", f"{w}.summary", "summary is required")
+    if state == "COMPLETE_V1" and triage is None:
+        r.error("E128", "qa_triage", "COMPLETE_V1 requires an independent QA triage object")
+    if state == "COMPLETE_V1" and triage is not None and triage_status != "SIGNED":
+        r.error("E129", "qa_triage.status", "COMPLETE_V1 requires a SIGNED independent triage")
+
+    # ---- dependency opportunities (never receipts) ------------------------
+    deps = doc.get("dependency_opportunities", [])
+    if not isinstance(deps, list):
+        r.error("E130", "dependency_opportunities", "must be an array")
+        deps = []
+    for i, dep in enumerate(deps):
+        w = f"dependency_opportunities[{i}]"
+        if not isinstance(dep, dict):
+            r.error("E131", w, "must be an object")
+            continue
+        if dep.get("is_release_receipt") is not False:
+            r.error(
+                "E132",
+                f"{w}.is_release_receipt",
+                "a dependency opportunity is never a release receipt",
+            )
+        if not isinstance(dep.get("description"), str) or len(dep["description"]) < 10:
+            r.error("E133", f"{w}.description", "description is required")
+
+    # ---- work in flight (accepted runs with no artifact yet) --------------
+    wif = doc.get("work_in_flight", [])
+    if not isinstance(wif, list):
+        r.error("E140", "work_in_flight", "must be an array")
+        wif = []
+    for i, item in enumerate(wif):
+        w = f"work_in_flight[{i}]"
+        if not isinstance(item, dict):
+            r.error("E141", w, "must be an object")
+            continue
+        if item.get("status") != "WORK_IN_FLIGHT":
+            r.error("E142", f"{w}.status", "must be WORK_IN_FLIGHT")
+        if item.get("has_pr") is not False:
+            r.error("E143", f"{w}.has_pr", "a work-in-flight run has no PR yet")
+        if item.get("pin") is not None:
+            r.error("E144", f"{w}.pin", "a work-in-flight run has no pinnable revision")
+        if item.get("is_evidence") is not False:
+            r.error("E145", f"{w}.is_evidence", "an accepted run is not evidence")
+        if item.get("is_landable") is not False:
+            r.error("E146", f"{w}.is_landable", "a work-in-flight run is not a landable candidate")
+        for key, minimum in (("lane", 1), ("owner_session", 8), ("run_ref", 8)):
+            v = item.get(key)
+            if not isinstance(v, str) or len(v) < minimum:
+                r.error("E147", f"{w}.{key}", f"must be a string of at least {minimum} chars")
+
+    # ---- version drift guard ---------------------------------------------
+    drift = doc.get("drift_guard")
+    if not isinstance(drift, dict):
+        r.error("E110", "drift_guard", "a drift guard recording the snapshot time is required")
+        drift = {}
+    snapshot = drift.get("snapshot_time")
+    if not isinstance(snapshot, str) or not ISO_Z.match(snapshot):
+        r.error("E111", "drift_guard.snapshot_time", "must be an ISO-8601 UTC timestamp ending in Z")
+    if not isinstance(drift.get("policy"), str) or len(drift["policy"]) < 20:
+        r.error("E112", "drift_guard.policy", "must state the re-pin policy")
+    recheck = drift.get("recheck_before")
+    if not isinstance(recheck, list) or not recheck:
+        r.error("E113", "drift_guard.recheck_before", "must list at least one recheck point")
+    stale_pins: list[str] = []
+
+    # ---- repo pins --------------------------------------------------------
+    repos = doc.get("repos")
+    if not isinstance(repos, list) or not repos:
+        r.error("E020", "repos", "must be a non-empty array")
+        repos = []
+    seen_repos: set[str] = set()
+    for i, repo in enumerate(repos):
+        where = f"repos[{i}]"
+        if not isinstance(repo, dict):
+            r.error("E021", where, "must be an object")
+            continue
+        name = repo.get("name")
+        if not isinstance(name, str) or not name:
+            r.error("E022", where, "name is required")
+        elif name in seen_repos:
+            r.error("E023", where, f"duplicate repo name {name!r}")
+        else:
+            seen_repos.add(name)
+        rev = repo.get("revision")
+        if not isinstance(rev, str) or not SHA40.match(rev):
+            r.error("E024", f"{where}.revision", "must be a full 40-hex revision")
+        if repo.get("reachable") is not True:
+            r.warn("W010", f"{where}.reachable", "revision is not recorded as reachable")
+        if not isinstance(repo.get("role"), str) or not repo.get("role"):
+            r.error("E025", f"{where}.role", "role is required")
+
+    # ---- candidates -------------------------------------------------------
+    candidates = doc.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        r.error("E030", "candidates", "must be a non-empty array")
+        candidates = []
+    seen_pr: set[tuple[str, int]] = set()
+    pinned_prs: set[tuple[str, int]] = set()
+    for i, cand in enumerate(candidates):
+        where = f"candidates[{i}]"
+        if not isinstance(cand, dict):
+            r.error("E031", where, "must be an object")
+            continue
+        repo = cand.get("repo")
+        pr = cand.get("pr")
+        if not isinstance(pr, int) or pr < 1:
+            r.error("E032", f"{where}.pr", "must be a positive integer")
+        if isinstance(repo, str) and isinstance(pr, int):
+            key = (repo, pr)
+            if key in seen_pr:
+                r.error("E033", where, f"duplicate candidate {repo}#{pr}")
+            seen_pr.add(key)
+            pinned_prs.add(key)
+        head = cand.get("head")
+        if not isinstance(head, str) or not SHA40.match(head):
+            r.error("E034", f"{where}.head", "must be a full 40-hex head SHA")
+        if cand.get("draft") is not True:
+            r.error("E035", f"{where}.draft", "every candidate in this manifest is a Draft")
+        level = cand.get("evidence_level")
+        if level not in RANK or level == "NOT_RUN":
+            r.error("E036", f"{where}.evidence_level", f"unknown evidence level {level!r}")
+        eclass = cand.get("evidence_class")
+        if eclass not in {
+            "CODE_CANDIDATE",
+            "LOCAL_PASS",
+            "REAL_READ_ONLY",
+            "ACTUAL_DEV_PASS",
+            "OAUTH_CLIENT_E2E",
+            "FINAL_ACCEPTANCE",
+        }:
+            r.error("E161", f"{where}.evidence_class", f"unknown evidence class {eclass!r}")
+        if cand.get("installed") is True and level == "SOURCE":
+            r.error(
+                "E037",
+                f"{where}.installed",
+                "an installed claim cannot rest on SOURCE evidence alone",
+            )
+        observed = cand.get("observed_at")
+        if not isinstance(observed, str) or not ISO_Z.match(observed):
+            r.error("E114", f"{where}.observed_at", "must be an ISO-8601 UTC timestamp ending in Z")
+        elif isinstance(snapshot, str) and observed != snapshot:
+            stale_pins.append(f"{repo}#{pr} observed {observed} != snapshot {snapshot}")
+            r.warn(
+                "W030",
+                f"{where}.observed_at",
+                f"pin observed at {observed}, snapshot is {snapshot}; re-pin before use",
+            )
+        if not isinstance(cand.get("base_ref"), str) or not cand["base_ref"]:
+            r.error("E038", f"{where}.base_ref", "base_ref is required")
+        if cand.get("stacks_on") is not None:
+            base_pr = cand["stacks_on"]
+            if not isinstance(base_pr, int):
+                r.error("E039", f"{where}.stacks_on", "must be an integer or null")
+            elif isinstance(repo, str) and (repo, base_pr) not in pinned_prs:
+                r.warn(
+                    "W011",
+                    f"{where}.stacks_on",
+                    f"base PR {repo}#{base_pr} is not itself pinned in this manifest",
+                )
+
+    # ---- source merge -----------------------------------------------------
+    merge = doc.get("source_merge") or {}
+    performed = merge.get("performed")
+    if not isinstance(performed, bool):
+        r.error("E040", "source_merge.performed", "must be a boolean")
+    if not isinstance(merge.get("policy"), str) or len(merge["policy"]) < 10:
+        r.error("E041", "source_merge.policy", "must state the merge policy")
+    audit = merge.get("conflict_audit")
+    if not isinstance(audit, list) or not audit:
+        r.error("E042", "source_merge.conflict_audit", "must record at least one audit row")
+        audit = []
+    for i, row in enumerate(audit):
+        where = f"source_merge.conflict_audit[{i}]"
+        if not isinstance(row, dict):
+            r.error("E043", where, "must be an object")
+            continue
+        if not isinstance(row.get("shared_own_commit_files"), int) or row["shared_own_commit_files"] < 0:
+            r.error("E044", f"{where}.shared_own_commit_files", "must be a non-negative integer")
+        if not isinstance(row.get("conclusion"), str) or len(row["conclusion"]) < 3:
+            r.error("E045", f"{where}.conclusion", "conclusion is required")
+
+    # ---- composition preflight -------------------------------------------
+    pre = doc.get("composition_preflight")
+    pre_verdict = None
+    if not isinstance(pre, dict):
+        r.error("E150", "composition_preflight", "a read-only composition preflight is required")
+    else:
+        pre_verdict = pre.get("verdict")
+        if pre_verdict not in {
+            "CLEAN_PREFLIGHT",
+            "BLOCKED_SEMANTIC",
+            "CONFLICT",
+            "BLOCKED_DEPENDENCY",
+            "NOT_ATTEMPTED",
+        }:
+            r.error("E151", "composition_preflight.verdict", f"unknown verdict {pre_verdict!r}")
+
+        # A structurally clean preflight is not a semantic join. The Work lease
+        # authority is the thing that decides whether a send may be admitted.
+        wl = pre.get("work_lease")
+        wl_status = None
+        if not isinstance(wl, dict):
+            r.error(
+                "E162",
+                "composition_preflight.work_lease",
+                "a work-lease authority record is required",
+            )
+            wl = {}
+        else:
+            wl_status = wl.get("status")
+            if wl_status not in {"SEND_ADMISSION_BOUND", "SEND_ADMISSION_UNBOUND"}:
+                r.error(
+                    "E163",
+                    "composition_preflight.work_lease.status",
+                    f"unknown work-lease status {wl_status!r}",
+                )
+            for key in ("authority", "observed_authority"):
+                v = wl.get(key)
+                if not isinstance(v, str) or len(v) < 10:
+                    r.error("E164", f"composition_preflight.work_lease.{key}", "must be recorded")
+            scp = wl.get("session_create_producer")
+            if not isinstance(scp, dict):
+                r.error(
+                    "E174",
+                    "composition_preflight.work_lease.session_create_producer",
+                    "the session-create producer must be recorded",
+                )
+                scp = {}
+            if scp.get("present") is True and (
+                not isinstance(scp.get("sha"), str) or not SHA40.match(scp["sha"])
+            ):
+                r.error(
+                    "E175",
+                    "composition_preflight.work_lease.session_create_producer.sha",
+                    "a present producer must name a full 40-hex SHA",
+                )
+            if wl_status == "SEND_ADMISSION_BOUND":
+                if scp.get("present") is not True:
+                    r.error(
+                        "E176",
+                        "composition_preflight.work_lease.session_create_producer.present",
+                        "no legitimate session-create producer acquires the authoritative lease",
+                    )
+                if scp.get("authenticated_writer") is not True:
+                    r.error(
+                        "E177",
+                        "composition_preflight.work_lease.session_create_producer.authenticated_writer",
+                        "the writer is not authenticated by a grant",
+                    )
+                proof = wl.get("negative_proof")
+                if not isinstance(proof, dict):
+                    r.error(
+                        "E165",
+                        "composition_preflight.work_lease.negative_proof",
+                        "SEND_ADMISSION_BOUND requires a verified same-SHA negative proof",
+                    )
+                else:
+                    sha = proof.get("sha")
+                    if not isinstance(sha, str) or not SHA40.match(sha):
+                        r.error(
+                            "E166",
+                            "composition_preflight.work_lease.negative_proof.sha",
+                            "must name a full 40-hex SHA",
+                        )
+                    if proof.get("exit") != 0:
+                        r.error(
+                            "E167",
+                            "composition_preflight.work_lease.negative_proof.exit",
+                            "the negative proof did not pass (exit != 0)",
+                        )
+                    if proof.get("security_fail") != 0:
+                        r.error(
+                            "E168",
+                            "composition_preflight.work_lease.negative_proof.security_fail",
+                            "security_fail must be 0 before send admission is called bound",
+                        )
+            elif wl_status == "SEND_ADMISSION_UNBOUND":
+                if pre_verdict == "CLEAN_PREFLIGHT":
+                    r.error(
+                        "E169",
+                        "composition_preflight.verdict",
+                        "an unbound send-admission lease cannot be CLEAN_PREFLIGHT",
+                    )
+                if performed is True and not preview_ok:
+                    r.error(
+                        "E170",
+                        "source_merge.performed",
+                        "composition is blocked while send admission does not read the Work lease; "
+                        "a preview must declare not_release and make no release claim",
+                    )
+        if not isinstance(pre.get("performed"), bool):
+            r.error("E152", "composition_preflight.performed", "must be a boolean")
+        pairs = pre.get("pairs")
+        if not isinstance(pairs, list) or not pairs:
+            r.error("E153", "composition_preflight.pairs", "must record at least one pair")
+            pairs = []
+        for i, pair in enumerate(pairs):
+            w = f"composition_preflight.pairs[{i}]"
+            if not isinstance(pair, dict):
+                r.error("E154", w, "must be an object")
+                continue
+            for key in ("merge_base_left", "merge_base_right"):
+                v = pair.get(key)
+                if not isinstance(v, str) or not SHA40.match(v):
+                    r.error("E155", f"{w}.{key}", "must be a full 40-hex merge base")
+            shared = pair.get("shared_files")
+            if not isinstance(shared, int) or shared < 0:
+                r.error("E156", f"{w}.shared_files", "must be a non-negative integer")
+            dep = pair.get("repo_dependency")
+            if not isinstance(dep, str) or len(dep) < 10:
+                r.error(
+                    "E157",
+                    f"{w}.repo_dependency",
+                    "must describe the dependency in at least 10 chars",
+                )
+            for key, minimum in (("order", 1), ("test_roots", 1), ("commands", 2)):
+                v = pair.get(key)
+                if not isinstance(v, list):
+                    r.error("E160", f"{w}.{key}", "must be an array")
+                elif len(v) < minimum:
+                    r.error("E160", f"{w}.{key}", f"needs at least {minimum} entries")
+            if pre_verdict == "CLEAN_PREFLIGHT" and isinstance(shared, int) and shared > 0:
+                r.error(
+                    "E158",
+                    f"{w}",
+                    "CLEAN_PREFLIGHT cannot be claimed when the pair shares files",
+                )
+            sem = pair.get("semantic_status")
+            if sem not in {"JOINED", "UNJOINED", "NOT_APPLICABLE", "UNKNOWN"}:
+                r.error("E171", f"{w}.semantic_status", f"unknown semantic status {sem!r}")
+            if pre_verdict == "CLEAN_PREFLIGHT" and sem == "UNJOINED":
+                r.error(
+                    "E172",
+                    w,
+                    "a pair whose semantics are UNJOINED cannot be CLEAN_PREFLIGHT",
+                )
+
+    # ---- mandatory release proofs -----------------------------------------
+    proofs = doc.get("proof_requirements")
+    if not isinstance(proofs, dict):
+        r.error(
+            "E180",
+            "proof_requirements",
+            "the three release proofs must be recorded",
+        )
+        proofs = {}
+    claims_doc = doc.get("claims") or {}
+    promo = (
+        state == "COMPLETE_V1"
+        or claims_doc.get("code_composed_rc") is True
+        or claims_doc.get("final_acceptance") is True
+    )
+    for key, sha_key in (
+        ("authenticated_lease_producer", "sha"),
+        ("t10_we_finalize_link", "evidence_sha"),
+        ("independent_exact_sha_negative_qa", "sha"),
+    ):
+        item = proofs.get(key)
+        if not isinstance(item, dict):
+            r.error("E181", f"proof_requirements.{key}", "must be recorded")
+            continue
+        if item.get("required") is not True:
+            r.error("E182", f"proof_requirements.{key}.required", "this proof is mandatory")
+        if promo and item.get("present") is not True:
+            r.error(
+                "E183",
+                f"proof_requirements.{key}.present",
+                "promotion is refused without this proof",
+            )
+        if item.get("present") is True:
+            v = item.get(sha_key)
+            if not isinstance(v, str) or not SHA40.match(v):
+                r.error(
+                    "E184",
+                    f"proof_requirements.{key}.{sha_key}",
+                    "a present proof must name a full 40-hex SHA",
+                )
+    if wl_status == "SEND_ADMISSION_BOUND":
+        alp = proofs.get("authenticated_lease_producer") or {}
+        if alp.get("present") is not True:
+            r.error(
+                "E185",
+                "proof_requirements.authenticated_lease_producer.present",
+                "send admission cannot be bound without an authenticated lease producer",
+            )
+
+    # ---- gates ------------------------------------------------------------
+    gates = doc.get("gates")
+    if not isinstance(gates, list) or not gates:
+        r.error("E050", "gates", "must be a non-empty array")
+        gates = []
+    seen_gates: set[str] = set()
+    all_gates_pass = bool(gates)
+    for i, gate in enumerate(gates):
+        where = f"gates[{i}]"
+        if not isinstance(gate, dict):
+            r.error("E051", where, "must be an object")
+            all_gates_pass = False
+            continue
+        gid = gate.get("id")
+        if not isinstance(gid, str) or not gid:
+            r.error("E052", f"{where}.id", "id is required")
+        elif gid in seen_gates:
+            r.error("E053", where, f"duplicate gate id {gid!r}")
+        else:
+            seen_gates.add(gid)
+        required = gate.get("required_level")
+        achieved = gate.get("achieved_level")
+        verdict = gate.get("verdict")
+        if required not in RANK:
+            r.error("E054", f"{where}.required_level", f"unknown level {required!r}")
+        if achieved not in RANK:
+            r.error("E055", f"{where}.achieved_level", f"unknown level {achieved!r}")
+        if verdict not in {"PASS", "FAIL", "NOT_RUN", "BLOCKED", "PARTIAL"}:
+            r.error("E056", f"{where}.verdict", f"unknown verdict {verdict!r}")
+        code = gate.get("blocker_code", "NONE")
+        if code not in {
+            "NONE",
+            "BLOCKED_PROVIDER_SOURCE",
+            "BLOCKED_AUTH_CLIENT_E2E",
+            "BLOCKED_REAL_DEVICE",
+            "BLOCKED_NO_CANDIDATE",
+            "BLOCKED_UNLANDED_CHAIN",
+            "BLOCKED_OWNER_ACTION",
+            "BLOCKED_SEMANTIC_JOIN",
+        }:
+            r.error("E058", f"{where}.blocker_code", f"unknown blocker code {code!r}")
+        if verdict == "PASS" and code != "NONE":
+            r.error("E059", where, f"verdict PASS cannot carry blocker code {code}")
+        if verdict != "PASS":
+            all_gates_pass = False
+        if (
+            required in RANK
+            and achieved in RANK
+            and RANK[achieved] >= RANK[required]
+            and verdict != "PASS"
+        ):
+            r.warn(
+                "W020",
+                where,
+                f"evidence level {achieved} meets {required} but verdict is {verdict}",
+            )
+        if verdict in {"FAIL", "NOT_RUN", "BLOCKED"} and not gate.get("blocker"):
+            r.warn("W021", where, f"verdict {verdict} without a blocker note")
+        if not isinstance(gate.get("owner"), str) or len(gate["owner"]) < 3:
+            r.error("E057", f"{where}.owner", "owner is required")
+
+    # ---- hosted CI --------------------------------------------------------
+    hosted = doc.get("hosted_ci") or {}
+    if hosted.get("status") not in {
+        "GREEN",
+        "FAILED",
+        "QUOTA_WAIVED",
+        "NOT_CONFIGURED",
+        "UNKNOWN",
+    }:
+        r.error("E060", "hosted_ci.status", "unknown hosted CI status")
+    if not isinstance(hosted.get("evidence"), str) or len(hosted["evidence"]) < 3:
+        r.error("E061", "hosted_ci.evidence", "must state what was observed")
+
+    # ---- open P0 ----------------------------------------------------------
+    open_p0 = doc.get("open_p0")
+    if not isinstance(open_p0, list):
+        r.error("E070", "open_p0", "must be an array")
+        open_p0 = []
+    for i, item in enumerate(open_p0):
+        where = f"open_p0[{i}]"
+        if not isinstance(item, dict):
+            r.error("E071", where, "must be an object")
+            continue
+        for key, minimum in (("id", 2), ("summary", 10), ("owner_action", 10)):
+            v = item.get(key)
+            if not isinstance(v, str) or len(v) < minimum:
+                r.error("E072", f"{where}.{key}", f"must be a string of at least {minimum} chars")
+
+    # ---- rollback / claims ------------------------------------------------
+    rollback = doc.get("rollback") or {}
+    if not isinstance(rollback.get("design"), str) or len(rollback["design"]) < 10:
+        r.error("E080", "rollback.design", "must describe the rollback")
+    if not isinstance(rollback.get("verified"), bool):
+        r.error("E081", "rollback.verified", "must be a boolean")
+
+    claims = doc.get("claims") or {}
+    for key in ("live_device", "client_e2e", "production", "code_composed_rc", "final_acceptance"):
+        if not isinstance(claims.get(key), bool):
+            r.error("E082", f"claims.{key}", "must be a boolean")
+    if claims.get("final_acceptance") is True and state != "COMPLETE_V1":
+        r.error(
+            "E173",
+            "claims.final_acceptance",
+            "final acceptance cannot be claimed before COMPLETE_V1",
+        )
+    if isinstance(preview, dict) and preview.get("not_release") is True:
+        if claims.get("final_acceptance") is True:
+            r.error(
+                "E195",
+                "claims.final_acceptance",
+                "an integration preview cannot claim final acceptance",
+            )
+        if (doc.get("qa") or {}).get("signature"):
+            r.error(
+                "E196",
+                "qa.signature",
+                "an integration preview cannot carry a QA signature",
+            )
+    if claims.get("code_composed_rc") is True and performed is not True:
+        r.error(
+            "E159",
+            "claims.code_composed_rc",
+            "a manifest is not a code-composed RC; this claim requires source_merge.performed",
+        )
+    if state != "COMPLETE_V1" and any(claims.get(k) is True for k in ("live_device", "client_e2e", "production")):
+        r.error(
+            "E083",
+            "claims",
+            f"state {state} cannot carry a live/client/production claim",
+        )
+
+    # ---- state invariants -------------------------------------------------
+    if state in {"RC_CANDIDATE", "BLOCKED"} and not open_p0:
+        r.error(
+            "E090",
+            "open_p0",
+            f"{state} must record why it is not COMPLETE_V1; open_p0 is empty",
+        )
+    if state == "COMPLETE_V1":
+        if not all_gates_pass:
+            r.error("E091", "gates", "COMPLETE_V1 requires every gate verdict to be PASS")
+        for i, gate in enumerate(gates):
+            required = gate.get("required_level")
+            achieved = gate.get("achieved_level")
+            if required in RANK and achieved in RANK and RANK[achieved] < RANK[required]:
+                r.error(
+                    "E092",
+                    f"gates[{i}]",
+                    f"COMPLETE_V1: evidence {achieved} is below required {required}",
+                )
+        if open_p0:
+            r.error("E093", "open_p0", "COMPLETE_V1 cannot carry open P0 items")
+        if any(claims.get(k) is not True for k in ("live_device", "client_e2e", "production")):
+            r.error("E094", "claims", "COMPLETE_V1 requires live, client and production claims")
+    if performed is True and not all_gates_pass and not preview_ok:
+        r.error(
+            "E095",
+            "source_merge.performed",
+            "a source merge before every gate passes is forbidden by the I1 policy; "
+            "only an explicit not_release preview may compose",
+        )
+    if state == "COMPLETE_V1" and stale_pins:
+        r.error(
+            "E115",
+            "drift_guard",
+            "COMPLETE_V1 cannot rest on pins older than the snapshot: " + "; ".join(stale_pins),
+        )
+
+    # ---- credential hygiene ----------------------------------------------
+    if raw_text:
+        for label, pattern in SECRET_PATTERNS:
+            if pattern.search(raw_text):
+                r.error("E100", "$", f"credential-like material detected ({label})")
+
+    return r
+
+
+def _valid_fixture() -> dict:
+    return {
+        "schema": SCHEMA,
+        "manifest_id": "fixture-rc-1",
+        "generated_at": "2026-10-17T00:00:00Z",
+        "campaign_ref": "Owner/repo#1",
+        "integration_ref": "Owner/repo#2",
+        "state": "RC_CANDIDATE",
+        "integrator": {"owner": "integrator-a", "device_ref": "device:x", "authority": "read-only"},
+        "qa": {
+            "owner": "qa-b",
+            "status": "PENDING",
+            "independent_of_integrator": True,
+            "session_ref": "device:x|claude|sess-b",
+            "run_ref": "run-b",
+            "signature": None,
+        },
+        "drift_guard": {
+            "snapshot_time": "2026-10-17T00:00:00Z",
+            "policy": "re-read every pin from the provider immediately before push and composition",
+            "recheck_before": ["push", "composition"],
+        },
+        "repos": [
+            {"name": "r", "repo": "Owner/repo", "revision": "a" * 40, "role": "host", "reachable": True}
+        ],
+        "candidates": [
+            {
+                "lane": "S1",
+                "repo": "Owner/repo",
+                "pr": 1,
+                "head": "b" * 40,
+                "base_ref": "main",
+                "base_is_pr": False,
+                "stacks_on": None,
+                "draft": True,
+                "evidence_level": "SOURCE",
+                "evidence_class": "CODE_CANDIDATE",
+                "installed": False,
+                "observed_at": "2026-10-17T00:00:00Z",
+            }
+        ],
+        "source_merge": {
+            "performed": False,
+            "policy": "no merge in this milestone",
+            "conflict_audit": [
+                {
+                    "left": "a",
+                    "right": "b",
+                    "shared_own_commit_files": 0,
+                    "conclusion": "disjoint",
+                }
+            ],
+        },
+        "composition_preflight": {
+            "performed": True,
+            "verdict": "CLEAN_PREFLIGHT",
+            "work_lease": {
+                "status": "SEND_ADMISSION_BOUND",
+                "authority": "the live Work Engine lease at send admission",
+                "observed_authority": "the same lease was read on the real path",
+                "session_create_producer": {
+                    "present": True,
+                    "sha": "f" * 40,
+                    "authenticated_writer": True,
+                },
+                "negative_proof": {
+                    "sha": "e" * 40,
+                    "qa_snapshot": "snapshot-1",
+                    "exit": 0,
+                    "held": 22,
+                    "security_fail": 0,
+                },
+            },
+            "pairs": [
+                {
+                    "left": "#1",
+                    "right": "#2",
+                    "merge_base_left": "a" * 40,
+                    "merge_base_right": "b" * 40,
+                    "shared_files": 0,
+                    "semantic_status": "JOINED",
+                    "repo_dependency": "different repositories; shared database contract",
+                    "order": ["#1", "#2"],
+                    "test_roots": ["tests/test_a.py", "tests/test_b.py"],
+                    "commands": ["python3 -m unittest tests.test_a", "python3 -m unittest tests.test_b"],
+                }
+            ],
+        },
+        "gates": [
+            {
+                "id": "G1",
+                "required_level": "LOCAL",
+                "achieved_level": "NOT_RUN",
+                "verdict": "NOT_RUN",
+                "owner": "owner-a",
+                "blocker": "not run yet",
+                "receipt": None,
+            }
+        ],
+        "proof_requirements": {
+            "authenticated_lease_producer": {"required": True, "present": True, "sha": "1" * 40},
+            "t10_we_finalize_link": {
+                "required": True,
+                "present": True,
+                "evidence_sha": "2" * 40,
+            },
+            "independent_exact_sha_negative_qa": {
+                "required": True,
+                "present": True,
+                "sha": "3" * 40,
+                "qa_snapshot": "snapshot-1",
+            },
+        },
+        "hosted_ci": {"status": "QUOTA_WAIVED", "evidence": "no check runs observed"},
+        "open_p0": [{"id": "P0", "summary": "not complete yet", "owner_action": "run the gate"}],
+        "rollback": {"design": "revert one additive commit", "verified": False},
+        "claims": {
+            "live_device": False,
+            "client_e2e": False,
+            "production": False,
+            "code_composed_rc": False,
+            "final_acceptance": False,
+        },
+    }
+
+
+def self_test() -> int:
+    failures = 0
+
+    def expect(name: str, mutate, codes: set[str]) -> None:
+        nonlocal failures
+        doc = _valid_fixture()
+        mutate(doc)
+        got = {e["code"] for e in check(doc, json.dumps(doc)).errors}
+        missing = codes - got
+        if missing:
+            failures += 1
+            print(f"FAIL self-test {name}: expected {sorted(missing)}, got {sorted(got)}")
+        else:
+            print(f"ok   self-test {name}")
+
+    base = check(_valid_fixture(), json.dumps(_valid_fixture()))
+    if base.errors:
+        failures += 1
+        print(f"FAIL self-test baseline: {base.errors}")
+    else:
+        print("ok   self-test baseline")
+
+    expect("schema", lambda d: d.update(schema="wrong"), {"E002"})
+    expect("state", lambda d: d.update(state="DONE"), {"E005"})
+    expect("short-sha", lambda d: d["candidates"][0].update(head="deadbeef"), {"E034"})
+    expect("not-draft", lambda d: d["candidates"][0].update(draft=False), {"E035"})
+    expect(
+        "installed-on-source",
+        lambda d: d["candidates"][0].update(installed=True),
+        {"E037"},
+    )
+    expect(
+        "complete-with-not-run",
+        lambda d: d.update(state="COMPLETE_V1", open_p0=[]),
+        {"E091"},
+    )
+    expect(
+        "complete-with-weak-evidence",
+        lambda d: (
+            d.update(state="COMPLETE_V1", open_p0=[]),
+            d["gates"][0].update(verdict="PASS"),
+            d["claims"].update(live_device=True, client_e2e=True, production=True),
+            d["qa"].update(signature="sig"),
+        ),
+        {"E092"},
+    )
+    expect(
+        "empty-p0-on-candidate",
+        lambda d: d.update(open_p0=[]),
+        {"E090"},
+    )
+    expect(
+        "self-signed-qa",
+        lambda d: d["qa"].update(owner="integrator-a"),
+        {"E012"},
+    )
+    expect(
+        "merge-before-gates",
+        lambda d: d["source_merge"].update(performed=True),
+        {"E095"},
+    )
+    expect(
+        "claim-while-candidate",
+        lambda d: d["claims"].update(live_device=True),
+        {"E083"},
+    )
+    expect(
+        "qa-signed-without-signature",
+        lambda d: d["qa"].update(status="SIGNED"),
+        {"E016"},
+    )
+    expect(
+        "qa-pending-with-signature",
+        lambda d: d["qa"].update(signature="sig"),
+        {"E017"},
+    )
+    expect(
+        "qa-bad-status",
+        lambda d: d["qa"].update(status="DONE"),
+        {"E015"},
+    )
+    expect("missing-drift-guard", lambda d: d.pop("drift_guard"), {"E110"})
+    expect(
+        "missing-observed-at",
+        lambda d: d["candidates"][0].pop("observed_at"),
+        {"E114"},
+    )
+    expect(
+        "complete-on-stale-pin",
+        lambda d: (
+            d.update(state="COMPLETE_V1", open_p0=[]),
+            d["gates"][0].update(verdict="PASS", achieved_level="LOCAL"),
+            d["claims"].update(live_device=True, client_e2e=True, production=True),
+            d["qa"].update(status="SIGNED", signature="sig"),
+            d["candidates"][0].update(observed_at="2026-10-16T00:00:00Z"),
+        ),
+        {"E115"},
+    )
+    expect(
+        "dependency-is-not-a-receipt",
+        lambda d: d.update(
+            dependency_opportunities=[
+                {
+                    "lane": "R1",
+                    "description": "source-only runtime work, no pin yet",
+                    "pin": None,
+                    "is_release_receipt": True,
+                }
+            ]
+        ),
+        {"E132"},
+    )
+    def _preview(d):
+        d["preview"] = {
+            "label": "INTEGRATION_PREVIEW",
+            "all_release_gates": False,
+            "not_release": True,
+            "composed": True,
+            "composed_from": ["a" * 40],
+            "base_revision": "b" * 40,
+            "composed_revision": "c" * 40,
+        }
+
+    expect(
+        "preview-bad-label",
+        lambda d: (_preview(d), d["preview"].update(label="RELEASE")),
+        {"E189"},
+    )
+    expect(
+        "preview-with-final-acceptance",
+        lambda d: (_preview(d), d["claims"].update(final_acceptance=True)),
+        {"E195"},
+    )
+    expect(
+        "performed-without-preview",
+        lambda d: (
+            d["source_merge"].update(performed=True),
+            d["composition_preflight"]["work_lease"].update(
+                status="SEND_ADMISSION_UNBOUND"
+            ),
+        ),
+        {"E170"},
+    )
+    expect(
+        "promotion-without-t10-we-finalize-link",
+        lambda d: (
+            d.update(state="RC_CANDIDATE"),
+            d["source_merge"].update(performed=True),
+            d["claims"].update(code_composed_rc=True),
+            d["proof_requirements"]["t10_we_finalize_link"].update(present=False),
+        ),
+        {"E183"},
+    )
+    expect(
+        "bound-without-authenticated-lease-producer",
+        lambda d: d["proof_requirements"]["authenticated_lease_producer"].update(
+            present=False
+        ),
+        {"E185"},
+    )
+    expect(
+        "acceptance-without-exact-sha-negative-qa",
+        lambda d: (
+            d["claims"].update(final_acceptance=True),
+            d["proof_requirements"]["independent_exact_sha_negative_qa"].update(
+                present=False
+            ),
+        ),
+        {"E183"},
+    )
+    expect(
+        "bound-without-session-create-producer",
+        lambda d: d["composition_preflight"]["work_lease"]["session_create_producer"].update(
+            present=False
+        ),
+        {"E176"},
+    )
+    expect(
+        "bound-without-authenticated-writer",
+        lambda d: d["composition_preflight"]["work_lease"]["session_create_producer"].update(
+            authenticated_writer=False
+        ),
+        {"E177"},
+    )
+    expect(
+        "bound-without-negative-proof",
+        lambda d: d["composition_preflight"]["work_lease"].update(negative_proof=None),
+        {"E165"},
+    )
+    expect(
+        "unbound-clean-preflight",
+        lambda d: d["composition_preflight"]["work_lease"].update(status="SEND_ADMISSION_UNBOUND"),
+        {"E169"},
+    )
+    expect(
+        "unjoined-clean-preflight",
+        lambda d: d["composition_preflight"]["pairs"][0].update(semantic_status="UNJOINED"),
+        {"E172"},
+    )
+    expect(
+        "unknown-evidence-class",
+        lambda d: d["candidates"][0].update(evidence_class="LOOKS_FINE"),
+        {"E161"},
+    )
+    expect(
+        "final-acceptance-early",
+        lambda d: d["claims"].update(final_acceptance=True),
+        {"E173"},
+    )
+    expect(
+        "manifest-claims-code-composed-rc",
+        lambda d: d["claims"].update(code_composed_rc=True),
+        {"E159"},
+    )
+    expect(
+        "clean-preflight-with-shared-files",
+        lambda d: d["composition_preflight"]["pairs"][0].update(shared_files=3),
+        {"E158"},
+    )
+    expect(
+        "work-in-flight-counted-as-evidence",
+        lambda d: d.update(
+            work_in_flight=[
+                {
+                    "lane": "T10",
+                    "owner_session": "session-xyz",
+                    "run_ref": "run-xyz",
+                    "status": "WORK_IN_FLIGHT",
+                    "has_pr": False,
+                    "pin": None,
+                    "is_evidence": True,
+                    "is_landable": False,
+                }
+            ]
+        ),
+        {"E145"},
+    )
+    expect(
+        "work-in-flight-with-pin",
+        lambda d: d.update(
+            work_in_flight=[
+                {
+                    "lane": "N3",
+                    "owner_session": "session-xyz",
+                    "run_ref": "run-xyz",
+                    "status": "WORK_IN_FLIGHT",
+                    "has_pr": False,
+                    "pin": "d" * 40,
+                    "is_evidence": False,
+                    "is_landable": False,
+                }
+            ]
+        ),
+        {"E144"},
+    )
+    expect(
+        "triage-bad-severity",
+        lambda d: d.update(
+            qa_triage={
+                "repo": "Owner/repo",
+                "pr": 9,
+                "head": "c" * 40,
+                "status": "INDEPENDENT_QA_PARTIAL",
+                "findings": [
+                    {
+                        "id": "P0-1",
+                        "severity": "P9",
+                        "candidate": "#1",
+                        "summary": "a finding with an invalid severity",
+                        "state_at_snapshot": "OPEN",
+                    }
+                ],
+                "pins_are_snapshot_of": "an earlier snapshot",
+            }
+        ),
+        {"E125"},
+    )
+    expect(
+        "pass-carrying-blocker",
+        lambda d: d["gates"][0].update(verdict="PASS", achieved_level="LOCAL", blocker_code="BLOCKED_REAL_DEVICE"),
+        {"E059"},
+    )
+    expect(
+        "complete-without-triage",
+        lambda d: (
+            d.update(state="COMPLETE_V1", open_p0=[]),
+            d["gates"][0].update(verdict="PASS", achieved_level="LOCAL"),
+            d["claims"].update(live_device=True, client_e2e=True, production=True),
+            d["qa"].update(status="SIGNED", signature="sig"),
+        ),
+        {"E128"},
+    )
+    expect(
+        "secret",
+        lambda d: d.update(manifest_id="fixture-rc-1"),
+        set(),
+    )
+    leak = _valid_fixture()
+    text = json.dumps(leak) + " ghp_" + "A" * 30
+    if not any(e["code"] == "E100" for e in check(leak, text).errors):
+        failures += 1
+        print("FAIL self-test secret-scan")
+    else:
+        print("ok   self-test secret-scan")
+
+    print(f"\nself-test: {'PASS' if failures == 0 else f'{failures} FAILED'}")
+    return 0 if failures == 0 else 1
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(__doc__.strip())
+        return 2
+    if argv[0] == "--self-test":
+        return self_test()
+    as_json = "--json" in argv
+    path = argv[0]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+        doc = json.loads(raw)
+    except OSError as exc:
+        print(f"cannot read {path}: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"{path}: invalid JSON: {exc}", file=sys.stderr)
+        return 1
+
+    report = check(doc, raw)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "path": path,
+                    "ok": report.ok,
+                    "errors": report.errors,
+                    "warnings": report.warnings,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"{path}: {doc.get('manifest_id', '?')} state={doc.get('state', '?')}")
+        for w in report.warnings:
+            print(f"  WARN {w['code']} {w['where']}: {w['message']}")
+        for e in report.errors:
+            print(f"  ERROR {e['code']} {e['where']}: {e['message']}")
+        print(f"  {'OK' if report.ok else 'FAILED'} ({len(report.errors)} errors, {len(report.warnings)} warnings)")
+    return 0 if report.ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
