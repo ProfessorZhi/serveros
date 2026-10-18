@@ -2945,10 +2945,22 @@ class Daemon:
         }
 
     def _r_agent_grant_issue(self, params) -> dict:
-        """Only a trusted provider's signed, exact human-approved scope can issue."""
+        """Only a trusted provider's signed, exact human-approved scope can issue.
+
+        This is the TRUSTED ISSUANCE BOUNDARY for the OS principal: the grant is
+        bound to `uid:<n>` derived from the kernel peer of THIS call
+        (`SO_PEERCRED`), which is the one identity in the exchange the caller
+        cannot write. The signed payload is not consulted for it — the store
+        refuses a payload that names one. A call that arrived with no peer is
+        stored UNBOUND, and the verify read then refuses it; nothing here
+        fills the field in from a request argument or from `getuid()`, because
+        that would be this process's principal standing in for the caller's.
+        """
         if set(params) != {"evidence"}:
             raise actor_mod.Rejected("agent.grant.issue accepts signed evidence only")
-        record = self.control_store().issue_grant(params["evidence"], now=_iso(self._now()))
+        record = self.control_store().issue_grant(
+            params["evidence"], now=_iso(self._now()),
+            os_principal=agent_control_store_mod.os_principal_of(_CALLER_PEER.get()))
         return {"grant": record, "basis": "provider-signed-delegation"}
 
     def _r_agent_lease_authority_verify(self, params) -> dict:

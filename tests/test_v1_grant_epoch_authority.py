@@ -105,6 +105,36 @@ def a_grant(daemon, context, *, ref="grant:1", projects=(PROJECT,),
     })
 
 
+def a_bound_grant(daemon, context, *, ref="grant:1", projects=(PROJECT,),
+                  items=(ITEM,), actions=(ACTION,), expires_in=600,
+                  valid_from_offset=-60, uid=None) -> dict:
+    """The record the TRUSTED ISSUANCE boundary writes: epoch + OS binding.
+
+    Production writes this through `issue_grant`, which needs provider-signed
+    evidence (`cryptography`, absent from this venv) and takes the binding from
+    the kernel peer. The fixture writes the same record under the store's own
+    lock and mints the epoch the same way, so the verify read, the binding
+    comparison and the window conversion are all production code.
+    """
+    store = daemon.control_store()
+    with store._mutation():
+        record = {
+            "grant_ref": ref,
+            "delegated_by": context["context_ref"],
+            "valid_from": iso(daemon, valid_from_offset),
+            "expires_at": iso(daemon, expires_in),
+            "projects": list(projects),
+            "items": list(items),
+            "actions": list(actions),
+            "revoked": False,
+            "epoch": store._next_grant_epoch(),
+            "os_principal": f"uid:{os.getuid() if uid is None else uid}",
+        }
+        store._data["grants"][ref] = record
+        store._flush()
+    return dict(record)
+
+
 def a_legacy_grant(daemon, context, *, ref="grant:legacy") -> dict:
     """A record written before the epoch existed: UNKNOWN, never backfilled."""
     store = daemon.control_store()
@@ -146,7 +176,7 @@ def verify(daemon, *, context_ref, grant_ref="grant:1", action=ACTION,
 
 def test_a_live_grant_with_a_matching_epoch_verifies(daemon):
     ctx = a_context(daemon)
-    grant = a_grant(daemon, ctx)
+    grant = a_bound_grant(daemon, ctx)
     assert isinstance(grant["epoch"], int) and grant["epoch"] >= 1
 
     answer = verify(daemon, context_ref=ctx["context_ref"],
@@ -215,7 +245,7 @@ def test_principal_b_cannot_claim_principal_a(daemon):
 
 def test_a_wrong_item_is_refused(daemon):
     ctx = a_context(daemon)
-    a_grant(daemon, ctx)
+    a_bound_grant(daemon, ctx)
     answer = verify(daemon, context_ref=ctx["context_ref"], item_ref="SRV-9999")
     assert answer["verified"] is False
     assert answer["reason"] == "POLICY_DENIED"
@@ -223,7 +253,7 @@ def test_a_wrong_item_is_refused(daemon):
 
 def test_a_wrong_project_is_refused(daemon):
     ctx = a_context(daemon)
-    a_grant(daemon, ctx)
+    a_bound_grant(daemon, ctx)
     answer = verify(daemon, context_ref=ctx["context_ref"], project="another")
     assert answer["verified"] is False
     assert answer["reason"] == "POLICY_DENIED"
@@ -268,7 +298,7 @@ def test_the_epoch_survives_a_restart(tmp_path):
 def test_the_read_mutates_no_lease_and_no_grant(daemon, tmp_path):
     import sqlite3
     ctx = a_context(daemon)
-    grant = a_grant(daemon, ctx)
+    grant = a_bound_grant(daemon, ctx)
     before = dict(daemon.control_store().grants())
     verify(daemon, context_ref=ctx["context_ref"], expected_epoch=grant["epoch"])
     assert daemon.control_store().grants() == before
