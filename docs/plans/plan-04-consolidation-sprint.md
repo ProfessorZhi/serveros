@@ -187,23 +187,44 @@ git bundle verify claude-fleet.bundle
 ```
 把 bundle 放进私有仓库 `hwz-records` 的 `archive/third-party/claude-fleet/`（超过 GitHub 普通文件建议大小时用 Git LFS），PR #10–#12 的描述也导出为 Markdown 放在一起。存档验证通过后才能删除。
 
+**设备整理的总原则：旧版 Fleet 一直在跑，整理只在它旁边做。**
+
+每台设备上的每个对象（checkout、安装、服务、定时任务、目录）先由 G0 归入下面三类之一，再按类处理。**归不了类的一律按 R 类处理。**
+
+| 类别 | 判定 | 怎么处理 | 什么时候 |
+|---|---|---|---|
+| **R 运行路径** | 正在运行的 Fleet / serverosd / connector / Work Engine 会读或会执行它：被 systemd 服务、Windows 服务、计划任务、cron、PATH 中的 `serverosctl`、`fleet/profiles.yaml` 里的路径引用；或者有进程正打开它（`lsof`、`/proc/*/cwd`、Windows 的 `Get-Process` 模块路径） | **原地不动**：不 pull、不切分支、不改 remote、不移动、不删除，不停服务。新版装到**新目录**，和旧版并存 | 第 3 波，所有者逐台批准，在维护窗口切换 |
+| **S 旁路** | 不被任何运行中的东西引用，但人或脚本会手工用：开发 checkout、旧仓库的 clone、文档副本 | 备份（记录 SHA 和 `remote -v`）后，把 `git remote set-url` 指向新仓库，然后 `git fetch` 核对。**不删除** | 第 3 波，批准后即可，不需要维护窗口 |
+| **X 废弃** | 确认没有任何引用，而且内容已经进了新仓库，例如已退役仓库的重复 clone、临时 scan 目录 | 先挪到同盘的 `_retired-20261019/` 目录（只改名，可以一键还原），观察 14 天后再删 | 观察期满，所有者确认后 |
+
+**为什么这样不会影响旧版 Fleet**
+- 旧仓库只归档、不删除，所以 R 类 checkout 的 `git pull` 照常能用，不急着切。
+- 改 remote 不影响正在运行的进程。只对 S 类做，R 类在切换前保持原样。
+- 新版装在新目录，旧版的文件一个都不动。切换本身就是改服务指向的路径或 PATH 顺序；回滚就是改回去，几秒钟。
+- `hwz-records`、`serveros` 都不改名，设备 profile 里的路径保持有效。
+
 **G0-T / G0-D / G0-W — 设备只读盘点**
-每台设备一个 agent。东京、Dell 用已有的 SSH 访问方式，Windows 就是本机。运行 plan-03 §10.1 的只读命令（Windows 用 PowerShell 的对应命令），**不修改任何东西**。
+每台设备一个 agent。东京、Dell 用已有的 SSH 访问方式，Windows 就是本机。运行 plan-03 §10.1 的只读命令（Windows 用 PowerShell 的对应命令），再加上「谁在用」的检查：
+- systemd、cron、Windows 服务和计划任务的命令行；
+- `fleet/profiles.yaml` 里该设备的路径；
+- 正在运行的进程的工作目录和打开的文件。
 
-输出每台设备一张表：
+**不修改任何东西。**
 
-| checkout 路径 | 远端仓库 | 属于哪个旧仓库 | 对应的新仓库 | 谁在用（服务 / 定时任务 / 手工） | 是否 Fleet 运行路径 |
+输出每台设备一张表，每一行都要有类别：
+
+| 对象（路径） | 类型（checkout / 安装 / 服务 / 定时任务 / 目录） | 远端或来源仓库 | 对应的新仓库 | 谁在用（证据） | 类别 R / S / X |
 |---|---|---|---|---|---|
 
-同时列出：`which -a serverosctl workengine` 的结果，以及写死旧仓库名的服务、定时任务和脚本。
+同时列出：`which -a serverosctl workengine`（Windows 用 `Get-Command -All`）的结果，以及写死旧仓库名的服务、定时任务和脚本。
 
-**G1-T / G1-D / G1-W — 设备切换（第 3 波，必须已获所有者批准该设备）**
-按 plan-03 §10.2 做，并加上第 1 节第 3 条的限制：
-1. **先切 Fleet 运行路径以外的 checkout**：`git remote set-url` 指向新仓库，然后 `git fetch` 核对。
-2. **Fleet 运行路径**：把新版 serveros（含 `workengine/`）安装到新目录，和旧版并存；验证通过后，再按所有者批准里写明的方式切换。
-3. 任何一步验证失败，按备份回滚，然后报告。
-
-每台设备单独交回执：改了什么、验证结果、有没有回滚。
+**G1-T / G1-D / G1-W — 设备整理（第 3 波，必须已获所有者批准该设备）**
+1. **备份**：记录所有 R、S 类对象的 SHA、`remote -v`、服务定义、PATH，以及 `pip list`。
+2. **S 类**：改 remote 指向新仓库，然后 `git fetch` 核对。
+3. **X 类**：移到 `_retired-20261019/`，**不删除**。
+4. **R 类，先并存**：把新版 serveros（含 `workengine/`）装到新目录。用新目录里的 `serverosctl --help`、`python -m workengine --help`，以及测试 project 上的读写做验证。**这一步不碰旧版。**
+5. **R 类，再切换**：只在所有者批准里写明了维护窗口和切换方式时才做。切换 = 把服务或 PATH 改指向新目录，然后验证 Fleet 和这台设备的连接。失败就立刻改回原路径并报告。没有写明，就停在第 4 步。
+6. 每台设备单独交回执：每个对象做了什么、验证结果、有没有回滚。
 
 ---
 
