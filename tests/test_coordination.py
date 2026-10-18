@@ -765,7 +765,7 @@ def a_work_lease(root: Path, *, owner="agent:A", token="1", ttl_s=600):
         "CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, "
         "owner TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL)")
     conn.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?)",
-                 ("LIT-0101", owner, token, expires))
+                 ("work-write:LIT-0101", owner, token, expires))
     conn.commit()
     conn.close()
 
