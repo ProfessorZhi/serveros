@@ -344,3 +344,32 @@ git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
 - 只写 `hwz-records` 分支 `status/consolidation-sprint` 的 `STATUS-consolidation-sprint.md`，按文件里已有的固定公式算百分比，每次状态变化就更新。
 - 每有一个仓库集成完成，就在文件的「请求验收」一节加一行。云端 Claude 会话读到后按第 7 节验收，**一个仓库通过就可以合并一个**，不必等全部完成。
 - 文件里不写真实邮箱、姓名、凭据内容、内网 IP。
+
+### 9.6 提高并发（2026-10-18 18:15 UTC 起）
+
+第二轮同时只有 5 个 agent 在跑，并发不够。按下面三条加到约 20 个。前提不变：每个 agent 写的文件互不重叠，每完成一个提交就推送。
+
+**一、把大车道拆细**（拆出来的 agent 各自开子分支 `<原分支>-<后缀>`，由原车道负责人合回原分支）
+
+| 原车道 | 拆成 | 各自只改 |
+|---|---|---|
+| A1w | A1w-cli：只保留一个 `serverosctl`，`workengine` 作为子命令或内部库 | `bin/`、`runtime/cli.py`、入口配置 |
+| | A1w-release：`scripts/release.py` 的 `REQUIRED_MEMBERS` 加 `workengine/` 和 `schema.sql`，打包测试 | `scripts/release.py` 和它的测试 |
+| | A1w-tests：测试改成用仓库内的 workengine，`runtime_truth.py` 默认指向仓库根目录，5 个本机路径脱敏 | `tests/`、`runtime_truth.py` |
+| | A1w-license：MIT `LICENSE`，`workengine` 的 PROPRIETARY 改成 MIT | `LICENSE`、`workengine/` 的元数据 |
+| E2 | E2a CrossUidRevocationChain ／ E2b V1-68 叠加层 9 个 ／ E2c ProjectionConstantParityTest ／ E2d 主机用户身份测试 | 各自对应的测试文件和 fixture |
+| E3 | E3a compute-hero #1、#2 ／ E3b portal #53 | 各自的测试文件 |
+| E5 | E5a `backend/` ／ E5b `web/` 和 `prototypes/` ／ E5c `docs/` ／ E5d `deploy/`、`config/`、`tests/` | 各自的目录 |
+
+**二、集成预演，现在就开始，不等依赖**
+
+- A-int-pre：先把 A2（#281）和 A3（#280）合进 `consolidate/serveros` 并推送。A1w 一完成，只差最后一次合并。
+- E-int-pre：在 `consolidate/llmlab-staging` 上先合 E1 和 E4（#130），跑一遍脱敏扫描和测试，提前发现冲突。
+
+**三、只读准备工作，现在就能做**
+
+- P-issues：列出所有旧仓库里要转移的 Issue / PR（`marketops-private`、`llm-lab`、`llm-lab-portal` 的 #56 和 #63、`work-engine` 的 #3 和 #13–#16），每个写明去向。只列，不转。
+- P-g1-T ／ P-g1-D ／ P-g1-W：根据 G0 的盘点表，为每台设备写好 G1 脚本：备份、S 类改 remote、X 类挪到 `_retired-20261019/`、R 类新旧并存安装。脚本只带 `--dry-run` 模式，**不执行**，放进 `hwz-records` 的 `consolidate/g1-scripts` 分支，等所有者批准。
+- P-archive：列出 10 个待归档旧仓库各自的顶层路径，以及它们在新仓库里的位置（给验收 V1 用）。
+
+**云端 Claude 会话同时做验收**：已经完成的 PR（hwz-records #12、#13、#14；serveros #280、#281；ability-management #30、#31、#32）由云端会话按第 7 节先验收，结论写进进度文件的「验收」一节。Dell 主控不用等。
