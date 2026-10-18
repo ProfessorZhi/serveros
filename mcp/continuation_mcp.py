@@ -221,7 +221,7 @@ def _completion_reader(cli):
 TOOLS: tuple[dict, ...] = (
     {
         "name": "continuation.execute",
-        "description": "Build or test this Item in its granted offline container. Use a stable key per command; retrying the same key returns its receipt. Image, mounts and budgets come from the live grant. Read stdout/stderr evidence from the result; command exit does not mean Item acceptance.",
+        "description": "Build or test this Item in its granted offline container. Use a stable key per command; retrying the same key returns its receipt. Image, mounts and budgets come from the live grant. The execution is bound to the Item's unique open Work Engine Run, that Run's exact execution_context revision and runner identity; a missing or ambiguous Run, a stale SHA, a revoked grant or an absent binding refuses before spawn. Read stdout/stderr evidence from the result; command exit does not mean Item acceptance, and Work Engine finalization has not yet consumed this proof.",
         "inputSchema": {"type": "object", "properties": {
             "key": {"type": "string"},
             "argv": {"type": "array", "items": {"type": "string"}}},
@@ -459,7 +459,7 @@ class ContinuationServer:
         if any(path.resolve().is_relative_to(worktree) for path in
                (_ROOT, self.envelope_path, self.receipts, Path(store.path))):
             raise ValueError("worktree contains the adapter, authority or receipt store")
-        return executor, grant, resolved
+        return executor, grant, resolved, Path(paths.root("state")) / "serveros.db"
 
     def parent_cwd(self):
         verdict = self.verdict("continuation.inspect")
@@ -468,7 +468,7 @@ class ContinuationServer:
         _mod, store = self.cli()._control_store()
         grant = store.grants()[self.envelope["grant_ref"]]
         if grant.get("engineering") is not None:
-            _executor, _grant, resolved = self._engineering()
+            _executor, _grant, resolved, _state_db = self._engineering()
             return Path(resolved["worktree"])
         # Control-only legacy wakes need no host file scope. An empty private
         # directory keeps their control operations usable without HOME access.
@@ -487,9 +487,10 @@ class ContinuationServer:
         if verdict["decision"] != "ALLOW":
             return answer
         try:
-            executor, grant, resolved = self._engineering()
+            executor, grant, resolved, state_db = self._engineering()
             result = executor.execute(envelope=self.envelope, grant=grant, resolved=resolved,
-                key=arguments.get("key"), argv=arguments.get("argv"), receipts=self.receipts)
+                key=arguments.get("key"), argv=arguments.get("argv"), receipts=self.receipts,
+                state_db=state_db)
         except ValueError as exc:
             answer.update(decision="DENY", because=str(exc),
                           verdict={**verdict, "decision": "DENY", "because": str(exc)})
