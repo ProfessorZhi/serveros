@@ -82,6 +82,11 @@ actor = _load("_serveros_context_actor", _ROOT / "context" / "actor.py")
 # this boundary, and two module instances would be two exception classes with
 # one name — a `except` clause that silently stops matching.
 coordination = _load("serveros_runtime_coordination", _RUNTIME / "coordination.py")
+# #245 / S2. The dispatch-attempt kernel: intent identity, phases and the
+# reconcile decision. Loaded under the same synthetic name everywhere, so the
+# `AttemptRefused` class caught here is the one the store raises.
+dispatch_attempts = _load("serveros_runtime_dispatch_attempts",
+                          _RUNTIME / "dispatch_attempts.py")
 
 SCHEMA = "serveros/agent-control-router.v1"
 CONTRACT = _HERE / "agent-control-contract.yaml"
@@ -902,7 +907,8 @@ class FleetAgentControlRouter:
 
     def __init__(self, *, local_device_ref: str,
                  transports: list[AgentControlTransport] | None = None,
-                 registry=None, clock=None, context_store: dict | None = None) -> None:
+                 registry=None, clock=None, context_store: dict | None = None,
+                 attempts=None) -> None:
         if not str(local_device_ref).startswith("device:"):
             raise TargetError(
                 f"{local_device_ref!r} is not a device ref. This router is the "
@@ -930,6 +936,14 @@ class FleetAgentControlRouter:
         # than left for a reader to assume the stronger thing.
         self._seen_keys: dict[str, dict] = {}
         self._max_seen = 512
+        # #245 / S2. The DURABLE half, when one is given: an object with
+        # `get_dispatch_attempt(key)` / `put_dispatch_attempt(record)` — the
+        # existing Agent Control store satisfies both. It is optional so that a
+        # router built without a store keeps the in-process guard rather than
+        # silently gaining a durable claim it cannot honour; and when it IS
+        # given, the guard reads the record that survives a restart, so a retry
+        # after a lost response is refused instead of dispatched a second time.
+        self._attempts = attempts
 
     # -- evidence ----------------------------------------------------------
 
@@ -1026,6 +1040,12 @@ class FleetAgentControlRouter:
                 f"evidence; proceeding without one would record this act with no "
                 f"actor and would tell a forger its ref had been accepted")
 
+        # The actor behind the presented context, resolved by ServerOS from the
+        # minted record. It is part of the intent identity (#237 T5) and it is
+        # what the attempt record carries (#245 P0-2) — never a string from the
+        # payload, and `None` when the request presented no context.
+        principal = (context.get("context") or {}).get("actor_ref")
+
         node = self.transport_for(request.device_ref)
         observed = (node.resolve_inputs(request.device_ref, request.runtime_id)
                     if node is not None else {})
@@ -1073,20 +1093,33 @@ class FleetAgentControlRouter:
                 f"no route carries this request to {request.device_ref}",
                 record=record)
 
-        replayed = self._replay(request)
+        replayed = self._replay(request, principal=principal)
         if replayed is not None:
             return replayed
+
+        # #245. The attempt is persisted BEFORE the mutation leaves this
+        # process, and that order is the whole point: a record written here can
+        # say "we had decided to send and had not yet" if the process dies next,
+        # which a record written AFTER the send cannot — by then it has already
+        # happened and the two crash windows are indistinguishable.
+        self._begin_attempt(request, principal=principal)
 
         try:
             result = node.send(request, resolved=record)
         except TransportFailure as exc:
-            # The transport's own vocabulary, verbatim. Nothing here converts a
-            # delivery failure into a statement about the session on the far
-            # side, because the transport learned nothing about it.
+            # #245. Leave the attempt in the phase its failure actually
+            # supports: nothing-sent stays CALL_NOT_SENT; anything ambiguous
+            # becomes EFFECT_UNKNOWN, so a retry does not launch a second paid
+            # turn. Then refuse in the transport's own vocabulary, verbatim —
+            # nothing here converts a delivery failure into a statement about
+            # the session on the far side, because the transport learned nothing
+            # about it.
+            self._mark_attempt_after_failure(request, exc.reason,
+                                             principal=principal)
             return self._refuse(request, exc.reason, exc.detail, record=record,
                                 retryable=exc.retryable)
 
-        self._remember(request, result)
+        self._remember(request, result, principal=principal)
         return AgentControlResponse(
             ok=True, action=request.action, verb=verb,
             device_ref=request.device_ref, correlation_id=request.correlation_id,
@@ -1143,27 +1176,132 @@ class FleetAgentControlRouter:
 
     # -- idempotency -------------------------------------------------------
 
-    def _replay(self, request: AgentControlRequest) -> AgentControlResponse | None:
-        """A retry of the same intent, answered from the first attempt.
+    def _intent_digest(self, request: AgentControlRequest, *, principal=None) -> str:
+        """The identity of this request's INTENT — the TARGET, not just the key.
 
-        Scoped to one router instance and to mutations. A read replayed from
-        memory would answer with a stale observation, which is worse than
-        answering slowly; a mutation replayed from memory is the one case where
-        the caller's intent is that the second attempt have no second effect.
+        #237 T5 / independent-QA P0-1. The guard compared the action, the device
+        and the payload and omitted the session, the runtime and the principal —
+        so two sends to different sessions under one key digested identically and
+        the second was answered as a replay of the first. The digest is what
+        makes that a CONFLICT.
+        """
+        return dispatch_attempts.intent_digest(
+            action=request.action, device_ref=request.device_ref,
+            verb=request.verb, params=request.params,
+            workspace=request.workspace, work_item=request.work_item,
+            session_ref=request.session_ref,
+            agent_runtime=request.agent_runtime, principal=principal)
+
+    def _attempt_record(self, request, phase, *, principal=None, result=None) -> dict:
+        """One durable attempt record for this request, at this phase.
+
+        It carries the RESOLVED principal and the target. The daemon re-derives
+        the principal from the trusted context and refuses a record that claims a
+        different one, so a principal from the payload is never trusted
+        (#245 P0-2).
+        """
+        return dispatch_attempts.attempt_record(
+            key=request.idempotency_key, action=request.action,
+            device_ref=request.device_ref, verb=request.verb,
+            intent_digest=self._intent_digest(request, principal=principal),
+            phase=phase, work_item=request.work_item, principal=principal,
+            runtime=request.agent_runtime, session_ref=request.session_ref,
+            result=result, at=_now())
+
+    def _durable_attempt(self, request) -> bool:
+        """Whether this request has a durable attempt to write. Mutations only."""
+        return bool(self._attempts is not None and request.idempotency_key
+                    and _mutating(request.verb))
+
+    def _begin_attempt(self, request, *, principal=None) -> None:
+        """Persist `CALL_NOT_SENT` BEFORE the mutation leaves this process. #245.
+
+        The order is the entire value. A record written BEFORE `node.send` can
+        say "we had decided to send and had not yet" when the process dies next;
+        a record written after the send cannot, because by then the effect has
+        happened and "crashed before" and "crashed after" are the same bytes
+        with opposite repairs.
+
+        The attempt is recorded against the request's own trusted `context_ref`;
+        the daemon resolves the actor from it and refuses a record whose claimed
+        principal is anybody else. A store that refuses this write is NOT
+        swallowed — it raises, as the binding write at `_record` does — because
+        dispatching without the record is exactly the blind retry this exists to
+        prevent.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(
+            self._attempt_record(request, dispatch_attempts.CALL_NOT_SENT,
+                                 principal=principal),
+            context_ref=request.context_ref)
+
+    def _mark_attempt_after_failure(self, request, reason, *, principal=None) -> None:
+        """Leave the attempt in the phase the failure actually supports.
+
+        Nothing-sent stays `CALL_NOT_SENT` (a retry is safe); anything ambiguous
+        becomes `EFFECT_UNKNOWN`, so a retry refuses instead of launching a
+        second paid turn.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(
+            self._attempt_record(
+                request, dispatch_attempts.phase_after_transport_failure(reason),
+                principal=principal),
+            context_ref=request.context_ref)
+
+    def _replay(self, request: AgentControlRequest, *,
+                principal=None) -> AgentControlResponse | None:
+        """A retry of the same intent, answered from the record of the first.
+
+        Two records, one decision. When a durable store was given (`attempts`),
+        the record it holds — which survives a restart — decides, and a recorded
+        UNKNOWN outcome refuses the retry instead of dispatching it again (#237
+        T4/T9). Without one, the in-process dict decides, and the limitation is
+        the one the contract already declares.
+
+        A read is never replayed: answering one from memory would answer with an
+        observation that has aged, which is worse than answering slowly.
         """
         if not request.idempotency_key or not _mutating(request.verb):
             return None
+        digest = self._intent_digest(request, principal=principal)
+
+        if self._attempts is not None:
+            recorded = self._attempts.get_dispatch_attempt(request.idempotency_key)
+            verdict = dispatch_attempts.reconcile(recorded, digest=digest)
+            if verdict["verdict"] == dispatch_attempts.PROCEED:
+                return None
+            if verdict["verdict"] == dispatch_attempts.REPLAY:
+                return AgentControlResponse(
+                    ok=True, action=request.action, verb=request.verb,
+                    device_ref=request.device_ref,
+                    correlation_id=request.correlation_id,
+                    result=dict(recorded.get("result") or {},
+                                idempotent_replay=True),
+                    dispatched=False)
+            # CONFLICT / IN_FLIGHT / REFUSE_UNKNOWN / REFUSE_SUPERSEDED all
+            # refuse, each saying why in the kernel's own sentence. A caller
+            # told only "no" could not tell a settled replay from an unknown
+            # outcome, and the repair differs.
+            raise Rejected(
+                f"idempotency key {request.idempotency_key!r}: "
+                f"{verdict['because']}")
+
         seen = self._seen_keys.get(request.idempotency_key)
         if seen is None:
             return None
-        if seen["action"] != request.action or seen["device_ref"] != request.device_ref:
+        if (seen["action"] != request.action
+                or seen["device_ref"] != request.device_ref
+                or seen.get("intent_digest") != digest):
             # The same key on a different intent is a caller bug, and silently
             # answering it with the other call's result would report an effect
             # that never happened for this request.
             raise Rejected(
                 f"idempotency key {request.idempotency_key!r} was already used for "
-                f"{seen['action']} on {seen['device_ref']}; a key identifies one "
-                f"intent, not one caller")
+                f"{seen['action']} on {seen['device_ref']} with a different "
+                f"payload; a key identifies one intent, not one caller")
         return AgentControlResponse(
             ok=True, action=request.action, verb=request.verb,
             device_ref=request.device_ref, correlation_id=request.correlation_id,
@@ -1172,12 +1310,27 @@ class FleetAgentControlRouter:
             provenance=tuple(seen.get("provenance") or ()),
             dispatched=False)
 
-    def _remember(self, request: AgentControlRequest, result: dict) -> None:
+    def _remember(self, request: AgentControlRequest, result: dict, *,
+                  principal=None) -> None:
         if not request.idempotency_key or not _mutating(request.verb):
             return
+        digest = self._intent_digest(request, principal=principal)
+        if self._attempts is not None:
+            # The outcome. `_begin_attempt` already wrote CALL_NOT_SENT before
+            # the send, so this MOVES the same attempt to SETTLED — same key,
+            # same digest, a different phase, which is what a phase is for. The
+            # daemon accepts a SETTLED only with the provider's answer attached
+            # and only over an existing attempt, so a forged settle is refused
+            # there (#245 P0-2). A store that refuses the write is NOT swallowed:
+            # the caller would otherwise believe a retry will be recognised when
+            # nothing recorded it.
+            self._attempts.put_dispatch_attempt(
+                self._attempt_record(request, dispatch_attempts.SETTLED,
+                                      principal=principal, result=result),
+                context_ref=request.context_ref)
         self._seen_keys[request.idempotency_key] = {
             "action": request.action, "device_ref": request.device_ref,
-            "result": result,
+            "intent_digest": digest, "result": result,
         }
         if len(self._seen_keys) > self._max_seen:
             for key in list(self._seen_keys)[: len(self._seen_keys) - self._max_seen]:

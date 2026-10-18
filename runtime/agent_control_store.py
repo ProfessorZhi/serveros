@@ -149,6 +149,24 @@ from pathlib import Path
 
 SCHEMA = "serveros/agent-control-store.v1"
 
+
+def _dispatch_attempts():
+    """The dispatch-attempt kernel, under the name every sibling loader uses.
+
+    Loaded lazily rather than imported at module scope: this store is imported by
+    the kernel's own tests and by the daemon, and a module-level import here
+    would make one of those the other's import-time dependency for no gain.
+    """
+    name = "serveros_runtime_dispatch_attempts"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().with_name("dispatch_attempts.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
 # The sidecar a write lock is taken on: the store's own name with this appended,
 # beside it rather than in a `locks/` directory. `locks/` already means something
 # else in this root — a HOLDER'S CLAIM about a lease, recorded in a file — and a
@@ -370,6 +388,21 @@ RECEIPT_STATUSES = ("STARTED", "EXITED", "REFUSED", "TIMED_OUT", "OUTPUT_LIMIT",
 
 class StoreError(RuntimeError):
     pass
+
+
+class AttemptRefused(StoreError):
+    """A dispatch attempt the store will not write, and the word for why.
+
+    Its own type because the daemon has to return a reason the caller can act
+    on: an identity failure (`UNTRUSTED_ACTOR`) and a transition failure
+    (`INVALID_CONTEXT`) are different repairs, and reporting both as one would
+    send the caller to fix the wrong thing.
+    """
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        self.reason_code = str(reason_code)
+        self.detail = str(detail)
+        super().__init__(detail)
 
 
 def _actor_module():
@@ -686,7 +719,8 @@ class AgentControlStore:
                     f"had never been granted.")
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
-                    "admissions": {}, "checkpoints": {}}
+                    "admissions": {}, "checkpoints": {},
+                    "dispatch_attempts": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -707,6 +741,11 @@ class AgentControlStore:
         data.setdefault("grants", {})
         data.setdefault("admissions", {})
         data.setdefault("checkpoints", {})
+        # #245. Durable dispatch attempts, added the same additive way every
+        # other section was: an older store document simply lacks the key and
+        # gets an empty section, so this is a forward-compatible read of an
+        # existing file rather than a migration.
+        data.setdefault("dispatch_attempts", {})
         data["schema"] = SCHEMA
         return data
 
@@ -874,6 +913,127 @@ class AgentControlStore:
 
     def bindings(self) -> dict:
         return dict(self._read()["bindings"])
+
+    # -- durable dispatch attempts (#245 / S2) ------------------------------
+    #
+    # The record `runtime/dispatch_attempts.py#reconcile` reads. It lives HERE,
+    # in the existing Agent Control store, because #245 names Agent Control as
+    # its owner and because a second attempt store is the "new-lease-system"
+    # shape `integration/components.yaml` refuses by name.
+
+    def put_dispatch_attempt(self, record: dict, *, context_ref=None,
+                             actor=None) -> dict:
+        """Record one dispatch attempt, durably, keyed by its idempotency key.
+
+        The record is written BEFORE the effect is attempted (phase
+        CALL_NOT_SENT), because "we crashed before sending" and "we crashed
+        after sending and do not know" are the same bytes on disk and opposite
+        answers — and only a record that exists first can tell them apart.
+
+        NOT write-once: an attempt MOVES through phases. Three rules are
+        enforced HERE, under the mutation lock, so the check and the write are
+        one step rather than a read a second writer can slip between:
+
+        * a change of INTENT under one key is refused (different
+          `intent_digest`) — the same-key-different-payload conflict;
+        * QA D3 — only the actor that DISPATCHED an attempt may mutate it.
+          Knowing the digest is not owning the attempt, so `actor` is compared
+          with the stored principal and a mismatch is `UNTRUSTED_ACTOR`. A
+          stored record with no principal cannot be mutated by anybody;
+        * QA D4 — only the moves in `dispatch_transitions` are allowed. A
+          terminal SETTLED is not reopened and EFFECT_UNKNOWN is not turned back
+          into a sendable CALL_NOT_SENT, because either would make the next
+          retry PROCEED and send the same external effect twice.
+
+        `context_ref` is accepted for interface uniformity with the daemon
+        handle and is not read here; `actor` is the resolved principal the
+        daemon derived from it, and is what the identity rule compares.
+        """
+        key = str(record.get("key") or "")
+        if not key:
+            raise StoreError(
+                "a dispatch attempt without a key cannot be stored: there is "
+                "nothing for a retry to be matched to")
+        kernel = _dispatch_attempts()
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            existing = section.get(key)
+            if existing is not None:
+                if actor is not None:
+                    owner = str(existing.get("principal") or "").strip()
+                    if not owner or owner != str(actor).strip():
+                        raise AttemptRefused(
+                            "UNTRUSTED_ACTOR",
+                            f"dispatch key {key!r} was dispatched by {owner or 'nobody'} "
+                            f"and {actor!r} is not that actor. An attempt is mutated "
+                            f"by the actor that made it; knowing the digest is not "
+                            f"owning it")
+                if (str(existing.get("intent_digest"))
+                        != str(record.get("intent_digest"))):
+                    raise AttemptRefused(
+                        "INVALID_CONTEXT",
+                        f"dispatch key {key!r} already records a DIFFERENT intent "
+                        f"(payload digest {existing.get('intent_digest')!r} vs "
+                        f"{record.get('intent_digest')!r}). A key identifies one "
+                        f"intent, and a different payload under it is a conflict, "
+                        f"not an update")
+                if not kernel.dispatch_transition_allowed(
+                        existing.get("phase"), record.get("phase")):
+                    raise AttemptRefused(
+                        "INVALID_CONTEXT",
+                        f"dispatch key {key!r} is {existing.get('phase')!r} and the "
+                        f"dispatch side may not move it to {record.get('phase')!r}. "
+                        f"A terminal outcome is not reopened, and an unknown one is "
+                        f"not turned back into a sendable attempt")
+            stored = dict(record)
+            section[key] = stored
+            self._flush()
+            return stored
+
+    def reconcile_dispatch_attempt(self, key: str, *, observation, reconciler,
+                                   current_writer=None, now=None) -> dict:
+        """Resolve an EFFECT_UNKNOWN attempt from an OWNER's observation. #245.
+
+        Read, decide and write under ONE mutation lock, so the decision cannot be
+        made about a record that changed between the read and the write — which
+        is what `_mutation` exists to prevent, and the reason this is a method
+        here rather than two calls from outside.
+
+        A REFUSED observation writes nothing: the attempt stays EFFECT_UNKNOWN,
+        which is what refuses a retry. Only a definite observation, from the
+        recorded principal, holding the current writer scope, about THIS intent,
+        moves it — to SETTLED (`SETTLE_APPLIED`) or back to CALL_NOT_SENT
+        (`SETTLE_NOT_APPLIED`).
+
+        Returns the kernel's verdict, plus the updated record when it settled.
+        """
+        kernel = _dispatch_attempts()
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            recorded = section.get(str(key))
+            verdict = kernel.reconcile_observation(
+                recorded, observation=observation, reconciler=reconciler,
+                current_writer=current_writer, now=now)
+            if verdict["verdict"] not in (kernel.SETTLE_APPLIED,
+                                          kernel.SETTLE_NOT_APPLIED):
+                return verdict
+            updated = dict(recorded)
+            updated["phase"] = verdict["phase"]
+            updated["reconciled_by"] = str((reconciler or {}).get("principal") or "")
+            if now:
+                updated["reconciled_at"] = str(now)
+            if verdict.get("result") is not None:
+                updated["result"] = verdict["result"]
+            section[str(key)] = updated
+            self._flush()
+            return dict(verdict, attempt=updated)
+
+    def get_dispatch_attempt(self, key: str) -> dict | None:
+        """The recorded attempt for a key, or None if nothing was recorded."""
+        return self._read().get("dispatch_attempts", {}).get(str(key))
+
+    def dispatch_attempts(self) -> dict:
+        return dict(self._read().get("dispatch_attempts", {}))
 
     def close_binding(self, ref: str, *, at: str, reason: str | None = None) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
