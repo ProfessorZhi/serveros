@@ -1,0 +1,19 @@
+{
+  "schema": "research-packet.v1",
+  "request_id": "",
+  "project_ref": "",
+  "item_ref": "",
+  "run_ref": "",
+  "objective": "",
+  "questions": [],
+  "non_goals": [],
+  "inputs": [],
+  "source_refs": [],
+  "known_facts": [],
+  "hypotheses": [],
+  "ruled_out": [],
+  "requested_output": [],
+  "limits": {"wall_seconds": 0, "max_tool_calls": 0, "max_cost_usd": 0, "max_output_bytes": 0},
+  "data_policy": {"classification": "", "permission_ref": "", "audience": []},
+  "handoff": {"parent_ref": "", "result_prefix": ""}
+}
