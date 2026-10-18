@@ -1,0 +1,11 @@
+# Runtime state (created when the CLI runs without --state-dir).
+# Not source. The resume demo/tests use temp dirs, so this stays empty here.
+state/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
