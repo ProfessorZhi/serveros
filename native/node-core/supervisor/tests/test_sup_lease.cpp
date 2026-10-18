@@ -1,20 +1,43 @@
-// The writer lease, against real `flock`.
+// The writer lease, against real `flock` — and the fixture's own safety.
 //
-// WHY THESE ARE NOT FAKES. The property under test is the kernel's, not this
-// module's: that a lock taken on one file description excludes another, and that
-// it is dropped when that description closes. A fake lock would test this file's
-// own bookkeeping and prove nothing about the failure it exists to prevent, so
-// these cases take real locks on a real file in a directory this test creates
-// and removes.
+// WHY THESE ARE NOT FAKES. The property under test in the lease cases is the
+// kernel's, not this module's: that a lock taken on one file description
+// excludes another, and that it is dropped when that description closes. A fake
+// lock would test this file's own bookkeeping and prove nothing about the failure
+// it exists to prevent, so these cases take real locks on a real file in a
+// directory this test creates and removes.
 //
 // Two descriptors in ONE process contend under `flock`, because the lock belongs
 // to the open file description and not to the process — which is what makes the
 // two-writer case testable without a second process, and is also why the
 // semantics differ from POSIX record locks.
+//
+// THE SCRATCH DIRECTORY IS FD-ANCHORED, AND THAT IS A SECURITY PROPERTY HERE.
+// An earlier revision resolved the base with `lstat` and then handed the PATH to
+// `mkdtemp`. Two things were wrong with that, and an independent review found
+// both:
+//
+//   * `lstat` looked only at the FINAL component, so an intermediate symlink was
+//     followed. `SERVEROS_TEST_TMPDIR=/sandbox/outerlink/sub`, where `outerlink`
+//     is a symlink, was accepted and the leaf was created THROUGH the link — in
+//     a directory the caller never named.
+//   * the check and the create were two separate resolutions of the same string,
+//     so replacing the base with a symlink in between redirected the create.
+//
+// A fixture whose stated purpose is to refuse a redirecting symlink cannot make
+// that claim while doing either. So every component is now opened with
+// `O_DIRECTORY | O_NOFOLLOW` relative to the previous one, the leaf is created
+// with `mkdirat` on that pinned descriptor, and deletion is `unlinkat` on the
+// same descriptor. A path that is replaced after validation cannot redirect a
+// create or a delete, because neither uses the path.
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <dirent.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <random>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,22 +50,185 @@ using namespace nodecore::supervisor;
 
 namespace {
 
-//: Where a scratch directory may be created.
+//: A scratch directory this test owns, pinned by descriptor.
+//:
+//: `path` exists for diagnostics and for the lease module, which takes a path —
+//: that is another owner's interface and this file does not change it. Nothing
+//: in the CREATE or DELETE path uses `path`.
+struct Scratch {
+    int base_fd = -1;   // the validated base, O_DIRECTORY | O_NOFOLLOW, every component
+    int leaf_fd = -1;   // the private leaf, 0700
+    std::string leaf_name;
+    std::string path;   // full path to the leaf, for the lease module only
+    std::string error;
+    bool ok = false;
+};
+
+bool absolute_components(const std::string& path, std::vector<std::string>& parts,
+                         std::string& error) {
+    parts.clear();
+    if (path.empty() || path.front() != '/') {
+        // A RELATIVE OVERRIDE IS REFUSED. It would be resolved against the test's
+        // current directory, which the caller did not name and which a CI job
+        // does not control — the same class of mistake as a hardcoded path,
+        // wearing a variable's clothes.
+        error = "the scratch base is not an absolute path: " + path;
+        return false;
+    }
+    std::string current;
+    for (const char c : path) {
+        if (c != '/') {
+            current.push_back(c);
+            continue;
+        }
+        if (current.empty()) {
+            continue;  // "//" and the leading "/" are separators, not components
+        }
+        if (current == "." || current == "..") {
+            // `O_NOFOLLOW` does not refuse `..`: it is a real directory entry
+            // that walks out of the tree. Refused by name, because a base that
+            // climbs is not a base.
+            error = "the scratch base contains a \"" + current + "\" component: " + path;
+            return false;
+        }
+        parts.push_back(current);
+        current.clear();
+    }
+    if (!current.empty()) {
+        if (current == "." || current == "..") {
+            error = "the scratch base contains a \"" + current + "\" component: " + path;
+            return false;
+        }
+        parts.push_back(current);
+    }
+    if (parts.empty()) {
+        error = "the scratch base is the filesystem root, which is not a scratch directory";
+        return false;
+    }
+    return true;
+}
+
+//: Open `path` as a directory, refusing a symlink at EVERY component.
+//:
+//: Each step is `openat` relative to the descriptor from the previous step, so
+//: the thing validated is the thing walked: a component replaced after it was
+//: opened cannot affect the next step, because the next step does not re-resolve
+//: the prefix.
+int open_absolute_directory(const std::string& path, std::string& error) {
+    std::vector<std::string> parts;
+    if (!absolute_components(path, parts, error)) {
+        return -1;
+    }
+    int fd = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        error = std::string("the filesystem root could not be opened (") + std::strerror(errno) + ")";
+        return -1;
+    }
+    for (const std::string& part : parts) {
+        const int next = ::openat(fd, part.c_str(),
+                                  O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        const int saved = errno;
+        // Inspect the entry BEFORE closing its parent: `fstatat` needs the
+        // directory descriptor, and a closed one only reports EBADF — which
+        // would silently make every refusal look like "not a directory".
+        struct stat looked;
+        const bool looked_ok =
+            ::fstatat(fd, part.c_str(), &looked, AT_SYMLINK_NOFOLLOW) == 0;
+        ::close(fd);
+        if (next < 0) {
+            // `O_NOFOLLOW` on a symlink returns ELOOP, but with `O_DIRECTORY`
+            // the kernel may report ENOTDIR first — either way the entry is
+            // refused, and the REASON should name what is actually there rather
+            // than whichever errno the kernel happened to check first.
+            const bool is_link = looked_ok && S_ISLNK(looked.st_mode);
+            if (saved == ELOOP || is_link) {
+                error = "\"" + part + "\" is a symlink, and a scratch base may not be reached "
+                        "through one";
+            } else if (saved == ENOENT) {
+                error = "the scratch base does not exist at \"" + part + "\"";
+            } else if (saved == ENOTDIR) {
+                error = "\"" + part + "\" is not a directory";
+            } else {
+                error = "\"" + part + "\" could not be opened as a directory (" +
+                        std::strerror(saved) + ")";
+            }
+            return -1;
+        }
+        fd = next;
+    }
+    return fd;
+}
+
+//: A random leaf name. Collision-resistant rather than unpredictable: a second
+//: run of this suite must not land on the first run's directory, and that is all
+//: this needs to be.
+std::string random_leaf_name() {
+    std::random_device device;
+    static const char* hex = "0123456789abcdef";
+    std::string name = "srvos-lease-";
+    for (int index = 0; index < 16; ++index) {
+        name.push_back(hex[device() % 16]);
+    }
+    return name;
+}
+
+//: Create the private leaf under a pinned base descriptor.
+bool make_leaf(Scratch& scratch) {
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        const std::string name = random_leaf_name();
+        // `mkdirat` on the PINNED descriptor: the create cannot be redirected by
+        // anything that happens to the base's path afterwards.
+        if (::mkdirat(scratch.base_fd, name.c_str(), 0700) != 0) {
+            if (errno == EEXIST) {
+                continue;
+            }
+            scratch.error = std::string("a private directory could not be created (") +
+                            std::strerror(errno) + ")";
+            return false;
+        }
+        const int leaf =
+            ::openat(scratch.base_fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (leaf < 0) {
+            scratch.error = std::string("the private directory could not be opened (") +
+                            std::strerror(errno) + ")";
+            ::unlinkat(scratch.base_fd, name.c_str(), AT_REMOVEDIR);
+            return false;
+        }
+        struct stat info;
+        if (::fstat(leaf, &info) != 0) {
+            scratch.error = std::string("the private directory could not be inspected (") +
+                            std::strerror(errno) + ")";
+            ::close(leaf);
+            ::unlinkat(scratch.base_fd, name.c_str(), AT_REMOVEDIR);
+            return false;
+        }
+        // ASSERTED, not assumed: `mkdirat` was asked for 0700 and the umask can
+        // only remove bits, but a fixture that claims a private directory should
+        // prove it is one.
+        if ((info.st_mode & 0777) != 0700) {
+            scratch.error = "the private directory is not 0700";
+            ::close(leaf);
+            ::unlinkat(scratch.base_fd, name.c_str(), AT_REMOVEDIR);
+            return false;
+        }
+        scratch.leaf_fd = leaf;
+        scratch.leaf_name = name;
+        scratch.path = scratch.path.empty() ? name : scratch.path + "/" + name;
+        return true;
+    }
+    scratch.error = "a unique private directory could not be named";
+    return false;
+}
+
+//: Where a scratch base may come from, and how the leaf is made under it.
 //:
 //: `SERVEROS_TEST_TMPDIR` first — an owner-supplied sandbox, which is how a CI
 //: job, or an account that is not the developer's, points this suite at a
-//: directory it controls. Then the platform's own convention,
-//: `std::filesystem::temp_directory_path()`, which reads TMPDIR and falls back
-//: to the platform default.
-//:
-//: WHY THIS IS NOT A LITERAL PATH. The first version of this helper named a
-//: directory inside one developer's home on one machine. On any other host that
-//: parent does not exist, `mkdtemp` returns nullptr, `root` is empty, and every
-//: CHECK in this file fails for a reason that has nothing to do with the lease.
-//: A test that only runs on the machine it was written on is a test of the
-//: machine — and this suite is meant to be run on another box, by a different
-//: account, where that directory does not exist.
-bool scratch_base(std::string& base, std::string& error) {
+//: directory it controls. Then the platform's own answer,
+//: `std::filesystem::temp_directory_path()`. Neither is assumed to exist and
+//: neither is a literal: a test that only runs on its author's machine is a test
+//: of the machine.
+bool scratch_base_path(std::string& base, std::string& error) {
     const char* override = std::getenv("SERVEROS_TEST_TMPDIR");
     if (override != nullptr && override[0] != '\0') {
         base = override;
@@ -59,87 +245,96 @@ bool scratch_base(std::string& base, std::string& error) {
     return true;
 }
 
-//: Create a private directory under `base`, or fail closed.
-//:
-//: The base is checked with `lstat`, which does **not** follow: a symlink in
-//: that position would silently redirect every artefact this test writes to
-//: somewhere else, and a fixture is exactly where that must be refused rather
-//: than followed. Only a real directory is accepted.
-//:
-//: `mkdtemp` then creates the leaf with mode 0700, unique per call, so two runs
-//: of this suite — or two tests in one run — cannot collide. On any failure this
-//: returns false and the caller creates NOTHING: there is no fallback path,
-//: because a fallback is how a test starts writing somewhere nobody chose.
-bool make_scratch_in(const std::string& base, std::string& root, std::string& error) {
-    root.clear();
-    if (base.empty()) {
-        error = "no scratch base was given";
+//: Open `base` fd-anchored and create a leaf under it. On failure nothing is
+//: created anywhere and both descriptors are closed.
+bool open_scratch_at(const std::string& base, Scratch& scratch) {
+    scratch = Scratch();
+    scratch.base_fd = open_absolute_directory(base, scratch.error);
+    if (scratch.base_fd < 0) {
         return false;
     }
-    struct stat info;
-    if (::lstat(base.c_str(), &info) != 0) {
-        error = "the scratch base does not exist: " + base;
+    scratch.path = base;
+    if (!make_leaf(scratch)) {
+        ::close(scratch.base_fd);
+        scratch.base_fd = -1;
+        scratch.path.clear();
         return false;
     }
-    if (S_ISLNK(info.st_mode)) {
-        error = "the scratch base is a symlink, which would redirect what this test writes: " +
-                base;
-        return false;
-    }
-    if (!S_ISDIR(info.st_mode)) {
-        error = "the scratch base is not a directory: " + base;
-        return false;
-    }
-    const std::string pattern = base + "/srvos-lease-XXXXXX";
-    std::vector<char> buffer(pattern.begin(), pattern.end());
-    buffer.push_back('\0');
-    char* made = ::mkdtemp(buffer.data());
-    if (made == nullptr) {
-        error = "a private directory could not be created under " + base;
-        return false;
-    }
-    root = made;
+    scratch.ok = true;
     return true;
 }
 
-bool scratch_root(std::string& root, std::string& error) {
-    root.clear();
+bool open_default_scratch(Scratch& scratch) {
     std::string base;
-    if (!scratch_base(base, error)) {
+    if (!scratch_base_path(base, scratch.error)) {
         return false;
     }
-    return make_scratch_in(base, root, error);
+    return open_scratch_at(base, scratch);
 }
 
-//: Remove a directory this test created, by name. Never recursive: everything
-//: under it was created by name too, and a recursive remove is how a test
-//: deletes something it did not create.
-void remove_scratch(const std::string& root, const std::vector<std::string>& leaves) {
+//: Remove the leaf and everything named in `leaves`, ALL of it relative to the
+//: pinned descriptors. A base path that has been replaced since validation
+//: cannot redirect a delete, because the delete never resolves the path.
+void release_scratch(Scratch& scratch, const std::vector<std::string>& leaves) {
     for (const std::string& leaf : leaves) {
-        ::unlink((root + "/" + leaf).c_str());
+        if (scratch.leaf_fd >= 0) {
+            ::unlinkat(scratch.leaf_fd, leaf.c_str(), 0);
+        }
     }
-    ::rmdir(root.c_str());
+    if (scratch.leaf_fd >= 0) {
+        ::close(scratch.leaf_fd);
+        scratch.leaf_fd = -1;
+    }
+    if (scratch.base_fd >= 0 && !scratch.leaf_name.empty()) {
+        ::unlinkat(scratch.base_fd, scratch.leaf_name.c_str(), AT_REMOVEDIR);
+    }
+    if (scratch.base_fd >= 0) {
+        ::close(scratch.base_fd);
+        scratch.base_fd = -1;
+    }
+    scratch.ok = false;
+}
+
+//: How many entries a descriptor's directory currently holds, "." and ".."
+//: included. Used to prove a refused case created nothing: the count before and
+//: after must be identical.
+bool entry_count(int dir_fd, int& count) {
+    // A FRESH open file description, not `dup`. `dup` shares the directory
+    // offset with the original descriptor, so a second pass would resume at the
+    // end and report zero entries — which would make a "no leftovers" assertion
+    // pass for the wrong reason the first time and fail the second.
+    const int fresh = ::openat(dir_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fresh < 0) {
+        return false;
+    }
+    DIR* dir = ::fdopendir(fresh);
+    if (dir == nullptr) {
+        ::close(fresh);
+        return false;
+    }
+    count = 0;
+    while (::readdir(dir) != nullptr) {
+        ++count;
+    }
+    ::closedir(dir);  // closes `fresh`
+    return true;
 }
 
 }  // namespace
 
-//: The scratch-root contract itself. These are the cases that make the fix a
-//: fix rather than a different literal: a sandbox the caller names is honoured,
-//: a base that is missing, a symlink or unwritable is REFUSED WITHOUT CREATING
-//: ANYTHING, and two calls never collide.
-void test_the_scratch_root_is_portable() {
-    std::cout << "the scratch root is portable and fails closed"
+//: The scratch-root contract. These are the cases an independent review asked
+//: for, and each one is a way the previous revision could have been wrong.
+void test_the_scratch_root_is_fd_anchored() {
+    std::cout << "the scratch root is fd-anchored and fails closed\n";
 
-              << "\n";
     std::string base;
     std::string error;
-    CHECK(scratch_base(base, error));
+    CHECK(scratch_base_path(base, error));
     CHECK(!base.empty());
 
-    // With no override the base is the platform's own answer — which is the
-    // property the literal path lacked. Asserted by equality rather than by
-    // scanning for a home directory, because a CI that sets TMPDIR under a home
-    // is still correct: the platform chose it.
+    // With no override the base is the platform's own answer. Asserted by
+    // EQUALITY rather than by scanning for a home directory: a CI that sets
+    // TMPDIR under a home is still correct, because the platform chose it.
     const char* saved = std::getenv("SERVEROS_TEST_TMPDIR");
     const std::string saved_value = saved == nullptr ? std::string() : std::string(saved);
     const bool had_override = saved != nullptr;
@@ -147,81 +342,179 @@ void test_the_scratch_root_is_portable() {
     ::unsetenv("SERVEROS_TEST_TMPDIR");
     std::string plain;
     std::string plain_error;
-    CHECK(scratch_base(plain, plain_error));
+    CHECK(scratch_base_path(plain, plain_error));
     std::error_code code;
-    // Equality with the platform's own answer IS the portability property, and
-    // it needs no literal: a base named after one account would fail here on
-    // any host where that account's home is somewhere else, which is the bug
-    // this change exists to remove.
     CHECK_EQ(plain, std::filesystem::temp_directory_path(code).string());
 
-    // An owner-supplied sandbox is honoured.
-    std::string sandbox;
-    CHECK(make_scratch_in(plain, sandbox, error));
-    if (!sandbox.empty()) {
-        CHECK(sandbox.rfind(plain + "/", 0) == 0);
-        ::setenv("SERVEROS_TEST_TMPDIR", sandbox.c_str(), 1);
-        std::string chosen;
-        CHECK(scratch_base(chosen, plain_error));
-        CHECK_EQ(chosen, sandbox);
-        ::unsetenv("SERVEROS_TEST_TMPDIR");
+    // A sandbox this test owns, to hold the negative cases.
+    Scratch sandbox;
+    CHECK(open_default_scratch(sandbox));
+    if (!sandbox.ok) {
+        std::fprintf(stderr, "no sandbox: %s\n", sandbox.error.c_str());
+        return;
     }
-
     {
-        // A base that does not exist is REFUSED, and nothing is created
-        // anywhere — there is no fallback to a path the test did not choose.
-        const std::string missing = (sandbox.empty() ? plain : sandbox) + "/srvos-absent-base";
-        std::string refused;
-        std::string why;
-        CHECK(!make_scratch_in(missing, refused, why));
-        CHECK(refused.empty());
-        CHECK(!why.empty());
+        // A base that exists and is a real directory is accepted, and the leaf
+        // is created UNDER it.
+        Scratch scratch;
+        CHECK(open_scratch_at(sandbox.path, scratch));
+        CHECK(scratch.ok);
+        CHECK(scratch.path.rfind(sandbox.path + "/", 0) == 0);
         struct stat info;
-        CHECK(::lstat(missing.c_str(), &info) != 0);
+        CHECK(::fstat(scratch.leaf_fd, &info) == 0);
+        CHECK_EQ(static_cast<int>(info.st_mode & 0777), 0700);
+        release_scratch(scratch, {});
     }
     {
-        // A SYMLINK in that position is refused rather than followed: it would
-        // silently redirect everything this test writes.
-        const std::string link = (sandbox.empty() ? plain : sandbox) + "/srvos-link-base";
-        ::unlink(link.c_str());
-        CHECK(::symlink((sandbox.empty() ? plain : sandbox).c_str(), link.c_str()) == 0);
-        std::string refused;
-        std::string why;
-        CHECK(!make_scratch_in(link, refused, why));
-        CHECK(refused.empty());
-        CHECK_CONTAINS(why, "symlink");
-        ::unlink(link.c_str());
+        // F1 — AN INTERMEDIATE SYMLINK IS REFUSED. The previous revision checked
+        // only the last component, so `outerlink/sub` was accepted and the leaf
+        // was created through the link. Nothing may be created now.
+        const std::string link = sandbox.path + "/outerlink";
+        const std::string real = sandbox.path + "/realdir";
+        ::mkdirat(sandbox.leaf_fd, "realdir", 0700);
+        CHECK(::symlinkat("realdir", sandbox.leaf_fd, "outerlink") == 0);
+        int before = 0;
+        CHECK(entry_count(sandbox.leaf_fd, before));
+
+        Scratch scratch;
+        CHECK(!open_scratch_at(link + "/sub", scratch));
+        CHECK(!scratch.ok);
+        CHECK_CONTAINS(scratch.error, "symlink");
+
+        int after = 0;
+        CHECK(entry_count(sandbox.leaf_fd, after));
+        CHECK_EQ(before, after);
+        ::unlinkat(sandbox.leaf_fd, "outerlink", 0);
+        ::unlinkat(sandbox.leaf_fd, "realdir", AT_REMOVEDIR);
     }
     {
-        // An unwritable base is refused, and the refusal is not "created anyway
-        // somewhere else".
-        const std::string locked = (sandbox.empty() ? plain : sandbox) + "/srvos-locked-base";
-        ::mkdir(locked.c_str(), 0700);
-        ::chmod(locked.c_str(), 0500);
-        std::string refused;
-        std::string why;
-        CHECK(!make_scratch_in(locked, refused, why));
-        CHECK(refused.empty());
-        ::chmod(locked.c_str(), 0700);
-        ::rmdir(locked.c_str());
+        // A FINAL-component symlink is still refused, and nothing is created.
+        ::mkdirat(sandbox.leaf_fd, "realdir", 0700);
+        CHECK(::symlinkat("realdir", sandbox.leaf_fd, "finallink") == 0);
+        int before = 0;
+        CHECK(entry_count(sandbox.leaf_fd, before));
+        Scratch scratch;
+        CHECK(!open_scratch_at(sandbox.path + "/finallink", scratch));
+        CHECK_CONTAINS(scratch.error, "symlink");
+        int after = 0;
+        CHECK(entry_count(sandbox.leaf_fd, after));
+        CHECK_EQ(before, after);
+        ::unlinkat(sandbox.leaf_fd, "finallink", 0);
+        ::unlinkat(sandbox.leaf_fd, "realdir", AT_REMOVEDIR);
     }
     {
-        // TWO CALLS, TWO DIRECTORIES. A fixture that reused one path would let
-        // two runs of this suite overwrite each other's lock files, and the
-        // failure would look like a lease bug.
-        std::string first;
-        std::string second;
-        CHECK(make_scratch_in(sandbox.empty() ? plain : sandbox, first, error));
-        CHECK(make_scratch_in(sandbox.empty() ? plain : sandbox, second, error));
-        CHECK(!first.empty() && !second.empty());
-        CHECK(first != second);
-        remove_scratch(first, {});
-        remove_scratch(second, {});
+        // F2 — THE CREATE CANNOT BE REDIRECTED AFTER VALIDATION. The leaf is
+        // created through the pinned descriptor; replacing the BASE's own path
+        // with a symlink afterwards cannot move it, and the delete still removes
+        // the directory it made rather than whatever the link points at.
+        const std::string victim = sandbox.path + "/victim";
+        ::mkdirat(sandbox.leaf_fd, "victim", 0700);
+        Scratch scratch;
+        CHECK(open_scratch_at(victim, scratch));
+        CHECK(scratch.ok);
+        struct stat pinned;
+        CHECK(::fstat(scratch.leaf_fd, &pinned) == 0);
+
+        // Replace the PATH `victim` with a symlink to somewhere else. The
+        // directory itself is MOVED aside rather than removed, because it holds
+        // the scratch leaf — moving is what an attacker replacing a path would
+        // do, and it leaves the pinned descriptors pointing where they did.
+        CHECK(::renameat(sandbox.leaf_fd, "victim", sandbox.leaf_fd, "victim-moved") == 0);
+        CHECK(::symlinkat("elsewhere", sandbox.leaf_fd, "victim") == 0);
+
+        // The pinned descriptor still refers to the directory that was created.
+        struct stat still;
+        CHECK(::fstat(scratch.leaf_fd, &still) == 0);
+        CHECK_EQ(static_cast<long>(pinned.st_ino), static_cast<long>(still.st_ino));
+        // And releasing removes THAT leaf by name relative to the pinned base —
+        // it does not follow the link now sitting at the same path.
+        const std::string leaf_name = scratch.leaf_name;
+        release_scratch(scratch, {});
+        struct stat gone;
+        CHECK(::fstatat(sandbox.leaf_fd, ("victim-moved/" + leaf_name).c_str(), &gone,
+                        AT_SYMLINK_NOFOLLOW) != 0);
+        // The symlink at the original path was never touched.
+        CHECK(::fstatat(sandbox.leaf_fd, "victim", &gone, AT_SYMLINK_NOFOLLOW) == 0);
+        CHECK(S_ISLNK(gone.st_mode));
+        ::unlinkat(sandbox.leaf_fd, "victim", 0);
+        ::unlinkat(sandbox.leaf_fd, "victim-moved", AT_REMOVEDIR);
+    }
+    {
+        // F3 — a RELATIVE override is refused: it would resolve against the
+        // test's cwd, which the caller did not name.
+        Scratch scratch;
+        CHECK(!open_scratch_at("relative/base", scratch));
+        CHECK_CONTAINS(scratch.error, "not an absolute path");
+        CHECK(!open_scratch_at("..", scratch));
+    }
+    {
+        // A base that does not exist is refused and nothing is created.
+        int before = 0;
+        CHECK(entry_count(sandbox.leaf_fd, before));
+        Scratch scratch;
+        CHECK(!open_scratch_at(sandbox.path + "/absent", scratch));
+        CHECK(!scratch.ok);
+        CHECK(!scratch.error.empty());
+        int after = 0;
+        CHECK(entry_count(sandbox.leaf_fd, after));
+        CHECK_EQ(before, after);
+    }
+    {
+        // A base that is a regular FILE is refused — and this refusal does not
+        // depend on the caller's capabilities, so it is the case that still
+        // means something when the suite runs as root.
+        const int file = ::openat(sandbox.leaf_fd, "notadir", O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+        CHECK(file >= 0);
+        if (file >= 0) {
+            ::close(file);
+        }
+        Scratch scratch;
+        CHECK(!open_scratch_at(sandbox.path + "/notadir", scratch));
+        CHECK_CONTAINS(scratch.error, "not a directory");
+        ::unlinkat(sandbox.leaf_fd, "notadir", 0);
+    }
+    {
+        // F4 — an unwritable base is refused, but ROOT BYPASSES THE MODE BIT, so
+        // the expectation is only asserted when it can actually hold. The
+        // refusal above is the capability-independent one.
+        if (::geteuid() != 0) {
+            ::mkdirat(sandbox.leaf_fd, "locked", 0700);
+            CHECK(::fchmodat(sandbox.leaf_fd, "locked", 0500, 0) == 0);
+            int before = 0;
+            CHECK(entry_count(sandbox.leaf_fd, before));
+            Scratch scratch;
+            CHECK(!open_scratch_at(sandbox.path + "/locked", scratch));
+            CHECK(!scratch.ok);
+            int after = 0;
+            CHECK(entry_count(sandbox.leaf_fd, after));
+            CHECK_EQ(before, after);
+            CHECK(::fchmodat(sandbox.leaf_fd, "locked", 0700, 0) == 0);
+            ::unlinkat(sandbox.leaf_fd, "locked", AT_REMOVEDIR);
+        } else {
+            std::cout << "  (root: the 0500 case is skipped, the mode bit does not bind)\n";
+        }
+    }
+    {
+        // Two calls, two directories: a reused path would let two runs overwrite
+        // each other's lock files and look like a lease bug.
+        Scratch first;
+        Scratch second;
+        CHECK(open_scratch_at(sandbox.path, first));
+        CHECK(open_scratch_at(sandbox.path, second));
+        CHECK(first.ok && second.ok);
+        CHECK(first.path != second.path);
+        release_scratch(first, {});
+        release_scratch(second, {});
+    }
+    {
+        // F6 — NO LEFTOVERS. After every case above has cleaned up, the sandbox
+        // holds exactly what it started with.
+        int count = 0;
+        CHECK(entry_count(sandbox.leaf_fd, count));
+        CHECK_EQ(count, 2);  // "." and ".."
     }
 
-    if (!sandbox.empty()) {
-        remove_scratch(sandbox, {});
-    }
+    release_scratch(sandbox, {});
     if (had_override) {
         ::setenv("SERVEROS_TEST_TMPDIR", saved_value.c_str(), 1);
     } else {
@@ -230,24 +523,24 @@ void test_the_scratch_root_is_portable() {
 }
 
 int main() {
-    test_the_scratch_root_is_portable();
+    test_the_scratch_root_is_fd_anchored();
 
-    std::string root;
-    std::string root_error;
-    scratch_root(root, root_error);
-    CHECK(!root.empty());
-    if (root.empty()) {
-        // The reason is printed rather than swallowed: an empty root is a
+    Scratch scratch;
+    if (!open_default_scratch(scratch)) {
+        // The reason is printed rather than swallowed: no scratch root is a
         // fixture problem, and a reader needs to know which one.
-        std::fprintf(stderr, "no scratch root: %s\n", root_error.c_str());
+        std::fprintf(stderr, "no scratch root: %s\n", scratch.error.c_str());
+        CHECK(false);
         return check::report("test_sup_lease");
     }
+    const std::string& root = scratch.path;
+    CHECK(scratch.ok);
 
     {
         // A free lease is taken, and held by the object that took it.
         const std::string path = root + "/a.lock";
         WriterLease lease;
-        const LeaseAttempt attempt = lease.acquire(path, "device:tokyo-shared-dev-01");
+        const LeaseAttempt attempt = lease.acquire(path, "device:fixture-under-test");
         CHECK(attempt.ok);
         CHECK_EQ(attempt.code, std::string(kLeaseAcquired));
         CHECK(lease.held());
@@ -257,7 +550,7 @@ int main() {
         const LeaseAttempt holder = peek_holder(path);
         CHECK(holder.ok);
         CHECK_EQ(holder.code, std::string(kLeaseHolderRead));
-        CHECK_EQ(holder.holder, std::string("device:tokyo-shared-dev-01"));
+        CHECK_EQ(holder.holder, std::string("device:fixture-under-test"));
         lease.release();
         CHECK(!lease.held());
     }
@@ -363,9 +656,10 @@ int main() {
         CHECK(holder.holder.size() <= 200);
     }
 
-    // Remove exactly what this test created, by name.
-    remove_scratch(root, {"a.lock", "b.lock", "c.lock", "d.lock", "e.lock", "f.lock",
-                          "never-written.lock"});
+    // Remove exactly what this test created, by name, relative to the pinned
+    // descriptors.
+    release_scratch(scratch, {"a.lock", "b.lock", "c.lock", "d.lock", "e.lock", "f.lock",
+                              "never-written.lock"});
 
     return check::report("test_sup_lease");
 }
