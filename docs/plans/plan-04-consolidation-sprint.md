@@ -372,4 +372,17 @@ git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
 - P-g1-T ／ P-g1-D ／ P-g1-W：根据 G0 的盘点表，为每台设备写好 G1 脚本：备份、S 类改 remote、X 类挪到 `_retired-20261019/`、R 类新旧并存安装。脚本只带 `--dry-run` 模式，**不执行**，放进 `hwz-records` 的 `consolidate/g1-scripts` 分支，等所有者批准。
 - P-archive：列出 10 个待归档旧仓库各自的顶层路径，以及它们在新仓库里的位置（给验收 V1 用）。
 
-**云端 Claude 会话同时做验收**：已经完成的 PR（hwz-records #12、#13、#14；serveros #280、#281；ability-management #30、#31、#32）由云端会话按第 7 节先验收。结论写在 `hwz-records` 分支 `status/acceptance` 的 `ACCEPTANCE.md`（云端会话是它唯一的写入者，进度文件仍只由 Dell 主控写）。Dell 主控不用等，读这个文件即可。
+### 9.7 全部交给 Dell（2026-10-18 起，取代第 7 节和 9.6 里「云端会话验收」的说法）
+
+**所有工作都在 Dell A6000 的主控会话里完成，包括验收。** 云端 Claude 会话不再参与，也不再写任何文件。Windows 本机只做两件事：9.1 的抢救推送，以及 Windows 设备本身的只读盘点和 G1（因为只能在 Windows 本机上做）。
+
+**验收怎么做（Dell 主控派独立的验收 agent）**
+- 每有一个仓库集成完成，就派一个**新的**验收 agent 去验。验收者不能是做这个仓库的同一个 agent，也不能复用它的工作目录，要从全新 clone 开始。
+- 按第 7 节的 V1–V7 逐项给出「通过 / 不通过 + 证据」，结果写进进度文件的「验收」一节。进度文件仍然只由主控写。
+- 不通过的项交回对应车道修复，修完再派一个新的验收 agent 复验。
+- 已经完成、现在就能验的：hwz-records #12、#13、#14；serveros #280、#281；ability-management #30、#31、#32。**现在就派。**
+- 验收通过的仓库，在进度文件里标「可以合并」，然后告诉所有者，由所有者在网页上合并。
+- 已知的口径：
+  - `REDACTED` 这类占位符不算命中；`/home/example` 这类占位路径不算命中；
+  - Private 仓库（ability-management、marketops-session、hwz-records）只要求没有真实凭据，个人信息不算不通过；
+  - Public 仓库（serveros、marketops、llmlab）还要检查新提交的作者邮箱是不是 noreply。
