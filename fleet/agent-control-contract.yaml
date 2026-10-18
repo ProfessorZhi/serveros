@@ -284,11 +284,40 @@ write_scope:
     fail-closed on purpose: a thread that predates the lease cannot be shown to
     hold the write scope. It is a behaviour change, stated here rather than left
     to be discovered.
-  production_producer_missing: >-
-    NOT YET WIRED: no production caller acquires the Work lease when a session is
-    created, so on the deployed path an execution send is currently refused until
-    `acquire_lease` is called for that Item. That is the remaining integration
-    step (S1 × work-engine #13) — and it is a REFUSAL, not a spoofable admission.
+  producer_boundary_blocked: >-
+    BLOCKED_PRODUCER_BOUNDARY. An authenticated `session.create` must acquire the
+    exclusive Work lease before its thread can send, and this product CANNOT do
+    that today. work-engine #13 exposes `acquire_lease` / `renew_lease` /
+    `release_lease` / `check_writer` only as methods on
+    `workengine.store.ServerOSStore` — no CLI subcommand and no MCP tool — and
+    serveros has no import or subprocess boundary to that repository (`runtime/cli.py`
+    records that `workengine` is not on PATH). Writing the `leases` row from
+    serveros would be a SECOND writer and a caller-asserted owner, which is the
+    one thing this contract forbids. Verified against live heads serveros
+    `a6bed15` and work-engine `40b0622` on 2026-10-18.
+  required_operation: >-
+    What unblocks the create path — the exact API/owner, not an invented one:
+    an authorized `acquire_lease(resource=<Item ref>, owner=<mapped principal>,
+    ttl_s=<bounded>)`, with `renew_lease` / `release_lease` / `check_writer` for
+    the lifecycle, reachable from the serveros daemon under the SAME OS
+    principal. work-engine must authorize the call against ITS OWN record of the
+    Item's owner/grant — never against a string the serveros caller supplies. A
+    CLI subcommand or an MCP tool on work-engine would satisfy this; an in-process
+    import would make every serveros deployment depend on the work-engine package
+    and is NOT proposed here.
+  principal_to_owner: >-
+    The owner a create would request: the `actor_ref` resolved from the trusted
+    `context_ref` (never a payload string), qualified by the Work Item identity
+    and the current Work epoch — not the session ref, not a device name, not a
+    project label. This mapping is DECLARED here and NOT IMPLEMENTED, because
+    there is no boundary to apply it.
+  create_reports_authority: >-
+    The fail-closed half that IS implemented: `agent.binding.record` reports
+    `write_authority` — the same `{source: work-engine:leases, lease: <live row |
+    null>}` shape as `agent.binding.resolve` — in its answer. A caller therefore
+    learns at CREATE time that a thread cannot send, instead of discovering it on
+    the first `session.send`. It does not acquire anything and does not make the
+    create→send path usable on its own.
   not_claimed: >-
     This fences the CONTROL-PLANE admission and the binding record. It does NOT
     claim to stop a shell side-effect inside a provider that offers no native

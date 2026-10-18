@@ -3103,7 +3103,19 @@ class Daemon:
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
-        return {"recorded": True, "session_ref": ref, "binding": stored}
+        bound = str((stored or {}).get("bound_item_ref") or "") or None
+        return {"recorded": True, "session_ref": ref, "binding": stored,
+                # QA Snapshot G. The caller learns at CREATE time whether this
+                # thread can send at all. The send admission reads the same
+                # authority, so a create that reports no lease is a thread that
+                # will refuse every write — said here rather than discovered on
+                # the first `session.send`. The acquisition itself is
+                # BLOCKED_PRODUCER_BOUNDARY: nothing in this product can call
+                # work-engine's `acquire_lease` yet.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)}}
 
     def _writer_claim(self, store, ref, params):
         """The write-scope claim to record with this binding, or None.
