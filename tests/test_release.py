@@ -549,6 +549,41 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse((self.comp_root / "current").is_symlink(),
                          "a refused artifact left the node pointed at something")
 
+    def test_a_promoted_revision_carries_the_work_engine_package(self):
+        """The package a node runs from ships the engine and its schema.
+
+        `workengine/` moved inside this repository, so an installed node must
+        be able to import it from its own revision instead of an external
+        checkout. The schema is the asset that makes the installed engine able
+        to open its store, which is why it — not merely the directory's
+        presence — is what the release verifies.
+        """
+        art = make_artifact(self.base, "a")
+        self.assertEqual(self.promote(art, "rev-a").returncode, 0)
+        rev = self.comp_root / "revisions" / "rev-a"
+        self.assertTrue((rev / "workengine").is_dir(),
+                        "the promoted package carries no workengine/ directory")
+        self.assertTrue((rev / "workengine" / "schema.sql").is_file(),
+                        "the promoted package carries no workengine/schema.sql")
+        self.assertEqual((rev / "workengine" / "schema.sql").read_text(),
+                         "-- engine schema\n")
+
+    def test_a_node_revision_requires_the_work_engine_schema(self):
+        """A revision without the schema is refused before promotion.
+
+        The engine opens its store with this file. A revision that shipped the
+        package but not the schema would import cleanly and then fail on the
+        first open, which is the failure mode this requirement exists to keep
+        on the staging side of the swap.
+        """
+        art = make_artifact(self.base, "a")
+        (art / "workengine" / "schema.sql").unlink()
+        result = self.promote(art, "rev-a")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("missing workengine/schema.sql", result.stderr)
+        self.assertFalse((self.comp_root / "current").is_symlink(),
+                         "a refused artifact left the node pointed at something")
+
     def test_a_dry_run_writes_nothing(self):
         """A dry run that stages is a real run with the last step removed.
 
