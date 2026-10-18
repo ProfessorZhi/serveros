@@ -296,6 +296,13 @@ BINDING_ONLY_FIELDS = ("session_role", "bound_item_ref")
 # a new grant can have and nothing else may move it.
 REVOCATION_FIELDS = ("revoked", "revoked_at", "revoked_reason")
 
+#: Fields the STORE writes and a caller may never supply. `epoch` joins the
+#: revocation fields for the same reason: an epoch a caller could choose is an
+#: epoch a caller could choose to keep, which is exactly the generation fence
+#: Work Engine #14's `OwnerVerifiedLease` asks for. Excluded from the
+#: write-once comparison on both sides, so a re-report stays idempotent.
+OWNER_WRITTEN_GRANT_FIELDS = REVOCATION_FIELDS + ("epoch",)
+
 # The three phases of one admission, in the only order they can happen. Each is
 # a DIFFERENT store's answer being reported back, which is why they are three
 # and not a boolean `done`:
@@ -422,6 +429,95 @@ def _actor_module():
         sys.modules[name] = module
         spec.loader.exec_module(module)
     return sys.modules[name]
+
+
+def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
+                      item_ref, expected_epoch=None, now=None) -> dict:
+    """May `context`, from `peer`, act as this grant's principal, right now?
+
+    PURE, and every check is a refusal when it cannot be answered. This is the
+    trusted-parent read Work Engine #14's `OwnerVerifiedLease` needs: the context
+    is resolved OUT OF BAND by the caller (never taken from a request field), the
+    peer is the kernel's `SO_PEERCRED`, and the grant is re-read live.
+
+    A grant with NO epoch is UNKNOWN and authorizes nothing. Records written
+    before the field existed are NOT backfilled: minting an epoch after the fact
+    would be minting authority nobody granted.
+    """
+    def refuse(reason, because):
+        return {"verified": False, "reason": reason, "because": because}
+
+    if not isinstance(context, dict) or not str(context.get("context_ref") or "").strip():
+        return refuse("UNTRUSTED_ACTOR",
+                      "no trusted context was resolved for this call")
+    if not isinstance(peer, dict) or peer.get("uid") is None:
+        return refuse("UNTRUSTED_ACTOR",
+                      "this call did not arrive with a kernel peer credential "
+                      "(SO_PEERCRED), so the caller cannot be bound to an OS "
+                      "principal. A uid in the payload is a claim, not evidence")
+    now = str(now or "")
+    verdict = _actor_module().authorizes(context, now)
+    if not verdict.get("authorizes"):
+        return refuse("UNTRUSTED_ACTOR",
+                      f"the presented context does not authorize a mutation: "
+                      f"{verdict.get('because')}")
+
+    key = str(grant_ref or "").strip()
+    if not key:
+        return refuse("INVALID_CONTEXT", "no grant_ref was named")
+    grant = (grants or {}).get(key)
+    if grant is None:
+        return refuse("INVALID_CONTEXT", f"no grant {key!r} is recorded")
+    if str(grant.get("delegated_by")) != str(context["context_ref"]):
+        return refuse(
+            "UNTRUSTED_ACTOR",
+            f"grant {key!r} was delegated by {grant.get('delegated_by')!r}, and "
+            f"this context is {context['context_ref']!r}. Authority is rooted in "
+            f"the context that was verified, not in whoever presents the ref")
+    if grant.get("revoked") is True:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} was revoked at {grant.get('revoked_at')}")
+    for field in ("valid_from", "expires_at"):
+        if not grant.get(field):
+            return refuse("INVALID_CONTEXT", f"grant {key!r} has no {field}")
+    if str(grant["valid_from"]) > now:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} is not valid until {grant['valid_from']}")
+    if str(grant["expires_at"]) <= now:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} expired at {grant['expires_at']}")
+
+    epoch = grant.get("epoch")
+    if epoch is None or isinstance(epoch, bool) or not isinstance(epoch, int):
+        return refuse(
+            "INVALID_CONTEXT",
+            f"grant {key!r} records no epoch, so its authority is UNKNOWN. A "
+            f"record written before the epoch existed is not backfilled: an epoch "
+            f"minted after the fact would be authority nobody granted")
+    if expected_epoch is not None and int(expected_epoch) != int(epoch):
+        return refuse("INVALID_CONTEXT",
+                      f"grant {key!r} is at epoch {epoch} and this call expected "
+                      f"{expected_epoch}; the grant has moved")
+
+    if str(action or "") not in (grant.get("actions") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not carry action {action!r}")
+    if str(project or "") not in (grant.get("projects") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not cover project {project!r}")
+    if str(item_ref or "") not in (grant.get("items") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not cover Item {item_ref!r}")
+
+    return {"verified": True, "grant": {
+        "grant_ref": key,
+        "principal": context["actor_ref"],
+        "os_principal": f"uid:{int(peer['uid'])}",
+        "epoch": int(epoch),
+        "valid_from": grant["valid_from"],
+        "expires_at": grant["expires_at"],
+        "revoked": False,
+    }}
 
 
 def _intent_digest(record: dict, *, selection_digest: str, grant_ref: str,
@@ -720,7 +816,7 @@ class AgentControlStore:
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
                     "admissions": {}, "checkpoints": {},
-                    "dispatch_attempts": {}}
+                    "dispatch_attempts": {}, "grant_epoch": 0}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -746,6 +842,10 @@ class AgentControlStore:
         # gets an empty section, so this is a forward-compatible read of an
         # existing file rather than a migration.
         data.setdefault("dispatch_attempts", {})
+        # A durable, monotonic grant generation. Additive like every other key:
+        # an older document reads as 0 and the FIRST new grant gets 1. Existing
+        # grants are NOT backfilled (see `verify_live_grant`).
+        data.setdefault("grant_epoch", 0)
         data["schema"] = SCHEMA
         return data
 
@@ -1641,6 +1741,18 @@ class AgentControlStore:
 
     # -- standing delegations (§12, P6) ------------------------------------
 
+    def _next_grant_epoch(self) -> int:
+        """The next grant generation, from the store's own durable counter.
+
+        Called ONLY from inside a `_mutation()`, so read-increment-write is one
+        step under the lock. Monotonic across restarts because the counter lives
+        in the document, and never derived from a grant COUNT: revoking a grant
+        must not let a later grant reuse its number.
+        """
+        current = int(self._data.get("grant_epoch") or 0) + 1
+        self._data["grant_epoch"] = current
+        return current
+
     def issue_grant(self, evidence: dict, *, now: str) -> dict:
         """Persist a provider-approved scope and its verified issuance atomically."""
         actor = _actor_module()
@@ -1660,6 +1772,9 @@ class AgentControlStore:
             except actor.Rejected as exc:
                 raise StoreError(str(exc)) from exc
             recorded = {**approved, "revoked": False,
+                        # Minted HERE, by the store, from a durable monotonic
+                        # counter — never supplied by a caller.
+                        "epoch": self._next_grant_epoch(),
                         "issuance": {"schema": actor.ISSUANCE_SCHEMA,
                                      "accepted_at": now, "evidence": evidence}}
             # Own a snapshot, not a caller's mutable dictionary.
@@ -1709,6 +1824,11 @@ class AgentControlStore:
                 "is a scope on a trusted context, and a grant that does not say "
                 "whose delegation it is is one that no longer has a root — which is "
                 "the state this collection exists to keep out")
+        if "epoch" in record:
+            raise StoreError(
+                "a grant may not be stored carrying an `epoch`. The epoch is minted "
+                "by the store from a durable monotonic counter; an epoch a caller "
+                "could choose is one a caller could keep after it was superseded")
         smuggled = [f for f in REVOCATION_FIELDS
                     if f in record and record[f] != (False if f == "revoked" else None)]
         if smuggled:
@@ -1716,7 +1836,7 @@ class AgentControlStore:
                 f"a grant may not be stored carrying {', '.join(smuggled)}. A "
                 f"delegation ends by revocation (`revoke_grant`), and a grant whose "
                 f"revocation a put could write is one a second put could un-revoke")
-        staged = {k: v for k, v in record.items() if k not in REVOCATION_FIELDS}
+        staged = {k: v for k, v in record.items() if k not in OWNER_WRITTEN_GRANT_FIELDS}
         with self._mutation():
             # Under the lock, so a context another writer reported a moment ago
             # is seen. Checked against the document on disk rather than against
@@ -1732,7 +1852,7 @@ class AgentControlStore:
             existing = self._data["grants"].get(ref)
             if existing is not None:
                 theirs = {k: v for k, v in existing.items()
-                          if k not in REVOCATION_FIELDS}
+                          if k not in OWNER_WRITTEN_GRANT_FIELDS}
                 # Compared WITHOUT the revocation fields on both sides: a
                 # re-report of a delegation that has since been revoked is
                 # still the same delegation, so it returns the record as it
@@ -1745,7 +1865,8 @@ class AgentControlStore:
                     f"changing its scope in place would rewrite what the work "
                     f"already done was authorized by. Revoke it and record the "
                     f"one you mean")
-            recorded = {**staged, "revoked": False}
+            recorded = {**staged, "revoked": False,
+                        "epoch": self._next_grant_epoch()}
             self._data["grants"][ref] = recorded
             self._flush()
             return recorded
