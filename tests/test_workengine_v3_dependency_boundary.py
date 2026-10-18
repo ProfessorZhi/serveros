@@ -1,6 +1,6 @@
 """A dependency the store does not have is named, not traced.
 
-Measured 2026-10-08 on the installed CLI (`/data/home/vince/.local/bin/workengine`,
+Measured 2026-10-08 on the installed CLI (`~/.local/bin/workengine`,
 tree `c3b56f3b`, the merge base this branch starts from): eleven calls that name
 an Item, an activity or a Run the store does not have answered with a Python
 traceback and exit code 1. The CLI's contract with a caller is a JSON error and

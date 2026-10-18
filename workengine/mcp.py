@@ -9,7 +9,7 @@ Three things it does not do, each because the alternative is a bug that reads
 as a feature:
 
   * It does not accept an `actor` argument. §15 says the actor is derived from a
-    trusted context, not self-reported. A tool that took `actor: "hwz"` would
+    trusted context, not self-reported. A tool that took `actor: "anyone"` would
     let any caller write any name into an audit record, and the audit record is
     the only thing that makes a termination reviewable. The actor comes from
     resolving `context_ref`; if nothing can resolve it, the call is refused.

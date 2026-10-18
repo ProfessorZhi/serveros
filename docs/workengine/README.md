@@ -33,10 +33,12 @@ the executing device profile. Unknown/unbound roots fail specifically rather tha
 inventing a fallback. ServerOS Space owns semantic placement; work-engine consumes
 its contract and does not implement a second directory policy.
 
-The installed product has one serverosctl dispatcher. A component may expose its
-own library/compatibility entry internally, but two packages must not fight for the
-same public executable. This is a composition requirement, not an assertion that
-all current installations have already converged.
+The installed product has one serverosctl dispatcher, and it is the node
+runtime's (`bin/serverosctl` -> `runtime/cli.py`). The work control plane is
+reached with `python -m workengine`; its MCP adapter is the separate
+`serveros-work-mcp` process. This package no longer registers a second
+`serverosctl`, because two packages fighting for the same public executable was
+the composition defect this section describes.
 
 ## Flexible work semantics
 
@@ -63,11 +65,11 @@ migrated. These examples describe that interface, not new verbs introduced by th
 document change:
 
 ```bash
-serverosctl --json item create --project serveros --prefix SRV --title "Converge work control" --kind ops
-serverosctl --json activity add SRV-0001 implement --kind develop
-serverosctl --json run begin SRV-0001 implement --worker codex --idempotency-key srv-0001-control-plane
-serverosctl --json board render --project serveros --output-dir /absolute/path/records/projects/serveros/board
-serverosctl --json federation local inventory --source /absolute/observed.jsonl --target /absolute/projection.jsonl --evidence-run RUN-0001
+python -m workengine --json item create --project serveros --prefix SRV --title "Converge work control" --kind ops
+python -m workengine --json activity add SRV-0001 implement --kind develop
+python -m workengine --json run begin SRV-0001 implement --worker codex --idempotency-key srv-0001-control-plane
+python -m workengine --json board render --project serveros --output-dir /absolute/path/records/projects/serveros/board
+python -m workengine --json federation local inventory --source /absolute/observed.jsonl --target /absolute/projection.jsonl --evidence-run RUN-0001
 ```
 
 `federation` takes a domain — `feishu`, `github` or `local` — and one of `inventory`,

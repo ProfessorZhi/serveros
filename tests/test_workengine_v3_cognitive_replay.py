@@ -1,6 +1,6 @@
 """同 id 换内容重放：要么真接受，要么什么都没写并且说出来。
 
-Measured 2026-10-08 through the installed CLI (`/data/home/vince/.local/bin/workengine`,
+Measured 2026-10-08 through the installed CLI (`~/.local/bin/workengine`,
 tree `0a24696b`) with `probe/probe-conflicting-replay-v2.py`: four of the five
 things a second call could change were answered with **exit 0 and a value the
 caller never wrote**. `register_source` with a second `--locator`, and

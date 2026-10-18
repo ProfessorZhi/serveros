@@ -20,7 +20,7 @@ from workengine.store import ActiveWorkerAckRequired, ServerOSStore
 CONTEXT_REF = "human-context:provider%3Abotmux-human-control/deadbeef"
 
 
-def a_minted_record(actor: str = "human:hwz", ref: str = CONTEXT_REF) -> dict:
+def a_minted_record(actor: str = "human:test-actor", ref: str = CONTEXT_REF) -> dict:
     """A context record in the shape `actor.build` produces.
 
     Written out rather than imported because the actor module lives in the
@@ -51,7 +51,7 @@ class FakeContexts:
     is what let the surface ship reading `actor_ref` off the top level.
     """
 
-    def __init__(self, actor="human:hwz", found=True, raises=None, nested=True):
+    def __init__(self, actor="human:test-actor", found=True, raises=None, nested=True):
         self.actor = actor
         self.found = found
         self.raises = raises
@@ -209,8 +209,8 @@ class TestTheActorIsNeverSelfReported(WorkMcpTest):
             "item": self.item.id, "run": run.id, "reason": "scope moved",
             "context_ref": "ctx:real",
         })
-        self.assertEqual(result["actor"], "human:hwz")
-        self.assertEqual(self.events()[0]["payload"]["actor"], "human:hwz")
+        self.assertEqual(result["actor"], "human:test-actor")
+        self.assertEqual(self.events()[0]["payload"]["actor"], "human:test-actor")
         self.assertEqual(self.contexts.asked, ["ctx:real"])
 
 
@@ -373,7 +373,7 @@ class TestReads(WorkMcpTest):
                                           {"item": self.item.id, "run": run.id})
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["recorded_event_types"], ["run_terminated"])
-        self.assertEqual(payload["events"][0]["payload"]["actor"], "human:hwz")
+        self.assertEqual(payload["events"][0]["payload"]["actor"], "human:test-actor")
 
     def test_events_for_an_unknown_run_is_refused(self):
         with self.assertRaises(KeyError):

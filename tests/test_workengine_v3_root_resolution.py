@@ -1,7 +1,7 @@
 """The root-resolution chain, pinned at every link.
 
 `workengine` used to carry one machine's answer as a literal
-(`/opt/applications/data/home-hwz/...`). A wrong default root is not a loud
+(a data root bound to one machine, for example). A wrong default root is not a loud
 failure: on a host that does not have the path, the run does not stop at the
 start -- it stops *after* the store has already taken a Run row, leaving a
 record pointing somewhere that does not exist.
@@ -16,6 +16,7 @@ back without turning something red.
 """
 import ast
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,15 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The SHAPE of a per-machine root, rather than one machine's literals.
+# Spelling the identifiers out here would put the same machine-specific
+# names back into the source this test exists to keep clean, and the
+# pattern is broader than the old tuple: `/home/<any>` and
+# `home-<any>` are both forbidden, not only the two names someone
+# happened to remember.
+MACHINE_ROOT = re.compile(
+    r"(?:/opt/applications|/home/[A-Za-z0-9_.-]+|home-[A-Za-z0-9_.-]+)")
 
 PROFILE = """schema: serveros/host-profile.v1
 node:
@@ -174,9 +184,9 @@ class RootResolutionTest(unittest.TestCase):
         offenders = []
         for path in sorted((REPO_ROOT / "workengine").glob("*.py")):
             for text in _value_strings(path):
-                for needle in ("/opt/applications", "/home/hwz", "home-hwz"):
-                    if needle in text:
-                        offenders.append(f"{path.name}: {needle}")
+                found = MACHINE_ROOT.search(text)
+                if found:
+                    offenders.append(f"{path.name}: {found.group(0)}")
         self.assertEqual(offenders, [], "a machine-specific root is back in the source")
 
 

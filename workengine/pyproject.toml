@@ -1,0 +1,33 @@
+[project]
+name = "workengine"
+version = "0.3.0"
+description = "ServerOS v3 federated workflow control plane for information, Items, Runs, evidence, and feedback."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+# Two entry points, and deliberately not a third. The historical package
+# registered `serverosctl = "workengine.cli:main"` as well, which competed with
+# the node runtime's `bin/serverosctl` for the same executable on one machine.
+# After the merge into `serveros`, the public dispatcher is the node CLI only;
+# `python -m workengine` remains the internal/compatibility entry and
+# `serveros-work-mcp` stays a separate process because an agent that holds the
+# control surface must not thereby hold the maintenance one.
+[project.scripts]
+workengine = "workengine.cli:main"
+serveros-work-mcp = "workengine.mcp:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# This file lives INSIDE the package directory. `serveros` itself is not a
+# distribution (it is packaged by `scripts/release.py`), so the mapping is from
+# the package name to the directory this file is in. Installing this file is
+# optional: running from the repository root already resolves `workengine`.
+[tool.setuptools]
+packages = ["workengine"]
+package-dir = { workengine = "." }
+
+[tool.setuptools.package-data]
+workengine = ["schema.sql", "schemas/*.json"]

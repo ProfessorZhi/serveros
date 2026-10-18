@@ -102,7 +102,7 @@ class ServerOSCliTest(unittest.TestCase):
 
             second_repo = self.run_cli(
                 td, artifacts, "context", "attach", "SRV-0001", "verify",
-                "--repo", "hwz-ops", "--mode", "inspect", "--revision", "ops",
+                "--repo", "ops-repo", "--mode", "inspect", "--revision", "ops",
             )
             self.assertEqual(second_repo.returncode, 0, second_repo.stderr)
             begun = self.run_cli(
@@ -120,7 +120,7 @@ class ServerOSCliTest(unittest.TestCase):
                     "mode": "test", "revision": "new", "worktree": final_worktree, "dirty": True,
                 },
             )
-            self.assertEqual(by_repo["hwz-ops"]["revision"], "ops")
+            self.assertEqual(by_repo["ops-repo"]["revision"], "ops")
 
     def test_outcome_deliverable_and_board_projection(self):
         with tempfile.TemporaryDirectory() as td:

@@ -83,7 +83,7 @@ class ContextResolveTest(unittest.TestCase):
     def test_roots_default_to_the_devices_own_profile(self):
         """With no environment at all, the roots follow the device's profile.
 
-        This assertion used to read `== "/opt/applications/data/home-hwz/..."`,
+        This assertion used to read `== "<data-root>/..."`,
         under the name "the canonical contract". It was not a contract; it was
         one machine's binding compiled into the binary. On the machine this CLI
         actually runs on, that path does not exist -- so `run begin` committed

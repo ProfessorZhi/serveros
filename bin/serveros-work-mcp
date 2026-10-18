@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""serveros-work-mcp — Work Engine MCP adapter entry point.
+
+The adapter is a separate process from the node CLI on purpose: an agent that
+holds the control surface must not thereby hold the maintenance one. Kept as a
+shim for the same reason `bin/serverosctl` is — one program, one location, and
+the module behind it stays importable by tests without running `main`.
+
+Invoked as `python3 <this file>` rather than directly, because the artifact
+writer restores an executable bit only for `.sh` and `.py` and this file has no
+suffix. The shebang is kept for running it straight out of a checkout.
+"""
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from workengine.mcp import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -618,7 +618,7 @@ class ADecisionThatHasBeenTakenIsNotOverwritten(unittest.TestCase):
     def _cli(self, *args):
         return subprocess.run(
             [sys.executable, "-m", "workengine.cli", "--state-dir", str(self.state), *args],
-            check=False, capture_output=True, text=True, cwd="/data/scratch/vince",
+            check=False, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[1]),
             env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])),
         )
 

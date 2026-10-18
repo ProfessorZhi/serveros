@@ -16,13 +16,13 @@ class RootUnbound(RuntimeError):
     it is the command succeeding somewhere nobody bound, and the two look
     nothing alike at the call site. On 2026-09-18 this store took a Run row and
     *then* failed: `begin_run` committed the INSERT and the artifacts mkdir came
-    after, so the row survived pointing at `/opt/applications/data/home-hwz/...`
+    after, so the row survived pointing at `<data-root>/...`
     -- the *Beijing* `linux-server` profile's binding, absent on this host.
     """
 
 
 # This module used to hold one machine's answer as a literal
-# (`/opt/applications/data/home-hwz/...`). A path written into the binary is one
+# (a data root under `/opt/applications`). A path written into the binary is one
 # device's binding presented as every device's, and it fails in the hardest way
 # to notice: the wrong root is often still *writable*, so the work lands
 # somewhere plausible and nothing raises.

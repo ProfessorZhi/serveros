@@ -37,7 +37,7 @@ class ServerOSExecutionTest(unittest.TestCase):
             osctl.register_project("serveros", "SRV")
             item = osctl.create_item("serveros", "multi-repo change", "ops")
             osctl.add_activity(item.id, "implement", "develop")
-            osctl.attach_context(item.id, "implement", "hwz-ops", ContextMode.DEVELOP, revision="abc123")
+            osctl.attach_context(item.id, "implement", "ops-repo", ContextMode.DEVELOP, revision="abc123")
             osctl.attach_context(item.id, "implement", "work-engine", ContextMode.DEVELOP, revision="def456")
             first = osctl.begin_run(item.id, "implement", "worker-a", "same-key")
             second = osctl.begin_run(item.id, "implement", "worker-a", "same-key")
@@ -69,7 +69,7 @@ class ServerOSExecutionTest(unittest.TestCase):
                 "new", final_worktree, True,
             ))
             store.attach_context(ExecutionContext(
-                item.id, "implement", "hwz-ops", ContextMode.INSPECT,
+                item.id, "implement", "ops-repo", ContextMode.INSPECT,
                 "ops", str(Path(td) / "ops"),
             ))
 
@@ -80,7 +80,7 @@ class ServerOSExecutionTest(unittest.TestCase):
             self.assertEqual(by_repo["work-engine"].revision, "new")
             self.assertEqual(by_repo["work-engine"].worktree, final_worktree)
             self.assertTrue(by_repo["work-engine"].dirty)
-            self.assertEqual(by_repo["hwz-ops"].revision, "ops")
+            self.assertEqual(by_repo["ops-repo"].revision, "ops")
 
     def test_run_lifecycle_is_linear_and_resumable(self):
         with tempfile.TemporaryDirectory() as td:
