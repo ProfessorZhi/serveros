@@ -131,6 +131,21 @@ RECEIPT_ANCHOR_MISMATCH = "RECEIPT_ANCHOR_MISMATCH"
 EXIT_CODE_DISAGREEMENT = "EXIT_CODE_DISAGREEMENT"
 MISSING_WORK_AUTHORITY = "MISSING_WORK_AUTHORITY"
 
+# Continuation engineering authority (wake envelope + Agent Control grant/
+# checkpoint + Work Engine Run/execution_context).
+MISSING_AUTHORITY = "MISSING_AUTHORITY"
+INVALID_AUTHORITY = "INVALID_AUTHORITY"
+CHECKPOINT_MISMATCH = "CHECKPOINT_MISMATCH"
+ENVELOPE_MISMATCH = "ENVELOPE_MISMATCH"
+ENVELOPE_EXPIRED = "ENVELOPE_EXPIRED"
+WORK_RUN_MISMATCH = "WORK_RUN_MISMATCH"
+WORK_RUN_TERMINAL = "WORK_RUN_TERMINAL"
+WORK_RUN_INVALID = "WORK_RUN_INVALID"
+WORK_RUN_WORKER_MISMATCH = "WORK_RUN_WORKER_MISMATCH"
+EXECUTION_REVISION_MISMATCH = "EXECUTION_REVISION_MISMATCH"
+EXECUTION_WORKTREE_MISMATCH = "EXECUTION_WORKTREE_MISMATCH"
+EXECUTION_DIRTY = "EXECUTION_DIRTY"
+
 _BECAUSE = {
     MISSING_RECEIPT: "no bounded-invocation receipt exists for this action key",
     INVALID_RECEIPT: "the receipt is not a usable invoke_once record",
@@ -167,6 +182,18 @@ _BECAUSE = {
     RECEIPT_ANCHOR_MISMATCH: "the receipt/artifact bytes do not match the recorded receipt_sha256",
     EXIT_CODE_DISAGREEMENT: "the runner receipt and the Work Engine evidence disagree on exit_code",
     MISSING_WORK_AUTHORITY: "the Work Engine Run/evidence snapshot is not available",
+    MISSING_AUTHORITY: "the continuation authority snapshot is not available",
+    INVALID_AUTHORITY: "the continuation authority snapshot is not a usable record",
+    CHECKPOINT_MISMATCH: "the receipt/authority names a different checkpoint",
+    ENVELOPE_MISMATCH: "the wake envelope disagrees with the expected Item/grant/checkpoint",
+    ENVELOPE_EXPIRED: "the receipt finished after the wake envelope expired",
+    WORK_RUN_MISMATCH: "the dispatch binding names a different Work Engine Run",
+    WORK_RUN_TERMINAL: "the Work Engine Run is already terminal",
+    WORK_RUN_INVALID: "the Work Engine Run state is not one this gate knows",
+    WORK_RUN_WORKER_MISMATCH: "the Work Engine Run worker is not the expected runner identity",
+    EXECUTION_REVISION_MISMATCH: "the Work Engine execution_context revision is not the expected SHA",
+    EXECUTION_WORKTREE_MISMATCH: "the Work Engine execution_context is for a different worktree",
+    EXECUTION_DIRTY: "the Work Engine execution_context records a dirty worktree",
 }
 
 _ELIGIBLE_BECAUSE = (
@@ -236,6 +263,70 @@ class BoundedReceipt:
     stdout_bytes: bytes | None
     stderr_bytes: bytes | None
     path: str
+
+
+@dataclass(frozen=True)
+class ExpectedContinuation:
+    """What the Parent expects a continuation engineering execution to be.
+
+    `cwd` is the bounded invocation's actual working directory (the private
+    receipts directory); `worktree` is the granted host worktree whose HEAD and
+    execution_context the binding must describe.
+    """
+
+    checkpoint_ref: str
+    action_key: str
+    work_item_id: str
+    work_run_id: str
+    commit_sha: str
+    principal: str
+    grant_ref: str
+    runner_identity: str
+    argv: tuple[str, ...]
+    cwd: str
+    input_text: str
+    readonly: bool
+    timeout: int
+    max_output_bytes: int
+    env: Mapping[str, str]
+    worktree: str
+
+    @property
+    def cycle_ref(self) -> str:
+        """The binding's `cycle_ref` is the checkpoint the wake carries."""
+        return self.checkpoint_ref
+
+
+@dataclass(frozen=True)
+class ContinuationAuthority:
+    """A read-only readback of the wake envelope, grant and Work Engine Run.
+
+    Each field is a fact from an existing owner: the envelope (written by
+    `runtime/wake.py`), the Agent Control grant/checkpoint, or Work Engine
+    `runs`/`execution_contexts`. The producer builds this while it still holds
+    the trusted stores; the consumer compares it to the receipt binding.
+    """
+
+    checkpoint_ref: str
+    envelope_action_key: str
+    envelope_work_item: str
+    envelope_grant_ref: str
+    envelope_delegation_ref: str
+    envelope_checkpoint_ref: str
+    envelope_expires_at: str
+    run_id: str
+    run_state: str
+    run_worker: str
+    execution_repo: str
+    execution_revision: str
+    execution_worktree: str
+    execution_dirty: int
+    grant_ref: str
+    grant_delegated_by: str
+    grant_valid_from: str
+    grant_expires_at: str
+    grant_revoked: bool
+    receipt_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -547,6 +638,316 @@ def _decision(expected, reasons, receipt, admission, work, anchor,
         authority=(
             "runtime/bounded_invocation.invoke_once + "
             "agent-control admission + work-engine:runs+evidence"),
+    )
+
+
+_RUN_STATES = frozenset({
+    "ALLOCATED", "PREPARING", "RUNNING", "FINALIZING",
+    "SUCCEEDED", "FAILED", "CANCELLED", "INVALID",
+})
+_TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "INVALID"})
+
+
+def evaluate_continuation(
+    expected: ExpectedContinuation,
+    authority: ContinuationAuthority | None,
+    receipt: BoundedReceipt | None,
+    *,
+    untrusted_child_report: str | None = None,
+) -> DispatchDecision:
+    """Decide a continuation engineering receipt against the real authority.
+
+    The receipt must be the real `runtime/bounded_invocation.invoke_once` output
+    for this exact action key. Its binding must name the envelope's checkpoint,
+    Item and grant, the grant's principal, the unique open Work Engine Run, that
+    Run's `worker`, and the execution_context revision equal to the granted
+    worktree's exact HEAD. The anchor must match the bytes the producer recorded
+    in the existing private report.
+
+    The happy path is `ELIGIBLE` for independent QA only. Work Engine
+    finalization still does not consume this proof, so `t10_status` stays
+    `BLOCKED_WIRING`.
+    """
+    _validate_continuation(expected)
+    reasons = _Reasons()
+    if receipt is None:
+        reasons.add(MISSING_RECEIPT, _UNKNOWN)
+        return _continuation_decision(
+            expected, reasons, None, authority, None, untrusted_child_report)
+
+    payload, anchor, _parsed = _check_receipt_core(expected, receipt, reasons)
+    _check_continuation_authority(expected, authority, payload, anchor, reasons)
+    return _continuation_decision(
+        expected, reasons, receipt, authority, anchor, untrusted_child_report)
+
+
+def _check_receipt_core(expected, receipt: BoundedReceipt, reasons: _Reasons):
+    """The receipt checks shared by both surfaces; no authority is consulted."""
+    payload = receipt.receipt
+    anchor = receipt_anchor(receipt)
+    if not _receipt_is_well_formed(payload):
+        reasons.add(INVALID_RECEIPT, _DENY)
+        return payload, anchor, None
+
+    if str(payload.get("action_key")) != expected.action_key:
+        reasons.add(ACTION_KEY_MISMATCH, _DENY)
+
+    status = str(payload.get("status"))
+    if status != "EXITED":
+        reasons.add(RECEIPT_NOT_EXITED, _UNKNOWN)
+    else:
+        exit_code = payload.get("process_exit_code")
+        if type(exit_code) is not int:
+            reasons.add(INVALID_RECEIPT, _DENY)
+        elif exit_code != 0:
+            reasons.add(PROCESS_EXIT_NONZERO, _DENY)
+
+    expected_digest = _input_digest(expected)
+    if str(payload.get("input_digest")).lower() != expected_digest.lower():
+        reasons.add(INPUT_DIGEST_MISMATCH, _DENY)
+
+    if (receipt.stdin_bytes is None or receipt.stdout_bytes is None
+            or receipt.stderr_bytes is None):
+        reasons.add(MISSING_ARTIFACT, _UNKNOWN)
+    else:
+        if receipt.stdin_bytes != expected.input_text.encode("utf-8"):
+            reasons.add(STDIN_ARTIFACT_MISMATCH, _DENY)
+        recorded = payload.get("output_sha256")
+        if (not isinstance(recorded, Mapping)
+                or set(recorded) != {"stdout", "stderr"}
+                or any(not _is_digest(recorded.get(name))
+                       for name in ("stdout", "stderr"))):
+            reasons.add(INVALID_RECEIPT, _DENY)
+        else:
+            actual = {
+                "stdout": hashlib.sha256(receipt.stdout_bytes).hexdigest(),
+                "stderr": hashlib.sha256(receipt.stderr_bytes).hexdigest(),
+            }
+            if any(str(recorded[name]).lower() != actual[name] for name in actual):
+                reasons.add(OUTPUT_DIGEST_MISMATCH, _DENY)
+
+    parsed = _parse_binding(receipt.stdin_bytes)
+    if parsed is None:
+        reasons.add(MISSING_DISPATCH_BINDING, _BLOCKED)
+    else:
+        _check_binding(expected, parsed, reasons)
+    return payload, anchor, parsed
+
+
+def _check_continuation_authority(expected, authority, payload, anchor,
+                                  reasons: _Reasons) -> None:
+    if authority is None:
+        reasons.add(MISSING_AUTHORITY, _UNKNOWN)
+        return
+    try:
+        required = (
+            authority.checkpoint_ref, authority.envelope_action_key,
+            authority.envelope_work_item, authority.envelope_grant_ref,
+            authority.envelope_delegation_ref, authority.envelope_checkpoint_ref,
+            authority.envelope_expires_at, authority.run_id, authority.run_state,
+            authority.run_worker, authority.execution_repo,
+            authority.execution_revision, authority.execution_worktree,
+            authority.grant_ref, authority.grant_delegated_by,
+            authority.grant_valid_from, authority.grant_expires_at,
+        )
+        if any(not isinstance(value, str) or not value.strip()
+               for value in required):
+            reasons.add(INVALID_AUTHORITY, _DENY)
+            return
+
+        if authority.checkpoint_ref != expected.checkpoint_ref:
+            reasons.add(CHECKPOINT_MISMATCH, _DENY)
+        if authority.envelope_checkpoint_ref != expected.checkpoint_ref:
+            reasons.add(ENVELOPE_MISMATCH, _DENY)
+        if authority.envelope_work_item != expected.work_item_id:
+            reasons.add(ENVELOPE_MISMATCH, _DENY)
+        if authority.envelope_grant_ref != expected.grant_ref:
+            reasons.add(ENVELOPE_MISMATCH, _DENY)
+        if authority.envelope_delegation_ref != expected.principal:
+            reasons.add(CROSS_PRINCIPAL, _DENY)
+
+        if authority.run_id != expected.work_run_id:
+            reasons.add(WORK_RUN_MISMATCH, _DENY)
+        if authority.run_worker != expected.runner_identity:
+            reasons.add(WORK_RUN_WORKER_MISMATCH, _DENY)
+        state = authority.run_state.strip().upper()
+        if state in _TERMINAL_RUN_STATES:
+            reasons.add(WORK_RUN_TERMINAL, _DENY)
+        elif state not in _RUN_STATES:
+            reasons.add(WORK_RUN_INVALID, _DENY)
+
+        if authority.execution_revision.lower() != expected.commit_sha.lower():
+            reasons.add(EXECUTION_REVISION_MISMATCH, _DENY)
+        try:
+            if Path(authority.execution_worktree).resolve() != Path(
+                    expected.worktree).resolve():
+                reasons.add(EXECUTION_WORKTREE_MISMATCH, _DENY)
+        except OSError:
+            reasons.add(INVALID_AUTHORITY, _DENY)
+        if bool(authority.execution_dirty):
+            reasons.add(EXECUTION_DIRTY, _DENY)
+        if not str(authority.execution_repo).strip():
+            reasons.add(INVALID_AUTHORITY, _DENY)
+
+        if authority.grant_ref != expected.grant_ref:
+            reasons.add(CROSS_GRANT, _DENY)
+        if authority.grant_delegated_by != expected.principal:
+            reasons.add(CROSS_PRINCIPAL, _DENY)
+        if authority.grant_revoked:
+            reasons.add(GRANT_REVOKED, _DENY)
+
+        valid_from = _instant(authority.grant_valid_from)
+        expires_at = _instant(authority.grant_expires_at)
+        started = _instant(payload.get("started_at"))
+        finished = _instant(payload.get("finished_at"))
+        if valid_from is None or expires_at is None:
+            reasons.add(GRANT_WINDOW_UNREADABLE, _UNKNOWN)
+        elif started is None or finished is None:
+            reasons.add(CLOCK_UNREADABLE, _UNKNOWN)
+        else:
+            if started < valid_from:
+                reasons.add(GRANT_NOT_YET_VALID, _DENY)
+            if finished >= expires_at:
+                reasons.add(EXPIRED_GRANT, _DENY)
+
+        envelope_expiry = _instant(authority.envelope_expires_at)
+        if envelope_expiry is None:
+            reasons.add(CLOCK_UNREADABLE, _UNKNOWN)
+        elif finished is not None and finished > envelope_expiry:
+            reasons.add(ENVELOPE_EXPIRED, _DENY)
+
+        recorded_anchor = authority.receipt_sha256
+        if not recorded_anchor:
+            reasons.add(MISSING_RECEIPT_ANCHOR, _BLOCKED)
+        elif anchor is None:
+            reasons.add(MISSING_ARTIFACT, _UNKNOWN)
+        elif str(recorded_anchor).lower() != anchor.lower():
+            reasons.add(RECEIPT_ANCHOR_MISMATCH, _DENY)
+    except (AttributeError, TypeError, ValueError):
+        reasons.add(INVALID_AUTHORITY, _DENY)
+
+
+def _validate_continuation(expected: ExpectedContinuation) -> None:
+    for name in (
+        "checkpoint_ref", "work_item_id", "work_run_id", "principal",
+        "grant_ref", "runner_identity", "worktree",
+    ):
+        value = getattr(expected, name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"expected continuation {name} must be a nonempty string")
+    if (not isinstance(expected.action_key, str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", expected.action_key)):
+        raise ValueError("expected continuation action_key is not a bounded key")
+    if not isinstance(expected.commit_sha, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{40}", expected.commit_sha):
+        raise ValueError(
+            "expected continuation commit_sha must be an exact full 40-hex SHA")
+    if (not isinstance(expected.argv, (tuple, list)) or not expected.argv
+            or any(not isinstance(item, str) or not item or "\x00" in item
+                   for item in expected.argv)):
+        raise ValueError("expected continuation argv must be nonempty strings")
+    if not isinstance(expected.cwd, str) or not Path(expected.cwd).is_absolute():
+        raise ValueError("expected continuation cwd must be absolute")
+    if not Path(expected.worktree).is_absolute():
+        raise ValueError("expected continuation worktree must be absolute")
+    if type(expected.timeout) is not int or expected.timeout <= 0:
+        raise ValueError("expected continuation timeout must be positive")
+    if type(expected.max_output_bytes) is not int or expected.max_output_bytes <= 0:
+        raise ValueError("expected continuation max_output_bytes must be positive")
+    if not isinstance(expected.readonly, bool):
+        raise ValueError("expected continuation readonly must be a bool")
+    if not isinstance(expected.input_text, str):
+        raise ValueError("expected continuation input_text must be a string")
+    if not isinstance(expected.env, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in expected.env.items()):
+        raise ValueError("expected continuation env must map strings to strings")
+
+
+def _continuation_decision(expected, reasons, receipt, authority, anchor,
+                           untrusted_child_report) -> DispatchDecision:
+    decision = reasons.decision()
+    eligible = decision == DECISION_ELIGIBLE
+    if eligible:
+        because = (
+            "the runner receipt anchors exit 0, the canonical continuation "
+            "binding, the unique open Work Engine Run, the exact "
+            "execution_context revision and the artifact digests; this is "
+            "eligibility for independent QA review, not a Parent acceptance "
+            "and not a QA signature")
+    elif decision == DECISION_BLOCKED_WIRING:
+        because = _BLOCKED_BECAUSE
+    else:
+        because = "; ".join(_BECAUSE.get(code, code) for code in reasons.codes)
+    if untrusted_child_report is not None:
+        because += (
+            ". The child's report was recorded as untrusted prose and was not "
+            "read for this decision")
+
+    wiring = (
+        "BOUND" if eligible
+        else "MISSING" if reasons.has_blocked
+        else "NOT_ESTABLISHED"
+    )
+    receipt_summary = None
+    if receipt is not None:
+        payload = receipt.receipt
+        receipt_summary = {
+            "action_key": payload.get("action_key"),
+            "status": payload.get("status"),
+            "process_exit_code": payload.get("process_exit_code"),
+            "input_digest": payload.get("input_digest"),
+            "output_sha256": dict(payload.get("output_sha256") or {}),
+            "started_at": payload.get("started_at"),
+            "finished_at": payload.get("finished_at"),
+            "path": receipt.path,
+            "anchor": anchor,
+        }
+    authority_summary = None
+    if authority is not None:
+        authority_summary = {
+            "checkpoint_ref": authority.checkpoint_ref,
+            "work_run_id": authority.run_id,
+            "run_state": authority.run_state,
+            "run_worker": authority.run_worker,
+            "execution_revision": authority.execution_revision,
+            "execution_worktree": authority.execution_worktree,
+            "grant_ref": authority.grant_ref,
+            "principal": authority.grant_delegated_by,
+        }
+    return DispatchDecision(
+        decision=decision,
+        reasons=tuple(reasons.codes),
+        because=because,
+        target={
+            "checkpoint_ref": expected.checkpoint_ref,
+            "action_key": expected.action_key,
+            "work_item_id": expected.work_item_id,
+            "work_run_id": expected.work_run_id,
+            "commit_sha": expected.commit_sha,
+            "principal": expected.principal,
+            "grant_ref": expected.grant_ref,
+            "runner_identity": expected.runner_identity,
+            "worktree": expected.worktree,
+        },
+        receipt=receipt_summary,
+        admission=authority_summary,
+        work_decision=None,
+        child_report_ignored=untrusted_child_report is not None,
+        eligible_for_qa_review=eligible,
+        parent_accepted=False,
+        qa_signature=False,
+        requires_independent_qa=True,
+        run_state_advanced=False,
+        qa_gate_advanced=False,
+        wiring=wiring,
+        t10_status=T10_STATUS_BLOCKED_WIRING,
+        work_engine_consumption=WORK_ENGINE_CONSUMPTION_NOT_WIRED,
+        evidence_level="LOCAL_OFFLINE_SYNTHETIC",
+        authority=(
+            "runtime/wake envelope + agent-control grant/checkpoint + "
+            "work-engine:runs+execution_contexts + "
+            "runtime/bounded_invocation.invoke_once"),
     )
 
 

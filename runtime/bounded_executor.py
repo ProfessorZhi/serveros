@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -161,7 +162,262 @@ def _worker(config):
     return 0 if report.get("worker_stopped") else 2
 
 
-def execute(*, envelope, grant, resolved, key, argv, receipts):
+RUN_TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "INVALID"}
+
+
+def _paths_module():
+    """`runtime/paths.py`, under the name the continuation adapter already uses."""
+    spec = importlib.util.spec_from_file_location(
+        "serveros_runtime_paths", Path(__file__).with_name("paths.py"))
+    module = sys.modules.get(spec.name)
+    if module is None:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def _work_engine_rows(state_db, sql: str, params: tuple = ()):
+    """Read the Work Engine store read-only; a miss is a refusal, never empty."""
+    path = Path(str(state_db))
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError(
+            f"T10 continuation binding: Work Engine store {str(state_db)!r} is "
+            f"not a readable absolute file. Nothing was run")
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise ValueError(
+            f"T10 continuation binding: Work Engine store {path} cannot be "
+            f"opened read-only ({exc}). Nothing was run") from exc
+    try:
+        conn.row_factory = sqlite3.Row
+        return list(conn.execute(sql, params))
+    except sqlite3.Error as exc:
+        raise ValueError(
+            f"T10 continuation binding: Work Engine store {path} has no "
+            f"readable Run/execution-context rows ({exc}). Nothing was run") from exc
+    finally:
+        conn.close()
+
+
+def _open_run(state_db, item: str):
+    """The Item's unique open Work Engine Run, or a refusal.
+
+    `context/resolver._runs` calls the latest Run "ordering only, never a
+    writable target". This is the stronger reading: an engineering execution
+    binds only when exactly one non-terminal Run exists. Zero means no canonical
+    Run; more than one means the binding would have to choose, and choosing is
+    the invention this milestone refuses.
+    """
+    rows = _work_engine_rows(
+        state_db,
+        "SELECT run_id, activity_id, worker, state FROM runs "
+        "WHERE item_id=? ORDER BY run_id", (item,))
+    opened = [row for row in rows
+              if str(row["state"] or "").strip().upper() not in RUN_TERMINAL]
+    if not opened:
+        raise ValueError(
+            f"T10 continuation binding: no open Work Engine Run for {item}; a "
+            f"continuation execution without a canonical Work Run cannot be "
+            f"bound. Nothing was run")
+    if len(opened) > 1:
+        names = ", ".join(str(row["run_id"]) for row in opened)
+        raise ValueError(
+            f"T10 continuation binding: more than one open Work Engine Run for "
+            f"{item} ({names}); a continuation execution cannot choose one. "
+            f"Nothing was run")
+    row = opened[0]
+    for field in ("run_id", "activity_id", "worker", "state"):
+        if not str(row[field] or "").strip():
+            raise ValueError(
+                f"T10 continuation binding: Work Engine Run for {item} has no "
+                f"{field}. Nothing was run")
+    return row
+
+
+def _execution_context(state_db, item: str, activity: str, worktree: Path):
+    """The execution_context for this Run's activity at the granted worktree."""
+    rows = _work_engine_rows(
+        state_db,
+        "SELECT repo, mode, revision, worktree, dirty FROM execution_contexts "
+        "WHERE item_id=? AND activity_id=? ORDER BY context_id",
+        (item, activity))
+    wanted = worktree.resolve()
+    matching = []
+    for row in rows:
+        raw = str(row["worktree"] or "").strip()
+        if not raw:
+            continue
+        try:
+            if Path(raw).resolve() == wanted:
+                matching.append(row)
+        except OSError:
+            continue
+    if not matching:
+        raise ValueError(
+            f"T10 continuation binding: no Work Engine execution_context for "
+            f"{item}/{activity} at {wanted}; the Run does not name the tree "
+            f"this grant would execute in. Nothing was run")
+    if len(matching) > 1:
+        raise ValueError(
+            f"T10 continuation binding: more than one Work Engine "
+            f"execution_context for {item}/{activity} at {wanted}. Nothing was run")
+    return matching[0]
+
+
+def _git_output(cwd: Path, *argv: str) -> str:
+    """One read-only git answer, with no ambient GIT_* pointing elsewhere."""
+    env = {name: value for name, value in os.environ.items()
+           if not name.startswith("GIT_")}
+    try:
+        done = subprocess.run(
+            ["git", *argv], cwd=str(cwd), capture_output=True, text=True,
+            timeout=15, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            f"T10 continuation binding cannot read the git worktree at {cwd}: "
+            f"{type(exc).__name__}: {exc}. Nothing was run") from exc
+    if done.returncode != 0:
+        raise ValueError(
+            f"T10 continuation binding cannot read the git worktree at {cwd}: "
+            f"{done.stderr.strip() or 'git exited ' + str(done.returncode)}. "
+            f"Nothing was run")
+    return done.stdout.strip()
+
+
+def continuation_binding(*, envelope, grant, resolved, key, action,
+                         state_db) -> dict:
+    """The canonical T10 binding for one continuation engineering execution.
+
+    Every operand is read from an existing authority or from the validated
+    envelope/grant, and nothing is taken from the caller or the child:
+
+      * `cycle_ref` is the envelope's checkpoint_ref;
+      * `work_item_id`, `grant_ref` are the envelope's;
+      * `principal` is the grant's `delegated_by`, and the envelope's
+        `delegation_ref` must equal it;
+      * `work_run_id` and `runner_identity` are the unique open Work Engine
+        Run's `run_id` and `worker`;
+      * `commit_sha` is that Run's execution_context `revision`, which must be
+        the exact worktree HEAD with a clean tracked tree;
+      * `action_key` is the bounded-invocation key this execution will write.
+
+    Missing, ambiguous, revoked, expired or mismatched provenance refuses here,
+    before the receipt lock or any spawn.
+    """
+    work_item = str(envelope.get("work_item_ref") or "").strip()
+    grant_ref = str(envelope.get("grant_ref") or "").strip()
+    checkpoint_ref = str(envelope.get("checkpoint_ref") or "").strip()
+    principal = str(grant.get("delegated_by") or "").strip()
+    delegation = str(envelope.get("delegation_ref") or "").strip()
+    if not all((work_item, grant_ref, checkpoint_ref, principal, delegation)):
+        raise ValueError(
+            "T10 continuation binding: the envelope/grant is missing "
+            "work_item_ref, grant_ref, checkpoint_ref, delegation_ref or "
+            "delegated_by. Nothing was run")
+    if delegation != principal:
+        raise ValueError(
+            f"T10 continuation binding: envelope delegation_ref {delegation!r} "
+            f"does not match grant delegated_by {principal!r}. Nothing was run")
+    if grant.get("revoked") is True:
+        raise ValueError(
+            f"T10 continuation binding: grant {grant_ref!r} is revoked. "
+            f"Nothing was run")
+    try:
+        valid_from = datetime.fromisoformat(str(grant.get("valid_from")))
+        expires_at = datetime.fromisoformat(str(grant.get("expires_at")))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"T10 continuation binding: grant {grant_ref!r} has no readable "
+            f"valid_from/expires_at. Nothing was run") from exc
+    if valid_from.tzinfo is None or expires_at.tzinfo is None:
+        raise ValueError(
+            f"T10 continuation binding: grant {grant_ref!r} has a naive "
+            f"window; a bound with no timezone is not one. Nothing was run")
+    now = datetime.now(timezone.utc)
+    if not valid_from <= now < expires_at:
+        raise ValueError(
+            f"T10 continuation binding: grant {grant_ref!r} is not in force at "
+            f"{now.isoformat()} (window {grant.get('valid_from')} to "
+            f"{grant.get('expires_at')}). Nothing was run")
+
+    worktree = Path(str(resolved.get("worktree") or "")).resolve()
+    if not worktree.is_dir():
+        raise ValueError(
+            f"T10 continuation binding: the engineering worktree {worktree} is "
+            f"not a directory. Nothing was run")
+    run = _open_run(state_db, work_item)
+    context = _execution_context(
+        state_db, work_item, str(run["activity_id"]), worktree)
+    revision = str(context["revision"] or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError(
+            f"T10 continuation binding: execution_context revision {revision!r} "
+            f"is not an exact full 40-hex SHA. Nothing was run")
+    if int(context["dirty"] or 0):
+        raise ValueError(
+            "T10 continuation binding: execution_context records a dirty "
+            "worktree; the SHA does not describe what would be tested. "
+            "Nothing was run")
+    if not str(context["repo"] or "").strip() or not str(context["mode"] or "").strip():
+        raise ValueError(
+            "T10 continuation binding: execution_context carries no repo/mode. "
+            "Nothing was run")
+    head = _git_output(worktree, "rev-parse", "HEAD").lower()
+    if head != revision:
+        raise ValueError(
+            f"T10 continuation binding: execution_context revision {revision} "
+            f"is not the worktree HEAD {head}. Nothing was run")
+    dirty = _git_output(worktree, "status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise ValueError(
+            "T10 continuation binding: the worktree has tracked changes; the "
+            f"SHA does not describe it: {dirty.splitlines()[:5]}. Nothing was run")
+
+    return {
+        "cycle_ref": checkpoint_ref,
+        "action_key": str(action),
+        "work_item_id": work_item,
+        "work_run_id": str(run["run_id"]),
+        "commit_sha": revision,
+        "principal": principal,
+        "grant_ref": grant_ref,
+        "runner_identity": str(run["worker"]).strip(),
+    }
+
+
+def receipt_sha256(receipts_dir, action_key: str) -> str | None:
+    """Anchor over the receipt and its three artifacts, or None if incomplete.
+
+    The same bytes-anchor the consumer recomputes. It is written into the
+    existing private `<action>.container` report; no new ledger is created.
+    """
+    root = _directory(receipts_dir)
+    path = root / (str(action_key) + ".json")
+    if path.is_symlink() or not path.is_file():
+        return None
+    artifacts = {}
+    for name in ("stdin", "stdout", "stderr"):
+        item = root / (str(action_key) + "." + name)
+        if item.is_symlink() or not item.is_file():
+            return None
+        artifacts[name] = item.read_bytes()
+    digest = hashlib.sha256()
+    for label, data in (
+        ("receipt", path.read_bytes()),
+        ("stdin", artifacts["stdin"]),
+        ("stdout", artifacts["stdout"]),
+        ("stderr", artifacts["stderr"]),
+    ):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(data)
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def execute(*, envelope, grant, resolved, key, argv, receipts, state_db=None):
     """Caller must recheck authority immediately before this call.
 
     Commands are argv inside the container. No caller-supplied host argv,
@@ -181,12 +437,27 @@ def execute(*, envelope, grant, resolved, key, argv, receipts):
     if receipts.is_relative_to(Path(resolved["worktree"])):
         raise ValueError("engineering receipts must be outside the writable worktree")
     identity = hashlib.sha256((str(receipts) + envelope["action_key"] + key).encode()).hexdigest()
+    action = "exec-" + hashlib.sha256(key.encode()).hexdigest()[:24]
+    # THE BINDING IS BUILT BEFORE THIS CALL CREATES ANYTHING. A missing Work
+    # run, an ambiguous run, a stale revision, a revoked grant or a
+    # cross-principal envelope refuses here, before the private directory, the
+    # lock or any spawn exists.
+    if state_db is None:
+        paths = _paths_module().Paths()
+        if not paths.bound:
+            raise ValueError(
+                "T10 continuation binding: node path profile is unbound, so the "
+                "Work Engine store cannot be located. Nothing was run")
+        state_db = Path(paths.root("state")) / "serveros.db"
+    t10_binding = continuation_binding(
+        envelope=envelope, grant=grant, resolved=resolved, key=key,
+        action=action, state_db=state_db)
+
     private = receipts / ("engineering-" + hashlib.sha256(envelope["action_key"].encode()).hexdigest()[:20])
     private.mkdir(mode=0o700, exist_ok=True)
     _directory(private)
     if private.stat().st_mode & 0o077:
         raise ValueError("engineering receipt root must be private")
-    action = "exec-" + hashlib.sha256(key.encode()).hexdigest()[:24]
     # One adapter is serial, and the private budget lock also closes concurrent
     # MCP/reconnect admission races. Parameter errors above consume no attempt.
     with bounded._receipt_lock(private / "budget.lock"):
@@ -199,7 +470,8 @@ def execute(*, envelope, grant, resolved, key, argv, receipts):
         expires = min(datetime.fromisoformat(envelope["expires_at"]).timestamp(),
                       datetime.fromisoformat(grant["expires_at"]).timestamp())
         issued = datetime.fromisoformat(envelope["issued_at"]).timestamp()
-        config = {**resolved, "identity": identity, "name": "serveros-exec-" + identity[:24],
+        config = {**resolved, **t10_binding,
+                  "identity": identity, "name": "serveros-exec-" + identity[:24],
                   "work_item": envelope["work_item_ref"], "grant_ref": envelope["grant_ref"],
                   "epoch": envelope["epoch"],
                   "private_root": str(private), "artifacts": str(artifacts),
@@ -220,9 +492,18 @@ def execute(*, envelope, grant, resolved, key, argv, receipts):
             except (OSError, ValueError, subprocess.SubprocessError):
                 report = {"worker_stopped": False, "effect": "UNKNOWN"}
             report_path.write_text(json.dumps(report, sort_keys=True))
+        # The receipt is written by `invoke_once`, outside the container mounts.
+        # Anchor it into the report the trusted worker already owns; no new
+        # ledger, and a later consumer can detect a receipt edited after this.
+        anchor = receipt_sha256(private, action)
+        report["receipt_sha256"] = anchor
+        report["receipt_path"] = str(private / (action + ".json"))
+        report_path.write_text(json.dumps(report, sort_keys=True))
         return {"receipt": receipt, "container": report, "artifacts": str(artifacts),
                 "worker_stopped": report.get("worker_stopped") is True,
                 "container_evidence": str(report_path),
+                "receipt_path": report["receipt_path"],
+                "receipt_sha256": anchor,
                 "output_tail": {stream: (private / (action + "." + stream)).read_text(errors="replace")[-4000:]
                                 if (private / (action + "." + stream)).exists() else ""
                                 for stream in ("stdout", "stderr")},

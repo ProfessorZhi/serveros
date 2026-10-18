@@ -1,9 +1,12 @@
 # Fleet V1 verdict/evidence seam — #237 T10
 
-**Status:** `SOURCE / OFFLINE`. The admitted `work dispatch` producer now
-records the canonical T10 binding and a `receipt_sha256` anchor; the consumer
-reconciles them with the real runner receipt. The continuation engineering path
-and Work Engine consumption remain owner-blocked.
+**Status:** `SOURCE / OFFLINE`. The admitted `work dispatch` producer and the
+continuation engineering executor now record/reconcile the canonical T10
+binding and a `receipt_sha256` anchor. **Continuation production remains
+`BLOCKED_ORIGINAL_OWNER`:** the wake/checkpoint does not create or attach the
+Work Engine Run + `execution_contexts` row the binding requires, so a real
+continuation execution refuses before spawn. Work Engine finalization still
+does not consume the proof.
 **T10 production closure:** **BLOCKED_WIRING — not closed**
 (`work_engine_consumption=NOT_WIRED`).
 **May this sign a V1 QA verdict?** **No.** Every decision returns
@@ -297,6 +300,60 @@ finalize evidence — `action_key`, `input_digest`, `receipt_sha256`,
 absent, replayed with different input, or contradicts the requested verdict.
 That is a Work Engine API/schema change and is not made by this PR.
 
+### 4.7 Continuation engineering — implemented, then BLOCKED_ORIGINAL_OWNER
+
+`continuation.execute` now builds the same canonical binding in the trusted
+executor, `runtime/bounded_executor.py`:
+
+* `state_db` is `<state>/serveros.db`, read **read-only** with the same
+  `mode=ro` connection `context/resolver.py` already uses;
+* `runs` must contain exactly one non-terminal Run for the envelope's
+  `work_item_ref`; zero means there is no canonical Run, more than one means the
+  binding would have to choose, and both refuse before the receipt lock or any
+  spawn;
+* that Run's `activity_id` must have exactly one `execution_contexts` row whose
+  `worktree` resolves to the granted engineering worktree;
+* its `revision` must be an exact full 40-hex SHA equal to the worktree's real
+  `HEAD`; `dirty` must be 0 and the tracked tree must be clean;
+* `principal` is `grant.delegated_by`, and the envelope's `delegation_ref` must
+  equal it; the envelope's `checkpoint_ref`, `work_item_ref` and `grant_ref`
+  are the other trusted refs;
+* `work_run_id` and `runner_identity` are that Run's `run_id` and `worker`;
+* the eight-field binding is added to the config that becomes `invoke_once`'s
+  stdin, so it is inside `input_digest`;
+* `receipt_sha256` over the receipt and its stdin/stdout/stderr is written into
+  the existing private `<action>.container` report — no new ledger.
+
+`runtime/wake.py` is deliberately unchanged. Its existing envelope fields
+(`checkpoint_ref`, `work_item_ref`, `grant_ref`, `delegation_ref`) are the
+trusted references; the Run id, exact SHA and runner identity are Work Engine
+store facts, not envelope fields. Adding caller-supplied versions of them to
+the envelope would be the false authority this milestone refuses.
+
+`mcp/continuation_mcp.py` passes the state DB path from `Paths()` and adds no
+new caller/child argument. `evaluate_continuation` in `bounded_provenance.py`
+reconciles the receipt, binding, envelope/grant/checkpoint, Work Run and
+execution_context. A real exit 1 with `ALL TESTS PASSED` is
+`DENY / PROCESS_EXIT_NONZERO`; exit 0 is `ELIGIBLE` for independent QA only,
+always with `t10_status=BLOCKED_WIRING` and
+`work_engine_consumption=NOT_WIRED`.
+
+**Refusals before spawn** (no receipt, no private directory): Work Engine store
+missing/unreadable; no open Run; more than one open Run; no/ambiguous
+execution_context at the granted worktree; revision not 40-hex; revision not
+the worktree HEAD; dirty tracked tree; revoked/expired grant; envelope
+`delegation_ref` not the grant's `delegated_by`; missing envelope refs.
+
+**Remaining original-owner blocker.** The current wake/checkpoint path does not
+create or attach a Work Engine Run + `execution_contexts` row. `runtime/wake.py`
+plans from the checkpoint/grant and `context/resolver.py::_runs` only reads the
+store; nothing produces the row this binding requires. Until an owner adds
+"begin/attach the Run (exact revision, worktree, dirty=0) before
+`continuation.execute`" — or an equivalent recorded step — every real
+continuation engineering execution refuses. This is fail-closed by design, not
+a green T10. The optional Work Engine store-side link in §4.6 is the other
+remaining owner change.
+
 ## 5. What the gate never does
 
 * It never parses the child's stdout/stderr as a verdict; it hashes them.
@@ -308,9 +365,12 @@ That is a Work Engine API/schema change and is not made by this PR.
   `runtime/daemon.py`, `runtime/coordination.py`, `context/resolver.py`,
   `fleet/agent_control_router.py`, `fleet_mcp/**`,
   `integrations/fleet-v1-qa/**`, Native, F1, the I1 manifest, credentials,
-  providers or another Agent's worktree. The only runtime file edited by this
-  milestone is `runtime/cli.py`, under the explicit T10 producer grant; the
-  S1/S2 owners' files are untouched.
+  providers or another Agent's worktree. The runtime files edited are
+  `runtime/cli.py` (admitted `work dispatch` producer),
+  `runtime/bounded_executor.py` (continuation binding/executor) and
+  `mcp/continuation_mcp.py` (state DB pass-through), under the explicit T10
+  grants; `runtime/wake.py` was inspected but not edited. The S1/S2 owners'
+  files are untouched.
 
 ## 6. Test evidence
 
@@ -337,6 +397,28 @@ binding in stdin/env and `receipt_sha256` in the DISPATCHED evidence; the
 consumer returns `DENY / PROCESS_EXIT_NONZERO`. The exit-0 case returns
 `ELIGIBLE` for independent QA only, with `t10_status=BLOCKED_WIRING` and
 `work_engine_consumption=NOT_WIRED`.
+
+Continuation evidence, same cgroup and `timeout 600`:
+
+```bash
+python -m pytest tests/test_fleet_v1_t10_continuation_provenance.py -q
+python -m pytest tests/test_bounded_executor.py \
+  tests/test_fleet_v1_t10_continuation_provenance.py -q
+python -m pytest tests/test_continuation_mcp.py \
+  tests/test_fleet_v1_t10_producer_binding.py \
+  tests/test_fleet_v1_verdict_evidence.py -q
+```
+
+Measured on Tokyo, 2026-10-18: continuation **10 passed in 1.49s**; executor +
+continuation **17 passed, 3 skipped in 2.00s**; continuation MCP + prior T10
+**106 passed, 1 skipped in 25.10s**; every run exit 0 and `pswpout` delta 0.
+The continuation tests seed a real temporary Work Engine SQLite store
+(`runs`/`execution_contexts`), a real temporary git worktree and use the real
+unmodified `invoke_once`; the Docker worker argv is replaced by a real offline
+synthetic runner, so the evidence level is
+`LOCAL_OFFLINE_SYNTHETIC`, not REAL_CONTAINER or CLIENT_E2E. The opt-in
+`SERVEROS_TEST_DOCKER_IMAGE` tests (3 + 1 skipped) now also need a Work Engine
+Run/execution_context; they are an owner follow-up, not a green T10.
 
 The fixture suite covers:
 
@@ -369,4 +451,7 @@ integrations/fleet-v1-verdict-evidence/
     └── negative_cases.json    # Work Engine negative matrix
 tests/test_fleet_v1_verdict_evidence.py       # consumer matrix
 tests/test_fleet_v1_t10_producer_binding.py   # real CLI + invoke_once producer
+tests/test_fleet_v1_t10_continuation_provenance.py
+                                              # wake/grant/checkpoint + Work Run
+                                              # + execution_context binding
 ```
