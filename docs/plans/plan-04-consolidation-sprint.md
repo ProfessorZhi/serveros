@@ -290,11 +290,14 @@ git bundle verify claude-fleet.bundle
 ```powershell
 # B-int：8 个提交还没推送
 git -C D:\consolidate-b-int\ability-management push -u origin consolidate/ability-management
-# D1：15 项改动没有提交，先存到 WIP 分支
+# D1：15 项改动没有提交，先存到 WIP 分支。
+# 注意：marketops 是 Public，未脱敏完的 WIP 不能推到它上面（分支也是公开的）。
+# 推到私有的 marketops-private，Dell 在那里做完脱敏后，才把干净结果推到 marketops。
 git -C D:\consolidation-d1\marketops switch -c consolidate/d1-marketops-wip
 git -C D:\consolidation-d1\marketops add -A
 git -C D:\consolidation-d1\marketops commit -m "wip(d1): unfinished marketops consolidation from round 1"
-git -C D:\consolidation-d1\marketops push -u origin consolidate/d1-marketops-wip
+git -C D:\consolidation-d1\marketops remote add private https://github.com/ProfessorZhi/marketops-private.git
+git -C D:\consolidation-d1\marketops push -u private consolidate/d1-marketops-wip
 # 以后提交改用 noreply 邮箱（已经推送的提交不改写）
 git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
 ```
@@ -386,3 +389,18 @@ git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
   - `REDACTED` 这类占位符不算命中；`/home/example` 这类占位路径不算命中；
   - Private 仓库（ability-management、marketops-session、hwz-records）只要求没有真实凭据，个人信息不算不通过；
   - Public 仓库（serveros、marketops、llmlab）还要检查新提交的作者邮箱是不是 noreply。
+
+### 9.8 Windows 先交清，其余全部交给 Dell 收尾（2026-10-18 起）
+
+**Windows 本机只做「把本地成果交上 GitHub」和 Windows 自己的盘点**，做完就停，之后所有工作由 Dell 主控收尾。
+
+Windows 要交的东西：
+1. 9.1 的抢救：B-int 推到 `ability-management`（私有）；D1 的 WIP 推到 **`marketops-private`（私有）**，不推到公开的 `marketops`。
+2. 扫一遍 Windows 上所有和本次整合有关的 Git 目录，看有没有未提交的改动或未推送的提交，有的话都推到**私有仓库**的 `rescue/<目录名>` 分支。
+3. G0-W：Windows 只读盘点，结果放到 `hwz-records` 的 `consolidate/g0-windows` 分支。
+4. 交接清单写进 `hwz-records` 的 `consolidate/g0-windows` 分支的 `HANDOFF-windows.md`，写明每样东西推到了哪个仓库、哪个分支、哪个提交。
+
+**MarketOps 交给 Dell 后的做法**
+- **D1（marketops，Public）**：从 `marketops-private` 的 `consolidate/d1-marketops-wip` 接着做。所有真实人名、公司名、邮箱、电话、社交账号都换成合成数据，脱敏扫描为 0，新提交用 noreply 邮箱，然后才推到公开的 `marketops` 的 `consolidate/d1-marketops` 分支、开 Draft PR，再派独立验收。
+- **D2（marketops-session，现已 Private）**：第一轮停下来，是因为当时仓库是公开的、里面有真实会话数据。现在仓库已改成私有，**D2 重新开工**：把 `marketops-session-private` 的有用内容并入 `marketops-session`，真实会话数据可以保留，但凭据和密钥不能入库。完成后开 Draft PR，派独立验收。
+- **D-int**：D1、D2 都通过后，按 P-issues 清单列出 `marketops-private` 里要转移的 Issue / PR，交给所有者决定。
