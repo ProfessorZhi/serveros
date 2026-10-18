@@ -111,7 +111,7 @@ artifacts/work-items/<project>/<ITEM>/<RUN>/
 - 资产：Drive/受控资产层保存大字节，records/Git 保留必要 metadata 和定位。
 - 390px 预览要求层次、留白、状态语言一致，颜色不作为唯一状态信号；截图验收只覆盖本次人可见变化。
 
-GitHub 不合仓凑整齐：serveros、ability-management、work-engine、hwz-ops、hwz-records、research-exchange 与业务 repo 各守 owner。根 README 指向短入口和正式契约；临时输出、运行库、秘密与大资产不进普通 Git。
+GitHub 按项目收敛为六个仓库：ServerOS 用 `serveros`（含 `workengine/` 与 `research-exchange/` 的模板和工具）和 `ability-management`，外加私有数据仓库 `hwz-records`；MarketOps 用 `marketops` 和 `marketops-session`；LLM Lab 用 `llmlab`。各仓库守自己的 owner 边界；根 README 指向短入口和正式契约；临时输出、运行库、秘密与大资产不进普通 Git。
 
 ## 7. CC 必须交付的迁移批次
 

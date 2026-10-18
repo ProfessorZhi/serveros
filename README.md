@@ -181,14 +181,27 @@ A Skill instruction or a card button is not an enforced security boundary by its
 
 ## Ownership
 
-| Repository/component | Owns |
+Three projects, six repositories. ServerOS code lives only in **serveros** (the
+complete product, including the Work Engine under `workengine/`) and
+**ability-management**; **hwz-records** is the private data repository the node
+runtime reads and writes, not a second code repository.
+
+| Repository | Owns |
 |---|---|
-| serveros | product architecture, composition, bootstrap, deterministic contracts and node runtime |
+| serveros | product architecture, composition, bootstrap, deterministic contracts, node runtime, and the Work Engine (`workengine/`): work/control transitions, Run/effect receipts and Board projections |
 | ability-management | typed capability registry, provenance/revisions, reusable Skills and distribution |
-| work-engine | work/control transitions, Run/effect receipts and Board projections |
-| hwz-records | understanding, stable intent, designs and human semantic records |
-| hwz-ops | instance roots, topology, concrete bindings, policy and observed maps |
+| hwz-records | understanding, stable intent, designs, human semantic records, instance roots, topology, concrete bindings, policy and observed maps (private data, not code) |
+| marketops | MarketOps application/MCP, research pipeline and business truth |
+| marketops-session | MarketOps session-derived design analysis and tooling; the session corpus itself is not stored in the repository |
+| llmlab | LLM Lab gateway, evaluation and deployment templates |
 | native providers | their actual task stores, sessions, cloud bodies and runtime interfaces |
+
+The six repositories absorbed their former neighbors: `work-engine` and the
+`serveros-research-exchange` templates/tools into `serveros`; `dev-doctor` and
+`agent-software` into `ability-management`; `hwz-ops` and `agent-session-archive`
+into `hwz-records`; `marketops-private` into `marketops`;
+`marketops-session-private` into `marketops-session`; `llm-lab` and
+`llm-lab-portal` into `llmlab`. In the target structure only `hwz-records` is private.
 
 MarketOps and Support Bot remain independent parallel projects. Support Bot uses
 litellm-support-bot for code and troublebuddy-kb-bridge for knowledge; ServerOS does not
