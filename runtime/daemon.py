@@ -1435,6 +1435,10 @@ class Daemon:
             "agent.context.inspect": self._r_agent_context_inspect,
             "agent.context.resolve": self._r_agent_context_resolve,
             "agent.grant.issue": self._r_agent_grant_issue,
+            # The trusted-parent verification READ that Work Engine #14's
+            # `OwnerVerifiedLease` needs. Read-only: it mints nothing, acquires
+            # nothing and mutates no lease. It is NOT a lease verb.
+            "agent.lease.authority.verify": self._r_agent_lease_authority_verify,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -1581,6 +1585,8 @@ class Daemon:
                 "agent.context.attach", "agent.context.inspect",
                 "agent.context.resolve",
                 "agent.grant.issue",
+                # The trusted-parent grant verification READ (not a lease verb).
+                "agent.lease.authority.verify",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status",
                 # §17. `agent.binding.resolve` and `agent.binding.list` are
@@ -2939,11 +2945,56 @@ class Daemon:
         }
 
     def _r_agent_grant_issue(self, params) -> dict:
-        """Only a trusted provider's signed, exact human-approved scope can issue."""
+        """Only a trusted provider's signed, exact human-approved scope can issue.
+
+        This is the TRUSTED ISSUANCE BOUNDARY for the OS principal: the grant is
+        bound to `uid:<n>` derived from the kernel peer of THIS call
+        (`SO_PEERCRED`), which is the one identity in the exchange the caller
+        cannot write. The signed payload is not consulted for it — the store
+        refuses a payload that names one. A call that arrived with no peer is
+        stored UNBOUND, and the verify read then refuses it; nothing here
+        fills the field in from a request argument or from `getuid()`, because
+        that would be this process's principal standing in for the caller's.
+        """
         if set(params) != {"evidence"}:
             raise actor_mod.Rejected("agent.grant.issue accepts signed evidence only")
-        record = self.control_store().issue_grant(params["evidence"], now=_iso(self._now()))
+        record = self.control_store().issue_grant(
+            params["evidence"], now=_iso(self._now()),
+            os_principal=agent_control_store_mod.os_principal_of(_CALLER_PEER.get()))
         return {"grant": record, "basis": "provider-signed-delegation"}
+
+    def _r_agent_lease_authority_verify(self, params) -> dict:
+        """May this caller act as this grant's principal, right now? (#237 B3)
+
+        The trusted-parent READ Work Engine #14's `OwnerVerifiedLease` needs, and
+        ONLY a read: it mints no grant, acquires no lease and mutates nothing.
+        The context is resolved from what ServerOS minted — never from an
+        `actor` / `os_user` field on the request — and the OS principal is the
+        kernel's `SO_PEERCRED` peer on this socket, never a string.
+
+        Refusals are answers (`{"verified": False, "reason": ...}`). An
+        unanswerable question is a refusal, not a default.
+        """
+        ref = str(params.get("context_ref") or "").strip()
+        if not ref:
+            return {"verified": False, "reason": "UNTRUSTED_ACTOR",
+                    "because": ("no context_ref was presented. The actor behind a "
+                                "grant is resolved from a context ServerOS minted, "
+                                "and a caller's word is not one")}
+        resolved = actor_mod.resolve(ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"verified": False, "reason": "UNTRUSTED_ACTOR",
+                    "because": resolved["because"]}
+        return agent_control_store_mod.verify_live_grant(
+            self.control_store().grants(),
+            grant_ref=params.get("grant_ref"),
+            context=resolved["context"],
+            peer=_CALLER_PEER.get(),
+            action=params.get("action"),
+            project=params.get("project"),
+            item_ref=params.get("item_ref"),
+            expected_epoch=params.get("expected_epoch"),
+            now=_iso(self._now()))
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.

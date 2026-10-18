@@ -144,7 +144,7 @@ import re
 import sys
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = "serveros/agent-control-store.v1"
@@ -296,6 +296,13 @@ BINDING_ONLY_FIELDS = ("session_role", "bound_item_ref")
 # a new grant can have and nothing else may move it.
 REVOCATION_FIELDS = ("revoked", "revoked_at", "revoked_reason")
 
+#: Fields the STORE writes and a caller may never supply. `epoch` joins the
+#: revocation fields for the same reason: an epoch a caller could choose is an
+#: epoch a caller could choose to keep, which is exactly the generation fence
+#: Work Engine #14's `OwnerVerifiedLease` asks for. Excluded from the
+#: write-once comparison on both sides, so a re-report stays idempotent.
+OWNER_WRITTEN_GRANT_FIELDS = REVOCATION_FIELDS + ("epoch", "os_principal")
+
 # The three phases of one admission, in the only order they can happen. Each is
 # a DIFFERENT store's answer being reported back, which is why they are three
 # and not a boolean `done`:
@@ -422,6 +429,190 @@ def _actor_module():
         sys.modules[name] = module
         spec.loader.exec_module(module)
     return sys.modules[name]
+
+
+def os_principal_of(peer) -> str | None:
+    """`uid:<n>` from a KERNEL peer record, or None when it cannot be read.
+
+    The only evidence accepted here is the peer the socket read with
+    `SO_PEERCRED`. A uid on the request is a claim about the caller written by
+    the caller, and a `getuid()` is this process's principal even when someone
+    else made the request — which is why the argument is the peer record and not
+    a number.
+
+    None is not "unbound is fine": every reader treats it as a refusal.
+    """
+    if not isinstance(peer, dict):
+        return None
+    uid = peer.get("uid")
+    if isinstance(uid, bool) or not isinstance(uid, int) or uid < 0:
+        return None
+    return f"uid:{uid}"
+
+
+def _grant_seconds(value) -> float | None:
+    """A grant window stamp as epoch seconds, or None.
+
+    Work Engine #14's `LeaseGrant` carries `valid_from` / `expires_at` as float
+    epoch seconds; this store writes them as ISO-8601. Converting is a READ
+    concern, and `float(<an ISO string>)` is precisely the failure the
+    independent QA measured. A stamp with no timezone, or one nothing can parse,
+    yields None: the window it would be compared against is a real interval, and
+    an assumed offset would be a guess recorded as a fact.
+    """
+    parsed = _instant(value)
+    return None if parsed is None else parsed.timestamp()
+
+
+def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
+                      item_ref, expected_epoch=None, now=None) -> dict:
+    """May `context`, from `peer`, act as this grant's principal, right now?
+
+    PURE, and every check is a refusal when it cannot be answered. This is the
+    trusted-parent read Work Engine #14's `OwnerVerifiedLease` needs: the context
+    is resolved OUT OF BAND by the caller (never taken from a request field), the
+    peer is the kernel's `SO_PEERCRED`, and the grant is re-read live.
+
+    On success the `grant` is exactly one Work Engine #14 `LeaseGrant` — the ten
+    fields, `items`/`actions` as tuples, an int epoch and epoch-seconds floats
+    for the window — so a consumer constructs the dataclass from it rather than
+    reshaping the answer at each call site.
+
+    Two fields are never derivable at read time:
+
+    * NO epoch is UNKNOWN and authorizes nothing; a record written before the
+      field existed is not backfilled, because an epoch minted after the fact
+      would be authority nobody granted.
+    * NO `os_principal` is UNKNOWN for the same reason. The binding is written
+      only by `issue_grant`, from the kernel peer of THAT call; this read
+      compares it and never invents it.
+    """
+    def refuse(reason, because):
+        return {"verified": False, "reason": reason, "because": because}
+
+    if not isinstance(context, dict) or not str(context.get("context_ref") or "").strip():
+        return refuse("UNTRUSTED_ACTOR",
+                      "no trusted context was resolved for this call")
+    os_principal = os_principal_of(peer)
+    if os_principal is None:
+        return refuse("UNTRUSTED_ACTOR",
+                      "this call did not arrive with a readable kernel peer "
+                      "credential (SO_PEERCRED), so the caller cannot be bound to "
+                      "an OS principal. A uid in the payload is a claim, not "
+                      "evidence")
+    now = str(now or "")
+    verdict = _actor_module().authorizes(context, now)
+    if not verdict.get("authorizes"):
+        return refuse("UNTRUSTED_ACTOR",
+                      f"the presented context does not authorize a mutation: "
+                      f"{verdict.get('because')}")
+
+    key = str(grant_ref or "").strip()
+    if not key:
+        return refuse("INVALID_CONTEXT", "no grant_ref was named")
+    grant = (grants or {}).get(key)
+    if grant is None:
+        return refuse("INVALID_CONTEXT", f"no grant {key!r} is recorded")
+    if str(grant.get("delegated_by")) != str(context["context_ref"]):
+        return refuse(
+            "UNTRUSTED_ACTOR",
+            f"grant {key!r} was delegated by {grant.get('delegated_by')!r}, and "
+            f"this context is {context['context_ref']!r}. Authority is rooted in "
+            f"the context that was verified, not in whoever presents the ref")
+    if grant.get("revoked") is True:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} was revoked at {grant.get('revoked_at')}")
+    window = {}
+    for field in ("valid_from", "expires_at"):
+        if not grant.get(field):
+            return refuse("INVALID_CONTEXT", f"grant {key!r} has no {field}")
+        instant = _grant_seconds(grant[field])
+        if instant is None:
+            return refuse(
+                "INVALID_CONTEXT",
+                f"grant {key!r} has an unreadable {field} {grant[field]!r}. The "
+                f"window must be a timezone-bearing ISO-8601 instant; a stamp "
+                f"this read cannot place in time cannot be checked, and Work "
+                f"Engine #14 consumes the window as epoch seconds")
+        window[field] = instant
+    at = _grant_seconds(now)
+    if at is None:
+        return refuse("INVALID_CONTEXT",
+                      f"the verification instant {now!r} is unreadable")
+    if at < window["valid_from"]:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} is not valid until {grant['valid_from']}")
+    if at >= window["expires_at"]:
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} expired at {grant['expires_at']}")
+
+    epoch = grant.get("epoch")
+    if epoch is None or isinstance(epoch, bool) or not isinstance(epoch, int):
+        return refuse(
+            "INVALID_CONTEXT",
+            f"grant {key!r} records no epoch, so its authority is UNKNOWN. A "
+            f"record written before the epoch existed is not backfilled: an epoch "
+            f"minted after the fact would be authority nobody granted")
+    if expected_epoch is not None:
+        if isinstance(expected_epoch, bool) or not isinstance(expected_epoch, int):
+            return refuse(
+                "INVALID_CONTEXT",
+                f"expected_epoch {expected_epoch!r} is not an integer, so there is "
+                f"nothing to compare the grant's epoch with")
+        if expected_epoch != epoch:
+            return refuse("INVALID_CONTEXT",
+                          f"grant {key!r} is at epoch {epoch} and this call "
+                          f"expected {expected_epoch}; the grant has moved")
+
+    # The OS principal was BOUND when this grant was issued, from the kernel
+    # peer of that call, and is compared here with the peer of THIS call. A
+    # grant with no binding is UNKNOWN and authorizes nothing: backfilling one
+    # at read time would mint an identity nobody attested, which is the very
+    # thing the binding exists to prevent. It is also why a bearer
+    # `context_ref` is not enough on its own — QA measured the same context and
+    # grant verifying for uid 4242 AND uid 9999.
+    bound = str(grant.get("os_principal") or "").strip()
+    if not bound:
+        return refuse(
+            "UNTRUSTED_ACTOR",
+            f"grant {key!r} records no os_principal, so the caller would be "
+            f"identified by a bearer ref alone. A grant issued without a kernel "
+            f"peer is not backfilled: that would be authority nobody attested")
+    if bound != os_principal:
+        return refuse(
+            "UNTRUSTED_ACTOR",
+            f"grant {key!r} is bound to os_principal {bound!r} and this call "
+            f"arrived as {os_principal!r}. A context ref is presented by a "
+            f"bearer; the kernel peer is who is actually calling")
+
+    if str(action or "") not in (grant.get("actions") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not carry action {action!r}")
+    if str(project or "") not in (grant.get("projects") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not cover project {project!r}")
+    if str(item_ref or "") not in (grant.get("items") or []):
+        return refuse("POLICY_DENIED",
+                      f"grant {key!r} does not cover Item {item_ref!r}")
+
+    # EXACTLY Work Engine #14's `LeaseGrant`, field for field: the ten fields,
+    # tuples for `items`/`actions`, an int epoch and float epoch-seconds for the
+    # window. The requested project/Item/action passed the membership checks
+    # above against the STORED scope, so the value returned is the intersection
+    # of what was asked and what the grant truly carries — never the caller's
+    # field echoed back and never the grant's whole scope widened into it.
+    return {"verified": True, "grant": {
+        "principal": str(context["actor_ref"]),
+        "grant_ref": key,
+        "project": str(project),
+        "items": (str(item_ref),),
+        "actions": (str(action),),
+        "valid_from": window["valid_from"],
+        "expires_at": window["expires_at"],
+        "revoked": False,
+        "epoch": int(epoch),
+        "os_principal": bound,
+    }}
 
 
 def _intent_digest(record: dict, *, selection_digest: str, grant_ref: str,
@@ -720,7 +911,7 @@ class AgentControlStore:
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
                     "admissions": {}, "checkpoints": {},
-                    "dispatch_attempts": {}}
+                    "dispatch_attempts": {}, "grant_epoch": 0}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -746,6 +937,10 @@ class AgentControlStore:
         # gets an empty section, so this is a forward-compatible read of an
         # existing file rather than a migration.
         data.setdefault("dispatch_attempts", {})
+        # A durable, monotonic grant generation. Additive like every other key:
+        # an older document reads as 0 and the FIRST new grant gets 1. Existing
+        # grants are NOT backfilled (see `verify_live_grant`).
+        data.setdefault("grant_epoch", 0)
         data["schema"] = SCHEMA
         return data
 
@@ -1641,8 +1836,30 @@ class AgentControlStore:
 
     # -- standing delegations (§12, P6) ------------------------------------
 
-    def issue_grant(self, evidence: dict, *, now: str) -> dict:
-        """Persist a provider-approved scope and its verified issuance atomically."""
+    def _next_grant_epoch(self) -> int:
+        """The next grant generation, from the store's own durable counter.
+
+        Called ONLY from inside a `_mutation()`, so read-increment-write is one
+        step under the lock. Monotonic across restarts because the counter lives
+        in the document, and never derived from a grant COUNT: revoking a grant
+        must not let a later grant reuse its number.
+        """
+        current = int(self._data.get("grant_epoch") or 0) + 1
+        self._data["grant_epoch"] = current
+        return current
+
+    def issue_grant(self, evidence: dict, *, now: str,
+                    os_principal: str | None = None) -> dict:
+        """Persist a provider-approved scope and its verified issuance atomically.
+
+        `os_principal` is the OS principal the calling process was attested as at
+        the socket — `uid:<n>` derived from `SO_PEERCRED` by `os_principal_of`,
+        never a field of the request or of the signed payload. The daemon passes
+        it from the kernel peer of the call that asked for the grant; a caller
+        that has no peer (an in-process call) stores the grant UNBOUND, and the
+        read refuses it. That is the fail-closed side: an unbound grant
+        authorizes nothing, and nothing here backfills one.
+        """
         actor = _actor_module()
         with self._mutation():
             payload = evidence.get("payload") if isinstance(evidence, dict) else None
@@ -1659,9 +1876,24 @@ class AgentControlStore:
                 approved, context = actor.verify_delegation(evidence, now=now)
             except actor.Rejected as exc:
                 raise StoreError(str(exc)) from exc
+            if "os_principal" in approved:
+                raise StoreError(
+                    "os_principal is bound from the kernel peer credential of the "
+                    "issuing call, never taken from the signed payload. A document "
+                    "that names its own OS principal is one the signer could have "
+                    "written for somebody else")
             recorded = {**approved, "revoked": False,
+                        # Minted HERE, by the store, from a durable monotonic
+                        # counter — never supplied by a caller.
+                        "epoch": self._next_grant_epoch(),
                         "issuance": {"schema": actor.ISSUANCE_SCHEMA,
                                      "accepted_at": now, "evidence": evidence}}
+            if os_principal is not None:
+                if not re.fullmatch(r"uid:\d+", str(os_principal)):
+                    raise StoreError(
+                        "os_principal must be `uid:<non-negative integer>`, the "
+                        "shape `os_principal_of` derives from a kernel peer")
+                recorded["os_principal"] = str(os_principal)
             # Own a snapshot, not a caller's mutable dictionary.
             recorded = json.loads(json.dumps(recorded))
             self._data["contexts"][context["context_ref"]] = context
@@ -1709,6 +1941,19 @@ class AgentControlStore:
                 "is a scope on a trusted context, and a grant that does not say "
                 "whose delegation it is is one that no longer has a root — which is "
                 "the state this collection exists to keep out")
+        if "epoch" in record:
+            raise StoreError(
+                "a grant may not be stored carrying an `epoch`. The epoch is minted "
+                "by the store from a durable monotonic counter; an epoch a caller "
+                "could choose is one a caller could keep after it was superseded")
+        if "os_principal" in record:
+            raise StoreError(
+                "a standing delegation may not name its own `os_principal`. The "
+                "binding is written by `issue_grant` from the kernel peer of the "
+                "issuing call; a uid a caller could choose is an identity the "
+                "caller could claim for somebody else. A grant stored here is "
+                "UNBOUND, and the verify read refuses it until it is issued "
+                "through a call that has a peer")
         smuggled = [f for f in REVOCATION_FIELDS
                     if f in record and record[f] != (False if f == "revoked" else None)]
         if smuggled:
@@ -1716,7 +1961,7 @@ class AgentControlStore:
                 f"a grant may not be stored carrying {', '.join(smuggled)}. A "
                 f"delegation ends by revocation (`revoke_grant`), and a grant whose "
                 f"revocation a put could write is one a second put could un-revoke")
-        staged = {k: v for k, v in record.items() if k not in REVOCATION_FIELDS}
+        staged = {k: v for k, v in record.items() if k not in OWNER_WRITTEN_GRANT_FIELDS}
         with self._mutation():
             # Under the lock, so a context another writer reported a moment ago
             # is seen. Checked against the document on disk rather than against
@@ -1732,7 +1977,7 @@ class AgentControlStore:
             existing = self._data["grants"].get(ref)
             if existing is not None:
                 theirs = {k: v for k, v in existing.items()
-                          if k not in REVOCATION_FIELDS}
+                          if k not in OWNER_WRITTEN_GRANT_FIELDS}
                 # Compared WITHOUT the revocation fields on both sides: a
                 # re-report of a delegation that has since been revoked is
                 # still the same delegation, so it returns the record as it
@@ -1745,7 +1990,8 @@ class AgentControlStore:
                     f"changing its scope in place would rewrite what the work "
                     f"already done was authorized by. Revoke it and record the "
                     f"one you mean")
-            recorded = {**staged, "revoked": False}
+            recorded = {**staged, "revoked": False,
+                        "epoch": self._next_grant_epoch()}
             self._data["grants"][ref] = recorded
             self._flush()
             return recorded

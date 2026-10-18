@@ -349,6 +349,93 @@ write_scope:
     fence; that is B2/B5, and it needs effect reconciliation.
 
 # ---------------------------------------------------------------------------
+# Grant authority: a durable monotonic epoch, and the trusted-parent READ.
+#
+# Work Engine #14's `OwnerVerifiedLease` requires a `LeaseAuthority.verify` that
+# resolves context_ref out of band, re-reads the grant at `now`, and binds the
+# actor to an OS principal. This block is the serveros half of that.
+# ---------------------------------------------------------------------------
+grant_authority:
+  epoch:
+    what: >-
+      An integer GENERATION minted by the store, from a durable monotonic counter
+      in the control document (`grant_epoch`). It is written by `issue_grant` and
+      `put_grant`, and a caller may never supply one: an epoch a caller could
+      choose is one a caller could keep after it was superseded. Monotonic across
+      restarts, and never derived from a grant COUNT, so revoking a grant does
+      not let a later one reuse its number.
+    backfill: >-
+      A grant written before this field existed has NO epoch and reads as UNKNOWN.
+      It is NOT backfilled: an epoch minted after the fact would be authority
+      nobody granted. Such a grant must be re-issued to become usable.
+    revocation_aware: >-
+      Revocation does not change the epoch; it ends the grant. A revoked grant is
+      refused regardless of its epoch, and the epoch stays on the record as the
+      evidence of which generation ended.
+  verify_read:
+    method: agent.lease.authority.verify
+    binding: >-
+      READ-ONLY, and deliberately NOT a lease verb: it mints no grant, acquires
+      no lease and mutates nothing. Registering a lease verb still waits for a
+      trusted producer.
+    inputs: >-
+      `context_ref`, `grant_ref`, `action`, `project`, `item_ref`, and an optional
+      `expected_epoch`.
+    identity: >-
+      The context is resolved from what ServerOS minted (`agent.context.resolve`
+      in-process, never an `actor`/`os_user` field); the OS principal is the
+      kernel's `SO_PEERCRED` peer on the socket, never a string the caller sends.
+      An absent or unreadable peer is a refusal, not a guess.
+    os_principal_binding: >-
+      The grant is BOUND to `uid:<n>` at the trusted ISSUANCE boundary
+      (`agent.grant.issue`), from the kernel peer of that call, and the verify
+      COMPARES it with the peer of THIS call. A bearer `context_ref` is not OS
+      principal authorization: before this comparison the same context and grant
+      verified for two different uids. The field is owner-written in the same
+      sense as `epoch` — `put_grant` refuses a record that names one, and
+      `issue_grant` refuses a signed payload that does. It is never taken from an
+      argument, a request field, or `getuid()`.
+    os_principal_backfill: >-
+      A grant issued with no peer carries NO `os_principal` and authorizes
+      nothing; the read refuses it. It is NOT backfilled at read time — an
+      identity minted after the fact is one nobody attested. Such a grant must be
+      re-issued through a call that has a peer.
+    result: >-
+      On success the `grant` value is EXACTLY one Work Engine #14 `LeaseGrant`:
+      `principal`, `grant_ref`, `project`, `items` (tuple), `actions` (tuple),
+      `valid_from` (float epoch seconds), `expires_at` (float epoch seconds),
+      `revoked`, `epoch` (int), `os_principal`. The requested project / Item /
+      action passed membership checks against the STORED scope, so the returned
+      tuple is the intersection of the request and the grant — never the
+      caller's field echoed back, and never the grant's whole scope widened.
+      ISO -> epoch conversion is this read's job because the store keeps
+      ISO-8601 and the consumer's dataclass keeps floats; `float(<ISO>)` is the
+      TypeError independent QA measured.
+    refusals: >-
+      no/unresolvable context or an absent/unreadable peer -> UNTRUSTED_ACTOR; a
+      context that does not authorize a mutation, a grant delegated by a
+      DIFFERENT context, a grant with no `os_principal` binding, or a grant bound
+      to a different uid -> UNTRUSTED_ACTOR; a revoked/expired/not-yet-valid
+      grant -> POLICY_DENIED; a missing or unreadable window stamp, a missing
+      epoch, or an `expected_epoch` mismatch -> INVALID_CONTEXT; an action /
+      project / Item outside the grant -> POLICY_DENIED. Every uncertainty is a
+      refusal.
+  remaining_dependency: >-
+    The Work Engine SIDE of the bridge — an out-of-process `LeaseAuthority` that
+    calls this read and returns the verified `LeaseGrant` — is not in this
+    repository and was not written here. `acquire_lease` itself remains
+    BLOCKED_PRODUCER_BOUNDARY: this read proves WHO may hold a lease; it does
+    not acquire one. No caller-supplied LeaseGrant is accepted anywhere.
+  standing_delegation_unbound: >-
+    A grant recorded through `put_grant` (the `serverosctl work grant` path) is
+    UNBOUND: that write has no kernel peer to bind, and taking the CLI's own uid
+    would be this process's principal standing in for the caller's. Such a grant
+    is stored and reads as UNTRUSTED_ACTOR until it is re-issued through
+    `agent.grant.issue`. Whether the operator path should gain a peer-attested
+    binding is an ORIGINAL-OWNER decision, not one this read may make; it is
+    recorded here as a dependency rather than closed by a guess.
+
+# ---------------------------------------------------------------------------
 # #237 B2 — the durable-effect interface this contract does NOT yet implement.
 #
 # Stated as an interface and a blocker, NOT as done. `idempotency.durability`
