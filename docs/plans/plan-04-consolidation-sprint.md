@@ -341,6 +341,6 @@ git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
 
 ### 9.5 进度
 
-- 只写 `hwz-records` 分支 `status/consolidation-sprint` 的 `STATUS-consolidation-sprint.md`，按第 0 节的固定公式算百分比，每次状态变化就更新。
+- 只写 `hwz-records` 分支 `status/consolidation-sprint` 的 `STATUS-consolidation-sprint.md`，按文件里已有的固定公式算百分比，每次状态变化就更新。
 - 每有一个仓库集成完成，就在文件的「请求验收」一节加一行。云端 Claude 会话读到后按第 7 节验收，**一个仓库通过就可以合并一个**，不必等全部完成。
 - 文件里不写真实邮箱、姓名、凭据内容、内网 IP。
