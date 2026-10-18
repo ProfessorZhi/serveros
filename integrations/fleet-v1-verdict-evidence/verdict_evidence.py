@@ -118,6 +118,7 @@ COMMIT_MISMATCH = "COMMIT_MISMATCH"
 ACTOR_MISMATCH = "ACTOR_MISMATCH"
 RUNNER_MISMATCH = "RUNNER_MISMATCH"
 INVALID_SIGNED_RECEIPT = "INVALID_SIGNED_RECEIPT"
+V1_REQUIRES_STRICT_PATH = "V1_REQUIRES_STRICT_PATH"
 
 _DENY_REASONS = frozenset({
     INVALID_RUN_RECORD, RUN_FAILED, UNRECOGNIZED_RUNNER, CROSS_PRINCIPAL,
@@ -128,6 +129,7 @@ _DENY_REASONS = frozenset({
     UNSIGNED_FINALIZATION, AUTHORIZATION_NOT_T10_VERIFIED, T10_NOT_ACCEPTABLE,
     MISSING_SOURCE_PROOF, NO_VERIFIED_ZERO_EXIT, COMMIT_MISMATCH,
     ACTOR_MISMATCH, RUNNER_MISMATCH, INVALID_SIGNED_RECEIPT,
+    V1_REQUIRES_STRICT_PATH,
 })
 _UNKNOWN_REASONS = frozenset({
     MISSING_RUN, RUN_NOT_TERMINAL, MISSING_RECEIPT, MISSING_ARTIFACT,
@@ -164,6 +166,7 @@ _BECAUSE = {
     ACTOR_MISMATCH: "the runner_receipt actor is not the expected principal",
     RUNNER_MISMATCH: "the runner_receipt runner is not the Run's expected worker",
     INVALID_SIGNED_RECEIPT: "the runner_receipt fields are not usable evidence",
+    V1_REQUIRES_STRICT_PATH: "the legacy compatibility mode cannot influence V1 acceptance; use evaluate_v1_acceptance with a signed finalization and a trusted-parent grant/epoch answer",
 }
 
 _ELIGIBLE_BECAUSE = (
@@ -225,6 +228,9 @@ class AcceptanceDecision:
     run_state_advanced: bool
     qa_gate_advanced: bool
     authority: str
+    v1_required: bool = False
+    v1_acceptable: bool = False
+    v1_mode: str = "LEGACY_COMPATIBILITY"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -241,6 +247,9 @@ class AcceptanceDecision:
             "run_state_advanced": self.run_state_advanced,
             "qa_gate_advanced": self.qa_gate_advanced,
             "authority": self.authority,
+            "v1_required": self.v1_required,
+            "v1_acceptable": self.v1_acceptable,
+            "v1_mode": self.v1_mode,
         }
 
 
@@ -249,8 +258,15 @@ def evaluate_acceptance(
     authority: AuthoritySnapshot,
     *,
     untrusted_child_report: str | None = None,
+    v1_required: bool = False,
 ) -> AcceptanceDecision:
     """Decide whether a structured receipt may move a Parent/QA gate.
+
+    This is the LEGACY / UNSIGNED compatibility gate. It is NOT the V1
+    acceptance path: a `v1_required=True` call refuses, and every decision it
+    returns carries `v1_acceptable=False`. A V1 caller must use
+    `v1_acceptance.evaluate_v1_acceptance`, which requires the strict signed
+    finalization readback and a trusted-parent grant/epoch answer.
 
     The child's report is deliberately not parsed.  It is present in the
     signature only so tests and callers can demonstrate that it changes
@@ -264,6 +280,9 @@ def evaluate_acceptance(
     def add(code: str) -> None:
         if code not in reasons:
             reasons.append(code)
+
+    if v1_required:
+        add(V1_REQUIRES_STRICT_PATH)
 
     run = authority.run
     artifact_dir: Path | None = None
@@ -335,6 +354,10 @@ def evaluate_acceptance(
         run_state_advanced=False,
         qa_gate_advanced=False,
         authority=AUTHORITY,
+        v1_required=v1_required,
+        v1_acceptable=False,
+        v1_mode=("V1_REFUSED_LEGACY_PATH" if v1_required
+                 else "LEGACY_COMPATIBILITY"),
     )
 
 

@@ -350,6 +350,10 @@ class DispatchDecision:
     work_engine_consumption: str
     evidence_level: str
     authority: str
+    # This module is a LEGACY/pre-finalization consumer. It can never be the
+    # V1 acceptance path; V1 callers must use v1_acceptance.
+    v1_acceptable: bool = False
+    v1_mode: str = "LEGACY_COMPATIBILITY"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -373,6 +377,8 @@ class DispatchDecision:
             "work_engine_consumption": self.work_engine_consumption,
             "evidence_level": self.evidence_level,
             "authority": self.authority,
+            "v1_acceptable": self.v1_acceptable,
+            "v1_mode": self.v1_mode,
         }
 
 

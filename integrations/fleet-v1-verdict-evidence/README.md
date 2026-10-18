@@ -10,7 +10,10 @@ The new `finalization_result.py` gate refuses a downstream `runs.state ==
 SUCCEEDED` unless the durable finalize evidence is **both** `T10_VERIFIED` and
 `t10_acceptable=true` with a verified zero-exit receipt. The existing
 `verdict_evidence.py` consumer is hardened for Work Engine #15's labelled
-`finalize.json`; a legacy `UNSIGNED` `state=SUCCEEDED` is `DENY`.
+`finalize.json`; a legacy `UNSIGNED` `state=SUCCEEDED` is `DENY`. V1 acceptance
+is now a **single strict path** (`v1_acceptance.py`); the legacy receipt-vs-
+prose compatibility mode is isolated (`v1_acceptable=False`) and a
+`v1_required=True` call refuses (`V1_REQUIRES_STRICT_PATH`).
 **Production is still blocked:** there is no production Work Engine finalize
 call site, no OS-attested cross-process parent/verifier boundary, and no
 independent QA signature. Continuation production also remains
@@ -469,6 +472,50 @@ not production. No production finalize call site consumes the gate, the legacy
 `finalize_run` is not switched, no independent QA signature exists, and no
 second ledger/signature is created.
 
+### 4.10 V1 strict acceptance and legacy isolation (P1)
+
+`verdict_evidence.evaluate_acceptance` is a **LEGACY / UNSIGNED compatibility**
+gate, not the V1 acceptance path. It exists so pre-#15 fixtures with no
+`authorization` marker keep exercising the historical receipt-vs-prose
+behaviour. Every decision it returns now carries `v1_acceptable=False` and
+`v1_mode="LEGACY_COMPATIBILITY"`; a `v1_required=True` call adds
+`V1_REQUIRES_STRICT_PATH` and is `DENY` (`v1_mode="V1_REFUSED_LEGACY_PATH"`).
+There is no permissive V1 legacy override.
+
+`v1_acceptance.evaluate_v1_acceptance` is the **single V1 positive path**. It
+composes:
+
+1. `finalization_result.evaluate_signed_finalization` over the authoritative
+   Work Engine exact Run and durable `finalize.json` (`T10_VERIFIED` +
+   `t10_acceptable=true` + a matching `runner_receipt` with a verified exit 0);
+2. a grant/epoch freshness **answer from a trusted parent**. This consumer does
+   not compute grant freshness itself and never fabricates it:
+   - no parent → `BLOCKED_WIRING` (`NO_TRUSTED_PARENT_FOR_GRANT_EPOCH`);
+   - `verified` not true / `fresh` not true / `epoch` missing or non-positive →
+     `BLOCKED_WIRING` (`GRANT_FRESHNESS_UNKNOWN`, `STALE_GRANT_UNKNOWN`,
+     `GRANT_EPOCH_UNKNOWN`);
+   - revoked → `DENY`; wrong grant/principal → `DENY`;
+   - a caller JSON object instead of a `GrantFreshnessSnapshot` → `DENY`
+     (`CALLER_JSON_NOT_AUTHORITY`).
+
+A clearly labelled `"test-double:"` parent answer around the real offline
+exit-0 receipt is `ELIGIBLE_FOR_QA` only: `eligible_for_qa_review=True`,
+`v1_acceptable=False`, `production_status="BLOCKED_TRUST_SOURCE"`,
+`parent_accepted=False`, `qa_signature=False`. A `"trusted-parent:"` marker is
+not authenticated in this milestone and remains `BLOCKED_WIRING`
+(`V1_ACCEPTANCE_NOT_WIRED`); an unknown source is
+`BLOCKED_WIRING` (`UNRECOGNIZED_TRUST_SOURCE`). `v1_required=True` is required;
+a call with it false is `BLOCKED_WIRING` (`V1_CONTEXT_REQUIRED`).
+
+`bounded_provenance` decisions also carry `v1_acceptable=False` /
+`v1_mode="LEGACY_COMPATIBILITY"`: it is a legacy/pre-finalization consumer and
+cannot be read as V1 acceptance.
+
+**Remaining blocker.** The production trusted parent / grant-epoch verifier is
+still absent (`BLOCKED_TRUST_SOURCE`). The test double is not a production
+parent; no production finalize call site consumes the V1 path and no
+independent QA signature exists.
+
 ## 5. What the gate never does
 
 * It never parses the child's stdout/stderr as a verdict; it hashes them.
@@ -486,7 +533,9 @@ second ledger/signature is created.
   `mcp/continuation_mcp.py` (state DB pass-through), under the explicit T10
   grants; `runtime/wake.py` was inspected but not edited. The S1/S2 owners'
   files are untouched. The signed-finalization milestone edits only this
-  integration package and its new test; no runtime file is touched.
+  integration package and its new test; no runtime file is touched. The V1
+  strict-acceptance milestone likewise edits only this package and its new
+  test; no runtime or Work Engine file is touched.
 
 ## 6. Test evidence
 
@@ -586,6 +635,33 @@ existing `verdict_evidence` consumer is also tested directly against the same
 real #15 evidence: `UNSIGNED` → `DENY`, `T10_VERIFIED` → `ELIGIBLE`.
 Evidence level: **LOCAL / HERMETIC**, not production.
 
+V1 strict acceptance / legacy isolation, same cgroup and non-blocking
+`flock -n`:
+
+```bash
+flock -n /tmp/serveros-t10-v1-strict.lock \
+  systemd-run --user --scope -q \
+    -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
+    timeout 600 python -m pytest \
+    tests/test_fleet_v1_t10_legacy_compatibility.py -q
+```
+
+Measured on Tokyo, 2026-10-18: **13 passed in 3.20s**, exit 0, `pswpout` delta
+0. Focused T10 regression (V1/legacy + prior verdict/producer/continuation/
+authority-bridge/signed-finalization suites): **90 passed in 48.99s**, exit 0,
+`pswpout` delta 0.
+
+The tests reuse the exact Work Engine #15 source and the #274 real
+`finalize_run`/offline `invoke_once` helpers. They pin: pre-#15 compatibility is
+ELIGIBLE only in the legacy mode with `v1_acceptable=False`; `v1_required=True`
+refuses; no trusted parent → `BLOCKED_WIRING`; a labelled test-double grant
+answer + real exit 0 → `ELIGIBLE_FOR_QA` with `v1_acceptable=False`; stale/
+unknown/revoked/epoch-less grant, absent authorization marker, legacy
+`SUCCEEDED`/`UNSIGNED`, caller JSON fake `T10_VERIFIED`, missing durable
+evidence, tampered bytes, cross-grant/actor/run/SHA, and child text PASS with a
+real exit 1 → no acceptance. Evidence level: **LOCAL / HERMETIC**, not
+production.
+
 The fixture suite covers:
 
 * text-only success without a receipt → `UNKNOWN / MISSING_RECEIPT`;
@@ -615,6 +691,7 @@ integrations/fleet-v1-verdict-evidence/
 ├── bounded_provenance.py      # bounded-invocation receipt + admission + Work Engine
 ├── authority_bridge.py        # PREVIEW RunnerReceiptAuthority for WE #14/#15
 ├── finalization_result.py     # strict signed Work Engine finalization gate
+├── v1_acceptance.py           # single strict V1 acceptance path
 └── fixtures/
     └── negative_cases.json    # Work Engine negative matrix
 tests/test_fleet_v1_verdict_evidence.py       # consumer matrix
@@ -627,4 +704,7 @@ tests/test_fleet_v1_t10_authority_bridge.py   # real WE #14 finalize_run_verifie
 tests/test_fleet_v1_t10_signed_finalization.py
                                               # real WE #15 finalize_run
                                               # + durable T10_VERIFIED gate
+tests/test_fleet_v1_t10_legacy_compatibility.py
+                                              # legacy isolation + strict V1
+                                              # acceptance path
 ```
