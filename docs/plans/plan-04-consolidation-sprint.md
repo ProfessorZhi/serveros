@@ -278,3 +278,69 @@ git bundle verify claude-fleet.bundle
 | `docs/screenshots/*` | `docs/legacy/screenshots/` | 逐张检查，没有内网地址和密钥的才保留 |
 | 旧 PR #12（Vision 契约）、#16（并发 2） | `backend/gateway/` 或 `docs/` | 作为文档或未启用的配置选项保留 |
 | 旧 PR #17（记录请求正文） | — | **不并入**默认代码路径：隐私风险高。设计思路可以写进 `docs/` |
+
+## 9. 第二轮：在 Dell A6000 上集中冲刺（2026-10-18 起）
+
+第一轮在 Windows 本机跑了约 4 小时，总进度 32%。慢的原因是 Windows 平台问题和单机并发有限。第二轮改到 **Dell A6000（Linux）上开一个 CC 会话**，一次派出多个子 agent。**从这一轮起，这个会话是唯一的主控，也是进度文件唯一的写入者。** Windows 本机只做第 9.1 节的抢救和 G0-W。
+
+### 9.1 开工前：Windows 本机先抢救（所有者执行，约 2 分钟）
+
+第一轮有成果还留在 Windows 磁盘上，不推到 GitHub，Dell 那边看不到：
+
+```powershell
+# B-int：8 个提交还没推送
+git -C D:\consolidate-b-int\ability-management push -u origin consolidate/ability-management
+# D1：15 项改动没有提交，先存到 WIP 分支
+git -C D:\consolidation-d1\marketops switch -c consolidate/d1-marketops-wip
+git -C D:\consolidation-d1\marketops add -A
+git -C D:\consolidation-d1\marketops commit -m "wip(d1): unfinished marketops consolidation from round 1"
+git -C D:\consolidation-d1\marketops push -u origin consolidate/d1-marketops-wip
+# 以后提交改用 noreply 邮箱（已经推送的提交不改写）
+git config --global user.email "67468685+ProfessorZhi@users.noreply.github.com"
+```
+
+### 9.2 所有者已做的决定
+
+- **可以暂停 Dell 上 serveros 以外的服务**，例如 LLM Lab 的管理后台、Gateway，用来给集成和测试腾出资源。
+- llmlab 基线改用 **`integration/v1-wave15-public-union-20261018`**（wave-14 的超集，多了 #128、#129），由 E1b 补齐。
+- 重新派 E2。
+
+### 9.3 Dell 上的边界（比第 1 节更具体）
+
+1. **ServerOS / Fleet 不能停**：serverosd、Fleet connector、Work Engine，以及 G0-D 标为 R 类的路径，一律不动。
+2. **暂停其他服务必须可还原**：
+   - 先列出要暂停的服务（只限 LLM Lab 的管理后台、Portal、Gateway 这类），记录每个服务的 `systemctl status`、unit 文件路径和启动命令；
+   - 再用 `systemctl stop`（不用 disable、不改 unit 文件）；
+   - 把恢复命令写进进度文件；冲刺结束后逐个启动，并验证健康检查。
+3. **其他用户的东西不碰**：他们自己启动的推理引擎、GPU 任务、文件都不动。冲刺不使用 GPU，所有命令都设置 `CUDA_VISIBLE_DEVICES=""`。
+4. **工作目录独立**：所有 clone 都放在所有者自己的数据目录下的 `consolidation-sprint/` 里，不放进 `/srv/llm-lab`，也不放进 Fleet 的路径。
+5. **资源**：重的测试用 `nice -n 10` 跑；浏览器测试只监听 127.0.0.1 上的随机高位端口。
+6. **GitHub 凭据**：用一个 fine-grained token，只授权这次涉及的仓库，文件权限设为 600；冲刺结束后撤销。
+7. Git 提交邮箱用 noreply（见 9.1）。
+
+### 9.4 派工表（一次全部派出，后台并行）
+
+| ID | 仓库 | 分支 | 做什么 | 依赖 |
+|---|---|---|---|---|
+| A1w | serveros | `feat/workengine-merge-20261019` | 接着 A1 的导入（43 个新文件）做接线：只保留一个 `serverosctl`；`scripts/release.py` 的 `REQUIRED_MEMBERS` 加 `workengine/`；测试改成用仓库内的 workengine；加 MIT `LICENSE`，把 PROPRIETARY 改成 MIT；5 个本机路径脱敏 | — |
+| A-int | serveros | `consolidate/serveros` | 合并 A1w + A2（#281）+ A3（#280），在全新 clone 上跑 `scripts/verify.py`、`pytest`、`serverosctl --help`、`python -m workengine --help`、`release.py` 打包 | A1w |
+| B-int | ability-management | `consolidate/ability-management` | 在 9.1 推送上来的分支上，跑 Linux 测试并和 main 基线比较，然后开 PR | 9.1 |
+| C2 | hwz-records | `consolidate/c2-agent-sessions` | `agent-session-archive` → `archive/agent-sessions/` | — |
+| C3 | hwz-records | `consolidate/c3-research-packets` | 新建 `research-packets/`，写 README 说明用途 | — |
+| C4 | hwz-records | `consolidate/c4-claude-fleet-bundle` | `claude-fleet` 用 `git bundle create --all` 打包，验证后放进 `archive/third-party/claude-fleet/`（必要时用 LFS），同时导出 PR #10–#12 的说明 | — |
+| C5 | hwz-records | `consolidate/c5-quay-extract` | quay 有 138 个所有者独有的提交（要检查**所有分支**，不能只看默认分支），其中约 36 KB 的 LiteLLM 探针证据要摘进 `archive/third-party/quay/`。`measurements/`、`experiments/` 是上游的内容，不摘 | — |
+| D1 | marketops | `consolidate/d1-marketops` | 接着 9.1 的 WIP 分支做完 | 9.1 |
+| E1b | llm-lab-portal | `consolidate/e1-base` | 把 wave-15 多出来的 #128、#129 合进 E1（PR #131），PR 的 base 改成 wave-15 | — |
+| E2 | llm-lab-portal | `consolidate/e2-pytests` | Python 已知失败（见第 6 节 E2 卡） | — |
+| E3 | llm-lab-portal | `consolidate/e3-browser` | 浏览器已知失败（见第 6 节 E3 卡），连续 3 次全部通过 | — |
+| E5 | llm-lab-portal | `consolidate/e5-sanitize` | 全仓脱敏扫描并修复（`REDACTED` 这类占位符不算命中） | — |
+| E-int | llmlab | `main`（初始提交） | E1b + E2 + E3 + E4（#130）+ E5 → 在全新 clone 上跑第 3 节的全部测试 → 脱敏扫描为 0 → 一个初始提交推送到 `llmlab` main | E1b、E2、E3、E5 |
+| D-int | — | — | 核对 D1、D2 的回执，列出要转移的 Issue | D1 |
+
+大约 14 个子 agent。没有依赖的 11 个立即并行开工，A-int、E-int、D-int 等依赖完成后马上接着派。
+
+### 9.5 进度
+
+- 只写 `hwz-records` 分支 `status/consolidation-sprint` 的 `STATUS-consolidation-sprint.md`，按第 0 节的固定公式算百分比，每次状态变化就更新。
+- 每有一个仓库集成完成，就在文件的「请求验收」一节加一行。云端 Claude 会话读到后按第 7 节验收，**一个仓库通过就可以合并一个**，不必等全部完成。
+- 文件里不写真实邮箱、姓名、凭据内容、内网 IP。
