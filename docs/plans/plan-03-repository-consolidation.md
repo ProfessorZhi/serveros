@@ -2,7 +2,7 @@
 
 > **状态**：方案，尚未执行。2026-10-18 由账户所有者 ProfessorZhi 确认方向。
 > **执行者**：多个 Claude Code 并行执行，每条车道一个独立 CC 和独立 worktree。
-> **2026-10-18 所有者已确认**：① 同意公开 work-engine 源码；② `serveros` 采用 MIT 许可证；③ `marketops-session` 已脱敏，**保持 Public**。
+> **2026-10-18 所有者已确认**：① 同意公开 work-engine 源码；② `serveros` 采用 MIT 许可证；③ ~~`marketops-session` 保持 Public~~ → **更正（同日）：`ability-management`、`marketops-session` 都保持 Private**。最终 3 Public（serveros、marketops、llmlab）+ 3 Private（ability-management、marketops-session、hwz-records）。
 > **本文是执行依据。** 以下仓库归类和文件统计，均来自 2026-10-18 对每个仓库逐一 clone 后的实际查看。
 
 ---
@@ -50,7 +50,7 @@ ServerOS 的**代码**只在两个仓库：`serveros`（完整产品，含 Work 
 T0  所有者：冻结 work-engine、新建 llmlab、给 GitHub App 授权（约 10 分钟）
     │
     ├─ 车道 A  ServerOS：work-engine → serveros ────────┐
-    ├─ 车道 B  ability-management 脱敏并公开 ──────────┤
+    ├─ 车道 B  ability-management 合并（Private）──────────┤
     ├─ 车道 C  hwz-records 合并私有数据 ───────────────┤
     ├─ 车道 D  MarketOps 收敛 ─────────────────────────┤
     ├─ 车道 E  LLM Lab → llmlab ───────────────────────┤
@@ -147,7 +147,7 @@ T0  所有者：冻结 work-engine、新建 llmlab、给 GitHub App 授权（约
 
 ---
 
-## 5. 车道 B：`ability-management` 并入两个小仓库并公开
+## 5. 车道 B：`ability-management` 并入两个小仓库（保持 Private，以下公开相关步骤作废）
 
 1. 并入：
    - `dev-doctor`（21 个文件）→ `skills/dev-doctor/`
@@ -172,10 +172,10 @@ T0  所有者：冻结 work-engine、新建 llmlab、给 GitHub App 授权（约
 
 ## 7. 车道 D：MarketOps
 
-1. `marketops-session` **保持 Public**（所有者 2026-10-18 确认，已脱敏）。复核一次：`gitleaks`（包含历史）和 grep 结果为 0；README 写明「会话语料本体不入库」，并在 `.gitignore` 和 CI 中加一道检查，防止以后有人误提交语料。
+1. `marketops-session` **保持 Private**（所有者 2026-10-18 最终决定，已改为 Private）。凭据和密钥仍然不能入库。
 2. 对比 `marketops` / `marketops-private` 和 `marketops-session` / `marketops-session-private`，补齐新仓库缺少的内容。
 3. `marketops` 公开前严格清理：不能有任何真实人名、公司名、邮箱、电话、社交账号，全部换成合成数据。
-4. 把 `marketops-session-private` 中仍有用、**且可以公开**的内容补进 `marketops-session`；不能公开的（语料、真实会话片段）不迁移，在报告中列明。然后 `marketops-session-private` 进入归档和删除流程。
+4. 把 `marketops-session-private` 中仍有用的内容补进 `marketops-session`（Private），在报告中列明落点。然后 `marketops-session-private` 进入归档和删除流程。
 5. `marketops-private` 中仍有效的 Issue 转到 `marketops`。
 
 ---
@@ -290,7 +290,7 @@ done
 
 - [ ] 三个项目只剩 6 个仓库，可见性与第 0 节一致（`hwz-records` 是唯一的 Private）；
 - [ ] `serveros` 根目录有 MIT `LICENSE`，`workengine` 不再标记为 PROPRIETARY；
-- [ ] 五个 Public 仓库的 `gitleaks`（包含历史）和 `trufflehog` 扫描结果均为 0；
+- [ ] 三个 Public 仓库（serveros、marketops、llmlab）的 `gitleaks`（包含历史）和 `trufflehog` 扫描结果均为 0；
 - [ ] `serveros` 全部测试通过，包括 `test_workengine_*`；安装后只有一个 `serverosctl`；
 - [ ] `work-engine` 的开放 PR 都有明确去向（已移植 / 已关闭）；
 - [ ] 东京、Dell、Windows 三台设备都已同步并通过验证，没有任何 checkout、服务或定时任务还指向旧仓库；
