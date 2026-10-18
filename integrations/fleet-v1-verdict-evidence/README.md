@@ -1,14 +1,18 @@
 # Fleet V1 verdict/evidence seam — #237 T10
 
-**Status:** `SOURCE / OFFLINE`. The admitted `work dispatch` producer and the
-continuation engineering executor now record/reconcile the canonical T10
-binding and a `receipt_sha256` anchor. **Continuation production remains
-`BLOCKED_ORIGINAL_OWNER`:** the wake/checkpoint does not create or attach the
-Work Engine Run + `execution_contexts` row the binding requires, so a real
-continuation execution refuses before spawn. Work Engine finalization still
-does not consume the proof.
-**T10 production closure:** **BLOCKED_WIRING — not closed**
-(`work_engine_consumption=NOT_WIRED`).
+**Status:** `SOURCE / OFFLINE` plus a `LOCAL / PREVIEW_ONLY` authority bridge.
+The admitted `work dispatch` producer and the continuation engineering executor
+record/reconcile the canonical T10 binding and a `receipt_sha256` anchor. A
+PREVIEW-only `RunnerReceiptAuthority` now proves a real local `invoke_once`
+receipt can serve Work Engine #14 `finalize_run_verified` — and that a child
+printing `ALL TESTS PASSED` while exiting 1 cannot conclude success.
+**Production is still blocked:** there is no production Work Engine finalize
+call site, no OS-attested cross-process parent boundary for that call, and no
+independent QA signature. Continuation production also remains
+`BLOCKED_ORIGINAL_OWNER` because the wake/checkpoint does not create or attach
+the Work Engine Run + `execution_contexts` row the binding requires.
+**T10 production closure:** **BLOCKED_WIRING / BLOCKED_ORIGINAL_OWNER — not
+closed** (`work_engine_consumption=NOT_WIRED`).
 **May this sign a V1 QA verdict?** **No.** Every decision returns
 `qa_signature=False`, `parent_accepted=False`, `requires_independent_qa=True`.
 
@@ -354,6 +358,68 @@ continuation engineering execution refuses. This is fail-closed by design, not
 a green T10. The optional Work Engine store-side link in §4.6 is the other
 remaining owner change.
 
+### 4.8 `RunnerReceiptAuthority` preview bridge — LOCAL / PREVIEW_ONLY
+
+`authority_bridge.LocalRunnerReceiptAuthority` is the T10 side of Work Engine
+#14 (`e4c4a2b`) `RunnerReceiptAuthority.verify(receipt_ref, *, item_ref,
+run_ref, now)`. It is not imported by a production path.
+
+The trusted parent supplies, in-process:
+
+* the `ExpectedContinuation` (exact dispatch spec plus the eight binding
+  fields), so `input_digest` can be recomputed;
+* the `ContinuationAuthority` readback (wake envelope, grant/checkpoint, unique
+  open Work Engine Run, execution_context revision/worktree/dirty, `runs.worker`);
+* an **opaque** `receipt_ref` minted for the admitted action — never a path, a
+  hash, a caller JSON object or child text;
+* the `receipt_sha256` anchor it recalled from the `invoke_once` result;
+* the Work Engine `VerifiedRunReceipt` class and `ReceiptError` class (so this
+  module does not import the other repository).
+
+`verify` resolves the opaque ref under `expected.cwd` (the private receipts
+directory) and `expected.action_key`, then:
+
+1. requires the exact Item/Run, unrevoked grant, grant window and wake-envelope
+   expiry at `now`;
+2. requires the unique Run, its `worker`, the exact execution_context
+   revision, the granted worktree and `dirty=0`;
+3. requires the grant's `delegated_by` and the envelope's `delegation_ref` to
+   be the expected principal;
+4. reads the real receipt with the safe reader (no symlinks, private 0700 dir)
+   and recomputes `input_digest`, `receipt_sha256` over receipt + stdin/stdout/
+   stderr, and both `output_sha256` values;
+5. parses the eight-field binding from the receipt's stdin and compares every
+   field to the parent's expectation (`RECEIPT_ITEM_MISMATCH`,
+   `RECEIPT_RUN_MISMATCH`, `STALE_SHA`, `CROSS_PRINCIPAL`, ...);
+6. returns a `VerifiedRunReceipt` whose `verdict` is `PASS` iff
+   `process_exit_code == 0`. The child's `ALL TESTS PASSED` text is hashed,
+   never parsed.
+
+The constructor refuses `BLOCKED_TRUST_SOURCE` and names the missing operand if
+the parent cannot supply the receipt anchor, the Work Engine
+Run/execution_context snapshot, the opaque ref, the factory, or if the grant/
+envelope window is unreadable.
+
+`STATUS = "PREVIEW_ONLY"` and `PRODUCTION_STATUS = "BLOCKED_ORIGINAL_OWNER"`.
+The remaining original-owner API is explicit:
+
+1. **A production finalize call site.** Work Engine #14 exposes
+   `finalize_run_verified` only as an importable store method; it registers no
+   CLI verb or MCP tool (`tests/test_runner_receipt.py` asserts the absence).
+   ServerOS has no production caller. The preview test calls the store method
+   directly.
+2. **An OS-attested cross-process parent.** The preview bridge is constructed
+   in-process by the trusted parent that ran `invoke_once`. A production
+   boundary needs a trusted daemon (serverosd or equivalent) that owns the
+   private receipts directory, resolves the opaque ref itself, and calls the
+   finalize API through an authorized path. A `receipt_ref` supplied by a child
+   or a caller path is refused; there is currently no such production caller.
+3. **Independent QA.** The verified receipt is eligibility for review, not a QA
+   signature. No independent signature exists.
+
+The legacy `finalize_run` is not switched and no permission is elevated. This
+is a provenance proof, not a production acceptance.
+
 ## 5. What the gate never does
 
 * It never parses the child's stdout/stderr as a verdict; it hashes them.
@@ -420,6 +486,28 @@ synthetic runner, so the evidence level is
 `SERVEROS_TEST_DOCKER_IMAGE` tests (3 + 1 skipped) now also need a Work Engine
 Run/execution_context; they are an owner follow-up, not a green T10.
 
+Authority bridge, same cgroup and a non-blocking `flock -n`:
+
+```bash
+flock -n /tmp/serveros-t10-authority-bridge.lock \
+  systemd-run --user --scope -q \
+    -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
+    timeout 600 python -m pytest \
+    tests/test_fleet_v1_t10_authority_bridge.py -q
+```
+
+Measured on Tokyo, 2026-10-18: **10 passed in 2.71s**, exit 0, `pswpout` delta
+0. The test extracts the exact Work Engine #14 source with
+`git -C /data/home/vince/workspace/src/work-engine archive e4c4a2b` into a
+temporary directory (read-only; the Work Engine repo is not edited), imports
+its real `ServerOSStore.finalize_run_verified`, and uses the real offline
+`invoke_once` with a synthetic runner. It covers: exit 1 + `ALL TESTS PASSED`
+→ Work Engine refuses success; exact exit 0 → `SUCCEEDED` with the
+`runner_receipt` block in `finalize.json`; child text path → refused; missing
+trusted context / missing parent anchor → `BLOCKED_TRUST_SOURCE`; stale SHA,
+revoked grant, cross-run, cross-principal and checksum tampering → refused.
+Evidence level: **LOCAL / PREVIEW_ONLY**, not production.
+
 The fixture suite covers:
 
 * text-only success without a receipt → `UNKNOWN / MISSING_RECEIPT`;
@@ -447,6 +535,7 @@ integrations/fleet-v1-verdict-evidence/
 ├── README.md
 ├── verdict_evidence.py        # Work Engine receipt vs prose
 ├── bounded_provenance.py      # bounded-invocation receipt + admission + Work Engine
+├── authority_bridge.py        # PREVIEW RunnerReceiptAuthority for WE #14
 └── fixtures/
     └── negative_cases.json    # Work Engine negative matrix
 tests/test_fleet_v1_verdict_evidence.py       # consumer matrix
@@ -454,4 +543,6 @@ tests/test_fleet_v1_t10_producer_binding.py   # real CLI + invoke_once producer
 tests/test_fleet_v1_t10_continuation_provenance.py
                                               # wake/grant/checkpoint + Work Run
                                               # + execution_context binding
+tests/test_fleet_v1_t10_authority_bridge.py   # real WE #14 finalize_run_verified
+                                              # + real offline receipt
 ```
