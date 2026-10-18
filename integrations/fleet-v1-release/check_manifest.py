@@ -101,7 +101,7 @@ def check(doc, raw_text: str = "") -> Report:
             r.error("E188", "preview", "must be an object")
             preview = None
         else:
-            if preview.get("label") not in {"INTEGRATION_PREVIEW", "INTEGRATION_PREVIEW_V2"}:
+            if preview.get("label") not in {"INTEGRATION_PREVIEW", "INTEGRATION_PREVIEW_V2", "INTEGRATION_PREVIEW_V3"}:
                 r.error("E189", "preview.label", "must be INTEGRATION_PREVIEW[_V2]")
             if preview.get("all_release_gates") is not False:
                 r.error("E190", "preview.all_release_gates", "must be false")

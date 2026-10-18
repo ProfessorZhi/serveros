@@ -532,7 +532,8 @@
         "label": {
           "enum": [
             "INTEGRATION_PREVIEW",
-            "INTEGRATION_PREVIEW_V2"
+            "INTEGRATION_PREVIEW_V2",
+            "INTEGRATION_PREVIEW_V3"
           ]
         },
         "all_release_gates": {
