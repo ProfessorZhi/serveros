@@ -85,6 +85,14 @@ inline constexpr const char* kReasonNeedsLogin = "SERVICE_ACCOUNT_LOGON_FAILED";
 inline constexpr const char* kReasonUnknownStateWord = "UNKNOWN_STATE_WORD";
 inline constexpr const char* kReasonNoStateLine = "NO_STATE_IN_THE_ANSWER";
 inline constexpr const char* kReasonUnsupportedPlatform = "UNSUPPORTED_PLATFORM";
+//: `OpenSCManager`/`OpenService` was refused. A principal that may not read a
+//: service is a DIFFERENT fact from a service that is down: one is a grant, the
+//: other is a state. Collapsing them would let a Core report "stopped" for
+//: something it was never allowed to look at.
+inline constexpr const char* kReasonAccessDenied = "SCM_ACCESS_DENIED";
+//: Any other SCM failure. The numeric code travels in `scm_error` so the reason
+//: word stays closed while the diagnosis stays available.
+inline constexpr const char* kReasonScmError = "SCM_ERROR";
 
 //: The Windows equivalents of a start type, as `sc qc` prints them.
 inline constexpr const char* kStartAuto = "AUTO_START";
@@ -106,6 +114,10 @@ struct WindowsServiceObservation {
     //: so a reader can see the number the word came from rather than trusting
     //: the word alone.
     int raw_state = -1;
+    //: The Win32 error that produced this observation, or 0. Diagnostics only —
+    //: a reader switches on `reason`, which is closed; this is the number behind
+    //: it, and it is never rendered as a state word.
+    unsigned long scm_error = 0;
     //: False means no measurement was taken, and `reason` says why. Every field
     //: above is then meaningless and must not be read.
     bool measured = false;

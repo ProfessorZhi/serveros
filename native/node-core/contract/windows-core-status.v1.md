@@ -113,6 +113,8 @@ as a fault.
 | part | status |
 |---|---|
 | the parser, the state machine, the vocabulary | **BUILT AND TESTED** on Tokyo — none of it is Windows-specific: text in, struct out |
+| `from_win32` — the mapping every Win32 refusal lives in | **BUILT AND TESTED** on Tokyo. It takes plain integers and strings, so a mistake in it is a failing unit test rather than an incident |
+| `Win32ScmQuery::query` — the four API calls | **SOURCE ONLY / BUILD_UNVERIFIED**. `#if defined(_WIN32)`, never compiled here |
 | the `_WIN32` half — named pipe, DACL, token check, `sc` invocation | **BUILD_UNVERIFIED**. There is no cross compiler on this host: `x86_64-w64-mingw32-g++`, `i686-w64-mingw32-g++` and `clang-cl` are all absent |
 | a live Windows reading | **NOT RUN**. #246 asks for it as a separate, separately authorised step |
 
@@ -120,7 +122,78 @@ as a fault.
 as a working Windows binary, and no Linux fixture may be presented as a Windows
 measurement.
 
+## 4b. The `_WIN32` implementation: what it may ask for
+
+`src/win32_scm.cpp` is the read-only query. It is split so that the part which
+DECIDES is testable on a host that has no Windows at all:
+
+| function | platform | tested here |
+|---|---|---|
+| `from_win32(name, current_state, win32_exit_code, start_type, last_error)` | any | **yes** — every refusal is a pure mapping from plain numbers |
+| `Win32ScmQuery::query` | `_WIN32` only | **no** — not compiled on this host |
+
+**The rights requested, and no others:**
+
+- `OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)` — the machine name is a
+  literal `nullptr`, **never a parameter**, so this component cannot be aimed at a
+  remote SCM. `SC_MANAGER_ENUMERATE_SERVICE` and `SC_MANAGER_CREATE_SERVICE` are
+  never requested.
+- `OpenServiceW(…, SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG)` — QUERY only.
+  `SERVICE_START`, `SERVICE_STOP`, `SERVICE_CHANGE_CONFIG` and `DELETE` are never
+  requested, so the handles this code holds **cannot carry out a verb** however
+  they are used later.
+
+There is no write call, no registry access, no shell and no credential in that
+file. A service name containing a backslash is refused before any API is
+reached — that character addresses something other than a local service — which
+is a second, independent reason the component cannot be pointed elsewhere.
+
+**The Win32 constants are stated locally, then checked.** `from_win32` compiles
+where `<winsvc.h>` does not exist, so the values live in `win32_values`; under
+`_WIN32` a `static_assert` compares every one against the real header, so a
+Windows build that found a different number **fails to compile** instead of
+silently mapping `SERVICE_RUNNING` onto something else. This build cannot check
+them, which is why the check is not optional where it can run.
+
+**The read-only path to a logon failure.** `QueryServiceStatusEx` does not return
+1069 for a service that cannot log on; it returns `SERVICE_STOPPED` with
+`dwWin32ExitCode = 1069`. A Core that read only the state would see a stopped
+service and spend a retry on a credential, so the exit code is read on both
+routes — the typed call and the text parser — and only when the service is not
+running.
+
+**Access denied is a grant, not a state.** `ERROR_ACCESS_DENIED` (5) is
+`measured = false` with `SCM_ACCESS_DENIED`. Reporting it as `STOPPED` would
+claim knowledge this Core does not have, and would make a permission problem look
+like an outage.
+
+## 4c. The Core's status route: UNSUPPORTED, and deliberately not faked
+
+The Linux route is a UNIX socket protected by a mode bit, `SO_PEERCRED` and a
+refusal to follow a symlink. The Windows equivalent is a named pipe protected by
+a **DACL** and a client **token**.
+
+**It is not implemented here.** A security descriptor that has never been
+compiled, let alone run, is not a guarantee — it is the appearance of one, and in
+this area the appearance is worse than the absence. There is no Windows compiler
+on this host and no owner authorisation to exercise one on a real machine, so
+`windows_status_ipc_status()` returns `UNSUPPORTED` with the reason
+`NO_VERIFIED_SECURITY_DESCRIPTOR`.
+
+The status is a **constant**, not a computation: a later change that wants to
+claim the route works has to change that line and the test that pins it, which is
+a visible decision rather than a silent drift.
+
 ## 5. Task Scheduler: declared, not yet implemented
+
+The vocabulary is added (`task_status.hpp`) and every word carries a `TASK_`
+prefix, so **disjointness with the service states is a property of the spelling**
+and a test asserts the set intersection is empty. A summary therefore cannot
+report a task with a service's word, or a service with a task's word.
+
+`UnsupportedTaskQuery` returns `TASK_UNSUPPORTED` with a reason. **No code path
+derives a task state from SCM data**: the two producers share no field, no
+function and no word.
 
 #246 names SCM **and** Task Scheduler. This milestone covers the SCM only.
 

@@ -15,6 +15,13 @@
 
 add_library(windows_core_scm STATIC
   src/scm_status.cpp
+  # The `_WIN32` half and its platform-neutral mapping. The file always compiles;
+  # the four API calls inside it are `#if defined(_WIN32)` and are NOT compiled
+  # here, because this host has no cross compiler. The fallback path — which IS
+  # compiled and tested — answers UNSUPPORTED_PLATFORM rather than an empty list.
+  src/win32_scm.cpp
+  # The Task Scheduler vocabulary. Separate words, no SCM derivation.
+  src/task_status.cpp
 )
 target_include_directories(windows_core_scm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(windows_core_scm PUBLIC nodecore_supervisor)
@@ -36,3 +43,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(test_windows_scm_status PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME windows_scm_status COMMAND test_windows_scm_status)
+
+# The decision half of the `_WIN32` adapter, the IPC status, and the task
+# vocabulary — all platform-neutral, all tested on this host.
+add_executable(test_windows_core_source_contract tests/test_win32_source_contract.cpp)
+target_link_libraries(test_windows_core_source_contract PRIVATE windows_core_scm)
+target_include_directories(test_windows_core_source_contract PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(test_windows_core_source_contract PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME windows_core_source_contract COMMAND test_windows_core_source_contract)

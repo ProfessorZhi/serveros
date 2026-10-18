@@ -136,6 +136,7 @@ WindowsServiceObservation parse_scm_query(const std::string& service_name,
 
     std::string state_text;
     std::string start_text;
+    std::string exit_code_text;
     std::size_t begin = 0;
     while (begin <= stdout_text.size()) {
         const std::size_t newline = stdout_text.find('\n', begin);
@@ -156,6 +157,8 @@ WindowsServiceObservation parse_scm_query(const std::string& service_name,
             state_text = value;
         } else if (key == "START_TYPE") {
             start_text = value;
+        } else if (key == "WIN32_EXIT_CODE") {
+            exit_code_text = value;
         }
     }
 
@@ -194,6 +197,26 @@ WindowsServiceObservation parse_scm_query(const std::string& service_name,
     // there is a decision to respect.
     if (observed.start_type == kStartDisabled) {
         observed.state = kStateManualStop;
+        return observed;
+    }
+
+    // `WIN32_EXIT_CODE` IS WHERE A READ-ONLY QUERY FINDS A LOGON FAILURE. A
+    // service whose account cannot log on does not report an error from
+    // `QueryServiceStatusEx` — it reports `SERVICE_STOPPED` with
+    // `dwWin32ExitCode = ERROR_SERVICE_LOGON_FAILED` (1069). So the 1069 branch
+    // at the top of this function, which reads the `sc` wrapper's exit code, is
+    // the path a SHELL wrapper takes; this is the path a direct SCM query takes,
+    // and a parser that handled only the first would miss the fact on the route
+    // the Core actually uses.
+    //
+    // Only when the service is NOT running: a running service logged on, whatever
+    // exit code it last carried.
+    if (!exit_code_text.empty() && observed.state != kStateRunning) {
+        int win32_exit = 0;
+        if (leading_int(exit_code_text, win32_exit) && win32_exit == 1069) {
+            observed.state = kStateNeedsLogin;
+            observed.reason = kReasonNeedsLogin;
+        }
     }
     return observed;
 }

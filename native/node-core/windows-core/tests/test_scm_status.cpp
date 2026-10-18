@@ -49,6 +49,17 @@ std::string sc_error(int code, const std::string& what) {
     return "[SC] OpenService FAILED " + std::to_string(code) + ":\n\n" + what + "\n";
 }
 
+//: A `sc query` answer that carries an exit code — which is where a READ-ONLY
+//: query finds a logon failure, because `QueryServiceStatusEx` does not return
+//: 1069 for a service that cannot log on; it returns STOPPED with that exit code.
+std::string sc_query_with_exit(const std::string& name, int state_number,
+                               const std::string& state_word, int win32_exit) {
+    return "SERVICE_NAME: " + name + "\r\n" +
+           "        STATE              : " + std::to_string(state_number) + "  " + state_word +
+           "\r\n" +
+           "        WIN32_EXIT_CODE    : " + std::to_string(win32_exit) + "  (0x0)\r\n";
+}
+
 }  // namespace
 
 int main() {
@@ -164,6 +175,32 @@ int main() {
                                            "[SC] something FAILED 110609:\n", 0);
         CHECK_EQ(noise.state, std::string(kStateRunning));
         CHECK(noise.measured);
+    }
+
+    {
+        // THE READ-ONLY PATH TO A LOGON FAILURE, through the text answer. A
+        // service whose account cannot log on reports STOPPED with
+        // WIN32_EXIT_CODE 1069; a parser that read only STATE would see a
+        // stopped service and spend a retry on a credential.
+        const auto logon = parse_scm_query(
+            name, sc_query_with_exit(name, 1, "STOPPED", 1069), "", 0);
+        CHECK(logon.measured);
+        CHECK_EQ(logon.state, std::string(kStateNeedsLogin));
+        CHECK_EQ(windows_admission_for(logon, name),
+                 std::string(nodecore::supervisor::kAdmitNeedsLogin));
+
+        // The same code on a RUNNING service is ignored: it logged on, whatever
+        // it last carried.
+        const auto running = parse_scm_query(
+            name, sc_query_with_exit(name, 4, "RUNNING", 1069), "", 0);
+        CHECK_EQ(running.state, std::string(kStateRunning));
+
+        // And a DISABLED service stays MANUAL_STOP even with the code: the
+        // person's decision is the actionable fact.
+        const auto disabled = parse_scm_query(
+            name, sc_query_with_exit(name, 1, "STOPPED", 1069) + sc_qc(name, 4, "DISABLED"), "",
+            0);
+        CHECK_EQ(disabled.state, std::string(kStateManualStop));
     }
 
     // ---------------------------------------------------------------------
