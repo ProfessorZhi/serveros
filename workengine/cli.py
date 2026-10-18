@@ -256,8 +256,13 @@ def _common() -> argparse.ArgumentParser:
     return common
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="serverosctl", description="ServerOS v3 control plane", parents=[_common()])
+def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
+    # `prog` is a parameter because this parser is reached two ways: as the
+    # `serverosctl workengine` subcommand, where the usage line must name the
+    # composed entry, and as `python -m workengine`, the internal/compatibility
+    # entry whose historical name is `serverosctl`. A hard-coded name let the
+    # subcommand's own help claim a top-level surface it does not have.
+    parser = argparse.ArgumentParser(prog=prog, description="ServerOS v3 control plane", parents=[_common()])
     groups = parser.add_subparsers(dest="group", required=True)
 
     item = groups.add_parser("item", parents=[_common()])
@@ -387,8 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(argv: list[str] | None = None, prog: str = "serverosctl") -> int:
+    args = build_parser(prog).parse_args(argv)
     try:
         handler = {
             "item": _cmd_item,

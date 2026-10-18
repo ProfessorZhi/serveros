@@ -12486,6 +12486,46 @@ def cmd_architecture_project(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# workengine — the Work Engine control plane, behind the one dispatcher
+# ---------------------------------------------------------------------------
+#
+# The Work Engine's v3 control plane (`workengine/cli.py`) answers a separate
+# question space — Items, Runs, evidence, the Board — but it is not a separate
+# program. Before the merge it installed its own `serverosctl` console script,
+# so one machine could carry two executables with one name and two different
+# surfaces: a reader asking for the Board renderer was answered by whichever
+# copy happened to be on their PATH, and the other copy's absence of the verb
+# was indistinguishable from a defect.
+#
+# Its verbs are reached here as `serverosctl workengine <group> ...`, with the
+# tail forwarded unchanged — the mechanism `architecture` uses, and for the
+# same reason: re-declaring the engine's parser in this file would be a second
+# declaration of one interface, and the two would drift the first time a verb
+# was added on either side. `python -m workengine` remains the module entry
+# that tests and composition members use; the installed executable surface is
+# `serverosctl` only.
+
+
+def cmd_workengine(args) -> int:
+    """Run the Work Engine's v3 control plane with the tail passed through."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    # Imported here rather than at module scope so that the node runtime's own
+    # verbs stay answerable on a revision whose engine import is broken, and
+    # `serverosctl --help` does not depend on the engine being importable.
+    from workengine.cli import main as workengine_main
+
+    forwarded: list[str] = []
+    if getattr(args, "json", False):
+        # The global `--json` was typed before the subcommand, so the
+        # subparser never saw it; put it back in front of the tail rather than
+        # parsing it into a value this surface would then have to re-emit.
+        forwarded.append("--json")
+    forwarded.extend(getattr(args, "trailing_argv", None) or [])
+    return workengine_main(forwarded, prog="serverosctl workengine")
+
+
+# ---------------------------------------------------------------------------
 # test — the Project Testing Contract
 # ---------------------------------------------------------------------------
 
@@ -15501,6 +15541,21 @@ def build_parser() -> argparse.ArgumentParser:
     w_drift.add_argument("--dirty-detail", action="store_true",
                          help="list up to 50 dirty paths per checkout")
     w_drift.set_defaults(func=cmd_workspace)
+
+    # No `parents=[common]` and no `add_help`: both would make this subparser
+    # claim flags that belong to the engine's own parser. `--help` and `--json`
+    # written after the verb are then leftovers, forwarded verbatim, so
+    # `serverosctl workengine --help` prints the ENGINE's usage under the name
+    # `serverosctl workengine` rather than a second, shorter help page that
+    # would go stale. See `cmd_workengine` for why the surface is here at all.
+    workengine = sub.add_parser(
+        "workengine",
+        help="the Work Engine v3 control plane: Item, Activity, Run, "
+             "evidence, Board (workengine/cli.py, forwarded verbatim)",
+        description="Runs the Work Engine's v3 control plane with the "
+                    "arguments after `workengine` passed through unchanged.",
+        add_help=False)
+    workengine.set_defaults(func=cmd_workengine, accepts_unknown_argv=True)
 
     architecture = sub.add_parser(
         "architecture",
