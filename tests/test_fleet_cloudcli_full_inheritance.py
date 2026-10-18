@@ -1781,6 +1781,43 @@ class AdvertisedSchemaInvariantTest(unittest.TestCase):
                 self.assertIn("session_ref", schema["properties"])
                 self.assertIn("session_ref", schema["required"])
 
+    def test_approvals_list_declares_the_session_ref_the_runtime_requires(self):
+        """A READ whose disclosure the runtime scopes to one session.
+
+        `fleet.py` refuses an `approvals_list` that names no session and then
+        writes the named session into `arguments.session`, so the published
+        schema owes the caller the same key. It declared nothing: the tool is
+        `GOV_READ`, and the session axis was read off the governance class
+        alone, so a validating client had to supply a key the same schema's
+        top-level `additionalProperties: false` forbade. That is the defect
+        `session_reconfigure` and `approval_answer` already carried, surviving
+        in the one class the predicate did not cover.
+        """
+        native = cloudcli_native.NATIVE_BY_NAME["approvals_list"]
+        self.assertEqual(native.governance, cloudcli_native.GOV_READ)
+        schema = cloudcli_native.mirrored_schema(native)
+        self.assertIn("session_ref", schema["properties"])
+        self.assertIn("session_ref", schema["required"])
+        # Still a read: no project axis, and `arguments` itself stays optional
+        # because the native `session` is optional — the runtime fills it from
+        # `session_ref` rather than reading it out of the payload.
+        self.assertNotIn("project", schema["properties"])
+        self.assertEqual(schema["required"], ["device_ref", "session_ref"])
+
+    def test_the_session_addressed_reads_are_named_one_by_one(self):
+        """A read the runtime scopes to a session is added deliberately.
+
+        Derived from nothing: the governance-class predicate cannot express it,
+        so the exception is written down where a reviewer reads it.
+        """
+        self.assertEqual(cloudcli_native.SESSION_ADDRESSED_READS,
+                         frozenset({"approvals_list"}))
+        for name in cloudcli_native.SESSION_ADDRESSED_READS:
+            native = cloudcli_native.NATIVE_BY_NAME[name]
+            with self.subTest(tool=name):
+                self.assertTrue(native.read_only,
+                                "a session-addressed READ must still be a read")
+
     def test_every_session_addressed_class_declares_and_requires_session_ref(self):
         """Read from the same predicate the schema builder uses, so a class added
         to one half later cannot leave the other behind — which is the shape of
