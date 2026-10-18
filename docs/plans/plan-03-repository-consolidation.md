@@ -14,13 +14,13 @@
 | 项目 | 仓库 | 可见性 | 并入的旧仓库 |
 |---|---|---|---|
 | ServerOS | `serveros` | Public | `work-engine`、`serveros-research-exchange`（模板和工具部分） |
-| ServerOS | `ability-management` | Public（现为 Private） | `dev-doctor`、`agent-software` |
+| ServerOS | `ability-management` | **Private**（2026-10-18 所有者决定） | `dev-doctor`、`agent-software` |
 | ServerOS | `hwz-records` | Private | `hwz-ops`、`agent-session-archive` |
 | MarketOps | `marketops` | Public | `marketops-private` |
-| MarketOps | `marketops-session` | **Public**（已脱敏，语料本体不入库） | `marketops-session-private` |
+| MarketOps | `marketops-session` | **Private**（2026-10-18 所有者决定） | `marketops-session-private` |
 | LLM Lab | `llmlab`（新建） | Public | `llm-lab`、`llm-lab-portal` |
 
-另外直接删除：第三方项目副本 `quay`、`meta-cc`、`archguard`、`claude-fleet`、`learn-claude-code`，以及空仓库 `claude-workspace`。
+另外直接删除：第三方项目副本 `quay`、`meta-cc`、`archguard`、`learn-claude-code`，以及空仓库 `claude-workspace`。**`claude-fleet` 不是第三方副本**（所有者自己的提交 81 个），删除前先用 `git bundle` 存档到 `hwz-records/archive/third-party/claude-fleet/`，见 plan-04 派工卡 F。
 
 **本次不处理**：Support Bot（`litellm-support-bot`、`litellm-support`、`troublebuddy-kb-bridge`）以及与三个项目无关的其他仓库。
 
@@ -267,7 +267,8 @@ set -euo pipefail
 REPOS=(
   # 第三方副本和空仓库，可以最先删除
   ProfessorZhi/claude-workspace ProfessorZhi/learn-claude-code ProfessorZhi/meta-cc
-  ProfessorZhi/archguard ProfessorZhi/claude-fleet ProfessorZhi/quay
+  ProfessorZhi/archguard ProfessorZhi/quay
+  # ProfessorZhi/claude-fleet   # 先完成 bundle 存档（plan-04 派工卡 F）再删
   # 已并入的旧仓库（观察期后）
   # ProfessorZhi/agent-software ProfessorZhi/dev-doctor ProfessorZhi/serveros-research-exchange
   # ProfessorZhi/agent-session-archive ProfessorZhi/hwz-ops ProfessorZhi/work-engine

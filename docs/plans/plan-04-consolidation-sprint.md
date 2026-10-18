@@ -20,6 +20,10 @@
 
 ---
 
+> **2026-10-18 所有者决定：`ability-management`、`marketops-session` 保持 Private。** 最终是 3 个 Public（`serveros`、`marketops`、`llmlab`）+ 3 个 Private（`ability-management`、`marketops-session`、`hwz-records`）。
+
+---
+
 ## 1. 红线：不影响正在运行的旧版 Fleet
 
 1. **不合并任何会改运行代码的 PR**：#266、#146 和那 95 个 Draft 都不碰，它们属于 V1 交付。
@@ -36,7 +40,7 @@
 
 - [ ] 新建 **Public** 空仓库 `llmlab`（不初始化）。**只阻塞车道 E 的第 2 波推送**，其余车道照常进行。
 - [ ] 冻结 work-engine 上还开着的 PR（#3、#13–#16）：留言「冻结，内容随 serveros 合并」。
-- [ ] 第 2 波结束、**第 7 节验收通过后**：在网页上合并各车道 PR，改可见性（`ability-management` → Public），然后归档旧仓库。
+- [ ] 第 2 波结束、**第 7 节验收通过后**：在网页上合并各车道 PR，然后归档旧仓库。
 - [ ] 第 3 波：逐台回复「批准 东京」「批准 Dell」「批准 Windows」。
 
 ---
@@ -61,8 +65,8 @@
 | A3 | 1 | serveros | `consolidate/a3-docs` | README / README.zh / ARCHITECTURE / DIRECTORY-CONVERGENCE（**只改文档**） | — | 未开始 |
 | B1 | 1 | ability-management | `consolidate/b1-dev-doctor` | `skills/dev-doctor/` | — | 本地进行中 |
 | B2 | 1 | ability-management | `consolidate/b2-agent-software` | `software/` | — | 本地进行中 |
-| B3 | 1 | ability-management | `consolidate/b3-sanitize` | 31 个敏感文件（按目录拆给 B3a/B3b/B3c 三个 agent） | — | 本地进行中 |
-| B4 | 1 | ability-management | 无（只读） | — | — | 用 gitleaks 扫**包含历史**，给出建议：直接公开，还是新建干净仓库 |
+| B3 | 1 | ability-management | `consolidate/b3-sanitize` | 21 个含真实值的文件 | — | **已完成**，PR #31（与 main 基线相同的既有失败，无新增） |
+| B4 | — | ability-management | — | — | — | **取消**：所有者决定该仓库保持 Private，不需要为公开做历史处理 |
 | C1 | 1 | hwz-records | `chore/consolidate-20261019` | `ops/`、`archive/agent-sessions/`、`research-packets/` | — | **已推送**，只需核对和补回执 |
 | D1 | 1 | marketops | `consolidate/d1-marketops` | 全仓 | — | 未开始 |
 | D2 | 1 | marketops-session | `consolidate/d2-session` | 全仓 | — | 未开始 |
@@ -71,12 +75,12 @@
 | E3 | 1 | llm-lab-portal | `consolidate/e3-browser` | `tests/browser/`、`prototypes/v6/`（必要时） | — | 未开始 |
 | E4 | 1 | llm-lab-portal | `consolidate/e4-import` | 只新增：`legacy/`、`deploy/templates/`、`deploy/grafana/`、`deploy/evalscope/`、`docs/legacy/`、`docs/benchmarks/`、`config/*.example.toml` | — | 未开始 |
 | F1 | 1 | quay、meta-cc、archguard | 无（只读） | — | — | 本地已开始取上游，继续 |
-| F2 | 1 | claude-fleet、learn-claude-code、claude-workspace | 无（只读） | — | — | 未开始 |
+| F2 | 1 | claude-fleet、learn-claude-code、claude-workspace | 无（只读） | — | — | **已完成**：后两个可删；claude-fleet 不可直接删（见派工卡 F） |
 | G0-T | 1 | 东京设备 | 无（只读） | — | — | 未开始 |
 | G0-D | 1 | Dell 设备 | 无（只读） | — | — | 未开始 |
 | G0-W | 1 | Windows（本机） | 无（只读） | — | — | 未开始 |
 | A-int | 2 | serveros | `consolidate/serveros` | 合并 A1–A3 | A1–A3 | |
-| B-int | 2 | ability-management | `consolidate/ability-management` | 合并 B1–B3 | B1–B4 | |
+| B-int | 2 | ability-management | `consolidate/ability-management` | 合并 B1–B3（PR #30、#32、#31） | B1–B3 | |
 | D-int | 2 | — | — | 核对 D1、D2 的回执，列出要转移的 Issue | D1、D2 | |
 | E-int | 2 | llmlab | `main` 的初始提交 | E1 + E2 + E3 + E4 → 全仓脱敏 → 一个初始提交 | E1–E4、**llmlab 已建** | |
 | G1-T / G1-D / G1-W | 3 | 各设备 | — | 见派工卡 G1 | A-int、C1 已合并，**所有者批准该设备** | |
@@ -127,15 +131,8 @@
 - B1：`dev-doctor` → `skills/dev-doctor/`，其中 6 个文件含本机路径，需要脱敏。
 - B2：`agent-software` → `software/`。
 
-**B3a / B3b / B3c — ability-management 脱敏**
-31 个敏感文件按顶层目录分成三份，每个 agent 一份。处理方式二选一：改成通用写法，或者整体移到 `hwz-records` 的私有目录（那样就交给 C1 去放）。跑 `ability-management` 的测试，确认不退化。
-
-**B4 — ability-management 历史扫描（只读）**
-运行 `gitleaks detect`（包含 Git 历史）和 `trufflehog git file://.`。按结果给建议：
-- 历史干净：直接改为 Public；
-- 历史不干净：新建一个干净仓库，用一个初始提交导入。
-
-由所有者决定。
+**B3 — ability-management 脱敏（已完成，PR #31）**
+所有者已决定 `ability-management` **保持 Private**，所以 B3 是可选的清理，不是公开前提。`skills/muc-playwright-e2e/`（含真实姓名、飞书租户、会话 ID）原地保留，不移动。Git 历史不改写。
 
 **C1 — hwz-records（核对已推送分支）**
 核对 `chore/consolidate-20261019` 是否覆盖 `hwz-ops` → `ops/`、`agent-session-archive` → `archive/agent-sessions/`、新建 `research-packets/`。补齐缺的部分，交出完整的落点映射，开 Draft PR。这个仓库保持 Private。
@@ -143,10 +140,8 @@
 **D1 — marketops**
 把 `marketops-private` 中仍有用的内容补进 `marketops`。这是 Public 仓库：真实人名、公司名、邮箱、电话、社交账号全部换成合成数据。列出应该转到 `marketops` 的 Issue 编号（只列，不转）。
 
-**D2 — marketops-session（保持 Public）**
-先只读扫描当前内容，包括 Git 历史。如果发现会话语料原文、真实会话片段或真实个人信息，**立即停下**，回执第一行写「⚠️ 需要所有者处理」。
-
-如果干净：从 `marketops-session-private` 补进可以公开的部分。语料和真实会话片段不迁，在回执里列明。
+**D2 — marketops-session（Private）**
+所有者已决定该仓库**保持 Private**（2026-10-18 已改为 Private）。把 `marketops-session-private` 的有用内容并入 `marketops-session`；仓库是私有的，不要求换成合成数据，但凭据和密钥仍然不能入库。
 
 **E1 — llmlab 基线**
 1. 在 `integration/v1-wave14-green-20261018` 和 `integration/v1-wave4-recovered-20261017`（以及 PR #99）之间选一个作为基线，选最新且测试最全的，在回执里写理由。
@@ -182,6 +177,15 @@
 2. 判断这些提交是不是所有者自己写的。
 3. `quay` 的 `measurements/`、`experiments/` 里如果有值得保留的结论，列出它们，以及要摘到 `hwz-records` 的哪里。
 4. 结论二选一：「可以安全删除」，或「删除前先摘录 X → Y」。
+
+**F2 结论（2026-10-18）**：`learn-claude-code`（独有提交 0）、`claude-workspace`（占位 README）可以安全删除。
+**`claude-fleet` 不是第三方副本**：所有者自己的提交 81 个，相对基线新增约 309 个文件（`docs/`、`agentmetrics/`、`server/` 等），还有 3 个未合并的 PR（#10–#12），与上游没有共同祖先。删除前必须先存档：
+```bash
+git clone --mirror https://github.com/ProfessorZhi/claude-fleet.git && cd claude-fleet.git
+git bundle create claude-fleet.bundle --all     # 约 5MB
+git bundle verify claude-fleet.bundle
+```
+把 bundle 放进私有仓库 `hwz-records` 的 `archive/third-party/claude-fleet/`（超过 GitHub 普通文件建议大小时用 Git LFS），PR #10–#12 的描述也导出为 Markdown 放在一起。存档验证通过后才能删除。
 
 **G0-T / G0-D / G0-W — 设备只读盘点**
 每台设备一个 agent。东京、Dell 用已有的 SSH 访问方式，Windows 就是本机。运行 plan-03 §10.1 的只读命令（Windows 用 PowerShell 的对应命令），**不修改任何东西**。
@@ -222,7 +226,7 @@
 
 **验收通过后**才按下面的顺序清理旧仓库（所有者操作）：
 1. 合并各车道 PR，把 llmlab 推送上去。
-2. 把被并入的 10 个旧仓库**归档**：`work-engine`、`serveros-research-exchange`、`dev-doctor`、`agent-software`、`hwz-ops`、`agent-session-archive`、`marketops-private`、`marketops-session-private`、`llm-lab`、`llm-lab-portal`。F 车道确认过的第三方副本和空仓库可以直接删除。
+2. 把被并入的 10 个旧仓库**归档**：`work-engine`、`serveros-research-exchange`、`dev-doctor`、`agent-software`、`hwz-ops`、`agent-session-archive`、`marketops-private`、`marketops-session-private`、`llm-lab`、`llm-lab-portal`。第三方副本和空仓库：`learn-claude-code`、`claude-workspace` 可以直接删除；`quay`、`meta-cc`、`archguard` 等 F1 结论；**`claude-fleet` 不能直接删**，先按派工卡 F 的做法存档。
 3. 观察 14 天，确认没有设备再访问旧仓库后，运行 plan-03 §11 的删除脚本。
 
 ## 8. 不在这次冲刺里做
