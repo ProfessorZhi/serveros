@@ -489,6 +489,10 @@ approval_mod = _load("serveros_runtime_approval", "approval.py")
 # the daemon contributes the two things only it has — the durable binding store
 # and a way to reach the Item authority.
 coordination_mod = _load("serveros_runtime_coordination", "coordination.py")
+# #245 / S2. The dispatch-attempt kernel, under the same synthetic name every
+# other loader uses, so the `AttemptRefused` caught here is the one raised there.
+dispatch_attempts_mod = _load("serveros_runtime_dispatch_attempts",
+                              "dispatch_attempts.py")
 # §M. Which session a conversation is addressing. Pure rules and the level
 # projection; the daemon contributes the durable selection store. Loaded here
 # rather than restated because the console's `selection_record` is what refuses
@@ -1442,6 +1446,13 @@ class Daemon:
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
             "agent.binding.close": self._r_agent_binding_close,
+            # #245 / S2. The durable dispatch attempt. `agent.dispatch.resolve`
+            # is the read the router's replay guard matches a retry against;
+            # `agent.dispatch.record` is the write — CALL_NOT_SENT before the
+            # send, SETTLED/EFFECT_UNKNOWN after — and it is the record that
+            # makes a crash BETWEEN those two distinguishable from one after.
+            "agent.dispatch.resolve": self._r_agent_dispatch_resolve,
+            "agent.dispatch.record": self._r_agent_dispatch_record,
             # §M. Which session a conversation is addressing. Two methods and
             # not four: a selection has no close, because selecting another
             # session is what supersedes one, and a conversation that has
@@ -1580,6 +1591,12 @@ class Daemon:
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
                 "agent.binding.record", "agent.binding.close",
+                # #245 / S2. The durable dispatch attempt: `resolve` reads the
+                # record a retry is matched against, `record` writes it. On this
+                # socket (not the node MCP) for the same reason the bindings are:
+                # the record is the daemon's store, and the router that dispatches
+                # reaches it through here.
+                "agent.dispatch.resolve", "agent.dispatch.record",
                 # §M. Both, and reachable from a conversation by way of the
                 # CLI. This is the one console operation no provider serves:
                 # no provider has an opinion about which session a person is
@@ -3035,6 +3052,28 @@ class Daemon:
             item["observed_at"] = _iso(self._now())
         return {"found": True, "session_ref": ref, "binding": record,
                 "item": item,
+                # #237 B1. The CURRENT WRITER of this thread's write scope, the
+                # consumer half of the v2 writer-binding. Derived by the kernel's
+                # ONE derivation function from this store's OWN binding records —
+                # no second store, no copied authority. `None` means no thread
+                # claims the scope: a reading, not a failure. The gate refuses a
+                # thread that CLAIMS a superseded writer, and refuses a thread
+                # that claims nothing while the scope is owned by another; an
+                # unowned scope is left ungated so pre-existing threads keep
+                # working.
+                # The WORK ENGINE LEASE for this thread's Item, read from the
+                # `leases` table the writer (work-engine #13) writes. This is the
+                # authority the send admission checks the claim against (#237 B3
+                # / QA Snapshot E): an expired, revoked or absent lease is `None`
+                # and authorizes nothing. `current_writer` below is the
+                # binding-store derivation, kept for callers that read it, but it
+                # is not the authority — a claim is something a caller can write.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)},
+                "current_writer": (coordination_mod.current_writer(
+                    store.bindings(), bound) if bound else None),
                 "item_axis": coordination_mod.item_axis(
                     (item or {}).get("state"), outcome=(item or {}).get("outcome")),
                 "provenance": {
@@ -3056,25 +3095,91 @@ class Daemon:
         The record is built here rather than accepted. `put_binding` refuses a
         second, different record for a session, so a caller cannot use this to
         change which Item a thread is for; it can only create one.
+
+        #237 B1. This is also the PRODUCER of the write-scope claim: an
+        execution binding records which thread owns its Item's write scope, so
+        that the admission gate fires on the real path and not only in tests.
+        `_writer_claim` states the three rules it applies.
         """
         ref = _required(params, "session_ref")
+        store = self.control_store()
         try:
             record = coordination_mod.binding(
                 session_role=params.get("session_role"),
                 bound_item_ref=params.get("bound_item_ref"),
                 work_item=params.get("work_item"),
                 device_ref=params.get("device_ref"),
-                recorded_at=_iso(self._now()))
+                recorded_at=_iso(self._now()),
+                writer=self._writer_claim(store, ref, params))
         except coordination_mod.ThreadRefused as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": exc.reason, "detail": exc.detail}
         record["session_ref"] = ref
         try:
-            stored = self.control_store().put_binding(record)
+            stored = store.put_binding(record)
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
-        return {"recorded": True, "session_ref": ref, "binding": stored}
+        bound = str((stored or {}).get("bound_item_ref") or "") or None
+        return {"recorded": True, "session_ref": ref, "binding": stored,
+                # QA Snapshot G. The caller learns at CREATE time whether this
+                # thread can send at all. The send admission reads the same
+                # authority, so a create that reports no lease is a thread that
+                # will refuse every write — said here rather than discovered on
+                # the first `session.send`. The acquisition itself is
+                # BLOCKED_PRODUCER_BOUNDARY: nothing in this product can call
+                # work-engine's `acquire_lease` yet.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)}}
+
+    def _writer_claim(self, store, ref, params):
+        """The write-scope claim to record with this binding, or None.
+
+        THE PRODUCER HALF of the v2 writer-binding (#237 B1), and since QA
+        Snapshot E it mints from the WORK ENGINE LEASE — the same `leases` row
+        `workengine/store.py#acquire_lease` writes — so the binding and the send
+        admission name ONE authority instead of two that can disagree.
+
+          * an EXPLICIT claim in `params["writer"]` is REFUSED. This RPC carries
+            no trusted actor, and a caller-chosen owner/token is exactly the
+            spoof E4 recorded: `agent.binding.record` accepted
+            `writer={owner: agent:EVIL, token: 999}` with nothing behind it.
+          * a RE-RECORD of the same session reuses the claim already stored, so
+            `put_binding`'s idempotency holds.
+          * a NEW session claims the scope ONLY when the Work Engine holds a live
+            lease for that Item and no thread claims it yet. No lease ⇒ no claim,
+            and admission will refuse the send — a scope nobody acquired
+            authorizes nobody.
+        """
+        if params.get("writer") is not None:
+            raise coordination_mod.ThreadRefused(
+                "UNTRUSTED_ACTOR",
+                "agent.binding.record does not accept a caller-supplied writer. "
+                "The write scope's owner is the Work Engine lease; a writer this "
+                "RPC was told to record would be a claim with no authority "
+                "behind it")
+        if str(params.get("session_role") or "") != "execution":
+            return None
+        item = str(params.get("bound_item_ref") or "").strip()
+        if not item:
+            return None
+        existing = store.get_binding(ref)
+        if existing is not None:
+            return dict(existing.get("writer") or {}) or None
+        bindings = store.bindings()
+        if coordination_mod.scope_has_writer(bindings, item):
+            return None
+        lease = resolver_mod.live_lease(self._item_roots(), item)
+        if lease is None:
+            return None
+        claim = coordination_mod.mint_writer(bindings, item, owner=lease["owner"])
+        # The token is the LEASE's fence, not a second counter's. A binding that
+        # minted its own token could never agree with the lease it is checked
+        # against.
+        claim["token"] = str(lease["token"])
+        return claim
 
     def _r_agent_binding_close(self, params) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
@@ -3093,6 +3198,133 @@ class Daemon:
             return {"closed": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
         return {"closed": True, "session_ref": ref, "binding": closed}
+
+    def _r_agent_dispatch_resolve(self, params) -> dict:
+        """The recorded dispatch attempt for a key, or None (#245).
+
+        The READ half of the durable attempt. A retry is matched against this
+        record, so it must be the one the write half put there — one store,
+        `agent_control_store.py#dispatch_attempts`, reached by both.
+
+        NOT found is an answer and not an error: it means nothing was ever
+        dispatched under this key, which is what a FIRST dispatch looks like.
+        """
+        key = _required(params, "key")
+        attempt = self.control_store().get_dispatch_attempt(key)
+        return {"found": attempt is not None, "key": key, "attempt": attempt}
+
+    def _r_agent_dispatch_record(self, params) -> dict:
+        """Record one dispatch attempt (#245). The one write path for it.
+
+        Validated HERE as well as at the router, for the reason
+        `_r_agent_binding_record` states about its own shape: this is a write
+        point, and a write point that trusts its caller is one that will
+        eventually be handed a shape assembled somewhere else. The record is
+        rebuilt by `dispatch_attempts.attempt_record`, so a phase nobody
+        declared is refused here rather than stored as a word.
+
+        IDENTITY IS RESOLVED, NEVER ASSERTED (independent-QA P0-2). The caller
+        presents a `context_ref`; this method resolves it against what ServerOS
+        actually minted, requires it to be FRESH, and takes the principal from
+        THAT record. A record that claims a different principal is refused rather
+        than quietly overwritten — a forged principal is worth saying out loud.
+        With no resolvable, fresh context the write is refused as
+        `UNTRUSTED_ACTOR`: an unattributed phase is exactly the self-asserted
+        `SETTLED` the QA found.
+
+        TRANSITIONS. Only `DISPATCH_SIDE_PHASES` may be written here —
+        `SUPERSEDED` is a policy decision, not a dispatch outcome. A `SETTLED`
+        must carry the provider's answer (a settle with nothing attached is not a
+        settle) and must MOVE an existing `CALL_NOT_SENT`/`EFFECT_UNKNOWN`
+        attempt; nothing is settled that was never dispatched.
+        """
+        context_ref = str(params.get("context_ref") or "").strip()
+        if not context_ref:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": ("a dispatch attempt is written against the trusted "
+                               "context_ref of the call that dispatched it; none "
+                               "was presented, so nobody can be attributed")}
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": resolved["because"]}
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": str(exc)}
+        freshness = actor_mod.freshness(trusted, _iso(self._now()))
+        if freshness.get("state") != "FRESH":
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the presented context is {freshness.get('state')!r}, "
+                               f"which authorizes nothing: {freshness.get('because')}")}
+        principal = trusted["actor_ref"]
+
+        incoming = params.get("attempt")
+        if not isinstance(incoming, dict):
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": ("a dispatch attempt is a record; there is nothing "
+                               "here to store")}
+        claimed = str(incoming.get("principal") or "").strip()
+        if claimed and claimed != principal:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the record claims principal {claimed!r} and the "
+                               f"trusted context is {principal!r}. A principal is "
+                               f"taken from the resolved context, never from the "
+                               f"payload")}
+        try:
+            record = dispatch_attempts_mod.attempt_record(
+                key=incoming.get("key"), action=incoming.get("action"),
+                device_ref=incoming.get("device_ref"), verb=incoming.get("verb"),
+                intent_digest=incoming.get("intent_digest"),
+                phase=incoming.get("phase"), work_item=incoming.get("work_item"),
+                # The resolved actor, not the payload's string.
+                principal=principal,
+                runtime=incoming.get("runtime"),
+                session_ref=incoming.get("session_ref"),
+                grant_ref=incoming.get("grant_ref"),
+                provider_locator=incoming.get("provider_locator"),
+                result=incoming.get("result"), at=incoming.get("recorded_at"))
+        except dispatch_attempts_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+
+        phase = record["phase"]
+        if phase not in dispatch_attempts_mod.DISPATCH_SIDE_PHASES:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": (f"{phase!r} is not a phase the dispatch side writes. "
+                               f"A supersede is a policy decision about a newer "
+                               f"attempt, not an outcome of this one")}
+        store = self.control_store()
+        if phase == dispatch_attempts_mod.SETTLED:
+            if incoming.get("result") is None:
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a SETTLED must carry the provider's answer. A "
+                                   "settle with nothing attached is not a settle; it "
+                                   "is a caller asserting success")}
+            existing = store.get_dispatch_attempt(record["key"])
+            if (existing is None or existing.get("phase") not in
+                    (dispatch_attempts_mod.CALL_NOT_SENT,
+                     dispatch_attempts_mod.EFFECT_UNKNOWN)):
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a dispatch-side settle must move an existing "
+                                   "CALL_NOT_SENT or EFFECT_UNKNOWN attempt; "
+                                   "nothing was dispatched under this key")}
+        try:
+            # `actor` is what makes the store's identity check real: it compares
+            # the resolved principal with the one recorded when the attempt was
+            # first dispatched, so a different trusted actor cannot mutate it
+            # even with the digest (QA D3). The transition table is checked in
+            # the same mutation, so a terminal SETTLED cannot be reopened (D4).
+            stored = store.put_dispatch_attempt(record, actor=principal)
+        except agent_control_store_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": exc.reason_code,
+                    "detail": exc.detail}
+        except agent_control_store_mod.StoreError as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+        return {"recorded": True, "key": stored["key"], "attempt": stored}
 
     def _r_agent_binding_list(self, params) -> dict:
         """Every binding this node holds, by role. Never by actor, never by Item.

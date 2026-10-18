@@ -30,6 +30,27 @@ and a reader can grep for it.
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
+#: The kernel, loaded the way every other test loads a runtime module: under the
+#: synthetic name the daemon uses, so the `ThreadRefused` class caught here is
+#: the SAME class the daemon raises.
+_COORDINATION_NAME = "serveros_runtime_coordination"
+
+
+def _coordination():
+    if _COORDINATION_NAME in sys.modules:
+        return sys.modules[_COORDINATION_NAME]
+    path = Path(__file__).resolve().parent.parent / "runtime" / "coordination.py"
+    spec = importlib.util.spec_from_file_location(_COORDINATION_NAME, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_COORDINATION_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 ASSUME_BOUND = "assume-bound"
 REFUSE = "refuse"
 MODES = (ASSUME_BOUND, REFUSE)
@@ -74,7 +95,26 @@ class MemoryBindings:
                 record["bound_item_ref"], ("UNKNOWN", None))
             item = {"state": state, "outcome": outcome,
                     "item_ref": record["bound_item_ref"]}
-        return {"binding": record, "item": item}
+        # #237 B1. The CURRENT writer for this thread's write scope, joined at
+        # the same moment as the binding — the same two-facts-in-one-read shape
+        # the daemon's `agent.binding.resolve` provides. A test double that
+        # omitted it would make the writer gate unreachable from every routing
+        # test, which is the shape `tests/threads.py` exists to prevent one
+        # plane over.
+        return {"binding": record, "item": item,
+                "current_writer": self._current_writer(record)}
+
+    def _current_writer(self, record):
+        """The scope's current writer, derived by the KERNEL's own function.
+
+        Delegated rather than re-derived. A second derivation of "who may write
+        this scope" is a second answer to it, and this double exists to mirror
+        the daemon — not to invent a rule the daemon does not have.
+        """
+        if not record or not record.get("bound_item_ref"):
+            return None
+        return _coordination().current_writer(self._records,
+                                              record["bound_item_ref"])
 
     def put(self, record):
         ref = str(record["session_ref"])
@@ -86,21 +126,45 @@ class MemoryBindings:
         return self._records[ref]
 
     def close(self, ref, *, at="2026-09-14T00:00:00+00:00", reason=None):
-        record = dict(self._records[str(ref)])
+        """Close the binding for `ref`. A ref with nothing to close is a no-op.
+
+        Matches `AgentControlStore.close_binding`'s intent — closing a thread
+        that was never bound is not an error, there is simply nothing to
+        revoke — WITHOUT its fail-loud refusal, because a test double that
+        raised here would make a handoff unreachable from every routing test
+        (they run `assume-bound`, where `get` answers for a ref that was never
+        recorded). A ref that is neither recorded nor assumed has no binding and
+        this returns None.
+        """
+        key = str(ref)
+        record = self._records.get(key)
+        if record is None:
+            record = (self.get(key) or {}).get("binding")
+            if record is None:
+                return None
+        record = dict(record)
         record["state"] = "CLOSED"
         record["closed_at"] = at
         if reason:
             record["closed_reason"] = reason
-        self._records[str(ref)] = record
+        self._records[key] = record
         return record
 
     def bind(self, ref, *, session_role="execution",
-             bound_item_ref="LIT-0101", state="OPEN") -> dict:
-        """Record a binding directly, for a test that needs one in place."""
-        record = {"schema": "serveros/thread-binding.v1", "session_ref": str(ref),
-                  "session_role": session_role,
+             bound_item_ref="LIT-0101", state="OPEN", writer=None) -> dict:
+        """Record a binding directly, for a test that needs one in place.
+
+        `writer` records a claim of write authority (#237 B1), which is what
+        makes the binding a v2 one and what the writer gate checks. Omitting it
+        leaves a v1 binding, which claims nothing and is not gated.
+        """
+        record = {"schema": ("serveros/thread-binding.v2" if writer
+                             else "serveros/thread-binding.v1"),
+                  "session_ref": str(ref), "session_role": session_role,
                   "bound_item_ref": bound_item_ref,
                   "bound_item_ref_frozen": True, "state": state}
+        if writer:
+            record["writer"] = dict(writer)
         self._records[str(ref)] = record
         return record
 

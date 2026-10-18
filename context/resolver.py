@@ -21,11 +21,14 @@ a test environment, a Run directory or ServerOS machine state.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import math
 import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -35,6 +38,14 @@ except ImportError:  # pragma: no cover - environment guarantee
     raise SystemExit(2)
 
 SCHEMA = "serveros/context-capsule.v1"
+
+# The one lease timestamp format. The exclusive Work write lease is written by
+# `work-engine/workengine/store.py` and read here, so this string is a
+# cross-repository contract: fixed width, second precision, Z. A `datetime`
+# `isoformat()` (which drops the microsecond field when it is zero) would sort
+# `...:00Z` and `...:00.123456Z` incorrectly at the same second under a string
+# comparison, and the filter below IS a string comparison.
+_LEASE_STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
 # Deliverable kinds that are publications, and therefore route to feishu-report.
 PUBLICATION_DELIVERABLES = {
@@ -335,8 +346,65 @@ def active_items(roots: Roots, exclude: str) -> list[str]:
     )
 
 
-def held_leases(roots: Roots) -> list[str]:
-    return sorted(row["resource"] for row in _query_state(roots, "SELECT resource FROM leases"))
+def held_leases(roots: Roots, *, now=None) -> list[str]:
+    """Resources with a LIVE exclusive Work lease, ascending.
+
+    An EXPIRED row is not a held lease: it is a crashed or finished holder whose
+    claim stopped being backed by anything, and reporting it as held is
+    reporting a lock nobody holds. This reader used to be
+    `SELECT resource FROM leases` with no `expires_at` filter, so an expired
+    lease was returned and counted into `protected` — issue #237 B3/T6.
+
+    The row is deliberately NOT deleted; the READING excludes it. Dropping the
+    row would erase the only evidence that a holder ever existed, which is the
+    crash case the record is meant to answer.
+
+    `now` is epoch seconds and defaults to the wall clock. The comparison is a
+    plain string comparison on `expires_at`, which is why that column is pinned
+    to fixed-width `YYYY-MM-DDTHH:MM:SSZ` in `work-engine/workengine/store.py` —
+    the writer of this table is in another repository, so the format is a
+    cross-repo contract and not a local choice.
+    """
+    if now is None:
+        now = time.time()
+    expires_after = datetime.datetime.fromtimestamp(
+        math.ceil(float(now)), datetime.timezone.utc).strftime(_LEASE_STAMP)
+    return sorted(
+        row["resource"]
+        for row in _query_state(
+            roots,
+            "SELECT resource FROM leases WHERE expires_at > ?",
+            (expires_after,)))
+
+
+def live_lease(roots: Roots, resource: str, *, now=None) -> dict | None:
+    """The LIVE Work Engine lease for one resource, or None.
+
+    Same table and same fixed-width stamp as `held_leases`; the difference is
+    that this returns the owner and the token, because the send admission must
+    COMPARE them rather than merely count the resource. `held_leases` answers
+    "which resources are claimed" for the capsule's `protected` list; this
+    answers "who holds THIS one, and with which fence", which is the question a
+    send asks (#237 B3 / QA Snapshot E E5).
+
+    The row is written by `work-engine/workengine/store.py#acquire_lease` — the
+    one authority for exclusive Work write ownership — so this is a READ of that
+    authority, not a second one. An expired row is not a lease: it is a crashed
+    or finished holder, and a scope whose lease has lapsed has no current writer.
+    """
+    if now is None:
+        now = time.time()
+    expires_after = datetime.datetime.fromtimestamp(
+        math.ceil(float(now)), datetime.timezone.utc).strftime(_LEASE_STAMP)
+    rows = _query_state(
+        roots,
+        "SELECT resource, owner, token, expires_at FROM leases "
+        "WHERE resource=? AND expires_at > ?",
+        (str(resource), expires_after))
+    for row in rows:
+        return {"resource": row["resource"], "owner": row["owner"],
+                "token": row["token"], "expires_at": row["expires_at"]}
+    return None
 
 
 def _development(roots: Roots, project_cfg: dict, item_id: str) -> dict:
