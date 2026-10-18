@@ -498,6 +498,55 @@ def check(doc, raw_text: str = "") -> Report:
                     "a pair whose semantics are UNJOINED cannot be CLEAN_PREFLIGHT",
                 )
 
+    # ---- mandatory release proofs -----------------------------------------
+    proofs = doc.get("proof_requirements")
+    if not isinstance(proofs, dict):
+        r.error(
+            "E180",
+            "proof_requirements",
+            "the three release proofs must be recorded",
+        )
+        proofs = {}
+    claims_doc = doc.get("claims") or {}
+    promo = (
+        state == "COMPLETE_V1"
+        or claims_doc.get("code_composed_rc") is True
+        or claims_doc.get("final_acceptance") is True
+    )
+    for key, sha_key in (
+        ("authenticated_lease_producer", "sha"),
+        ("t10_we_finalize_link", "evidence_sha"),
+        ("independent_exact_sha_negative_qa", "sha"),
+    ):
+        item = proofs.get(key)
+        if not isinstance(item, dict):
+            r.error("E181", f"proof_requirements.{key}", "must be recorded")
+            continue
+        if item.get("required") is not True:
+            r.error("E182", f"proof_requirements.{key}.required", "this proof is mandatory")
+        if promo and item.get("present") is not True:
+            r.error(
+                "E183",
+                f"proof_requirements.{key}.present",
+                "promotion is refused without this proof",
+            )
+        if item.get("present") is True:
+            v = item.get(sha_key)
+            if not isinstance(v, str) or not SHA40.match(v):
+                r.error(
+                    "E184",
+                    f"proof_requirements.{key}.{sha_key}",
+                    "a present proof must name a full 40-hex SHA",
+                )
+    if wl_status == "SEND_ADMISSION_BOUND":
+        alp = proofs.get("authenticated_lease_producer") or {}
+        if alp.get("present") is not True:
+            r.error(
+                "E185",
+                "proof_requirements.authenticated_lease_producer.present",
+                "send admission cannot be bound without an authenticated lease producer",
+            )
+
     # ---- gates ------------------------------------------------------------
     gates = doc.get("gates")
     if not isinstance(gates, list) or not gates:
@@ -761,6 +810,20 @@ def _valid_fixture() -> dict:
                 "receipt": None,
             }
         ],
+        "proof_requirements": {
+            "authenticated_lease_producer": {"required": True, "present": True, "sha": "1" * 40},
+            "t10_we_finalize_link": {
+                "required": True,
+                "present": True,
+                "evidence_sha": "2" * 40,
+            },
+            "independent_exact_sha_negative_qa": {
+                "required": True,
+                "present": True,
+                "sha": "3" * 40,
+                "qa_snapshot": "snapshot-1",
+            },
+        },
         "hosted_ci": {"status": "QUOTA_WAIVED", "evidence": "no check runs observed"},
         "open_p0": [{"id": "P0", "summary": "not complete yet", "owner_action": "run the gate"}],
         "rollback": {"design": "revert one additive commit", "verified": False},
@@ -885,6 +948,33 @@ def self_test() -> int:
             ]
         ),
         {"E132"},
+    )
+    expect(
+        "promotion-without-t10-we-finalize-link",
+        lambda d: (
+            d.update(state="RC_CANDIDATE"),
+            d["source_merge"].update(performed=True),
+            d["claims"].update(code_composed_rc=True),
+            d["proof_requirements"]["t10_we_finalize_link"].update(present=False),
+        ),
+        {"E183"},
+    )
+    expect(
+        "bound-without-authenticated-lease-producer",
+        lambda d: d["proof_requirements"]["authenticated_lease_producer"].update(
+            present=False
+        ),
+        {"E185"},
+    )
+    expect(
+        "acceptance-without-exact-sha-negative-qa",
+        lambda d: (
+            d["claims"].update(final_acceptance=True),
+            d["proof_requirements"]["independent_exact_sha_negative_qa"].update(
+                present=False
+            ),
+        ),
+        {"E183"},
     )
     expect(
         "bound-without-session-create-producer",

@@ -9,15 +9,15 @@ wins and the disagreement is recorded.
 ```text
 serveros:main 4a31628
 │
-├─ S1/S2   #241 d0754ed ─┬─ #252 d49342b            base = main (behind 0)
-│                        └─ #261 a6bed15            stacked on #241; QA retesting
+├─ S1/S2   #241 d0754ed ─┬─ #261 a6bed15 ─ #262 9ada9f5   send gate → producer boundary
+│                        └─ #252 7a87e5c                  sibling on #241; re-base after #262
 │
 ├─ M1      #196 … ── #233 36a206d                  consumer of F1
 │
-├─ QA      #256 2c4fe87                            base = main; integrations/fleet-v1-qa/** only
+├─ QA      #256 2bb6f70                            base = main; integrations/fleet-v1-qa/** only
 │
-├─ R1      #257 c2e2e8d                            base = main; integrations/fleet-v1-runtime-parity/** only
-├─ T10     #258 4156572                            base = main; integrations/fleet-v1-verdict-evidence/** only
+├─ R1      #257 4045d16                            base = main; integrations/fleet-v1-runtime-parity/** only
+├─ T10     #258 5043ba1 ─ #260 ca1c05e ─ #263 c9fb802   producer + continuation binding
 ├─ N3      #259 f81ad9d                            base = main; integrations/fleet-v1-network-health/** only
 │
 ├─ F1      #146 ─ #149 ─ #150 ─ #154 ─ #155 ─ #163 ─ #164 ─ #177
@@ -46,8 +46,11 @@ Depths, counted from the PR whose base is `main`:
 | R1 (#257) | 1 | `main` |
 | T10 (#258) | 1 | `main` |
 | T10 producer (#260) | 2 | `feat/fleet-v1-t10-verdict-evidence-20261018` (= #258 head) |
+| T10 continuation (#263) | 3 | `feat/fleet-v1-t10-producer-binding-20261018` (= #260 head) |
 | S1 corrective (#261) | 3 | `feat/v1-session-write-fence-20261016` (= #241 head) |
+| S1 follow-up (#262) | 4 | `feat/v1-s1-lease-authority-send-gate-20261018` (= #261 head) |
 | N3 (#259) | 1 | `main` |
+| QA (#256) | 1 | `main` |
 
 `native/node-core` is **absent from `main`** (contents API 404). The whole N
 tower is unlanded, not partially landed.
@@ -107,17 +110,16 @@ consequences that a naive merge order gets wrong:
 
 When composition is eventually authorized, the order is forced by ancestry:
 
-0. **S1 corrective #261 `a6bed15` — BLOCKING, QA PENDING.** Send admission must
-   read the Work lease authority and a legitimate session-create producer must
-   acquire it. Nothing below step 0 may be composed in the S1 line until QA
-   produces a same-SHA receipt.
-1. **S1 pair** — work-engine #13 (writer) then serveros #241 (reader). Both base
-   current `main` (`behind_by: 0`) and share **0 files**, but the pair is
-   **semantically `UNJOINED`**: Snapshot E measured a forged binding writer
-   admitted while the live lease named another owner/token (exit 1, 22 held,
-   1 `SECURITY_FAIL`). Structural cleanliness is not landing approval.
-2. **T10 (#258)** and **N3 (#259)** — both base `main`, disjoint `integrations/**`
-   directories; independent of the S1 line.
+0. **S1 chain #241 → #261 → #262 — BLOCKING.** The send gate is fixed
+   (Snapshot G: 24/24), but no legitimate producer acquires the lease
+   (`BLOCKED_PRODUCER_BOUNDARY`). QA Snapshot H is in flight. Nothing in the S1
+   line may be composed until both land.
+0b. **T10 chain #258 → #260 → #263 — BLOCKING.** The producer CLI is verified
+   (37 checks); the Work Engine finalize/continuation consumption is not.
+1. **S1 paired with work-engine #13** — the writer must exist before the reader
+   has anything to read; the pair is still semantically unjoined.
+2. **N3 (#259)** and the source-only seams — base `main`, disjoint
+   `integrations/**` directories; independent of the S1 and T10 lines.
 3. **N1 (#242)** — 11-link chain, file-disjoint from every other lane.
 4. **N2 (#253)** — one commit above #242; depends on its CMake layout.
 5. **F1 (#243)** — 14-link unlanded chain. The owner must re-base; I1 must not.
@@ -143,8 +145,12 @@ let the structural result authorize composition (`E169`, `E170`, `E172`).
 
 | Pair | Shared files | Verdict |
 |---|---|---|
-| **#261 ↔ #252** | **4** — `runtime/daemon.py`, `fleet/agent_control_router.py`, `mcp/agent_mcp.py`, `tests/test_coordination.py` | siblings stacked on #241; **#261 must land first** because it changes the admission authority, then #252 re-bases |
-| **#260 ↔ #240** | **1** — `runtime/cli.py` | different chains; a rebase question, not a semantic join |
+| **#262 ↔ #252** | **5** — `fleet/agent-control-contract.yaml`, `fleet/agent_control_router.py`, `mcp/agent_mcp.py`, `runtime/daemon.py`, `tests/test_coordination.py` | siblings stacked on #241; **#262 must land first** because it owns the admission authority, then #252 re-bases. `git merge-tree`: **0 conflict markers** |
+| **#263 ↔ #240** | **1** — `runtime/cli.py` | different chains; `git merge-tree`: **0 conflict markers**; a rebase question, not a semantic join |
+
+Both chains are **fast-forward**: `merge-base --is-ancestor` is true for
+`#241→#261→#262` and `#258→#260→#263`. A three-way diff of a stacked pair
+reports a false marker; ancestry, not the diff, decides chain order.
 
 Neither overlap is a conflict I1 may resolve. The manifest records the file sets
 and the forced order; the owners re-base.

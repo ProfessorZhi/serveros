@@ -36,6 +36,19 @@ far a **candidate** has been accepted. They are separate; a candidate can be
 answers "do the branches conflict". Snapshot E is the worked example: the S1
 pair is `LOCAL_PASS` on both sides and still fails to join.
 
+## Three mandatory release proofs
+
+Promotion (any of `COMPLETE_V1`, `code_composed_rc`, `final_acceptance`) is
+refused by the checker unless all three are `present` with a full 40-hex SHA:
+
+| Proof | What it must contain | Checker |
+|---|---|---|
+| `authenticated_lease_producer` | a legitimate session-create producer that acquires the authoritative WE lease, with an authenticated writer | `E183` (promotion), `E185` (bound send), `E184` (SHA) |
+| `t10_we_finalize_link` | a verified Work Engine finalize/continuation consumption receipt | `E183`, `E184` |
+| `independent_exact_sha_negative_qa` | an independent QA run at the exact SHA that reproduced the negative and passed | `E183`, `E184` |
+
+None of the three is present at this snapshot.
+
 ## Owners
 
 - **Integrator**: Tokyo Integration Owner Session. Owns this manifest, the
@@ -43,12 +56,11 @@ pair is `LOCAL_PASS` on both sides and still fails to join.
 - **Independent QA**: **`INDEPENDENT_QA_PARTIAL`** — not `SIGNED`. Session
   `device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02`,
   Run `8384fcda-97c0-4d38-820d-4778f8ce5c8d`; triage artifact is **PR #256**
-  at `f5db800cb01d8352f8595d85b65a29e671728b2a` (**Snapshot F**, an offline
-  plugin packaging build at #230 `a934bee`; Snapshots A `a4d7131`, B `2c4fe87`,
-  C `a9c3ea5`, D `3ac74d5` and E `07e58ea` were superseded as snapshots, but
-  **E's cross-repo P0 is still open**). It owns every PASS in this matrix and
-  the `signature` field. A partial triage is **not** a PASS and **not** a
-  signature.
+  at `b7dabbe0bf7cf170cbc2f1fbc4549887af63faeb` (**Snapshot H**, exact-SHA
+  probes at #262+WE #13 and #263; Snapshots A `a4d7131` … G `2bb6f70` were
+  superseded as snapshots, but their open findings are carried forward). It
+  owns every PASS in this matrix and the `signature` field. A partial triage is
+  **not** a PASS and **not** a signature.
 - **Lane owners** (`S1`, `S2`, `F1`, `N1`, `N2`, `P1`, `M1`, `G1`, `R1`): own
   their source and their local receipts. The integrator does not re-run or
   re-sign them.
@@ -73,6 +85,8 @@ snapshot saw.
 | QA-P0-6-D4 | P0 | #252 | A terminal SETTLED can be written back to `CALL_NOT_SENT`, after which the kernel returns `PROCEED` | **CLOSED (LOCAL)** — terminal moves are refused; `EFFECT_UNKNOWN` cannot move back; terminal retry is `REPLAY` |
 | QA-P1-3 | P1 | #252 | Owner-observation reconcile has no production caller; grant enforcement not exercised | **OPEN** |
 | QA-P1-4 | P1 | #230 | Offline plugin packaging: 70 checks, exit 0 — five Skills byte-identical, deterministic SHA-256 across two builds, no secret/path/env/argv/bypass, refusals for bad scope/endpoint/out-of-source | **OPEN** (packaging green) — authenticated `initialize`/`tools/list`/`tools/call` is `BLOCKED_BY_OWNER_OAUTH` |
+| QA-P0-8-H | P0 | #262 + WE#13 | Snapshot H (A, 22 checks exit 0): create reports `write_authority`; a no-lease create records no claim, `lease=None`, no acquire/mutate; send gate refuses; pre-acquired A/1 admitted; forged writer/epoch and second claimant refuse. Source: no `acquire_lease` in serveros, WE has no CLI/MCP or actor/grant | **OPEN** — `BLOCKED_PRODUCER_BOUNDARY` |
+| QA-P1-5-H | P1 | #263 | Snapshot H (B, 34 checks exit 0): real executor + consumer; exit 0 → `ELIGIBLE` only, exit 1 + PASS → `DENY`; bad Run/context/revision/grant/cross-principal refuse before spawn; tamper → `DENY`; missing anchor → `BLOCKED_WIRING`. WE does not ingest the proof | **OPEN** — `BLOCKED_WIRING` |
 | QA-P0-3 | P0 | #243 | `test_no_node_paths_in_product_data.py` failed at `494f452` on an absolute home literal | **CLOSED (LOCAL)** — guard re-run at `4a5d0a0`: 10 tests OK, exit 0 |
 | QA-P1-1 | P1 | #255 | Present-but-null is read as affirmative: `{"health": null, "policy": null}` → `READY/ALLOWED` with a non-null `effective` | **OPEN** — uncorrected at `619cf63`; G1 owner dispatch platform-blocked |
 | QA-P2-1 | P2 | #252 | `_same_writer` matches an empty/partial writer record | **CLOSED (LOCAL)** — empty writer, no-principal record and empty reconciler all refuse; the production-caller question moved to QA-P1-3 |
@@ -174,7 +188,8 @@ importance. Only step 1 is immediately landable.
 
 | Step | Composition | Why here |
 |---|---|---|
-| **0** | **S1 corrective #261 `a6bed15`** | **BLOCKS step 1 until QA verifies it.** Send admission must read the lease authority, and a legitimate session-create producer must acquire it |
+| **0** | **S1 chain #241→#261→#262** | **BLOCKS step 1.** Snapshot H A: 22 checks exit 0, send gate correct, but **no legitimate producer acquires the lease** — `BLOCKED_PRODUCER_BOUNDARY` |
+| **0b** | **T10 chain #258→#260→#263** | Snapshot H B: 34 checks exit 0, but **WE does not ingest the proof** — `BLOCKED_WIRING` |
 | 1 | serveros **#241** then work-engine **#13** | structurally clean, **semantically `UNJOINED`** — blocked by step 0 |
 | 2 | **#258** (T10) and **#259** (N3) | both base `main`, disjoint `integrations/**` directories; may land in parallel with step 1 |
 | 3 | **#242** (N1) | 11-link chain, file-disjoint from every other lane |
@@ -215,10 +230,23 @@ was created, sent or resumed. `RUNTIME_CC_CODEX_CLOUDCLI` stays
 acceptance seam and negative fixtures.
 
 **#260 `ca1c05e`** (stacked on #258) adds a producer binding in `runtime/cli.py`.
-But the **Work Engine finalization/continuation consumption is not wired**:
-`mcp/continuation_mcp.py` was deliberately not edited because its wake envelope
-lacks `work_run_id` / `commit_sha` / `runner_identity`. So the parent still has
-no end-to-end acceptance path. `T10` stays `BLOCKED` (`BLOCKED_OWNER_ACTION`).
+QA Snapshot G ran the real CLI: **37 checks, exit 0** (`PASS` + exit 1 → `DENY`,
+exit 0 → only `ELIGIBLE`, tampered anchor → `DENY`).
+
+**#263 `c9fb802`** (stacked on #260) wires `runtime/bounded_executor.py` and
+`mcp/continuation_mcp.py` fail-closed. `runtime/wake.py` is deliberately
+unchanged: Run id, exact SHA and runner identity are Work Engine store facts,
+not caller-supplied envelope fields.
+
+**Snapshot H (B, 34 checks, exit 0)** exercised the real executor:
+exit 0 → `ELIGIBLE` only; exit 1 with PASS text → `DENY`; 0/ambiguous Runs,
+missing `execution_context`, stale revision, revoked grant and cross-principal
+refuse **before spawn**; cross-run/tampered bytes/forged principal → `DENY`;
+missing anchor → `BLOCKED_WIRING`.
+
+The **Work Engine still does not ingest the T10 proof**, so the parent has no
+verified finalize/continuation receipt. `T10` stays `BLOCKED`
+(`BLOCKED_OWNER_ACTION`), classified `BLOCKED_WIRING`.
 
 **#260 ↔ #240 overlap — 1 file.** Both modify `runtime/cli.py`; `#240` is the
 journey B1 branch. It is a rebase question, not a semantic join, but one of the
@@ -246,7 +274,8 @@ Structural facts are clean. **Semantics are not, and that is what decides.**
 | **semantic status** | **`UNJOINED`** |
 | **work-lease authority** | **`SEND_ADMISSION_UNBOUND`** |
 | Snapshot E evidence | **exit 1, 22 checks held, 1 `SECURITY_FAIL` (E5)** |
-| S1 corrective | **#261 `a6bed15`** — send gate reads the WE lease; **QA retesting, PENDING** |
+| S1 corrective | **#261 `a6bed15`** — QA Snapshot G: red→green, 24/24 exit 0 |
+| S1 follow-up | **#262 `9ada9f5`** — Snapshot H A: 22 checks exit 0; create reports `write_authority`; **`BLOCKED_PRODUCER_BOUNDARY`** |
 | session-create producer | **absent** — no legitimate producer acquires the authoritative lease |
 | authenticated writer | **false** — the binding claim is still caller-writable |
 | sibling overlap | **#261 ↔ #252 share 4 files** (see below) |
@@ -295,6 +324,32 @@ cd <serveros-worktree> && python3 -m unittest tests.test_v1_write_fence tests.te
 # 3. the join itself: forged writer refused, lease mismatch refused, exit 0
 #    (this is the receipt the corrective milestone must produce)
 ```
+
+## Conflict-resolution worksheet (act on this; no re-research needed)
+
+Measured with `git merge-tree` on a read-only clone at the exact SHAs below,
+under a 1 GiB / no-swap / 25 % CPU scope. **Every proposed pair has zero
+conflict markers.** The blockers are semantic and authority-based.
+
+| # | Pair | Relation | Files changed in both | Markers | Who acts | Action |
+|---|---|---|---|---|---|---|
+| 1 | **#241 → #261 → #262** | **fast-forward** (`merge-base --is-ancestor` true for both links) | 0 | 0 | Security A owner | land in order once QA Snapshot H passes and a lease producer exists |
+| 2 | **#262 ↔ #252** | siblings on #241 | **5** — `fleet/agent-control-contract.yaml`, `fleet/agent_control_router.py`, `mcp/agent_mcp.py`, `runtime/daemon.py`, `tests/test_coordination.py` | **0** | S1 owner then S2 owner | #262 lands first (it owns the admission authority); **#252 rebases and is re-reviewed** |
+| 3 | **#258 → #260 → #263** | **fast-forward** (ancestry true for both links) | 0 | 0 | T10 owner | land in order after Snapshot H and the WE consume link |
+| 4 | **#263 ↔ #240** | different chains | **1** — `runtime/cli.py` | **0** | #260/#263 owner and #240 owner | whichever lands first owns `runtime/cli.py`; the other rebases |
+| 5 | **#263 ↔ #262** | disjoint | **0** | 0 | — | independent |
+| 6 | **#257 / #259 ↔ lanes** | disjoint `integrations/**` | **0** | 0 | — | independent |
+
+Reading rules:
+
+- **A stacked pair diffed three-way reports a false conflict.** `#261` vs
+  `#262` shows a marker on `fleet/agent-control-contract.yaml` only because
+  `merge-tree` does not consider ancestry; `git merge` fast-forwards. Use
+  `merge-base --is-ancestor`, not the diff, to decide chain order.
+- **Zero markers is not approval.** Rows 2 and 4 are mechanically mergeable and
+  still unauthorized: row 2 changes who may admit a write, row 4 is an owner
+  rebase.
+- I1 does not resolve any row. It records the file sets, the order and the owner.
 
 ## Work in flight — none at this snapshot
 

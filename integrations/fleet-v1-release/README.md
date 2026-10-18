@@ -64,6 +64,11 @@ The checker is deliberately narrow and mechanical. It rejects:
 - `SEND_ADMISSION_BOUND` without a same-SHA negative proof that exited 0 with
   `security_fail: 0` (`E165`–`E168`);
 - a pair whose `semantic_status` is `UNJOINED` marked `CLEAN_PREFLIGHT` (`E172`);
+- promotion without an authenticated lease producer (`E183`), a T10 WE
+  finalize link (`E183`), or an independent exact-SHA negative QA (`E183`) —
+  and any "present" proof that names no 40-hex SHA (`E184`);
+- `SEND_ADMISSION_BOUND` while the authenticated lease producer is absent
+  (`E185`);
 - `final_acceptance: true` before `COMPLETE_V1` (`E173`);
 - an unknown evidence class (`E161`);
 - credential-like material in the manifest (`E100`).
