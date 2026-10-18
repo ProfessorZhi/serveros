@@ -128,8 +128,18 @@ def _git(repo: Path, *args: str) -> bytes:
 # red. This tuple remains the builder's IMPLEMENTATION input: it is how the
 # composition is assembled, and it is no longer the statement of what is
 # required.
+#
+# `workengine` is the fourth member of the same argument, and the only one that
+# arrived by merge rather than by discovery: the Work Engine was a separate
+# distribution that a node had to point at with `--work-engine`. It is copied
+# verbatim like the rest of the Core modules, so an installed node can run
+# `python -m workengine` from its own revision instead of from a checkout that
+# moves. It is NOT on `runtime/cli.py`'s import path — the node dispatcher
+# stays the only `serverosctl` — so the loader closure does not require it;
+# `release.py`'s `REQUIRED_MEMBERS` is what makes a release carry it.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
-                "abilities", "memory", "fleet", "intake", "documents")
+                "abilities", "memory", "fleet", "intake", "documents",
+                "workengine")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:

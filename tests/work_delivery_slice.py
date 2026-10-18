@@ -45,9 +45,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-WORK_ENGINE = Path("/data/home/vince/workspace/src/work-engine")
-SERVEROS = Path("/data/home/vince/workspace/src/serveros")
-REAL_STATE_DB = Path("/data/home/vince/state/serveros/serveros.db")
+REPO = Path(__file__).resolve().parents[1]
+# The engine is the repository's own `workengine/` package since the merge of
+# `work-engine@19d9520`, so the module is run from the repository root. The
+# previous value was an absolute checkout path belonging to one machine; a
+# slice that can only run where that path exists is not reproducible.
+WORK_ENGINE = REPO
+SERVEROS = REPO
+# The real node database this fixture promises not to touch. It is derived from
+# the node's own state directory instead of a machine-specific absolute path;
+# when the directory is not seeded the guard reports "it does not exist".
+REAL_STATE_DB = (Path(os.environ["SERVEROS_STATE_DIR"])
+                 if os.environ.get("SERVEROS_STATE_DIR")
+                 else Path.home() / "state" / "serveros") / "serveros.db"
 
 PROJECT = "serveros"
 PREFIX = "SRV"

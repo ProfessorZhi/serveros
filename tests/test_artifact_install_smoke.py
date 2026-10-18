@@ -235,11 +235,19 @@ class InstalledArtifactTests(unittest.TestCase):
     def test_every_shipped_module_imports_from_the_install(self):
         """Every module the artifact carries, loaded with the artifact's layout.
 
-        The artifact is not a set of python packages — there is no
+        Most of the artifact is not a set of python packages — there is no
         `__init__.py`; entry points put their own directory on `sys.path` and
         import by bare name. So an audit that walked packages would import
         nothing and report success, which is the failure mode this test is
         about. It reproduces the layout the entry points set up.
+
+        A directory that DOES carry `__init__.py` is a package and is probed
+        as one: the package's top-level parent goes on `sys.path` and the
+        module is imported by its dotted name. `workengine/` is the case that
+        made this distinction necessary — it is shipped as a package and its
+        modules use relative imports, so `import store` with `workengine/`
+        itself on `sys.path` asks a question the runtime never asks and fails
+        with "attempted relative import with no known parent package".
 
         Files under `fixtures/` are loaded by path rather than imported —
         `memory/provider-contract.yaml` names one — so they are exercised the
@@ -270,6 +278,22 @@ class InstalledArtifactTests(unittest.TestCase):
                     if "/fixtures/" in rel:
                         proc = subprocess.run(
                             [sys.executable, str(py), "--selftest"],
+                            cwd=str(self.installed), env=clean_env(self.home),
+                            capture_output=True, text=True, timeout=300)
+                    elif (py.parent / "__init__.py").is_file():
+                        # A package, not a bare module: sys.path holds the
+                        # package's top-level PARENT and the import names the
+                        # package, so relative imports resolve the way they do
+                        # when the shipped entry points import it.
+                        parts = [py.stem]
+                        parent = py.parent
+                        while (parent / "__init__.py").is_file():
+                            parts.append(parent.name)
+                            parent = parent.parent
+                        script = PROBE % {"paths": [str(parent)],
+                                          "module": ".".join(reversed(parts))}
+                        proc = subprocess.run(
+                            [sys.executable, "-c", script],
                             cwd=str(self.installed), env=clean_env(self.home),
                             capture_output=True, text=True, timeout=300)
                     else:

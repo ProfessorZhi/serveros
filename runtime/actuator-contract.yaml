@@ -1569,3 +1569,123 @@ actuators:
       that a declaration layer running behind the code is the pathology.
     sites:
       - {file: context/trust_binding.py, symbols: [_write]}
+
+  # ---------------------------------------------------------------------
+  # The Work Engine call sites, declared when `work-engine@19d9520` moved
+  # inside this repository. Each one is a permission the merge brought with
+  # it; none of them existed in this tree before the import.
+  # ---------------------------------------------------------------------
+  - id: workengine-resume-demo-runs-the-cli
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      `scripts/workengine_resume_demo.py` runs the CLI as a fresh process
+      because the demo's whole subject is a NEW process resuming an id. The
+      argv is assembled from `sys.executable` and the module name, so the
+      scanner reports the chokepoint rather than the command. It is a demo,
+      not a product path: it writes only under the state directory its caller
+      passes and touches no node service.
+    sites:
+      - {file: scripts/workengine_resume_demo.py, symbols: [_run]}
+
+  - id: workengine-board-atomic-render
+    kind: fs_mutation
+    verb: os.replace
+    why: >-
+      The board renderer's write-temp-then-rename. The temporary name is
+      derived from the target in the same directory and is removed by the
+      replace; the destination is the board path the caller named, so no
+      other file can be reached by this call.
+    sites:
+      - {file: workengine/board.py, symbols: [_atomic_write]}
+
+  - id: workengine-context-resolver-commands
+    kind: unresolved_argv
+    verb: "<argv0>"
+    why: >-
+      Two commands the Capsule adapter runs as separate processes: a probe of
+      whether the chosen interpreter can import PyYAML, and the resolver
+      itself. Both argv entries are assembled from configuration
+      (`SERVEROS_PYTHON`, `sys.executable`, the located bundle), which is why
+      the scanner reports the chokepoint rather than one command.
+    sites:
+      - {file: workengine/context.py, symbols: [_has_yaml, resolve_capsule]}
+
+  - id: workengine-federation-staging-cleanup
+    kind: fs_mutation
+    verb: .unlink()
+    why: >-
+      The failure half of atomic staging in the federation publisher. Each
+      unlink removes the temporary file the SAME function created one
+      statement earlier, on the path where writing or publishing did not
+      complete. The name is a fresh `mkstemp`/`O_EXCL` path, never a
+      caller-supplied one.
+    sites:
+      - {file: workengine/federation.py, symbols: [_write_staged, _write_transaction_file]}
+
+  - id: workengine-federation-recorded-metadata
+    kind: fs_mutation
+    verb: os.chown
+    why: >-
+      The publisher preserves the mode and ownership of the file it is
+      replacing by re-applying metadata it captured before the write. Both
+      calls run on the backup/staged copy with a recorded uid/gid and mode,
+      not on a path a caller supplies, and `follow_symlinks=False` keeps the
+      operation on the object itself.
+    sites:
+      - {file: workengine/federation.py, symbols: [_apply_metadata], verb: os.chown}
+      - {file: workengine/federation.py, symbols: [_apply_metadata], verb: os.chmod}
+
+  - id: workengine-federation-publication-journal
+    kind: fs_mutation
+    verb: .replace()
+    why: >-
+      The publication protocol writes a journal before it touches the target,
+      then commits with a same-directory replace. `_restore_pending` replays
+      the previous bytes from the backup on the failure path, and
+      `publish_inventory` is the publication chokepoint: the target is
+      canonicalized and a symlink is refused before any of these calls. The
+      unlink half removes only the journal, stage and backup names the
+      protocol itself created.
+    sites:
+      - {file: workengine/federation.py, symbols: [_write_journal, _restore_pending, publish_inventory], verb: .replace()}
+      - {file: workengine/federation.py, symbols: [_write_journal, _remove_pending, _restore_pending, publish_inventory], verb: .unlink()}
+
+  - id: workengine-migration-path-move
+    kind: fs_mutation
+    verb: os.rename
+    why: >-
+      The store migration copies a directory aside, verifies the copy's hash
+      against the manifest, fsyncs it, and only then renames it into place and
+      removes the source. The remove touches the source that was just
+      verified or the temporary path this function created; an EXDEV fallback
+      removes the temporary copy only after the same hash check.
+    sites:
+      - {file: workengine/migration.py, symbols: [_move_verified], verb: os.rename}
+      - {file: workengine/migration.py, symbols: [_remove_path], verb: shutil.rmtree}
+      - {file: workengine/migration.py, symbols: [_remove_path], verb: .unlink()}
+
+  - id: workengine-run-finalize-atomic-commit
+    kind: fs_mutation
+    verb: .replace()
+    why: >-
+      `ServerOSStore.finalize_run` writes the finalize payload to a `.tmp`
+      sibling, rejects secrets in it, hashes it, records that hash, and then
+      replaces the final name. The other replace recovers an evidence locator
+      only when the recorded target is absent, from a `.tmp` this method
+      wrote. Both names are derived from the store's own artifact directory.
+    sites:
+      - {file: workengine/store.py, symbols: [ServerOSStore.finalize_run]}
+
+  - id: workengine-mcp-terminate-name-resolution
+    kind: process_termination
+    verb: .terminate()
+    why: >-
+      Declared as a gap in the scanner's knowledge rather than as a process
+      signal. `WorkControlClient.call` dispatches `work.run.cancel` and
+      `work.run.abandon` to the object's own `terminate` method, which writes
+      the Run state through the store; it signals no process and holds no
+      `Popen`. The scanner resolves `.terminate()` by name here, so the two
+      call sites are declared under the kind it reports.
+    sites:
+      - {file: workengine/mcp.py, symbols: [WorkControlClient.call]}
