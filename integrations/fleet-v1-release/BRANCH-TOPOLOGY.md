@@ -9,7 +9,8 @@ wins and the disagreement is recorded.
 ```text
 serveros:main 4a31628
 │
-├─ S1/S2   #241 d0754ed ── #252 d49342b            base = main (behind 0)
+├─ S1/S2   #241 d0754ed ─┬─ #252 d49342b            base = main (behind 0)
+│                        └─ #261 a6bed15            stacked on #241; QA retesting
 │
 ├─ M1      #196 … ── #233 36a206d                  consumer of F1
 │
@@ -44,6 +45,8 @@ Depths, counted from the PR whose base is `main`:
 | G1 (#255) | 15 + 5 | `integration/fleet-v1-candidate-20261017` (= #243 head) |
 | R1 (#257) | 1 | `main` |
 | T10 (#258) | 1 | `main` |
+| T10 producer (#260) | 2 | `feat/fleet-v1-t10-verdict-evidence-20261018` (= #258 head) |
+| S1 corrective (#261) | 3 | `feat/v1-session-write-fence-20261016` (= #241 head) |
 | N3 (#259) | 1 | `main` |
 
 `native/node-core` is **absent from `main`** (contents API 404). The whole N
@@ -104,9 +107,10 @@ consequences that a naive merge order gets wrong:
 
 When composition is eventually authorized, the order is forced by ancestry:
 
-0. **S1 corrective — BLOCKING, no PR/SHA yet.** Send admission must read the
-   Work lease authority before the pair may land. Nothing below step 0 may be
-   composed in the S1 line until it exists.
+0. **S1 corrective #261 `a6bed15` — BLOCKING, QA PENDING.** Send admission must
+   read the Work lease authority and a legitimate session-create producer must
+   acquire it. Nothing below step 0 may be composed in the S1 line until QA
+   produces a same-SHA receipt.
 1. **S1 pair** — work-engine #13 (writer) then serveros #241 (reader). Both base
    current `main` (`behind_by: 0`) and share **0 files**, but the pair is
    **semantically `UNJOINED`**: Snapshot E measured a forged binding writer
@@ -134,6 +138,16 @@ caller-supplied binding writer and never consults the lease, which is exactly
 what Snapshot E measured. A preflight can therefore be `CLEAN` structurally and
 `BLOCKED_SEMANTIC` in fact; the manifest records both and the checker refuses to
 let the structural result authorize composition (`E169`, `E170`, `E172`).
+
+## Sibling overlaps introduced this milestone
+
+| Pair | Shared files | Verdict |
+|---|---|---|
+| **#261 ↔ #252** | **4** — `runtime/daemon.py`, `fleet/agent_control_router.py`, `mcp/agent_mcp.py`, `tests/test_coordination.py` | siblings stacked on #241; **#261 must land first** because it changes the admission authority, then #252 re-bases |
+| **#260 ↔ #240** | **1** — `runtime/cli.py` | different chains; a rebase question, not a semantic join |
+
+Neither overlap is a conflict I1 may resolve. The manifest records the file sets
+and the forced order; the owners re-base.
 
 Two accepted Owner runs (N3 network-source, T10 test-evidence) are **work in
 flight**: sessions and Run ids exist, but no PR and no SHA. They are not on this

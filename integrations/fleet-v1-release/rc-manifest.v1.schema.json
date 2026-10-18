@@ -248,11 +248,27 @@
         "work_lease": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "authority", "observed_authority", "negative_proof"],
+          "required": [
+            "status",
+            "authority",
+            "observed_authority",
+            "session_create_producer",
+            "negative_proof"
+          ],
           "properties": {
             "status": { "enum": ["SEND_ADMISSION_BOUND", "SEND_ADMISSION_UNBOUND"] },
             "authority": { "type": "string", "minLength": 10 },
             "observed_authority": { "type": "string", "minLength": 10 },
+            "session_create_producer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["present", "sha", "authenticated_writer"],
+              "properties": {
+                "present": { "type": "boolean" },
+                "sha": { "type": ["string", "null"] },
+                "authenticated_writer": { "type": "boolean" }
+              }
+            },
             "negative_proof": {
               "type": ["object", "null"],
               "additionalProperties": false,

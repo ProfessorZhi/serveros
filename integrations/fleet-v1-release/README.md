@@ -58,6 +58,9 @@ The checker is deliberately narrow and mechanical. It rejects:
   (`E159`), or claiming `CLEAN_PREFLIGHT` where the pair shares files (`E158`);
 - an **unbound send-admission lease** marked `CLEAN_PREFLIGHT` (`E169`) or used
   to authorize a source merge (`E170`);
+- `SEND_ADMISSION_BOUND` without a legitimate session-create producer that
+  acquires the authoritative lease (`E176`), or with a caller-writable,
+  unauthenticated writer (`E177`), or with a producer that names no SHA (`E175`);
 - `SEND_ADMISSION_BOUND` without a same-SHA negative proof that exited 0 with
   `security_fail: 0` (`E165`–`E168`);
 - a pair whose `semantic_status` is `UNJOINED` marked `CLEAN_PREFLIGHT` (`E172`);

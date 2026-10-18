@@ -382,7 +382,35 @@ def check(doc, raw_text: str = "") -> Report:
                 v = wl.get(key)
                 if not isinstance(v, str) or len(v) < 10:
                     r.error("E164", f"composition_preflight.work_lease.{key}", "must be recorded")
+            scp = wl.get("session_create_producer")
+            if not isinstance(scp, dict):
+                r.error(
+                    "E174",
+                    "composition_preflight.work_lease.session_create_producer",
+                    "the session-create producer must be recorded",
+                )
+                scp = {}
+            if scp.get("present") is True and (
+                not isinstance(scp.get("sha"), str) or not SHA40.match(scp["sha"])
+            ):
+                r.error(
+                    "E175",
+                    "composition_preflight.work_lease.session_create_producer.sha",
+                    "a present producer must name a full 40-hex SHA",
+                )
             if wl_status == "SEND_ADMISSION_BOUND":
+                if scp.get("present") is not True:
+                    r.error(
+                        "E176",
+                        "composition_preflight.work_lease.session_create_producer.present",
+                        "no legitimate session-create producer acquires the authoritative lease",
+                    )
+                if scp.get("authenticated_writer") is not True:
+                    r.error(
+                        "E177",
+                        "composition_preflight.work_lease.session_create_producer.authenticated_writer",
+                        "the writer is not authenticated by a grant",
+                    )
                 proof = wl.get("negative_proof")
                 if not isinstance(proof, dict):
                     r.error(
@@ -694,6 +722,11 @@ def _valid_fixture() -> dict:
                 "status": "SEND_ADMISSION_BOUND",
                 "authority": "the live Work Engine lease at send admission",
                 "observed_authority": "the same lease was read on the real path",
+                "session_create_producer": {
+                    "present": True,
+                    "sha": "f" * 40,
+                    "authenticated_writer": True,
+                },
                 "negative_proof": {
                     "sha": "e" * 40,
                     "qa_snapshot": "snapshot-1",
@@ -852,6 +885,20 @@ def self_test() -> int:
             ]
         ),
         {"E132"},
+    )
+    expect(
+        "bound-without-session-create-producer",
+        lambda d: d["composition_preflight"]["work_lease"]["session_create_producer"].update(
+            present=False
+        ),
+        {"E176"},
+    )
+    expect(
+        "bound-without-authenticated-writer",
+        lambda d: d["composition_preflight"]["work_lease"]["session_create_producer"].update(
+            authenticated_writer=False
+        ),
+        {"E177"},
     )
     expect(
         "bound-without-negative-proof",
