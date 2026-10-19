@@ -1142,6 +1142,119 @@ class ServerOSStore:
         temporary.replace(locator)
         return {"state":state,"verdict":verdict}
 
+    def finalize_run_verified(self, item_id, run_id, *, verdict, exit_code, command,
+                              cases, revision, dirty, receipt_ref, receipt_authority,
+                              now=None):
+        """Finalize a Run only against a receipt a trusted parent verified.
+
+        `finalize_run` records the caller's `verdict`/`exit_code` and concludes
+        SUCCEEDED from those words. That is a control-plane record, not proof
+        that a bounded runner produced anything. serveros #263 added the real
+        receipt (`action_key`, `input_digest`, `receipt_sha256`,
+        `process_exit_code`) and left Work Engine consumption unwired.
+
+        This method is the store-side half of that gate. It accepts an opaque
+        `receipt_ref` and a `RunnerReceiptAuthority`; it never accepts child
+        text, a caller JSON hash, a bare exit code or an unverified path as
+        authority. With no authority bound it refuses BLOCKED_TRUST_SOURCE
+        rather than falling back to the caller's word. The receipt is written
+        into the existing finalize evidence file, so the evidence row's sha256
+        anchors both the verdict and the receipt binding — no new ledger and no
+        schema change.
+
+        The producer is still owned by serveros, so the positive path is
+        BLOCKED_ORIGINAL_OWNER until that authority is bound. Shipping a
+        permissive default here would be the forced PASS this seam exists to
+        prevent.
+        """
+        from .authority import (
+            ReceiptError,
+            VerifiedRunReceipt,
+            validate_verified_receipt,
+        )
+
+        if receipt_authority is None:
+            raise ReceiptError(
+                "BLOCKED_TRUST_SOURCE",
+                "no trusted runner-receipt authority is bound; a caller's "
+                "exit_code and verdict are not proof and cannot conclude "
+                "SUCCEEDED")
+        if not isinstance(receipt_ref, str) or not receipt_ref.strip():
+            raise ReceiptError(
+                "RUNNER_RECEIPT_REQUIRED",
+                "no runner receipt reference was presented; pass the opaque "
+                "ref the trusted receipt authority issued, not a hash or an "
+                "exit code")
+        now_e = time.time() if now is None else float(now)
+        try:
+            receipt = receipt_authority.verify(
+                receipt_ref, item_ref=item_id, run_ref=run_id, now=now_e)
+        except ReceiptError:
+            raise
+        except Exception as exc:
+            raise ReceiptError(
+                "UNTRUSTED_RECEIPT",
+                f"the trusted receipt authority did not answer: "
+                f"{type(exc).__name__}") from exc
+        if not isinstance(receipt, VerifiedRunReceipt):
+            raise ReceiptError(
+                "UNTRUSTED_RECEIPT",
+                "the authority returned no VerifiedRunReceipt; a reference "
+                "that resolves to nothing is not proof")
+        verdict = _verdict_word(verdict)
+        validate_verified_receipt(
+            receipt, item_id=item_id, run_id=run_id,
+            verdict=verdict, exit_code=exit_code)
+
+        with self.transaction(immediate=True) as c:
+            r = self._require_run(c, item_id, run_id)
+            if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
+                e = c.execute(
+                    "SELECT * FROM evidence WHERE item_id=? AND run_id=? "
+                    "ORDER BY evidence_id DESC LIMIT 1", (item_id, run_id)
+                ).fetchone()
+                return {"state": r['state'], "verdict": e['verdict'] if e else verdict}
+            if r['state'] != 'FINALIZING':
+                raise ValueError("run must be FINALIZING")
+            locator = str(Path(r['artifact_dir']) / 'finalize.json')
+            Path(r['artifact_dir']).mkdir(parents=True, exist_ok=True)
+            temporary = Path(locator + '.tmp')
+            payload = json.dumps({
+                "command": command,
+                "cases": cases,
+                "exit_code": exit_code,
+                "revision": revision,
+                "dirty": dirty,
+                "verdict": verdict,
+                "runner_receipt": {
+                    "action_key": receipt.action_key,
+                    "input_digest": receipt.input_digest,
+                    "receipt_sha256": receipt.receipt_sha256,
+                    "process_exit_code": receipt.process_exit_code,
+                    "runner_identity": receipt.runner_identity,
+                    "commit_sha": receipt.commit_sha,
+                },
+            }) + '\n'
+            temporary.write_text(payload)
+            _reject_secrets(json.loads(payload))
+            digest = hashlib.sha256(payload.encode()).hexdigest()
+            c.execute(
+                "INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,"
+                "cases_json,exit_code,revision,dirty,verdict,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item_id, run_id, 'finalize', locator, digest, command,
+                 json.dumps(cases), exit_code, revision, int(dirty), verdict,
+                 now_iso()))
+            state = ('SUCCEEDED'
+                     if verdict == 'PASS' and exit_code == 0
+                     and receipt.process_exit_code == 0
+                     else 'FAILED')
+            c.execute(
+                "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
+                (state, now_iso(), item_id, run_id))
+        temporary.replace(locator)
+        return {"state": state, "verdict": verdict}
+
     def record_feedback(self,item_id,locator,kind,observation_id):
         if not all(str(value).strip() for value in (item_id, locator, kind, observation_id)):
             raise ValueError("feedback requires Item, Observation, kind, and locator")
