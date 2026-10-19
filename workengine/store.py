@@ -1120,59 +1120,84 @@ class ServerOSStore:
             c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
 
-    def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
-        verdict = _verdict_word(verdict)
-        with self.transaction(immediate=True) as c:
-            r=self._require_run(c, item_id, run_id)
-            if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
-                e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone()
-                if e and not Path(e['locator']).exists():
-                    tmp=Path(e['locator']+'.tmp')
-                    if tmp.exists(): tmp.replace(e['locator'])
-                    else: Path(e['locator']).write_text(json.dumps({"command":e['command'],"cases":json.loads(e['cases_json']),"exit_code":e['exit_code'],"revision":e['revision'],"dirty":bool(e['dirty']),"verdict":e['verdict']})+'\n')
-                return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
-            if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
-            locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True)
-            temporary=Path(locator+'.tmp'); payload=json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n'; temporary.write_text(payload)
-            _reject_secrets(json.loads(payload))
-            digest=hashlib.sha256(payload.encode()).hexdigest()
-            c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,'finalize',locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
-            state='SUCCEEDED' if verdict=='PASS' and exit_code==0 else 'FAILED'
-            c.execute("UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",(state,now_iso(),item_id,run_id))
-        temporary.replace(locator)
-        return {"state":state,"verdict":verdict}
+    def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases,
+                     revision, dirty, t10_required=False, t10_binding=None,
+                     receipt_ref=None, receipt_authority=None, now=None):
+        """Conclude a Run; `t10_required=True` makes runner proof mandatory.
 
-    def finalize_run_verified(self, item_id, run_id, *, verdict, exit_code, command,
-                              cases, revision, dirty, receipt_ref, receipt_authority,
-                              now=None):
-        """Finalize a Run only against a receipt a trusted parent verified.
+        The CLI's `run finalize` and every existing caller reach this method.
+        Without `t10_required` the historical record semantics are preserved,
+        but the answer is labelled `authorization: "UNSIGNED"` and
+        `t10_acceptable: false`: a caller's `verdict`/`exit_code` is a
+        control-plane record, not runner proof, and V1/T10 must not accept it.
 
-        `finalize_run` records the caller's `verdict`/`exit_code` and concludes
-        SUCCEEDED from those words. That is a control-plane record, not proof
-        that a bounded runner produced anything. serveros #263 added the real
-        receipt (`action_key`, `input_digest`, `receipt_sha256`,
-        `process_exit_code`) and left Work Engine consumption unwired.
+        `t10_required=True` is the narrow opt-in. It requires a trusted
+        `RunnerReceiptAuthority`, an opaque `receipt_ref`, and an exact
+        `T10Binding` (Item, Run, commit, actor). Any missing half refuses with
+        `BLOCKED_TRUST_SOURCE` or its specific code; it NEVER falls back to the
+        unsigned path. The receipt is verified by the parent and re-checked
+        here, and `SUCCEEDED` additionally requires a verified zero exit.
 
-        This method is the store-side half of that gate. It accepts an opaque
-        `receipt_ref` and a `RunnerReceiptAuthority`; it never accepts child
-        text, a caller JSON hash, a bare exit code or an unverified path as
-        authority. With no authority bound it refuses BLOCKED_TRUST_SOURCE
-        rather than falling back to the caller's word. The receipt is written
-        into the existing finalize evidence file, so the evidence row's sha256
-        anchors both the verdict and the receipt binding — no new ledger and no
-        schema change.
-
-        The producer is still owned by serveros, so the positive path is
-        BLOCKED_ORIGINAL_OWNER until that authority is bound. Shipping a
-        permissive default here would be the forced PASS this seam exists to
-        prevent.
+        There is no in-process verifier in the CLI. In production this method
+        is called by the out-of-process serverosd/runner parent described in
+        `docs/t10-finalize-entry.md`; until that parent exists the CLI refuses
+        `BLOCKED_TRUST_SOURCE`.
         """
+        from .authority import ReceiptError, validate_t10_binding
+
+        verdict = _verdict_word(verdict)
+        if not t10_required:
+            result, authorization, _stored = self._write_finalize(
+                item_id, run_id, verdict=verdict, exit_code=exit_code,
+                command=command, cases=cases, revision=revision, dirty=dirty,
+                receipt=None)
+            return {**result, "authorization": authorization,
+                    "t10_acceptable": authorization == "T10_VERIFIED"}
+
+        if receipt_authority is None:
+            raise ReceiptError(
+                "BLOCKED_TRUST_SOURCE",
+                "no trusted runner-receipt authority is bound; a T10-required "
+                "Run cannot fall back to a caller's exit_code and verdict")
+        if t10_binding is None:
+            raise ReceiptError(
+                "T10_BINDING_REQUIRED",
+                "a T10-required finalize must name the exact Item, Run, "
+                "commit and actor the trusted parent derived")
+        receipt = self._verify_runner_receipt(
+            item_id, run_id, receipt_ref=receipt_ref,
+            receipt_authority=receipt_authority, verdict=verdict,
+            exit_code=exit_code, now=now)
+        validate_t10_binding(t10_binding, item_id=item_id, run_id=run_id,
+                             receipt=receipt)
+        result, authorization, stored = self._write_finalize(
+            item_id, run_id, verdict=verdict, exit_code=exit_code,
+            command=command, cases=cases, revision=revision, dirty=dirty,
+            receipt=receipt)
+        if authorization != "T10_VERIFIED":
+            raise ReceiptError(
+                "T10_UNSIGNED_RUN",
+                "this Run was already concluded without a verified receipt; "
+                "a T10-required finalize cannot relabel an unsigned success")
+        if stored is not None:
+            if (stored.get("commit_sha") != t10_binding.commit_sha
+                    or stored.get("actor_ref") != t10_binding.actor_ref
+                    or stored.get("receipt_sha256") != receipt.receipt_sha256):
+                raise ReceiptError(
+                    "T10_BINDING_MISMATCH",
+                    "the Run's stored finalize receipt is for a different "
+                    "commit, actor or receipt anchor than this request")
+        return {**result, "authorization": "T10_VERIFIED",
+                "t10_acceptable": True}
+
+    def _verify_runner_receipt(self, item_id, run_id, *, receipt_ref,
+                               receipt_authority, verdict, exit_code, now=None):
+        """The one receipt-verification path shared by both finalize routes."""
         from .authority import (
             ReceiptError,
             VerifiedRunReceipt,
             validate_verified_receipt,
         )
-
         if receipt_authority is None:
             raise ReceiptError(
                 "BLOCKED_TRUST_SOURCE",
@@ -1201,11 +1226,21 @@ class ServerOSStore:
                 "UNTRUSTED_RECEIPT",
                 "the authority returned no VerifiedRunReceipt; a reference "
                 "that resolves to nothing is not proof")
-        verdict = _verdict_word(verdict)
         validate_verified_receipt(
             receipt, item_id=item_id, run_id=run_id,
             verdict=verdict, exit_code=exit_code)
+        return receipt
 
+    def _write_finalize(self, item_id, run_id, *, verdict, exit_code, command,
+                        cases, revision, dirty, receipt=None):
+        """Write the one finalize conclusion and say whether it was signed.
+
+        Returns `(result, authorization, stored_receipt)`. `authorization` is
+        `T10_VERIFIED` only when this write carries a verified receipt, or when
+        a terminal Run's existing evidence file already carries one. A terminal
+        Run concluded unsigned stays UNSIGNED; a T10-required caller must not
+        be able to launder it by asking again.
+        """
         with self.transaction(immediate=True) as c:
             r = self._require_run(c, item_id, run_id)
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
@@ -1213,28 +1248,64 @@ class ServerOSStore:
                     "SELECT * FROM evidence WHERE item_id=? AND run_id=? "
                     "ORDER BY evidence_id DESC LIMIT 1", (item_id, run_id)
                 ).fetchone()
-                return {"state": r['state'], "verdict": e['verdict'] if e else verdict}
+                stored_receipt = None
+                if e:
+                    locator = Path(e['locator'])
+                    if not locator.exists():
+                        tmp = Path(e['locator'] + '.tmp')
+                        if tmp.exists():
+                            tmp.replace(e['locator'])
+                        else:
+                            locator.write_text(json.dumps({
+                                "command": e['command'],
+                                "cases": json.loads(e['cases_json']),
+                                "exit_code": e['exit_code'],
+                                "revision": e['revision'],
+                                "dirty": bool(e['dirty']),
+                                "verdict": e['verdict'],
+                                "authorization": "UNSIGNED",
+                            }) + '\n')
+                    try:
+                        payload = json.loads(locator.read_text(encoding='utf-8'))
+                    except (OSError, ValueError):
+                        payload = {}
+                    candidate = payload.get('runner_receipt')
+                    if isinstance(candidate, dict):
+                        stored_receipt = candidate
+                authorization = ('T10_VERIFIED' if stored_receipt is not None
+                                 else 'UNSIGNED')
+                return ({"state": r['state'],
+                         "verdict": e['verdict'] if e else verdict},
+                        authorization, stored_receipt)
             if r['state'] != 'FINALIZING':
                 raise ValueError("run must be FINALIZING")
             locator = str(Path(r['artifact_dir']) / 'finalize.json')
             Path(r['artifact_dir']).mkdir(parents=True, exist_ok=True)
             temporary = Path(locator + '.tmp')
-            payload = json.dumps({
+            body = {
                 "command": command,
                 "cases": cases,
                 "exit_code": exit_code,
                 "revision": revision,
                 "dirty": dirty,
                 "verdict": verdict,
-                "runner_receipt": {
+                # The durable record says what kind of conclusion this is, not
+                # only the return value. A reader of finalize.json must not
+                # have to infer "unsigned" from a missing receipt.
+                "authorization": ("T10_VERIFIED" if receipt is not None
+                                  else "UNSIGNED"),
+            }
+            if receipt is not None:
+                body["runner_receipt"] = {
                     "action_key": receipt.action_key,
                     "input_digest": receipt.input_digest,
                     "receipt_sha256": receipt.receipt_sha256,
                     "process_exit_code": receipt.process_exit_code,
                     "runner_identity": receipt.runner_identity,
                     "commit_sha": receipt.commit_sha,
-                },
-            }) + '\n'
+                    "actor_ref": receipt.actor_ref,
+                }
+            payload = json.dumps(body) + '\n'
             temporary.write_text(payload)
             _reject_secrets(json.loads(payload))
             digest = hashlib.sha256(payload.encode()).hexdigest()
@@ -1245,15 +1316,44 @@ class ServerOSStore:
                 (item_id, run_id, 'finalize', locator, digest, command,
                  json.dumps(cases), exit_code, revision, int(dirty), verdict,
                  now_iso()))
-            state = ('SUCCEEDED'
-                     if verdict == 'PASS' and exit_code == 0
-                     and receipt.process_exit_code == 0
-                     else 'FAILED')
+            if receipt is not None:
+                state = ('SUCCEEDED'
+                         if verdict == 'PASS' and exit_code == 0
+                         and receipt.process_exit_code == 0
+                         else 'FAILED')
+            else:
+                state = ('SUCCEEDED' if verdict == 'PASS' and exit_code == 0
+                         else 'FAILED')
             c.execute(
                 "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
                 (state, now_iso(), item_id, run_id))
         temporary.replace(locator)
-        return {"state": state, "verdict": verdict}
+        stored_receipt = body.get('runner_receipt')
+        return ({"state": state, "verdict": verdict},
+                'T10_VERIFIED' if receipt is not None else 'UNSIGNED',
+                stored_receipt)
+
+    def finalize_run_verified(self, item_id, run_id, *, verdict, exit_code, command,
+                              cases, revision, dirty, receipt_ref, receipt_authority,
+                              now=None):
+        """The #14 lower-level seam: verify a receipt, then write it.
+
+        Kept for existing callers that do not have a `T10Binding` yet. The
+        production-facing route is `finalize_run(..., t10_required=True, ...)`,
+        which adds the exact Item/Run/commit/actor binding. Both paths share
+        `_verify_runner_receipt` and `_write_finalize`; there is no second
+        evidence store and no permissive default.
+        """
+        verdict = _verdict_word(verdict)
+        receipt = self._verify_runner_receipt(
+            item_id, run_id, receipt_ref=receipt_ref,
+            receipt_authority=receipt_authority, verdict=verdict,
+            exit_code=exit_code, now=now)
+        result, _authorization, _stored = self._write_finalize(
+            item_id, run_id, verdict=verdict, exit_code=exit_code,
+            command=command, cases=cases, revision=revision, dirty=dirty,
+            receipt=receipt)
+        return result
 
     def record_feedback(self,item_id,locator,kind,observation_id):
         if not all(str(value).strip() for value in (item_id, locator, kind, observation_id)):

@@ -49,6 +49,7 @@ def receipt(**overrides) -> VerifiedRunReceipt:
         verdict="PASS",
         runner_identity="runner:test",
         commit_sha=COMMIT,
+        actor_ref="human:hwz",
     )
     values.update(overrides)
     return VerifiedRunReceipt(**values)
@@ -172,6 +173,10 @@ class RunnerReceiptTest(unittest.TestCase):
 
     def test_invalid_commit_sha_is_refused(self):
         authority = StubReceiptAuthority(receipt(commit_sha="deadbeef"))
+        self._refused("INVALID_RECEIPT", authority=authority)
+
+    def test_a_verified_receipt_without_an_actor_is_refused(self):
+        authority = StubReceiptAuthority(receipt(actor_ref=""))
         self._refused("INVALID_RECEIPT", authority=authority)
 
     def test_pass_with_nonzero_exit_is_inconsistent(self):

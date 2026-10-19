@@ -123,6 +123,25 @@ class VerifiedRunReceipt:
     verdict: str
     runner_identity: str
     commit_sha: str
+    actor_ref: str
+
+
+@dataclass(frozen=True)
+class T10Binding:
+    """The exact Work facts a T10-required finalize must name.
+
+    The trusted parent derives these while it still holds the Work store and
+    the grant: the Run is the unique non-terminal Run for the Item, the commit
+    is the worktree's exact full SHA, and the actor is the grant principal —
+    never a value supplied by the child or by the caller's payload. Comparing
+    them to the verified receipt is what makes a receipt for another Run,
+    another commit or another actor unusable here.
+    """
+
+    item_ref: str
+    run_ref: str
+    commit_sha: str
+    actor_ref: str
 
 
 class RunnerReceiptAuthority(Protocol):
@@ -341,6 +360,8 @@ def validate_verified_receipt(receipt: VerifiedRunReceipt, *, item_id: str,
             "INVALID_RECEIPT", "commit_sha is not a full 40-hex SHA")
     if not str(receipt.runner_identity or "").strip():
         raise ReceiptError("INVALID_RECEIPT", "runner_identity is empty")
+    if not str(receipt.actor_ref or "").strip():
+        raise ReceiptError("INVALID_RECEIPT", "actor_ref is empty")
     if type(receipt.process_exit_code) is not int:
         raise ReceiptError("INVALID_RECEIPT", "process_exit_code is not an int")
     if receipt.process_exit_code != exit_code:
@@ -358,3 +379,41 @@ def validate_verified_receipt(receipt: VerifiedRunReceipt, *, item_id: str,
             f"a receipt cannot say PASS with process_exit_code "
             f"{receipt.process_exit_code}")
     return receipt
+
+
+def validate_t10_binding(binding: T10Binding, *, item_id: str, run_id: str,
+                         receipt: VerifiedRunReceipt) -> T10Binding:
+    """Require the exact Item/Run/commit/actor the trusted parent derived.
+
+    The receipt already agrees with the Item and Run it was verified for. This
+    comparison adds the three facts a receipt alone does not name to the caller:
+    the exact commit, the exact actor, and the binding the parent asked to
+    finalize. A receipt for another Run, commit or actor is refused here rather
+    than merely recorded beside a mismatched request.
+    """
+    if not _HEX40.fullmatch(str(binding.commit_sha or "")):
+        raise ReceiptError(
+            "INVALID_T10_BINDING",
+            "commit_sha is not a full 40-hex SHA")
+    if not str(binding.actor_ref or "").strip():
+        raise ReceiptError("INVALID_T10_BINDING", "actor_ref is empty")
+    if binding.item_ref != item_id:
+        raise ReceiptError(
+            "T10_ITEM_MISMATCH",
+            f"the binding names Item {binding.item_ref!r}, not {item_id!r}")
+    if binding.run_ref != run_id:
+        raise ReceiptError(
+            "T10_RUN_MISMATCH",
+            f"the binding names Run {binding.run_ref!r}, not {run_id!r}")
+    if binding.commit_sha != receipt.commit_sha:
+        raise ReceiptError(
+            "T10_COMMIT_MISMATCH",
+            f"the binding names commit {binding.commit_sha}, the receipt "
+            f"names {receipt.commit_sha}; a receipt for another commit is not "
+            "evidence for this Run")
+    if binding.actor_ref != receipt.actor_ref:
+        raise ReceiptError(
+            "T10_ACTOR_MISMATCH",
+            f"the binding names actor {binding.actor_ref!r}, the receipt was "
+            f"verified for {receipt.actor_ref!r}")
+    return binding

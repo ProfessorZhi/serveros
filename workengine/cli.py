@@ -137,7 +137,15 @@ def _cmd_run(args):
     if args.action == "evidence":
         return server.store.record_evidence(args.item,args.run,kind=args.kind,locator=args.locator,command=args.command,cases=args.case,exit_code=args.exit_code,revision=args.revision,dirty=args.dirty,verdict=args.verdict)
     if args.action == "finalize":
-        return server.store.finalize_run(args.item,args.run,verdict=args.verdict,exit_code=args.exit_code,command=args.command,cases=args.case,revision=args.revision,dirty=args.dirty)
+        # `t10_required` is the explicit opt-in that makes runner proof
+        # mandatory. The CLI holds no trusted verifier, so it refuses
+        # BLOCKED_TRUST_SOURCE rather than falling back to the unsigned path;
+        # the out-of-process parent calls the store with a verifier instead.
+        return server.store.finalize_run(
+            args.item, args.run, verdict=args.verdict,
+            exit_code=args.exit_code, command=args.command, cases=args.case,
+            revision=args.revision, dirty=args.dirty,
+            t10_required=args.t10_required, receipt_ref=args.receipt)
     raise ValueError("unsupported run action")
 
 
@@ -335,6 +343,16 @@ def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
     advance.add_argument("--to", required=True, choices=[state.value for state in RunState])
     evidence = run_actions.add_parser("evidence", parents=[_common()]); evidence.add_argument("item"); evidence.add_argument("run"); evidence.add_argument("--kind",required=True); evidence.add_argument("--locator",required=True); evidence.add_argument("--command",required=True); evidence.add_argument("--case",action="append",default=[]); evidence.add_argument("--exit-code",type=int,required=True); evidence.add_argument("--revision",required=True); evidence.add_argument("--verdict",required=True,help=_verdict_help); evidence.add_argument("--dirty",action="store_true")
     finalize = run_actions.add_parser("finalize", parents=[_common()]); finalize.add_argument("item"); finalize.add_argument("run"); finalize.add_argument("--verdict",required=True,help=_verdict_help); finalize.add_argument("--exit-code",type=int,required=True); finalize.add_argument("--command",required=True); finalize.add_argument("--case",action="append",default=[]); finalize.add_argument("--revision",required=True); finalize.add_argument("--dirty",action="store_true")
+    # The narrow opt-in. Without it the historical record semantics survive and
+    # the answer is labelled UNSIGNED; with it, a verified receipt and an exact
+    # Item/Run/commit/actor binding are mandatory. The CLI cannot verify the
+    # receipt itself, so --t10-required refuses BLOCKED_TRUST_SOURCE until an
+    # out-of-process parent supplies the authority through the store.
+    finalize.add_argument("--t10-required", action="store_true",
+                          help="require a trusted runner receipt; fails closed "
+                               "when no trusted parent is bound")
+    finalize.add_argument("--receipt", default=None,
+                          help="opaque receipt ref issued by the trusted parent")
 
     # Terminating a Run is destructive control-plane action: it is deliberately
     # one Run at a time, with a mandatory reason and actor, and no bulk form.

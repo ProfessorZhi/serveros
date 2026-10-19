@@ -6,13 +6,17 @@
 |---|---|
 | Work Engine lease producer | `BLOCKED_TRUST_SOURCE` — no OS-principal + grant verified parent is bound |
 | Runner-receipt producer / T10 finalization | `BLOCKED_ORIGINAL_OWNER` — serveros owns the real `invoke_once` receipt producer |
-| Work Engine consumption | `SEAM_ONLY` — strict paths exist and refuse, no CLI/MCP verb is exposed |
+| Work Engine consumption | `SEAM_ONLY` — the T10-required finalize route exists and refuses without a trusted parent; no lease CLI/MCP verb is exposed |
 | Code | `workengine/authority.py`, `ServerOSStore.finalize_run_verified` |
 | Tests | `tests/test_lease_authority.py`, `tests/test_runner_receipt.py` |
 
 This document is the exact interface the original owner must provide. It is a
 contract, not an installation: nothing here grants a principal, mints a token,
 or claims that a production path is wired.
+
+See `docs/t10-finalize-entry.md` for the T10-required finalize entry route
+(`finalize_run(..., t10_required=True, ...)`) and the exact out-of-process
+parent caller it needs.
 
 ## 1. Why this exists
 
