@@ -13,6 +13,59 @@ none of these design documents is a deployment receipt.
 
 **A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
 
+## Development quickstart
+
+The commands below were run in a fresh clone with an isolated venv (Linux, Python 3.12). ServerOS is a control plane for a specific authorized device: the repository-wide test suite reads that device's profile and live records tree. The command below therefore runs the zero-configuration core subset, which does not depend on the host binding.
+
+### Clone
+
+```bash
+git clone https://github.com/ProfessorZhi/serveros.git
+cd serveros
+```
+
+### Install dependencies
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install pytest pytest-xdist pytest-timeout pyyaml cryptography
+```
+
+### Run tests
+
+```bash
+export TMPDIR=/tmp/serveros-test-tmp
+mkdir -p "$TMPDIR"
+CUDA_VISIBLE_DEVICES="" nice -n 10 python -m pytest -q -n 8 --timeout=300 \
+  tests/test_actor_context.py \
+  tests/test_agent_control_router.py \
+  tests/test_agent_control_store.py \
+  tests/test_agent_mcp.py \
+  tests/test_agent_sessions.py \
+  tests/test_approval.py \
+  tests/test_business_calendar.py \
+  tests/test_card_delivery.py \
+  tests/test_bootstrap_skill_scope.py \
+  tests/test_ability_resolver.py \
+  tests/test_ability_projection.py
+```
+
+Measured: `638 passed, 185 subtests passed in 16.07s`, rc=0. The short `TMPDIR` is required: some tests create deep socket/work paths.
+
+The repository-wide suite (`python -m pytest tests -q -n 8 --timeout=300`) additionally needs the real device profile, live records tree, and sibling `ability-management` / ops checkouts. With those roots supplied on this development host it measured `7561 passed, 79 failed, 71 skipped, 4532 subtests passed in 178.48s`; the remaining failures are bound to the live host (uid `1002`, `/data/home/vince`, the Lark CLI, and time-dependent assertions) and are not a clean-host baseline.
+
+### Local start
+
+No service needs to be started for CLI development. The two entry points are:
+
+```bash
+bin/serverosctl --help
+python -m workengine --help
+```
+
+Measured: both rc=0. `bin/serverosctl` is the reference-node control CLI; `python -m workengine` is the v3 work control plane.
+
 ## The daily experience
 
 ```text
