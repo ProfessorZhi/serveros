@@ -4,7 +4,7 @@
 
 | Fact | State |
 |---|---|
-| Work Engine lease producer | `BLOCKED_TRUST_SOURCE` — no OS-principal + grant verified parent is bound |
+| Work Engine lease producer | `BLOCKED_TRUST_SOURCE` — no owner-approved production parent is bound; a source adapter for serveros #272 exists (`docs/serveros-lease-authority.md`) |
 | Runner-receipt producer / T10 finalization | `BLOCKED_ORIGINAL_OWNER` — serveros owns the real `invoke_once` receipt producer |
 | Work Engine consumption | `SEAM_ONLY` — the T10-required finalize route exists and refuses without a trusted parent; no lease CLI/MCP verb is exposed |
 | Code | `workengine/authority.py`, `ServerOSStore.finalize_run_verified` |
@@ -17,6 +17,11 @@ or claims that a production path is wired.
 See `docs/t10-finalize-entry.md` for the T10-required finalize entry route
 (`finalize_run(..., t10_required=True, ...)`) and the exact out-of-process
 parent caller it needs.
+
+See `docs/serveros-lease-authority.md` for the cross-repo adapter that consumes
+serveros #272's `agent.lease.authority.verify` read. It is source-proven against
+the actual #272 source in a hermetic temp socket; the production parent remains
+`BLOCKED_TRUST_SOURCE` until an owner-approved caller binds it.
 
 ## 1. Why this exists
 
