@@ -216,13 +216,18 @@ Tokyo 默认使用 vince。共享网关的 ubuntu 维护例外只限明确目标
 
 ## 仓库职责
 
+三个项目，六个仓库。ServerOS 的代码只在两个仓库：**serveros**（完整产品，含 `workengine/`）和 **ability-management**；**hwz-records** 是节点运行时读写的私有数据仓库，不是第二个代码仓库。
+
 | 仓库 | 职责 |
 |---|---|
-| serveros | 产品架构、插件组合、入口、确定性契约与节点运行时 |
+| serveros | 产品架构、插件组合、入口、确定性契约、节点运行时，以及 Work Engine（`workengine/`）：工作控制状态、Run/动作回执、看板投影 |
 | ability-management | 能力身份、来源、revision、可复用 Skill 与分发 |
-| work-engine | 工作控制状态、Run/动作回执、看板投影 |
-| hwz-records | 确认的认识、稳定工作意图、设计与人类记录 |
-| hwz-ops | 实例目录、拓扑、目标/Binding、策略与带时间的观察地图 |
+| hwz-records | 确认的认识、稳定工作意图、设计、人类记录、实例目录、拓扑、目标/Binding、策略与带时间的观察地图（私有数据，不是代码） |
+| marketops | MarketOps 应用/MCP、研究管线与业务真值 |
+| marketops-session | MarketOps 会话反推的设计分析与工具；会话语料本体不入库 |
+| llmlab | LLM Lab 网关、评测与部署模板 |
+
+这六个仓库吸收了原仓库：`work-engine` 与 `serveros-research-exchange` 的模板/工具并入 `serveros`；`dev-doctor`、`agent-software` 并入 `ability-management`；`hwz-ops`、`agent-session-archive` 并入 `hwz-records`；`marketops-private` 并入 `marketops`；`marketops-session-private` 并入 `marketops-session`；`llm-lab`、`llm-lab-portal` 并入 `llmlab`。目标结构为 3 个 Public（`serveros`、`marketops`、`llmlab`）与 3 个 Private（`ability-management`、`marketops-session`、`hwz-records`）。
 
 MarketOps 和 Support Bot 保持并行业务项目。Bot 代码是 litellm-support-bot，知识仓是 troublebuddy-kb-bridge；ServerOS 不接管它们的路线或正在运行的实验。
 

@@ -308,7 +308,8 @@ responsibilities, commitments, constraints, decisions and open questions.
 
 A Claim retains subject, assertion, provenance, observed time, applicability,
 confidence and its confirmation/conflict/supersession relationship. Records own
-confirmed semantic content; work-engine owns associated work/control transitions.
+confirmed semantic content; the Work Engine in `serveros` owns associated
+work/control transitions.
 Do not maintain independently editable copies of the same fact in both.
 
 Machine observations may be recorded automatically. Interpreting a message as a
@@ -1315,18 +1316,27 @@ This is source/composition membership, not two resident daemons.
 
 | Owner | Authority |
 |---|---|
-| serveros | product architecture, composition, bootstrap, Context/Space/Relations contracts and node runtime |
+| serveros | product architecture, composition, bootstrap, Context/Space/Relations contracts, node runtime, and the Work Engine (`workengine/`): durable work/control transitions, Run and effect receipts, Board and work projections |
 | ability-management | typed Ability/Capability registry, provenance/revisions, reusable Skill source and distribution |
-| work-engine | durable work/control transitions, Run and effect receipts, Board and work projections |
-| hwz-records | approved understanding, stable work intent, designs, reports and human semantic records |
-| hwz-ops | instance roots, topology, concrete targets/bindings, local policy and observed maps |
+| hwz-records | approved understanding, stable work intent, designs, reports, human semantic records, instance roots, topology, concrete targets/bindings, local policy and observed maps; private data, not code |
+| marketops | MarketOps application/MCP, research pipeline and business truth |
+| marketops-session | MarketOps session-derived design analysis and tooling; the session corpus itself is not stored in the repository |
+| llmlab | LLM Lab gateway, evaluation and deployment templates |
 | native providers | their actual sessions, task stores, cloud bodies, runtime facts and supported effects |
 
-One public serverosctl entry dispatches to the owning component; two repositories
-must not compete for the same installed executable. work-engine may consume a
-placement interface without implementing a second placement authority or importing
-the entire product back into itself. CLI and MCP adapters share the owning use-case
-contract rather than duplicate business decisions.
+These six repositories are the whole source topology: three projects
+(`serveros` + `ability-management` + `hwz-records` for ServerOS, `marketops` +
+`marketops-session` for MarketOps, `llmlab` for LLM Lab). The Work Engine and the
+research-exchange templates/tools are in-repository parts of `serveros`; they are not
+separate checkouts.
+
+One public `serverosctl` entry (`bin/serverosctl` → `runtime/cli.py`) dispatches to
+the owning component; no second package may install another `serverosctl`. The Work
+Engine is the in-repository package `workengine/`, reached through `python -m
+workengine` and the `serveros-work-mcp` process entry, and may consume a placement
+interface without implementing a second placement authority or importing the entire
+product back into itself. CLI and MCP adapters share the owning use-case contract
+rather than duplicate business decisions.
 
 ServerOS plugin packages the bootstrap and selected reusable capabilities. A local
 bootstrap Skill may live in serveros; reusable Skill canonical sources remain in

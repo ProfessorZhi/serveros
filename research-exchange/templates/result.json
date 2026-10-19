@@ -1,0 +1,14 @@
+{
+  "schema": "research-result.v1",
+  "request_id": "",
+  "result_id": "",
+  "input_revision": "",
+  "status": "PARTIAL",
+  "answers": [],
+  "source_refs": [],
+  "counterevidence": [],
+  "recommendations": [],
+  "limitations": [],
+  "provider": "",
+  "report_path": ""
+}

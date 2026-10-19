@@ -1,0 +1,28 @@
+# Migrated from the source repository's .gitignore
+# (ProfessorZhi/serveros-research-exchange@bdde66b349076467c05d9c3848b7f54dc81a5558)
+# so that this subtree keeps the same local-artifact and secret boundary.
+#
+# The root .gitignore already covers the ServerOS-wide rules (`__pycache__/`,
+# `.env`, `.env.*`, `*.pem`, `*.key`). The entries below are the source rules
+# plus the test artifacts this protocol implementation produces when its
+# mechanism tests run here. Nothing in this file tracks business material:
+# packets, inputs and results live in the private hwz-records checkout.
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# local virtual environments
+.venv/
+venv/
+
+# secrets — never commit (source rules)
+.env
+.env.*
+*.pem
+*.key
