@@ -148,6 +148,53 @@ class RunSafetyTests(unittest.TestCase):
         self.assertIs(runs["writable"], False)
 
 
+class HeldLeaseTests(unittest.TestCase):
+    """T6: a row in `leases` is not a lease being held."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.world = make_world(self.base, [])
+        self.db = self.world["state_dir"] / "serveros.db"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _roots(self):
+        return resolver.Roots(
+            workspace_root=self.world["workspace"],
+            artifacts_root=self.world["artifacts"],
+            state_db=self.db,
+        )
+
+    def _lease(self, resource, expires_at):
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
+                (resource, "agent:test", "1", expires_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_only_unexpired_leases_are_reported_as_held(self):
+        self._lease("work-write:EXPIRED", "2000-01-01T00:00:00Z")
+        self._lease("work-write:LIVE", "2999-01-01T00:00:00Z")
+        self.assertEqual(resolver.held_leases(self._roots()), ["work-write:LIVE"])
+
+    def test_the_expired_row_is_not_deleted_by_the_reader(self):
+        """A read-only resolve must not turn 'expired' into 'never existed'."""
+        self._lease("work-write:EXPIRED", "2000-01-01T00:00:00Z")
+        self.assertEqual(resolver.held_leases(self._roots()), [])
+        conn = sqlite3.connect(self.db)
+        try:
+            count = conn.execute("SELECT count(*) FROM leases").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 1)
+
+
 class RootContractTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

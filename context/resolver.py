@@ -336,7 +336,22 @@ def active_items(roots: Roots, exclude: str) -> list[str]:
 
 
 def held_leases(roots: Roots) -> list[str]:
-    return sorted(row["resource"] for row in _query_state(roots, "SELECT resource FROM leases"))
+    """Resources with a LIVE write lease — an expired row is not a lock.
+
+    `workengine/store.py` pins `expires_at` to fixed-width UTC
+    (`YYYY-MM-DDTHH:MM:SSZ`), so SQLite's lexicographic comparison is also a
+    chronological one, and `strftime` emits the same shape. The row itself is
+    left in place: an expired lease is the evidence of a crashed holder, not
+    garbage to be reported as held (issue #237 B3 / T6).
+    """
+    return sorted(
+        row["resource"]
+        for row in _query_state(
+            roots,
+            "SELECT resource FROM leases "
+            "WHERE expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        )
+    )
 
 
 def _development(roots: Roots, project_cfg: dict, item_id: str) -> dict:
