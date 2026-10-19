@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import hashlib
+import math
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,6 +35,39 @@ _SECRET = re.compile(r"(token|secret|cookie|password|api[_-]?key)", re.I)
 def _reject_secrets(value):
     text=json.dumps(value, ensure_ascii=False)
     if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
+
+
+# ---------------------------------------------------------------------------
+# The lease clock. ONE fixed-width UTC spelling, so that two processes can
+# compare two `expires_at` values as strings and agree.
+#
+# `now_iso()` (model.py) is `datetime.isoformat()` and it is NOT fixed width:
+# it drops the microsecond field when it happens to be zero, so
+# `2026-10-16T14:30:00+00:00` (25 chars) and `2026-10-16T14:30:00.123456+00:00`
+# (32 chars) can both appear — and `...:00+00:00` sorts AFTER
+# `...:00.123456+00:00` at the same second under a string comparison. A reader
+# one repository over (`serveros/context/resolver.py#held_leases`) filters this
+# column with SQL, so the format is a cross-repo contract and is pinned here:
+# `YYYY-MM-DDTHH:MM:SSZ`, second precision, Z suffix. The expiry is rounded UP
+# (`math.ceil`), so a TTL is never shortened by the truncation.
+# ---------------------------------------------------------------------------
+
+_LEASE_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _lease_stamp(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(
+        math.ceil(epoch), datetime.timezone.utc).strftime(_LEASE_STAMP)
+
+
+def _lease_epoch(stamp: str) -> float:
+    return datetime.datetime.strptime(
+        str(stamp), _LEASE_STAMP).replace(
+        tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _lease_now(now) -> float:
+    return time.time() if now is None else float(now)
 
 
 def _verdict_word(verdict) -> str:
@@ -147,6 +183,31 @@ class EvidenceConflict(ValueError):
     reason_code = "EVIDENCE_CONFLICT"
 
 
+class LeaseError(ValueError):
+    """The exclusive Work write lease refused: acquisition, renewal or a commit.
+
+    Its own type, and it carries a `reason_code`, because the four refusals here
+    are repaired four different ways and a caller that got one generic "lease
+    refused" would not know which:
+
+      LEASE_HELD_BY_OTHER  somebody else holds the scope. Repair: wait, or take
+                           it over after their TTL — do not write anyway.
+      STALE_TOKEN          this caller was superseded (or never held it). Repair:
+                           stop; the token moved, the process did not.
+      LEASE_EXPIRED        this caller DID hold it, and ran past its TTL. Repair:
+                           re-acquire, and do not commit on the old acquisition.
+      NOT_HOLDER           there is no lease on the scope at all. Repair: acquire.
+
+    A subclass of `ValueError` so a caller written against the older, untyped
+    refusals keeps working, and matching `ActiveWorkerAckRequired` beside it.
+    """
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        self.reason_code = reason_code
+        self.detail = detail
+        super().__init__(f"{reason_code}: {detail}")
+
+
 class ServerOSStore:
     def __init__(self, state_dir: str | Path) -> None:
         state_dir = Path(state_dir)
@@ -211,6 +272,184 @@ class ServerOSStore:
                 "UPDATE id_sequences SET next_value=? WHERE scope=? AND kind='item'", (seq + 1, project)
             )
             return f"{row['prefix']}-{seq:04d}"
+
+    # -- the exclusive Work write lease ------------------------------------
+    #
+    # ONE authoritative writer per (resource, current generation), enforced
+    # here rather than by a convention. The `leases` table has been in
+    # `schema.sql` since the first migration and until now nothing read or wrote
+    # it (issue #237 B3): a mutual-exclusion mechanism that existed only as a
+    # CREATE TABLE. This is that mechanism, on the SAME table and the SAME
+    # `id_sequences` counter the Item allocator already uses — not a second
+    # lease system, which `integration/components.yaml` refuses by name.
+    #
+    # The `token` is the fence, and it is MONOTONIC per resource (minted from
+    # `id_sequences`), so that "is this writer the current one" is decidable from
+    # the number alone and survives a restart. An owner+boolean would not: a
+    # process that was superseded and is still running would look identical to
+    # the one that replaced it. That is issue #237 T3/T6.
+
+    def _lease_row(self, conn, resource: str):
+        return conn.execute(
+            "SELECT resource, owner, token, expires_at FROM leases WHERE resource=?",
+            (resource,),
+        ).fetchone()
+
+    def acquire_lease(self, resource: str, *, owner: str, ttl_s: float,
+                      now=None) -> dict:
+        """Take the exclusive write lease, or refuse because it is held.
+
+        A live lease — one whose `expires_at` is still ahead of `now` — is not
+        taken over, whoever asks. An EXPIRED row is: it is a crashed or finished
+        holder, and leaving it as a permanent lock would be the opposite failure
+        (a scope nobody can ever write again). The successor is minted a HIGHER
+        token, so the old holder's token is fenced the moment it is superseded.
+        """
+        if not str(resource).strip():
+            raise LeaseError("NOT_HOLDER", "a lease names a resource; '' names none")
+        now_e = _lease_now(now)
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            if row is not None and _lease_epoch(row["expires_at"]) > now_e:
+                raise LeaseError(
+                    "LEASE_HELD_BY_OTHER",
+                    f"{resource!r} is held by {row['owner']!r} (token "
+                    f"{row['token']}) until {row['expires_at']}. An exclusive "
+                    f"write scope has one writer at a time; renewed holders call "
+                    f"renew_lease, and a superseded one has lost the token, not "
+                    f"just the turn")
+            token = self._next_lease_token(conn, resource)
+            expires = _lease_stamp(now_e + float(ttl_s))
+            if row is None:
+                conn.execute(
+                    "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
+                    (resource, owner, token, expires))
+            else:
+                conn.execute(
+                    "UPDATE leases SET owner=?, token=?, expires_at=? WHERE resource=?",
+                    (owner, token, expires, resource))
+            return {"resource": resource, "owner": owner, "token": token,
+                    "expires_at": expires}
+
+    def renew_lease(self, resource: str, *, owner: str, token: int,
+                    ttl_s: float, now=None) -> dict:
+        """Extend the TTL of a lease the caller still holds.
+
+        Renewal does NOT mint a new token: the holder is unchanged, so its fence
+        must not move. It refuses, in STALE_TOKEN, when the caller is no longer
+        the holder — the case where a process kept running after it was
+        superseded must not be able to renew authority it has already lost.
+        """
+        now_e = _lease_now(now)
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            if _lease_epoch(row["expires_at"]) <= now_e:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {row['expires_at']} and cannot be "
+                    f"renewed by its old holder — re-acquire it, which mints a "
+                    f"new token and fences the lapsed one")
+            expires = _lease_stamp(now_e + float(ttl_s))
+            conn.execute("UPDATE leases SET expires_at=? WHERE resource=?",
+                         (expires, resource))
+            return {"resource": resource, "owner": row["owner"],
+                    "token": int(row["token"]), "expires_at": expires}
+
+    def release_lease(self, resource: str, *, owner: str, token: int,
+                      now=None) -> dict:
+        """Give the lease back. Only the current holder, by token, may."""
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            conn.execute("DELETE FROM leases WHERE resource=?", (resource,))
+            return {"resource": resource, "owner": owner, "token": int(token),
+                    "released": True}
+
+    def active_lease(self, resource: str, *, now=None) -> dict | None:
+        """The live lease on a resource, or None. An expired row is None.
+
+        The row is left in place when it is expired — the reader excludes it.
+        Deleting it here would erase the only evidence that a holder ever
+        existed, which is the crash case #237 asks to stay answerable.
+        """
+        now_e = _lease_now(now)
+        with self.transaction() as conn:
+            row = self._lease_row(conn, resource)
+        if row is None or _lease_epoch(row["expires_at"]) <= now_e:
+            return None
+        return {"resource": row["resource"], "owner": row["owner"],
+                "token": int(row["token"]), "expires_at": row["expires_at"]}
+
+    def held_leases(self, *, now=None) -> list[str]:
+        """Every resource with a LIVE lease, ascending. The T6 reader.
+
+        This is the query `serveros/context/resolver.py#held_leases` means to
+        make — resources currently claimed — and it filters `expires_at`, which
+        the serveros reader did not (issue #237 B3/T6).
+        """
+        now_e = _lease_now(now)
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT resource, expires_at FROM leases").fetchall()
+        return sorted(row["resource"] for row in rows
+                      if _lease_epoch(row["expires_at"]) > now_e)
+
+    def check_writer(self, resource: str, *, owner: str, token: int,
+                     now=None) -> dict:
+        """The fence, at the commit boundary. Raises `LeaseError` if fenced.
+
+        Called by whatever is about to commit a protected write — not only when
+        the write began. An authorization checked once before a long turn is not
+        an authorization at the moment of the effect (issue #237 B1/T3), and a
+        holder that ran past its TTL must be stopped here rather than trusted
+        because it held the lease an hour ago.
+        """
+        now_e = _lease_now(now)
+        with self.transaction() as conn:
+            row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=owner, token=token)
+        if _lease_epoch(row["expires_at"]) <= now_e:
+            raise LeaseError(
+                "LEASE_EXPIRED",
+                f"{resource!r} lapsed at {row['expires_at']} and this writer "
+                f"(token {token}) is past it. A lease authorizes the turn it was "
+                f"acquired for, not every turn after")
+        return {"authorized": True, "resource": resource, "owner": row["owner"],
+                "token": int(row["token"]), "expires_at": row["expires_at"]}
+
+    @staticmethod
+    def _require_holder(row, resource, *, owner, token) -> None:
+        if row is None:
+            raise LeaseError(
+                "NOT_HOLDER",
+                f"no lease is recorded for {resource!r}, so this caller holds "
+                f"nothing to renew, release or commit on")
+        if str(row["owner"]) != str(owner) or int(row["token"]) != int(token):
+            raise LeaseError(
+                "STALE_TOKEN",
+                f"{resource!r} is held by {row['owner']!r} (token {row['token']}); "
+                f"this caller presents owner {owner!r} token {token}. The token "
+                f"moved when this caller was superseded, and a process that is "
+                f"still running does not still hold the write scope")
+
+    @staticmethod
+    def _next_lease_token(conn, resource: str) -> int:
+        """A token that only ever increases, per resource, across restarts."""
+        row = conn.execute(
+            "SELECT next_value FROM id_sequences WHERE scope=? AND kind='lease'",
+            (resource,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO id_sequences(scope,kind,next_value) VALUES (?, 'lease', 2)",
+                (resource,))
+            return 1
+        token = int(row["next_value"])
+        conn.execute(
+            "UPDATE id_sequences SET next_value=? WHERE scope=? AND kind='lease'",
+            (token + 1, resource))
+        return token
 
     def create_item(self, item: WorkItem) -> WorkItem:
         prefix = item.id.split("-", 1)[0]
