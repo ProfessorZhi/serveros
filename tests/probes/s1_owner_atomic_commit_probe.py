@@ -350,7 +350,8 @@ def positive(tmp: Path) -> dict:
     code = (probe.get("error") or {}).get("code")
     out = verify_socket(daemon, params(context, grant))
     return {
-        "status": "BLOCKED_OWNER_ATOMIC_AUTHORITY",
+        "status": ("COMMIT_FENCE_PRODUCER_PRESENT" if fence_methods
+                   else "BLOCKED_OWNER_ATOMIC_AUTHORITY"),
         "commit_fence_methods": fence_methods,
         "hypothetical_commit_method": code,
         "owner_live_answer": {"verified": out.get("verified"),
