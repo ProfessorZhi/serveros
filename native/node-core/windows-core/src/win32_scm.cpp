@@ -1,10 +1,20 @@
 // The Win32 SCM query, and the mapping every refusal lives in.
 //
 // The mapping is platform-neutral and is tested on Linux; the four API calls are
-// `_WIN32`-gated and are NOT COMPILED on this host (see the header).
+// `_WIN32`-gated. A Linux build does not compile them; the hosted Windows
+// contract workflow does, with MSVC, without calling a real SCM.
 #include "windows-core/win32_scm.hpp"
 
 #if defined(_WIN32)
+// This translation unit is the only one that sees <windows.h>, and the C++
+// headers above already use `std::` names: keep the SDK's min/max macros and
+// its rarely needed extras out of this compile.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <winsvc.h>
 #endif

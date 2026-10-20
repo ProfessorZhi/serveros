@@ -10,11 +10,13 @@ share.
 |---|---|
 | `scm_status.cpp` — the parser and the state machine | **BUILT AND TESTED on Linux**. Text in, struct out; none of it is platform-specific. |
 | `status_document.cpp` — the status envelope and its schema | **BUILT AND TESTED on Linux**. A value in, JSON out; `contract/windows-core-status.v1.schema.json` is closed and read by the test. |
-| the `_WIN32` half — the SCM calls, the named pipe, the DACL, the token check | **BUILD_UNVERIFIED.** No cross compiler on this host: `x86_64-w64-mingw32-g++`, `i686-w64-mingw32-g++` and `clang-cl` are all absent. |
+| the `_WIN32` half — the SCM calls, the named pipe, the DACL, the token check | **HOSTED_WINDOWS_BUILD when its workflow passes.** `.github/workflows/serveros-native-windows-contract.yml` compiles this translation unit with MSVC on `windows-latest` and asserts the `_WIN32` branch is present. It never calls the runner's SCM, and the Linux build still does not compile this half. |
 | a live Windows reading | **NOT RUN.** A later, separately authorised step (issue #246). |
 
-`BUILD_UNVERIFIED` is not a synonym for "working". No Linux fixture in this tree
-may be presented as a measurement of a Windows host.
+`HOSTED_WINDOWS_BUILD` is not a synonym for "working Windows Core": it says the
+`_WIN32` half compiles and its synthetic suites pass, nothing more. It is not
+`REAL_DEVICE`, not `CLIENT_E2E`, and not a reading of any user's machine. No
+Linux fixture in this tree may be presented as a measurement of a Windows host.
 
 ## What it refuses, and why each is a refusal
 
