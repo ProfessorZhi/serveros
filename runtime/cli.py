@@ -136,13 +136,70 @@ def load_registry(path: str | None):
 # ---------------------------------------------------------------------------
 
 
-def daemon_socket_path() -> Path:
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return Path(runtime) / "serveros/serveros.sock"
-
-
 class DaemonUnavailable(RuntimeError):
     """The node runtime could not answer. Not a fault — a missing measurement."""
+
+
+class PlatformUnsupported(DaemonUnavailable):
+    """This platform cannot even name the runtime's socket, and none is made up.
+
+    Distinct from `DaemonUnavailable` (there is a path, and nothing is at it)
+    and from `DaemonBusy` (the runtime is there and occupied): here the CLI has
+    no correct address to ask. On Windows the Python daemon is intentionally
+    POSIX-only and the native C++ Core is a different program, so the honest
+    answer is NOT_RUNNING / UNSUPPORTED_PLATFORM. A fabricated uid or a
+    fallback socket would turn "cannot ask" into a false measurement.
+    """
+
+
+def _portable_stdout() -> None:
+    """Give this process's stdout one encoding, without changing the console.
+
+    The Windows console on FJPCOS is GBK. `argparse` writes help text to
+    `sys.stdout`, and help contains `§`; GBK bytes are not valid UTF-8, so a
+    reader that decodes the captured stream as UTF-8 fails. Machine output is
+    JSON and is kept ASCII-safe by `ensure_ascii=True`, but human help has no
+    such escape.
+
+    This reconfigures THIS process's stdout stream to UTF-8 when it is not
+    already UTF-8. It does not call `chcp`, write the registry, or change the
+    console's system code page, and it leaves stderr alone. A stream that
+    cannot be reconfigured (a test capture, a closed pipe) is left as it is;
+    the JSON path is still ASCII-safe.
+    """
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    if encoding.replace("_", "-") in ("utf-8", "utf8"):
+        return
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError, ValueError):
+        return
+
+
+def daemon_socket_path() -> Path:
+    """Where the running daemon's socket would be, or refuse to invent one.
+
+    `XDG_RUNTIME_DIR` is the explicit answer and is honoured on every platform.
+    Without it the Linux daemon's path is `/run/user/<uid>`, and `<uid>` comes
+    from `os.getuid`. Windows has no `os.getuid`; the Python daemon is
+    POSIX-only and the native C++ Core is a different program, so there is no
+    correct uid or fallback path to guess. Raise `PlatformUnsupported` rather
+    than fabricate one.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "serveros/serveros.sock"
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        raise PlatformUnsupported(
+            "no node runtime socket path on this platform: XDG_RUNTIME_DIR is "
+            "unset and os.getuid is unavailable. The Python serverosd is "
+            "POSIX-only; the Windows path is the native C++ Core (#334), not "
+            "this daemon. No uid or fallback socket is invented.")
+    return Path(f"/run/user/{getuid()}") / "serveros/serveros.sock"
 
 
 #: How long one `ask_daemon` waits before it calls the runtime unavailable.
@@ -256,7 +313,11 @@ def ask_daemon(method: str, params: dict | None = None,
 
 def emit(payload: dict, *, as_json: bool, lines: list[str] | None = None) -> None:
     if as_json:
-        json.dump(payload, sys.stdout, indent=2, sort_keys=True, default=str)
+        # ASCII-safe by contract. The Windows console is GBK, and JSON has an
+        # escape for every non-ASCII character; `ensure_ascii=False` would make
+        # the same document undecodable under one console and not another.
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True, default=str,
+                  ensure_ascii=True)
         sys.stdout.write("\n")
     else:
         for line in lines or []:
@@ -1962,11 +2023,23 @@ def cmd_status(args) -> int:
     """
     try:
         payload = ask_daemon("node.status")
+    except PlatformUnsupported as exc:
+        # There is no address to ask, so there is no reading to report. Name
+        # both facts a reader needs: the runtime is NOT_RUNNING, and this
+        # platform is why the CLI cannot even try (UNSUPPORTED_PLATFORM).
+        sys.stderr.write(f"serverosctl: {exc}\n")
+        if args.json:
+            json.dump({"ok": False, "runtime": "NOT_RUNNING",
+                       "platform": "UNSUPPORTED_PLATFORM",
+                       "detail": str(exc)},
+                      sys.stdout, indent=2, sort_keys=True, ensure_ascii=True)
+            sys.stdout.write("\n")
+        return EXIT_COULD_NOT_ANSWER
     except DaemonUnavailable as exc:
         sys.stderr.write(f"serverosctl: {exc}\n")
         if args.json:
             json.dump({"ok": False, "runtime": "NOT_RUNNING", "detail": str(exc)},
-                      sys.stdout, indent=2, sort_keys=True)
+                      sys.stdout, indent=2, sort_keys=True, ensure_ascii=True)
             sys.stdout.write("\n")
         return EXIT_COULD_NOT_ANSWER
 
@@ -15830,6 +15903,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before argparse can print `--help`: that text contains `§`, and a GBK
+    # console would otherwise write bytes no strict UTF-8 reader can decode.
+    _portable_stdout()
     parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     # Almost every verb's argv surface is closed, and a misspelled flag has to
