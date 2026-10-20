@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import hashlib
+import math
+import os
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,6 +36,218 @@ _SECRET = re.compile(r"(token|secret|cookie|password|api[_-]?key)", re.I)
 def _reject_secrets(value):
     text=json.dumps(value, ensure_ascii=False)
     if _SECRET.search(text): raise ValueError("secret-like evidence metadata is forbidden")
+
+
+# ---------------------------------------------------------------------------
+# The lease clock. ONE fixed-width UTC spelling, so that two processes can
+# compare two `expires_at` values as strings and agree.
+#
+# `now_iso()` (model.py) is `datetime.isoformat()` and it is NOT fixed width:
+# it drops the microsecond field when it happens to be zero, so
+# `2026-10-16T14:30:00+00:00` (25 chars) and `2026-10-16T14:30:00.123456+00:00`
+# (32 chars) can both appear — and `...:00+00:00` sorts AFTER
+# `...:00.123456+00:00` at the same second under a string comparison. A reader
+# one repository over (`serveros/context/resolver.py#held_leases`) filters this
+# column with SQL, so the format is a cross-repo contract and is pinned here:
+# `YYYY-MM-DDTHH:MM:SSZ`, second precision, Z suffix. The expiry is rounded UP
+# (`math.ceil`), so a TTL is never shortened by the truncation.
+# ---------------------------------------------------------------------------
+
+_LEASE_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+#: A lease is bounded. Without an upper bound one acquire can write an expiry
+#: far enough ahead that no successor can ever take the scope, and a value that
+#: can be arbitrarily large is not a TTL. Seven days is longer than any single
+#: Work turn and short enough that a crashed holder's scope is recoverable.
+_LEASE_MAX_TTL_S = 7 * 24 * 60 * 60
+
+
+def _lease_stamp(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(
+        math.ceil(epoch), datetime.timezone.utc).strftime(_LEASE_STAMP)
+
+
+def _lease_epoch(stamp: str) -> float:
+    try:
+        return datetime.datetime.strptime(
+            str(stamp), _LEASE_STAMP).replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_ROW_INVALID",
+            f"{stamp!r} is not the pinned lease timestamp {_LEASE_STAMP!r}; "
+            f"the row cannot be aged, so it authorizes nothing and may not be "
+            f"treated as expired and taken over") from exc
+
+
+def _lease_ttl(ttl_s) -> float:
+    """A TTL is a positive, finite, bounded number of seconds.
+
+    Zero and negative values used to be written as an ALREADY-EXPIRED row: the
+    acquire returned normally, `active_lease` immediately reported `None`, and
+    the caller had a lease that never was one. NaN/Infinity raised raw
+    `ValueError`/`OverflowError` from `math.ceil`, which is neither a refusal
+    word nor a rolled-back write. Both are refusals now, before the transaction.
+    """
+    if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s must be a number of seconds, not {type(ttl_s).__name__}")
+    value = float(ttl_s)
+    if not math.isfinite(value) or value <= 0:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s must be finite and greater than zero, not {ttl_s!r}; a "
+            f"non-positive or non-finite TTL is a lease that is expired before "
+            f"it is written")
+    if value > _LEASE_MAX_TTL_S:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {value!r} exceeds the {_LEASE_MAX_TTL_S}s bound; an "
+            f"unbounded lease would let one holder deny a scope forever")
+    return value
+
+
+def _lease_expiry(now_e: float, ttl_s: float) -> str:
+    try:
+        stamp = _lease_stamp(now_e + ttl_s)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {ttl_s!r} from {now_e!r} is outside the representable "
+            f"clock range") from exc
+    if _lease_epoch(stamp) <= now_e:
+        # `ceil` should make this impossible for a positive TTL; if it ever
+        # does happen, writing the row would be a successful acquire of an
+        # already-expired lease, which is the failure mode this refuses.
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {ttl_s!r} does not move the expiry past {now_e!r} at the "
+            f"pinned second precision")
+    return stamp
+
+
+def _lease_now(now) -> float:
+    """Epoch seconds, finite.
+
+    A caller-supplied `now` is a test seam on the store primitives. What must
+    never happen is a NaN clock: every `expires_at > now` comparison is False
+    against NaN, so a NaN would let its caller take over a LIVE lease. Infinity
+    is refused for the same reason in the other direction — a clock that cannot
+    be aged cannot be a fence.
+    """
+    if isinstance(now, bool):
+        raise LeaseError("LEASE_CLOCK_INVALID", "a boolean is not an instant")
+    try:
+        value = time.time() if now is None else float(now)
+    except (TypeError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_CLOCK_INVALID",
+            f"now must be epoch seconds, not {now!r}") from exc
+    if not math.isfinite(value):
+        raise LeaseError(
+            "LEASE_CLOCK_INVALID",
+            f"now must be finite, not {now!r}; a non-finite clock makes the "
+            f"expiry comparison meaningless and could take over a live lease")
+    return value
+
+
+def _sha256_path(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _fsync_dir(path: Path) -> None:
+    """Make a rename durable. A failure here is not the rename's failure."""
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _read_finalize_record(evidence) -> dict | None:
+    """Read the durable finalize file and require it to match its anchor.
+
+    Returns the stored runner receipt when the file is a T10_VERIFIED record,
+    `None` when it is an UNSIGNED record, and raises `ReceiptError` when the
+    record is missing, torn, tampered with, or contradicts itself.
+
+    The evidence row's `sha256` is the anchor. A missing file used to be
+    RECONSTRUCTED from the row as an UNSIGNED success — inventing a record and
+    silently dropping a receipt the row's anchor covered. A `.tmp` left by a
+    crash is promoted only when its bytes hash to that anchor. Nothing is ever
+    synthesized.
+    """
+    from .authority import ReceiptError
+
+    locator = Path(evidence["locator"])
+    expected = str(evidence["sha256"])
+    temporary = Path(str(locator) + ".tmp")
+    if not locator.exists():
+        if not temporary.exists():
+            raise ReceiptError(
+                "EVIDENCE_MISSING",
+                f"the Run is terminal but its finalize evidence file "
+                f"{str(locator)!r} is missing; a conclusion whose only durable "
+                f"record is gone is not a conclusion")
+        digest = _sha256_path(temporary)
+        if digest != expected:
+            raise ReceiptError(
+                "EVIDENCE_HASH_MISMATCH",
+                f"the crash-left {str(temporary)!r} hashes to {digest!r}, not "
+                f"the evidence row's anchor {expected!r}; it is not promoted")
+        temporary.replace(locator)
+        _fsync_dir(locator.parent)
+    digest = _sha256_path(locator)
+    if digest != expected:
+        raise ReceiptError(
+            "EVIDENCE_HASH_MISMATCH",
+            f"the finalize evidence file {str(locator)!r} hashes to {digest!r}, "
+            f"not the evidence row's anchor {expected!r}; the file was changed "
+            f"after the row was written")
+    try:
+        payload = json.loads(locator.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReceiptError(
+            "EVIDENCE_TORN",
+            f"the finalize evidence file {str(locator)!r} is not readable "
+            f"JSON") from exc
+    if not isinstance(payload, dict):
+        raise ReceiptError(
+            "EVIDENCE_TORN",
+            f"the finalize evidence file {str(locator)!r} is not an object")
+    authorization = payload.get("authorization")
+    receipt = payload.get("runner_receipt")
+    if authorization is None and receipt is None:
+        # A record written before the label existed. It claims no receipt, so
+        # UNSIGNED is the honest reading rather than a guess.
+        return None
+    if authorization == "T10_VERIFIED":
+        if not isinstance(receipt, dict):
+            raise ReceiptError(
+                "EVIDENCE_TORN",
+                "the record says T10_VERIFIED but carries no runner receipt; a "
+                "label without the receipt it labels is not evidence")
+        return receipt
+    if authorization == "UNSIGNED":
+        if receipt is not None:
+            raise ReceiptError(
+                "EVIDENCE_TORN",
+                "the record says UNSIGNED but carries a runner receipt; a reader "
+                "must not have to guess which half is the record")
+        return None
+    raise ReceiptError(
+        "EVIDENCE_TORN",
+        f"the record carries authorization {authorization!r}; only UNSIGNED or "
+        f"T10_VERIFIED is a finalize record")
 
 
 def _verdict_word(verdict) -> str:
@@ -147,18 +363,57 @@ class EvidenceConflict(ValueError):
     reason_code = "EVIDENCE_CONFLICT"
 
 
+class LeaseError(ValueError):
+    """The exclusive Work write lease refused: acquisition, renewal or a commit.
+
+    Its own type, and it carries a `reason_code`, because the four refusals here
+    are repaired four different ways and a caller that got one generic "lease
+    refused" would not know which:
+
+      LEASE_HELD_BY_OTHER  somebody else holds the scope. Repair: wait, or take
+                           it over after their TTL — do not write anyway.
+      STALE_TOKEN          this caller was superseded (or never held it). Repair:
+                           stop; the token moved, the process did not.
+      LEASE_EXPIRED        this caller DID hold it, and ran past its TTL. Repair:
+                           re-acquire, and do not commit on the old acquisition.
+      NOT_HOLDER           there is no lease on the scope at all. Repair: acquire.
+
+    A subclass of `ValueError` so a caller written against the older, untyped
+    refusals keeps working, and matching `ActiveWorkerAckRequired` beside it.
+    """
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        self.reason_code = reason_code
+        self.detail = detail
+        super().__init__(f"{reason_code}: {detail}")
+
+
 class ServerOSStore:
-    def __init__(self, state_dir: str | Path) -> None:
+    def __init__(self, state_dir: str | Path, *, clock=None) -> None:
         state_dir = Path(state_dir)
         if not state_dir.is_absolute():
             raise ValueError("ServerOS state directory must be absolute")
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be a callable returning epoch seconds")
         self.state_dir = state_dir.resolve()
+        #: The one clock the commit boundary trusts. Production leaves it as
+        #: `time.time`; a caller that needs determinism injects a clock when it
+        #: constructs the store, so the fence never reads a per-call clock.
+        self._clock = clock or time.time
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "serveros.db"
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.executescript(schema)
             migrate(conn)
+
+    def clock(self) -> float:
+        """The store's trusted instant, validated like every lease clock."""
+        return _lease_now(self._clock())
+
+    def _now(self, now) -> float:
+        """`now` is an explicit test seam; absent it, use the store's clock."""
+        return self.clock() if now is None else _lease_now(now)
 
     def connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
@@ -211,6 +466,258 @@ class ServerOSStore:
                 "UPDATE id_sequences SET next_value=? WHERE scope=? AND kind='item'", (seq + 1, project)
             )
             return f"{row['prefix']}-{seq:04d}"
+
+    # -- the exclusive Work write lease ------------------------------------
+    #
+    # ONE authoritative writer per (resource, current generation), enforced
+    # here rather than by a convention. The `leases` table has been in
+    # `schema.sql` since the first migration and until now nothing read or wrote
+    # it (issue #237 B3): a mutual-exclusion mechanism that existed only as a
+    # CREATE TABLE. This is that mechanism, on the SAME table and the SAME
+    # `id_sequences` counter the Item allocator already uses — not a second
+    # lease system, which `integration/components.yaml` refuses by name.
+    #
+    # The `token` is the fence, and it is MONOTONIC per resource (minted from
+    # `id_sequences`), so that "is this writer the current one" is decidable from
+    # the number alone and survives a restart. An owner+boolean would not: a
+    # process that was superseded and is still running would look identical to
+    # the one that replaced it. That is issue #237 T3/T6.
+
+    def _lease_row(self, conn, resource: str):
+        return conn.execute(
+            "SELECT resource, owner, token, expires_at FROM leases WHERE resource=?",
+            (resource,),
+        ).fetchone()
+
+    def acquire_lease(self, resource: str, *, owner: str, ttl_s: float,
+                      now=None) -> dict:
+        """Take the exclusive write lease, or refuse because it is held.
+
+        A live lease — one whose `expires_at` is still ahead of `now` — is not
+        taken over, whoever asks. An EXPIRED row is: it is a crashed or finished
+        holder, and leaving it as a permanent lock would be the opposite failure
+        (a scope nobody can ever write again). The successor is minted a HIGHER
+        token, so the old holder's token is fenced the moment it is superseded.
+        """
+        if not isinstance(resource, str) or not resource.strip():
+            raise LeaseError("NOT_HOLDER", "a lease names a resource; '' names none")
+        if not isinstance(owner, str) or not owner.strip():
+            raise LeaseError(
+                "LEASE_OWNER_REQUIRED",
+                f"a lease names an owner, not {owner!r}; an empty owner is a "
+                f"row nobody can be fenced against")
+        ttl = _lease_ttl(ttl_s)
+        now_e = self._now(now)
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            if row is not None and _lease_epoch(row["expires_at"]) > now_e:
+                raise LeaseError(
+                    "LEASE_HELD_BY_OTHER",
+                    f"{resource!r} is held by {row['owner']!r} (token "
+                    f"{row['token']}) until {row['expires_at']}. An exclusive "
+                    f"write scope has one writer at a time; renewed holders call "
+                    f"renew_lease, and a superseded one has lost the token, not "
+                    f"just the turn")
+            token = self._next_lease_token(conn, resource)
+            expires = _lease_expiry(now_e, ttl)
+            if row is None:
+                conn.execute(
+                    "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
+                    (resource, owner, token, expires))
+            else:
+                conn.execute(
+                    "UPDATE leases SET owner=?, token=?, expires_at=? WHERE resource=?",
+                    (owner, token, expires, resource))
+            return {"resource": resource, "owner": owner, "token": token,
+                    "expires_at": expires}
+
+    def renew_lease(self, resource: str, *, owner: str, token: int,
+                    ttl_s: float, now=None) -> dict:
+        """Extend the TTL of a lease the caller still holds.
+
+        Renewal does NOT mint a new token: the holder is unchanged, so its fence
+        must not move. It refuses, in STALE_TOKEN, when the caller is no longer
+        the holder — the case where a process kept running after it was
+        superseded must not be able to renew authority it has already lost.
+        """
+        ttl = _lease_ttl(ttl_s)
+        now_e = self._now(now)
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            if _lease_epoch(row["expires_at"]) <= now_e:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {row['expires_at']} and cannot be "
+                    f"renewed by its old holder — re-acquire it, which mints a "
+                    f"new token and fences the lapsed one")
+            expires = _lease_expiry(now_e, ttl)
+            conn.execute("UPDATE leases SET expires_at=? WHERE resource=?",
+                         (expires, resource))
+            return {"resource": resource, "owner": row["owner"],
+                    "token": int(row["token"]), "expires_at": expires}
+
+    def release_lease(self, resource: str, *, owner: str, token: int,
+                      now=None) -> dict:
+        """Give the lease back. Only the current holder, by token, may."""
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            conn.execute("DELETE FROM leases WHERE resource=?", (resource,))
+            return {"resource": resource, "owner": owner, "token": int(token),
+                    "released": True}
+
+    def active_lease(self, resource: str, *, now=None) -> dict | None:
+        """The live lease on a resource, or None. An expired row is None.
+
+        The row is left in place when it is expired — the reader excludes it.
+        Deleting it here would erase the only evidence that a holder ever
+        existed, which is the crash case #237 asks to stay answerable.
+        """
+        now_e = self._now(now)
+        with self.transaction() as conn:
+            row = self._lease_row(conn, resource)
+        if row is None or _lease_epoch(row["expires_at"]) <= now_e:
+            return None
+        return {"resource": row["resource"], "owner": row["owner"],
+                "token": int(row["token"]), "expires_at": row["expires_at"]}
+
+    def held_leases(self, *, now=None) -> list[str]:
+        """Every resource with a LIVE lease, ascending. The T6 reader.
+
+        This is the query `serveros/context/resolver.py#held_leases` means to
+        make — resources currently claimed — and it filters `expires_at`, which
+        the serveros reader did not (issue #237 B3/T6).
+        """
+        now_e = self._now(now)
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT resource, expires_at FROM leases").fetchall()
+        return sorted(row["resource"] for row in rows
+                      if _lease_epoch(row["expires_at"]) > now_e)
+
+    def check_writer(self, resource: str, *, owner: str, token: int,
+                     now=None) -> dict:
+        """The fence, at the commit boundary. Raises `LeaseError` if fenced.
+
+        Called by whatever is about to commit a protected write — not only when
+        the write began. An authorization checked once before a long turn is not
+        an authorization at the moment of the effect (issue #237 B1/T3), and a
+        holder that ran past its TTL must be stopped here rather than trusted
+        because it held the lease an hour ago.
+
+        This call is a POINT CHECK, not an atomic commit: it releases its read
+        transaction before the caller performs the effect, so a lease can expire
+        and a successor can acquire in between. A caller that is about to write
+        must use `lease_guard`, which holds the write transaction across the
+        effect and re-reads the fence before the commit.
+        """
+        now_e = self._now(now)
+        with self.transaction() as conn:
+            row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=owner, token=token)
+        if _lease_epoch(row["expires_at"]) <= now_e:
+            raise LeaseError(
+                "LEASE_EXPIRED",
+                f"{resource!r} lapsed at {row['expires_at']} and this writer "
+                f"(token {token}) is past it. A lease authorizes the turn it was "
+                f"acquired for, not every turn after")
+        return {"authorized": True, "resource": resource, "owner": row["owner"],
+                "token": int(row["token"]), "expires_at": row["expires_at"]}
+
+    @contextmanager
+    def lease_guard(self, resource: str, *, owner: str, token: int):
+        """Hold the write fence across the WHOLE effect, not just a check.
+
+        `check_writer` answers at one instant and the caller's write lands in a
+        different transaction. That leaves the TOCTOU #237 B1/T3 names: the old
+        writer checks, its lease expires, a successor acquires, and the old
+        writer's effect still commits. The fence was never consulted between
+        the check and the effect.
+
+        This guard is the atomic form. It opens `BEGIN IMMEDIATE`, validates the
+        holder and the expiry inside that transaction, yields the connection the
+        effect must use, and re-validates both immediately before the commit.
+        Because SQLite's write lock is held for the whole block, a successor
+        cannot acquire between the check and the effect; because the expiry is
+        re-read at the store's trusted clock (`clock()`), a turn that overran
+        its TTL rolls back instead of landing. The block holds SQLite's single
+        write lock, so keep it to the write it gates.
+
+        `now` is deliberately NOT a parameter. A commit boundary must not accept
+        a caller-chosen clock: passing a past `now` to `check_writer` can make an
+        expired lease look live, which is exactly the bypass this method exists
+        to remove.
+        """
+        if not isinstance(resource, str) or not resource.strip():
+            raise LeaseError("NOT_HOLDER", "a lease names a resource; '' names none")
+        started = self.clock()
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            if _lease_epoch(row["expires_at"]) <= started:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {row['expires_at']} before this "
+                    f"effect started; the fence is read at the effect, not only "
+                    f"when the turn began")
+            yield conn
+            finished = self.clock()
+            current = self._lease_row(conn, resource)
+            self._require_holder(current, resource, owner=owner, token=token)
+            if _lease_epoch(current["expires_at"]) <= finished:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {current['expires_at']} while this "
+                    f"effect was running (finished at {finished}). The effect is "
+                    f"rolled back: a lease authorizes the instant it covers, not "
+                    f"the turn that overran it")
+
+    @staticmethod
+    def _require_holder(row, resource, *, owner, token) -> None:
+        if row is None:
+            raise LeaseError(
+                "NOT_HOLDER",
+                f"no lease is recorded for {resource!r}, so this caller holds "
+                f"nothing to renew, release or commit on")
+        if not isinstance(owner, str) or not owner.strip():
+            raise LeaseError(
+                "NOT_HOLDER",
+                f"an owner must be a non-empty string, not {owner!r}; an empty "
+                f"owner names no holder and cannot be fenced")
+        # The token is the fence, so it is compared as the integer the store
+        # minted. Coercion (`"1"`, `1.0`, `True`) turns a caller's typing
+        # mistake into a match with a token it never received.
+        if type(token) is not int:
+            raise LeaseError(
+                "STALE_TOKEN",
+                f"a lease token is an integer, not {type(token).__name__}; a "
+                f"coerced value is not the fence that was minted")
+        if str(row["owner"]) != owner or int(row["token"]) != token:
+            raise LeaseError(
+                "STALE_TOKEN",
+                f"{resource!r} is held by {row['owner']!r} (token {row['token']}); "
+                f"this caller presents owner {owner!r} token {token}. The token "
+                f"moved when this caller was superseded, and a process that is "
+                f"still running does not still hold the write scope")
+
+    @staticmethod
+    def _next_lease_token(conn, resource: str) -> int:
+        """A token that only ever increases, per resource, across restarts."""
+        row = conn.execute(
+            "SELECT next_value FROM id_sequences WHERE scope=? AND kind='lease'",
+            (resource,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO id_sequences(scope,kind,next_value) VALUES (?, 'lease', 2)",
+                (resource,))
+            return 1
+        token = int(row["next_value"])
+        conn.execute(
+            "UPDATE id_sequences SET next_value=? WHERE scope=? AND kind='lease'",
+            (token + 1, resource))
+        return token
 
     def create_item(self, item: WorkItem) -> WorkItem:
         prefix = item.id.split("-", 1)[0]
@@ -881,27 +1388,237 @@ class ServerOSStore:
             c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,kind,locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
             return dict(c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? AND locator=?",(item_id,run_id,locator)).fetchone())
 
-    def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases, revision, dirty):
+    def finalize_run(self, item_id, run_id, *, verdict, exit_code, command, cases,
+                     revision, dirty, t10_required=False, t10_binding=None,
+                     receipt_ref=None, receipt_authority=None, now=None):
+        """Conclude a Run; `t10_required=True` makes runner proof mandatory.
+
+        The CLI's `run finalize` and every existing caller reach this method.
+        Without `t10_required` the historical record semantics are preserved,
+        but the answer is labelled `authorization: "UNSIGNED"` and
+        `t10_acceptable: false`: a caller's `verdict`/`exit_code` is a
+        control-plane record, not runner proof, and V1/T10 must not accept it.
+
+        `t10_required=True` is the narrow opt-in. It requires a trusted
+        `RunnerReceiptAuthority`, an opaque `receipt_ref`, and an exact
+        `T10Binding` (Item, Run, commit, actor). Any missing half refuses with
+        `BLOCKED_TRUST_SOURCE` or its specific code; it NEVER falls back to the
+        unsigned path. The receipt is verified by the parent and re-checked
+        here, and `SUCCEEDED` additionally requires a verified zero exit.
+
+        There is no in-process verifier in the CLI. In production this method
+        is called by the out-of-process serverosd/runner parent described in
+        `docs/t10-finalize-entry.md`; until that parent exists the CLI refuses
+        `BLOCKED_TRUST_SOURCE`.
+        """
+        from .authority import ReceiptError, validate_t10_binding
+
         verdict = _verdict_word(verdict)
+        if not t10_required:
+            result, authorization, _stored = self._write_finalize(
+                item_id, run_id, verdict=verdict, exit_code=exit_code,
+                command=command, cases=cases, revision=revision, dirty=dirty,
+                receipt=None)
+            return {**result, "authorization": authorization,
+                    "t10_acceptable": authorization == "T10_VERIFIED"}
+
+        if receipt_authority is None:
+            raise ReceiptError(
+                "BLOCKED_TRUST_SOURCE",
+                "no trusted runner-receipt authority is bound; a T10-required "
+                "Run cannot fall back to a caller's exit_code and verdict")
+        if t10_binding is None:
+            raise ReceiptError(
+                "T10_BINDING_REQUIRED",
+                "a T10-required finalize must name the exact Item, Run, "
+                "commit and actor the trusted parent derived")
+        receipt = self._verify_runner_receipt(
+            item_id, run_id, receipt_ref=receipt_ref,
+            receipt_authority=receipt_authority, verdict=verdict,
+            exit_code=exit_code, now=now)
+        validate_t10_binding(t10_binding, item_id=item_id, run_id=run_id,
+                             receipt=receipt)
+        result, authorization, stored = self._write_finalize(
+            item_id, run_id, verdict=verdict, exit_code=exit_code,
+            command=command, cases=cases, revision=revision, dirty=dirty,
+            receipt=receipt)
+        if authorization != "T10_VERIFIED":
+            raise ReceiptError(
+                "T10_UNSIGNED_RUN",
+                "this Run was already concluded without a verified receipt; "
+                "a T10-required finalize cannot relabel an unsigned success")
+        if stored is not None:
+            if (stored.get("commit_sha") != t10_binding.commit_sha
+                    or stored.get("actor_ref") != t10_binding.actor_ref
+                    or stored.get("receipt_sha256") != receipt.receipt_sha256):
+                raise ReceiptError(
+                    "T10_BINDING_MISMATCH",
+                    "the Run's stored finalize receipt is for a different "
+                    "commit, actor or receipt anchor than this request")
+        return {**result, "authorization": "T10_VERIFIED",
+                "t10_acceptable": True}
+
+    def _verify_runner_receipt(self, item_id, run_id, *, receipt_ref,
+                               receipt_authority, verdict, exit_code, now=None):
+        """The one receipt-verification path shared by both finalize routes."""
+        from .authority import (
+            ReceiptError,
+            VerifiedRunReceipt,
+            validate_verified_receipt,
+        )
+        if receipt_authority is None:
+            raise ReceiptError(
+                "BLOCKED_TRUST_SOURCE",
+                "no trusted runner-receipt authority is bound; a caller's "
+                "exit_code and verdict are not proof and cannot conclude "
+                "SUCCEEDED")
+        if not isinstance(receipt_ref, str) or not receipt_ref.strip():
+            raise ReceiptError(
+                "RUNNER_RECEIPT_REQUIRED",
+                "no runner receipt reference was presented; pass the opaque "
+                "ref the trusted receipt authority issued, not a hash or an "
+                "exit code")
+        now_e = time.time() if now is None else float(now)
+        try:
+            receipt = receipt_authority.verify(
+                receipt_ref, item_ref=item_id, run_ref=run_id, now=now_e)
+        except ReceiptError:
+            raise
+        except Exception as exc:
+            raise ReceiptError(
+                "UNTRUSTED_RECEIPT",
+                f"the trusted receipt authority did not answer: "
+                f"{type(exc).__name__}") from exc
+        if not isinstance(receipt, VerifiedRunReceipt):
+            raise ReceiptError(
+                "UNTRUSTED_RECEIPT",
+                "the authority returned no VerifiedRunReceipt; a reference "
+                "that resolves to nothing is not proof")
+        validate_verified_receipt(
+            receipt, item_id=item_id, run_id=run_id,
+            verdict=verdict, exit_code=exit_code)
+        return receipt
+
+    def _write_finalize(self, item_id, run_id, *, verdict, exit_code, command,
+                        cases, revision, dirty, receipt=None):
+        """Write the one finalize conclusion and say whether it was signed.
+
+        Returns `(result, authorization, stored_receipt)`. `authorization` is
+        `T10_VERIFIED` only when this write carries a verified receipt, or when
+        a terminal Run's existing evidence file already carries one. A terminal
+        Run concluded unsigned stays UNSIGNED; a T10-required caller must not
+        be able to launder it by asking again.
+        """
         with self.transaction(immediate=True) as c:
-            r=self._require_run(c, item_id, run_id)
+            r = self._require_run(c, item_id, run_id)
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
-                e=c.execute("SELECT * FROM evidence WHERE item_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1",(item_id,run_id)).fetchone()
-                if e and not Path(e['locator']).exists():
-                    tmp=Path(e['locator']+'.tmp')
-                    if tmp.exists(): tmp.replace(e['locator'])
-                    else: Path(e['locator']).write_text(json.dumps({"command":e['command'],"cases":json.loads(e['cases_json']),"exit_code":e['exit_code'],"revision":e['revision'],"dirty":bool(e['dirty']),"verdict":e['verdict']})+'\n')
-                return {"state":r['state'],"verdict":e['verdict'] if e else verdict}
-            if r['state']!='FINALIZING': raise ValueError("run must be FINALIZING")
-            locator=str(Path(r['artifact_dir'])/'finalize.json'); Path(r['artifact_dir']).mkdir(parents=True,exist_ok=True)
-            temporary=Path(locator+'.tmp'); payload=json.dumps({"command":command,"cases":cases,"exit_code":exit_code,"revision":revision,"dirty":dirty,"verdict":verdict})+'\n'; temporary.write_text(payload)
+                e = c.execute(
+                    "SELECT * FROM evidence WHERE item_id=? AND run_id=? "
+                    "AND kind='finalize' ORDER BY evidence_id DESC LIMIT 1",
+                    (item_id, run_id)
+                ).fetchone()
+                if e is None:
+                    if r['state'] in ('SUCCEEDED', 'FAILED'):
+                        from .authority import ReceiptError
+                        raise ReceiptError(
+                            "EVIDENCE_MISSING",
+                            "the Run is terminal but has no finalize evidence "
+                            "row; a conclusion with no durable evidence is not "
+                            "a conclusion")
+                    return ({"state": r['state'], "verdict": verdict},
+                            'UNSIGNED', None)
+                stored_receipt = _read_finalize_record(e)
+                authorization = ('T10_VERIFIED' if stored_receipt is not None
+                                 else 'UNSIGNED')
+                return ({"state": r['state'],
+                         "verdict": e['verdict'] if e['verdict'] else verdict},
+                        authorization, stored_receipt)
+            if r['state'] != 'FINALIZING':
+                raise ValueError("run must be FINALIZING")
+            locator = str(Path(r['artifact_dir']) / 'finalize.json')
+            Path(r['artifact_dir']).mkdir(parents=True, exist_ok=True)
+            temporary = Path(locator + '.tmp')
+            body = {
+                "command": command,
+                "cases": cases,
+                "exit_code": exit_code,
+                "revision": revision,
+                "dirty": dirty,
+                "verdict": verdict,
+                # The durable record says what kind of conclusion this is, not
+                # only the return value. A reader of finalize.json must not
+                # have to infer "unsigned" from a missing receipt.
+                "authorization": ("T10_VERIFIED" if receipt is not None
+                                  else "UNSIGNED"),
+            }
+            if receipt is not None:
+                body["runner_receipt"] = {
+                    "action_key": receipt.action_key,
+                    "input_digest": receipt.input_digest,
+                    "receipt_sha256": receipt.receipt_sha256,
+                    "process_exit_code": receipt.process_exit_code,
+                    "runner_identity": receipt.runner_identity,
+                    "commit_sha": receipt.commit_sha,
+                    "actor_ref": receipt.actor_ref,
+                }
+            payload = json.dumps(body) + '\n'
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
             _reject_secrets(json.loads(payload))
-            digest=hashlib.sha256(payload.encode()).hexdigest()
-            c.execute("INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,cases_json,exit_code,revision,dirty,verdict,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(item_id,run_id,'finalize',locator,digest,command,json.dumps(cases),exit_code,revision,int(dirty),verdict,now_iso()))
-            state='SUCCEEDED' if verdict=='PASS' and exit_code==0 else 'FAILED'
-            c.execute("UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",(state,now_iso(),item_id,run_id))
-        temporary.replace(locator)
-        return {"state":state,"verdict":verdict}
+            digest = hashlib.sha256(payload.encode()).hexdigest()
+            c.execute(
+                "INSERT INTO evidence(item_id,run_id,kind,locator,sha256,command,"
+                "cases_json,exit_code,revision,dirty,verdict,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item_id, run_id, 'finalize', locator, digest, command,
+                 json.dumps(cases), exit_code, revision, int(dirty), verdict,
+                 now_iso()))
+            if receipt is not None:
+                state = ('SUCCEEDED'
+                         if verdict == 'PASS' and exit_code == 0
+                         and receipt.process_exit_code == 0
+                         else 'FAILED')
+            else:
+                state = ('SUCCEEDED' if verdict == 'PASS' and exit_code == 0
+                         else 'FAILED')
+            c.execute(
+                "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
+                (state, now_iso(), item_id, run_id))
+            # Promote the file BEFORE the database commit. If this fails the
+            # exception rolls the transaction back and the Run stays FINALIZING;
+            # a recoverable orphan file is preferred to a committed evidence row
+            # whose locator does not exist. (The reverse order — commit, then
+            # rename — is the torn record `_read_finalize_record` refuses.)
+            temporary.replace(locator)
+            _fsync_dir(Path(locator).parent)
+        stored_receipt = body.get('runner_receipt')
+        return ({"state": state, "verdict": verdict},
+                'T10_VERIFIED' if receipt is not None else 'UNSIGNED',
+                stored_receipt)
+
+    def finalize_run_verified(self, item_id, run_id, *, verdict, exit_code, command,
+                              cases, revision, dirty, receipt_ref, receipt_authority,
+                              now=None):
+        """The #14 lower-level seam: verify a receipt, then write it.
+
+        Kept for existing callers that do not have a `T10Binding` yet. The
+        production-facing route is `finalize_run(..., t10_required=True, ...)`,
+        which adds the exact Item/Run/commit/actor binding. Both paths share
+        `_verify_runner_receipt` and `_write_finalize`; there is no second
+        evidence store and no permissive default.
+        """
+        verdict = _verdict_word(verdict)
+        receipt = self._verify_runner_receipt(
+            item_id, run_id, receipt_ref=receipt_ref,
+            receipt_authority=receipt_authority, verdict=verdict,
+            exit_code=exit_code, now=now)
+        result, _authorization, _stored = self._write_finalize(
+            item_id, run_id, verdict=verdict, exit_code=exit_code,
+            command=command, cases=cases, revision=revision, dirty=dirty,
+            receipt=receipt)
+        return result
 
     def record_feedback(self,item_id,locator,kind,observation_id):
         if not all(str(value).strip() for value in (item_id, locator, kind, observation_id)):

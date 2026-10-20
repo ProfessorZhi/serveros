@@ -346,6 +346,12 @@ def active_items(roots: Roots, exclude: str) -> list[str]:
     )
 
 
+# RC-v2 merge resolution (#275 x #295/#304): #275's reader is canonical.
+# It keeps the same T6 property (expired rows excluded, rows retained as crash
+# evidence) and adds the injectable instant plus the canonical
+# work_write_resource helpers. #295's SQL-side duplicate held_leases was
+# dropped; tests/test_resolver.py still checks expired-row exclusion against
+# this reader. Neither side's safety property is lost.
 def held_leases(roots: Roots, *, now=None) -> list[str]:
     """Resources with a LIVE exclusive Work lease, ascending.
 
