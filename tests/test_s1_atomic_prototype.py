@@ -1,20 +1,23 @@
-"""A' atomic authority epoch + lease commit prototype (PROTOTYPE_ONLY).
+"""A' atomic authority epoch + lease commit prototype (PROTOTYPE_HARDENING).
 
 This test runs against a real temp WorkEngine SQLite DB (`ServerOSStore`
-schema) and two independent connections/processes. The owner policy, grant,
-context and uid are synthetic fixtures; nothing here is a production owner.
+schema) and independent connections/processes. The owner policy, grant,
+context, uid and clock are SYNTHETIC HARNESS INPUTS; nothing here is a
+production owner, SO_PEERCRED, store clock or effect commit.
 
 The prototype must not be read as production authorization: its success word
-is `PROTOTYPE_FENCED_COMMIT`, it carries `simulated_owner: True`, and it has
-no `verified` key. Production #364 remains `BLOCKED_OWNER_COMMIT_SEAM`.
+is `PROTOTYPE_FENCED_COMMIT`, it carries `simulated_owner: True` /
+`owner_status: SIMULATED_OWNER`, and it has no `verified` key. Production #364
+remains `BLOCKED_OWNER_COMMIT_SEAM`.
 
 EVIDENCE: LOCAL / REAL_TEMP SQLite (temp DB, real schema/transaction/token
-helpers); SYNTHETIC owner/uid/context; multi-process Linux only.
-NOT_RUN: two real OS uids, a real owner key, production daemon/Fleet wiring,
-finalize/effect same-transaction (see README).
+helpers); SYNTHETIC owner/uid/context/clock; multi-process Linux only.
+NOT_RUN: two real OS uids, kernel SO_PEERCRED, a real owner key, production
+daemon/Fleet wiring, DB migration, power loss, real Windows.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import multiprocessing
 import os
@@ -71,6 +74,24 @@ GRANT = dict(
 CONTEXT = dict(context_ref=CONTEXT_REF, actor_ref=ACTOR, grant_ref=GRANT_REF)
 
 
+class FixedClock:
+    """A synthetic trusted-clock fixture. No sleep and no wall-clock drift."""
+
+    def __init__(self, now: float = NOW):
+        self.now = float(now)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def set(self, now: float) -> None:
+        self.now = float(now)
+
+
+def _iso(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(
+        epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _request(request_id="req:1", **overrides) -> dict:
     request = {
         "request_id": request_id, "context_ref": CONTEXT_REF,
@@ -80,10 +101,12 @@ def _request(request_id="req:1", **overrides) -> dict:
     return request
 
 
-def _make(tmp_path, *, policy_over=None, grant_over=None,
-          context_over=None, seed_policy=True, seed_grant=True,
-          seed_context=True):
-    p = proto.AtomicFencePrototype(str(tmp_path / "proto"))
+def _make(tmp_path, *, clock=None, synthetic_peer_uid=UID,
+          policy_over=None, grant_over=None, context_over=None,
+          seed_policy=True, seed_grant=True, seed_context=True):
+    p = proto.AtomicFencePrototype(
+        str(tmp_path / "proto"), clock=clock or FixedClock(NOW),
+        synthetic_peer_uid=synthetic_peer_uid)
     if seed_policy:
         values = dict(POLICY)
         values.update(policy_over or {})
@@ -99,9 +122,9 @@ def _make(tmp_path, *, policy_over=None, grant_over=None,
     return p
 
 
-def _refused(p, code, request=None, peer_uid=UID, now=NOW):
+def _refused(p, code, request=None):
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        p.acquire(request or _request(), peer_uid=peer_uid, now=now)
+        p.acquire(request or _request())
     assert caught.value.code == code, str(caught.value)
     assert p.lease(RESOURCE) is None
     assert p.commit_count() == 0
@@ -113,11 +136,14 @@ def _refused(p, code, request=None, peer_uid=UID, now=NOW):
 
 def test_a_fenced_commit_writes_policy_epoch_and_lease_in_one_transaction(tmp_path):
     p = _make(tmp_path)
-    receipt = p.acquire(_request(), peer_uid=UID, now=NOW)
+    receipt = p.acquire(_request())
 
     assert receipt["prototype_status"] == "PROTOTYPE_FENCED_COMMIT"
     assert receipt["simulated_owner"] is True
     assert receipt["owner_status"] == "SIMULATED_OWNER"
+    assert receipt["authorized"] is True
+    assert receipt["historical"] is False
+    assert receipt["effect_eligible"] is False
     assert "verified" not in receipt
     assert receipt["policy_epoch"] == 1
     assert receipt["authority_epoch"] == 1
@@ -136,7 +162,7 @@ def test_a_fenced_commit_writes_policy_epoch_and_lease_in_one_transaction(tmp_pa
 
 def test_real_work_engine_reader_sees_the_fenced_lease(tmp_path):
     p = _make(tmp_path)
-    receipt = p.acquire(_request(), peer_uid=UID, now=NOW)
+    receipt = p.acquire(_request())
     store = proto.ServerOSStore(str(p.state_dir))
     live = store.active_lease(RESOURCE, now=NOW)
     assert live == {
@@ -151,7 +177,7 @@ def test_real_work_engine_reader_sees_the_fenced_lease(tmp_path):
 
 def test_revoke_commits_before_acquire_and_leaves_no_lease(tmp_path):
     p = _make(tmp_path)
-    revoked = p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
+    revoked = p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
     assert revoked["prototype_status"] == "PROTOTYPE_POLICY_REVOKED"
     assert revoked["owner_status"] == "SIMULATED_OWNER"
     assert revoked["policy_epoch"] == 2
@@ -163,8 +189,8 @@ def test_revoke_commits_before_acquire_and_leaves_no_lease(tmp_path):
 
 def test_acquire_before_revoke_is_auditable_and_blocks_a_new_acquire(tmp_path):
     p = _make(tmp_path)
-    first = p.acquire(_request(), peer_uid=UID, now=NOW)
-    p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
+    first = p.acquire(_request())
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
 
     lease = p.lease(RESOURCE)
     assert lease["token"] == str(first["token"])
@@ -174,7 +200,7 @@ def test_acquire_before_revoke_is_auditable_and_blocks_a_new_acquire(tmp_path):
     assert p.commit_count() == 1
 
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        p.acquire(_request("req:2"), peer_uid=UID, now=NOW)
+        p.acquire(_request("req:2"))
     assert caught.value.code == "POLICY_DENIED"
     assert p.lease(RESOURCE)["token"] == str(first["token"])
     assert p.commit_count() == 1
@@ -185,7 +211,7 @@ def test_legacy_cross_domain_read_then_revoke_then_write_is_reproduced(tmp_path)
 
     This test asserts that the legacy pattern DOES write a lease after the
     revoke. It is a reproduction of the problem the prototype removes, not a
-    desired behavior. The prototype test above is the GREEN side.
+    desired behavior. The fenced path above is the GREEN side.
     """
     p = _make(tmp_path)
     read_done = threading.Event()
@@ -214,7 +240,7 @@ def test_legacy_cross_domain_read_then_revoke_then_write_is_reproduced(tmp_path)
     thread = threading.Thread(target=legacy_writer)
     thread.start()
     assert read_done.wait(5)
-    p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
     revoke_done.set()
     thread.join(10)
     assert not thread.is_alive()
@@ -222,6 +248,74 @@ def test_legacy_cross_domain_read_then_revoke_then_write_is_reproduced(tmp_path)
     lease = p.lease(RESOURCE)
     assert lease is not None and int(lease["token"]) == 99, (
         "the legacy cross-domain write should reproduce a lease after revoke")
+
+
+# ---------------------------------------------------------------------------
+# Commit-phase clock re-check.  Controlled fake-clock jumps, no sleeps.
+# ---------------------------------------------------------------------------
+
+def test_ttl_expiry_during_hold_rolls_back_lease_token_and_commit(tmp_path):
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock)
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.acquire(_request(), hold=lambda: clock.set(NOW + 31))
+    assert caught.value.code == "LEASE_EXPIRED_AT_COMMIT", str(caught.value)
+    assert p.lease(RESOURCE) is None
+    assert p.commit_count() == 0
+    assert p.token_next(RESOURCE) is None
+    assert p.policy(POLICY_REF)["policy_epoch"] == 1
+
+
+def test_policy_expiry_during_hold_rolls_back_all_rows(tmp_path):
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock, policy_over={
+        "expires_at": _iso(NOW + 10)}, grant_over={
+        "expires_at": _iso(NOW + 1000)})
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.acquire(_request(), hold=lambda: clock.set(NOW + 11))
+    assert caught.value.code == "POLICY_EXPIRED_AT_COMMIT", str(caught.value)
+    assert p.lease(RESOURCE) is None
+    assert p.commit_count() == 0
+    assert p.token_next(RESOURCE) is None
+
+
+def test_grant_expiry_during_hold_rolls_back_all_rows(tmp_path):
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock, policy_over={
+        "expires_at": _iso(NOW + 1000)}, grant_over={
+        "expires_at": _iso(NOW + 10)})
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.acquire(_request(), hold=lambda: clock.set(NOW + 11))
+    assert caught.value.code == "GRANT_EXPIRED_AT_COMMIT", str(caught.value)
+    assert p.lease(RESOURCE) is None
+    assert p.commit_count() == 0
+    assert p.token_next(RESOURCE) is None
+
+
+def test_a_backward_clock_jump_before_the_window_rolls_back(tmp_path):
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock, policy_over={
+        "valid_from": _iso(NOW - 100)}, grant_over={
+        "valid_from": _iso(NOW - 100)})
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.acquire(_request(), hold=lambda: clock.set(NOW - 200))
+    assert caught.value.code == "POLICY_DENIED", str(caught.value)
+    assert p.lease(RESOURCE) is None
+    assert p.commit_count() == 0
+    assert p.token_next(RESOURCE) is None
+
+
+def test_a_caller_cannot_pass_now_or_peer_uid_to_acquire(tmp_path):
+    p = _make(tmp_path)
+    with pytest.raises(TypeError):
+        p.acquire(_request(), now=NOW)
+    with pytest.raises(TypeError):
+        p.acquire(_request(), peer_uid=UID)
+
+
+def test_a_missing_synthetic_peer_uid_is_refused(tmp_path):
+    p = _make(tmp_path, synthetic_peer_uid=None)
+    _refused(p, "UNTRUSTED_ACTOR")
 
 
 # ---------------------------------------------------------------------------
@@ -275,19 +369,9 @@ def test_old_writer_epoch_is_refused_against_a_newer_policy(tmp_path):
              request=_request(expected_authority_epoch=1))
 
 
-def test_the_real_work_engine_db_is_in_wal_mode(tmp_path):
-    p = _make(tmp_path)
-    conn = sqlite3.connect(p.db_path)
-    try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    finally:
-        conn.close()
-    assert str(mode).lower() == "wal"
-
-
 def test_cross_uid_is_refused(tmp_path):
-    p = _make(tmp_path)
-    _refused(p, "UNTRUSTED_ACTOR", peer_uid=9999)
+    p = _make(tmp_path, synthetic_peer_uid=9999)
+    _refused(p, "UNTRUSTED_ACTOR")
 
 
 def test_cross_actor_is_refused(tmp_path):
@@ -307,6 +391,17 @@ def test_out_of_scope_is_refused(tmp_path, overrides):
 
 def test_missing_owner_attestation_is_refused(tmp_path):
     p = _make(tmp_path, policy_over={"owner_attestation": ""})
+    _refused(p, "BLOCKED_OWNER_POLICY")
+
+
+def test_empty_issued_by_is_refused(tmp_path):
+    p = _make(tmp_path, policy_over={"issued_by": ""})
+    _refused(p, "BLOCKED_OWNER_POLICY")
+
+
+def test_authority_epoch_behind_policy_epoch_is_refused(tmp_path):
+    p = _make(tmp_path, policy_over={"policy_epoch": 2, "authority_epoch": 1},
+              grant_over={"owner_policy_epoch": 2})
     _refused(p, "BLOCKED_OWNER_POLICY")
 
 
@@ -344,15 +439,28 @@ def test_caller_self_asserted_authority_fields_are_rejected(tmp_path):
                  request=_request(**{field: value}))
 
 
+def test_the_real_work_engine_db_is_in_wal_mode(tmp_path):
+    p = _make(tmp_path)
+    conn = sqlite3.connect(p.db_path)
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+    assert str(mode).lower() == "wal"
+
+
 # ---------------------------------------------------------------------------
-# Idempotency / replay / old writer.
+# Idempotency / historical replay / old writer.
 # ---------------------------------------------------------------------------
 
-def test_same_request_id_replays_the_committed_token(tmp_path):
+def test_same_request_id_is_a_historical_replay_not_current_authority(tmp_path):
     p = _make(tmp_path)
-    first = p.acquire(_request(), peer_uid=UID, now=NOW)
-    again = p.acquire(_request(), peer_uid=UID, now=NOW)
-    assert again["replayed"] is True
+    first = p.acquire(_request())
+    again = p.acquire(_request())
+    assert again["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert again["authorized"] is False
+    assert again["historical"] is True
+    assert again["effect_eligible"] is False
     assert again["token"] == first["token"]
     assert p.commit_count() == 1
     assert p.token_next(RESOURCE) == 2
@@ -360,9 +468,19 @@ def test_same_request_id_replays_the_committed_token(tmp_path):
 
 def test_same_request_id_with_different_facts_conflicts(tmp_path):
     p = _make(tmp_path)
-    first = p.acquire(_request(), peer_uid=UID, now=NOW)
+    first = p.acquire(_request())
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        p.acquire(_request(ttl_s=31.0), peer_uid=UID, now=NOW)
+        p.acquire(_request(ttl_s=31.0))
+    assert caught.value.code == "IDEMPOTENCY_CONFLICT"
+    assert p.lease(RESOURCE)["token"] == str(first["token"])
+    assert p.commit_count() == 1
+
+
+def test_same_request_id_with_a_different_epoch_pin_conflicts(tmp_path):
+    p = _make(tmp_path)
+    first = p.acquire(_request())
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.acquire(_request(expected_authority_epoch=1))
     assert caught.value.code == "IDEMPOTENCY_CONFLICT"
     assert p.lease(RESOURCE)["token"] == str(first["token"])
     assert p.commit_count() == 1
@@ -375,83 +493,195 @@ def test_missing_request_id_is_refused(tmp_path):
     _refused(p, "INVALID_REQUEST", request=request)
 
 
-def test_replay_after_revoke_returns_historical_receipt_but_new_request_refuses(
-        tmp_path):
+def test_replay_after_revoke_is_historical_and_new_request_refuses(tmp_path):
     p = _make(tmp_path)
-    first = p.acquire(_request(), peer_uid=UID, now=NOW)
-    p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
-    replay = p.acquire(_request(), peer_uid=UID, now=NOW)
-    assert replay["replayed"] is True
+    first = p.acquire(_request())
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+    replay = p.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
+    assert replay["historical"] is True
+    assert replay["effect_eligible"] is False
     assert replay["token"] == first["token"]
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        p.acquire(_request("req:2"), peer_uid=UID, now=NOW)
+        p.acquire(_request("req:2"))
     assert caught.value.code == "POLICY_DENIED"
     assert p.commit_count() == 1
 
 
 def test_token_is_monotonic_after_expiry_and_old_replay_keeps_its_token(
         tmp_path):
-    p = _make(tmp_path)
-    first = p.acquire(_request(), peer_uid=UID, now=NOW)
-    second = p.acquire(_request("req:2"), peer_uid=UID, now=NOW + 3600)
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock)
+    first = p.acquire(_request())
+    clock.set(NOW + 3600)
+    second = p.acquire(_request("req:2"))
     assert second["token"] == first["token"] + 1
-    assert second["token"] > first["token"]
-    replay = p.acquire(_request(), peer_uid=UID, now=NOW + 3600)
+    replay = p.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
     assert replay["token"] == first["token"]
     assert p.lease(RESOURCE)["token"] == str(second["token"])
     assert p.commit_count() == 2
 
 
 # ---------------------------------------------------------------------------
+# Production-wiring gaps: legacy writes outside the fence.
+# ---------------------------------------------------------------------------
+
+def test_legacy_serveros_store_acquire_bypasses_the_fence(tmp_path):
+    """PRODUCTION_WIRING_REQUIRED: the real store can write outside the fence.
+
+    This is a negative test proving the prototype is not a production
+    boundary. It must keep passing while the production entrypoint is
+    unfenced; it is not a desired authorization.
+    """
+    p = _make(tmp_path)
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+    store = proto.ServerOSStore(str(p.state_dir))
+    lease = store.acquire_lease(RESOURCE, owner="human:LEGACY",
+                                ttl_s=30, now=NOW)
+    assert lease["token"] == 1
+    assert p.lease(RESOURCE)["owner"] == "human:LEGACY"
+    assert p.commit_count() == 0
+    assert p.policy(POLICY_REF)["revoked"] == 1
+
+
+def test_legacy_check_writer_accepts_a_pre_revoke_token_after_revoke(tmp_path):
+    """PRODUCTION_WIRING_REQUIRED: check_writer reads only the lease row.
+
+    The prototype's `check_writer_fenced` refuses the same token after the
+    revoke; a production writer must use the fenced check (and hold it across
+    its effect), not the legacy one.
+    """
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR, token=receipt["token"])
+    assert caught.value.code == "POLICY_DENIED"
+
+
+def test_fenced_check_writer_refuses_an_expired_grant_after_acquire(tmp_path):
+    clock = FixedClock(NOW)
+    p = _make(tmp_path, clock=clock, policy_over={
+        "expires_at": _iso(NOW + 1000)}, grant_over={
+        "expires_at": _iso(NOW + 10)})
+    receipt = p.acquire(_request(ttl_s=600.0))
+    clock.set(NOW + 11)
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW + 11)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "GRANT_EXPIRED_AT_COMMIT"
+
+
+def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
+        tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    checked = p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                    token=receipt["token"])
+    assert checked["prototype_status"] == "PROTOTYPE_FENCED_CHECK"
+    assert checked["authorized"] is True
+    assert checked["effect_eligible"] is False
+
+
+# ---------------------------------------------------------------------------
 # Multi-process: two independent SQLite connections.
 # ---------------------------------------------------------------------------
 
-def _worker_acquire(db_dir, request, peer_uid, now, barrier, queue):
-    p = proto.AtomicFencePrototype(db_dir, initialize=False)
+def _worker_proto(db_dir):
+    return proto.AtomicFencePrototype(
+        db_dir, initialize=False, clock=FixedClock(NOW),
+        synthetic_peer_uid=UID)
+
+
+def _worker_acquire(db_dir, request, barrier, queue):
+    p = _worker_proto(db_dir)
     barrier.wait(timeout=15)
     try:
-        receipt = p.acquire(request, peer_uid=peer_uid, now=now)
+        receipt = p.acquire(request)
         queue.put(("ok", receipt["token"], receipt["request_id"]))
     except BaseException as exc:
         queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
 
 
-def _worker_acquire_hold(db_dir, request, peer_uid, now, written, release,
-                         queue):
-    p = proto.AtomicFencePrototype(db_dir, initialize=False)
+def _worker_acquire_hold(db_dir, request, written, release, queue):
+    p = _worker_proto(db_dir)
 
     def hold():
         written.set()
         assert release.wait(15)
 
     try:
-        receipt = p.acquire(request, peer_uid=peer_uid, now=now, hold=hold)
+        receipt = p.acquire(request, hold=hold)
         queue.put(("ok", receipt["token"]))
     except BaseException as exc:
         queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
 
 
-def _worker_revoke(db_dir, policy_ref, expected, now, go, queue):
-    p = proto.AtomicFencePrototype(db_dir, initialize=False)
-    assert go.wait(15)
+def _worker_revoke_probe(db_dir, policy_ref, expected, attempted, blocked,
+                         release, queue):
+    """Attempt BEGIN IMMEDIATE in a separate connection, then really revoke.
+
+    `blocked` is set only when that independent BEGIN IMMEDIATE raises
+    'database is locked' because the acquirer's transaction holds the write
+    lock. No sleep and no simulated concurrency.
+    """
+    p = _worker_proto(db_dir)
+    conn = sqlite3.connect(p.db_path, timeout=0, isolation_level=None)
+    conn.execute("PRAGMA busy_timeout = 0")
+    attempted.set()
     try:
-        result = p.revoke_policy(
-            policy_ref, expected_policy_epoch=expected, now=now)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                queue.put(("probe_error", str(exc)))
+                return
+            blocked.set()
+        else:
+            conn.rollback()
+            queue.put(("probe_not_blocked", None))
+            return
+    finally:
+        conn.close()
+    assert release.wait(15)
+    try:
+        result = p.revoke_policy(policy_ref, expected_policy_epoch=expected)
         queue.put(("ok", result["policy_epoch"]))
     except BaseException as exc:
         queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
 
 
-def _worker_crash(db_dir, request, peer_uid, now):
-    p = proto.AtomicFencePrototype(db_dir, initialize=False)
-    p.acquire(request, peer_uid=peer_uid, now=now,
-              hold=lambda: os._exit(17))
+def _worker_crash_before_commit(db_dir, request):
+    p = _worker_proto(db_dir)
+    p.acquire(request, hold=lambda: os._exit(17))
 
 
-def _worker_commit(db_dir, request, peer_uid, now, queue):
-    p = proto.AtomicFencePrototype(db_dir, initialize=False)
+def _worker_commit_then_exit(db_dir, request, queue):
+    p = _worker_proto(db_dir)
+    receipt = p.acquire(request)
+    queue.put(("ok", receipt["token"]))
+    # Flush the feeder thread before the hard process exit; os._exit does not
+    # run multiprocessing's normal shutdown.
+    queue.close()
+    queue.join_thread()
+    os._exit(23)
+
+
+def _worker_commit(db_dir, request, queue):
+    p = _worker_proto(db_dir)
     try:
-        receipt = p.acquire(request, peer_uid=peer_uid, now=now)
+        receipt = p.acquire(request)
         queue.put(("ok", receipt["token"]))
     except BaseException as exc:
         queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
@@ -463,7 +693,6 @@ def _join(process, timeout=20):
     assert process.exitcode == 0, f"worker exit {process.exitcode}"
 
 
-@FORK_ONLY
 def test_two_processes_compete_for_one_fenced_lease(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
@@ -472,7 +701,7 @@ def test_two_processes_compete_for_one_fenced_lease(tmp_path):
     processes = [
         ctx.Process(target=_worker_acquire,
                     args=(str(p.state_dir), _request(request_id),
-                          UID, NOW, barrier, queue))
+                          barrier, queue))
         for request_id in ("req:p1", "req:p2")
     ]
     for process in processes:
@@ -490,28 +719,34 @@ def test_two_processes_compete_for_one_fenced_lease(tmp_path):
     assert lease is not None
     assert int(lease["token"]) == successes[0][1]
     assert p.commit_count() == 1
+    assert p.token_next(RESOURCE) == successes[0][1] + 1
 
 
 @FORK_ONLY
-def test_acquire_lock_precedes_a_concurrent_revoke(tmp_path):
+def test_acquire_lock_precedes_a_concurrent_revoke_with_blocked_barrier(
+        tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
     written = ctx.Event()
     release = ctx.Event()
-    go = ctx.Event()
+    attempted = ctx.Event()
+    blocked = ctx.Event()
     acquire_queue = ctx.Queue()
     revoke_queue = ctx.Queue()
     acquirer = ctx.Process(
         target=_worker_acquire_hold,
-        args=(str(p.state_dir), _request(), UID, NOW, written, release,
-              acquire_queue))
+        args=(str(p.state_dir), _request(), written, release, acquire_queue))
     revoker = ctx.Process(
-        target=_worker_revoke,
-        args=(str(p.state_dir), POLICY_REF, 1, NOW, go, revoke_queue))
+        target=_worker_revoke_probe,
+        args=(str(p.state_dir), POLICY_REF, 1, attempted, blocked, release,
+              revoke_queue))
     acquirer.start()
     assert written.wait(15), "acquirer did not reach its held transaction"
     revoker.start()
-    go.set()
+    assert attempted.wait(5), "revoker did not attempt BEGIN IMMEDIATE"
+    assert blocked.wait(5), (
+        "revoker's independent BEGIN IMMEDIATE was not blocked by the "
+        "acquirer's write lock")
     release.set()
     _join(acquirer)
     _join(revoker)
@@ -527,7 +762,7 @@ def test_acquire_lock_precedes_a_concurrent_revoke(tmp_path):
     assert policy["revoked"] == 1
     assert policy["policy_epoch"] == 2
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        p.acquire(_request("req:2"), peer_uid=UID, now=NOW)
+        p.acquire(_request("req:2"))
     assert caught.value.code == "POLICY_DENIED"
     assert p.commit_count() == 1
 
@@ -535,13 +770,12 @@ def test_acquire_lock_precedes_a_concurrent_revoke(tmp_path):
 @FORK_ONLY
 def test_revoke_first_then_acquire_in_another_process_is_refused(tmp_path):
     p = _make(tmp_path)
-    p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
+    p.revoke_policy(POLICY_REF, expected_policy_epoch=1)
     ctx = multiprocessing.get_context("fork")
     queue = ctx.Queue()
     process = ctx.Process(
         target=_worker_acquire,
-        args=(str(p.state_dir), _request(), UID, NOW,
-              ctx.Barrier(1), queue))
+        args=(str(p.state_dir), _request(), ctx.Barrier(1), queue))
     process.start()
     assert queue.get(timeout=15) == ("refused", "POLICY_DENIED")
     _join(process)
@@ -558,19 +792,58 @@ def test_crash_before_commit_leaves_no_lease_commit_or_token(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
     process = ctx.Process(
-        target=_worker_crash,
-        args=(str(p.state_dir), _request(), UID, NOW))
+        target=_worker_crash_before_commit,
+        args=(str(p.state_dir), _request()))
     process.start()
     process.join(20)
     assert not process.is_alive()
     assert process.exitcode == 17
 
-    reopened = proto.AtomicFencePrototype(str(p.state_dir), initialize=False)
+    reopened = proto.AtomicFencePrototype(str(p.state_dir), initialize=False,
+                                          clock=FixedClock(NOW),
+                                          synthetic_peer_uid=UID)
     assert reopened.lease(RESOURCE) is None
     assert reopened.commit("req:1") is None
     assert reopened.commit_count() == 0
     assert reopened.token_next(RESOURCE) is None
     assert reopened.policy(POLICY_REF)["policy_epoch"] == 1
+
+
+@FORK_ONLY
+def test_commit_then_process_exit_survives_and_integrity_is_ok(tmp_path):
+    p = _make(tmp_path)
+    ctx = multiprocessing.get_context("fork")
+    queue = ctx.Queue()
+    process = ctx.Process(
+        target=_worker_commit_then_exit,
+        args=(str(p.state_dir), _request(), queue))
+    process.start()
+    assert queue.get(timeout=15)[0] == "ok"
+    process.join(20)
+    assert not process.is_alive()
+    assert process.exitcode == 23
+
+    reopened = proto.AtomicFencePrototype(str(p.state_dir), initialize=False,
+                                          clock=FixedClock(NOW),
+                                          synthetic_peer_uid=UID)
+    lease = reopened.lease(RESOURCE)
+    assert lease is not None and lease["token"] == "1"
+    assert reopened.commit("req:1")["token"] == 1
+    conn = sqlite3.connect(reopened.db_path)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+        # Recorded for the report: os._exit after COMMIT is a process kill,
+        # not a power-loss/fsync proof.
+        synchronous = conn.execute("PRAGMA synchronous").fetchone()[0]
+    finally:
+        conn.close()
+    assert synchronous in (1, 2, 3)  # NORMAL/FULL/EXTRA
+    replay = reopened.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
+    assert replay["token"] == 1
+    assert reopened.token_next(RESOURCE) == 2
 
 
 @FORK_ONLY
@@ -580,19 +853,23 @@ def test_commit_survives_restart_and_replay_is_idempotent(tmp_path):
     queue = ctx.Queue()
     process = ctx.Process(
         target=_worker_commit,
-        args=(str(p.state_dir), _request(), UID, NOW, queue))
+        args=(str(p.state_dir), _request(), queue))
     process.start()
     assert queue.get(timeout=15)[0] == "ok"
     _join(process)
 
-    reopened = proto.AtomicFencePrototype(str(p.state_dir), initialize=False)
+    reopened = proto.AtomicFencePrototype(str(p.state_dir), initialize=False,
+                                          clock=FixedClock(NOW),
+                                          synthetic_peer_uid=UID)
     lease = reopened.lease(RESOURCE)
     assert lease is not None and lease["token"] == "1"
     assert reopened.commit("req:1")["token"] == 1
-    replay = reopened.acquire(_request(), peer_uid=UID, now=NOW)
-    assert replay["replayed"] is True and replay["token"] == 1
+    replay = reopened.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
+    assert replay["token"] == 1
     assert reopened.token_next(RESOURCE) == 2
     with pytest.raises(proto.PrototypeRefusal) as caught:
-        reopened.acquire(_request("req:2"), peer_uid=UID, now=NOW)
+        reopened.acquire(_request("req:2"))
     assert caught.value.code == "LEASE_HELD_BY_OTHER"
     assert reopened.commit_count() == 1

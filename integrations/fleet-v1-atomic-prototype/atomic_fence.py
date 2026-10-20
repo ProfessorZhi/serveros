@@ -1,13 +1,17 @@
 """A' PROTOTYPE: owner policy/epoch and lease commit in one SQLite transaction.
 
-STATUS: PROTOTYPE_ONLY / V1_NOT_RELEASE.
+STATUS: PROTOTYPE_HARDENING / NOT_V1_SIGNED / V1_NOT_RELEASE.
 
 Flags:
-  PROD_DEFAULT_BLOCKED   production #364 still returns BLOCKED_OWNER_COMMIT_SEAM
-  NO_OWNER_TRUST         the only owner is a synthetic fixture; no owner key
-  NO_DAEMON_WIRING       nothing here is imported by serverosd or WorkEngine
-  NO_MIGRATION           the prototype adds tables to a TEMP DB only
-  NOT_V1_SIGNED          this is not a production authorization
+  PROD_DEFAULT_BLOCKED       production #364 still returns BLOCKED_OWNER_COMMIT_SEAM
+  NO_OWNER_TRUST             the only owner is a synthetic fixture; no owner key
+  NO_DAEMON_WIRING           nothing here is imported by serverosd or WorkEngine
+  NO_MIGRATION               the prototype adds tables to a TEMP DB only
+  NOT_V1_SIGNED              this is not a production authorization
+  NO_TRUSTED_CLOCK           the clock is a synthetic constructor fixture
+  NO_TRUSTED_PEER            synthetic_peer_uid is a fixture; no SO_PEERCRED
+  PRODUCTION_WIRING_REQUIRED legacy acquire/check_writer/work revoke/finalize
+                             still bypass this fence
 
 WHAT IS REAL
 ------------
@@ -24,9 +28,11 @@ WHAT IS SIMULATED
 -----------------
 The owner policy and grant rows are synthetic fixtures.  The owner
 "attestation" is a non-empty fixture string, NOT a signature and NOT a key.
-The peer uid and context are supplied out of band by the harness; a request
-field cannot choose them.  This prototype proves a transaction shape, not
-that a real owner exists.
+The clock and `synthetic_peer_uid` are constructor-bound harness fixtures;
+`acquire` accepts no per-call `now`/`peer_uid`, so a request field cannot
+choose them.  They are still NOT the production store clock or kernel
+`SO_PEERCRED`.  This prototype proves a transaction shape, not that a real
+owner exists.
 
 NOT PROVEN
 ----------
@@ -34,13 +40,18 @@ NOT PROVEN
 * Production daemon/Fleet/WorkEngine wiring or migration.
 * Real finalize/effect exactly-once: `ServerOSStore.finalize_run_verified`
   opens its own transaction, so lease + finalize are not composed here.
-* Two real OS uids, a production owner key, a live provider, OAuth or a send.
+* Real legacy `ServerOSStore.acquire_lease`/`check_writer`, JSON `work revoke`,
+  `finalize` or an effect being routed through this fence.
+* Power-loss/fsync durability (`os._exit` is a process kill), two real OS uids,
+  a production owner key, a live provider, OAuth or a send.
 
 OUTPUT
 ------
 A successful commit is named `PROTOTYPE_FENCED_COMMIT` and carries
-`simulated_owner: True`.  It deliberately has no `verified` key; it must
-never be consumed as a production positive.
+`simulated_owner: True`, `authorized: True`, `historical: False`,
+`effect_eligible: False`.  A replay is `PROTOTYPE_HISTORICAL_REPLAY` with
+`authorized: False`, `historical: True`, `effect_eligible: False`.  Neither
+has a `verified` key; neither is a production positive or an effect commit.
 """
 from __future__ import annotations
 
@@ -65,6 +76,11 @@ from workengine.store import (  # real WorkEngine semantics, imported read-only
 PROTOTYPE_FENCED_COMMIT = "PROTOTYPE_FENCED_COMMIT"
 PROTOTYPE_POLICY_REVOKED = "PROTOTYPE_POLICY_REVOKED"
 SIMULATED_OWNER = "SIMULATED_OWNER"
+PROTOTYPE_HISTORICAL_REPLAY = "PROTOTYPE_HISTORICAL_REPLAY"
+PROTOTYPE_FENCED_CHECK = "PROTOTYPE_FENCED_CHECK"
+POLICY_EXPIRED_AT_COMMIT = "POLICY_EXPIRED_AT_COMMIT"
+GRANT_EXPIRED_AT_COMMIT = "GRANT_EXPIRED_AT_COMMIT"
+LEASE_EXPIRED_AT_COMMIT = "LEASE_EXPIRED_AT_COMMIT"
 RESOURCE_PREFIX = "work-write:"
 
 _ALLOWED_REQUEST_KEYS = {
@@ -150,6 +166,8 @@ def _digest(request: dict, peer_uid: int) -> str:
         "item_ref": request["item_ref"],
         "action": request["action"],
         "ttl_s": float(request["ttl_s"]),
+        "expected_authority_epoch": request.get("expected_authority_epoch"),
+        "expected_grant_epoch": request.get("expected_grant_epoch"),
         "peer_uid": peer_uid,
     }
     return hashlib.sha256(
@@ -166,7 +184,8 @@ class AtomicFencePrototype:
     temp DB, so concurrent schema DDL never races.
     """
 
-    def __init__(self, state_dir, *, initialize: bool = True, clock=None) -> None:
+    def __init__(self, state_dir, *, initialize: bool = True, clock=None,
+                 synthetic_peer_uid=None) -> None:
         path = Path(state_dir)
         if not path.is_absolute():
             raise ValueError("the prototype state directory must be absolute")
@@ -183,6 +202,9 @@ class AtomicFencePrototype:
                 "BLOCKED_STORAGE",
                 f"{self.db_path} does not exist; initialize the prototype first")
         self._clock = clock or time.time
+        # SYNTHETIC HARNESS INPUT, never a kernel credential. A production
+        # entrypoint must read SO_PEERCRED instead.
+        self._synthetic_peer_uid = synthetic_peer_uid
 
     # -- storage -----------------------------------------------------------
 
@@ -398,6 +420,13 @@ class AtomicFencePrototype:
                 "POLICY_DENIED", f"{policy['policy_ref']} was revoked")
         _int(policy["policy_epoch"], "policy.policy_epoch")
         _int(policy["authority_epoch"], "policy.authority_epoch")
+        if not str(policy["issued_by"] or "").strip():
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY", "the owner policy has no issued_by")
+        if int(policy["authority_epoch"]) < int(policy["policy_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY",
+                "the authority epoch is behind the policy epoch")
         issued = _instant(policy["issued_at"], "policy.issued_at")
         valid_from = _instant(policy["valid_from"], "policy.valid_from")
         expires = _instant(policy["expires_at"], "policy.expires_at")
@@ -473,15 +502,19 @@ class AtomicFencePrototype:
 
     # -- the one fenced mutation ------------------------------------------
 
-    def acquire(self, request, *, peer_uid, now=None, hold=None) -> dict:
+    def acquire(self, request, *, hold=None) -> dict:
         """Read the fence and write the lease in ONE `BEGIN IMMEDIATE`.
 
-        `peer_uid` and the context store are out of band.  The request cannot
-        name a uid, actor, policy, grant, owner or epoch except the optional
-        `expected_authority_epoch` pin, which can only make the call stricter.
+        The trusted inputs are constructor-bound SYNTHETIC harness facts:
+        `clock` and `synthetic_peer_uid`. The request cannot name them, and
+        `acquire` accepts no per-call `now` or `peer_uid`. A production
+        entrypoint must supply the store clock and kernel `SO_PEERCRED`
+        instead; this prototype cannot do that.
+
         `hold` is a TEST-ONLY hook invoked after the lease/commit rows are
-        written and before the transaction commits; a crash there must leave
-        no row.
+        written and before the commit-phase window re-check. The clock is read
+        again after the hold, inside the same `BEGIN IMMEDIATE`; a TTL or
+        policy/grant expiry is rolled back atomically.
         """
         if not isinstance(request, dict):
             raise PrototypeRefusal("INVALID_REQUEST", "request must be an object")
@@ -500,11 +533,15 @@ class AtomicFencePrototype:
         except LeaseError as exc:
             raise PrototypeRefusal(exc.reason_code, exc.detail) from exc
         try:
-            now_e = _lease_now(self._clock() if now is None else now)
+            now_e = _lease_now(self._clock())
         except LeaseError as exc:
             raise PrototypeRefusal(exc.reason_code, exc.detail) from exc
+        peer_uid = self._synthetic_peer_uid
         if isinstance(peer_uid, bool) or not isinstance(peer_uid, int) or peer_uid < 0:
-            raise PrototypeRefusal("UNTRUSTED_ACTOR", "peer_uid is not a uid")
+            raise PrototypeRefusal(
+                "UNTRUSTED_ACTOR",
+                "the harness bound no synthetic peer uid; production must use "
+                "SO_PEERCRED, not a caller argument")
         expected = request.get("expected_authority_epoch")
         if expected is not None:
             _int(expected, "expected_authority_epoch")
@@ -522,7 +559,9 @@ class AtomicFencePrototype:
                     raise PrototypeRefusal(
                         "IDEMPOTENCY_CONFLICT",
                         "the request id was already committed with other facts")
-                return self._receipt(replay, replayed=True)
+                # Historical audit only: never current authority and never
+                # eligible for an effect commit.
+                return self._receipt(replay)
 
             context = conn.execute(
                 "SELECT actor_ref,grant_ref FROM proto_context WHERE context_ref=?",
@@ -595,10 +634,20 @@ class AtomicFencePrototype:
                  str(policy["actor_ref"]), token, expires_at, committed_at))
             if hold is not None:
                 hold()
+            # COMMIT-PHASE RE-CHECK. Read the injected trusted clock AGAIN
+            # inside this same BEGIN IMMEDIATE, after the effect/hold, and
+            # re-check every window before COMMIT. A clock that crossed TTL or
+            # a policy/grant expiry raises here and the transaction rolls back
+            # the lease, the id_sequences token and proto_commit together.
+            final_now = _lease_now(self._clock())
+            self._check_commit_windows(policy, grant, expires_at, final_now)
             return {
                 "prototype_status": PROTOTYPE_FENCED_COMMIT,
                 "simulated_owner": True,
                 "owner_status": SIMULATED_OWNER,
+                "authorized": True,
+                "historical": False,
+                "effect_eligible": False,
                 "request_id": request_id,
                 "grant_ref": str(grant["grant_ref"]),
                 "policy_ref": str(policy["policy_ref"]),
@@ -613,7 +662,125 @@ class AtomicFencePrototype:
                 "replayed": False,
             }
 
-    def revoke_policy(self, policy_ref, *, expected_policy_epoch, now=None) -> dict:
+    @staticmethod
+    def _check_commit_windows(policy, grant, lease_expires_at, now) -> None:
+        """The commit-phase window re-check; raises to roll the transaction back."""
+        if not str(policy["issued_by"] or "").strip():
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY", "the owner policy has no issued_by")
+        if int(policy["authority_epoch"]) < int(policy["policy_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY",
+                "the authority epoch is behind the policy epoch")
+        issued = _instant(policy["issued_at"], "policy.issued_at")
+        if issued > now:
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY",
+                "the owner policy is issued after the commit clock")
+        policy_from = _instant(policy["valid_from"], "policy.valid_from")
+        policy_to = _instant(policy["expires_at"], "policy.expires_at")
+        grant_from = _instant(grant["valid_from"], "grant.valid_from")
+        grant_to = _instant(grant["expires_at"], "grant.expires_at")
+        if now < policy_from or now < grant_from:
+            raise PrototypeRefusal(
+                "POLICY_DENIED",
+                "the clock moved before the policy/grant window at commit")
+        if now >= policy_to:
+            raise PrototypeRefusal(
+                POLICY_EXPIRED_AT_COMMIT,
+                "the owner policy expired before COMMIT")
+        if now >= grant_to:
+            raise PrototypeRefusal(
+                GRANT_EXPIRED_AT_COMMIT, "the grant expired before COMMIT")
+        if _lease_epoch(lease_expires_at) <= now:
+            raise PrototypeRefusal(
+                LEASE_EXPIRED_AT_COMMIT, "the lease TTL lapsed before COMMIT")
+        if _strict_flag(policy["revoked"], "policy.revoked"):
+            raise PrototypeRefusal(
+                "POLICY_DENIED", "the owner policy was revoked before COMMIT")
+        if _strict_flag(grant["revoked"], "grant.revoked"):
+            raise PrototypeRefusal(
+                "POLICY_DENIED", "the grant was revoked before COMMIT")
+        if int(grant["owner_policy_epoch"]) != int(policy["policy_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_EPOCH",
+                "the policy epoch changed before COMMIT")
+
+    def check_writer_fenced(self, resource, *, owner, token) -> dict:
+        """Prototype-only writer check that re-reads the authority epoch NOW.
+
+        `ServerOSStore.check_writer` reads only the lease row, so a token
+        acquired before a revoke still looks authorized. This method reads the
+        `proto_commit` row and the current policy in one `BEGIN IMMEDIATE` and
+        refuses after a revoke/epoch change. It is still NOT an effect
+        transaction: a caller must hold the fence across its effect.
+        """
+        if not isinstance(resource, str) or not resource.strip():
+            raise PrototypeRefusal("NOT_HOLDER", "a lease names a resource")
+        if not isinstance(owner, str) or not owner.strip():
+            raise PrototypeRefusal("NOT_HOLDER", "an owner must be a string")
+        if isinstance(token, bool) or not isinstance(token, int):
+            raise PrototypeRefusal("STALE_TOKEN", "token must be an integer")
+        try:
+            now_e = _lease_now(self._clock())
+        except LeaseError as exc:
+            raise PrototypeRefusal(exc.reason_code, exc.detail) from exc
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT resource,owner,token,expires_at FROM leases WHERE resource=?",
+                (str(resource),)).fetchone()
+            if row is None:
+                raise PrototypeRefusal("NOT_HOLDER", "no lease row")
+            if str(row["owner"]) != str(owner) or int(row["token"]) != token:
+                raise PrototypeRefusal(
+                    "STALE_TOKEN", "the caller is not the current holder")
+            if _lease_epoch(row["expires_at"]) <= now_e:
+                raise PrototypeRefusal("LEASE_EXPIRED", "the lease expired")
+            commit = conn.execute(
+                "SELECT * FROM proto_commit WHERE resource=? AND token=? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (str(resource), token)).fetchone()
+            if commit is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY",
+                    "the lease has no fenced commit row")
+            policy = conn.execute(
+                "SELECT * FROM proto_owner_policy WHERE policy_ref=?",
+                (str(commit["policy_ref"]),)).fetchone()
+            if policy is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY", "the fenced commit has no policy")
+            grant = conn.execute(
+                "SELECT * FROM proto_grant WHERE grant_ref=?",
+                (str(commit["grant_ref"]),)).fetchone()
+            if grant is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY", "the fenced commit has no grant")
+            self._check_commit_windows(policy, grant, row["expires_at"], now_e)
+            if _strict_flag(policy["revoked"], "policy.revoked"):
+                raise PrototypeRefusal(
+                    "POLICY_DENIED", "the owner policy is revoked")
+            if int(commit["policy_epoch"]) != int(policy["policy_epoch"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_EPOCH", "the policy epoch moved after commit")
+            if int(commit["authority_epoch"]) != int(policy["authority_epoch"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_EPOCH", "the authority epoch moved after commit")
+            return {
+                "prototype_status": PROTOTYPE_FENCED_CHECK,
+                "simulated_owner": True,
+                "owner_status": SIMULATED_OWNER,
+                "authorized": True,
+                "historical": False,
+                "effect_eligible": False,
+                "resource": str(resource),
+                "owner": str(owner),
+                "token": token,
+                "policy_epoch": int(policy["policy_epoch"]),
+                "authority_epoch": int(policy["authority_epoch"]),
+            }
+
+    def revoke_policy(self, policy_ref, *, expected_policy_epoch) -> dict:
         """Commit a synthetic owner revoke in the SAME SQLite transaction domain.
 
         The policy epoch and authority epoch advance together; an acquire that
@@ -623,7 +790,7 @@ class AtomicFencePrototype:
         ref = _text(policy_ref, "policy_ref")
         expected = _int(expected_policy_epoch, "expected_policy_epoch")
         try:
-            now_e = _lease_now(self._clock() if now is None else now)
+            now_e = _lease_now(self._clock())
         except LeaseError as exc:
             raise PrototypeRefusal(exc.reason_code, exc.detail) from exc
         with self._transaction() as conn:
@@ -691,11 +858,16 @@ class AtomicFencePrototype:
         return token
 
     @staticmethod
-    def _receipt(row, *, replayed: bool) -> dict:
+    def _receipt(row) -> dict:
+        # A replay is a HISTORICAL audit record. It is not current authority,
+        # and it cannot be handed to an effect commit.
         return {
-            "prototype_status": PROTOTYPE_FENCED_COMMIT,
+            "prototype_status": PROTOTYPE_HISTORICAL_REPLAY,
             "simulated_owner": True,
             "owner_status": SIMULATED_OWNER,
+            "authorized": False,
+            "historical": True,
+            "effect_eligible": False,
             "request_id": str(row["request_id"]),
             "grant_ref": str(row["grant_ref"]),
             "policy_ref": str(row["policy_ref"]),
@@ -707,5 +879,5 @@ class AtomicFencePrototype:
             "token": int(row["token"]),
             "expires_at": str(row["expires_at"]),
             "committed_at": str(row["committed_at"]),
-            "replayed": replayed,
+            "replayed": True,
         }

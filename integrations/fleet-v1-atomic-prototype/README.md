@@ -1,6 +1,8 @@
 # A′ atomic authority epoch + lease commit prototype
 
-**PROTOTYPE_ONLY / V1_NOT_RELEASE.**
+**PROTOTYPE_HARDENING / NOT_V1_SIGNED / V1_NOT_RELEASE.**
+
+Round 2 hardness notes are below; the production default is still blocked.
 
 | Flag | Value |
 |---|---|
@@ -9,7 +11,12 @@
 | `NO_DAEMON_WIRING` | nothing here is imported by `serverosd`, Fleet or Work Engine |
 | `NO_MIGRATION` | `proto_*` tables are created in a temp DB only |
 | `NOT_V1_SIGNED` | this is not a production authorization |
+| `NO_TRUSTED_CLOCK` | the clock is a constructor-injected synthetic fixture; production must use the store clock |
+| `NO_TRUSTED_PEER` | `synthetic_peer_uid` is a harness fixture; production must use kernel `SO_PEERCRED` |
+| `SO_PEERCRED_NOT_BOUND` | no kernel peer credential is read by this prototype |
+| `PRODUCTION_WIRING_REQUIRED` | legacy `ServerOSStore.acquire_lease`/`check_writer`, JSON `work revoke`, finalize/effect and owner key are unfenced |
 | `REAL_FINALIZE_SAME_TXN` | **NOT_PROVEN** |
+| `POWER_LOSS` | **NOT_PROVEN**; `os._exit` is a process kill, not fsync/power-loss evidence |
 | `REAL_WINDOWS` | **NOT_RUN** |
 | `TWO_REAL_UIDS` | **NOT_RUN** |
 
@@ -46,10 +53,44 @@ uses, inside the same transaction.
 **Not used:** `ServerOSStore.acquire_lease` opens its own `BEGIN IMMEDIATE`;
 calling it could not include the fence row. It is not modified.
 
-**Simulated:** the owner policy, grant, context, uid and the non-empty
+**Simulated:** the owner policy, grant, context, uid, clock and the non-empty
 "owner attestation" string are fixtures. The attestation is not a signature,
-not a key and not a cryptographic proof. The peer uid and context are supplied
-out of band by the harness; request fields cannot choose them.
+not a key and not a cryptographic proof. `clock` and `synthetic_peer_uid` are
+constructor-bound harness inputs; `acquire` accepts no per-call `now` or
+`peer_uid`, so a request field cannot choose them. They are still NOT the
+production store clock or kernel `SO_PEERCRED` (`NO_TRUSTED_CLOCK`,
+`NO_TRUSTED_PEER`, `SO_PEERCRED_NOT_BOUND`).
+
+## Round-2 hardening (closed in this prototype scope)
+
+* **Commit-phase window re-check.** After the lease/commit rows are written
+  and after the test `hold`, the prototype reads the injected trusted clock
+  **again inside the same `BEGIN IMMEDIATE`** and re-checks TTL, policy window,
+  grant window and revocation. `LEASE_EXPIRED_AT_COMMIT`,
+  `POLICY_EXPIRED_AT_COMMIT`, `GRANT_EXPIRED_AT_COMMIT` or `POLICY_DENIED`
+  rolls the lease row, the `id_sequences` token and `proto_commit` back
+  together. Tests use a `FixedClock` jump, never a long sleep.
+* **No per-call clock/peer.** `AtomicFencePrototype(clock=...,
+  synthetic_peer_uid=...)` binds the synthetic harness facts at construction;
+  `acquire(request, hold=...)` has no `now`/`peer_uid` keyword. A caller
+  cannot pass a past instant or a chosen uid on the call.
+* **Historical replay.** A repeated request id returns
+  `prototype_status: PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`,
+  `historical: true`, `effect_eligible: false` even if the policy is still
+  live. It is an audit record, not current authority and not effect-eligible.
+  The idempotency digest includes the expected authority/grant epoch pins.
+* **Fenced writer check.** `check_writer_fenced` re-reads the commit policy
+  epoch, the current policy and the grant in one `BEGIN IMMEDIATE`, and
+  refuses a pre-revoke token after a revoke or an expired policy/grant window.
+  It is still a point-in-time check, not an effect transaction.
+* **Barrier evidence.** The acquire-vs-revoke test starts an independent
+  SQLite connection with `busy_timeout=0` and proves its `BEGIN IMMEDIATE`
+  raises `database is locked` while the acquirer holds the write lock; no
+  sleep is used.
+* **Commit-after-kill.** A child commits, flushes its queue and `os._exit`s;
+  the parent reopens the DB, verifies the lease/commit/token, WAL mode and
+  `integrity_check=ok`. This is a process-kill durability test, not a
+  power-loss/fsync proof.
 
 ## Why a pure experimental module is not enough
 
@@ -66,9 +107,17 @@ cannot, by itself:
 
 Anyone can still call `ServerOSStore.acquire_lease` directly on the same DB;
 that is exactly why this is a prototype and why the production default stays
-blocked. The next step is a Work Engine entrypoint that performs the
-fence-check and lease insert in one transaction, with a real owner issuance
-interface. Neither exists here.
+blocked. Two negative tests make this explicit
+(`test_legacy_serveros_store_acquire_bypasses_the_fence`,
+`test_legacy_check_writer_accepts_a_pre_revoke_token_after_revoke`): the real
+store writes a lease after a prototype revoke, and the real `check_writer`
+still returns authorized for a pre-revoke token. Both are
+`PRODUCTION_WIRING_REQUIRED`, not prototype failures. Also unresolved:
+`serverosctl work revoke` writes the JSON ledger rather than this SQLite
+fence; `finalize_run_verified` opens its own transaction; no owner signature
+or `SO_PEERCRED` binding exists. Production must route every lease mutation,
+revoke and effect through one fenced transaction domain before any positive
+authorization can be claimed.
 
 ## Authoritative-source premise
 
@@ -88,9 +137,10 @@ Engine as-is.
 | RED baseline | a legacy cross-domain read → revoke → separate write reproduces a lease after revoke (test asserts the gap, not a fix) |
 | B fail closed | revoked/expired/future policy, revoked/expired grant, stale policy/authority/grant epoch, cross uid/actor/scope, missing attestation/fence row, non-bool revocation, invalid TTL, caller self-asserted authority fields |
 | C multi-process | two independent SQLite connections/processes race for one lease: exactly one success, one `LEASE_HELD_BY_OTHER`, no double lease; acquire transaction precedes a concurrent revoke (commit epoch 1 vs revoke epoch 2) |
-| D crash | `os._exit` after lease/commit writes but before COMMIT leaves no lease, no commit row and no token advance; committed state survives restart |
-| E replay | same request id + same facts → same token, `replayed: true`, no new commit/token; different facts → `IDEMPOTENCY_CONFLICT`; stale writer epoch → `STALE_AUTHORITY_EPOCH` |
-| F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction, so lease + finalize are not composed here |
+| D crash | `os._exit(17)` after writes but before COMMIT leaves no lease/commit/token; a child that commits, flushes and `os._exit(23)` reopens with lease/commit/token intact, WAL and `integrity_check=ok`; power loss **NOT_PROVEN** |
+| E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
+| F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
+| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry (50 tests) |
 
 ## Run
 

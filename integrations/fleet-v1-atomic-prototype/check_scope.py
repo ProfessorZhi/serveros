@@ -20,9 +20,18 @@ ALLOWED_EXACT = ("tests/test_s1_atomic_prototype.py",)
 
 def main(argv: list[str]) -> int:
     base = argv[1] if len(argv) > 1 else "31bfc28d9ff4a1d0a56914fb8e4b82ec6ebf85fd"
-    changed = subprocess.check_output(
+    committed = subprocess.check_output(
         ["git", "diff", "--name-only", f"{base}..HEAD"], text=True
     ).splitlines()
+    working = []
+    for line in subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True).splitlines():
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path:
+            working.append(path)
+    changed = sorted(set(committed) | set(working))
     bad = [path for path in changed
            if not (path in ALLOWED_EXACT
                    or any(path.startswith(p) for p in ALLOWED_PREFIXES))]
