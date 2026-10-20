@@ -1,26 +1,30 @@
-# V1 effect reconciliation — the driver, and the provider capability it needs
+# V1 effect reconciliation — Core caller, outer provider observation
 
 Slice owner: S2 durable-effects line (`#245`, `#237` T4/T5/T9/T12).
-Base: `feat/v1-durable-dispatch-attempts-20261017` (`#252`, Draft).
+Stack: `#252` → `#299` → `#312` → this Core-boundary repair.
 
-## What this directory is
+## Where the caller lives
 
-`effect_reconciliation.py` is the caller that was missing between two existing
-owners:
+The pure decision and the caller are **Core-owned**; the provider-specific part
+is an object injected by an outer adapter:
 
-| Concern | Owner (unchanged) |
+| Concern | Owner |
 | --- | --- |
-| What a retry may do; what an owner observation authorizes | `runtime/dispatch_attempts.py` |
+| What a retry may do; what an owner observation authorizes | `runtime/dispatch_attempts.py#reconcile_observation` |
+| Ask the injected source, then record the answer | `runtime/dispatch_attempts.py#reconcile_attempt` |
 | The durable attempt record | `runtime/agent_control_store.py#dispatch_attempts` |
 | Routing and dispatch | `fleet/agent_control_router.py` |
-| **Ask the owner after a timeout/reconnect** | **this directory** |
+| Provider-specific observation adapter | outer adapter, injected as `dispatch_observation_source` |
 
-The driver holds no state, opens no file, and has no `send` method. Every
-durable read/write goes through the existing Agent Control store. A second
-attempt ledger would be the `second-source-of-truth` / `new-lease-system` shape
+`effect_reconciliation.py` in this directory is the **outer-adapter facade**: it
+holds no state, opens no file, has no `send` method, and delegates every call to
+the Core. The daemon does **not** path-load this directory — that edge was the
+release-compatibility regression on `#312` fixed by this stack, and
+`tests/test_core_ability_boundary.py` now names it directly. A second attempt
+ledger would be the `second-source-of-truth` / `new-lease-system` shape
 `integration/components.yaml` refuses by name.
 
-## What the driver enforces
+## What the Core caller enforces
 
 - It only offers `EFFECT_UNKNOWN` attempts to an observation source. A
   `SETTLED`, `ACCEPTED` or `SUPERSEDED` attempt is never overwritten by a late
@@ -34,7 +38,7 @@ attempt ledger would be the `second-source-of-truth` / `new-lease-system` shape
   so it cannot move the attempt to `CALL_NOT_SENT` (which would make the next
   retry `PROCEED`).
 - `NOT_APPLIED` still requires provenance (`source`) and an intent match
-  (digest or provider locator) at the kernel; this driver does not relax it.
+  (digest or provider locator) at the kernel; the Core caller does not relax it.
 - A Work-scoped attempt needs the recorded principal **and** the current writer
   (owner/epoch/token). A coordinator attempt with no `work_item` has no write
   scope to gate.
@@ -59,41 +63,40 @@ until R1 exposes a read keyed by the client turn id (or a provider-native
 durable journal). No test double in this slice is offered as a production
 source.
 
-## Wiring proposal — S1 files are NOT edited by this slice
+## Wiring status — Core route applied, outer pieces still owners' calls
 
-These are the exact changes that would put the driver on the deployed path.
-They touch S1-owned files, so they are a proposal for the S1 owner to apply or
-schedule, not a concurrent edit.
+### 1. `runtime/daemon.py` — `agent.dispatch.reconcile` (APPLIED in #312, repaired here)
 
-### 1. `runtime/daemon.py` — a reconcile method (read/modify S1 file)
-
-Add `agent.dispatch.reconcile` beside `agent.dispatch.resolve` /
-`agent.dispatch.record`:
+#312 added the route. The repair removes its path load of this directory and
+calls the Core caller directly:
 
 ```text
-input:  context_ref (required), key, current_writer (owner/epoch/token)
-resolve the actor from the trusted context_ref, as record does
-build reconciler principal + writer from that context
-ask the registered observation source (below)
-call EffectReconciler(...).reconcile(key, principal=..., writer=...,
-                                     current_writer=...)
-return the driver result; never dispatch
+input:  context_ref (required), key
+resolve the actor from the trusted context_ref
+reject caller-supplied principal/writer/source/capability/observation/result
+load the attempt; require EFFECT_UNKNOWN
+check the recorded grant through the daemon-held verifier
+derive the writer from the attempt's own session binding
+call dispatch_attempts.reconcile_attempt(
+        store, key, principal=..., observation_source=<injected>,
+        writer=..., current_writer=..., now=...)
+never dispatch
 ```
 
-Refusal rules to preserve:
+Refusal rules preserved:
 
 - no resolvable fresh context → `UNTRUSTED_ACTOR`, no store write;
 - source capability ≠ `CLIENT_TURN_ID` → `BLOCKED_PROVIDER_SOURCE`, no settle;
 - any kernel refusal (`REFUSE_PRINCIPAL`, `REFUSE_STALE_WRITER`,
   `REFUSE_UNKNOWN`) → no store write.
 
-### 2. `runtime/daemon.py` — reconnect sweep (read/modify S1 file)
+### 2. `runtime/daemon.py` — reconnect sweep (proposal, not applied)
 
-At startup and after a transport reconnection, call
-`EffectReconciler.reconcile_unknown(...)` for the attempts visible in the
-existing store. It never re-dispatches: an attempt whose owner cannot answer
-stays `EFFECT_UNKNOWN`. Bound the batch (e.g. the first N keys in sorted order)
-so a reconnect cannot become an unbounded provider fan-out.
+At startup and after a transport reconnection, call the Core
+`dispatch_attempts.reconcile_unknown(store, ...)` for the attempts visible in
+the existing store. It never re-dispatches: an attempt whose owner cannot
+answer stays `EFFECT_UNKNOWN`. Bound the batch (e.g. the first N keys in sorted
+order) so a reconnect cannot become an unbounded provider fan-out.
 
 ### 3. `mcp/*_provider.py` — a `CLIENT_TURN_ID` read (R1 ownership)
 
@@ -136,9 +139,38 @@ authoritative `APPLIED` settles and replays, authoritative `NOT_APPLIED` frees
 the scope, reconnect sweep touches only `EFFECT_UNKNOWN`, cross-principal and
 stale-writer refusals, no second state artifact, no send path.
 
+### Core-boundary repair (this stacked slice)
+
+The release-compatibility regression was `runtime/daemon.py` resolving a path
+into `integrations/` and instantiating `EffectReconciler` from it.
+
+```text
+RED   tests/test_core_ability_boundary.py::CoreDoesNotDependOnTheFabric::
+      test_the_core_process_reaches_only_core_directories
+      — ['integrations/v1-effect-reconciliation/effect_reconciliation.py']
+        != []
+      test_the_core_does_not_load_the_effect_reconciliation_integration
+      — same edge, named directly
+
+GREEN 7 passed   CoreDoesNotDependOnTheFabric
+      125 passed / 19 subtests
+                     test_core_ability_boundary.py
+                     test_dispatch_reconcile_gate.py
+                     test_effect_reconciliation.py
+                     test_dispatch_attempts.py
+                     test_agent_control_store.py
+      93 passed / 7 subtests  test_agent_control_router.py
+      25 passed / 2 deselected  test_daemon_equivalence.py
+```
+
+The two deselected `test_daemon_equivalence` cases
+(`container.attribution`, `resource.summary`) fail identically on the original
+#312 tree: the CLI renderer hits `mount['path'] is None` on this host. They are
+host-environment failures, not a regression from this refactor.
+
 ## Honest level
 
-- `CODE` / `LOCAL`: this driver and its bounded tests.
+- `CODE` / `LOCAL`: the Core caller, the outer facade and their bounded tests.
 - `REAL_TEMP`, `REAL_DEVICE`, `CLIENT_E2E`: **not run**.
 - `durable_effects`: still **partial**. The observation source is
   `BLOCKED_PROVIDER_SOURCE`; an unknown outcome stays `EFFECT_UNKNOWN` and

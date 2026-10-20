@@ -3323,35 +3323,8 @@ class Daemon:
         return {"recorded": True, "key": stored["key"], "attempt": stored}
 
     @staticmethod
-    def _effect_reconciliation_driver():
-        """The #299 driver, loaded by path like every sibling module.
-
-        Loaded lazily so a node that never reconciles does not depend on the
-        integration slice at import time. A missing driver is a refusal at the
-        call site, not a daemon that cannot start. The synthetic name is the
-        one the driver's own tests use, so the `AttemptRefused` class it sees
-        is the one this daemon loaded.
-        """
-        name = "serveros_integrations_effect_reconciliation"
-        if name in sys.modules:
-            return sys.modules[name]
-        path = (_HERE.parent / "integrations" / "v1-effect-reconciliation"
-                / "effect_reconciliation.py")
-        if not path.is_file():
-            return None
-        spec = importlib.util.spec_from_file_location(name, path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            sys.modules.pop(name, None)
-            raise
-        return module
-
-    @staticmethod
     def _dispatch_answer(key: str, result: dict) -> dict:
-        """The driver's answer, with no success boolean and no send claim."""
+        """The Core caller's answer, with no success boolean and no send claim."""
         return {
             "key": str(result.get("key") or key),
             "status": result.get("status"),
@@ -3383,7 +3356,7 @@ class Daemon:
 
         READ, plus at most ONE write to the SAME `dispatch_attempts` ledger
         `agent.dispatch.record` writes. It never dispatches, never retries and
-        never marks success: the #299 driver can only turn an EFFECT_UNKNOWN
+        never marks success: the Core caller can only turn an EFFECT_UNKNOWN
         into SETTLED / CALL_NOT_SENT, or leave it exactly where it was.
 
         AUTHORITY IS RESOLVED, NEVER ASSERTED. The request carries only a
@@ -3518,25 +3491,22 @@ class Daemon:
         current_writer = (coordination_mod.current_writer(
             store.bindings(), work_item) if work_item else None)
 
+        # The provider-specific part is the observation source OBJECT injected
+        # at construction; the Core owns the caller. `serverosd` does NOT
+        # resolve a path into an integration directory: the decision lives in
+        # `runtime/dispatch_attempts.py`, takes the source as an argument, and
+        # records through the same Agent Control ledger. The source is reached
+        # only after the trusted context, principal, phase and grant checks
+        # above, so a request still cannot supply an authority.
         try:
-            driver_mod = self._effect_reconciliation_driver()
-        except Exception as exc:
-            return self._dispatch_refusal(
-                key, "BLOCKED_PROVIDER_SOURCE", attempt,
-                (f"the reconciliation driver is not usable "
-                 f"({type(exc).__name__}); the attempt was not settled"))
-        if driver_mod is None:
-            return self._dispatch_refusal(
-                key, "BLOCKED_PROVIDER_SOURCE", attempt,
-                ("the reconciliation driver is not installed on this node; the "
-                 "attempt was not settled"))
-        try:
-            result = driver_mod.EffectReconciler(
-                attempts=store,
+            result = dispatch_attempts_mod.reconcile_attempt(
+                store, key,
+                principal=principal,
                 observation_source=self._dispatch_observation_source,
+                writer=writer,
+                current_writer=current_writer,
                 now=_iso(self._now()),
-            ).reconcile(key, principal=principal, writer=writer,
-                        current_writer=current_writer)
+            )
         except agent_control_store_mod.AttemptRefused as exc:
             return self._dispatch_refusal(key, exc.reason_code, attempt, exc.detail)
         except agent_control_store_mod.StoreError as exc:
