@@ -798,6 +798,46 @@
       "merge_base": "771c81c",
       "own_commits": 1,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 347,
+      "lane": "X2",
+      "base": "test/x2-windows-fixture-guard-20261020",
+      "base_sha": "eff4c380",
+      "head": "a0053c9836ba9fe42213258830c1a625baf2886d",
+      "merge_base": "eff4c380",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 349,
+      "lane": "X2",
+      "base": "test/x2-guard-p2-20261020",
+      "base_sha": "a0053c98",
+      "head": "558c32418346a6f9dd18cfd3659c513f58ea1479",
+      "merge_base": "a0053c98",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 345,
+      "lane": "W1",
+      "base": "rc/i1-v4-review-20261020",
+      "base_sha": "40c4b1c",
+      "head": "ef8a360a71fd60d3f08a7a66601548537ee4e810",
+      "merge_base": "40c4b1c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 352,
+      "lane": "I1",
+      "base": "main",
+      "base_sha": "771c81c",
+      "head": "b237c1178da5ef858ab0df6df191ae2d1082c19c",
+      "merge_base": "771c81c",
+      "own_commits": 2,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -1105,6 +1145,11 @@
     {
       "from": 343,
       "to": 344,
+      "kind": "base"
+    },
+    {
+      "from": 347,
+      "to": 349,
       "kind": "base"
     }
   ],
@@ -1740,5 +1785,55 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-V5-REVIEW-2026-10-20.md"
+  },
+  "review_rc_v6": {
+    "branch": "rc/i1-v6-review-20261020",
+    "tip": "b237c1178da5ef858ab0df6df191ae2d1082c19c",
+    "tested_head": "f27322b",
+    "baseline_sha": "c553f11bf1d13036b72a34d4f0c108ff9de75131",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 352,
+    "cherry_picks": {
+      "347": "a0053c9",
+      "349": "558c324",
+      "345": "ef8a360"
+    },
+    "tests": {
+      "nine_file_same_process": "138 passed",
+      "x2_windows_cli": "94 passed, 0 skipped",
+      "light_core_s1": "383 passed/213 subtests",
+      "fleet_next": "286 passed/133 subtests",
+      "f1": "29 PASS FAKE_DEVICE + selftest 28 OK",
+      "real_temp": "PASS/REFUSAL",
+      "syntax": "OK"
+    },
+    "hosted_ci": {
+      "final_tip": {
+        "sha": "b237c11",
+        "msvc": "39401235842 pass",
+        "offline_units": "39401235795 pass",
+        "runner_smoke": "39401235795 pass"
+      },
+      "prior_tip": {
+        "sha": "248cbe5",
+        "runs": "39401065317/39401065223 pass"
+      }
+    },
+    "device_status": {
+      "dell_rc_v4": "109 passed/2 failed/23 errors",
+      "windows_rc_v4": "4 failed/19 skipped",
+      "qa_ab_rc_v5": "1 failed/36 passed/13 collection errors",
+      "rc_v6": "not rerun on devices"
+    },
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V6-REVIEW-2026-10-20.md"
   }
 }
