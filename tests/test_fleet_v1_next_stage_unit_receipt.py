@@ -36,7 +36,7 @@ class RealNoStartReceipt(unittest.TestCase):
         launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         launcher.chmod(0o755)
         (self.source / "fleet").mkdir()
-        template = self.source / "fleet_mcp" / "deploy" / "serveros-fleet-example-mcp.service"
+        template = self.source / "fleet_mcp" / "deploy" / "serveros-fleet-next-mcp.service"
         template.parent.mkdir(parents=True)
         template.write_text(
             "[Unit]\nDescription=Isolated test unit\n"
@@ -68,7 +68,7 @@ class RealNoStartReceipt(unittest.TestCase):
 
         self.assertEqual(result, 0)
         receipt = json.loads(output.getvalue())
-        unit = self.unit_dir / "serveros-fleet-example-mcp.service"
+        unit = self.unit_dir / "serveros-fleet-next-mcp.service"
         self.assertEqual(receipt["unit_path"], str(unit))
         self.assertFalse(receipt["started"])
         self.assertTrue(unit.is_file())

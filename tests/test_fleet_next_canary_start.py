@@ -191,7 +191,7 @@ def fixture(tmp: str, *, corrupt: bool = False, staged: bool = True) -> Path:
     rev = root / "revisions" / "fleet-mcp-20261016@deadbee"
     (rev / "fleet_mcp").mkdir(parents=True, exist_ok=True)
     (rev / "fleet_mcp" / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (rev / "serveros-fleet-example-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
+    (rev / "serveros-fleet-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
     # The manifest is dropped from its own file list, exactly as `install.py`
     # does: it is written AFTER the tree is hashed. Rebuilding a fixture in the
     # same root would otherwise fold the previous manifest into the list and
@@ -718,7 +718,7 @@ class TheConfigFlagCannotBeOverridden(CanaryHarness):
 
     def _launcher(self, root: Path) -> str:
         return str((root / "current").resolve() / "fleet_mcp" / "bin"
-                   / "serveros-fleet-example-mcp")
+                   / "serveros-fleet-mcp")
 
     def test_reviewed_then_override_is_blocked(self):
         proposal = candidate()

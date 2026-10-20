@@ -79,7 +79,7 @@ lane can be reviewed without reading the others.
 | **B — runtime policy** | `fleet_mcp/fleet.py`, `fleet_mcp/config.py`, `fleet_mcp/runtime_create_policy.py` | packaging, deploy scripts |
 | **C — packaging** | `integrations/**` (the overlay builder, skills, assets, `plugin.json`) | runtime policy, deploy |
 | **D — Dell** | Dell device enrolment, the second runtime's binding and isolation facts | Tokyo ingress, Windows |
-| **E — ingress** | `fleet_mcp/deploy/next_*`, `serveros-fleet-example-mcp.service` | V1's unit, V1's binding |
+| **E — ingress** | `fleet_mcp/deploy/next_*`, `serveros-fleet-next-mcp.service` | V1's unit, V1's binding |
 | **F — release QA** | live-evidence gates, the acceptance matrix's evidence collection | product code |
 
 **The integration owner (A) does not take over an in-flight lane.** A's job is to

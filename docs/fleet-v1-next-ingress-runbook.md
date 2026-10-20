@@ -338,7 +338,7 @@ so "the token is not V1's" stays an owner statement, not a measured fact.
 Then **measure** that the caps took effect — a template cannot prove isolation:
 
 ```bash
-systemctl --user show serveros-fleet-example-mcp.service \
+systemctl --user show serveros-fleet-next-mcp.service \
   -p MemoryMax -p MemorySwapMax -p CPUQuota -p TasksMax
 ```
 Expect `MemoryMax=1536M`, `MemorySwapMax=0`, `CPUQuota=40%`, `TasksMax=96`, and
@@ -382,7 +382,7 @@ be claimed.
 ### Rollback (Next-only, always available)
 
 `next_install.py rollback` addresses the Next unit only and never restarts V1.
-`SyslogIdentifier=serveros-fleet-example-mcp` keeps the two journals separable.
+`SyslogIdentifier=serveros-fleet-next-mcp` keeps the two journals separable.
 
 ---
 
@@ -463,7 +463,7 @@ now **captures** that stdout, requires exactly one well-formed document, and
 republishes a single Next-only receipt:
 
 ```json
-{"decision": "EXECUTED", "unit": "serveros-fleet-example-mcp.service",
+{"decision": "EXECUTED", "unit": "serveros-fleet-next-mcp.service",
  "started": false, "health": null, "unit_path": "...",
  "effect_state": "NEXT_ONLY_ACTION_ATTEMPTED", "v1_action": false,
  "writes": ["..."], "executes": ["..."], "receipt": { ...the installer's own... }}

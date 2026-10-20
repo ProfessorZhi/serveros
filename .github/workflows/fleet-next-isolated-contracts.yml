@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - 'fleet_mcp/deploy/next_*'
-      - 'fleet_mcp/deploy/serveros-fleet-example-mcp.service'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
       - 'tests/test_fleet_next_install.py'
       - 'tests/test_fleet_next_dual_stack_preflight.py'
       - 'tests/test_fleet_runtime_create_policy.py'
@@ -17,7 +17,7 @@ on:
       - 'feat/fleet-next-isolated-rollout-20261015'
     paths:
       - 'fleet_mcp/deploy/next_*'
-      - 'fleet_mcp/deploy/serveros-fleet-example-mcp.service'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
       - 'tests/test_fleet_next_install.py'
       - 'tests/test_fleet_next_dual_stack_preflight.py'
       - 'tests/test_fleet_runtime_create_policy.py'

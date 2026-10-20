@@ -511,17 +511,17 @@ class NextOnlyRollbackAndLimitsTest(unittest.TestCase):
         """The unit's FILE NAME is the unit name. The template mentions V1 only
         to forbid installing under it — that mention must not become the name."""
         from fleet_mcp.deploy import next_dual_stack_preflight as preflight
-        path = ROOT / "fleet_mcp" / "deploy" / "serveros-fleet-example-mcp.service"
+        path = ROOT / "fleet_mcp" / "deploy" / "serveros-fleet-next-mcp.service"
         self.assertEqual(path.name, preflight.NEXT_UNIT)
         self.assertNotEqual(preflight.NEXT_UNIT, preflight.V1_UNIT)
         unit = path.read_text(encoding="utf-8")
         self.assertIn("NEVER install under", unit)
         self.assertIn(preflight.V1_UNIT, unit)
-        self.assertIn("SyslogIdentifier=serveros-fleet-example-mcp", unit)
+        self.assertIn("SyslogIdentifier=serveros-fleet-next-mcp", unit)
 
     def test_the_unit_template_still_carries_the_bounded_caps(self):
         unit = (ROOT / "fleet_mcp" / "deploy"
-                / "serveros-fleet-example-mcp.service").read_text(encoding="utf-8")
+                / "serveros-fleet-next-mcp.service").read_text(encoding="utf-8")
         for required in ("MemoryMax=1536M", "MemorySwapMax=0", "CPUQuota=40%",
                          "TasksMax=96", "NoNewPrivileges=yes"):
             with self.subTest(required=required):

@@ -46,7 +46,7 @@ from fleet_mcp.deploy import next_install, next_dual_stack_preflight as gate  # 
 V1_CONFIG = "/home/operator/.config/old-fleet/config.yaml"
 NEXT_CONFIG = "/home/operator/.config/new-fleet/config.yaml"
 NEXT_UNIT_PATH = ("/home/operator/.config/systemd/user/"
-                  "serveros-fleet-example-mcp.service")
+                  "serveros-fleet-next-mcp.service")
 OLD_REV = "aa17512"
 OLD_LABEL = f"fleet-mcp-20261015@{OLD_REV}"
 
