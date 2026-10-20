@@ -180,6 +180,23 @@ def verify(daemon, *, context_ref, grant_ref="grant:1", action=ACTION,
         peer=peer() if peer_value == "default" else peer_value)["result"]
 
 
+def verify_store(daemon, context, *, grant_ref="grant:1", action=ACTION,
+                 project=PROJECT, item_ref=ITEM, expected_epoch=None,
+                 peer_value=None):
+    """The pre-owner #272 read itself, called at its own boundary.
+
+    The daemon route now refuses an owner-backed positive until a commit fence
+    exists, so a test of the #272 grant DTO/epoch/uid rules must call the
+    production `verify_live_grant` directly. The route-level expectation is
+    tested in `tests/test_owner_commit_fence.py`.
+    """
+    return daemon_mod.agent_control_store_mod.verify_live_grant(
+        daemon.control_store().grants(), grant_ref=grant_ref,
+        context=context, peer=peer() if peer_value is None else peer_value,
+        action=action, project=project, item_ref=item_ref,
+        expected_epoch=expected_epoch, now=iso(daemon))
+
+
 # ---------------------------------------------------------------------------
 # P0 — the shape Work Engine #14 consumes.
 # ---------------------------------------------------------------------------
@@ -192,7 +209,7 @@ LEASE_GRANT_FIELDS = ("principal", "grant_ref", "project", "items", "actions",
 def test_the_positive_result_is_the_full_lease_grant_shape(daemon):
     ctx = a_context(daemon)
     a_bound_grant(daemon, ctx)
-    answer = verify(daemon, context_ref=ctx["context_ref"])
+    answer = verify_store(daemon, ctx)
     assert answer["verified"] is True
     grant = answer["grant"]
     assert set(grant) == set(LEASE_GRANT_FIELDS), sorted(grant)
@@ -210,9 +227,10 @@ def test_the_positive_result_matches_the_pinned_public_contract(daemon):
     """The returned grant is checked against a PINNED public fixture.
 
     The fixture is a contract description (field names and wire types), not a
-    copy of any private class definition. It proves the daemon's answer is the
+    copy of any private class definition. It proves the #272 read's grant is the
     shape a Work Engine #14 consumer expects without reading another user's
-    checkout.
+    checkout. The daemon route itself now refuses an owner-backed positive
+    until a commit fence exists; `verify_store` calls the #272 read directly.
     """
     contract = H.lease_grant_contract()
     fields = contract["fields"]
@@ -220,7 +238,7 @@ def test_the_positive_result_matches_the_pinned_public_contract(daemon):
 
     ctx = a_context(daemon)
     a_bound_grant(daemon, ctx)
-    grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
+    grant = verify_store(daemon, ctx)["grant"]
     assert set(grant) == set(fields), sorted(grant)
 
     for name, kind in fields.items():
@@ -247,7 +265,7 @@ def test_the_real_public_work_engine_lease_grant_accepts_the_verified_wire(daemo
 
     RC-v2 (`ec43f714`) ships `workengine/authority.py` (#304), so this no longer
     needs an owner-private checkout. The class definition is imported from the
-    public tree; only the daemon's verified wire is an input.
+    public tree; the #272 read's verified grant is the input.
     """
     authority = H.in_tree_authority()
     assert authority is not None, (
@@ -257,7 +275,7 @@ def test_the_real_public_work_engine_lease_grant_accepts_the_verified_wire(daemo
 
     ctx = a_context(daemon)
     a_bound_grant(daemon, ctx)
-    grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
+    grant = verify_store(daemon, ctx)["grant"]
     built = authority.LeaseGrant(**grant)      # the TypeError the QA measured
     assert built.principal == "human:A"
     assert built.grant_ref == "grant:1"
@@ -322,7 +340,7 @@ def test_a_different_uid_is_refused(daemon):
 def test_the_bound_uid_is_admitted(daemon):
     ctx = a_context(daemon)
     a_bound_grant(daemon, ctx, uid=4242)
-    allowed = verify(daemon, context_ref=ctx["context_ref"], peer_value=peer(uid=4242))
+    allowed = verify_store(daemon, ctx, peer_value=peer(uid=4242))
     assert allowed["verified"] is True
 
 

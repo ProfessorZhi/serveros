@@ -9,7 +9,9 @@
 | Owner policy | external owner-issued fact; a resolver injected at daemon construction |
 | Production `serverosd` | passes no resolver → every issue/verify refuses `BLOCKED_OWNER_POLICY` |
 | Test evidence | `REAL_TEMP` (real AF_UNIX + real `SO_PEERCRED`), `LOCAL` (synthetic peer negatives) |
-| QA2 #360 S1 findings | independently reproduced 6/6 RED at `#358` `b183aab`; 6/6 `ok` and 36/36 controls on this branch |
+| QA2 #360 S1 findings | independently reproduced 6/6 RED at `#358` `b183aab`; 6/6 `ok` on this branch |
+| Owner-backed mutation eligibility | `verified: false`, `BLOCKED_OWNER_COMMIT_SEAM`; no owner commit fence exists |
+| WorkEngine adapter | refuses owner-backed replies unless `atomicity == "COMMIT_FENCED"`; none emitted |
 | Two real uids | `BLOCKED_MULTIPRINCIPAL_NOT_RUN` (no passwordless sudo/setuid) |
 | New registry / grant store | **none** |
 
@@ -103,6 +105,58 @@ answer is never promoted to `VERIFIED` for an atomicity claim it cannot make.
 A true atomic commit requires the upstream owner issuance interface; that
 remains a protocol requirement (section 6).
 
+## 3.6 The mutation boundary: no commit fence, no positive (stacked branch)
+
+The cross-module review at #363 `8840f41` found that the point-in-time answer
+was still consumed as a write grant: `workengine/serveros_authority.py` read
+only `verified: true`, built a `LeaseGrant`, and
+`OwnerVerifiedLease.acquire` wrote a lease. A revoke after the daemon's last
+resolver read but before that write was invisible.
+
+Fix, in two places:
+
+1. `agent.lease.authority.verify` with an owner resolver **never** returns
+   `verified: true`. When every owner check passes it returns
+   `verified: false, reason: BLOCKED_OWNER_COMMIT_SEAM`; `point_in_time: true`
+   and the `owner_policy` audit remain as a read-only record, but no `grant`
+   is returned. The daemon has no owner-issued atomic policy/epoch commit
+   fence, so it cannot authorize a mutation.
+2. `ServerOSLeaseAuthority.verify` explicitly refuses any owner-backed reply
+   (`owner_policy`, `point_in_time` or `atomicity` present) whose
+   `atomicity` is not exactly `COMMIT_FENCED`. A refusal marker cannot be
+   swallowed as decoration. No production code emits `COMMIT_FENCED`; a
+   synthetic HMAC or a legacy #272 readback is not such a fence.
+
+Legacy #272 reads (no owner markers) keep their previous behavior. The
+Work Engine adapter's fence check is the last gate before
+`OwnerVerifiedLease.acquire` writes.
+
+### RED → GREEN on the stacked branch
+
+The RED test materializes the real chain — temp Daemon + temp AF_UNIX socket +
+`SO_PEERCRED`, `UnixSocketVerifyClient`, `ServerOSLeaseAuthority`,
+`OwnerVerifiedLease`, temp `ServerOSStore` — and revokes the owner policy in
+the client after the daemon's last read and before `acquire`:
+
+```text
+RED at 8840f41:
+  test_the_owner_route_never_returns_verified_without_a_commit_fence  FAILED
+  test_a_revoke_after_the_last_read_cannot_acquire_a_lease           FAILED DID NOT RAISE
+  test_the_adapter_refuses_an_owner_backed_positive_without_commit_fence FAILED DID NOT RAISE
+  3 failed
+
+GREEN on this branch:
+  3 passed   tests/test_owner_commit_fence.py
+```
+
+The rewritten positives now assert the safe expectation: a live owner policy
+yields a `BLOCKED_OWNER_COMMIT_SEAM` refusal with a point-in-time audit and
+**no** grant; #272 DTO/epoch/uid positives call `verify_live_grant` at its own
+boundary. The two QA2 probe controls that expected an owner-backed
+`verified: true` (`valid-policy-10-field-dto`, `caller-actor-ref-ignored`) are
+superseded by this requirement; all six findings and the other 34 controls
+still hold.
+
 ## 4. Refusal matrix
 
 | Case | Result |
@@ -113,6 +167,8 @@ remains a protocol requirement (section 6).
 | `revoked` is not a `bool` (`1`, `"yes"`, `None`) | `BLOCKED_OWNER_POLICY` |
 | policy issued in the future / after its own expiry | `BLOCKED_OWNER_POLICY` |
 | grant or policy changed between the two reads | `BLOCKED_ATOMICITY` |
+| owner checks pass but no owner commit fence exists | `BLOCKED_OWNER_COMMIT_SEAM` (`verified: false`, no grant) |
+| WorkEngine adapter sees an owner-backed reply with `atomicity != COMMIT_FENCED` | `AuthorityError` `BLOCKED_OWNER_COMMIT_SEAM` |
 | idempotent issue readback with a dead live policy | `StoreError` `POLICY_DENIED` / `BLOCKED_OWNER_POLICY` |
 | policy revoked | `POLICY_DENIED` |
 | policy expired / not yet valid | `POLICY_DENIED` |
@@ -214,9 +270,10 @@ no production owner. The synthetic-peer negative is `LOCAL` and labelled
   path re-reads and refuses on change but cannot make the resolve→return window
   atomic. A protocol requirement remains: an upstream owner issuance interface
   that commits an authority snapshot/generation the verify path can pin in one
-  read. Until then the answer says `point_in_time: true` and
-  `atomicity: BLOCKED_OWNER_COMMIT_SEAM`; no synthetic atomicity is promoted to
-  production.
+  read. Until then the daemon returns `verified: false` with that reason and a
+  point-in-time audit only; the WorkEngine adapter requires the exact
+  `COMMIT_FENCED` marker for any owner-backed reply, and no production code
+  emits it. No synthetic atomicity is promoted to production.
 * The `LeaseGrant` window/uid/epoch checks are #272's; this slice adds the
   owner binding, not a second grant source.
 * No real provider, model request, credential or paid send; no merge,

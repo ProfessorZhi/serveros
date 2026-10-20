@@ -3044,6 +3044,13 @@ class Daemon:
 
         Refusals are answers (`{"verified": False, "reason": ...}`). An
         unanswerable question is a refusal, not a default.
+
+        This is a MUTATION-ELIGIBILITY read: a consumer may use a positive
+        answer to write a lease. The owner gate is point-in-time, so without a
+        real owner-issued atomic policy/epoch commit fence a successful owner
+        check is still `BLOCKED_OWNER_COMMIT_SEAM` (`verified: false`), with
+        only a read-only point-in-time audit. Legacy #272 reads with no owner
+        resolver keep their previous behavior.
         """
         ref = str(params.get("context_ref") or "").strip()
         if not ref:
@@ -3144,10 +3151,24 @@ class Daemon:
                                 "or window) during verification; the first "
                                 "snapshot is stale"),
                     "point_in_time": False}
-        return {**second,
-                "owner_policy": owner_policy_mod.audit(policy_again),
+        # The owner answer authorizes NOTHING by itself. It is a point-in-time
+        # read, and the only consumer that can turn it into a write
+        # (`OwnerVerifiedLease.acquire`) does so after this reply. Without an
+        # owner-issued atomic policy/epoch commit fence there is no way for
+        # this route to know the owner is still current at that write. A
+        # `verified: true` here would be consumed as a write grant, so the
+        # mutation-eligibility answer is a refusal; the point-in-time audit is
+        # informational only and carries no grant.
+        return {"verified": False,
+                "reason": "BLOCKED_OWNER_COMMIT_SEAM",
+                "because": ("no owner-issued atomic policy/epoch commit fence "
+                            "exists for the lease write. The owner checks "
+                            "passed at this instant, but a revocation after "
+                            "this read is invisible to the mutating consumer, "
+                            "so a point-in-time read cannot authorize a "
+                            "lease"),
                 "point_in_time": True,
-                "atomicity": "BLOCKED_OWNER_COMMIT_SEAM"}
+                "owner_policy": owner_policy_mod.audit(policy_again)}
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.
