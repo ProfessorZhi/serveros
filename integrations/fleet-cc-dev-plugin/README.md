@@ -276,3 +276,15 @@ the fixture's `CLIENT_E2E` remains a **LOCAL** result, not a live one.
 `BLOCKED_SURFACE_UNREACHABLE` and unexpected-status paths, and the redaction
 rule: a planted `headers.Authorization`, `oauth.clientSecret` and URL query are
 never copied into the receipt, and a stdio `command` is not reported at all.
+
+## Acceptance receipt (2026-10-20)
+
+[`ACCEPTANCE-2026-10-20.md`](ACCEPTANCE-2026-10-20.md) records the layered
+functional acceptance at code SHA **`b24b15a`**: L0 package structure and
+byte-identical Skills, L1 real Claude Code CLI load/handshake with 33 tools,
+L2 the local temporary daemon's virtual facts and the `SCOPE_DENIED` write
+refusal (provider send count 0), and L3 one real `claude -p` session calling
+three read-only tools (0 permission denials, **1** model call, **$0.218094**).
+All layers pass at **LOCAL**; the live Next read remains
+`BLOCKED_OWNER_OAUTH`, and no real device, `serverosd` or production state was
+touched.
