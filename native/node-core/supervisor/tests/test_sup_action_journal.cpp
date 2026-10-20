@@ -19,8 +19,11 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.hpp"
@@ -107,6 +110,23 @@ bool state_has_attempt(const std::string& path, const std::string& service_id) {
     return false;
 }
 
+ActionJournal make_journal(const std::string& path, Recovery* recovery,
+                           std::function<RecoveryClock()> clock) {
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    const bool ok = directory.open(path, verdict);
+    CHECK(ok);
+    if (!ok) {
+        std::cout << "  (" << verdict.code << ": " << verdict.reason << ")\n";
+    }
+    return ActionJournal(std::move(directory), recovery, std::move(clock));
+}
+
+bool file_exists(const std::string& path) {
+    struct stat info;
+    return ::lstat(path.c_str(), &info) == 0;
+}
+
 int count_temp_files(const std::string& dir) {
     DIR* handle = ::opendir(dir.c_str());
     if (handle == nullptr) {
@@ -168,7 +188,7 @@ void test_prewrite_is_durable_before_the_effect() {
     const std::string path = dir + "/state.json";
 
     Recovery recovery;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -209,7 +229,7 @@ void test_prewrite_failure_has_no_effect() {
     const std::string path = dir + "/state.json";
 
     Recovery recovery;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -243,7 +263,7 @@ void test_a_crash_after_the_effect_leaves_the_attempt() {
     Recovery recovery;
     RecoveryPolicy policy;
     policy.max_attempts = 1;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -275,7 +295,7 @@ void test_outcome_write_failure_keeps_the_attempt() {
     Recovery recovery;
     RecoveryPolicy policy;
     policy.max_attempts = 1;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -315,7 +335,7 @@ void test_cross_boot_places_the_attempt() {
 
     Recovery recovery;
     RecoveryPolicy policy;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -349,7 +369,7 @@ void test_a_second_start_cannot_exceed_the_budget() {
     Recovery recovery;
     RecoveryPolicy policy;
     policy.max_attempts = 2;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1001, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -378,7 +398,7 @@ void test_without_the_lease_no_effect() {
     const std::string path = dir + "/state.json";
 
     Recovery recovery;
-    ActionJournal journal(path, &recovery,
+    ActionJournal journal = make_journal(path, &recovery,
                           [] { return clock_at(1000, 1770000000, "boot-a"); });
     InspectingProvider provider;
     provider.state_path = path;
@@ -394,6 +414,99 @@ void test_without_the_lease_no_effect() {
     remove_dir(dir);
 }
 
+void test_the_write_is_bound_to_the_opened_directory() {
+    // THE SYNTHETIC RACE. The directory is opened and verified, then the path's
+    // parent is renamed and replaced by a symlink to a different directory. A
+    // path-based writer would follow the symlink; the fd-bound writer must land
+    // in the ORIGINAL inode and the post-write stability check must fail closed.
+    const std::string root = make_temp_dir();
+    CHECK(!root.empty());
+    if (root.empty()) {
+        return;
+    }
+    CHECK(::mkdir((root + "/state").c_str(), 0700) == 0);
+    CHECK(::mkdir((root + "/evil").c_str(), 0700) == 0);
+    const std::string path = root + "/state/state.json";
+
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    CHECK(directory.open(path, verdict));
+    CHECK(directory.valid());
+
+    CHECK(::rename((root + "/state").c_str(), (root + "/moved").c_str()) == 0);
+    CHECK(::symlink((root + "/evil").c_str(), (root + "/state").c_str()) == 0);
+
+    Recovery recovery;
+    ActionJournal journal(std::move(directory), &recovery,
+                          [] { return clock_at(1000, 1770000000, "boot-a"); });
+    std::string error;
+    CHECK(!journal.write_outcome(error));
+    CHECK(!error.empty());
+    CHECK_CONTAINS(error, "original inode");
+
+    // The write went to the trusted inode, not to the symlink target.
+    CHECK(file_exists(root + "/moved/state.json"));
+    CHECK(!file_exists(root + "/evil/state.json"));
+
+    ::unlink((root + "/state").c_str());  // the attacker's symlink
+    ::unlink((root + "/moved/state.json").c_str());
+    ::rmdir((root + "/moved").c_str());
+    ::rmdir((root + "/evil").c_str());
+    ::rmdir(root.c_str());
+}
+
+void test_the_read_is_bound_to_the_opened_directory() {
+    // The same race on the READ side: a path-based load could read an
+    // attacker-chosen empty state and reset the budget. The trusted fd must
+    // still read the original inode.
+    const std::string root = make_temp_dir();
+    CHECK(!root.empty());
+    if (root.empty()) {
+        return;
+    }
+    CHECK(::mkdir((root + "/state").c_str(), 0700) == 0);
+    CHECK(::mkdir((root + "/evil").c_str(), 0700) == 0);
+    const std::string path = root + "/state/state.json";
+    const std::string trusted =
+        "{\"schema\":\"serveros/native-core-recovery.v2\",\"boot_id\":\"boot-a\","
+        "\"anchor\":{\"monotonic\":100,\"wall_epoch\":1770000000},"
+        "\"services\":[{\"id\":\"svc\",\"consecutive_failures\":0,"
+        "\"opened_until\":0,\"attempts\":[10]}]}\n";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << trusted;
+    }
+    CHECK(::chmod(path.c_str(), 0600) == 0);
+
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    CHECK(directory.open(path, verdict));
+
+    CHECK(::rename((root + "/state").c_str(), (root + "/moved").c_str()) == 0);
+    CHECK(::symlink((root + "/evil").c_str(), (root + "/state").c_str()) == 0);
+    {
+        std::ofstream out(root + "/evil/state.json", std::ios::binary | std::ios::trunc);
+        out << "{\"schema\":\"serveros/native-core-recovery.v2\",\"boot_id\":\"boot-a\","
+               "\"anchor\":{\"monotonic\":1,\"wall_epoch\":1770000000},\"services\":[]}\n";
+    }
+    CHECK(::chmod((root + "/evil/state.json").c_str(), 0600) == 0);
+
+    std::string text;
+    bool present = false;
+    std::string error;
+    CHECK(directory.read(text, present, error));
+    CHECK(present);
+    CHECK(text == trusted);  // the trusted inode, not the symlink target
+    CHECK_CONTAINS(text, "\"id\":\"svc\"");
+
+    ::unlink((root + "/state").c_str());
+    ::unlink((root + "/moved/state.json").c_str());
+    ::rmdir((root + "/moved").c_str());
+    ::unlink((root + "/evil/state.json").c_str());
+    ::rmdir((root + "/evil").c_str());
+    ::rmdir(root.c_str());
+}
+
 int main() {
     test_prewrite_is_durable_before_the_effect();
     test_prewrite_failure_has_no_effect();
@@ -402,5 +515,7 @@ int main() {
     test_cross_boot_places_the_attempt();
     test_a_second_start_cannot_exceed_the_budget();
     test_without_the_lease_no_effect();
+    test_the_write_is_bound_to_the_opened_directory();
+    test_the_read_is_bound_to_the_opened_directory();
     return check::report("test_sup_action_journal");
 }

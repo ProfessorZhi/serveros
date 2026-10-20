@@ -195,6 +195,8 @@ void test_the_state_path_must_be_safe_to_write() {
     // A parent we cannot write cannot gain a first-run state file.
     CHECK(::chmod(dir.c_str(), 0500) == 0);
     CHECK_EQ(check_state_path(dir + "/fresh.json").code, std::string(kStatePathUnwritable));
+    // `renameat` needs the parent writable even when the file already exists.
+    CHECK_EQ(check_state_path(dir + "/state.json").code, std::string(kStatePathUnwritable));
     CHECK(::chmod(dir.c_str(), 0700) == 0);
 
     // An INTERMEDIATE ancestor symlink is refused too. The immediate parent
@@ -210,6 +212,46 @@ void test_the_state_path_must_be_safe_to_write() {
     CHECK_EQ(check_state_path(dir + "/real/../state.json").code,
              std::string(kStatePathNotNormalized));
 
+    // A world-writable ancestor WITHOUT the sticky bit lets any account rename
+    // the entry. `/tmp` (1777) is allowed because only the owner can rename an
+    // entry in a sticky directory; a bare 0777 directory is not.
+    CHECK(::mkdir((dir + "/open").c_str(), 0700) == 0);
+    CHECK(::chmod((dir + "/open").c_str(), 0777) == 0);
+    CHECK(::mkdir((dir + "/open/sub").c_str(), 0700) == 0);
+    CHECK_EQ(check_state_path(dir + "/open/sub/state.json").code,
+             std::string(kStateAncestorWorldWritable));
+    ::rmdir((dir + "/open/sub").c_str());
+    CHECK(::chmod((dir + "/open").c_str(), 0700) == 0);
+    ::rmdir((dir + "/open").c_str());
+
+    // A GROUP-writable ancestor without the sticky bit lets any member of the
+    // group rename the entry, so it is refused even though it is not
+    // world-writable.
+    CHECK(::mkdir((dir + "/gopen").c_str(), 0700) == 0);
+    CHECK(::chmod((dir + "/gopen").c_str(), 0770) == 0);
+    CHECK(::mkdir((dir + "/gopen/sub").c_str(), 0700) == 0);
+    CHECK_EQ(check_state_path(dir + "/gopen/sub/state.json").code,
+             std::string(kStateAncestorGroupWritable));
+    ::rmdir((dir + "/gopen/sub").c_str());
+    CHECK(::chmod((dir + "/gopen").c_str(), 0700) == 0);
+    ::rmdir((dir + "/gopen").c_str());
+
+    // A GROUP-writable STICKY ancestor is the one writable form that is safe:
+    // sticky prevents other group members from renaming our entry, and both
+    // the directory and the resolved entry are owned by us.
+    CHECK(::mkdir((dir + "/gsticky").c_str(), 0700) == 0);
+    CHECK(::chmod((dir + "/gsticky").c_str(), 01770) == 0);
+    CHECK(::mkdir((dir + "/gsticky/sub").c_str(), 0700) == 0);
+    CHECK(check_state_path(dir + "/gsticky/sub/state.json").ok);
+    ::rmdir((dir + "/gsticky/sub").c_str());
+    CHECK(::chmod((dir + "/gsticky").c_str(), 0700) == 0);
+    ::rmdir((dir + "/gsticky").c_str());
+
+    // `/tmp` itself is 1777 (world-writable + sticky, root-owned) and is the
+    // ancestor of every temp root in this file. The positive checks prove the
+    // sticky ancestor is preserved rather than refused.
+    CHECK(check_state_path(dir + "/state.json").ok);
+
     ::unlink((dir + "/link").c_str());
     ::rmdir((dir + "/real/sub").c_str());
     ::rmdir((dir + "/real").c_str());
@@ -217,6 +259,69 @@ void test_the_state_path_must_be_safe_to_write() {
     ::unlink((dir + "/state.json").c_str());
     ::rmdir((dir + "/sub").c_str());
     ::rmdir(dir.c_str());
+}
+
+void test_an_in_between_inode_replacement_is_refused() {
+    // The hook replaces the immediate parent with a NEW REAL directory between
+    // fstatat and openat. This is not a symlink (O_NOFOLLOW would catch that);
+    // only the dev+ino identity check can tell the opened inode from the one
+    // that was inspected.
+    const std::string root = make_temp_dir();
+    CHECK(!root.empty());
+    if (root.empty()) {
+        return;
+    }
+    CHECK(::mkdir((root + "/state").c_str(), 0700) == 0);
+
+    bool swapped = false;
+    const auto after_lookup = [&](const std::string& component) {
+        if (component == "state" && !swapped) {
+            swapped = true;
+            CHECK(::rename((root + "/state").c_str(), (root + "/moved").c_str()) == 0);
+            CHECK(::mkdir((root + "/state").c_str(), 0700) == 0);
+        }
+    };
+
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    CHECK(!directory.open(root + "/state/state.json", verdict, after_lookup));
+    CHECK_EQ(verdict.code, std::string(kStateParentIdentityChanged));
+    CHECK(!directory.valid());
+
+    ::rmdir((root + "/state").c_str());
+    ::rmdir((root + "/moved").c_str());
+    ::rmdir(root.c_str());
+}
+
+void test_a_final_file_lookup_switch_is_refused() {
+    // The same identity check on the state file itself: fstatat sees one inode,
+    // the writability probe opens another. The gate must fail closed.
+    const std::string root = make_temp_dir();
+    CHECK(!root.empty());
+    if (root.empty()) {
+        return;
+    }
+    CHECK(::mkdir((root + "/state").c_str(), 0700) == 0);
+    CHECK(write_file(root + "/state/state.json", "{}", 0600));
+
+    bool swapped = false;
+    const auto after_file_lookup = [&] {
+        if (!swapped) {
+            swapped = true;
+            ::unlink((root + "/state/state.json").c_str());
+            CHECK(write_file(root + "/state/state.json", "{\"different\":true}", 0600));
+        }
+    };
+
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    CHECK(!directory.open(root + "/state/state.json", verdict, {}, after_file_lookup));
+    CHECK_EQ(verdict.code, std::string(kStatePathIdentityChanged));
+    CHECK(!directory.valid());
+
+    ::unlink((root + "/state/state.json").c_str());
+    ::rmdir((root + "/state").c_str());
+    ::rmdir(root.c_str());
 }
 
 void test_the_toy_harness_passes_the_budget() {
@@ -254,6 +359,8 @@ void test_the_toy_harness_passes_the_budget() {
 int main() {
     test_the_gate_requires_every_acting_fact();
     test_the_state_path_must_be_safe_to_write();
+    test_an_in_between_inode_replacement_is_refused();
+    test_a_final_file_lookup_switch_is_refused();
     test_the_toy_harness_passes_the_budget();
     return check::report("test_sup_action_gate");
 }

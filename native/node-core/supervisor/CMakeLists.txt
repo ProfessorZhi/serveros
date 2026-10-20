@@ -22,6 +22,7 @@ add_library(nodecore_supervisor STATIC
   src/admission.cpp
   src/action_gate.cpp
   src/action_journal.cpp
+  src/state_directory.cpp
   src/probe.cpp
   src/lease.cpp
   src/receipt.cpp
