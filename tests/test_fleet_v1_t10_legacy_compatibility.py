@@ -71,7 +71,12 @@ HEAD = H.HEAD
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
-    reason="X2 evidence scope: Linux (Tokyo / Dell fjd) only")
+    reason=(
+        "PRODUCER_BOUNDARY_POSIX_ONLY: Windows FJPCOS has no verified X2 "
+        "producer; this suite executes the POSIX bounded runner and in-tree "
+        "finalize, so its 19 cases are skipped rather than run against a fake "
+        "Windows producer. Manifest: "
+        "tests/v1_portability/fixtures/windows-skip-manifest.v1.json"))
 
 
 def _pre15_snapshot(tmp_path: Path):

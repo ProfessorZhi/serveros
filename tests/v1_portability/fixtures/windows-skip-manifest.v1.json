@@ -1,0 +1,55 @@
+{
+  "schema": "serveros/x2-windows-skip-manifest.v1",
+  "base": "rc/i1-v4-review-20261020@40c4b1c46e5d3f3da883045bfa2152acc41da01a",
+  "reason_code": "PRODUCER_BOUNDARY_POSIX_ONLY",
+  "reason": "The two X2 suites execute the POSIX bounded runner, the in-tree store finalize and SO_PEERCRED-shaped producer evidence. Windows FJPCOS has no verified producer in this milestone, so those tests are skipped explicitly rather than run against a fake Windows producer; no acceptance is claimed. The portable consumer/boundary checks that do not need a producer remain enabled in tests/v1_portability/test_portability_boundary.py.",
+  "measured_windows_run": {
+    "suites": [
+      "tests/test_fleet_v1_t10_legacy_compatibility.py"
+    ],
+    "skipped": 19,
+    "failed": 4,
+    "failure_classes": [
+      "fixture_crlf_pin:3",
+      "guard_windows_root:1"
+    ]
+  },
+  "suites": {
+    "tests/test_fleet_v1_t10_legacy_compatibility.py": [
+      "test_legacy_pre15_compat_cannot_affect_v1",
+      "test_in_tree_legacy_finalize_is_unsigned_and_not_v1",
+      "test_pinned_unsigned_label_is_denied_by_v1",
+      "test_v1_missing_trusted_parent_is_blocked_wiring",
+      "test_v1_test_double_grant_is_eligible_for_qa_only",
+      "test_v1_stale_or_unknown_grant_is_not_accepted",
+      "test_v1_cross_grant_actor_or_run_is_denied",
+      "test_v1_requires_explicit_context",
+      "test_v1_absent_authorization_marker_is_denied",
+      "test_v1_caller_json_fake_label_is_denied",
+      "test_v1_caller_json_grant_is_denied",
+      "test_v1_missing_durable_evidence_is_blocked",
+      "test_v1_tampered_bytes_is_denied",
+      "test_v1_child_text_pass_real_exit_one_is_denied",
+      "test_public_t10_producer_writes_an_exact_t10_verified_finalize",
+      "test_public_t10_producer_without_a_parent_is_blocked",
+      "test_public_t10_binding_mismatch_is_refused",
+      "test_public_t10_receipt_exit_disagreement_is_refused",
+      "test_public_t10_trusted_parent_label_is_not_acceptance"
+    ],
+    "tests/test_v1_grant_os_principal_schema.py": [
+      "test_the_positive_result_is_the_full_lease_grant_shape",
+      "test_the_positive_result_matches_the_pinned_public_contract",
+      "test_the_real_public_work_engine_lease_grant_accepts_the_verified_wire",
+      "test_the_public_authority_module_exposes_the_exact_seams",
+      "test_an_unreadable_time_refuses",
+      "test_a_naive_time_without_utc_offset_refuses",
+      "test_a_different_uid_is_refused",
+      "test_the_bound_uid_is_admitted",
+      "test_a_grant_with_no_os_principal_binding_is_refused",
+      "test_an_absent_peer_is_refused",
+      "test_a_malformed_peer_uid_refuses_cleanly",
+      "test_revoked_and_old_epoch_still_refuse",
+      "test_wrong_scope_still_refuses"
+    ]
+  }
+}
