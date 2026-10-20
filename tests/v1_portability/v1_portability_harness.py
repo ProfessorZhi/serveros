@@ -4,18 +4,28 @@ Everything here is either in-tree serveros code (`workengine/`, `runtime/`,
 `integrations/`) or a pinned fixture under `tests/v1_portability/fixtures/`.
 It never reads an owner-private Work Engine checkout.
 
-Two kinds of evidence are deliberately kept apart:
+Evidence labels (kept explicit in every producer test):
 
-* **EXECUTED** — the real in-tree `workengine.ServerOSStore` writes a legacy
-  `finalize.json`, and the real `runtime.bounded_invocation.invoke_once`
-  produces a runner receipt.
-* **PINNED_PUBLIC_FIXTURE** — the durable `T10_VERIFIED` finalize shape is a
-  contract fixture, not a production verifier's output.  The suite labels it
-  `source="public-canonical-fixture:v1"` and never claims the private #15
-  verifier ran.  That proof is `PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN`.
+* **PUBLIC_REIMPLEMENTATION_LOCAL** — the public in-tree
+  `workengine/authority.py` dataclasses (`LeaseGrant`, `VerifiedRunReceipt`,
+  `T10Binding`) plus a locally controlled `RunnerReceiptAuthority` test
+  producer. This proves the public API and its linkage to the consumer gate;
+  it is NOT a production trusted parent.
+* **HISTORICAL_PRIVATE_SOURCE_UNVERIFIED** — the old owner-private Work Engine
+  #15 producer. It is not read, extracted or copied here, and no claim is made
+  that it ever produced the same record.
+
+Two kinds of fixture data are also kept apart:
+
+* **EXECUTED** — the real in-tree `workengine.ServerOSStore` writes the
+  finalize (legacy `UNSIGNED` or public `T10_VERIFIED`), and the real
+  `runtime.bounded_invocation.invoke_once` produces a runner receipt.
+* **PINNED_PUBLIC_FIXTURE** — the durable `T10_VERIFIED` / explicit `UNSIGNED`
+  consumer shapes under `fixtures/`, used where the producer is not the point.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import hashlib
 import importlib.util
@@ -39,6 +49,9 @@ ACTION_KEY = "x2-canonical-action"
 INPUT_DIGEST = "a" * 64
 RECEIPT_SHA = "b" * 64
 FIXTURE_SOURCE = "public-canonical-fixture:v1"
+
+PUBLIC_REIMPLEMENTATION_LOCAL = "PUBLIC_REIMPLEMENTATION_LOCAL"
+HISTORICAL_PRIVATE_SOURCE_UNVERIFIED = "HISTORICAL_PRIVATE_SOURCE_UNVERIFIED"
 
 T10_FIXTURE = "finalize_t10_verified.v1.json"
 UNSIGNED_FIXTURE = "finalize_unsigned.v1.json"
@@ -75,7 +88,7 @@ V1 = integration(
 
 
 def workengine():
-    """The CURRENT in-tree sanitized workengine, never an external checkout.
+    """The CURRENT in-tree workengine, never an external checkout.
 
     A shared pytest process may already hold a `workengine` imported from an
     external checkout by another suite.  That binding is dropped rather than
@@ -102,11 +115,10 @@ def workengine():
 
 
 def in_tree_authority():
-    """The signed authority module, only if the PUBLIC tree ships one.
+    """The public signed-authority module, if this tree ships one.
 
-    `workengine/authority.py` is absent from the sanitized public tree.  When
-    it is absent this returns None and the caller classifies the proof
-    `PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN` instead of skipping silently.
+    RC-v2 (`ec43f714`) does; the pre-#304 tree did not.  Callers on a tree
+    without it must classify the proof, not skip it silently.
     """
     path = REPO / "workengine" / "authority.py"
     if not path.is_file():
@@ -114,9 +126,14 @@ def in_tree_authority():
     workengine()
     importlib.invalidate_caches()
     try:
-        return importlib.import_module("workengine.authority")
+        module = importlib.import_module("workengine.authority")
     except ImportError:
         return None
+    location = Path(module.__file__).resolve()
+    if REPO not in location.parents:
+        raise RuntimeError(
+            f"workengine.authority was imported from {location}, not {REPO}")
+    return module
 
 
 def now_iso() -> str:
@@ -165,33 +182,42 @@ def grant_snapshot(**over):
     return V1.GrantFreshnessSnapshot(**values)
 
 
-def legacy_scenario(tmp_path: Path) -> SimpleNamespace:
-    """The REAL in-tree workengine writes a legacy finalize (no marker)."""
+def prepare_run(root) -> SimpleNamespace:
+    """A real in-tree Item/Activity/Context/Run in the FINALIZING state."""
+    root = Path(root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
     package = workengine()
-    worktree = (tmp_path / "worktree").resolve()
+    worktree = root / "worktree"
     worktree.mkdir(parents=True, exist_ok=True)
-    store = package.ServerOSStore(tmp_path / "state")
+    store = package.ServerOSStore(root / "state")
     store.register_project("demo", "SRV")
     item = store.create_item(
-        package.WorkItem(ITEM, "demo", "x2 legacy", "test", "/card"))
+        package.WorkItem(ITEM, "demo", "x2 portability", "test", "/card"))
     store.add_activity(package.Activity(item.id, ACTIVITY, "test"))
     store.attach_context(package.ExecutionContext(
         item.id, ACTIVITY, "repo", package.ContextMode.TEST, HEAD,
         str(worktree), False))
     run = store.begin_run(
-        item.id, ACTIVITY, RUNNER, "x2-legacy-1", tmp_path / "artifacts")
+        item.id, ACTIVITY, RUNNER, "x2-run-1", root / "artifacts")
     for state in (package.RunState.PREPARING, package.RunState.RUNNING,
                   package.RunState.FINALIZING):
         run = store.advance_run(item.id, run.id, state)
-    result = store.finalize_run(
-        item.id, run.id, verdict="PASS", exit_code=0,
+    return SimpleNamespace(
+        store=store, item=item, run=run, worktree=worktree, head=HEAD,
+        root=root)
+
+
+def legacy_scenario(tmp_path: Path) -> SimpleNamespace:
+    """The REAL in-tree workengine writes a legacy finalize (`UNSIGNED`)."""
+    sc = prepare_run(Path(tmp_path) / "legacy")
+    result = sc.store.finalize_run(
+        sc.item.id, sc.run.id, verdict="PASS", exit_code=0,
         command="pytest", cases=["one"], revision=HEAD, dirty=False)
     readback = FINAL.read_work_engine_finalization(
-        store.db_path, item.id, run.id)
-    expected = expected_finalization()
+        sc.store.db_path, sc.item.id, sc.run.id)
     return SimpleNamespace(
-        store=store, item=item, run=run, worktree=worktree, result=result,
-        readback=readback, expected=expected,
+        **vars(sc), result=result, readback=readback,
+        expected=expected_finalization(),
         finalize_path=Path(readback.evidence_locator))
 
 
@@ -200,7 +226,7 @@ def public_readback(tmp_path: Path, *, fixture_name: str = T10_FIXTURE):
 
     The bytes are written to a Run-shaped `artifact_dir/finalize.json` and the
     readback is stamped `source="public-canonical-fixture:v1"`.  This exercises
-    the consumer gate; it does not claim a private verifier produced it.
+    the consumer gate; it does not claim a producer ran.
     """
     artifact_dir = (tmp_path / "artifact").resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -248,22 +274,25 @@ sys.exit(int(sys.argv[1]))
 '''
 
 
-def bounded_receipt(tmp_path: Path, *, exit_code: int = 1) -> SimpleNamespace:
+def bounded_receipt(tmp_path: Path, *, exit_code: int = 1,
+                    key: str | None = None) -> SimpleNamespace:
     """A REAL receipt from the in-tree bounded runner (no Docker, no network)."""
     bounded = runtime(
         "serveros_runtime_bounded_invocation", "bounded_invocation.py")
     executor = runtime(
         "serveros_runtime_bounded_executor", "bounded_executor.py")
-    receipts = (tmp_path / "receipts").resolve()
+    root = Path(tmp_path).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    receipts = root / "receipts"
     receipts.mkdir(mode=0o700, exist_ok=True)
     receipts.chmod(0o700)
-    runner = (tmp_path / "synthetic_runner.py").resolve()
+    runner = root / "synthetic_runner.py"
     runner.write_text(RUNNER_SOURCE, encoding="utf-8")
-    key = f"x2-child-exit-{exit_code}"
+    key = key or f"x2-child-exit-{exit_code}"
     record = bounded.invoke_once(
         key=key,
         argv=[sys.executable, str(runner), str(exit_code)],
-        cwd=tmp_path.resolve(),
+        cwd=root,
         receipts=receipts,
         input_text="",
         timeout=30,
@@ -275,3 +304,102 @@ def bounded_receipt(tmp_path: Path, *, exit_code: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         record=record, key=key, anchor=anchor, stdout=stdout,
         input_digest=record["input_digest"], receipts=receipts)
+
+
+def t10_inputs(tmp_path: Path, *, exit_code: int = 0, verdict: str = "PASS",
+               receipt_overrides: dict | None = None,
+               binding_overrides: dict | None = None,
+               root_name: str = "t10") -> SimpleNamespace:
+    """The exact public T10 inputs, without finalizing yet.
+
+    The `VerifiedRunReceipt` is built from a REAL in-tree bounded-runner
+    receipt.  The `T10Binding` and the dataclasses are the public in-tree
+    `workengine.authority` definitions.  What is local is only the
+    `RunnerReceiptAuthority` implementation below; the label says so.
+    """
+    authority = in_tree_authority()
+    if authority is None:
+        raise RuntimeError(
+            "the public in-tree workengine.authority is absent; this tree "
+            "cannot run the public T10 conformance path")
+    root = (Path(tmp_path) / root_name).resolve()
+    sc = prepare_run(root)
+    receipt = bounded_receipt(
+        root, exit_code=exit_code, key=f"x2-t10-exit-{exit_code}")
+    verified = authority.VerifiedRunReceipt(
+        item_ref=sc.item.id,
+        run_ref=sc.run.id,
+        action_key=receipt.key,
+        input_digest=receipt.input_digest,
+        receipt_sha256=receipt.anchor,
+        process_exit_code=receipt.record["process_exit_code"],
+        verdict=verdict,
+        runner_identity=RUNNER,
+        commit_sha=HEAD,
+        actor_ref=CONTEXT,
+    )
+    if receipt_overrides:
+        verified = dataclasses.replace(verified, **receipt_overrides)
+    binding = authority.T10Binding(
+        item_ref=sc.item.id, run_ref=sc.run.id,
+        commit_sha=HEAD, actor_ref=CONTEXT)
+    if binding_overrides:
+        binding = dataclasses.replace(binding, **binding_overrides)
+    expected = FINAL.ExpectedFinalization(
+        item_ref=verified.item_ref,
+        run_ref=verified.run_ref,
+        commit_sha=verified.commit_sha,
+        actor_ref=verified.actor_ref,
+        action_key=verified.action_key,
+        input_digest=verified.input_digest,
+        receipt_sha256=verified.receipt_sha256,
+        process_exit_code=verified.process_exit_code,
+        runner_identity=verified.runner_identity,
+    )
+    return SimpleNamespace(
+        **vars(sc), authority=authority, receipt=receipt,
+        verified=verified, binding=binding, expected=expected,
+        receipt_ref="local-test-receipt:" + receipt.key)
+
+
+def local_receipt_authority(inputs: SimpleNamespace, *,
+                            label: str = PUBLIC_REIMPLEMENTATION_LOCAL):
+    """A LOCALLY CONTROLLED `RunnerReceiptAuthority`, clearly labelled.
+
+    It answers only for the exact `receipt_ref` this harness issued.  It is not
+    a production trusted parent and cannot become one: the consumer gate still
+    stops at `ELIGIBLE_FOR_QA` with `production_status=BLOCKED_TRUST_SOURCE`.
+    """
+    class LocalReceiptAuthority:
+        EVIDENCE_LABEL = label
+
+        def verify(self, receipt_ref, *, item_ref, run_ref, now):
+            if receipt_ref != inputs.receipt_ref:
+                raise inputs.authority.ReceiptError(
+                    "UNKNOWN_RECEIPT",
+                    f"this local producer has no receipt {receipt_ref!r}")
+            if item_ref != inputs.item.id or run_ref != inputs.run.id:
+                raise inputs.authority.ReceiptError(
+                    "RECEIPT_IDENTITY_MISMATCH",
+                    "the local producer answers only for its own exact Item/Run")
+            return inputs.verified
+
+    return LocalReceiptAuthority()
+
+
+def t10_scenario(tmp_path: Path, *, exit_code: int = 0,
+                 verdict: str = "PASS", root_name: str = "t10") -> SimpleNamespace:
+    """The real public T10 finalize path with a local test producer."""
+    inputs = t10_inputs(tmp_path, exit_code=exit_code, verdict=verdict,
+                        root_name=root_name)
+    producer = local_receipt_authority(inputs)
+    result = inputs.store.finalize_run(
+        inputs.item.id, inputs.run.id,
+        verdict=verdict, exit_code=exit_code,
+        command="pytest", cases=["one"], revision=HEAD, dirty=False,
+        t10_required=True, t10_binding=inputs.binding,
+        receipt_ref=inputs.receipt_ref, receipt_authority=producer)
+    readback = FINAL.read_work_engine_finalization(
+        inputs.store.db_path, inputs.item.id, inputs.run.id)
+    return SimpleNamespace(
+        **vars(inputs), producer=producer, result=result, readback=readback)

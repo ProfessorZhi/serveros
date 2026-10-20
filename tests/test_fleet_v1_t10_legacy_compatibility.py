@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """#237 T10 P1 — legacy compatibility must never become V1 acceptance.
 
-PUBLIC-SAFE X2 REWRITE (base rc/i1-review-20261020 @ 3f0240d)
--------------------------------------------------------------
-The RC file extracted the owner-private Work Engine #15 archive with
+PUBLIC-SAFE X2 REWRITE (base rc/i1-v2-review-20261020 @ ec43f714)
+----------------------------------------------------------------
+The RC-v1 file extracted the owner-private Work Engine #15 archive with
 `git archive` and therefore setup-errored on Dell/fjd, where that checkout does
-not exist.  This suite now keeps the same negative assertions using only:
+not exist.  RC-v2 now ships PUBLIC `workengine/authority.py` (#304), so this
+suite keeps the same negative assertions and proves the positive producer side
+using only public in-tree code:
 
-* the CURRENT in-tree, sanitized `workengine.ServerOSStore` for the real legacy
-  finalize (which writes no `authorization` marker);
-* the real in-tree `runtime.bounded_invocation.invoke_once` for a runner
+* the REAL in-tree `workengine.ServerOSStore` for the legacy `UNSIGNED`
+  finalize and for `finalize_run(t10_required=True)`;
+* the REAL in-tree `workengine.authority` dataclasses (`VerifiedRunReceipt`,
+  `T10Binding`);
+* the REAL in-tree `runtime.bounded_invocation.invoke_once` for a runner
   receipt;
-* pinned public fixtures under `tests/v1_portability/fixtures/` for the durable
-  `T10_VERIFIED` shape and the explicit `UNSIGNED` label.
+* a LOCALLY CONTROLLED `RunnerReceiptAuthority`, labelled
+  `PUBLIC_REIMPLEMENTATION_LOCAL`, which is not a production trusted parent.
 
-The private #15 verifier's positive output is NOT claimed.  That proof is
-classified `PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN` and is never obtained by
-reading another user's checkout.  See
-`integrations/fleet-v1-portability/README.md`.
+The old owner-private #15 producer is labelled
+`HISTORICAL_PRIVATE_SOURCE_UNVERIFIED`; it is never read, extracted or copied.
+Pinned public fixtures remain for consumer-gate tests where the producer is not
+the point.  See `integrations/fleet-v1-portability/README.md`.
 
 WHAT THIS FILE STILL PINS
 -------------------------
@@ -130,15 +134,17 @@ def test_legacy_pre15_compat_cannot_affect_v1(tmp_path):
     assert refused.qa_signature is False
 
 
-def test_in_tree_legacy_finalize_is_unmarked_and_not_v1(tmp_path):
-    """The REAL in-tree workengine writes a legacy finalize with no marker."""
+def test_in_tree_legacy_finalize_is_unsigned_and_not_v1(tmp_path):
+    """The REAL in-tree workengine writes a durable legacy `UNSIGNED` record."""
     sc = H.legacy_scenario(tmp_path)
     assert sc.result["state"] == "SUCCEEDED"
-    assert "authorization" not in sc.result
+    assert sc.result["authorization"] == "UNSIGNED"
+    assert sc.result["t10_acceptable"] is False
     payload = json.loads(sc.readback.evidence_bytes)
-    assert "authorization" not in payload
+    assert payload["authorization"] == "UNSIGNED"
+    assert "runner_receipt" not in payload
     assert sc.readback.run_state == "SUCCEEDED"
-    assert sc.readback.authorization is None
+    assert sc.readback.authorization == "UNSIGNED"
     assert sc.readback.t10_acceptable is False
     assert sc.readback.evidence_verified is True
 
@@ -146,8 +152,7 @@ def test_in_tree_legacy_finalize_is_unmarked_and_not_v1(tmp_path):
         sc.expected, sc.readback, grant=H.grant_snapshot(),
         expected_grant_ref=GRANT)
     assert decision.decision == V1.DECISION_DENY, decision.as_dict()
-    assert ("AUTHORIZATION_NOT_T10_VERIFIED" in decision.reasons
-            or "UNSIGNED_FINALIZATION" in decision.reasons)
+    assert "UNSIGNED_FINALIZATION" in decision.reasons
     assert decision.eligible_for_qa_review is False
     assert decision.v1_acceptable is False
 
@@ -355,23 +360,115 @@ def test_v1_child_text_pass_real_exit_one_is_denied(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The part that genuinely needs the private original: classified, not skipped.
+# Public in-tree T10 producer conformance (PUBLIC_REIMPLEMENTATION_LOCAL).
+#
+# The dataclasses and the store path are the real public ones. The only local
+# piece is the `RunnerReceiptAuthority` implementation; its label says so, and
+# the consumer gate still refuses to turn it into production acceptance.
 # ---------------------------------------------------------------------------
 
-def test_real_signed_t10_verifier_is_private_legacy_source_required():
-    authority = H.in_tree_authority()
-    if (authority is None or not hasattr(authority, "T10Binding")
-            or not hasattr(authority, "VerifiedRunReceipt")):
-        pytest.xfail(
-            "PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN: the public in-tree "
-            "workengine has no signed finalize verifier (T10Binding / "
-            "VerifiedRunReceipt). Producing a real T10_VERIFIED finalize needs "
-            "the owner-private Work Engine archive, which this suite must not "
-            "read. The pinned public readback exercises the consumer gate; it "
-            "does not claim the private verifier ran. See "
-            "integrations/fleet-v1-portability/README.md.")
-    pytest.fail(
-        "the public tree now ships workengine.authority; implement the real "
-        "T10 positive path and remove the PRIVATE_LEGACY_SOURCE_REQUIRED "
-        "classification instead of leaving the pinned fixture as the only "
-        "producer.")
+def test_public_t10_producer_writes_an_exact_t10_verified_finalize(tmp_path):
+    sc = H.t10_scenario(tmp_path)
+    assert sc.producer.EVIDENCE_LABEL == H.PUBLIC_REIMPLEMENTATION_LOCAL
+    assert sc.result["state"] == "SUCCEEDED"
+    assert sc.result["authorization"] == "T10_VERIFIED"
+    assert sc.result["t10_acceptable"] is True
+    assert sc.readback.run_state == "SUCCEEDED"
+    assert sc.readback.authorization == "T10_VERIFIED"
+    assert sc.readback.t10_acceptable is True
+    assert sc.readback.evidence_verified is True
+    receipt = sc.readback.runner_receipt
+    assert receipt["action_key"] == sc.receipt.key
+    assert receipt["input_digest"] == sc.receipt.input_digest
+    assert receipt["receipt_sha256"] == sc.receipt.anchor
+    assert receipt["process_exit_code"] == 0
+    assert receipt["runner_identity"] == H.RUNNER
+    assert receipt["commit_sha"] == H.HEAD
+    assert receipt["actor_ref"] == H.CONTEXT
+
+    decision = V1.evaluate_v1_acceptance(
+        sc.expected, sc.readback, grant=H.grant_snapshot(),
+        expected_grant_ref=GRANT)
+    assert decision.decision == V1.DECISION_ELIGIBLE_FOR_QA, decision.as_dict()
+    assert decision.eligible_for_qa_review is True
+    assert decision.v1_acceptable is False
+    assert decision.parent_accepted is False
+    assert decision.qa_signature is False
+    assert decision.requires_independent_qa is True
+    assert decision.t10_status == "T10_VERIFIED"
+    assert decision.production_status == "BLOCKED_TRUST_SOURCE"
+    assert decision.trusted_parent == "TEST_DOUBLE"
+
+    # The same REAL readback still refuses a stale or revoked grant.
+    for changed, code in (
+        ({"fresh": False}, "STALE_GRANT_UNKNOWN"),
+        ({"revoked": True}, "GRANT_REVOKED"),
+    ):
+        bad = V1.evaluate_v1_acceptance(
+            sc.expected, sc.readback, grant=H.grant_snapshot(**changed),
+            expected_grant_ref=GRANT)
+        assert bad.decision != V1.DECISION_ELIGIBLE_FOR_QA, bad.as_dict()
+        assert code in bad.reasons, bad.as_dict()
+        assert bad.v1_acceptable is False
+
+
+def test_public_t10_producer_without_a_parent_is_blocked(tmp_path):
+    inputs = H.t10_inputs(tmp_path)
+    with pytest.raises(inputs.authority.ReceiptError) as exc:
+        inputs.store.finalize_run(
+            inputs.item.id, inputs.run.id,
+            verdict="PASS", exit_code=0, command="pytest", cases=["one"],
+            revision=H.HEAD, dirty=False, t10_required=True,
+            t10_binding=inputs.binding, receipt_ref=inputs.receipt_ref,
+            receipt_authority=None)
+    assert exc.value.reason_code == "BLOCKED_TRUST_SOURCE"
+    run = inputs.store.get_run(inputs.item.id, inputs.run.id)
+    assert run.state.value == "FINALIZING"
+
+
+def test_public_t10_binding_mismatch_is_refused(tmp_path):
+    for index, (changed, code) in enumerate((
+        ({"commit_sha": "f" * 40}, "T10_COMMIT_MISMATCH"),
+        ({"actor_ref": "ctx-other"}, "T10_ACTOR_MISMATCH"),
+        ({"run_ref": "RUN-9999"}, "T10_RUN_MISMATCH"),
+    )):
+        inputs = H.t10_inputs(
+            tmp_path, binding_overrides=changed,
+            root_name=f"t10-binding-{index}")
+        producer = H.local_receipt_authority(inputs)
+        with pytest.raises(inputs.authority.ReceiptError) as exc:
+            inputs.store.finalize_run(
+                inputs.item.id, inputs.run.id,
+                verdict="PASS", exit_code=0, command="pytest", cases=["one"],
+                revision=H.HEAD, dirty=False, t10_required=True,
+                t10_binding=inputs.binding, receipt_ref=inputs.receipt_ref,
+                receipt_authority=producer)
+        assert exc.value.reason_code == code, exc.value
+
+
+def test_public_t10_receipt_exit_disagreement_is_refused(tmp_path):
+    inputs = H.t10_inputs(tmp_path, exit_code=1)
+    assert inputs.verified.process_exit_code == 1
+    producer = H.local_receipt_authority(inputs)
+    with pytest.raises(inputs.authority.ReceiptError) as exc:
+        inputs.store.finalize_run(
+            inputs.item.id, inputs.run.id,
+            verdict="PASS", exit_code=0, command="pytest", cases=["one"],
+            revision=H.HEAD, dirty=False, t10_required=True,
+            t10_binding=inputs.binding, receipt_ref=inputs.receipt_ref,
+            receipt_authority=producer)
+    assert exc.value.reason_code == "EXIT_CODE_DISAGREEMENT"
+
+
+def test_public_t10_trusted_parent_label_is_not_acceptance(tmp_path):
+    """A locally forged `trusted-parent:` string still cannot accept."""
+    sc = H.t10_scenario(tmp_path)
+    forged = H.grant_snapshot(verified_by="trusted-parent:local-forgery")
+    decision = V1.evaluate_v1_acceptance(
+        sc.expected, sc.readback, grant=forged, expected_grant_ref=GRANT)
+    assert decision.decision == V1.DECISION_BLOCKED_WIRING, decision.as_dict()
+    assert "V1_ACCEPTANCE_NOT_WIRED" in decision.reasons
+    assert decision.trusted_parent == "UNVERIFIED"
+    assert decision.v1_acceptable is False
+    assert decision.parent_accepted is False
+    assert decision.qa_signature is False
