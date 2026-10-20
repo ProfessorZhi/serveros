@@ -568,6 +568,66 @@
       "merge_base": "e8eccf2",
       "own_commits": 1,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 315,
+      "lane": "S1",
+      "base": "feat/s1-grant-window-hardening-20261020",
+      "base_sha": "7d35535b53f791513a10b28554b4bd79e943e77a",
+      "head": "7d35535b53f791513a10b28554b4bd79e943e77a",
+      "merge_base": "665067e",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 318,
+      "lane": "S1",
+      "base": "feat/s1-handoff-daemon-bindings-20261020",
+      "base_sha": "7d35535b53f791513a10b28554b4bd79e943e77a",
+      "head": "2640bcee18bc4bcc58b25c548e8cfb19542f1df9",
+      "merge_base": "665067e",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 317,
+      "lane": "N1",
+      "base": "feat/n1-action-state-required-20261020",
+      "base_sha": "cb38ec6fe039c7ba85c8e73f1f7c3e351edaf235",
+      "head": "cb38ec6fe039c7ba85c8e73f1f7c3e351edaf235",
+      "merge_base": "e8eccf2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 319,
+      "lane": "QA",
+      "base": "qa/q1-independent-acceptance-20261020",
+      "base_sha": "c04b0e174d58caf84f01ce07dbb1ba9e560436b5",
+      "head": "c04b0e174d58caf84f01ce07dbb1ba9e560436b5",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 320,
+      "lane": "S1",
+      "base": "feat/s1-handoff-authority-atomicity-20261020",
+      "base_sha": "2640bcee18bc4bcc58b25c548e8cfb19542f1df9",
+      "head": "d559e17442176e126bb4cf3cef6a074f85190245",
+      "merge_base": "665067e",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 316,
+      "lane": "QA",
+      "base": "qa/q1-independent-security-20261020",
+      "base_sha": "7369e2a1f03435be9d3c967b359834f2670e0c0e",
+      "head": "7369e2a1f03435be9d3c967b359834f2670e0c0e",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -819,6 +879,31 @@
     {
       "from": 313,
       "to": 314,
+      "kind": "base"
+    },
+    {
+      "from": 307,
+      "to": 315,
+      "kind": "base"
+    },
+    {
+      "from": 315,
+      "to": 318,
+      "kind": "base"
+    },
+    {
+      "from": 318,
+      "to": 320,
+      "kind": "base"
+    },
+    {
+      "from": 314,
+      "to": 317,
+      "kind": "base"
+    },
+    {
+      "from": 316,
+      "to": 319,
       "kind": "base"
     }
   ],
@@ -1248,5 +1333,52 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-REVIEW-2026-10-20.md"
+  },
+  "review_rc_v2": {
+    "branch": "rc/i1-v2-review-20261020",
+    "tip": "ec43f714c855e07055f32707d4afaebcc5313580",
+    "tested_head": "990fad26afca6b8dd35e09c6ce30e7353fefc09f",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 329,
+    "merged": [
+      275,
+      318,
+      312,
+      277,
+      309,
+      317,
+      311,
+      301,
+      304,
+      305,
+      300,
+      255,
+      319,
+      303
+    ],
+    "excluded": [
+      320
+    ],
+    "feature_tests": {
+      "core": "723 passed, 7 xfailed, 108 subtests",
+      "t10": "55 passed",
+      "finalize": "56 passed"
+    },
+    "f1": {
+      "conformance": "29 PASS / 0 FAIL",
+      "selftest": "28 tests OK",
+      "mode": "FAKE_DEVICE"
+    },
+    "real_temp": "PASS/REFUSAL; serverosd+serverosctl; temp removed",
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V2-REVIEW-2026-10-20.md"
   }
 }
