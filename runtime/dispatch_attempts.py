@@ -459,6 +459,197 @@ def _same_writer(reconciler, current_writer) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# THE OBSERVATION SOURCE CONTRACT, AND THE CORE-OWNED CALLER (#245 / S2)
+#
+# The decision above is pure, and the record lives in the store the caller
+# injects. What was missing was one caller that ASKS the owner and then records
+# the answer. It lives HERE, in the Core, because `serverosd` may not load an
+# integration module from a path: the provider-specific part is the observation
+# source OBJECT, injected after the daemon has resolved the trusted context,
+# principal, phase and grant. This function never dispatches, never retries and
+# never opens a store of its own — it can only move a recorded EFFECT_UNKNOWN
+# to SETTLED / CALL_NOT_SENT, or leave it exactly where it was.
+# ---------------------------------------------------------------------------
+
+#: The source can be asked by the client turn id we still hold after a lost
+#: response. This is the ONLY capability that makes reconciliation meaningful.
+CLIENT_TURN_ID = "CLIENT_TURN_ID"
+#: The source needs a provider-native id that arrived only in the lost response.
+RESPONSE_ID_ONLY = "RESPONSE_ID_ONLY"
+#: There is no read path at all.
+NO_SOURCE = "NO_SOURCE"
+
+BLOCKED_PROVIDER_SOURCE = "BLOCKED_PROVIDER_SOURCE"
+NO_ATTEMPT = "NO_ATTEMPT"
+NOT_UNKNOWN = "NOT_UNKNOWN"
+NO_OBSERVATION = "NO_OBSERVATION"
+SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+
+#: A source answering any of these has established a LOOKUP MISS, not an
+#: absence. Normalised to UNKNOWN before the decision sees it, so the effect
+#: stays fenced even if an adapter is careless about its own words.
+LOOKUP_MISS_WORDS = ("ABSENT", "NOT_FOUND", "MISSING", "TURN_NOT_FOUND",
+                     "LOOKUP_MISS")
+
+
+def source_capability(source) -> str:
+    """What a source can be asked by, declared by the source itself.
+
+    A source that does not declare a capability is `NO_SOURCE`: the caller will
+    not infer one from the presence of an `observe` method, because an object
+    that can be called is not the same thing as one that can answer after the
+    response was lost.
+    """
+    if source is None:
+        return NO_SOURCE
+    capability = str(getattr(source, "capability", "") or "").strip().upper()
+    if capability in (CLIENT_TURN_ID, RESPONSE_ID_ONLY, NO_SOURCE):
+        return capability
+    return NO_SOURCE
+
+
+def normalize_observation(observation) -> dict:
+    """A copy of the source's answer, with lookup misses demoted to UNKNOWN.
+
+    The demotion is a safety property, not a style choice.
+    `SETTLE_NOT_APPLIED` sets the phase to CALL_NOT_SENT, which makes the next
+    retry PROCEED; a provider that merely failed to FIND a turn has not proved
+    that the effect was never applied, and freeing the scope for it would be
+    the blind retry this whole line exists to prevent.
+    """
+    if not isinstance(observation, dict):
+        return {"state": "UNKNOWN"}
+    out = dict(observation)
+    state = str(out.get("state") or "").strip().upper()
+    if state in LOOKUP_MISS_WORDS:
+        out["state"] = "UNKNOWN"
+        out["lookup_miss"] = True
+    return out
+
+
+def _attempt_result(key, status, phase, *, attempt=None, source_called=False,
+                    source_capability_value=None, because=None) -> dict:
+    return {
+        "key": key,
+        "status": status,
+        "verdict": None,
+        "phase": phase,
+        "attempt": attempt,
+        "observation": None,
+        "source_called": bool(source_called),
+        "source_capability": source_capability_value,
+        "because": because,
+    }
+
+
+def reconcile_attempt(attempts, key, *, principal, observation_source,
+                      writer=None, current_writer=None, now=None) -> dict:
+    """Ask the owner about ONE recorded attempt, then record the answer.
+
+    `attempts` is the EXISTING Agent Control store (or any object with the same
+    three methods); no second store or queue is created. `observation_source`
+    is the provider-specific object the daemon injected at construction; this
+    function is the Core-owned caller that asks it only after the daemon has
+    done the trusted-context/principal/phase/grant checks.
+
+    The order is the order the answers matter in: is there an attempt, is it
+    unknown, can the source be asked by the id we still hold, and only then
+    what did it say. A phase other than EFFECT_UNKNOWN is not offered to the
+    source at all, so a late reply cannot overwrite a settled, in-flight or
+    superseded attempt.
+    """
+    key = str(key)
+    recorded = attempts.get_dispatch_attempt(key)
+    if recorded is None:
+        return _attempt_result(
+            key, NO_ATTEMPT, None,
+            because=("no attempt is recorded under this key, so there is no "
+                     "unknown outcome to reconcile"))
+    phase = str(recorded.get("phase") or "").strip().upper()
+    if phase != EFFECT_UNKNOWN:
+        return _attempt_result(
+            key, NOT_UNKNOWN, phase, attempt=recorded,
+            because=(f"this attempt is {phase or 'unphased'}, not "
+                     f"EFFECT_UNKNOWN. A late reply does not overwrite an "
+                     f"attempt that already has its own answer"))
+
+    capability = source_capability(observation_source)
+    if observation_source is None or capability != CLIENT_TURN_ID:
+        return _attempt_result(
+            key, BLOCKED_PROVIDER_SOURCE, phase, attempt=recorded,
+            source_capability_value=capability,
+            because=(f"the observation source is {capability}, so it cannot "
+                     f"be asked by the client turn id this attempt still "
+                     f"holds. An answer keyed by the lost response id would be "
+                     f"a guess, and the effect stays EFFECT_UNKNOWN"))
+
+    try:
+        observation = observation_source.observe(recorded, key=key)
+    except Exception as exc:  # the source failing is not an outcome
+        return _attempt_result(
+            key, SOURCE_UNAVAILABLE, phase, attempt=recorded,
+            source_called=True, source_capability_value=capability,
+            because=(f"the observation source failed "
+                     f"({type(exc).__name__}: {exc}); an unanswered question "
+                     f"is not an answer, so the effect stays EFFECT_UNKNOWN"))
+    if observation is None:
+        return _attempt_result(
+            key, NO_OBSERVATION, phase, attempt=recorded,
+            source_called=True, source_capability_value=capability,
+            because=("the source returned no observation; silence is not "
+                     "evidence that the effect was or was not applied"))
+
+    normalized = normalize_observation(observation)
+    reconciler = {"principal": principal}
+    reconciler.update(dict(writer or {}))
+    verdict = attempts.reconcile_dispatch_attempt(
+        key, observation=normalized, reconciler=reconciler,
+        current_writer=current_writer, now=now)
+    updated = verdict.get("attempt") or attempts.get_dispatch_attempt(key)
+    return {
+        "key": key,
+        "status": verdict["verdict"],
+        "verdict": verdict["verdict"],
+        "phase": (updated or {}).get("phase"),
+        "attempt": updated,
+        "observation": normalized,
+        "source_called": True,
+        "source_capability": capability,
+        "because": verdict.get("because"),
+    }
+
+
+def reconcile_unknown(attempts, *, principal, observation_source, writer=None,
+                      current_writer=None, work_item=None) -> dict:
+    """Reconcile every EFFECT_UNKNOWN attempt, in key order. Never replays.
+
+    This is the reconnect sweep #237 T12 asks for: a control plane that was
+    gone comes back and asks the owner about what it could not see. It never
+    re-dispatches, and an attempt whose owner cannot answer stays
+    EFFECT_UNKNOWN — which keeps the retry door closed.
+    """
+    records = attempts.dispatch_attempts()
+    results = []
+    for key in sorted(records):
+        recorded = records[key]
+        if str(recorded.get("phase") or "").strip().upper() != EFFECT_UNKNOWN:
+            continue
+        if work_item is not None and recorded.get("work_item") != work_item:
+            continue
+        results.append(reconcile_attempt(
+            attempts, key, principal=principal,
+            observation_source=observation_source, writer=writer,
+            current_writer=current_writer))
+    return {
+        "results": results,
+        "settled": sum(1 for r in results
+                       if r["status"] in (SETTLE_APPLIED, SETTLE_NOT_APPLIED)),
+        "unknown": sum(1 for r in results if r["status"] == REFUSE_UNKNOWN),
+        "source_capability": source_capability(observation_source),
+    }
+
+
 def tree_shape() -> dict:
     """What this module declares, for a caller that reads contracts."""
     return {
@@ -469,6 +660,8 @@ def tree_shape() -> dict:
         "reconciliation": "reconcile_observation(recorded, observation, reconciler, current_writer)",
         "observation_verdicts": list(OBSERVATION_VERDICTS),
         "observed_states": list(_APPLIED_WORDS) + list(_NOT_APPLIED_WORDS) + ["UNKNOWN"],
+        "source_capabilities": [CLIENT_TURN_ID, RESPONSE_ID_ONLY, NO_SOURCE],
+        "caller": "reconcile_attempt(attempts, key, observation_source, ...)",
         "owner": "runtime/agent_control_store.py#dispatch_attempts",
         "not_claimed": ("a durable key is an attempt identity, not proof the "
                         "remote effect happened exactly once; an unknown outcome "
