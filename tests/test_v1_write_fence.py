@@ -137,7 +137,11 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
         # both are recorded — which is the real shape, and it is what the
         # transfer requires: the target must be ESTABLISHED (recorded as this
         # Item's writer) before the source loses its authority (#237 B1).
-        self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM)
+        # The source is the scope's writer; the target is established (bound to
+        # the same Item) but receives its claim only from the transfer. A
+        # source with no claim has no write authority to move, which is the
+        # distinction #310 F1/F2 found the old green tests were not making.
+        self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM, writer=writer())
         self.bindings.bind(self.TARGET, bound_item_ref=rt.ITEM)
         self.router = rt.router(self.service, bindings=self.bindings)
 
@@ -169,10 +173,18 @@ class TestHandoffRevokesSourceWriteAuthority(unittest.TestCase):
         outcome = self._handoff()
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertIn("context_handed_off", outcome.completed)
+        self.assertIn("write_authority_transferred", outcome.completed)
         record = self.bindings.get(self.SOURCE)["binding"]
         self.assertEqual(record["state"], "CLOSED",
                          "the source binding was left OPEN, so the stale source "
                          "is still an admitted writer")
+        target = self.bindings.get(self.TARGET)
+        self.assertIsInstance(target["binding"].get("writer"), dict,
+                              "the target did not receive the write-authority claim")
+        self.assertEqual(target["binding"]["writer"], target["current_writer"],
+                         "the target's claim is not the current writer")
+        self.assertNotEqual(target["current_writer"], record.get("writer"),
+                            "the target did not take over the source's claim")
 
     def test_a_stale_send_after_handoff_is_refused(self):
         self._handoff()
@@ -240,7 +252,7 @@ class TestHandoffWindow(unittest.TestCase):
     def setUp(self):
         self.service = rt.RecordingService()
         self.bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
-        self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM)
+        self.bindings.bind(self.SOURCE, bound_item_ref=rt.ITEM, writer=writer())
         self.router = rt.router(self.service, bindings=self.bindings)
 
     def _send(self):
@@ -261,8 +273,12 @@ class TestHandoffWindow(unittest.TestCase):
 
     def test_a_target_with_a_session_but_no_binding_does_not_revoke_the_source(self):
         outcome = self._handoff("session:ghost:9")     # never bound
-        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertFalse(outcome.ok,
+                         "a handoff with no established target writer must not "
+                         "report success")
+        self.assertEqual(outcome.reason, "NOT_CURRENT_WRITER")
         self.assertIn("context_handed_off", outcome.completed)
+        self.assertNotIn("write_authority_transferred", outcome.completed)
         self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "OPEN")
         self.assertTrue(self._send().ok,
                         "the source was revoked on a session alone, leaving no "
@@ -271,7 +287,9 @@ class TestHandoffWindow(unittest.TestCase):
     def test_a_target_bound_to_another_item_does_not_revoke_the_source(self):
         self.bindings.bind("session:elsewhere:7", bound_item_ref="LIT-0205")
         outcome = self._handoff("session:elsewhere:7")
-        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertFalse(outcome.ok,
+                         "a cross-Item target cannot receive write authority")
+        self.assertEqual(outcome.reason, "NOT_CURRENT_WRITER")
         self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "OPEN")
 
     def test_an_established_target_does_revoke_the_source(self):
@@ -279,7 +297,11 @@ class TestHandoffWindow(unittest.TestCase):
         self.bindings.bind("session:dst:2", bound_item_ref=rt.ITEM)
         outcome = self._handoff("session:dst:2")
         self.assertTrue(outcome.ok, outcome.reason)
+        self.assertIn("write_authority_transferred", outcome.completed)
         self.assertEqual(self.bindings.get(self.SOURCE)["binding"]["state"], "CLOSED")
+        target = self.bindings.get("session:dst:2")
+        self.assertEqual(target["binding"]["writer"], target["current_writer"],
+                         "the target's claim is not the current writer")
 
 
 class TestWriterGateAtAdmission(unittest.TestCase):

@@ -492,7 +492,8 @@ durable_effects:
 # ---------------------------------------------------------------------------
 handoff:
   steps: [checkpoint, resolve_target, target_available, target_ready,
-          context_handed_off, source_released]
+          context_handed_off, write_authority_transferred,
+          source_released]
   rule: >-
     The source session is not stopped unless the target answered. §9 states this
     and the implementation states it as control flow rather than as a comment,

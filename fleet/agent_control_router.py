@@ -1367,7 +1367,8 @@ def _resolution_summary(record: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 HANDOFF_STEPS = ("checkpoint", "resolve_target", "target_available",
-                 "target_ready", "context_handed_off", "source_released")
+                 "target_ready", "context_handed_off",
+                 "write_authority_transferred", "source_released")
 
 
 @dataclass(frozen=True)
@@ -1449,6 +1450,23 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
             checkpoint=checkpoint)
 
     target_request = create_request or _resume_request(request)
+    # A resume target that is already bound must be minted the writer claim
+    # BEFORE the route: admission fences a no-claim thread on an owned scope,
+    # so the target would be refused before the handoff ever reached the
+    # transfer. A create target is bound by the route and claimed below.
+    pre_claim = _claim_handoff_target(
+        router, request, target_ref=getattr(target_request, "session_ref", None),
+        target_device=target_request.device_ref)
+    if pre_claim is not None and not pre_claim.get("claimed"):
+        return HandoffOutcome(
+            False, str(pre_claim.get("reason") or "NOT_CURRENT_WRITER"),
+            tuple(completed), "target_ready", True,
+            {"claim": pre_claim,
+             "target_session_ref": getattr(target_request, "session_ref", None),
+             "why": ("the target binding exists but its writer claim could not "
+                     "be minted from the live Work lease; the source keeps its "
+                     "write authority and the handoff is not a transfer")},
+            checkpoint=checkpoint)
     created = router.route(target_request)
     if not created.ok:
         # Nothing was stopped. The source session is exactly as it was, and the
@@ -1482,6 +1500,24 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
             checkpoint=checkpoint)
     completed.append("context_handed_off")
 
+    # A create target was bound by the route just now; claim it before the
+    # source is closed. A resume target was claimed before the route.
+    claim = pre_claim
+    if claim is None or not claim.get("claimed"):
+        claim = _claim_handoff_target(
+            router, request, target_ref=handed.get("session_ref"),
+            target_device=target_request.device_ref)
+        if claim is not None and not claim.get("claimed"):
+            return HandoffOutcome(
+                False, str(claim.get("reason") or "NOT_CURRENT_WRITER"),
+                tuple(completed), "context_handed_off", True,
+                {"target": handed, "claim": claim,
+                 "why": ("the target answered with a session, but its writer "
+                         "claim could not be minted from the live Work lease; "
+                         "the source keeps its write authority and the handoff "
+                         "is not a transfer")},
+                checkpoint=checkpoint)
+
     # #237 B1 / architecture doc §5. The source's future WRITE authority is
     # revoked here — independently of `release_source` below — but ONLY once the
     # TARGET is ESTABLISHED, which `context_handed_off` by itself does NOT prove.
@@ -1500,14 +1536,47 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
     # and accepting turns". The source stays READABLE (`inspect`, `result`,
     # `interrupt`, `stop` are not gated). The binding is write-once on
     # `session_ref`, so the source can never be silently retargeted.
-    _revoke_source_write_authority(
+    revocation = _revoke_source_write_authority(
         router, request, target_ref=handed.get("session_ref"),
         target_device=target_request.device_ref)
+    successor = revocation.get("successor") or {}
+    current = revocation.get("current_writer")
+    transferred = (bool(revocation.get("revoked"))
+                   and isinstance(successor, dict)
+                   and str(successor.get("session_ref"))
+                   == str(handed.get("session_ref"))
+                   and isinstance(current, dict)
+                   and isinstance(successor.get("writer"), dict)
+                   and all(str(successor["writer"].get(field))
+                           == str(current.get(field))
+                           for field in ("owner", "epoch", "token")))
+    if not transferred:
+        # The target answered with a session, but write authority did not move.
+        # This is NOT a successful handoff: the stale source would remain a
+        # writer (or, if the close landed without a target claim, the scope
+        # would be unowned). Both are fail-closed; the detail names which.
+        closed = revocation.get("closed")
+        source_preserved = not (
+            isinstance(closed, dict)
+            and str(closed.get("state") or "").upper() == "CLOSED")
+        return HandoffOutcome(
+            False,
+            str(revocation.get("transport") or "NOT_CURRENT_WRITER"),
+            tuple(completed), "context_handed_off", source_preserved,
+            {"target": handed,
+             "revocation": revocation,
+             "why": ("the target answered with a session, but write authority "
+                     "did not move to it. The handoff is not a transfer: the "
+                     "source keeps its write authority unless the close already "
+                     "happened, and a target without the current writer claim "
+                     "is not an established writer")},
+            checkpoint=checkpoint)
 
+    completed.append("write_authority_transferred")
     release = (request.params or {}).get("release_source")
     if not release:
         return HandoffOutcome(True, None, tuple(completed), None, True,
-                              {"target": handed,
+                              {"target": handed, "revocation": revocation,
                                "why": "the source was not stopped: release_source "
                                       "was not requested, and a handoff that stops "
                                       "the source by default is a handoff that "
@@ -1525,7 +1594,8 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                               checkpoint=checkpoint)
     completed.append("source_released")
     return HandoffOutcome(True, None, tuple(completed), None, False,
-                          {"target": handed, "stop": stopped.result},
+                          {"target": handed, "stop": stopped.result,
+                           "revocation": revocation},
                           checkpoint=checkpoint)
 
 
@@ -1587,6 +1657,65 @@ def _stop_step(answer: AgentControlResponse) -> str:
     return "target_ready"
 
 
+def _claim_handoff_target(router, request: AgentControlRequest, *, target_ref,
+                          target_device):
+    """Mint the target's writer claim before it is admitted (#310 F2).
+
+    A target that is already bound to the source's Item must become the current
+    writer BEFORE its resume/send is admitted: admission fences a no-claim
+    thread on an owned scope. The claim is minted by the trusted daemon from the
+    LIVE Work lease; this function never supplies an owner, token or epoch.
+
+    Returns None when there is nothing to pre-claim (an unbound target is bound
+    by the route itself, or the bindings handle cannot claim), a dict with
+    `claimed: True` on success, or `claimed: False` with a reason. A failed claim
+    is a fail-closed handoff, never a success.
+    """
+    if not target_ref:
+        return None
+    source_transport = router.transport_for(request.device_ref)
+    source_bindings = getattr(source_transport, "bindings", None)
+    target_transport = router.transport_for(target_device) if target_device else None
+    target_bindings = (getattr(target_transport, "bindings", None)
+                       if target_transport is not None else None)
+    if source_bindings is None or target_bindings is None:
+        return None
+    if not hasattr(target_bindings, "claim") or not hasattr(source_bindings, "get"):
+        return None
+    try:
+        target = (target_bindings.get(target_ref) or {}).get("binding")
+        if not target:
+            return None
+        if target.get("writer"):
+            return {"claimed": True, "binding": target, "already": True}
+        source = (source_bindings.get(request.session_ref) or {}).get("binding")
+        if not source or not source.get("bound_item_ref"):
+            return None
+        item = str(source.get("bound_item_ref"))
+        if str(target.get("bound_item_ref") or "") != item:
+            return None
+        # Only claim in the SOURCE store: a cross-store claim would move the
+        # target's writer while the source's store still shows the source as
+        # current, and the close would have to fail closed anyway.
+        same = (source_bindings.get(target_ref) or {}).get("binding")
+        if not same or str(same.get("bound_item_ref") or "") != item:
+            return None
+        binding = target_bindings.claim(target_ref, from_ref=request.session_ref,
+                                        context_ref=request.context_ref)
+        if isinstance(binding, dict) and "binding" in binding:
+            binding = binding["binding"]
+        if not isinstance(binding, dict) or not isinstance(
+                binding.get("writer"), dict):
+            return {"claimed": False, "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the claim route returned no writer claim; the "
+                               "target is not an established writer")}
+        return {"claimed": True, "binding": binding}
+    except Exception as exc:  # noqa: BLE001 - a failed claim is an answer
+        return {"claimed": False,
+                "reason": getattr(exc, "reason", "NOT_CURRENT_WRITER"),
+                "detail": getattr(exc, "detail", str(exc))}
+
+
 def _revoke_source_write_authority(router, request: AgentControlRequest, *,
                                    target_ref, target_device):
     """Close the SOURCE thread's binding, once the TARGET is ESTABLISHED.
@@ -1609,49 +1738,142 @@ def _revoke_source_write_authority(router, request: AgentControlRequest, *,
 
     Reached through each device's OWN transport, so the bindings read and closed
     are the ones each side's admission will later read — never a second store.
-    Returns {"revoked": <record|None>, "because": <str>}. The handoff does not
-    turn a non-revocation into a failure: the target is up and the source is
-    intact, which is exactly the state `HandoffOutcome.source_preserved` already
-    describes.
+
+    A close is a TRANSFER only when the source store holds the target binding
+    (so the close and the target's writer claim can be one mutation) and the
+    daemon returns a CLOSED source whose current writer is the target. Every
+    other outcome is a non-transfer with readable evidence; the handoff turns
+    that into a fail-closed answer, never a success. The source keeps its
+    authority whenever the transfer cannot be completed, because "two writers"
+    is recoverable and "zero writers" is not.
+
+    Returns {"revoked": <record|None>, "current_writer": <record|None>,
+             "successor": <record|None>, "closed": <record|None>,
+             "because": <str>}.
     """
     source_transport = router.transport_for(request.device_ref)
     source_bindings = getattr(source_transport, "bindings", None)
     if source_bindings is None or not hasattr(source_bindings, "close"):
         return {"revoked": None,
-                "because": "the source device has no bindings handle here"}
-    source = None
-    if hasattr(source_bindings, "get"):
-        source = (source_bindings.get(request.session_ref) or {}).get("binding")
-    if not source:
-        return {"revoked": None,
-                "because": "the source thread has no recorded binding to revoke"}
-    if str(source.get("state") or "").upper() == "CLOSED":
-        return {"revoked": source, "because": "the source thread was already closed"}
-    item = str(source.get("bound_item_ref") or "")
-    if not item:
-        return {"revoked": None,
-                "because": "the source thread has no bound Item, so there is no "
-                           "write scope to transfer"}
+                "because": ("the source device has no bindings handle with "
+                            "close(); write authority cannot be revoked, so the "
+                            "handoff is not a transfer")}
+    try:
+        source_read = source_bindings.get(request.session_ref) or {}
+        source = source_read.get("binding")
+        if not source:
+            return {"revoked": None,
+                    "because": "the source thread has no recorded binding to revoke"}
+        if str(source.get("state") or "").upper() == "CLOSED":
+            current = source_read.get("current_writer")
+            if (target_ref and isinstance(current, dict)
+                    and str(current.get("owner")) == str(target_ref)):
+                return {"revoked": source, "current_writer": current,
+                        "because": ("the source thread was already closed and "
+                                    "the target is the current writer")}
+            return {"revoked": None, "closed": source,
+                    "because": ("the source thread is already closed but the "
+                                "target is not the current writer; no write "
+                                "authority was transferred")}
+        item = str(source.get("bound_item_ref") or "")
+        if not item:
+            return {"revoked": None,
+                    "because": ("the source thread has no bound Item, so there "
+                                "is no write scope to transfer")}
+        source_writer = source.get("writer")
+        if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+            return {"revoked": None,
+                    "because": ("the source records no writer claim, so there is "
+                                "no write authority to revoke or transfer")}
 
-    target_transport = router.transport_for(target_device) if target_device else None
-    target_bindings = (getattr(target_transport, "bindings", None)
-                       if target_transport is not None else None)
-    target = None
-    if target_ref and target_bindings is not None and hasattr(target_bindings, "get"):
-        target = (target_bindings.get(target_ref) or {}).get("binding")
-    if not target or str(target.get("bound_item_ref") or "") != item:
-        return {"revoked": None,
-                "because": (f"the target is not established as the writer of "
-                            f"{item!r}: it answered with a session, but no binding "
-                            f"records it as this Item's writer, and revoking the "
-                            f"source now would leave no authorized writer. The "
-                            f"source keeps its write authority")}
+        target_transport = (router.transport_for(target_device)
+                            if target_device else None)
+        target_bindings = (getattr(target_transport, "bindings", None)
+                           if target_transport is not None else None)
+        target = None
+        if (target_ref and target_bindings is not None
+                and hasattr(target_bindings, "get")):
+            target = (target_bindings.get(target_ref) or {}).get("binding")
+        if not target or str(target.get("bound_item_ref") or "") != item:
+            return {"revoked": None,
+                    "because": (f"the target is not established as the writer of "
+                                f"{item!r}: it answered with a session, but no "
+                                f"binding records it as this Item's writer. The "
+                                f"source keeps its write authority")}
+        target_writer = target.get("writer")
+        if target_writer:
+            # The handoff's claim route may already have minted the target.
+            # That is acceptable only when the claim IS the current writer;
+            # an unrelated existing claim is not a successor.
+            target_read = (target_bindings.get(target_ref) or {})
+            current = target_read.get("current_writer")
+            if (not isinstance(target_writer, dict)
+                    or not isinstance(current, dict)
+                    or any(str(target_writer.get(field))
+                           != str(current.get(field))
+                           for field in ("owner", "epoch", "token"))):
+                return {"revoked": None,
+                        "because": ("the target already records a writer that is "
+                                    "not the current writer; a transfer cannot "
+                                    "overwrite it")}
 
-    closed = source_bindings.close(
-        request.session_ref, at=_now(),
-        reason="handoff moved write authority to the established target session")
-    return {"revoked": closed,
-            "because": "the target was established, so the source thread was closed"}
+        # The source store must hold the target binding too. A cross-store
+        # transfer cannot be atomic, and closing the source without minting the
+        # target would leave ZERO authorized writers. In that case the source
+        # keeps its authority and the handoff fails closed.
+        source_target = None
+        if hasattr(source_bindings, "get"):
+            source_target = (source_bindings.get(target_ref) or {}).get("binding")
+        if (not source_target
+                or str(source_target.get("bound_item_ref") or "") != item):
+            return {"revoked": None,
+                    "because": ("the target binding is not in the source store; "
+                                "a cross-store write-authority transfer is not "
+                                "supported, and closing the source without minting "
+                                "the target would leave no authorized writer")}
+
+        closed = source_bindings.close(
+            request.session_ref, at=_now(),
+            reason="handoff moved write authority to the established target session",
+            successor_ref=target_ref, context_ref=request.context_ref)
+        state = str((closed or {}).get("state") or "").upper()
+        current = (closed or {}).get("current_writer")
+        successor = (closed or {}).get("successor")
+        if state != "CLOSED":
+            return {"revoked": None, "closed": closed,
+                    "because": (f"the close returned state {state or 'UNKNOWN'!r}, "
+                                f"not CLOSED; write authority was not revoked")}
+        if not isinstance(successor, dict):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "because": ("the close did not return the successor binding; "
+                                "the target's writer claim cannot be verified")}
+        if str(successor.get("session_ref")) != str(target_ref):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "successor": successor,
+                    "because": (f"the close returned successor "
+                                f"{successor.get('session_ref')!r}, not the target "
+                                f"{target_ref!r}")}
+        writer = successor.get("writer")
+        if (not isinstance(writer, dict) or not isinstance(current, dict)
+                or any(str(writer.get(field)) != str(current.get(field))
+                       for field in ("owner", "epoch", "token"))):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "successor": successor,
+                    "because": ("the successor's writer claim is not the current "
+                                "writer; write authority did not transfer")}
+        return {"revoked": closed, "current_writer": current,
+                "successor": successor,
+                "because": ("the source was closed and the target's claim is the "
+                            "current writer")}
+    except Exception as exc:  # noqa: BLE001 - a failed transfer is an answer
+        # A transport failure, a close refusal, or a malformed answer is a
+        # NON-transfer with readable evidence. Never an exception out of the
+        # handoff and never a success.
+        reason = getattr(exc, "reason", None)
+        detail = getattr(exc, "detail", str(exc))
+        return {"revoked": None, "transport": reason,
+                "because": (f"{reason}: {detail}" if reason else
+                            f"{type(exc).__name__}: {exc}")}
 
 
 def _resume_request(request: AgentControlRequest) -> AgentControlRequest:

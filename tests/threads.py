@@ -125,7 +125,8 @@ class MemoryBindings:
         self.puts.append(dict(record))
         return self._records[ref]
 
-    def close(self, ref, *, at="2026-09-14T00:00:00+00:00", reason=None):
+    def close(self, ref, *, at="2026-09-14T00:00:00+00:00", reason=None,
+              successor_ref=None, context_ref=None):
         """Close the binding for `ref`. A ref with nothing to close is a no-op.
 
         Matches `AgentControlStore.close_binding`'s intent — closing a thread
@@ -135,6 +136,12 @@ class MemoryBindings:
         (they run `assume-bound`, where `get` answers for a ref that was never
         recorded). A ref that is neither recorded nor assumed has no binding and
         this returns None.
+
+        `successor_ref` mirrors the daemon's write-authority transfer: the
+        target must be a recorded binding for the same Item, the source must
+        record a writer, and the target receives the kernel's next writer claim.
+        A cross-Item or writer-less transfer returns None, which the router
+        treats as a fail-closed non-transfer.
         """
         key = str(ref)
         record = self._records.get(key)
@@ -143,12 +150,73 @@ class MemoryBindings:
             if record is None:
                 return None
         record = dict(record)
+        if successor_ref and not (record.get("writer") or {}).get("owner"):
+            return None
         record["state"] = "CLOSED"
         record["closed_at"] = at
         if reason:
             record["closed_reason"] = reason
         self._records[key] = record
-        return record
+        result = dict(record)
+        if successor_ref:
+            target_key = str(successor_ref)
+            target = self._records.get(target_key)
+            if target is None:
+                target = (self.get(target_key) or {}).get("binding")
+            if (target is None
+                    or str(target.get("bound_item_ref") or "")
+                    != str(record.get("bound_item_ref") or "")):
+                return None
+            target = dict(target)
+            if not target.get("writer"):
+                source_writer = record.get("writer") or {}
+                writer = _coordination().mint_writer(
+                    self._records, record.get("bound_item_ref"),
+                    owner=source_writer.get("owner") or target_key)
+                target["schema"] = "serveros/thread-binding.v2"
+                target["writer"] = writer
+                self._records[target_key] = target
+            result["successor"] = target
+            result["current_writer"] = target["writer"]
+        return result
+
+    def claim(self, ref, *, from_ref, context_ref=None):
+        """Mirror the daemon's pre-close writer claim for a bound target.
+
+        The real route mints from the LIVE Work lease. This double has no lease
+        store, so it advances the SOURCE writer's owner and token — the same
+        shape, with the authority supplied by the test. A missing source, a
+        cross-Item target, or a source that is not the current writer answers
+        None, which the router turns into a fail-closed handoff.
+        """
+        key = str(ref)
+        source_key = str(from_ref)
+        source = self._records.get(source_key)
+        target = self._records.get(key)
+        if source is None or target is None:
+            return None
+        if str(source.get("bound_item_ref") or "") != str(
+                target.get("bound_item_ref") or ""):
+            return None
+        if target.get("writer"):
+            return target
+        source_writer = source.get("writer") or {}
+        if not source_writer.get("owner"):
+            return None
+        current = _coordination().current_writer(
+            self._records, source.get("bound_item_ref"))
+        if (not isinstance(current, dict)
+                or any(str(current.get(field)) != str(source_writer.get(field))
+                       for field in ("owner", "epoch", "token"))):
+            return None
+        writer = {"owner": source_writer["owner"],
+                  "epoch": int(source_writer.get("epoch") or 1),
+                  "token": str(int(source_writer.get("token") or 0) + 1)}
+        target = dict(target)
+        target["schema"] = "serveros/thread-binding.v2"
+        target["writer"] = writer
+        self._records[key] = target
+        return target
 
     def bind(self, ref, *, session_role="execution",
              bound_item_ref="LIT-0101", state="OPEN", writer=None) -> dict:
