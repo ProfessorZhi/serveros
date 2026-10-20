@@ -24,7 +24,17 @@
     "status": "INDEPENDENT_QA_PARTIAL",
     "signature": null,
     "exact_sha": null,
-    "note": "PR #256 carries the triage, not a signature. Its pins are superseded; checked S1/S2/T10/I1 tips are patch-identical, #255's current tip differs and is unreviewed. None of the post-snapshot heads #299-#302/#304-#305/#307-#309 has an exact-SHA QA receipt."
+    "note": "PR #256 carries the triage, not a signature. Its pins are superseded; checked S1/S2/T10/I1 tips are patch-identical, #255's current tip differs and is unreviewed. None of the post-snapshot heads #299-#302/#304-#305/#307-#309 has an exact-SHA QA receipt.",
+    "latest_snapshot": {
+      "pr": 310,
+      "status": "QA_PARTIAL",
+      "signature": null,
+      "opened_at": "2026-10-20T05:07:50Z",
+      "exact_heads": {"241": "429a717", "272": "fc93590", "295": "99e08f0", "296": "1284522", "297": "8d42916", "298": "e1f783f"},
+      "runs": {"241": "42+41+147 passed (171 subtests)", "272": "13 passed", "298": "84+22 (0 skipped)+24 passed", "red_baseline": "6/6 absence checks"},
+      "new_findings": ["P0 F1 handoff revocation not wired on production MCP path", "P1 F2 handoff target not minted", "P1 F3 #272 peer uid not authorized", "P2 forged finalize.json T10_VERIFIED; expired writer deadlock; caller-chosen writer; malformed expected_epoch"],
+      "composition": "independently confirms #241/#295 rewrite context/resolver.py::held_leases differently"
+    }
   },
   "hosted_ci": {
     "status": "QUOTA_WAIVED",
@@ -161,16 +171,16 @@
   "proofs": {
     "authenticated_lease_producer": {"status": "ABSENT", "reason": "BLOCKED_PRODUCER_BOUNDARY"},
     "t10_we_finalize_link": {"status": "ABSENT", "reason": "BLOCKED_WIRING / BLOCKED_TRUST_SOURCE"},
-    "independent_exact_sha_negative_qa": {"status": "ABSENT", "reason": "QA_PARTIAL; no exact-SHA signature"}
+    "independent_exact_sha_negative_qa": {"status": "ABSENT", "reason": "QA_PARTIAL; #310 snapshot R has exact-head runs with 0 skips on #298 but no signature and new P0/P1"}
   },
   "t1_t12": {
-    "T1": "NOT_RUN",
+    "T1": "OPEN_P0_HANDOFF_REVOCATION_NOT_WIRED",
     "T2": "PARTIAL",
     "T3": "PARTIAL",
     "T4": "CLOSED_LOCAL",
     "T5": "CLOSED_LOCAL",
     "T6": "CLOSED_LOCAL_AT_RISK_DUPLICATE",
-    "T7": "PARTIAL_BLOCKED",
+    "T7": "OPEN_P1_PEER_UID_NOT_AUTHORIZED",
     "T8": "BLOCKED",
     "T9": "BLOCKED",
     "T10": "BLOCKED",
@@ -203,6 +213,8 @@
     "P0-H old QA pins are superseded; most checked tips are patch-identical, #255 differs; no exact-SHA signature",
     "P0-I #254/#278 pins are stale",
     "P0-J zero hosted check runs; QUOTA_WAIVED",
-    "P0-K #275/#307 sibling conflict on verify_live_grant; review as one corrective"
+    "P0-K #275/#307 sibling conflict on verify_live_grant; review as one corrective",
+    "P0-L QA R F1: handoff revocation not wired on production MCP path (#241)",
+    "P0-M QA R F3: #272 verify_live_grant does not authorize the peer uid"
   ]
 }
