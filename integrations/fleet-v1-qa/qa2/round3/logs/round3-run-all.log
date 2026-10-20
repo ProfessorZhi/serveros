@@ -1,0 +1,42 @@
+reuse /tmp/qa2-round3-repro/checkouts/base-a6663075a886093b5ea2e28cd6baf8ca63365f2f
+reuse /tmp/qa2-round3-repro/checkouts/fix-dbb1f9f1f7ca5fb38a1591b4171504b21478e71a
+== #369 base a6663075a886093b5ea2e28cd6baf8ca63365f2f
+  base-three rc=0
+  base-broad rc=0
+  base-red-policy rc=1
+  base-red-fence rc=1
+  base-red-reduced rc=1
+reuse /tmp/qa2-round3-repro/checkouts/base-a6663075a886093b5ea2e28cd6baf8ca63365f2f
+reuse /tmp/qa2-round3-repro/checkouts/fix-dbb1f9f1f7ca5fb38a1591b4171504b21478e71a
+== #371 fix dbb1f9f1f7ca5fb38a1591b4171504b21478e71a
+  fix-three rc=0
+  fix-adapter rc=0
+  fix-broad rc=0
+  fix-green-policy rc=0
+  fix-green-fence rc=0
+  fix-green-reduced rc=0
+  fix-green-adapter rc=0
+  probe-masking-skip rc=0
+  probe-masking-runtime-error rc=1
+  probe-masking-import-error rc=1
+
+== evidence (/tmp/qa2-round3-repro/logs/20261020T164409Z)
+base-broad                       rc=0
+base-red-fence                   rc=1
+base-red-policy                  rc=1
+base-red-reduced                 rc=1
+base-three                       rc=0
+fix-adapter                      rc=0
+fix-broad                        rc=0
+fix-green-adapter                rc=0
+fix-green-fence                  rc=0
+fix-green-policy                 rc=0
+fix-green-reduced                rc=0
+fix-three                        rc=0
+probe-masking-import-error       rc=1
+probe-masking-runtime-error      rc=1
+probe-masking-skip               rc=0
+
+Expected: base/fix three+adapter+broad 0; base-red-* 1;
+fix-green-* 0; masking skip 0; masking RuntimeError/ImportError 1.
+REAL_WINDOWS_NOT_RUN: no result here is a real Windows pass.

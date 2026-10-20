@@ -1,0 +1,12 @@
+=== qa2_skip_module.py ===
+SKIPPED /tmp/qa2-winprobe-ZWIvph/qa2_skip_module.py: QA2 expected module skip
+summary skipped=1 errors=0 collected=0
+rc=0
+=== qa2_runtime_error_module.py ===
+ERROR   /tmp/qa2-winprobe-ZWIvph/qa2_runtime_error_module.py: RuntimeError: QA2 non-skip failure
+summary skipped=0 errors=1 collected=0
+rc=1
+=== qa2_import_error_module.py ===
+ERROR   /tmp/qa2-winprobe-ZWIvph/qa2_import_error_module.py: ModuleNotFoundError: No module named 'qa2_definitely_missing_module'
+summary skipped=0 errors=1 collected=0
+rc=1

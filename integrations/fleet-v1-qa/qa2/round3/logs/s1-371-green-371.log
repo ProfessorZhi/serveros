@@ -1,0 +1,16 @@
+--- tests/test_owner_policy_binding.py
+SKIPPED tests/test_owner_policy_binding.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+summary skipped=1 errors=0 collected=0
+rc=0
+--- tests/test_owner_commit_fence.py
+SKIPPED tests/test_owner_commit_fence.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+summary skipped=1 errors=0 collected=0
+rc=0
+--- tests/test_owner_policy_reduced_gate.py
+SKIPPED tests/test_owner_policy_reduced_gate.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use uid/peer semantics; this module cannot be collected on Windows
+summary skipped=1 errors=0 collected=0
+rc=0
+--- tests/test_owner_commit_fence_adapter.py
+COLLECTED tests/test_owner_commit_fence_adapter.py
+summary skipped=0 errors=0 collected=1
+rc=0

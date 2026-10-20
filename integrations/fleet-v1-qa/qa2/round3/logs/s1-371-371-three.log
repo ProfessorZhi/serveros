@@ -1,0 +1,4 @@
+.................s..........                                             [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_owner_policy_binding.py:473: BLOCKED_MULTIPRINCIPAL_NOT_RUN: this test process is uid 1002 and has no passwordless sudo/setuid, so a second real uid cannot be attested. Synthetic peer metadata covers only LOCAL negatives and is not REAL_OS evidence.
+27 passed, 1 skipped in 6.89s
