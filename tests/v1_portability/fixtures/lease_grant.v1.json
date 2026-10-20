@@ -1,0 +1,16 @@
+{
+  "schema": "serveros/workengine-lease-grant.v1",
+  "fields": {
+    "principal": "string",
+    "grant_ref": "string",
+    "project": "string",
+    "items": "array[string]",
+    "actions": "array[string]",
+    "valid_from": "number",
+    "expires_at": "number",
+    "revoked": "boolean",
+    "epoch": "integer",
+    "os_principal": "string"
+  },
+  "note": "Public contract shape consumed by Work Engine #14. No source code from any owner-private checkout is copied here."
+}

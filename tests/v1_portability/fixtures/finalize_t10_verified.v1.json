@@ -1,0 +1,20 @@
+{
+  "authorization": "T10_VERIFIED",
+  "cases": [
+    "one"
+  ],
+  "command": "pytest",
+  "dirty": false,
+  "exit_code": 0,
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "runner_receipt": {
+    "action_key": "x2-canonical-action",
+    "actor_ref": "ctx-delegated-1",
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "process_exit_code": 0,
+    "receipt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runner_identity": "claude-code"
+  },
+  "verdict": "PASS"
+}
