@@ -1,0 +1,19 @@
+== gh pr 378 ==
+{"baseRefName":"feat/s1-grant-epoch-writer-fix-20261021","baseRefOid":"8b42de479e5c0167f51bdb4cb8d7fba43be7479f","headRefName":"feat/s1-context-rebind-fence-20261021","headRefOid":"069f10cce084b95ef7e60ecd2c32784856002d54","isDraft":true,"mergeable":"MERGEABLE","number":378,"state":"OPEN","title":"fix(prototype): bind committed context lineage in check_writer_fenced (P1)","updatedAt":"2026-10-20T18:11:02Z","url":"https://github.com/ProfessorZhi/serveros/pull/378"}
+== remote refs ==
+069f10cce084b95ef7e60ecd2c32784856002d54	refs/heads/feat/s1-context-rebind-fence-20261021
+069f10cce084b95ef7e60ecd2c32784856002d54	refs/pull/378/head
+== local snapshot head ==
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+== snapshot is git? ==
+.
+..
+abilities
+ARCHITECTURE.md
+bin
+CARDS-STYLE.md
+context
+deploy
+docs
+documents

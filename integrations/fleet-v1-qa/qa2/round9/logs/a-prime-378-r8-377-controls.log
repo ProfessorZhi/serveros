@@ -1,0 +1,4 @@
+{"actual": {"detail": "the fenced commit has no grant", "fenced": "BLOCKED_OWNER_POLICY"}, "expected": "BLOCKED_OWNER_POLICY", "name": "grant-removed", "note": "", "ok": true, "severity": null}
+{"actual": {"detail": "the grant's policy_ref does not match the commit", "fenced": "BLOCKED_OWNER_POLICY"}, "expected": "BLOCKED_OWNER_POLICY", "name": "policy-ref-mismatch", "note": "", "ok": true, "severity": null}
+{"actual": {"detail": "the grant epoch moved from 1 to 2; the token is historical", "fenced": "BLOCKED_STALE_EPOCH"}, "expected": "BLOCKED_STALE_EPOCH", "name": "grant-epoch-bump", "note": "", "ok": true, "severity": null}
+{"failed": 0, "failed_names": [], "mode": "controls", "severities": [], "total": 3}

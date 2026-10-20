@@ -1,0 +1,11 @@
+== files ==
+integrations/fleet-v1-atomic-prototype/README.md
+integrations/fleet-v1-atomic-prototype/atomic_fence.py
+tests/test_s1_atomic_prototype.py
+== stat ==
+ integrations/fleet-v1-atomic-prototype/README.md   |   44 +++++++--
+ .../fleet-v1-atomic-prototype/atomic_fence.py      |   98 ++++++++++++++------
+ tests/test_s1_atomic_prototype.py                  |   93 +++++++++++++++++++
+ 3 files changed, 196 insertions(+), 39 deletions(-)
+== patch size ==
+409
