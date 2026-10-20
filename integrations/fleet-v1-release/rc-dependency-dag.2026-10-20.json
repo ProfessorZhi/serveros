@@ -858,6 +858,66 @@
       "merge_base": "771c81c",
       "own_commits": 2,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 358,
+      "lane": "S1",
+      "base": "rc/i1-v6-review-20261020",
+      "base_sha": "8620a90",
+      "head": "b183aab0b8913ed36e5de539c50223d3eaf508f1",
+      "merge_base": "8620a90",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 356,
+      "lane": "R1",
+      "base": "feat/fleet-v1-runtime-client-turn-id-20261020",
+      "base_sha": "34b215c",
+      "head": "b4020b73e6b7ec2b1f6301471a9872f8864c1643",
+      "merge_base": "34b215c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 361,
+      "lane": "R1",
+      "base": "feat/fleet-v1-runtime-reconcile-source-20261020",
+      "base_sha": "b4020b7",
+      "head": "6a27204300753f129719103d0aee811ac675622a",
+      "merge_base": "b4020b7",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 360,
+      "lane": "QA2",
+      "base": "rc/i1-v7-review-20261020",
+      "base_sha": "85c79b2",
+      "head": "2888d8bda6828bd2c87c68a770440933fdb4ae23",
+      "merge_base": "85c79b2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 362,
+      "lane": "QA",
+      "base": "qa/q1-rcv7-gate-af-20261020",
+      "base_sha": "467f290",
+      "head": "d0247f749f",
+      "merge_base": "467f290",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 359,
+      "lane": "QA",
+      "base": "qa/q1-pr353-ae-20261020",
+      "base_sha": "85c79b2",
+      "head": "467f290ec6e9db4ddaf826ef00e8ddaea3751a88",
+      "merge_base": "85c79b2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -1176,6 +1236,23 @@
       "from": 349,
       "to": 353,
       "kind": "base"
+    },
+    {
+      "from": 358,
+      "to": 357,
+      "kind": "sibling_on_rc_v6",
+      "reason": "#358 base 8620a90; RC-v7 adds only the #353 test patch"
+    },
+    {
+      "from": 356,
+      "to": 361,
+      "kind": "base"
+    },
+    {
+      "from": 360,
+      "to": 362,
+      "kind": "qa_harness",
+      "reason": "QA AG re-runs QA2 at the original heads"
     }
   ],
   "conflicts": [
@@ -1920,5 +1997,70 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-V7-REVIEW-2026-10-20.md"
+  },
+  "rc_v8_preflight": {
+    "status": "RC-v8_READINESS_PENDING/NOT_RELEASE",
+    "base_sha": "85c79b20c62da8db2f4d5c98284a34728b6e8f81",
+    "s1": {
+      "pr": 358,
+      "head": "b183aab",
+      "base": "8620a90",
+      "qa2": "RED 2 P1 + 3 P2",
+      "fix_pr": null
+    },
+    "r1": {
+      "pr": 356,
+      "head": "b4020b7",
+      "base": "34b215c",
+      "qa2": "RED 2 P1 + 4 P2",
+      "fix_pr": 361,
+      "fix_head": "6a27204",
+      "fix_own_tests": "61 passed LOCAL"
+    },
+    "ancestry": {
+      "358_vs_rc_v7_merge_base": "8620a90",
+      "356_vs_rc_v7_merge_base": "34b215c",
+      "361_vs_rc_v7_merge_base": "34b215c",
+      "merge_tree": "all clean"
+    },
+    "composition_order": [
+      "freeze RC-v7",
+      "merge #361 (contains #356)",
+      "merge S1 fix tip (not b183aab if changed)",
+      "QA2 findings re-run",
+      "RC-v7 regression",
+      "independent QA signature"
+    ],
+    "return_gates": [
+      "S1 fix absent",
+      "QA2 RED remains",
+      "synthetic production fields",
+      "uid/context fallback",
+      "second authority/ledger/producer",
+      "RC-v7 regression"
+    ],
+    "authority": {
+      "grant": "runtime/agent_control_store.py",
+      "owner_policy": "external resolver; contract only",
+      "dispatch": "existing dispatch_attempts",
+      "t10": "Work Engine finalize/receipt",
+      "repo": "ProfessorZhi/serveros"
+    },
+    "negative_tests": {
+      "reconcile_no_source": "4 passed/3 subtests LOCAL",
+      "grant_negatives": "4 passed LOCAL",
+      "t10_representative": "63 passed/75 deselected LOCAL",
+      "real_temp_owner_route": "UNKNOWN_METHOD",
+      "real_temp_grant": "DELEGATION_EVIDENCE_INVALID, no store",
+      "real_temp_reconcile": "UNTRUSTED_ACTOR, source_called=false"
+    },
+    "claims": {
+      "code_composed_rc": false,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null
   }
 }
