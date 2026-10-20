@@ -203,3 +203,58 @@ recorded PID was signalled. No send, settle or provider call occurred.
 
 No signed V1, no `RELEASE`, no main merge, no production deployment. QA2 #360,
 QA AG #362 and QA AF #359 are `QA_PARTIAL`; none is a signature.
+
+## 7. Post-QA AG update — S1 consumer seam is RED (RC-v8 stays PENDING)
+
+QA snapshot AG #362 (head `dac5f8ae`) independently re-ran the QA2 harness at
+the exact fix heads:
+
+| Lane | Fix head | QA AG result |
+| --- | --- | --- |
+| S1 | #363 `8840f416` | author 94 passed / 1 skipped; controls 36/36; signed 10/10; QA2 findings **6/6 GREEN** |
+| R1 | #361 `6a272043` | author 61 passed; independent v2 probe **25/25** |
+
+**But the cross-module consumer seam is still RED.** An independent I1 run of
+QA AG's `qa_probe_r18_seam_363.py` at the exact S1 head `8840f41` (real daemon
+AF_UNIX + `ServerOSAuthority`/`UnixSocketVerifyClient` + `OwnerVerifiedLease`
++ temp WorkEngine store) produced:
+
+```text
+PASS positive/verified
+PASS positive/lease-written
+PASS race/daemon-said-point-in-time
+FAIL race/no-new-lease leases=1 result={'resource': 'work-write:SRV-0001',
+     'owner': 'human:A', 'token': 1, ...} atomicity=BLOCKED_OWNER_COMMIT_SEAM
+PASS noresolver/refused (BLOCKED_OWNER_POLICY)
+PASS noresolver/no-lease
+PASS noauthority/refused-blocked-trust-source (BLOCKED_TRUST_SOURCE)
+PASS noauthority/no-lease
+TOTAL 8 FAIL 1
+RED_CONFIRMED
+```
+
+The daemon returns `verified: true` with `atomicity:
+"BLOCKED_OWNER_COMMIT_SEAM"`; `workengine/serveros_authority.py` checks only
+`verified`, constructs the `LeaseGrant`, and `OwnerVerifiedLease.acquire`
+writes **one lease** after the last owner-policy read. QA AG reproduced the
+same result. This is a future-activation / V1 release blocker; production
+still binds no resolver and remains `BLOCKED_OWNER_POLICY`, so it is not a
+current production exploit.
+
+**Consequences:**
+
+- RC-v8 remains `RC-v8_READINESS_PENDING`; **no `rc/i1-v8*` branch/PR** is
+  created.
+- #363 must not be treated as a positive authority. A new S1 downstream commit
+  must make the daemon return `verified: false` with
+  `BLOCKED_OWNER_COMMIT_SEAM` (or enforce a real authoritative commit fence at
+  the mutating lease/Work boundary that the adapter validates), and the
+  controlled revoke-before-`OwnerVerifiedLease.acquire` case must go RED→GREEN
+  in an independent QA run.
+- R1 #361 is a candidate for the future RC-v8 after its own QA re-run; it
+  remains synthetic-only and production `BLOCKED_PROVIDER_SOURCE`.
+- The fixture owner policy / synthetic HMAC is **not** production authority.
+  No positive production trust may be manufactured.
+
+No RC-v8 ref exists; QA AG is `QA_PARTIAL`, no signature. Main, the canonical
+checkout, production daemons/services and credentials were untouched.
