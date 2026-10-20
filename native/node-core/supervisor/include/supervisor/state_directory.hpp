@@ -12,9 +12,13 @@
 // The walk opens each component relative to the previous fd. O_NOFOLLOW refuses
 // a symlink at every level; O_DIRECTORY refuses a non-directory; fstat checks
 // the opened inode. The immediate parent must be owned by this effective uid
-// and not writable by group or other. A world-writable ancestor is allowed only
-// when it carries the sticky bit (e.g. `/tmp`), because then only the owner can
-// rename the entry.
+// and not writable by group or other. A group- or world-writable ancestor is
+// allowed only when it carries the sticky bit AND both the directory and the
+// resolved entry are owned by this euid or root; otherwise a member of the
+// group (or any account) could rename the entry. `/tmp` (1777, root-owned) with
+// an entry owned by us is the safe case. The `fstatat` result is compared with
+// the `openat` fd's `st_dev`/`st_ino`; a mismatch is refused rather than
+// applying the policy to one inode and opening another.
 //
 // The write uses openat(dirfd, ...) for the temp file, renameat(dirfd, ...) for
 // the replace, and fsync(dirfd). No path string is the write authority. A
@@ -22,6 +26,7 @@
 // reports failure if the path moved; the data still went to the trusted inode.
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace nodecore::supervisor {
@@ -46,10 +51,19 @@ inline constexpr const char* kStateParentGroupWritable = "STATE_PARENT_GROUP_WRI
 inline constexpr const char* kStateAncestorSymlink = "STATE_ANCESTOR_SYMLINK";
 inline constexpr const char* kStateAncestorNotADirectory = "STATE_ANCESTOR_NOT_A_DIRECTORY";
 inline constexpr const char* kStateAncestorMissing = "STATE_ANCESTOR_MISSING";
+//: A group-writable ancestor WITHOUT the sticky bit: any member of the group
+//: can rename the entry that leads to the state root.
+inline constexpr const char* kStateAncestorGroupWritable = "STATE_ANCESTOR_GROUP_WRITABLE";
 //: A world-writable ancestor WITHOUT the sticky bit: any account can rename the
-//: entry that leads to the state root. `/tmp` (1777) is allowed; a bare 0777
-//: directory is not.
+//: entry that leads to the state root. `/tmp` (1777) is allowed only when both
+//: the directory and the resolved entry are owned by this euid or root.
 inline constexpr const char* kStateAncestorWorldWritable = "STATE_ANCESTOR_WORLD_WRITABLE";
+//: The entry opened by `openat` is not the inode `fstatat` inspected: the path
+//: was switched between look-up and open. Fail closed; never apply the policy to
+//: one inode and open another.
+inline constexpr const char* kStateAncestorIdentityChanged = "STATE_ANCESTOR_IDENTITY_CHANGED";
+inline constexpr const char* kStateParentIdentityChanged = "STATE_PARENT_IDENTITY_CHANGED";
+inline constexpr const char* kStatePathIdentityChanged = "STATE_PATH_IDENTITY_CHANGED";
 
 struct StatePathVerdict {
     bool ok = false;
@@ -72,9 +86,19 @@ public:
     StateDirectory(const StateDirectory&) = delete;
     StateDirectory& operator=(const StateDirectory&) = delete;
 
+    //: Observation seams for deterministic race tests, like the injected clocks
+    //: elsewhere in this tree. Production passes neither. `after_lookup` is
+    //: called after a component's `fstatat` and before its `openat`;
+    //: `after_file_lookup` after the state file's `fstatat` and before its
+    //: writability probe. A test uses them to replace the entry and assert the
+    //: dev+ino identity check fails closed.
+    using OpenObservationHook = std::function<void(const std::string& component)>;
+
     //: Open and verify the immediate parent of `path`, or refuse with a named
     //: verdict. On success the fd is kept for `write_atomically`.
-    bool open(const std::string& path, StatePathVerdict& verdict);
+    bool open(const std::string& path, StatePathVerdict& verdict,
+              const OpenObservationHook& after_lookup = {},
+              const std::function<void()>& after_file_lookup = {});
 
     bool valid() const { return dirfd_ >= 0; }
     int fd() const { return dirfd_; }

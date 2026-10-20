@@ -96,8 +96,25 @@ bool write_all(int fd, const std::string& text, std::string& error) {
     return true;
 }
 
-bool is_world_writable_without_sticky(const struct stat& info) {
-    return (info.st_mode & S_IWOTH) != 0 && (info.st_mode & S_ISVTX) == 0;
+//: May a path component be trusted inside `directory`?
+//:
+//: A component is safe when the containing directory is not writable by group
+//: or other. If it IS writable, the sticky bit must be set AND both the
+//: directory and the resolved entry must be owned by this euid or root: sticky
+//: then lets only the entry owner (or root) rename it, so another group member
+//: cannot switch the path under us. `/tmp` (1777, root-owned) with an entry
+//: owned by us is the safe case; a 0770 directory without sticky is not, even
+//: when the entry is ours.
+bool trusted_ancestor(const struct stat& directory, const struct stat& entry, uid_t euid) {
+    if ((directory.st_mode & (S_IWGRP | S_IWOTH)) == 0) {
+        return true;
+    }
+    if ((directory.st_mode & S_ISVTX) == 0) {
+        return false;
+    }
+    const bool directory_owner_trusted = directory.st_uid == euid || directory.st_uid == 0;
+    const bool entry_owner_trusted = entry.st_uid == euid || entry.st_uid == 0;
+    return directory_owner_trusted && entry_owner_trusted;
 }
 
 StatePathVerdict path_refuse(const char* code, std::string reason) {
@@ -145,7 +162,9 @@ void StateDirectory::close() {
     }
 }
 
-bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
+bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
+                          const OpenObservationHook& after_lookup,
+                          const std::function<void()>& after_file_lookup) {
     close();
     basename_.clear();
     parent_path_.clear();
@@ -192,6 +211,12 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
                               "the root directory could not be opened: " + errno_text(errno));
         return false;
     }
+    struct stat dir_info {};
+    if (::fstat(current.get(), &dir_info) != 0 || !S_ISDIR(dir_info.st_mode)) {
+        verdict = path_refuse(kStatePathUnusable,
+                              "the root directory could not be inspected: " + errno_text(errno));
+        return false;
+    }
 
     for (std::size_t index = 0; index < parent_parts.size(); ++index) {
         const std::string& component = parent_parts[index];
@@ -229,12 +254,8 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
                     "\" is not a directory");
             return false;
         }
-        if (!last && is_world_writable_without_sticky(entry)) {
-            verdict = path_refuse(kStateAncestorWorldWritable,
-                                  "the state ancestor \"" + component +
-                                      "\" is world-writable without the sticky bit, so another "
-                                      "account can rename the entry");
-            return false;
+        if (after_lookup) {
+            after_lookup(component);
         }
 
         Fd next(::openat(current.get(), component.c_str(),
@@ -268,11 +289,24 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
                                       "\" is not a directory after opening");
             return false;
         }
-        if (!last && is_world_writable_without_sticky(opened)) {
-            verdict = path_refuse(kStateAncestorWorldWritable,
-                                  "the state ancestor \"" + component +
-                                      "\" is world-writable without the sticky bit, so another "
-                                      "account can rename the entry");
+        // The fd we opened must be the inode we inspected. Without this a
+        // real-directory swap between fstatat and openat would apply the policy
+        // to one inode and traverse another.
+        if (entry.st_dev != opened.st_dev || entry.st_ino != opened.st_ino) {
+            verdict = path_refuse(
+                last ? kStateParentIdentityChanged : kStateAncestorIdentityChanged,
+                "the state component \"" + component +
+                    "\" changed between look-up and open; refusing to apply a policy to one "
+                    "inode and open another");
+            return false;
+        }
+        if (!trusted_ancestor(dir_info, opened, ::geteuid())) {
+            const bool world = (dir_info.st_mode & S_IWOTH) != 0;
+            verdict = path_refuse(
+                world ? kStateAncestorWorldWritable : kStateAncestorGroupWritable,
+                "the ancestor directory containing \"" + component +
+                    "\" is writable by group or other without a safe sticky-and-owner "
+                    "combination");
             return false;
         }
         if (last) {
@@ -291,6 +325,7 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
             }
         }
         current = std::move(next);
+        dir_info = opened;
     }
 
     // A state file directly under "/" has no parent component; the root fd is
@@ -349,11 +384,42 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict) {
                                   "the state file \"" + path + "\" is writable by group or other");
             return false;
         }
+        if (after_file_lookup) {
+            after_file_lookup();
+        }
         Fd probe(::openat(current.get(), basename.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC));
         if (probe.get() < 0) {
-            verdict = path_refuse(kStatePathUnwritable, "the state file \"" + path +
-                                                           "\" is not writable: " +
-                                                           errno_text(errno));
+            const int error = errno;
+            if (error == ELOOP) {
+                verdict = path_refuse(kStatePathSymlink,
+                                      "the state file \"" + path +
+                                          "\" became a symlink during the check");
+            } else if (error == ENOENT) {
+                verdict = path_refuse(kStatePathUnusable,
+                                      "the state file \"" + path +
+                                          "\" disappeared during the check");
+            } else {
+                verdict = path_refuse(kStatePathUnwritable,
+                                      "the state file \"" + path +
+                                          "\" is not writable: " + errno_text(error));
+            }
+            return false;
+        }
+        // The fd we opened must be the inode we inspected. The checks above
+        // were made on `file`; a real-file swap between fstatat and openat is
+        // refused rather than applying the policy to one inode and probing
+        // another.
+        struct stat opened_file {};
+        if (::fstat(probe.get(), &opened_file) != 0) {
+            verdict = path_refuse(kStatePathUnusable,
+                                  "the state file \"" + path +
+                                      "\" could not be inspected after opening");
+            return false;
+        }
+        if (opened_file.st_dev != file.st_dev || opened_file.st_ino != file.st_ino) {
+            verdict = path_refuse(kStatePathIdentityChanged,
+                                  "the state file \"" + path +
+                                      "\" changed between look-up and open");
             return false;
         }
     } else if (errno == ENOENT) {

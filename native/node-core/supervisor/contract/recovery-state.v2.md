@@ -182,10 +182,19 @@ nothing; an existing state file is left exactly as it was.
 `openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`,
 `fstat`s every opened inode, and keeps the immediate parent as a directory fd.
 It refuses `.`/`..`, a symlink at any level, a non-directory, a missing
-component, a world-writable ancestor without the sticky bit, and an immediate
-parent that is not owned by this effective uid or is group/other-writable.
-`/tmp` (1777) is allowed as an ancestor because its sticky bit lets only the
-owner rename an entry.
+component, a **group- or world-writable ancestor without the sticky bit**, and
+an immediate parent that is not owned by this effective uid or is
+group/other-writable. A writable ancestor with the sticky bit is allowed only
+when **both** the directory and the resolved entry are owned by this euid or
+root: sticky then lets only the entry owner (or root) rename it, so another
+group member cannot switch the path. `/tmp` (1777, root-owned) with an entry
+owned by us is the safe case; a 0770 directory without sticky is refused even
+when the entry is ours.
+
+Each `fstatat` result is compared with the `openat` fd's `st_dev` and `st_ino`;
+a mismatch is `STATE_*_IDENTITY_CHANGED`, never a policy applied to one inode
+and a traversal of another. The state file's `fstatat` and writability probe are
+checked the same way (`STATE_PATH_IDENTITY_CHANGED`).
 
 The write is then at-relative: `openat(dirfd, temp, O_CREAT | O_EXCL |
 O_NOFOLLOW | O_CLOEXEC, 0600)`, `write`, `fsync(temp)`, `renameat(dirfd, temp,
@@ -200,10 +209,23 @@ followed.
 path-based and has a check-to-`lstat` window; it is detection, not the write
 authority. A same-user attacker can rename the state directory (they own it):
 the write still lands in the original inode and the run exits 2. Cross-user
-protection relies on the state root being a 0700 directory owned by the user,
-with ancestors not writable by untrusted accounts; group-writable ancestors
-without the sticky bit are allowed for host compatibility and are a residual
-risk. **Windows differs:** there is no `openat`/`renameat`/`O_NOFOLLOW`; the
+protection relies on the state root being a **0700 directory owned by the
+user**, with ancestors that are not writable by untrusted accounts. A
+group-writable ancestor without the sticky bit is now **refused** rather than
+accepted for host compatibility; a writable ancestor with sticky is accepted
+only under the directory/entry owner rule above.
+
+**Placement consequence on this host (measured):** the intended state root
+`$HOME/.serveros` is `0700` and its ancestors (`/`, `/data`, `/data/home`,
+`/data/home/vince`) are `0755`, so the realistic per-user path is allowed.
+`/data/home/vince/artifacts` and `.../workspace` are `0775` **non-sticky**, so a
+state file placed directly under them is refused with
+`STATE_ANCESTOR_GROUP_WRITABLE`. That is an intentional tightening, not an
+owner-policy blocker for the intended root: a deployer who wants the state under
+a 0775 tree must create a 0700 root below it or have the ancestor tightened.
+`/tmp` (`1777` sticky) remains usable for a 0700 test root.
+
+**Windows differs:** there is no `openat`/`renameat`/`O_NOFOLLOW`; the
 equivalent is a handle-relative `CreateFile`/`SetFileInformationByHandle`
 design. That is **not implemented** here — N2 #309 remains
 BUILD_UNVERIFIED/NOT_RUN, and this change makes no REAL_DEVICE or SCM claim.
