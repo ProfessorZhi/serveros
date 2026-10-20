@@ -11,7 +11,15 @@
 namespace nodecore::supervisor {
 namespace {
 
-constexpr const char* kRecoverySchema = "serveros/native-core-recovery.v1";
+//: A persisted stamp older than this is outside any policy window and is
+//: refused rather than converted, so a corrupted file cannot overflow the
+//: cross-boot arithmetic. Ten years is far beyond any 60/300/900 s ladder.
+constexpr long kMaxPersistedAgeSeconds = 10L * 365L * 24L * 3600L;
+
+//: The two clocks have different sane ranges. These bounds keep the conversion
+//: inside `long long` without trusting a value from the file.
+constexpr long long kMaxMonotonicSeconds = 100LL * 365LL * 24LL * 3600LL;
+constexpr long long kMaxWallEpoch = 253402300799LL;  // 9999-12-31T23:59:59Z
 
 // The attempts still inside the window. Pruned on read rather than on write,
 // so a resource that failed three times last month is not permanently barred
@@ -123,9 +131,45 @@ void Recovery::record_failure(const std::string& service_id, const RecoveryPolic
     }
 }
 
-std::string Recovery::to_json() const {
+ActionOutcome outcome_for(bool provider_ok, Readiness readiness) {
+    if (!provider_ok) {
+        return ActionOutcome::NotRecovered;
+    }
+    switch (readiness) {
+        case Readiness::Ready:
+            return ActionOutcome::Recovered;
+        case Readiness::NotReady:
+            return ActionOutcome::NotRecovered;
+        case Readiness::Unmeasured:
+            return ActionOutcome::Unmeasured;
+    }
+    return ActionOutcome::Unmeasured;
+}
+
+void Recovery::record_outcome(const std::string& service_id, ActionOutcome outcome,
+                              const RecoveryPolicy& policy, long now) {
+    switch (outcome) {
+        case ActionOutcome::Recovered:
+            record_success(service_id);
+            return;
+        case ActionOutcome::NotRecovered:
+            record_failure(service_id, policy, now);
+            return;
+        case ActionOutcome::Unmeasured:
+            // Deliberately nothing. The attempt was recorded when it was made;
+            // this verdict is "we could not look", which is not a failure.
+            return;
+    }
+}
+
+std::string Recovery::to_json(const RecoveryClock& clock) const {
     nodecore::Json root = nodecore::Json::object();
-    root.set("schema", nodecore::Json::string(kRecoverySchema));
+    root.set("schema", nodecore::Json::string(kRecoverySchemaV2));
+    root.set("boot_id", nodecore::Json::string(clock.boot_id));
+    nodecore::Json anchor = nodecore::Json::object();
+    anchor.set("monotonic", nodecore::Json::integer(clock.monotonic));
+    anchor.set("wall_epoch", nodecore::Json::integer(clock.wall_epoch));
+    root.set("anchor", std::move(anchor));
     nodecore::Json services = nodecore::Json::array();
     for (const auto& row : entries_) {
         nodecore::Json entry = nodecore::Json::object();
@@ -151,7 +195,7 @@ void Recovery::restore(const std::string& service_id, std::vector<long> attempts
     entry.opened_until = opened_until;
 }
 
-RecoveryLoaded load_recovery(const std::string* text) {
+RecoveryLoaded load_recovery(const std::string* text, const RecoveryClock& now) {
     RecoveryLoaded loaded;
     if (text == nullptr) {
         // No file is a first run. It is NOT an error, and it is NOT the same
@@ -173,10 +217,79 @@ RecoveryLoaded load_recovery(const std::string* text) {
         return loaded;
     }
     const detail::Json* schema = document.find("schema");
-    if (schema == nullptr || !schema->is_string() || schema->text != kRecoverySchema) {
-        loaded.error = std::string("the persisted recovery state is not ") + kRecoverySchema;
+    if (schema == nullptr || !schema->is_string()) {
+        loaded.error = "the persisted recovery state has no schema";
         return loaded;
     }
+    if (schema->text == kRecoverySchemaV1) {
+        loaded.legacy = true;
+        loaded.was_present = true;
+        loaded.error =
+            "the persisted recovery state is " + std::string(kRecoverySchemaV1) +
+            ": it has no boot id or clock anchor, so its monotonic stamps cannot be placed in "
+            "a boot. Refusing to act rather than guessing, and refusing to migrate, consume or "
+            "clear it automatically. Inspect or remove it deliberately";
+        return loaded;
+    }
+    if (schema->text != kRecoverySchemaV2) {
+        loaded.error = std::string("the persisted recovery state is not ") + kRecoverySchemaV2;
+        return loaded;
+    }
+
+    // THE CURRENT EPOCH MUST BE ESTABLISHABLE. This is the fail-closed half:
+    // without a boot id there is no domain in which a persisted monotonic
+    // stamp can be placed, and guessing is the defect this format removes.
+    if (now.boot_id.empty()) {
+        loaded.error =
+            "this run has no boot id, so a persisted monotonic stamp cannot be placed in a boot";
+        return loaded;
+    }
+    if (now.wall_epoch <= 0 || now.wall_epoch > kMaxWallEpoch) {
+        loaded.error =
+            "this run has no usable wall-clock epoch, so a persisted state cannot be placed in time";
+        return loaded;
+    }
+    if (now.monotonic < 0 || now.monotonic > kMaxMonotonicSeconds) {
+        loaded.error = "this run has no usable monotonic clock";
+        return loaded;
+    }
+
+    const detail::Json* boot = document.find("boot_id");
+    if (boot == nullptr || !boot->is_string() || boot->text.empty()) {
+        loaded.error = "the persisted recovery state has no boot_id";
+        return loaded;
+    }
+    const detail::Json* anchor = document.find("anchor");
+    if (anchor == nullptr || !anchor->is_object()) {
+        loaded.error = "the persisted recovery state has no clock anchor";
+        return loaded;
+    }
+    const detail::Json* anchor_mono = anchor->find("monotonic");
+    const detail::Json* anchor_wall = anchor->find("wall_epoch");
+    if (anchor_mono == nullptr || !anchor_mono->is_int() || anchor_wall == nullptr ||
+        !anchor_wall->is_int()) {
+        loaded.error = "the persisted recovery state's anchor is missing monotonic or wall_epoch";
+        return loaded;
+    }
+    if (anchor_mono->integer < 0 || anchor_mono->integer > kMaxMonotonicSeconds) {
+        loaded.error =
+            "the persisted recovery state's monotonic anchor is outside the representable range";
+        return loaded;
+    }
+    if (anchor_wall->integer <= 0 || anchor_wall->integer > kMaxWallEpoch) {
+        loaded.error =
+            "the persisted recovery state's wall-clock anchor is not a usable epoch";
+        return loaded;
+    }
+
+    const bool same_boot = boot->text == now.boot_id;
+    if (same_boot && anchor_mono->integer > now.monotonic) {
+        loaded.error =
+            "the persisted recovery state's monotonic anchor is in the future for this boot, "
+            "so it was not written by this boot's clock; refusing to place it";
+        return loaded;
+    }
+
     const detail::Json* services = document.find("services");
     if (services == nullptr || !services->is_array()) {
         loaded.error = "the persisted recovery state has no services array";
@@ -199,16 +312,86 @@ RecoveryLoaded load_recovery(const std::string* text) {
             loaded.error = "a persisted recovery row is missing a field or has the wrong type";
             return loaded;
         }
+        if (failures->integer < 0 || failures->integer > 1000000) {
+            loaded.error = "a persisted recovery row has an out-of-range consecutive_failures";
+            return loaded;
+        }
+        const long long opened_value = opened->integer;
+        if (opened_value < -static_cast<long long>(kMaxPersistedAgeSeconds) ||
+            opened_value >
+                anchor_mono->integer + static_cast<long long>(kMaxPersistedAgeSeconds)) {
+            loaded.error =
+                "a persisted recovery row's opened_until is outside the state's clock range";
+            return loaded;
+        }
+
         std::vector<long> stamps;
         for (const detail::Json& stamp : attempts->items) {
             if (!stamp.is_int()) {
                 loaded.error = "a persisted recovery attempt is not an integer";
                 return loaded;
             }
-            stamps.push_back(static_cast<long>(stamp.integer));
+            if (stamp.integer > anchor_mono->integer) {
+                loaded.error =
+                    "a persisted recovery attempt is later than the state's own clock anchor";
+                return loaded;
+            }
+            if (stamp.integer < -static_cast<long long>(kMaxPersistedAgeSeconds)) {
+                loaded.error =
+                    "a persisted recovery attempt is outside the state's bounded clock domain";
+                return loaded;
+            }
+            if (same_boot) {
+                // Within one boot the monotonic domain is the authority. A wall
+                // clock step, in either direction, cannot move this stamp.
+                stamps.push_back(static_cast<long>(stamp.integer));
+                continue;
+            }
+
+            // A different boot: place the old steady instant on the wall-clock
+            // timeline using the anchor written beside it, then place that wall
+            // instant in THIS boot's steady domain.
+            const long long stamp_wall =
+                anchor_wall->integer - (anchor_mono->integer - stamp.integer);
+            long long elapsed = now.wall_epoch - stamp_wall;
+            if (elapsed < 0) {
+                // A wall clock that stepped BACKWARDS must not age an attempt
+                // out. Treating it as "now" preserves the budget; a negative
+                // age would erase it, which is the expansion this fix forbids.
+                elapsed = 0;
+            }
+            if (elapsed > static_cast<long long>(kMaxPersistedAgeSeconds)) {
+                elapsed = kMaxPersistedAgeSeconds;
+            }
+            long long placed = static_cast<long long>(now.monotonic) - elapsed;
+            if (placed < -static_cast<long long>(kMaxPersistedAgeSeconds)) {
+                placed = -kMaxPersistedAgeSeconds;
+            }
+            stamps.push_back(static_cast<long>(placed));
+        }
+
+        long opened_until = 0;
+        if (same_boot) {
+            opened_until = static_cast<long>(opened_value);
+        } else {
+            const long long opened_wall =
+                anchor_wall->integer + (opened_value - anchor_mono->integer);
+            long long remaining = opened_wall - now.wall_epoch;
+            if (remaining > static_cast<long long>(kMaxPersistedAgeSeconds)) {
+                remaining = kMaxPersistedAgeSeconds;
+            }
+            if (remaining > 0) {
+                opened_until = static_cast<long>(now.monotonic + remaining);
+            } else {
+                // The cooldown elapsed while the Core was not running. A
+                // FORWARD wall step can produce this; it is the same reading as
+                // waiting out the cooldown. A BACKWARD step cannot, because it
+                // makes `remaining` larger, never smaller.
+                opened_until = now.monotonic;
+            }
         }
         state.restore(id->text, std::move(stamps), static_cast<int>(failures->integer),
-                      static_cast<long>(opened->integer));
+                      opened_until);
     }
     loaded.ok = true;
     loaded.was_present = true;

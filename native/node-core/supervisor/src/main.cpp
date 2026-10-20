@@ -37,6 +37,8 @@
 #include <string>
 #include <vector>
 
+#include "supervisor/action_gate.hpp"
+#include "supervisor/action_journal.hpp"
 #include "supervisor/admission.hpp"
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
@@ -79,8 +81,9 @@ void print_usage(std::FILE* out) {
                  "  --trigger boot|tick    boot proves absence and uses start_on_boot;\n"
                  "                         tick restarts only a failed unit (default tick).\n"
                  "                         Ignored by --serve, which is always a tick.\n"
-                 "  --state FILE           persisted recovery budget. READ in observe mode\n"
-                 "                         and never written there.\n"
+                 "  --state FILE           persisted recovery budget. REQUIRED with\n"
+                 "                         --enable-actions, where it is read and written;\n"
+                 "                         observe-only never uses it.\n"
                  "  --systemctl PATH       the systemctl to run (default %s).\n"
                  "  --serve                run the resident loop: monotonic ticks, a status\n"
                  "                         socket, and a clean exit on SIGTERM.\n"
@@ -130,6 +133,36 @@ std::string iso_now() {
 long monotonic_seconds() {
     using namespace std::chrono;
     return duration_cast<seconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+//: The wall clock at the same instant as `monotonic_seconds()`. The ONLY
+//: cross-boot bridge the persisted budget has; it is never used as a duration.
+long long wall_epoch_seconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+}
+
+//: The kernel's boot id, which says which boot owns the monotonic clock. It is
+//: kernel-provided and read-only; an unreadable id is a refusal, never a guess.
+bool read_boot_id(std::string& out) {
+    std::ifstream file("/proc/sys/kernel/random/boot_id");
+    if (!file.good()) {
+        return false;
+    }
+    std::string line;
+    if (!std::getline(file, line)) {
+        return false;
+    }
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' || line.back() == ' ' ||
+            line.back() == '\t')) {
+        line.pop_back();
+    }
+    if (line.empty() || line.size() > 128) {
+        return false;
+    }
+    out = line;
+    return true;
 }
 
 bool read_file(const std::string& path, std::string& out) {
@@ -334,29 +367,34 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (act) {
-        // ACTING REQUIRES ALL THREE. Each is the specific fact that turns a
-        // correct plan into a wrong action, and none of them has a safe default:
-        // two writers each believe they own the budget, a restart spent on a
-        // network fault outlives the fault, and a service that is busy is not a
-        // service that is broken. Refused with a named reason rather than
-        // defaulted, because a caller that did not think about these is exactly
-        // the caller that should be told.
-        if (lease_path.empty()) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --lease: two Cores acting on one host each "
-                         "believe they own the recovery budget, and neither receipt shows it\n");
+        // ACTING REQUIRES EVERY FACT. Each is the specific thing that turns a
+        // correct plan into a wrong action, and none has a safe default: two
+        // writers each believe they own the budget, a restart spent on a
+        // network fault outlives the fault, a busy service is not a broken one,
+        // and a budget that is not persisted resets at every process restart or
+        // reboot. Refused with a named reason rather than defaulted.
+        nodecore::supervisor::ActionGateInput gate;
+        gate.act = true;
+        gate.have_lease = !lease_path.empty();
+        gate.link_known = link.known;
+        gate.agent_known = agent.known;
+        gate.state_path = state_path;
+        const nodecore::supervisor::ActionGateVerdict verdict =
+            nodecore::supervisor::check_action_gate(gate);
+        if (!verdict.ok) {
+            std::fprintf(stderr, "--enable-actions refused: %s (%s)\n",
+                         verdict.reason.c_str(), verdict.code.c_str());
             return 2;
         }
-        if (!link.known) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --link-state: a restart cannot fix a host that "
-                         "is not connected, and this Core does not know which it is\n");
-            return 2;
-        }
-        if (!agent.known) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --agent-state: an agent mid-task on a service "
-                         "is a reason to wait, and this Core does not know whether one is\n");
+        // The flags are complete; now the path must be one this account can
+        // durably own. This check is structural. The post-action write is still
+        // the authority, and a write failure exits 2 rather than reporting
+        // success on a budget that was never persisted.
+        const nodecore::supervisor::StatePathVerdict state_verdict =
+            nodecore::supervisor::check_state_path(state_path);
+        if (!state_verdict.ok) {
+            std::fprintf(stderr, "--enable-actions refused: --state %s (%s)\n",
+                         state_verdict.reason.c_str(), state_verdict.code.c_str());
             return 2;
         }
     }
@@ -391,17 +429,54 @@ int main(int argc, char** argv) {
     }
 
     nodecore::supervisor::Recovery recovery;
-    if (act && !state_path.empty()) {
+    //: Set inside the tick lambda when the state cannot be persisted. The
+    //: single-pass path turns it into exit 2; the resident path never writes
+    //: state because it is observe-only.
+    bool state_write_failed = false;
+    //: Set when an action could not be issued from a durable attempt (lease or
+    //: verb refusal). The single-pass path turns it into exit 2 as well.
+    bool action_failed = false;
+    //: The clock reading the persisted budget was loaded in. The write takes a
+    //: fresh instant but keeps the same boot id, so both halves of the file
+    //: name one boot.
+    nodecore::supervisor::RecoveryClock state_clock;
+    if (act) {
+        // The acting gate above guarantees a non-empty, validated state path.
+        state_clock.monotonic = monotonic_seconds();
+        state_clock.wall_epoch = wall_epoch_seconds();
+        if (!read_boot_id(state_clock.boot_id)) {
+            std::fprintf(stderr,
+                         "refusing to act: the kernel boot id could not be read, so a persisted "
+                         "monotonic budget cannot be placed in a boot\n");
+            return 2;
+        }
+        if (state_clock.wall_epoch <= 0 || state_clock.monotonic < 0) {
+            std::fprintf(stderr,
+                         "refusing to act: the wall or monotonic clock is not usable, so a "
+                         "persisted budget cannot be placed in time\n");
+            return 2;
+        }
         std::string state_text;
         const bool present = read_file(state_path, state_text);
         const nodecore::supervisor::RecoveryLoaded loaded =
-            nodecore::supervisor::load_recovery(present ? &state_text : nullptr);
+            nodecore::supervisor::load_recovery(present ? &state_text : nullptr, state_clock);
         if (!loaded.ok) {
             std::fprintf(stderr, "refusing to act: %s\n", loaded.error.c_str());
             return 2;
         }
         recovery = loaded.state;
     }
+
+    //: The durable journal at the effect boundary. It writes the SAME
+    //: `recovery` ledger the planner consults and owns no budget of its own.
+    const auto recovery_clock = [&state_clock]() {
+        nodecore::supervisor::RecoveryClock clock;
+        clock.monotonic = monotonic_seconds();
+        clock.wall_epoch = wall_epoch_seconds();
+        clock.boot_id = state_clock.boot_id;
+        return clock;
+    };
+    nodecore::supervisor::ActionJournal journal(state_path, &recovery, recovery_clock);
 
     nodecore::supervisor::SystemdUserProvider provider(systemctl_path, allowlist.allowlist, &iso_now);
 
@@ -533,15 +608,30 @@ int main(int argc, char** argv) {
 
         if (allow_execution && act && plan.ok) {
             for (const nodecore::supervisor::Action& action : plan.actions) {
-                nodecore::supervisor::ProviderResult result;
-                if (action.verb == "start") {
-                    result = provider.start(action.unit);
-                } else if (action.verb == "restart") {
-                    result = provider.restart(action.unit);
-                } else {
-                    result = provider.stop(action.unit);
+                // PREWRITE BEFORE THE EFFECT. `execute_effect` records and
+                // atomically persists this attempt, and only then invokes the
+                // provider. A prewrite failure means no effect is issued.
+                const nodecore::supervisor::EffectExecution effect =
+                    nodecore::supervisor::execute_effect(provider, journal, writer_lease.held(),
+                                                         action.service_id, action.unit,
+                                                         action.verb, tick_started);
+                if (effect.prewrite_failed) {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 effect.error.c_str());
+                    plan.refusals.push_back(
+                        {action.service_id, "STATE_PREWRITE_FAILED", effect.error});
+                    state_write_failed = true;
+                    break;
                 }
-                recovery.record_attempt(action.service_id, tick_started);
+                if (!effect.ok) {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 effect.error.c_str());
+                    plan.refusals.push_back(
+                        {action.service_id, "ACTION_NOT_EXECUTED", effect.error});
+                    action_failed = true;
+                    break;
+                }
+                const nodecore::supervisor::ProviderResult& result = effect.provider;
 
                 // A VERB THAT EXITED 0 IS NOT A SERVICE THAT ANSWERS. The
                 // provider's `ok` says the verb was carried out; it says nothing
@@ -560,39 +650,56 @@ int main(int argc, char** argv) {
                 // of clearing it.
                 const nodecore::supervisor::ServiceDesired* service =
                     find_service(action.service_id);
-                bool recovered = result.ok;
+                // An unmeasured probe is the DEFAULT, not an assumption of
+                // failure: if the service entry is missing or the probe cannot
+                // be attempted, the budget learns nothing.
+                nodecore::supervisor::Readiness ready =
+                    nodecore::supervisor::Readiness::Unmeasured;
                 if (result.ok && service != nullptr) {
                     const nodecore::supervisor::ProbeSpec spec =
                         nodecore::supervisor::probe_spec_of(service->health);
                     const nodecore::supervisor::Observed after = provider.query(action.unit);
-                    const nodecore::supervisor::ProbeOutcome outcome =
+                    const nodecore::supervisor::ProbeOutcome probe =
                         nodecore::supervisor::run_probe(spec, probe_transport);
-                    const nodecore::supervisor::Readiness ready =
-                        nodecore::supervisor::readiness_from_probe(spec, after, outcome);
-                    recovered = ready == nodecore::supervisor::Readiness::Ready;
-                    if (!recovered) {
+                    ready = nodecore::supervisor::readiness_from_probe(spec, after, probe);
+                    if (ready != nodecore::supervisor::Readiness::Ready) {
                         std::fprintf(stderr,
                                      "%s returned %s but is not ready afterwards: %s (%s)\n",
                                      action.unit.c_str(), result.code.c_str(),
                                      nodecore::supervisor::to_word(ready).c_str(),
-                                     outcome.attempted ? outcome.code.c_str()
-                                                       : outcome.reason.c_str());
+                                     probe.attempted ? probe.code.c_str()
+                                                     : probe.reason.c_str());
                     }
                 }
-                if (!recovered) {
-                    if (service != nullptr) {
-                        recovery.record_failure(action.service_id, service->recovery, tick_started);
-                    }
-                } else {
-                    recovery.record_success(action.service_id);
+                // `outcome_for` is the one place that decides what the budget
+                // learns: a provider failure is a failed recovery; otherwise
+                // only READY clears the breaker, only NOT_READY advances it,
+                // and UNMEASURED is neither. See `Recovery::record_outcome`.
+                const nodecore::supervisor::ActionOutcome outcome =
+                    nodecore::supervisor::outcome_for(result.ok, ready);
+                const nodecore::supervisor::RecoveryPolicy policy =
+                    service != nullptr ? service->recovery
+                                       : nodecore::supervisor::RecoveryPolicy{};
+                recovery.record_outcome(action.service_id, outcome, policy, tick_started);
+
+                // THE OUTCOME IS A SEPARATE WRITE. If it fails, the attempt from
+                // the prewrite is already durable; the outcome is unknown. Do
+                // not report success and do not retry blindly.
+                std::string outcome_error;
+                if (!journal.write_outcome(outcome_error)) {
+                    std::fprintf(stderr,
+                                 "the effect on %s was issued but its outcome was not "
+                                 "persisted: %s\n",
+                                 action.unit.c_str(), outcome_error.c_str());
+                    state_write_failed = true;
+                    executed.push_back(nodecore::supervisor::ExecutionResult{
+                        action.service_id, action.unit, action.verb, result.ok, result.code,
+                        result.reason, result.exit_code});
+                    break;
                 }
                 executed.push_back(nodecore::supervisor::ExecutionResult{
                     action.service_id, action.unit, action.verb, result.ok, result.code,
                     result.reason, result.exit_code});
-            }
-            if (!state_path.empty()) {
-                std::ofstream state(state_path, std::ios::trunc);
-                state << recovery.to_json() << "\n";
             }
         }
 
@@ -712,6 +819,13 @@ int main(int argc, char** argv) {
     const nodecore::supervisor::TickOutcome tick_outcome = observe_and_plan(true);
     if (!tick_outcome.ok) {
         std::fprintf(stderr, "%s\n", tick_outcome.error.c_str());
+    }
+    if (state_write_failed || action_failed) {
+        // The durable attempt or its outcome could not be persisted, or the
+        // action could not be issued from a durable attempt. Reporting success
+        // here would let the next run start with a stale budget, so the pass
+        // exits non-zero.
+        return 2;
     }
     const std::string receipt = nodecore::supervisor::build_receipt(
         manifest, last_plan, executed, act ? "active" : "observe-only", snapshot.started_at,
