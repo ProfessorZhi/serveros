@@ -2,6 +2,7 @@
 
 Base: `rc/i1-v4-review-20261020` @ `40c4b1c` (X2 #335 @ `85b9539` is composed in)
 P2 stack: #342 @ `eff4c38` (Windows fixture/guard portability)
+FINAL stack: #347 @ `a0053c9` (guard alias under-blocking)
 Lane: X2 (independent test portability / private-legacy boundary)
 Evidence level: **LOCAL / HERMETIC**
 Scope: tests and documentation only. No product source, no Q1 trusted seam, no
@@ -247,3 +248,83 @@ Limits, stated rather than hidden:
   root; it is refused conservatively instead of being inferred unrestricted.
 * Only the actual audited path, argv and CWD are scanned; an environment
   mapping is not.
+
+## 11. FINAL REAL_WINDOWS portability slice (base #347 @ a0053c9)
+
+The real Windows FJPCOS agent ran **#342** (not yet #347) and measured:
+
+* **1 failure**: a POSIX-looking path was asserted case-sensitive on every
+  host. On Windows `/OWNER/...` is current-drive-relative and case-insensitive,
+  so `False` was the wrong expectation;
+* **19 skips** in the legacy suite (the explicit `PRODUCER_BOUNDARY_POSIX_ONLY`
+  boundary);
+* **13 collection errors** in the grant suite: `workengine`/`fcntl` were
+  imported before the module-level `skipif` could take effect.
+
+This slice fixes the two defects and leaves #347 untouched.
+
+### 11.1 Host-aware case semantics
+
+`_inside` now takes an explicit `windows` mode. `windows=False` uses
+`posixpath` on every host (POSIX case sensitivity is meaningful there);
+`windows=True` uses `ntpath` and case-folds drive/UNC paths. The old
+`/OWNER/... → False` assertion is replaced by:
+
+```python
+assert _inside("/OWNER/PRIVATE/ROOT/evil", "/owner/private/root",
+               windows=False) is False      # POSIX family
+assert _inside(r"D:\OWNER\PRIVATE\ROOT\evil", r"D:\owner\private\root",
+               windows=True) is True        # Windows drive family
+```
+
+Sibling, traversal, sibling-share, drive-relative, UNC and symlink negative
+cases are retained; the real `open()` audit-hook symlink probe still runs.
+
+### 11.2 Grant suite: platform check before POSIX imports
+
+`WINDOWS_PRODUCER_BOUNDARY = sys.platform == "win32"` and the module-level
+`skipif` are defined before anything POSIX. The harness and
+`runtime/daemon.py` (which imports `fcntl`) are loaded only inside
+`if not WINDOWS_PRODUCER_BOUNDARY:`. On Windows the suite therefore collects
+and reports **13 explicit `PRODUCER_BOUNDARY_POSIX_ONLY` skips**, not 13
+collection errors. On Linux all 13 real tests still run.
+
+Two tests pin this without hiding unrelated errors:
+
+* a static AST check: the guard assignment precedes the harness import, and
+  `daemon_mod` is loaded only inside the guard;
+* a synthetic importer: `sys.platform` is set to `win32`, a meta-path finder
+  raises on `workengine`/`fcntl`, the module must still import, expose the
+  `PRODUCER_BOUNDARY_POSIX_ONLY` reason and 13 test functions. Any other import
+  error propagates and fails the test.
+
+### 11.3 Measured (Tokyo Linux, bounded 1 GiB / swap 0 / 25% CPU, nice 10)
+
+| Run | Result |
+| --- | --- |
+| RED at `a0053c9` (boundary) | **3 failed, 48 passed** |
+| GREEN boundary | **51 passed** |
+| GREEN X2 three files | **83 passed** |
+| Same process + X1 finalize tests | **116 passed** |
+| Same process under the private-path guard | **116 passed** |
+| Windows pre-fix (reported on #342) | **1 failed, 19 skipped, 13 collection errors** |
+
+### 11.4 Windows recheck for the FJPCOS owner
+
+Do **not** claim REAL_WINDOWS until the FJPCOS Agent reruns this exact SHA.
+On that host, from the branch:
+
+```text
+python -m pytest -q tests/v1_portability/test_portability_boundary.py
+python -m pytest -q tests/test_v1_grant_os_principal_schema.py
+python -m pytest -q tests/test_fleet_v1_t10_legacy_compatibility.py
+```
+
+Expected shape after this slice:
+
+* boundary: **51 passed** (no skips);
+* grant: **13 skipped**, reason `PRODUCER_BOUNDARY_POSIX_ONLY`, **0 errors**;
+* legacy: **19 skipped**, reason `PRODUCER_BOUNDARY_POSIX_ONLY`, **0 errors**.
+
+Report the exact passed/failed/skipped/error counts and the Python version.
+This lane does not touch or install anything on the user's Windows worktrees.

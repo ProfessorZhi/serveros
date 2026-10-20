@@ -46,17 +46,18 @@ ITEM = "SRV-0001"
 PROJECT = "serveros"
 ACTION = "lease.acquire"
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "v1_portability"))
-import v1_portability_harness as H  # noqa: E402
+# Decide this BEFORE importing anything POSIX. `workengine` and `runtime.daemon`
+# import `fcntl`; on Windows FJPCOS that raised during collection, before the
+# skip marker could take effect. The 13 cases are skipped, never faked.
+WINDOWS_PRODUCER_BOUNDARY = sys.platform == "win32"
+POSIX_ONLY_REASON = (
+    "PRODUCER_BOUNDARY_POSIX_ONLY: Windows FJPCOS has no verified X2 "
+    "producer; this suite executes the POSIX daemon/uid grant read, so its "
+    "13 cases are skipped rather than run against a fake Windows producer. "
+    "Manifest: tests/v1_portability/fixtures/windows-skip-manifest.v1.json")
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != "linux",
-    reason=(
-        "PRODUCER_BOUNDARY_POSIX_ONLY: Windows FJPCOS has no verified X2 "
-        "producer; this suite executes the POSIX daemon/uid grant read, so its "
-        "13 cases are skipped rather than run against a fake Windows producer. "
-        "Manifest: "
-        "tests/v1_portability/fixtures/windows-skip-manifest.v1.json"))
+    WINDOWS_PRODUCER_BOUNDARY, reason=POSIX_ONLY_REASON)
 
 
 def _load_at(name: str, path: Path):
@@ -73,9 +74,13 @@ def _load(name: str, filename: str):
     return _load_at(name, RUNTIME / filename)
 
 
-daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
-registry_mod = _load("serveros_runtime_registry", "registry.py")
-actor_mod = _load_at("serveros_context_actor", REPO / "context" / "actor.py")
+if not WINDOWS_PRODUCER_BOUNDARY:
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "v1_portability"))
+    import v1_portability_harness as H  # noqa: E402
+
+    daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
+    registry_mod = _load("serveros_runtime_registry", "registry.py")
+    actor_mod = _load_at("serveros_context_actor", REPO / "context" / "actor.py")
 
 
 def a_registry():

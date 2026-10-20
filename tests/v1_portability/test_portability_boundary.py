@@ -172,16 +172,31 @@ def test_guard_catches_argv_but_not_the_configured_env_value():
     (r"\\server\share\private\..\other", r"\\server\share\private", False),
     (r"\\server2\share\private\evil", r"\\server\share\private", False),
     (r"\\server\share2\private\evil", r"\\server\share\private", False),
-    # POSIX keeps working and stays case-sensitive.
+    # POSIX keeps working; case sensitivity is tested by path family below.
     ("/owner/private/root/evil", "/owner/private/root", True),
     ("/owner/private/root2/evil", "/owner/private/root", False),
     ("/owner/private/root/../other", "/owner/private/root", False),
-    ("/OWNER/PRIVATE/ROOT/evil", "/owner/private/root", False),
 ))
 def test_guard_normalizes_both_candidate_and_root(candidate, root, expected):
     import private_path_guard as guard
 
     assert guard._inside(candidate, root) is expected, (candidate, root)
+
+
+def test_case_sensitivity_follows_the_path_family():
+    """POSIX case rules apply to POSIX paths; Windows rules to drive paths.
+
+    On Windows a string like `/OWNER/...` is current-drive-relative and
+    case-insensitive, so asserting `False` for it on every host was wrong.
+    """
+    import private_path_guard as guard
+
+    assert guard._inside(
+        "/OWNER/PRIVATE/ROOT/evil", "/owner/private/root",
+        windows=False) is False
+    assert guard._inside(
+        r"D:\OWNER\PRIVATE\ROOT\evil", r"D:\owner\private\root",
+        windows=True) is True
 
 
 def test_guard_catches_windows_argv_but_not_the_configured_env_value():
@@ -323,3 +338,113 @@ def test_suite_skip_reason_is_the_manifest_reason():
         assert manifest["reason_code"] in text, suite
         assert "pytest.xfail(" not in text, suite
         assert "pytest.skip(" not in text, suite
+
+
+# ---------------------------------------------------------------------------
+# The grant suite must skip on Windows BEFORE it imports POSIX modules.
+# ---------------------------------------------------------------------------
+
+GRANT_SUITE = REPO / "tests" / "test_v1_grant_os_principal_schema.py"
+
+
+def _guard_test(node: ast.AST) -> bool:
+    """`if not WINDOWS_PRODUCER_BOUNDARY:`"""
+    return (
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Name)
+        and node.test.operand.id == "WINDOWS_PRODUCER_BOUNDARY")
+
+
+def test_grant_suite_platform_guard_precedes_posix_imports():
+    tree = ast.parse(GRANT_SUITE.read_text(encoding="utf-8"))
+    guard_line = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Name)
+                        and target.id == "WINDOWS_PRODUCER_BOUNDARY"):
+                    guard_line = node.lineno
+    assert guard_line is not None, "WINDOWS_PRODUCER_BOUNDARY is missing"
+
+    harness_line = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "v1_portability_harness":
+                    harness_line = node.lineno
+                if alias.name in {"workengine", "fcntl"}:
+                    assert node.lineno > guard_line, alias.name
+        if (isinstance(node, ast.ImportFrom)
+                and node.module in {"workengine", "fcntl"}):
+            assert node.lineno > guard_line, node.module
+    assert harness_line is not None, "the harness import is missing"
+    assert harness_line > guard_line, (harness_line, guard_line)
+
+    all_daemon = set()
+    guarded_daemon = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "daemon_mod":
+                    all_daemon.add(node.lineno)
+        if _guard_test(node):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if (isinstance(target, ast.Name)
+                                and target.id == "daemon_mod"):
+                            guarded_daemon.add(child.lineno)
+    assert all_daemon, "daemon_mod is never loaded"
+    assert all_daemon == guarded_daemon, (all_daemon, guarded_daemon)
+
+
+def test_grant_suite_imports_under_win32_without_posix_modules():
+    """Reproduce the Windows collection error without a Windows host.
+
+    `sys.platform` is set before import and a meta-path finder raises if the
+    module touches `workengine` or `fcntl`. Any OTHER import error is left
+    uncaught: the subprocess must exit 0 or this test fails with its stderr.
+    """
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import importlib.util
+        import sys
+        import pytest  # preload before the blocker
+
+        sys.platform = "win32"
+        BLOCKED = ("workengine", "fcntl")
+
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] in BLOCKED:
+                    raise AssertionError("POSIX import attempted: " + name)
+                return None
+
+        sys.meta_path.insert(0, Blocker())
+        path = {str(GRANT_SUITE)!r}
+        spec = importlib.util.spec_from_file_location("x2_grant_win32", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert getattr(module, "WINDOWS_PRODUCER_BOUNDARY", None) is True
+        marks = getattr(module, "pytestmark", None)
+        marks = marks if isinstance(marks, list) else [marks]
+        reasons = []
+        for mark in marks:
+            inner = getattr(mark, "mark", mark)
+            if getattr(inner, "name", None) == "skipif":
+                reasons.append(getattr(inner, "kwargs", {{}}).get("reason", ""))
+        assert any("PRODUCER_BOUNDARY_POSIX_ONLY" in r for r in reasons), reasons
+        names = [n for n in vars(module)
+                 if n.startswith("test_") and callable(getattr(module, n))]
+        assert len(names) == 13, names
+        print("WIN32_IMPORT_OK", len(names))
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    assert "WIN32_IMPORT_OK 13" in completed.stdout

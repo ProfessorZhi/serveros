@@ -33,6 +33,7 @@ This is a TEST guard, not a filesystem sandbox.
 """
 from __future__ import annotations
 
+import ntpath
 import os
 import posixpath
 import re
@@ -131,26 +132,25 @@ def _windows_forms(raw: str) -> tuple[list[tuple[str, str]], bool]:
 
 
 def _posix_forms(raw: str) -> list[tuple[str, str]]:
-    """Lexical POSIX form and, when different, the resolved symlink target."""
+    """POSIX-family forms, independent of the host's native path rules.
+
+    `posixpath` is used explicitly so the same assertion is meaningful on a
+    Windows host: a POSIX-family path is case-sensitive there too, and is not
+    silently reinterpreted as the current drive.
+    """
     try:
-        absolute = os.path.abspath(raw)
+        absolute = posixpath.abspath(raw)
     except (OSError, ValueError):
         return []
     forms: list[tuple[str, str]] = []
 
     def add(path: str) -> None:
-        normalized = os.path.normcase(path)
-        if os.name == "nt":
-            # Keep the POSIX comparison in `/` form on Windows as well.
-            normalized = normalized.replace("\\", "/")
-        if os.sep == "/":
-            # POSIX permits `//name` but it names the same path as `/name`.
-            normalized = re.sub(r"^/+", "/", normalized)
-        forms.append(("posix", normalized))
+        # POSIX permits `//name` but it names the same path as `/name`.
+        forms.append(("posix", re.sub(r"^/+", "/", posixpath.normcase(path))))
 
     add(absolute)
     try:
-        real = os.path.realpath(absolute)
+        real = posixpath.realpath(absolute)
     except (OSError, ValueError):
         real = None
     if real and real != absolute:
@@ -158,8 +158,27 @@ def _posix_forms(raw: str) -> list[tuple[str, str]]:
     return forms
 
 
-def _forms(value) -> tuple[list[tuple[str, str]], bool]:
-    """All comparable forms of one value, and whether it is device-ambiguous."""
+def _native_windows_forms(raw: str) -> list[tuple[str, str]]:
+    """Drive/UNC forms under Windows semantics (also testable on Linux)."""
+    try:
+        absolute = ntpath.abspath(raw)
+    except (OSError, ValueError):
+        return []
+    windows, _ = _windows_forms(absolute.replace("\\", "/"))
+    return windows
+
+
+def _forms(value, *, windows: bool | None = None
+           ) -> tuple[list[tuple[str, str]], bool]:
+    """All comparable forms of one value, and whether it is device-ambiguous.
+
+    `windows=None` means the native host.  An explicit `windows=False` keeps
+    POSIX case sensitivity on any host; `windows=True` applies Windows
+    drive/UNC semantics and case-folding.  Drive/UNC/device spellings always
+    produce their Windows forms, because they are unambiguous.
+    """
+    if windows is None:
+        windows = os.name == "nt"
     try:
         raw = os.fsdecode(os.fspath(value))
     except (TypeError, ValueError):
@@ -169,19 +188,12 @@ def _forms(value) -> tuple[list[tuple[str, str]], bool]:
     forms: list[tuple[str, str]] = []
     ambiguous = False
     if _looks_windows(raw):
-        windows, ambiguous = _windows_forms(raw)
-        forms.extend(windows)
-    if os.name == "nt":
-        # A native relative or POSIX-spelled path becomes a drive path here.
-        try:
-            native = os.path.abspath(raw).replace("\\", "/")
-        except (OSError, ValueError):
-            native = ""
-        if native:
-            windows, native_ambiguous = _windows_forms(native)
-            forms.extend(windows)
-            ambiguous = ambiguous or native_ambiguous
-    forms.extend(_posix_forms(raw))
+        windows_forms, ambiguous = _windows_forms(raw)
+        forms.extend(windows_forms)
+    if windows:
+        forms.extend(_native_windows_forms(raw))
+    else:
+        forms.extend(_posix_forms(raw))
     # Preserve order while dropping duplicates (e.g. the realpath is lexical).
     return list(dict.fromkeys(forms)), ambiguous
 
@@ -236,10 +248,10 @@ def _values(event: str, args: tuple) -> list[str]:
     return values
 
 
-def _inside(value: str, root: str) -> bool:
+def _inside(value: str, root: str, *, windows: bool | None = None) -> bool:
     """Whether ANY comparable form of `value` is `root` or a descendant."""
-    candidate, _ = _forms(value)
-    expected, _ = _forms(root)
+    candidate, _ = _forms(value, windows=windows)
+    expected, _ = _forms(root, windows=windows)
     for c_family, c_path in candidate:
         for r_family, r_path in expected:
             if c_family != r_family:
@@ -251,12 +263,12 @@ def _inside(value: str, root: str) -> bool:
     return False
 
 
-def _must_refuse(value: str, roots) -> bool:
+def _must_refuse(value: str, roots, *, windows: bool | None = None) -> bool:
     """Inside a private root, or a device path that cannot be proven safe."""
-    _, ambiguous = _forms(value)
+    _, ambiguous = _forms(value, windows=windows)
     if ambiguous:
         return True
-    return any(_inside(value, root) for root in roots)
+    return any(_inside(value, root, windows=windows) for root in roots)
 
 
 def install_hook() -> None:
