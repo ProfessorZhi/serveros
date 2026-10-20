@@ -1,0 +1,41 @@
+# Fleet Next canary only. NEVER install under serveros-fleet-mcp.service.
+# Rendered by next_install.py using the existing install.py's two placeholders.
+# This unit is separate from V1: name, binding, release root, journal.
+[Unit]
+Description=ServerOS Fleet Next MCP (isolated canary)
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=PATH=/usr/bin:/bin
+ExecStart=@FLEET_MCP_RUNTIME@/fleet_mcp/bin/serveros-fleet-mcp --http --config @FLEET_MCP_CONFIG@
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=10
+KillMode=control-group
+
+# Bounded canary budget. Fail the rollout if systemctl --user show does not
+# confirm these limits actually took effect. MemorySwapMax=0 does NOT cure
+# global swap I/O pressure caused by other workloads.
+MemoryAccounting=yes
+MemoryMax=1536M
+MemorySwapMax=0
+CPUAccounting=yes
+CPUQuota=40%
+TasksAccounting=yes
+TasksMax=96
+IOAccounting=yes
+IOWeight=50
+OOMPolicy=stop
+
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serveros-fleet-example-mcp
+
+[Install]
+WantedBy=default.target

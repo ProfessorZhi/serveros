@@ -1,0 +1,33 @@
+{
+  "schema": "serveros/fleet-next-dual-stack-preflight.v1",
+  "v1": {
+    "service_unit": "serveros-fleet-mcp.service",
+    "runtime_root": "/home/EXAMPLE/runtime-assets/fleet-v1/ingress",
+    "config_path": "/home/EXAMPLE/.config/fleet-v1/binding.yaml",
+    "oauth_state_root": "/home/EXAMPLE/.local/state/fleet-v1-oauth",
+    "local_listen": {"host": "127.0.0.1", "port": 8401},
+    "public_mcp_url": "https://v1.example.invalid/mcp",
+    "plugin_id": "plugin_asdk_app_example_v1"
+  },
+  "next": {
+    "service_unit": "serveros-fleet-example-mcp.service",
+    "runtime_root": "/home/EXAMPLE/runtime-assets/fleet-next/ingress-next",
+    "config_path": "/home/EXAMPLE/.config/fleet-next/binding.yaml",
+    "oauth_state_root": "/home/EXAMPLE/.local/state/fleet-next-oauth",
+    "local_listen": {"host": "127.0.0.1", "port": 8402},
+    "public_mcp_url": "https://next.example.invalid/mcp",
+    "plugin_id": null
+  },
+  "limits": {
+    "memory_max_mib": 1536,
+    "memory_swap_max_mib": 0,
+    "cpu_quota_pct": 40,
+    "tasks_max": 96
+  },
+  "attestations": {
+    "v1_identity_observed": false,
+    "next_owner_binding_reviewed": false,
+    "next_oauth_client_authorized": false,
+    "rollback_ready": false
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema": "serveros/fleet-next-brand-assets.v1",
+  "status": "APPROVED_IN_CONVERSATION_NOT_IN_REPOSITORY",
+  "warning": "These digests were recorded from the user's conversation, not from a file this repository holds. No copy of either PNG is committed here, and none has reached Tokyo or GitHub. A file at these paths whose bytes match these digests is the approved asset; a file that does not match is a different asset and is refused rather than shipped.",
+  "approved_source": {
+    "description": "the 1254x1254 original the two rendered slots were derived from",
+    "sha256": "b5ae68cd337a29cc3d6a6df3212041c496c5432544380e84b784306e65db4fec",
+    "shipped": false
+  },
+  "slots": [
+    {
+      "slot": "composerIcon",
+      "shipped_path": "assets/composerIcon.png",
+      "expected_sha256": "644cf5a3ea36bcb16d1d560af45b3bec84aa4310ea510cdabcf80b304f13b111",
+      "square_required": true,
+      "note": "a composer avatar is drawn into a square slot"
+    },
+    {
+      "slot": "logo",
+      "shipped_path": "assets/logo.png",
+      "expected_sha256": "31bd3a24c3379190a8523a5dad0331d87b57a439f83a3d4ff9b77778d0d5c5f9",
+      "square_required": true,
+      "note": "the documented rule is 'Icons and logos must be square and at least 48 by 48 pixels' — it names logos explicitly, so the same requirement as the composer avatar. An earlier revision allowed a non-square logo on the reasoning that 'a logo is often a wordmark'; that was a preference wearing a rule's clothes, and the approved asset is 1024x1024, so the allowance bought nothing and would have accepted a shape the portal refuses. A wordmark that cannot be square needs a different flow, not a weaker check."
+    }
+  ],
+  "on_absent": "MISSING_BRAND_ASSET",
+  "on_mismatched": "BRAND_ASSET_MISMATCH"
+}
