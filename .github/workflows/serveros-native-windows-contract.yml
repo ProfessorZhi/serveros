@@ -46,10 +46,26 @@ jobs:
           git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
 
+      - name: Show the toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path -LiteralPath $vswhere) {
+            & $vswhere -latest -products * -property installationVersion
+            & $vswhere -latest -products * -property installationPath
+          } else {
+            Write-Host "vswhere not present"
+          }
+
+      # No -G: the hosted image decides which Visual Studio it ships, and a
+      # version written here would be the thing that goes stale. CMake's default
+      # Windows generator is the installed Visual Studio, and the configure log
+      # names the MSVC it found.
       - name: Configure the standalone Windows contract
         shell: pwsh
         run: |
-          cmake -S native/node-core/windows-core -B build-windows -G "Visual Studio 17 2022" -A x64
+          cmake -S native/node-core/windows-core -B build-windows -A x64
           if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
 
       - name: Build under _WIN32 and prove the binaries exist
