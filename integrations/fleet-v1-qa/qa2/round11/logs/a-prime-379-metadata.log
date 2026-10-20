@@ -1,0 +1,29 @@
+== gh pr 379 ==
+failed to run git: fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+
+== remote refs ==
+7245fc6b3711172251e20450d4356abff8af91ee	refs/heads/feat/s1-context-generation-20261021
+7245fc6b3711172251e20450d4356abff8af91ee	refs/pull/379/head
+== diff files ==
+failed to run git: fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+
+== stat ==
+failed to run git: fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+
+== prototype imports ==
+62:from __future__ import annotations
+64:import datetime
+65:import hashlib
+66:import json
+67:import sqlite3
+68:import time
+69:from contextlib import contextmanager
+70:from pathlib import Path
+72:from workengine.store import (  # real WorkEngine semantics, imported read-only
+== verified / COMMIT_FENCED ==
+NONE
+== snapshot sha ==
+7245fc6b3711172251e20450d4356abff8af91ee

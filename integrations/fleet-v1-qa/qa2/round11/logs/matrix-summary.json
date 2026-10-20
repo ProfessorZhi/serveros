@@ -1,0 +1,29 @@
+{
+  "api": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "api",
+    "status": {
+      "PASS": 18
+    },
+    "total": 18
+  },
+  "db": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "db",
+    "status": {
+      "EXPECTED_FAIL": 10
+    },
+    "total": 10
+  },
+  "osuid": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "osuid",
+    "status": {
+      "NOT_RUN": 2
+    },
+    "total": 2
+  }
+}

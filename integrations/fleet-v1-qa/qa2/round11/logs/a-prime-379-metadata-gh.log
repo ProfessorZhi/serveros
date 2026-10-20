@@ -1,0 +1,11 @@
+== gh pr 379 ==
+{"baseRefName":"feat/s1-context-rebind-fence-20261021","baseRefOid":"069f10cce084b95ef7e60ecd2c32784856002d54","headRefName":"feat/s1-context-generation-20261021","headRefOid":"7245fc6b3711172251e20450d4356abff8af91ee","isDraft":true,"mergeable":"MERGEABLE","number":379,"state":"OPEN","title":"fix(prototype): context generation fence + immutable commit (ABA P1)","updatedAt":"2026-10-20T18:24:15Z","url":"https://github.com/ProfessorZhi/serveros/pull/379"}
+== diff files ==
+integrations/fleet-v1-atomic-prototype/README.md
+integrations/fleet-v1-atomic-prototype/atomic_fence.py
+tests/test_s1_atomic_prototype.py
+== stat ==
+ integrations/fleet-v1-atomic-prototype/README.md   |   39 ++++
+ .../fleet-v1-atomic-prototype/atomic_fence.py      |  150 +++++++++++++++-
+ tests/test_s1_atomic_prototype.py                  |  183 ++++++++++++++++----
+ 3 files changed, 324 insertions(+), 48 deletions(-)
