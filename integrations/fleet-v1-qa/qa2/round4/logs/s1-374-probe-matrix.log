@@ -1,0 +1,37 @@
+--- noargs
+ERROR   no test files: pass <repo> and at least one test file; usage: python tests/probes/s1_win32_collection_probe.py <repo> <test-file> [<test-file> ...]
+rc=2
+--- repoonly
+ERROR   no test files: pass <repo> and at least one test file; usage: python tests/probes/s1_win32_collection_probe.py <repo> <test-file> [<test-file> ...]
+rc=2
+--- missing
+ERROR   test file does not exist: 'tests/definitely_missing_test.py'; usage: python tests/probes/s1_win32_collection_probe.py <repo> <test-file> [<test-file> ...]
+rc=2
+--- nonpy
+ERROR   test file is not a .py file: 'pytest.ini'; usage: python tests/probes/s1_win32_collection_probe.py <repo> <test-file> [<test-file> ...]
+rc=2
+--- epoch-only
+SKIPPED tests/test_v1_grant_epoch_authority.py: POSIX_ONLY: runtime/daemon.py and runtime/agent_control_store.py import fcntl; the epoch read uses the daemon route and peer
+ERROR   zero modules collected: skips alone do not prove the probe ran; pass the POSIX modules plus the cross-platform adapter
+summary skipped=1 errors=0 collected=0 rc=2
+rc=2
+--- normal
+SKIPPED tests/test_owner_policy_binding.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+SKIPPED tests/test_owner_commit_fence.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+SKIPPED tests/test_owner_policy_reduced_gate.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use uid/peer semantics; this module cannot be collected on Windows
+COLLECTED tests/test_owner_commit_fence_adapter.py
+summary skipped=3 errors=0 collected=1 rc=0
+rc=0
+--- epoch-adapter
+SKIPPED tests/test_v1_grant_epoch_authority.py: POSIX_ONLY: runtime/daemon.py and runtime/agent_control_store.py import fcntl; the epoch read uses the daemon route and peer
+COLLECTED tests/test_owner_commit_fence_adapter.py
+summary skipped=1 errors=0 collected=1 rc=0
+rc=0
+--- changed-set
+SKIPPED tests/test_v1_grant_epoch_authority.py: POSIX_ONLY: runtime/daemon.py and runtime/agent_control_store.py import fcntl; the epoch read uses the daemon route and peer
+SKIPPED tests/test_owner_policy_binding.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+SKIPPED tests/test_owner_commit_fence.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows
+SKIPPED tests/test_owner_policy_reduced_gate.py: POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use uid/peer semantics; this module cannot be collected on Windows
+COLLECTED tests/test_owner_commit_fence_adapter.py
+summary skipped=4 errors=0 collected=1 rc=0
+rc=0

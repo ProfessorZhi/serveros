@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/data/home/vince/artifacts/skills/qa2-independent-security/2026-10-21/checkouts/s1-372-31bfc28/tests/probes/s1_win32_collection_probe.py", line 36, in <module>
+    ROOT = Path(sys.argv[1]).resolve()
+                ~~~~~~~~^^^
+IndexError: list index out of range
+rc=1

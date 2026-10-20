@@ -1,0 +1,4 @@
+SKIPPED tests/test_v1_grant_epoch_authority.py: POSIX_ONLY: runtime/daemon.py and runtime/agent_control_store.py import fcntl; the epoch read uses the daemon route and peer
+ERROR   zero modules collected: skips alone do not prove the probe ran; pass the POSIX modules plus the cross-platform adapter
+summary skipped=1 errors=0 collected=0 rc=2
+rc=2
