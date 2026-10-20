@@ -3,8 +3,12 @@
 **Status: `QA_PARTIAL` / `NOT_RELEASE`. The QA2 findings are independently
 reproduced at the exact PR heads (S1 6/6, R1 8/8; 2 P1 findings each, no P0),
 and both downstream fix PRs now pass the same attack set at their exact SHAs:
-S1 #363 `8840f41` and R1 #361 `6a27204`. The fixes are stacked Drafts, not in
-RC-v7 and not an RC-v8 signature. No QA/V1/RC signature.**
+S1 #363 `8840f41` and R1 #361 `6a27204`. **A separate critical consumer seam is
+RED at #363: `verified:true` with `atomicity:BLOCKED_OWNER_COMMIT_SEAM` is still
+consumed by `OwnerVerifiedLease.acquire`, which writes a new lease after a
+post-read policy revoke. This is `BLOCKED_OWNER_COMMIT_SEAM` / `NOT_V1_SIGNED`;
+a new S1 fix PR is pending.** The fixes are stacked Drafts, not in RC-v7 and
+not an RC-v8 signature. No QA/V1/RC signature.**
 
 Lane: independent Q1 QA (#244/#250, register #256). QA2's Draft #360 was used
 read-only as the harness; the QA2 branch was not modified. All work was done
@@ -181,6 +185,36 @@ Evidence levels: S1 is `LOCAL_SYNTHETIC_PEER` / `LOCAL_SYNTHETIC_POLICY` /
 `SYNTHETIC_FIXTURE`. No `REAL_OWNER_2UID`, real provider, live OAuth,
 REAL_DEVICE or CLIENT_E2E claim.
 
+## 5b. Critical S1 consumer seam — RED at #363
+
+Independent real-process probe (`qa_probe_r18_seam_363.py`) at exact
+`8840f416169b22122450fb61a85f2b88c73715a0`:
+
+- real `Daemon` on a temp AF_UNIX socket with a synthetic owner-policy
+  resolver; one bound grant/context;
+- real `UnixSocketVerifyClient` → `ServerOSLeaseAuthority` →
+  `OwnerVerifiedLease.acquire` with a temp WorkEngine `ServerOSStore`.
+
+Positive control: a live policy acquires exactly one lease (token 1).
+
+Race: revoke the policy after the daemon's last read/response. The daemon
+answer is `verified:true`, `atomicity:BLOCKED_OWNER_COMMIT_SEAM`; the client
+checks only `verified is True`, builds the `LeaseGrant`, and `acquire` writes
+**one new lease** (`token=1`, `owner=human:A`). That is a **FAIL** of the
+required fail-closed boundary — a post-read revoke produced a lease.
+
+Controls: no owner resolver → `BLOCKED_OWNER_POLICY`, zero leases; no trusted
+authority → `BLOCKED_TRUST_SOURCE`, zero leases.
+
+Required fix: either the daemon returns `verified:false,
+reason:BLOCKED_OWNER_COMMIT_SEAM` until a real atomic commit fence exists, or
+the mutating Work/lease boundary enforces an authoritative fence the adapter
+validates. Renaming the reason or adding another read is not a fence. **No new
+S1 fix PR is published yet; GREEN is NOT_RUN.** This is a future activation /
+V1 release blocker (`BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`), not evidence
+of a current production exploit because the installed daemon binds no
+resolver.
+
 ## 6. Judgment
 
 **QA_PARTIAL / NOT_RELEASE; no QA/V1/RC-v7/RC-v8 signature.** The original
@@ -191,7 +225,11 @@ without a production resolver; R1 remains `SYNTHETIC_FIXTURE` with production
 `BLOCKED_PROVIDER_SOURCE`/`BLOCKED_OWNER_SIGNATURE`. Unit-test green is not a
 production trust signature. Real owner resolver and two real UIDs, a real
 provider/owner signature, live OAuth, Windows real SCM/REAL_DEVICE,
-CLIENT_E2E and full T1–T12 remain BLOCKED; RC-v8 is not published.
+CLIENT_E2E and full T1–T12 remain BLOCKED; RC-v8 is not published. The
+consumer seam at #363 is independently RED (`BLOCKED_OWNER_COMMIT_SEAM /
+NOT_V1_SIGNED`): `OwnerVerifiedLease.acquire` writes a new lease from a
+point-in-time `verified:true` answer after a post-read revoke. Until a new S1
+fix is published and re-tested, no V1 Work Engine lease-authority signature.
 
 ## 7. Receipts
 
