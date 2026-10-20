@@ -2,7 +2,7 @@
 
 **PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.**
 
-Round 2 hardness notes are below; the production default is still blocked.
+Rounds 2–4 hardness notes are below; the production default is still blocked.
 
 | Flag | Value |
 |---|---|
@@ -121,6 +121,41 @@ owner interface; a same-epoch in-place grant/policy content mutation beyond
 actor/ref/epoch is not fully detectable and remains an owner-protocol
 requirement.
 
+## Round-4 context generation / ABA witness
+
+QA2's A→B→A witness: with only a `grant_ref`/`actor_ref` comparison, the same
+context could be moved to another grant and back (or actor A→B→A) without an
+epoch change, and the old token returned authorized again. The same-epoch
+`grant`/`policy` content mutation had the same problem.
+
+The temp prototype now has:
+
+* `proto_context.context_epoch` (strict positive integer, initial 1);
+* a test-only `rebind_context(context_ref, expected_context_epoch=...,
+  grant_ref=..., actor_ref=...)` CAS operation that increments
+  `context_epoch` in the same `BEGIN IMMEDIATE`;
+* `proto_commit.context_epoch`, `policy_digest`, `grant_digest` snapshots
+  written at acquire;
+* SQLite triggers that refuse a `proto_context` UPDATE that does not increase
+  `context_epoch`, refuse context DELETE, and make `proto_commit` rows
+  immutable (UPDATE/DELETE refused);
+* `check_writer_fenced` checks the committed context epoch first
+  (`BLOCKED_STALE_CONTEXT_EPOCH`), then grant/actor binding
+  (`BLOCKED_STALE_CONTEXT`), policy/grant epochs (`BLOCKED_STALE_EPOCH`) and
+  same-epoch policy/grant content digests (`BLOCKED_STALE_CONTENT`).
+
+RED at #378: A→B→A and same-epoch content mutation both returned
+`PROTOTYPE_FENCED_CHECK authorized:true`. GREEN: ABA returns
+`BLOCKED_STALE_CONTEXT_EPOCH`; same-epoch content mutation returns
+`BLOCKED_STALE_CONTENT`; raw SQL rebind without an epoch bump and context
+DELETE are refused by triggers. `rebind_context` is a SYNTHETIC harness API,
+not a real owner issuance interface.
+
+**NOT_PROVEN:** a database owner who drops the experimental triggers can still
+rewrite rows; production needs schema/privilege control and an atomic owner
+context-generation reissue. The digest detects changes in this prototype DB;
+it is not a real owner-signed content proof.
+
 ## Why a pure experimental module is not enough
 
 This module proves the transaction shape, not a production integration. It
@@ -181,7 +216,7 @@ Engine as-is.
 | D crash | `os._exit(17)` after writes but before COMMIT leaves no lease/commit/token; a child that commits, flushes and `os._exit(23)` reopens with lease/commit/token intact, WAL and `integrity_check=ok`; power loss **NOT_PROVEN** |
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
-| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, and same-epoch context rebind/deletion/actor remap (54 tests) |
+| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, context generation/ABA, same-epoch content digests, and immutable commit (62 tests) |
 
 ## Run
 

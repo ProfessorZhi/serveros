@@ -12,6 +12,9 @@ Flags:
   NO_TRUSTED_PEER            synthetic_peer_uid is a fixture; no SO_PEERCRED
   PRODUCTION_WIRING_REQUIRED legacy acquire/check_writer/work revoke/finalize
                              still bypass this fence
+  CONTEXT_GENERATION_FENCED  context_epoch + SQLite triggers; synthetic API only
+  EXPERIMENTAL_TRIGGERS      temp DB triggers, not a production schema/privilege
+  SAME_EPOCH_CONTENT_DIGEST  canonical policy/grant digests; prototype DB only
 
 WHAT IS REAL
 ------------
@@ -44,6 +47,9 @@ NOT PROVEN
   `finalize` or an effect being routed through this fence.
 * Power-loss/fsync durability (`os._exit` is a process kill), two real OS uids,
   a production owner key, a live provider, OAuth or a send.
+* A database owner who drops the experimental triggers can rewrite the temp
+  DB; production needs schema/privilege control. The generation/digest checks
+  are not a real owner-signed proof.
 
 OUTPUT
 ------
@@ -81,6 +87,9 @@ PROTOTYPE_FENCED_CHECK = "PROTOTYPE_FENCED_CHECK"
 POLICY_EXPIRED_AT_COMMIT = "POLICY_EXPIRED_AT_COMMIT"
 GRANT_EXPIRED_AT_COMMIT = "GRANT_EXPIRED_AT_COMMIT"
 LEASE_EXPIRED_AT_COMMIT = "LEASE_EXPIRED_AT_COMMIT"
+BLOCKED_STALE_CONTEXT_EPOCH = "BLOCKED_STALE_CONTEXT_EPOCH"
+BLOCKED_STALE_CONTENT = "BLOCKED_STALE_CONTENT"
+PROTOTYPE_CONTEXT_REBOUND = "PROTOTYPE_CONTEXT_REBOUND"
 RESOURCE_PREFIX = "work-write:"
 
 _ALLOWED_REQUEST_KEYS = {
@@ -175,6 +184,14 @@ def _digest(request: dict, peer_uid: int) -> str:
     ).hexdigest()
 
 
+def _content_digest(row) -> str:
+    """A canonical digest over every persisted column of a policy/grant row."""
+    payload = {key: row[key] for key in row.keys()}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                   default=str).encode()).hexdigest()
+
+
 class AtomicFencePrototype:
     """A temp SQLite authority fence + Work Engine lease commit.
 
@@ -265,7 +282,8 @@ class AtomicFencePrototype:
                 CREATE TABLE IF NOT EXISTS proto_context (
                     context_ref TEXT PRIMARY KEY,
                     actor_ref TEXT NOT NULL,
-                    grant_ref TEXT NOT NULL
+                    grant_ref TEXT NOT NULL,
+                    context_epoch INTEGER NOT NULL CHECK (context_epoch >= 1)
                 );
                 CREATE TABLE IF NOT EXISTS proto_commit (
                     request_id TEXT PRIMARY KEY,
@@ -274,6 +292,9 @@ class AtomicFencePrototype:
                     policy_ref TEXT NOT NULL,
                     context_ref TEXT NOT NULL,
                     context_actor TEXT NOT NULL,
+                    context_epoch INTEGER NOT NULL,
+                    policy_digest TEXT NOT NULL,
+                    grant_digest TEXT NOT NULL,
                     grant_epoch INTEGER NOT NULL,
                     policy_epoch INTEGER NOT NULL,
                     authority_epoch INTEGER NOT NULL,
@@ -292,6 +313,29 @@ class AtomicFencePrototype:
                     new_epoch INTEGER NOT NULL,
                     authority_epoch INTEGER NOT NULL
                 );
+                CREATE TRIGGER IF NOT EXISTS proto_context_epoch_must_increase
+                BEFORE UPDATE ON proto_context
+                WHEN NEW.context_epoch <= OLD.context_epoch
+                BEGIN
+                    SELECT RAISE(ABORT,
+                        'proto_context update must increase context_epoch');
+                END;
+                CREATE TRIGGER IF NOT EXISTS proto_context_delete_forbidden
+                BEFORE DELETE ON proto_context
+                BEGIN
+                    SELECT RAISE(ABORT,
+                        'proto_context rows are generation-fenced; rebind instead');
+                END;
+                CREATE TRIGGER IF NOT EXISTS proto_commit_update_forbidden
+                BEFORE UPDATE ON proto_commit
+                BEGIN
+                    SELECT RAISE(ABORT, 'proto_commit rows are immutable');
+                END;
+                CREATE TRIGGER IF NOT EXISTS proto_commit_delete_forbidden
+                BEFORE DELETE ON proto_commit
+                BEGIN
+                    SELECT RAISE(ABORT, 'proto_commit rows are immutable');
+                END;
             """)
 
     # -- synthetic owner fixtures -----------------------------------------
@@ -351,15 +395,73 @@ class AtomicFencePrototype:
                  revoked))
         return self.grant(ref)
 
-    def seed_context(self, *, context_ref, actor_ref, grant_ref) -> dict:
+    def seed_context(self, *, context_ref, actor_ref, grant_ref,
+                     context_epoch=1) -> dict:
         ref = _text(context_ref, "context_ref")
         actor = _text(actor_ref, "actor_ref")
         grant = _text(grant_ref, "grant_ref")
+        _int(context_epoch, "context_epoch")
         with self._transaction() as conn:
             conn.execute(
-                "INSERT INTO proto_context(context_ref,actor_ref,grant_ref) "
-                "VALUES (?,?,?)", (ref, actor, grant))
+                "INSERT INTO proto_context(context_ref,actor_ref,grant_ref,"
+                "context_epoch) VALUES (?,?,?,?)",
+                (ref, actor, grant, context_epoch))
         return self.context(ref)
+
+    def rebind_context(self, context_ref, *, expected_context_epoch,
+                       grant_ref=None, actor_ref=None) -> dict:
+        """TEST-ONLY synthetic owner rebind with CAS generation increment.
+
+        Any field change must increment `context_epoch` in the same SQLite
+        transaction. A SQLite trigger also refuses an UPDATE that does not
+        increase the column, so a raw SQL A→B→A cannot resurrect an old token.
+        This is a prototype fixture, not a real owner issuance interface.
+        """
+        ref = _text(context_ref, "context_ref")
+        expected = _int(expected_context_epoch, "expected_context_epoch")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT context_ref,actor_ref,grant_ref,context_epoch "
+                "FROM proto_context WHERE context_ref=?", (ref,)).fetchone()
+            if row is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_CONTEXT", "no context row to rebind")
+            current = _int(row["context_epoch"], "context.context_epoch")
+            if current != expected:
+                raise PrototypeRefusal(
+                    BLOCKED_STALE_CONTEXT_EPOCH,
+                    f"expected context epoch {expected}, current is {current}")
+            new_grant = (str(row["grant_ref"]) if grant_ref is None
+                         else _text(grant_ref, "grant_ref"))
+            new_actor = (str(row["actor_ref"]) if actor_ref is None
+                         else _text(actor_ref, "actor_ref"))
+            if (new_grant == str(row["grant_ref"])
+                    and new_actor == str(row["actor_ref"])):
+                return {
+                    "prototype_status": PROTOTYPE_CONTEXT_REBOUND,
+                    "simulated_owner": True,
+                    "owner_status": SIMULATED_OWNER,
+                    "context_ref": ref,
+                    "grant_ref": new_grant,
+                    "actor_ref": new_actor,
+                    "context_epoch": current,
+                    "replayed": True,
+                }
+            next_epoch = current + 1
+            conn.execute(
+                "UPDATE proto_context SET grant_ref=?, actor_ref=?, "
+                "context_epoch=? WHERE context_ref=?",
+                (new_grant, new_actor, next_epoch, ref))
+            return {
+                "prototype_status": PROTOTYPE_CONTEXT_REBOUND,
+                "simulated_owner": True,
+                "owner_status": SIMULATED_OWNER,
+                "context_ref": ref,
+                "grant_ref": new_grant,
+                "actor_ref": new_actor,
+                "context_epoch": next_epoch,
+                "replayed": False,
+            }
 
     # -- read helpers (test/audit only) -----------------------------------
 
@@ -566,8 +668,8 @@ class AtomicFencePrototype:
                 return self._receipt(replay)
 
             context = conn.execute(
-                "SELECT actor_ref,grant_ref FROM proto_context WHERE context_ref=?",
-                (context_ref,)).fetchone()
+                "SELECT actor_ref,grant_ref,context_epoch FROM proto_context "
+                "WHERE context_ref=?", (context_ref,)).fetchone()
             if context is None:
                 raise PrototypeRefusal(
                     "UNTRUSTED_ACTOR", "the context_ref is not a trusted context")
@@ -627,12 +729,15 @@ class AtomicFencePrototype:
             conn.execute(
                 "INSERT INTO proto_commit("
                 "request_id,request_digest,grant_ref,policy_ref,context_ref,"
-                "context_actor,grant_epoch,policy_epoch,authority_epoch,"
+                "context_actor,context_epoch,policy_digest,grant_digest,"
+                "grant_epoch,policy_epoch,authority_epoch,"
                 "resource,owner,token,expires_at,committed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, digest, str(grant["grant_ref"]),
                  str(policy["policy_ref"]), context_ref,
-                 str(context["actor_ref"]), int(grant["grant_epoch"]),
+                 str(context["actor_ref"]), int(context["context_epoch"]),
+                 _content_digest(policy), _content_digest(grant),
+                 int(grant["grant_epoch"]),
                  int(policy["policy_epoch"]), int(policy["authority_epoch"]),
                  resource,
                  str(policy["actor_ref"]), token, expires_at, committed_at))
@@ -657,6 +762,7 @@ class AtomicFencePrototype:
                 "policy_ref": str(policy["policy_ref"]),
                 "context_ref": context_ref,
                 "context_actor": str(context["actor_ref"]),
+                "context_epoch": int(context["context_epoch"]),
                 "grant_epoch": int(grant["grant_epoch"]),
                 "policy_epoch": int(policy["policy_epoch"]),
                 "authority_epoch": int(policy["authority_epoch"]),
@@ -758,19 +864,29 @@ class AtomicFencePrototype:
                     "BLOCKED_OWNER_POLICY",
                     "the lease has no fenced commit row")
             keys = set(commit.keys())
-            if "context_ref" not in keys or "context_actor" not in keys:
+            if ("context_ref" not in keys or "context_actor" not in keys
+                    or "context_epoch" not in keys):
                 raise PrototypeRefusal(
                     "BLOCKED_STALE_CONTEXT",
                     "the fenced commit has no context snapshot")
             context_ref = str(commit["context_ref"])
             context_actor = str(commit["context_actor"])
+            commit_context_epoch = _int(
+                commit["context_epoch"], "commit.context_epoch")
             context = conn.execute(
-                "SELECT actor_ref,grant_ref FROM proto_context WHERE context_ref=?",
-                (context_ref,)).fetchone()
+                "SELECT actor_ref,grant_ref,context_epoch FROM proto_context "
+                "WHERE context_ref=?", (context_ref,)).fetchone()
             if context is None:
                 raise PrototypeRefusal(
                     "BLOCKED_STALE_CONTEXT",
                     "the committed context_ref no longer exists")
+            current_context_epoch = _int(
+                context["context_epoch"], "context.context_epoch")
+            if current_context_epoch != commit_context_epoch:
+                raise PrototypeRefusal(
+                    BLOCKED_STALE_CONTEXT_EPOCH,
+                    f"the context epoch moved from {commit_context_epoch} to "
+                    f"{current_context_epoch}; the token is historical")
             if str(context["grant_ref"]) != str(commit["grant_ref"]):
                 raise PrototypeRefusal(
                     "BLOCKED_STALE_CONTEXT",
@@ -817,6 +933,14 @@ class AtomicFencePrototype:
                     "BLOCKED_STALE_EPOCH",
                     f"the grant epoch moved from {commit['grant_epoch']} to "
                     f"{grant['grant_epoch']}; the token is historical")
+            if _content_digest(policy) != str(commit["policy_digest"]):
+                raise PrototypeRefusal(
+                    BLOCKED_STALE_CONTENT,
+                    "the policy content changed without a policy/authority epoch move")
+            if _content_digest(grant) != str(commit["grant_digest"]):
+                raise PrototypeRefusal(
+                    BLOCKED_STALE_CONTENT,
+                    "the grant content changed without a grant epoch move")
             self._check_commit_windows(policy, grant, row["expires_at"], now_e)
             return {
                 "prototype_status": PROTOTYPE_FENCED_CHECK,
@@ -830,6 +954,7 @@ class AtomicFencePrototype:
                 "token": token,
                 "context_ref": context_ref,
                 "context_actor": context_actor,
+                "context_epoch": current_context_epoch,
                 "grant_ref": str(commit["grant_ref"]),
                 "policy_ref": str(commit["policy_ref"]),
                 "grant_epoch": int(grant["grant_epoch"]),
@@ -930,6 +1055,7 @@ class AtomicFencePrototype:
             "policy_ref": str(row["policy_ref"]),
             "context_ref": str(row["context_ref"]),
             "context_actor": str(row["context_actor"]),
+            "context_epoch": int(row["context_epoch"]),
             "grant_epoch": int(row["grant_epoch"]),
             "policy_epoch": int(row["policy_epoch"]),
             "authority_epoch": int(row["authority_epoch"]),

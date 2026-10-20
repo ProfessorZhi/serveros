@@ -137,23 +137,39 @@ def _seed_second_grant(p, ref="grant:proto-2", **overrides):
     p.seed_grant(**values)
 
 
-def _rebind_context(p, *, grant_ref, actor_ref=ACTOR):
+def _raw_sql(p, sql, params=()):
     conn = sqlite3.connect(p.db_path, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "UPDATE proto_context SET grant_ref=?, actor_ref=? WHERE context_ref=?",
-            (grant_ref, actor_ref, CONTEXT_REF))
+        conn.execute(sql, params)
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def _delete_context(p):
+def _insert_orphan_commit(p, *, resource, token, context_ref="ctx:missing"):
+    """Test-only legacy row with a context ref that does not exist."""
+    expires = proto._lease_stamp(NOW + 30)
+    committed = proto._lease_stamp(NOW)
     conn = sqlite3.connect(p.db_path, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM proto_context WHERE context_ref=?", (CONTEXT_REF,))
+        conn.execute(
+            "INSERT INTO leases(resource,owner,token,expires_at) "
+            "VALUES (?,?,?,?)", (resource, ACTOR, token, expires))
+        conn.execute(
+            "INSERT INTO proto_commit("
+            "request_id,request_digest,grant_ref,policy_ref,context_ref,"
+            "context_actor,context_epoch,policy_digest,grant_digest,"
+            "grant_epoch,policy_epoch,authority_epoch,resource,owner,token,"
+            "expires_at,committed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("req:orphan", "x", GRANT_REF, POLICY_REF, context_ref,
+             ACTOR, 1, "x", "x", 1, 1, 1, resource, ACTOR, token,
+             expires, committed))
         conn.commit()
     finally:
         conn.close()
@@ -645,17 +661,15 @@ def test_fenced_check_refuses_after_grant_epoch_bump(tmp_path):
     assert caught.value.code == "BLOCKED_STALE_EPOCH", str(caught.value)
 
 
-def test_fenced_check_refuses_same_epoch_context_rebind(tmp_path):
-    """QA2 witness: a context rebind to a different grant must invalidate token 1.
-
-    A second grant with the same owner policy and the same grant_epoch is
-    inserted, and proto_context is rebound to it. The commit row still names
-    grant:proto; the token is historical and must be refused.
-    """
+def test_fenced_check_refuses_context_rebind_to_a_same_epoch_grant(tmp_path):
+    """A rebind must bump context_epoch; old grant_epoch equality is not enough."""
     p = _make(tmp_path)
     receipt = p.acquire(_request())
     _seed_second_grant(p, "grant:proto-2")
-    _rebind_context(p, grant_ref="grant:proto-2")
+    rebind = p.rebind_context(CONTEXT_REF, expected_context_epoch=1,
+                              grant_ref="grant:proto-2")
+    assert rebind["context_epoch"] == 2
+    assert p.context(CONTEXT_REF)["context_epoch"] == 2
     store = proto.ServerOSStore(str(p.state_dir))
     legacy = store.check_writer(RESOURCE, owner=ACTOR,
                                 token=receipt["token"], now=NOW)
@@ -663,26 +677,68 @@ def test_fenced_check_refuses_same_epoch_context_rebind(tmp_path):
     with pytest.raises(proto.PrototypeRefusal) as caught:
         p.check_writer_fenced(RESOURCE, owner=ACTOR,
                               token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTEXT_EPOCH", str(caught.value)
+
+
+def test_context_aba_rebind_cannot_resurrect_the_old_token(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    _seed_second_grant(p, "grant:proto-2")
+    assert p.rebind_context(CONTEXT_REF, expected_context_epoch=1,
+                            grant_ref="grant:proto-2")["context_epoch"] == 2
+    assert p.rebind_context(CONTEXT_REF, expected_context_epoch=2,
+                            grant_ref=GRANT_REF)["context_epoch"] == 3
+    assert p.context(CONTEXT_REF)["context_epoch"] == 3
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTEXT_EPOCH", str(caught.value)
+
+
+def test_context_actor_aba_cannot_resurrect_the_old_token(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    assert p.rebind_context(CONTEXT_REF, expected_context_epoch=1,
+                            actor_ref="human:B")["context_epoch"] == 2
+    assert p.rebind_context(CONTEXT_REF, expected_context_epoch=2,
+                            actor_ref=ACTOR)["context_epoch"] == 3
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTEXT_EPOCH", str(caught.value)
+
+
+def test_raw_sql_context_rebind_without_epoch_is_refused(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    _seed_second_grant(p, "grant:proto-2")
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_sql(p, "UPDATE proto_context SET grant_ref=? WHERE context_ref=?",
+                 ("grant:proto-2", CONTEXT_REF))
+    assert p.context(CONTEXT_REF)["context_epoch"] == 1
+    checked = p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                    token=receipt["token"])
+    assert checked["authorized"] is True
+
+
+def test_context_delete_is_refused_by_generation_trigger(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_sql(p, "DELETE FROM proto_context WHERE context_ref=?",
+                 (CONTEXT_REF,))
+    checked = p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                    token=receipt["token"])
+    assert checked["authorized"] is True
+
+
+def test_fenced_check_refuses_a_missing_context_row(tmp_path):
+    p = _make(tmp_path)
+    p.acquire(_request())
+    _insert_orphan_commit(p, resource="work-write:SRV-9999", token=77)
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced("work-write:SRV-9999", owner=ACTOR, token=77)
     assert caught.value.code == "BLOCKED_STALE_CONTEXT", str(caught.value)
-
-
-def test_fenced_check_refuses_deleted_or_actor_remapped_context(tmp_path):
-    for label, mutation, code in (
-            ("deleted", lambda p: _delete_context(p),
-             "BLOCKED_STALE_CONTEXT"),
-            ("actor", lambda p: _rebind_context(p, grant_ref=GRANT_REF,
-                                                actor_ref="human:B"),
-             "BLOCKED_STALE_CONTEXT"),
-    ):
-        case = tmp_path / label
-        case.mkdir()
-        p = _make(case)
-        receipt = p.acquire(_request())
-        mutation(p)
-        with pytest.raises(proto.PrototypeRefusal) as caught:
-            p.check_writer_fenced(RESOURCE, owner=ACTOR,
-                                  token=receipt["token"])
-        assert caught.value.code == code, str(caught.value)
 
 
 def test_context_rebind_priority_over_policy_revoke_and_epoch_bump(tmp_path):
@@ -696,13 +752,71 @@ def test_context_rebind_priority_over_policy_revoke_and_epoch_bump(tmp_path):
         p = _make(case)
         receipt = p.acquire(_request())
         _seed_second_grant(p, "grant:proto-2")
-        _rebind_context(p, grant_ref="grant:proto-2")
+        p.rebind_context(CONTEXT_REF, expected_context_epoch=1,
+                         grant_ref="grant:proto-2")
         mutate(p)
         with pytest.raises(proto.PrototypeRefusal) as caught:
             p.check_writer_fenced(RESOURCE, owner=ACTOR,
                                   token=receipt["token"])
-        assert caught.value.code == "BLOCKED_STALE_CONTEXT", (
+        assert caught.value.code == "BLOCKED_STALE_CONTEXT_EPOCH", (
             label, str(caught.value))
+
+
+def test_same_epoch_grant_content_mutation_is_refused(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    _raw_sql(p, "UPDATE proto_grant SET projects_json=? WHERE grant_ref=?",
+             ('["other"]', GRANT_REF))
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTENT", str(caught.value)
+
+
+def test_same_epoch_policy_content_mutation_is_refused(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    _raw_sql(p, "UPDATE proto_owner_policy SET projects_json=? "
+                "WHERE policy_ref=?", ('["other"]', POLICY_REF))
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTENT", str(caught.value)
+
+
+def test_cross_context_rebind_does_not_affect_the_old_token(tmp_path):
+    p = _make(tmp_path)
+    p.seed_context(context_ref="ctx:other", actor_ref=ACTOR,
+                   grant_ref=GRANT_REF)
+    receipt = p.acquire(_request())
+    _seed_second_grant(p, "grant:proto-2")
+    p.rebind_context("ctx:other", expected_context_epoch=1,
+                     grant_ref="grant:proto-2")
+    checked = p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                    token=receipt["token"])
+    assert checked["authorized"] is True
+    assert checked["context_ref"] == CONTEXT_REF
+
+
+def test_commit_rows_are_immutable(tmp_path):
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_sql(p, "UPDATE proto_commit SET context_ref=? WHERE request_id=?",
+                 ("ctx:other", "req:1"))
+    with pytest.raises(sqlite3.IntegrityError):
+        _raw_sql(p, "DELETE FROM proto_commit WHERE request_id=?", ("req:1",))
+    checked = p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                    token=receipt["token"])
+    assert checked["authorized"] is True
 
 
 def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
@@ -717,6 +831,7 @@ def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
     assert checked["effect_eligible"] is False
     assert checked["context_ref"] == CONTEXT_REF
     assert checked["context_actor"] == ACTOR
+    assert checked["context_epoch"] == 1
     assert checked["grant_ref"] == GRANT_REF
 
 
