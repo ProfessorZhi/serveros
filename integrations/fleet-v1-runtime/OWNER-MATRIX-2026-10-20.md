@@ -87,6 +87,16 @@ enrollment: enrolled
 - 不能把该行当作 Full V1 Codex 节点（它只声明 claude-code）；
 - 不能 fallback 到 `device:personal-dell` 或任何其他 Windows 设备。
 
+### 2.2 `device agents` 的 `runtimes` 列表不是 binding
+
+`serverosctl device agents --json` 对 Tokyo 报
+`runtimes: [claude-code, codex]`、`verdict: CONFORMANT`，但同一记录的
+`bindings.count` 是 **1**，binding 只有 `agent-runtime:claude-code`。
+该 `runtimes` 列表是**结构性 surface presence**（本机检测到的 runtime 面），
+不是 `runtime_bindings`。resolver 的 `_step_agent_runtime` 读 `device.agents`，
+而 Tokyo 的 `agents` 只有 claude-code；因此 Codex 仍在 runtime gate 被拒。
+这条区分是 R1 的核心：**installed/visible ≠ bound ≠ runnable**。
+
 ## 3. 四个面的逐 verb 矩阵
 
 ### 3.1 ServerOS Agent MCP（admission-controlled）
