@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "serveros/windows-core-status.v1",
+  "title": "Windows Core status — one read-only envelope",
+  "description": "The machine-checkable form of contract/windows-core-status.v1.md. It carries what a Windows Core may report about its services and about itself; it cannot carry a verb, a remote host, a credential, or a claim that the unimplemented named-pipe route works. Every object is additionalProperties:false, so a consumer can tell from this file alone which keys may appear.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "platform",
+    "mode",
+    "node",
+    "principal",
+    "generation",
+    "freshness",
+    "principal_identity",
+    "device_identity",
+    "ipc",
+    "services"
+  ],
+  "properties": {
+    "schema": {
+      "const": "serveros/windows-core-status.v1"
+    },
+    "platform": {
+      "const": "windows"
+    },
+    "mode": {
+      "const": "observe-only"
+    },
+    "node": {
+      "type": "string",
+      "description": "A CLAIM. This build has no authenticated device route, so device_identity says UNKNOWN with basis NONE."
+    },
+    "principal": {
+      "type": "string",
+      "description": "A CLAIM. This build has no OS identity readback, so principal_identity says UNKNOWN with basis NONE."
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "freshness": {
+      "const": "NOT_ASSERTED",
+      "description": "This producer has no clock it trusts. Deciding a reading is stale belongs to a trusted Node or Fleet reader."
+    },
+    "principal_identity": {
+      "$ref": "#/$defs/identity_verdict"
+    },
+    "device_identity": {
+      "$ref": "#/$defs/identity_verdict"
+    },
+    "ipc": {
+      "$ref": "#/$defs/ipc_route"
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/service_row"
+      }
+    }
+  },
+  "$defs": {
+    "basis": {
+      "description": "How an identity was established. Only ATTESTED may support a MATCHED claim, and nothing in this build can attest either a principal or a device.",
+      "enum": [
+        "ATTESTED",
+        "LOCAL_DECLARATION",
+        "CALLER_SUPPLIED",
+        "NONE"
+      ]
+    },
+    "identity_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "basis",
+        "claimed"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "MATCHED",
+            "MISMATCH",
+            "UNKNOWN"
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "claimed": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "ipc_route": {
+      "description": "The Core's own status route. UNSUPPORTED is a constant in this build: a named pipe with a DACL and a client token has not been compiled or run, and an unverified security descriptor is not a guarantee.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNSUPPORTED"
+        },
+        "reason": {
+          "const": "NO_VERIFIED_SECURITY_DESCRIPTOR"
+        }
+      }
+    },
+    "service_state": {
+      "description": "The closed Windows SCM vocabulary. RUNNING is the weakest word: a service can be RUNNING with its listener unbound. MANUAL_STOP is a person's decision, not a stopped service. UNKNOWN is never STOPPED.",
+      "enum": [
+        "RUNNING",
+        "STOPPED",
+        "START_PENDING",
+        "STOP_PENDING",
+        "CONTINUE_PENDING",
+        "PAUSE_PENDING",
+        "PAUSED",
+        "MANUAL_STOP",
+        "NEEDS_LOGIN",
+        "NOT_INSTALLED",
+        "UNKNOWN"
+      ]
+    },
+    "start_type": {
+      "enum": [
+        "AUTO_START",
+        "DEMAND_START",
+        "DISABLED"
+      ]
+    },
+    "readiness": {
+      "description": "The same three words the Linux readiness rule uses.",
+      "enum": [
+        "READY",
+        "NOT_READY",
+        "UNMEASURED"
+      ]
+    },
+    "admission": {
+      "description": "The Linux admission vocabulary, reused so one fact has one word on both platforms.",
+      "enum": [
+        "ADMITTED",
+        "NOT_INSTALLED",
+        "MASKED",
+        "NEEDS_LOGIN",
+        "INSTALL_STATE_UNKNOWN"
+      ]
+    },
+    "service_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "state",
+        "measured",
+        "readiness",
+        "admission"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/service_state"
+        },
+        "start_type": {
+          "$ref": "#/$defs/start_type"
+        },
+        "raw_state": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The SCM's dwCurrentState, carried only when it was read. An unmeasured row omits it, so a reader cannot mistake absence for a number."
+        },
+        "measured": {
+          "type": "boolean"
+        },
+        "readiness": {
+          "$ref": "#/$defs/readiness"
+        },
+        "admission": {
+          "$ref": "#/$defs/admission"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

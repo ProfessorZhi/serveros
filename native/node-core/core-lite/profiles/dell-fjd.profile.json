@@ -1,0 +1,43 @@
+{
+  "schema": "serveros/core-lite-profile.v1",
+  "node": "device:llm-lab-dell",
+  "principal": "fjd",
+  "platform": "linux",
+  "observe_only": true,
+  "generation": 1,
+  "observations": [
+    {
+      "name": "cpu",
+      "authorized": true
+    },
+    {
+      "name": "memory",
+      "authorized": true
+    },
+    {
+      "name": "swap",
+      "authorized": true
+    },
+    {
+      "name": "psi.memory",
+      "authorized": true
+    },
+    {
+      "name": "services",
+      "authorized": true
+    },
+    {
+      "name": "connector",
+      "authorized": true
+    },
+    {
+      "name": "gpu.readonly",
+      "authorized": true
+    },
+    {
+      "name": "storage.readonly",
+      "authorized": true
+    }
+  ],
+  "services": []
+}
