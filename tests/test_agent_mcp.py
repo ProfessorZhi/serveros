@@ -14,6 +14,7 @@ and the reason for declining them was the thing that landed.
 from __future__ import annotations
 
 import ast
+import datetime
 import io
 import importlib.util
 import json
@@ -71,13 +72,17 @@ PROVIDER = "provider:test-agent-session"
 ITEM = "LIT-0101"
 
 
-def minted_context(*, actor_id: str = "human:hwz") -> dict:
+def minted_context(*, actor_id: str = "human:hwz",
+                   now: str | None = None) -> dict:
     """A context ServerOS really minted, from a report a provider really could
     have produced. Built through `actor.build` rather than hand-written: a
     literal here would be this file's idea of a trusted context, and the
     resolver's idea is the one that decides whether a mutation is authorized.
+
+    `now` is supplied by the freshness-boundary tests so they can mint an aged
+    record without sleeping; the default is the real clock, as before.
     """
-    now = provider_instance.now_utc()
+    now = now or provider_instance.now_utc()
     report = {
         "human_control_provider": "provider:botmux-human-control",
         "transport": "feishu",
@@ -95,6 +100,51 @@ def minted_context(*, actor_id: str = "human:hwz") -> dict:
 
 CONTEXT = minted_context()
 CONTEXT_REF = CONTEXT["context_ref"]
+
+#: A default that means "the module's current context", resolved when the call
+#: is made. A literal `= CONTEXT_REF` in a signature is evaluated at import and
+#: would keep pointing at the first mint after `build()` re-mints.
+_CURRENT_CONTEXT = object()
+
+
+def _aged_context(seconds: int) -> dict:
+    """A context minted `seconds` ago, for the freshness boundary tests.
+
+    Minted at a past instant rather than by sleeping: `actor.build` takes the
+    clock as an argument, so the record's own window is reproducible and the
+    test does not spend the five minutes it is about.
+    """
+    past = (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=seconds)).isoformat()
+    return minted_context(now=past)
+
+
+def _use_context(context: dict) -> tuple[dict, str]:
+    """Install `context` as the module's current pair; return the previous one."""
+    global CONTEXT, CONTEXT_REF
+    previous = (CONTEXT, CONTEXT_REF)
+    CONTEXT, CONTEXT_REF = context, context["context_ref"]
+    return previous
+
+
+def _restore_context(previous: tuple[dict, str]) -> None:
+    global CONTEXT, CONTEXT_REF
+    CONTEXT, CONTEXT_REF = previous
+
+
+def _refresh_context() -> None:
+    """Mint a fresh context for the test about to run.
+
+    `CONTEXT` is minted once at import, and the contract computes freshness at
+    READ time (`stale_after_seconds: 300`). A suite that takes longer than that
+    would otherwise hand its own positive fixture to the gate as STALE, and the
+    gate would answer UNTRUSTED_ACTOR before the approval check the test is
+    about. Re-minting per `build()` keeps the positive fixture positive
+    without moving the threshold or touching the product's verdict.
+    """
+    global CONTEXT, CONTEXT_REF
+    CONTEXT = minted_context()
+    CONTEXT_REF = CONTEXT["context_ref"]
 
 
 class FakeDaemon:
@@ -214,6 +264,7 @@ def build(*, daemon=None, provider=None, providers=None, decision="ALLOW"):
     provider and the daemon. A fixture that replaced the router would be
     asserting this file's idea of §11 rather than the deployed one.
     """
+    _refresh_context()
     daemon = daemon or FakeDaemon(decision=decision)
     if providers is None:
         providers = [provider or FakeProvider()]
@@ -564,7 +615,8 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         self.provider = self.service.providers[PROVIDER]
         self.ref = semantics.session_ref(LOCAL, PROVIDER, "s1")
 
-    def arguments_for(self, name: str, context_ref: str | None = CONTEXT_REF) -> dict:
+    def arguments_for(self, name: str,
+                      context_ref: str | None = _CURRENT_CONTEXT) -> dict:
         """The smallest legal call of each control action, addressed to the
         fixture's session. `context_ref=None` leaves the key out entirely, which
         the schema refuses and `""` does not.
@@ -574,6 +626,8 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         before the provider is asked, and a fixture that omitted them would be a
         fixture of an illegal call.
         """
+        if context_ref is _CURRENT_CONTEXT:
+            context_ref = CONTEXT_REF
         if name == "agent.session.create":
             arguments = {"device": LOCAL, "runtime": RUNTIME, "agent_id": "a1",
                          "instruction": "go", "idempotency_key": "k1",
@@ -742,6 +796,54 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         self.assertFalse(answer["ok"])
         self.assertEqual(answer["reason"], "APPROVAL_REQUIRED")
         self.assertEqual(self.provider.calls, [])
+
+    def test_build_remints_the_context_so_a_long_suite_stays_fresh(self):
+        """The fixture's context is minted at import and aged at read time.
+
+        `freshness` requires FRESH to authorize and `stale_after_seconds` is
+        300. A core batch that takes longer than that would turn this file's
+        own positive fixture into a STALE context; the gate then answers
+        UNTRUSTED_ACTOR before reaching the approval check this class is about.
+        Minting per `build()` keeps the positive path positive without moving
+        the threshold, and the stale-context test below proves the boundary
+        itself is still enforced.
+        """
+        previous = _use_context(_aged_context(301))
+        try:
+            client, service, _daemon = build()
+            is_error, answer = payload(call(
+                client, "agent.session.stop",
+                session_ref=semantics.session_ref(LOCAL, PROVIDER, "s1"),
+                runtime=RUNTIME, context_ref=CONTEXT_REF))
+            self.assertFalse(is_error, answer)
+            self.assertFalse(answer["ok"])
+            self.assertEqual(answer["reason"], "APPROVAL_REQUIRED")
+            self.assertEqual(service.providers[PROVIDER].calls, [])
+        finally:
+            _restore_context(previous)
+
+    def test_a_stale_or_expired_context_is_refused_before_the_approval_check(self):
+        """Re-minting the positive fixture must not make an old context pass.
+
+        The context is presented explicitly, so this test does not depend on
+        what `build()` mints. STALE and EXPIRED are both refusals by name, and
+        neither reaches the approval decision or the provider.
+        """
+        for seconds, because in ((301, "not recently enough"),
+                                 (901, "past the 900s window")):
+            with self.subTest(seconds=seconds):
+                stale = _aged_context(seconds)
+                daemon = FakeDaemon(contexts={stale["context_ref"]: stale})
+                client, service, _daemon = build(daemon=daemon)
+                is_error, answer = payload(call(
+                    client, "agent.session.stop",
+                    session_ref=semantics.session_ref(LOCAL, PROVIDER, "s1"),
+                    runtime=RUNTIME, context_ref=stale["context_ref"]))
+                self.assertFalse(is_error, answer)
+                self.assertFalse(answer["ok"])
+                self.assertEqual(answer["reason"], "UNTRUSTED_ACTOR")
+                self.assertIn(because, answer["detail"])
+                self.assertEqual(service.providers[PROVIDER].calls, [])
 
     def test_a_remote_device_answers_a_typed_unavailability(self):
         """§7/§13. Never a locally-served request, and never an empty list."""
