@@ -81,6 +81,10 @@ def a_grant(context: dict, *, valid_from="2026-10-20T00:00:00+00:00",
         "actions": [ACTION],
         "revoked": False,
         "epoch": 1,
+        # RC-v2 compatibility: #275 made the kernel-peer binding mandatory
+        # after this fixture was written. The default peer in verify() is the
+        # same uid, so the binding is satisfied without weakening #275's check.
+        "os_principal": f"uid:{os.getuid()}",
     }
     record.update(overrides)
     return record
