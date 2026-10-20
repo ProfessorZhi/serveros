@@ -1,0 +1,3 @@
+Only in /data/home/vince/artifacts/skills/qa2-independent-security/2026-10-21/checkouts/a-prime-379-7245fc6: .snapshot-sha
+diff rc=1
+only .snapshot-sha marker differs; content identical to git archive 7245fc6b3711172251e20450d4356abff8af91ee
