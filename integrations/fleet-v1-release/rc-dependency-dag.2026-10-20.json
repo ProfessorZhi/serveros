@@ -1380,5 +1380,27 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-V2-REVIEW-2026-10-20.md"
-  }
+  },
+  "follow_ups": [
+    {
+      "pr": 320,
+      "head": "d559e17442176e126bb4cf3cef6a074f85190245",
+      "note": "QA U GREEN; child of #318; not in RC-v2"
+    },
+    {
+      "pr": 321,
+      "head": "ab24bcf896",
+      "note": "QA U focused Node Core 2/2 LOCAL PASS; child of #317; not in RC-v2"
+    },
+    {
+      "pr": 324,
+      "head": "1919c05e939ca7171845b23aeadbdd050baf75db",
+      "note": "QA snapshot U; QA_PARTIAL, no signature"
+    },
+    {
+      "pr": 328,
+      "head": "cf32af82c0",
+      "note": "S2 reconcile caller, stacked on #312; not reviewed"
+    }
+  ]
 }
