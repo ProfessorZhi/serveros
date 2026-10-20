@@ -628,6 +628,66 @@
       "merge_base": "771c81c",
       "own_commits": 1,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 321,
+      "lane": "N1",
+      "base": "feat/n1-action-state-required-20261020",
+      "base_sha": "cb38ec6fe039c7ba85c8e73f1f7c3e351edaf235",
+      "head": "ab24bcf896",
+      "merge_base": "e8eccf2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 327,
+      "lane": "N1",
+      "base": "feat/n1-dirfd-state-root-20261020",
+      "base_sha": "ab24bcf896",
+      "head": "5b7ed524fce096fcda6b85a2636cd18d87912343",
+      "merge_base": "e8eccf2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 328,
+      "lane": "S2",
+      "base": "feat/s1-dispatch-reconcile-gate-20261020",
+      "base_sha": "2a3e1352b442b0a307deba50e293a10c8ef34d61",
+      "head": "cf32af82c03eb52a4f34e2907e670f23b04a9b57",
+      "merge_base": "665067e",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 322,
+      "lane": "X1",
+      "base": "rc/i1-review-20261020",
+      "base_sha": "3f0240d",
+      "head": "0c35047934db31c776ea0851a14cb88238dd65cc",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 326,
+      "lane": "X1",
+      "base": "rc/i1-review-20261020",
+      "base_sha": "3f0240d",
+      "head": "3d30c98ed5e0dc7750c8b5a7b9e194c5659d9e3e",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 323,
+      "lane": "W2",
+      "base": "main",
+      "base_sha": "771c81c",
+      "head": "d695379c661289d6db9ed306bb2d59ec08309e97",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -904,6 +964,16 @@
     {
       "from": 316,
       "to": 319,
+      "kind": "base"
+    },
+    {
+      "from": 321,
+      "to": 327,
+      "kind": "base"
+    },
+    {
+      "from": 312,
+      "to": 328,
       "kind": "base"
     }
   ],
@@ -1402,5 +1472,57 @@
       "head": "cf32af82c0",
       "note": "S2 reconcile caller, stacked on #312; not reviewed"
     }
-  ]
+  ],
+  "review_rc_v3": {
+    "branch": "rc/i1-v3-review-20261020",
+    "tip": "e3dc9c7ca0aeca9dd97e981de85da3a727ed9d8a",
+    "tested_head": "6356db59d598ccc0be8957e53b5746154a8e4fe0",
+    "baseline_sha": "ec43f714c855e07055f32707d4afaebcc5313580",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 336,
+    "incremental": [
+      320,
+      327,
+      328,
+      322,
+      326,
+      323
+    ],
+    "semantic_conflict": {
+      "pair": "#326 x #304",
+      "files": [
+        "tests/v1_portability/test_portability_boundary.py:77",
+        "tests/test_fleet_v1_t10_legacy_compatibility.py:373"
+      ],
+      "status": "BLOCKED_SEMANTIC"
+    },
+    "contamination": {
+      "files": [
+        "tests/test_fleet_v1_t10_authority_bridge.py:121-128",
+        "tests/test_fleet_v1_t10_signed_finalization.py:127-134"
+      ],
+      "combined": "55 failed / 75 passed",
+      "isolated_finalize": "56 passed",
+      "isolated_t10": "55 passed + 2 semantic failed"
+    },
+    "tests": {
+      "targeted": "160 passed/185 subtests + 1 semantic fail",
+      "core": "821 passed/7 xfailed/285 subtests + 2 fails",
+      "agent_mcp_alone": "70 passed/175 subtests",
+      "w2": "46 passed",
+      "node_core": "gate 89/0, journal 88/0",
+      "f1": "29 PASS FAKE_DEVICE"
+    },
+    "real_temp": "PASS/REFUSAL; temp removed",
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V3-REVIEW-2026-10-20.md"
+  }
 }
