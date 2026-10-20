@@ -42,6 +42,10 @@ def _load_prototype():
 
 proto = _load_prototype()
 
+FORK_ONLY = pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="MULTIPROCESS_FORK_NOT_AVAILABLE: Linux-only prototype evidence")
+
 NOW = 2_000_000_000.0
 UID = 4242
 ACTOR = "human:A"
@@ -459,6 +463,7 @@ def _join(process, timeout=20):
     assert process.exitcode == 0, f"worker exit {process.exitcode}"
 
 
+@FORK_ONLY
 def test_two_processes_compete_for_one_fenced_lease(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
@@ -487,6 +492,7 @@ def test_two_processes_compete_for_one_fenced_lease(tmp_path):
     assert p.commit_count() == 1
 
 
+@FORK_ONLY
 def test_acquire_lock_precedes_a_concurrent_revoke(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
@@ -526,6 +532,7 @@ def test_acquire_lock_precedes_a_concurrent_revoke(tmp_path):
     assert p.commit_count() == 1
 
 
+@FORK_ONLY
 def test_revoke_first_then_acquire_in_another_process_is_refused(tmp_path):
     p = _make(tmp_path)
     p.revoke_policy(POLICY_REF, expected_policy_epoch=1, now=NOW)
@@ -546,6 +553,7 @@ def test_revoke_first_then_acquire_in_another_process_is_refused(tmp_path):
 # Crash / rollback / restart.
 # ---------------------------------------------------------------------------
 
+@FORK_ONLY
 def test_crash_before_commit_leaves_no_lease_commit_or_token(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
@@ -565,6 +573,7 @@ def test_crash_before_commit_leaves_no_lease_commit_or_token(tmp_path):
     assert reopened.policy(POLICY_REF)["policy_epoch"] == 1
 
 
+@FORK_ONLY
 def test_commit_survives_restart_and_replay_is_idempotent(tmp_path):
     p = _make(tmp_path)
     ctx = multiprocessing.get_context("fork")
