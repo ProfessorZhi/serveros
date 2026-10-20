@@ -711,9 +711,11 @@ class AtomicFencePrototype:
 
         `ServerOSStore.check_writer` reads only the lease row, so a token
         acquired before a revoke still looks authorized. This method reads the
-        `proto_commit` row and the current policy in one `BEGIN IMMEDIATE` and
-        refuses after a revoke/epoch change. It is still NOT an effect
-        transaction: a caller must hold the fence across its effect.
+        `proto_commit` row, the current policy and the current grant in one
+        `BEGIN IMMEDIATE`, checks the commit/grant/policy lineage and refuses
+        after a revoke or a policy/authority/grant epoch change. It is still
+        NOT an effect transaction: a caller must hold the fence across its
+        effect.
         """
         if not isinstance(resource, str) or not resource.strip():
             raise PrototypeRefusal("NOT_HOLDER", "a lease names a resource")
@@ -756,6 +758,24 @@ class AtomicFencePrototype:
             if grant is None:
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY", "the fenced commit has no grant")
+            # The commit row, the grant row and the policy row must be the
+            # same authority lineage, and the grant generation must still be
+            # the one the lease was committed under. A bump of grant_epoch
+            # invalidates the historical token even when policy/authority
+            # epochs are unchanged.
+            if str(commit["grant_ref"]) != str(grant["grant_ref"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY",
+                    "the fenced commit's grant_ref does not match the grant")
+            if str(grant["policy_ref"]) != str(commit["policy_ref"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY",
+                    "the grant's policy_ref does not match the commit")
+            if int(commit["grant_epoch"]) != int(grant["grant_epoch"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_EPOCH",
+                    f"the grant epoch moved from {commit['grant_epoch']} to "
+                    f"{grant['grant_epoch']}; the token is historical")
             self._check_commit_windows(policy, grant, row["expires_at"], now_e)
             if _strict_flag(policy["revoked"], "policy.revoked"):
                 raise PrototypeRefusal(
@@ -776,6 +796,7 @@ class AtomicFencePrototype:
                 "resource": str(resource),
                 "owner": str(owner),
                 "token": token,
+                "grant_epoch": int(grant["grant_epoch"]),
                 "policy_epoch": int(policy["policy_epoch"]),
                 "authority_epoch": int(policy["authority_epoch"]),
             }

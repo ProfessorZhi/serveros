@@ -80,9 +80,12 @@ production store clock or kernel `SO_PEERCRED` (`NO_TRUSTED_CLOCK`,
   live. It is an audit record, not current authority and not effect-eligible.
   The idempotency digest includes the expected authority/grant epoch pins.
 * **Fenced writer check.** `check_writer_fenced` re-reads the commit policy
-  epoch, the current policy and the grant in one `BEGIN IMMEDIATE`, and
-  refuses a pre-revoke token after a revoke or an expired policy/grant window.
-  It is still a point-in-time check, not an effect transaction.
+  and grant epoch, the current policy and the current grant in one
+  `BEGIN IMMEDIATE`, checks the commit/grant/policy lineage, and refuses a
+  pre-revoke token after a revoke, an expired policy/grant window, or a
+  `grant_epoch` bump (QA2 witness: commit at grant epoch 1, grant bumped to 2
+  → `BLOCKED_STALE_EPOCH`). It is still a point-in-time check, not an effect
+  transaction.
 * **Barrier evidence.** The acquire-vs-revoke test starts an independent
   SQLite connection with `busy_timeout=0` and proves its `BEGIN IMMEDIATE`
   raises `database is locked` while the acquirer holds the write lock; no
@@ -152,7 +155,7 @@ Engine as-is.
 | D crash | `os._exit(17)` after writes but before COMMIT leaves no lease/commit/token; a child that commits, flushes and `os._exit(23)` reopens with lease/commit/token intact, WAL and `integrity_check=ok`; power loss **NOT_PROVEN** |
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
-| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry (50 tests) |
+| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry and grant-epoch bump (51 tests) |
 
 ## Run
 

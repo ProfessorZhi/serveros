@@ -130,6 +130,19 @@ def _refused(p, code, request=None):
     assert p.commit_count() == 0
 
 
+def _bump_grant_epoch(p, epoch=2):
+    """Test-only owner grant generation bump, in the same temp SQLite DB."""
+    conn = sqlite3.connect(p.db_path, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE proto_grant SET grant_epoch=? WHERE grant_ref=?",
+            (epoch, GRANT_REF))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # The fenced commit itself.
 # ---------------------------------------------------------------------------
@@ -581,6 +594,26 @@ def test_fenced_check_writer_refuses_an_expired_grant_after_acquire(tmp_path):
         p.check_writer_fenced(RESOURCE, owner=ACTOR,
                               token=receipt["token"])
     assert caught.value.code == "GRANT_EXPIRED_AT_COMMIT"
+
+
+def test_fenced_check_refuses_after_grant_epoch_bump(tmp_path):
+    """QA2 witness: a lease committed at grant_epoch=1 must not survive epoch=2.
+
+    The legacy reader still accepts the token (PRODUCTION_WIRING_REQUIRED);
+    the fenced check must refuse BLOCKED_STALE_EPOCH.
+    """
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    assert p.commit("req:1")["grant_epoch"] == 1
+    _bump_grant_epoch(p, 2)
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_EPOCH", str(caught.value)
 
 
 def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
