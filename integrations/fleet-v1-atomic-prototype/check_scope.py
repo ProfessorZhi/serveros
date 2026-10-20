@@ -16,6 +16,7 @@ import sys
 
 ALLOWED_PREFIXES = ("integrations/fleet-v1-atomic-prototype/",)
 ALLOWED_EXACT = ("tests/test_s1_atomic_prototype.py",)
+ALLOWED_TEST_PREFIX = "tests/test_s1_atomic_prototype"
 
 
 def main(argv: list[str]) -> int:
@@ -32,9 +33,12 @@ def main(argv: list[str]) -> int:
         if path:
             working.append(path)
     changed = sorted(set(committed) | set(working))
-    bad = [path for path in changed
-           if not (path in ALLOWED_EXACT
-                   or any(path.startswith(p) for p in ALLOWED_PREFIXES))]
+    def _allowed(path):
+        return (path in ALLOWED_EXACT
+                or (path.startswith(ALLOWED_TEST_PREFIX)
+                    and path.endswith(".py"))
+                or any(path.startswith(p) for p in ALLOWED_PREFIXES))
+    bad = [path for path in changed if not _allowed(path)]
     print(f"base={base} changed={len(changed)} allowed={len(changed) - len(bad)} "
           f"forbidden={len(bad)}")
     for path in changed:

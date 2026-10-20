@@ -2,7 +2,7 @@
 
 **PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.**
 
-Rounds 2–4 hardness notes are below; the production default is still blocked.
+Rounds 2–5 hardness notes are below; the production default is still blocked.
 
 | Flag | Value |
 |---|---|
@@ -156,6 +156,34 @@ rewrite rows; production needs schema/privilege control and an atomic owner
 context-generation reissue. The digest detects changes in this prototype DB;
 it is not a real owner-signed content proof.
 
+## Round-5 single-writer capability API (A/B/C)
+
+`single_write_entry.py` is a **restricted mutator contract** experiment, not
+OS isolation:
+
+- **A / `API_ONLY_GREEN`** — one `SingleWriteEntry` object exposes synthetic
+  owner-side `issue`/`issue_grant`/`revoke_policy`/`rebind_context` and
+  caller-side `acquire`/`check_use`/`commit_effect`. Caller methods accept no
+  uid/actor/clock/policy/epoch; extra keywords are rejected. `acquire` returns
+  an in-process HMAC capability bound to the committed authority. `check_use`
+  and `commit_effect` verify the capability and re-run the fence in ONE
+  `BEGIN IMMEDIATE`; `commit_effect` writes the `proto_effect` marker in that
+  same transaction. TTL/revoke/context ABA/stale token/replay are refused.
+- **B / `RAW_DB_WRITE_BYPASS_EXPECTED`** — anyone who can write the same
+  SQLite file can insert an effect marker, drop the experimental triggers or
+  rewrite authority rows. The test intentionally does this and labels it
+  `BLOCKED_DB_WRITER_ISOLATION`; it is not a fix.
+- **C / `OS_ISOLATION_NOT_RUN`** — the capability key is an in-process test
+  secret. There is no real OS uid/ACL/socket/owner-key separation, no chmod/
+  chown and no production daemon.
+- **`EFFECT_COMMIT_NOT_PROVEN`** — `proto_effect` is a prototype marker, not
+  Work Engine `finalize_run_verified` or a production effect. Real effect/
+  finalize in the same transaction needs an owner-approved WorkEngine change.
+
+`classification()` returns the exact A/B/C record. The honest conclusion is
+`PROTOTYPE_ONLY / NOT_V1_SIGNED`; the same-file raw writer remains the
+unresolved production boundary.
+
 ## Why a pure experimental module is not enough
 
 This module proves the transaction shape, not a production integration. It
@@ -217,6 +245,7 @@ Engine as-is.
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
 | Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, context generation/ABA, same-epoch content digests, and immutable commit (62 tests) |
+| Round-5 single writer | `single_write_entry.py` API-only issue/acquire/use-check/effect marker, capability tamper/revoke/ABA/stale/TTL/replay, raw-DB bypass EXPECTED, legacy-store bypass, OS isolation NOT_RUN (13 tests) |
 
 ## Run
 

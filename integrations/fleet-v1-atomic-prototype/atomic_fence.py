@@ -819,148 +819,139 @@ class AtomicFencePrototype:
                 "the policy epoch changed before COMMIT")
 
     def check_writer_fenced(self, resource, *, owner, token) -> dict:
-        """Prototype-only writer check that re-reads the authority lineage NOW.
+        """Read the authority lineage and lease fence in one transaction.
 
-        `ServerOSStore.check_writer` reads only the lease row, so a token
-        acquired before a revoke still looks authorized. This method reads the
-        committed context/grant/policy lineage, the CURRENT context row and the
-        current policy/grant in one `BEGIN IMMEDIATE`.
-
-        Priority is explicit: lease holder/expiry -> committed context snapshot
-        -> current context row (missing, grant rebind or actor remap) ->
-        policy/grant rows -> policy revocation -> policy/authority/grant epoch
-        -> policy/grant windows. A context rebind therefore wins over a
-        simultaneous revoke or epoch bump and returns BLOCKED_STALE_CONTEXT.
-        It is still NOT an effect transaction: a caller must hold the fence
-        across its effect.
+        This is still NOT an effect transaction; `SingleWriteEntry` uses the
+        in-transaction half below to write its effect marker atomically.
         """
-        if not isinstance(resource, str) or not resource.strip():
-            raise PrototypeRefusal("NOT_HOLDER", "a lease names a resource")
-        if not isinstance(owner, str) or not owner.strip():
-            raise PrototypeRefusal("NOT_HOLDER", "an owner must be a string")
-        if isinstance(token, bool) or not isinstance(token, int):
-            raise PrototypeRefusal("STALE_TOKEN", "token must be an integer")
         try:
             now_e = _lease_now(self._clock())
         except LeaseError as exc:
             raise PrototypeRefusal(exc.reason_code, exc.detail) from exc
         with self._transaction() as conn:
-            row = conn.execute(
-                "SELECT resource,owner,token,expires_at FROM leases WHERE resource=?",
-                (str(resource),)).fetchone()
-            if row is None:
-                raise PrototypeRefusal("NOT_HOLDER", "no lease row")
-            if str(row["owner"]) != str(owner) or int(row["token"]) != token:
-                raise PrototypeRefusal(
-                    "STALE_TOKEN", "the caller is not the current holder")
-            if _lease_epoch(row["expires_at"]) <= now_e:
-                raise PrototypeRefusal("LEASE_EXPIRED", "the lease expired")
-            commit = conn.execute(
-                "SELECT * FROM proto_commit WHERE resource=? AND token=? "
-                "ORDER BY rowid DESC LIMIT 1",
-                (str(resource), token)).fetchone()
-            if commit is None:
-                raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY",
-                    "the lease has no fenced commit row")
-            keys = set(commit.keys())
-            if ("context_ref" not in keys or "context_actor" not in keys
-                    or "context_epoch" not in keys):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_CONTEXT",
-                    "the fenced commit has no context snapshot")
-            context_ref = str(commit["context_ref"])
-            context_actor = str(commit["context_actor"])
-            commit_context_epoch = _int(
-                commit["context_epoch"], "commit.context_epoch")
-            context = conn.execute(
-                "SELECT actor_ref,grant_ref,context_epoch FROM proto_context "
-                "WHERE context_ref=?", (context_ref,)).fetchone()
-            if context is None:
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_CONTEXT",
-                    "the committed context_ref no longer exists")
-            current_context_epoch = _int(
-                context["context_epoch"], "context.context_epoch")
-            if current_context_epoch != commit_context_epoch:
-                raise PrototypeRefusal(
-                    BLOCKED_STALE_CONTEXT_EPOCH,
-                    f"the context epoch moved from {commit_context_epoch} to "
-                    f"{current_context_epoch}; the token is historical")
-            if str(context["grant_ref"]) != str(commit["grant_ref"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_CONTEXT",
-                    "the context was rebound to a different grant")
-            if str(context["actor_ref"]) != context_actor:
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_CONTEXT",
-                    "the context actor changed after the commit")
-            grant = conn.execute(
-                "SELECT * FROM proto_grant WHERE grant_ref=?",
-                (str(commit["grant_ref"]),)).fetchone()
-            if grant is None:
-                raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY", "the fenced commit has no grant")
-            policy = conn.execute(
-                "SELECT * FROM proto_owner_policy WHERE policy_ref=?",
-                (str(commit["policy_ref"]),)).fetchone()
-            if policy is None:
-                raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY", "the fenced commit has no policy")
-            if not (context_actor == str(grant["actor_ref"])
-                    == str(policy["actor_ref"])):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_CONTEXT",
-                    "the context, grant and policy actors do not agree")
-            if str(grant["policy_ref"]) != str(commit["policy_ref"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY",
-                    "the grant's policy_ref does not match the commit")
-            if _strict_flag(policy["revoked"], "policy.revoked"):
-                raise PrototypeRefusal(
-                    "POLICY_DENIED", "the owner policy is revoked")
-            if _strict_flag(grant["revoked"], "grant.revoked"):
-                raise PrototypeRefusal(
-                    "POLICY_DENIED", "the grant is revoked")
-            if int(commit["policy_epoch"]) != int(policy["policy_epoch"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_EPOCH", "the policy epoch moved after commit")
-            if int(commit["authority_epoch"]) != int(policy["authority_epoch"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_EPOCH", "the authority epoch moved after commit")
-            if int(commit["grant_epoch"]) != int(grant["grant_epoch"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_EPOCH",
-                    f"the grant epoch moved from {commit['grant_epoch']} to "
-                    f"{grant['grant_epoch']}; the token is historical")
-            if _content_digest(policy) != str(commit["policy_digest"]):
-                raise PrototypeRefusal(
-                    BLOCKED_STALE_CONTENT,
-                    "the policy content changed without a policy/authority epoch move")
-            if _content_digest(grant) != str(commit["grant_digest"]):
-                raise PrototypeRefusal(
-                    BLOCKED_STALE_CONTENT,
-                    "the grant content changed without a grant epoch move")
-            self._check_commit_windows(policy, grant, row["expires_at"], now_e)
-            return {
-                "prototype_status": PROTOTYPE_FENCED_CHECK,
-                "simulated_owner": True,
-                "owner_status": SIMULATED_OWNER,
-                "authorized": True,
-                "historical": False,
-                "effect_eligible": False,
-                "resource": str(resource),
-                "owner": str(owner),
-                "token": token,
-                "context_ref": context_ref,
-                "context_actor": context_actor,
-                "context_epoch": current_context_epoch,
-                "grant_ref": str(commit["grant_ref"]),
-                "policy_ref": str(commit["policy_ref"]),
-                "grant_epoch": int(grant["grant_epoch"]),
-                "policy_epoch": int(policy["policy_epoch"]),
-                "authority_epoch": int(policy["authority_epoch"]),
-            }
+            return self._check_writer_fenced(
+                conn, resource, owner=owner, token=token, now_e=now_e)
+
+    def _check_writer_fenced(self, conn, resource, *, owner, token,
+                             now_e) -> dict:
+        """In-transaction half: the caller owns BEGIN IMMEDIATE and the effect write."""
+        row = conn.execute(
+            "SELECT resource,owner,token,expires_at FROM leases WHERE resource=?",
+            (str(resource),)).fetchone()
+        if row is None:
+            raise PrototypeRefusal("NOT_HOLDER", "no lease row")
+        if str(row["owner"]) != str(owner) or int(row["token"]) != token:
+            raise PrototypeRefusal(
+                "STALE_TOKEN", "the caller is not the current holder")
+        if _lease_epoch(row["expires_at"]) <= now_e:
+            raise PrototypeRefusal("LEASE_EXPIRED", "the lease expired")
+        commit = conn.execute(
+            "SELECT * FROM proto_commit WHERE resource=? AND token=? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (str(resource), token)).fetchone()
+        if commit is None:
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY",
+                "the lease has no fenced commit row")
+        keys = set(commit.keys())
+        if ("context_ref" not in keys or "context_actor" not in keys
+                or "context_epoch" not in keys):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_CONTEXT",
+                "the fenced commit has no context snapshot")
+        context_ref = str(commit["context_ref"])
+        context_actor = str(commit["context_actor"])
+        commit_context_epoch = _int(
+            commit["context_epoch"], "commit.context_epoch")
+        context = conn.execute(
+            "SELECT actor_ref,grant_ref,context_epoch FROM proto_context "
+            "WHERE context_ref=?", (context_ref,)).fetchone()
+        if context is None:
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_CONTEXT",
+                "the committed context_ref no longer exists")
+        current_context_epoch = _int(
+            context["context_epoch"], "context.context_epoch")
+        if current_context_epoch != commit_context_epoch:
+            raise PrototypeRefusal(
+                BLOCKED_STALE_CONTEXT_EPOCH,
+                f"the context epoch moved from {commit_context_epoch} to "
+                f"{current_context_epoch}; the token is historical")
+        if str(context["grant_ref"]) != str(commit["grant_ref"]):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_CONTEXT",
+                "the context was rebound to a different grant")
+        if str(context["actor_ref"]) != context_actor:
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_CONTEXT",
+                "the context actor changed after the commit")
+        grant = conn.execute(
+            "SELECT * FROM proto_grant WHERE grant_ref=?",
+            (str(commit["grant_ref"]),)).fetchone()
+        if grant is None:
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY", "the fenced commit has no grant")
+        policy = conn.execute(
+            "SELECT * FROM proto_owner_policy WHERE policy_ref=?",
+            (str(commit["policy_ref"]),)).fetchone()
+        if policy is None:
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY", "the fenced commit has no policy")
+        if not (context_actor == str(grant["actor_ref"])
+                == str(policy["actor_ref"])):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_CONTEXT",
+                "the context, grant and policy actors do not agree")
+        if str(grant["policy_ref"]) != str(commit["policy_ref"]):
+            raise PrototypeRefusal(
+                "BLOCKED_OWNER_POLICY",
+                "the grant's policy_ref does not match the commit")
+        if _strict_flag(policy["revoked"], "policy.revoked"):
+            raise PrototypeRefusal(
+                "POLICY_DENIED", "the owner policy is revoked")
+        if _strict_flag(grant["revoked"], "grant.revoked"):
+            raise PrototypeRefusal(
+                "POLICY_DENIED", "the grant is revoked")
+        if int(commit["policy_epoch"]) != int(policy["policy_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_EPOCH", "the policy epoch moved after commit")
+        if int(commit["authority_epoch"]) != int(policy["authority_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_EPOCH", "the authority epoch moved after commit")
+        if int(commit["grant_epoch"]) != int(grant["grant_epoch"]):
+            raise PrototypeRefusal(
+                "BLOCKED_STALE_EPOCH",
+                f"the grant epoch moved from {commit['grant_epoch']} to "
+                f"{grant['grant_epoch']}; the token is historical")
+        if _content_digest(policy) != str(commit["policy_digest"]):
+            raise PrototypeRefusal(
+                BLOCKED_STALE_CONTENT,
+                "the policy content changed without a policy/authority epoch move")
+        if _content_digest(grant) != str(commit["grant_digest"]):
+            raise PrototypeRefusal(
+                BLOCKED_STALE_CONTENT,
+                "the grant content changed without a grant epoch move")
+        self._check_commit_windows(policy, grant, row["expires_at"], now_e)
+        return {
+            "prototype_status": PROTOTYPE_FENCED_CHECK,
+            "simulated_owner": True,
+            "owner_status": SIMULATED_OWNER,
+            "authorized": True,
+            "historical": False,
+            "effect_eligible": False,
+            "resource": str(resource),
+            "owner": str(owner),
+            "token": token,
+            "context_ref": context_ref,
+            "context_actor": context_actor,
+            "context_epoch": current_context_epoch,
+            "grant_ref": str(commit["grant_ref"]),
+            "policy_ref": str(commit["policy_ref"]),
+            "grant_epoch": int(grant["grant_epoch"]),
+            "policy_epoch": int(policy["policy_epoch"]),
+            "authority_epoch": int(policy["authority_epoch"]),
+        }
+
 
     def revoke_policy(self, policy_ref, *, expected_policy_epoch) -> dict:
         """Commit a synthetic owner revoke in the SAME SQLite transaction domain.
