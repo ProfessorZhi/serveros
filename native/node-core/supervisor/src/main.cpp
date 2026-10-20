@@ -40,6 +40,7 @@
 #include "supervisor/action_gate.hpp"
 #include "supervisor/action_journal.hpp"
 #include "supervisor/admission.hpp"
+#include "supervisor/state_directory.hpp"
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
 #include "supervisor/plan.hpp"
@@ -366,6 +367,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--interval-seconds only applies with --serve\n");
         return 2;
     }
+    //: The opened, verified immediate parent of the state file. `open` walks
+    //: from "/" with openat(O_NOFOLLOW | O_DIRECTORY); the journal writes only
+    //: relative to this fd, so a path string replaced later cannot redirect a
+    //: budget write.
+    nodecore::supervisor::StateDirectory state_directory;
     if (act) {
         // ACTING REQUIRES EVERY FACT. Each is the specific thing that turns a
         // correct plan into a wrong action, and none has a safe default: two
@@ -386,13 +392,11 @@ int main(int argc, char** argv) {
                          verdict.reason.c_str(), verdict.code.c_str());
             return 2;
         }
-        // The flags are complete; now the path must be one this account can
-        // durably own. This check is structural. The post-action write is still
-        // the authority, and a write failure exits 2 rather than reporting
-        // success on a budget that was never persisted.
-        const nodecore::supervisor::StatePathVerdict state_verdict =
-            nodecore::supervisor::check_state_path(state_path);
-        if (!state_verdict.ok) {
+        // The flags are complete; now the immediate parent must be opened and
+        // verified. The journal keeps this fd and writes relative to it, so the
+        // authority is the inode, not a path string checked earlier.
+        nodecore::supervisor::StatePathVerdict state_verdict;
+        if (!state_directory.open(state_path, state_verdict)) {
             std::fprintf(stderr, "--enable-actions refused: --state %s (%s)\n",
                          state_verdict.reason.c_str(), state_verdict.code.c_str());
             return 2;
@@ -457,7 +461,12 @@ int main(int argc, char** argv) {
             return 2;
         }
         std::string state_text;
-        const bool present = read_file(state_path, state_text);
+        bool present = false;
+        std::string state_read_error;
+        if (!state_directory.read(state_text, present, state_read_error)) {
+            std::fprintf(stderr, "refusing to act: %s\n", state_read_error.c_str());
+            return 2;
+        }
         const nodecore::supervisor::RecoveryLoaded loaded =
             nodecore::supervisor::load_recovery(present ? &state_text : nullptr, state_clock);
         if (!loaded.ok) {
@@ -476,7 +485,8 @@ int main(int argc, char** argv) {
         clock.boot_id = state_clock.boot_id;
         return clock;
     };
-    nodecore::supervisor::ActionJournal journal(state_path, &recovery, recovery_clock);
+    nodecore::supervisor::ActionJournal journal(std::move(state_directory), &recovery,
+                                                recovery_clock);
 
     nodecore::supervisor::SystemdUserProvider provider(systemctl_path, allowlist.allowlist, &iso_now);
 

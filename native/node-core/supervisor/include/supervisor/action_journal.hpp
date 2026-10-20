@@ -29,12 +29,16 @@
 
 #include "supervisor/provider.hpp"
 #include "supervisor/recovery.hpp"
+#include "supervisor/state_directory.hpp"
 
 namespace nodecore::supervisor {
 
 class ActionJournal {
 public:
-    ActionJournal(std::string path, Recovery* recovery,
+    //: `directory` is the already-opened, verified immediate parent of the state
+    //: file. The journal writes only relative to that fd; it never re-resolves
+    //: the path string.
+    ActionJournal(StateDirectory directory, Recovery* recovery,
                   std::function<RecoveryClock()> clock);
 
     //: Record the attempt and persist it. False means the durable attempt does
@@ -45,12 +49,10 @@ public:
     //: but the outcome is not; do not report success and do not retry blindly.
     bool write_outcome(std::string& error);
 
-    const std::string& path() const { return path_; }
-
 private:
     bool persist(std::string& error);
 
-    std::string path_;
+    StateDirectory directory_;
     Recovery* recovery_ = nullptr;
     std::function<RecoveryClock()> clock_;
 };

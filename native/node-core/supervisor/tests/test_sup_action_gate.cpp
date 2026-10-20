@@ -195,6 +195,8 @@ void test_the_state_path_must_be_safe_to_write() {
     // A parent we cannot write cannot gain a first-run state file.
     CHECK(::chmod(dir.c_str(), 0500) == 0);
     CHECK_EQ(check_state_path(dir + "/fresh.json").code, std::string(kStatePathUnwritable));
+    // `renameat` needs the parent writable even when the file already exists.
+    CHECK_EQ(check_state_path(dir + "/state.json").code, std::string(kStatePathUnwritable));
     CHECK(::chmod(dir.c_str(), 0700) == 0);
 
     // An INTERMEDIATE ancestor symlink is refused too. The immediate parent
@@ -209,6 +211,18 @@ void test_the_state_path_must_be_safe_to_write() {
     // A non-normalised path is refused rather than lexically reinterpreted.
     CHECK_EQ(check_state_path(dir + "/real/../state.json").code,
              std::string(kStatePathNotNormalized));
+
+    // A world-writable ancestor WITHOUT the sticky bit lets any account rename
+    // the entry. `/tmp` (1777) is allowed because only the owner can rename an
+    // entry in a sticky directory; a bare 0777 directory is not.
+    CHECK(::mkdir((dir + "/open").c_str(), 0700) == 0);
+    CHECK(::chmod((dir + "/open").c_str(), 0777) == 0);
+    CHECK(::mkdir((dir + "/open/sub").c_str(), 0700) == 0);
+    CHECK_EQ(check_state_path(dir + "/open/sub/state.json").code,
+             std::string(kStateAncestorWorldWritable));
+    ::rmdir((dir + "/open/sub").c_str());
+    CHECK(::chmod((dir + "/open").c_str(), 0700) == 0);
+    ::rmdir((dir + "/open").c_str());
 
     ::unlink((dir + "/link").c_str());
     ::rmdir((dir + "/real/sub").c_str());

@@ -1,15 +1,7 @@
 #include "supervisor/action_gate.hpp"
 
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <cerrno>
-#include <cstring>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace nodecore::supervisor {
 namespace {
@@ -28,46 +20,6 @@ ActionGateVerdict gate_ok(std::string reason) {
     verdict.code = kActionGateOk;
     verdict.reason = std::move(reason);
     return verdict;
-}
-
-StatePathVerdict path_refuse(const char* code, std::string reason) {
-    StatePathVerdict verdict;
-    verdict.ok = false;
-    verdict.code = code;
-    verdict.reason = std::move(reason);
-    return verdict;
-}
-
-StatePathVerdict path_ok(std::string reason) {
-    StatePathVerdict verdict;
-    verdict.ok = true;
-    verdict.code = kStatePathOk;
-    verdict.reason = std::move(reason);
-    return verdict;
-}
-
-std::string errno_text(int value) { return std::string(std::strerror(value)); }
-
-//: Absolute components, with repeated slashes collapsed. The path is refused
-//: if any component is `.` or `..`, so the lexical walk and the kernel cannot
-//: disagree about where the file is.
-std::vector<std::string> split_components(const std::string& path) {
-    std::vector<std::string> parts;
-    std::string current;
-    for (const char c : path) {
-        if (c == '/') {
-            if (!current.empty()) {
-                parts.push_back(current);
-                current.clear();
-            }
-        } else {
-            current.push_back(c);
-        }
-    }
-    if (!current.empty()) {
-        parts.push_back(current);
-    }
-    return parts;
 }
 
 }  // namespace
@@ -112,146 +64,6 @@ ActionGateVerdict check_action_gate(const ActionGateInput& input) {
                 "directory the Core happened to start in, which is not a durable budget");
     }
     return gate_ok("every acting fact is present");
-}
-
-StatePathVerdict check_state_path(const std::string& path) {
-    if (path.empty()) {
-        return path_refuse(kStatePathEmpty, "no state path was given");
-    }
-    if (path[0] != '/') {
-        return path_refuse(kStatePathNotAbsolute, "\"" + path + "\" is not absolute");
-    }
-    if (path.back() == '/') {
-        return path_refuse(kStatePathNotAFile,
-                           "\"" + path + "\" names a directory, not a state file");
-    }
-    for (const std::string& part : split_components(path)) {
-        if (part == "." || part == "..") {
-            return path_refuse(kStatePathNotNormalized,
-                               "\"" + path +
-                                   "\" contains a \".\" or \"..\" component; a state path is "
-                                   "refused if its lexical form is not its resolved form");
-        }
-    }
-
-    const std::size_t slash = path.find_last_of('/');
-    const std::string parent = slash == 0 ? std::string("/") : path.substr(0, slash);
-    const std::string base = path.substr(slash + 1);
-    if (base.empty()) {
-        return path_refuse(kStatePathNotAFile,
-                           "\"" + path + "\" names a directory, not a state file");
-    }
-
-    // Every ancestor ABOVE the immediate parent must be a real directory, not a
-    // symlink. `lstat(parent)` alone follows an intermediate link: for
-    // `a/link/sub/state.json` it reports `sub`, never `link`. The immediate
-    // parent is checked below, preserving its own PARENT_* vocabulary.
-    const std::vector<std::string> parent_parts = split_components(parent);
-    std::string ancestor;
-    for (std::size_t index = 0; index + 1 < parent_parts.size(); ++index) {
-        ancestor += "/";
-        ancestor += parent_parts[index];
-        struct stat ancestor_info;
-        if (::lstat(ancestor.c_str(), &ancestor_info) != 0) {
-            const int error = errno;
-            if (error == ENOENT) {
-                return path_refuse(kStateAncestorMissing,
-                                   "the state ancestor \"" + ancestor + "\" does not exist");
-            }
-            return path_refuse(kStatePathUnusable, "the state ancestor \"" + ancestor +
-                                                       "\" could not be inspected: " +
-                                                       errno_text(error));
-        }
-        if (S_ISLNK(ancestor_info.st_mode)) {
-            return path_refuse(kStateAncestorSymlink,
-                               "the state ancestor \"" + ancestor +
-                                   "\" is a symlink; a state file reached through an "
-                                   "intermediate link is not necessarily this account's");
-        }
-        if (!S_ISDIR(ancestor_info.st_mode)) {
-            return path_refuse(kStateAncestorNotADirectory,
-                               "the state ancestor \"" + ancestor + "\" is not a directory");
-        }
-    }
-
-    // The PARENT is checked first, for both an existing and an absent file: a
-    // group/other-writable directory lets another account replace the state by
-    // rename, which defeats a 0600 file inside it.
-    struct stat parent_info;
-    if (::lstat(parent.c_str(), &parent_info) != 0) {
-        const int error = errno;
-        if (error == ENOENT) {
-            return path_refuse(kStateParentMissing,
-                               "the state directory \"" + parent + "\" does not exist");
-        }
-        return path_refuse(kStatePathUnusable, "the state directory \"" + parent +
-                                                  "\" could not be inspected: " + errno_text(error));
-    }
-    if (S_ISLNK(parent_info.st_mode)) {
-        return path_refuse(kStateParentSymlink,
-                           "the state directory \"" + parent +
-                               "\" is a symlink; a state file reached through a link is not "
-                               "necessarily this account's");
-    }
-    if (!S_ISDIR(parent_info.st_mode)) {
-        return path_refuse(kStateParentNotADirectory,
-                           "the state parent \"" + parent + "\" is not a directory");
-    }
-    if (parent_info.st_uid != ::getuid()) {
-        return path_refuse(kStateParentWrongOwner,
-                           "the state directory \"" + parent + "\" is owned by another account");
-    }
-    if ((parent_info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-        return path_refuse(kStateParentGroupWritable,
-                           "the state directory \"" + parent +
-                               "\" is writable by group or other, so the state file can be "
-                               "replaced by another account");
-    }
-
-    struct stat file_info;
-    if (::lstat(path.c_str(), &file_info) == 0) {
-        if (S_ISLNK(file_info.st_mode)) {
-            return path_refuse(kStatePathSymlink,
-                               "the state path \"" + path +
-                                   "\" is a symlink; it is refused rather than followed");
-        }
-        if (!S_ISREG(file_info.st_mode)) {
-            return path_refuse(kStatePathNotAFile,
-                               "the state path \"" + path + "\" is not a regular file");
-        }
-        if (file_info.st_uid != ::getuid()) {
-            return path_refuse(kStatePathWrongOwner,
-                               "the state file \"" + path + "\" is owned by another account");
-        }
-        if ((file_info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-            return path_refuse(kStatePathGroupWritable,
-                               "the state file \"" + path + "\" is writable by group or other");
-        }
-        const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-        if (fd < 0) {
-            const int error = errno;
-            return path_refuse(kStatePathUnwritable, "the state file \"" + path +
-                                                         "\" is not writable: " +
-                                                         errno_text(error));
-        }
-        ::close(fd);
-        return path_ok("the existing state file is a regular, owned, non-shared writable file");
-    }
-
-    const int stat_error = errno;
-    if (stat_error != ENOENT) {
-        return path_refuse(kStatePathUnusable, "the state path \"" + path +
-                                                   "\" could not be inspected: " +
-                                                   errno_text(stat_error));
-    }
-    if (::access(parent.c_str(), W_OK | X_OK) != 0) {
-        const int error = errno;
-        return path_refuse(kStatePathUnwritable,
-                           "the state directory \"" + parent +
-                               "\" is not writable, so a first-run state file cannot be created: " +
-                               errno_text(error));
-    }
-    return path_ok("the state file does not exist yet and its directory is writable");
 }
 
 }  // namespace nodecore::supervisor

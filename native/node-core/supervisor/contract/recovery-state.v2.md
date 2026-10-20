@@ -178,13 +178,35 @@ observation. There is no path that issues an effect without a durable attempt.
 The old single write after the actions loop is gone. A run with no actions writes
 nothing; an existing state file is left exactly as it was.
 
-`check_state_path` now walks every ancestor above the immediate parent and
-refuses any symlink or non-directory, and refuses `.`/`..` components. **The
-ancestor walk is lexical plus `lstat`, not a dirfd walk**: a directory can still
-be replaced by a symlink between the check and the path-based `open`/`rename`
-(TOCTOU). Closing that needs `openat`-relative resolution anchored at a directory
-fd; it is tracked as a separate blocker. The write itself uses `rename`, so a
-symlink at the final path is replaced rather than followed.
+`StateDirectory::open` walks from `/` component by component with
+`openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`,
+`fstat`s every opened inode, and keeps the immediate parent as a directory fd.
+It refuses `.`/`..`, a symlink at any level, a non-directory, a missing
+component, a world-writable ancestor without the sticky bit, and an immediate
+parent that is not owned by this effective uid or is group/other-writable.
+`/tmp` (1777) is allowed as an ancestor because its sticky bit lets only the
+owner rename an entry.
+
+The write is then at-relative: `openat(dirfd, temp, O_CREAT | O_EXCL |
+O_NOFOLLOW | O_CLOEXEC, 0600)`, `write`, `fsync(temp)`, `renameat(dirfd, temp,
+dirfd, basename)`, `fsync(dirfd)`. The **opened inode is the authority**: a path
+string renamed or replaced after the open cannot redirect the write. A
+post-write stability check compares `fstat(dirfd)` with `lstat(parent_path)` and
+reports failure if they differ, so a path swap is fail-closed; the data still
+went to the trusted inode. A final-path symlink is replaced by `renameat`, not
+followed.
+
+**Residual threat boundary.** The post-write stability check is itself
+path-based and has a check-to-`lstat` window; it is detection, not the write
+authority. A same-user attacker can rename the state directory (they own it):
+the write still lands in the original inode and the run exits 2. Cross-user
+protection relies on the state root being a 0700 directory owned by the user,
+with ancestors not writable by untrusted accounts; group-writable ancestors
+without the sticky bit are allowed for host compatibility and are a residual
+risk. **Windows differs:** there is no `openat`/`renameat`/`O_NOFOLLOW`; the
+equivalent is a handle-relative `CreateFile`/`SetFileInformationByHandle`
+design. That is **not implemented** here — N2 #309 remains
+BUILD_UNVERIFIED/NOT_RUN, and this change makes no REAL_DEVICE or SCM claim.
 
 ## 6. What this does not do
 
