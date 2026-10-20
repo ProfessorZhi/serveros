@@ -6,6 +6,7 @@ import datetime
 import json
 import hashlib
 import math
+import os
 import re
 import sqlite3
 import time
@@ -54,6 +55,12 @@ def _reject_secrets(value):
 
 _LEASE_STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
+#: A lease is bounded. Without an upper bound one acquire can write an expiry
+#: far enough ahead that no successor can ever take the scope, and a value that
+#: can be arbitrarily large is not a TTL. Seven days is longer than any single
+#: Work turn and short enough that a crashed holder's scope is recoverable.
+_LEASE_MAX_TTL_S = 7 * 24 * 60 * 60
+
 
 def _lease_stamp(epoch: float) -> str:
     return datetime.datetime.fromtimestamp(
@@ -61,13 +68,186 @@ def _lease_stamp(epoch: float) -> str:
 
 
 def _lease_epoch(stamp: str) -> float:
-    return datetime.datetime.strptime(
-        str(stamp), _LEASE_STAMP).replace(
-        tzinfo=datetime.timezone.utc).timestamp()
+    try:
+        return datetime.datetime.strptime(
+            str(stamp), _LEASE_STAMP).replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_ROW_INVALID",
+            f"{stamp!r} is not the pinned lease timestamp {_LEASE_STAMP!r}; "
+            f"the row cannot be aged, so it authorizes nothing and may not be "
+            f"treated as expired and taken over") from exc
+
+
+def _lease_ttl(ttl_s) -> float:
+    """A TTL is a positive, finite, bounded number of seconds.
+
+    Zero and negative values used to be written as an ALREADY-EXPIRED row: the
+    acquire returned normally, `active_lease` immediately reported `None`, and
+    the caller had a lease that never was one. NaN/Infinity raised raw
+    `ValueError`/`OverflowError` from `math.ceil`, which is neither a refusal
+    word nor a rolled-back write. Both are refusals now, before the transaction.
+    """
+    if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s must be a number of seconds, not {type(ttl_s).__name__}")
+    value = float(ttl_s)
+    if not math.isfinite(value) or value <= 0:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s must be finite and greater than zero, not {ttl_s!r}; a "
+            f"non-positive or non-finite TTL is a lease that is expired before "
+            f"it is written")
+    if value > _LEASE_MAX_TTL_S:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {value!r} exceeds the {_LEASE_MAX_TTL_S}s bound; an "
+            f"unbounded lease would let one holder deny a scope forever")
+    return value
+
+
+def _lease_expiry(now_e: float, ttl_s: float) -> str:
+    try:
+        stamp = _lease_stamp(now_e + ttl_s)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {ttl_s!r} from {now_e!r} is outside the representable "
+            f"clock range") from exc
+    if _lease_epoch(stamp) <= now_e:
+        # `ceil` should make this impossible for a positive TTL; if it ever
+        # does happen, writing the row would be a successful acquire of an
+        # already-expired lease, which is the failure mode this refuses.
+        raise LeaseError(
+            "LEASE_TTL_INVALID",
+            f"ttl_s {ttl_s!r} does not move the expiry past {now_e!r} at the "
+            f"pinned second precision")
+    return stamp
 
 
 def _lease_now(now) -> float:
-    return time.time() if now is None else float(now)
+    """Epoch seconds, finite.
+
+    A caller-supplied `now` is a test seam on the store primitives. What must
+    never happen is a NaN clock: every `expires_at > now` comparison is False
+    against NaN, so a NaN would let its caller take over a LIVE lease. Infinity
+    is refused for the same reason in the other direction — a clock that cannot
+    be aged cannot be a fence.
+    """
+    if isinstance(now, bool):
+        raise LeaseError("LEASE_CLOCK_INVALID", "a boolean is not an instant")
+    try:
+        value = time.time() if now is None else float(now)
+    except (TypeError, ValueError) as exc:
+        raise LeaseError(
+            "LEASE_CLOCK_INVALID",
+            f"now must be epoch seconds, not {now!r}") from exc
+    if not math.isfinite(value):
+        raise LeaseError(
+            "LEASE_CLOCK_INVALID",
+            f"now must be finite, not {now!r}; a non-finite clock makes the "
+            f"expiry comparison meaningless and could take over a live lease")
+    return value
+
+
+def _sha256_path(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _fsync_dir(path: Path) -> None:
+    """Make a rename durable. A failure here is not the rename's failure."""
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _read_finalize_record(evidence) -> dict | None:
+    """Read the durable finalize file and require it to match its anchor.
+
+    Returns the stored runner receipt when the file is a T10_VERIFIED record,
+    `None` when it is an UNSIGNED record, and raises `ReceiptError` when the
+    record is missing, torn, tampered with, or contradicts itself.
+
+    The evidence row's `sha256` is the anchor. A missing file used to be
+    RECONSTRUCTED from the row as an UNSIGNED success — inventing a record and
+    silently dropping a receipt the row's anchor covered. A `.tmp` left by a
+    crash is promoted only when its bytes hash to that anchor. Nothing is ever
+    synthesized.
+    """
+    from .authority import ReceiptError
+
+    locator = Path(evidence["locator"])
+    expected = str(evidence["sha256"])
+    temporary = Path(str(locator) + ".tmp")
+    if not locator.exists():
+        if not temporary.exists():
+            raise ReceiptError(
+                "EVIDENCE_MISSING",
+                f"the Run is terminal but its finalize evidence file "
+                f"{str(locator)!r} is missing; a conclusion whose only durable "
+                f"record is gone is not a conclusion")
+        digest = _sha256_path(temporary)
+        if digest != expected:
+            raise ReceiptError(
+                "EVIDENCE_HASH_MISMATCH",
+                f"the crash-left {str(temporary)!r} hashes to {digest!r}, not "
+                f"the evidence row's anchor {expected!r}; it is not promoted")
+        temporary.replace(locator)
+        _fsync_dir(locator.parent)
+    digest = _sha256_path(locator)
+    if digest != expected:
+        raise ReceiptError(
+            "EVIDENCE_HASH_MISMATCH",
+            f"the finalize evidence file {str(locator)!r} hashes to {digest!r}, "
+            f"not the evidence row's anchor {expected!r}; the file was changed "
+            f"after the row was written")
+    try:
+        payload = json.loads(locator.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReceiptError(
+            "EVIDENCE_TORN",
+            f"the finalize evidence file {str(locator)!r} is not readable "
+            f"JSON") from exc
+    if not isinstance(payload, dict):
+        raise ReceiptError(
+            "EVIDENCE_TORN",
+            f"the finalize evidence file {str(locator)!r} is not an object")
+    authorization = payload.get("authorization")
+    receipt = payload.get("runner_receipt")
+    if authorization is None and receipt is None:
+        # A record written before the label existed. It claims no receipt, so
+        # UNSIGNED is the honest reading rather than a guess.
+        return None
+    if authorization == "T10_VERIFIED":
+        if not isinstance(receipt, dict):
+            raise ReceiptError(
+                "EVIDENCE_TORN",
+                "the record says T10_VERIFIED but carries no runner receipt; a "
+                "label without the receipt it labels is not evidence")
+        return receipt
+    if authorization == "UNSIGNED":
+        if receipt is not None:
+            raise ReceiptError(
+                "EVIDENCE_TORN",
+                "the record says UNSIGNED but carries a runner receipt; a reader "
+                "must not have to guess which half is the record")
+        return None
+    raise ReceiptError(
+        "EVIDENCE_TORN",
+        f"the record carries authorization {authorization!r}; only UNSIGNED or "
+        f"T10_VERIFIED is a finalize record")
 
 
 def _verdict_word(verdict) -> str:
@@ -209,17 +389,31 @@ class LeaseError(ValueError):
 
 
 class ServerOSStore:
-    def __init__(self, state_dir: str | Path) -> None:
+    def __init__(self, state_dir: str | Path, *, clock=None) -> None:
         state_dir = Path(state_dir)
         if not state_dir.is_absolute():
             raise ValueError("ServerOS state directory must be absolute")
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be a callable returning epoch seconds")
         self.state_dir = state_dir.resolve()
+        #: The one clock the commit boundary trusts. Production leaves it as
+        #: `time.time`; a caller that needs determinism injects a clock when it
+        #: constructs the store, so the fence never reads a per-call clock.
+        self._clock = clock or time.time
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "serveros.db"
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.executescript(schema)
             migrate(conn)
+
+    def clock(self) -> float:
+        """The store's trusted instant, validated like every lease clock."""
+        return _lease_now(self._clock())
+
+    def _now(self, now) -> float:
+        """`now` is an explicit test seam; absent it, use the store's clock."""
+        return self.clock() if now is None else _lease_now(now)
 
     def connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
@@ -305,9 +499,15 @@ class ServerOSStore:
         (a scope nobody can ever write again). The successor is minted a HIGHER
         token, so the old holder's token is fenced the moment it is superseded.
         """
-        if not str(resource).strip():
+        if not isinstance(resource, str) or not resource.strip():
             raise LeaseError("NOT_HOLDER", "a lease names a resource; '' names none")
-        now_e = _lease_now(now)
+        if not isinstance(owner, str) or not owner.strip():
+            raise LeaseError(
+                "LEASE_OWNER_REQUIRED",
+                f"a lease names an owner, not {owner!r}; an empty owner is a "
+                f"row nobody can be fenced against")
+        ttl = _lease_ttl(ttl_s)
+        now_e = self._now(now)
         with self.transaction(immediate=True) as conn:
             row = self._lease_row(conn, resource)
             if row is not None and _lease_epoch(row["expires_at"]) > now_e:
@@ -319,7 +519,7 @@ class ServerOSStore:
                     f"renew_lease, and a superseded one has lost the token, not "
                     f"just the turn")
             token = self._next_lease_token(conn, resource)
-            expires = _lease_stamp(now_e + float(ttl_s))
+            expires = _lease_expiry(now_e, ttl)
             if row is None:
                 conn.execute(
                     "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
@@ -340,7 +540,8 @@ class ServerOSStore:
         the holder — the case where a process kept running after it was
         superseded must not be able to renew authority it has already lost.
         """
-        now_e = _lease_now(now)
+        ttl = _lease_ttl(ttl_s)
+        now_e = self._now(now)
         with self.transaction(immediate=True) as conn:
             row = self._lease_row(conn, resource)
             self._require_holder(row, resource, owner=owner, token=token)
@@ -350,7 +551,7 @@ class ServerOSStore:
                     f"{resource!r} lapsed at {row['expires_at']} and cannot be "
                     f"renewed by its old holder — re-acquire it, which mints a "
                     f"new token and fences the lapsed one")
-            expires = _lease_stamp(now_e + float(ttl_s))
+            expires = _lease_expiry(now_e, ttl)
             conn.execute("UPDATE leases SET expires_at=? WHERE resource=?",
                          (expires, resource))
             return {"resource": resource, "owner": row["owner"],
@@ -373,7 +574,7 @@ class ServerOSStore:
         Deleting it here would erase the only evidence that a holder ever
         existed, which is the crash case #237 asks to stay answerable.
         """
-        now_e = _lease_now(now)
+        now_e = self._now(now)
         with self.transaction() as conn:
             row = self._lease_row(conn, resource)
         if row is None or _lease_epoch(row["expires_at"]) <= now_e:
@@ -388,7 +589,7 @@ class ServerOSStore:
         make — resources currently claimed — and it filters `expires_at`, which
         the serveros reader did not (issue #237 B3/T6).
         """
-        now_e = _lease_now(now)
+        now_e = self._now(now)
         with self.transaction() as conn:
             rows = conn.execute(
                 "SELECT resource, expires_at FROM leases").fetchall()
@@ -404,8 +605,14 @@ class ServerOSStore:
         an authorization at the moment of the effect (issue #237 B1/T3), and a
         holder that ran past its TTL must be stopped here rather than trusted
         because it held the lease an hour ago.
+
+        This call is a POINT CHECK, not an atomic commit: it releases its read
+        transaction before the caller performs the effect, so a lease can expire
+        and a successor can acquire in between. A caller that is about to write
+        must use `lease_guard`, which holds the write transaction across the
+        effect and re-reads the fence before the commit.
         """
-        now_e = _lease_now(now)
+        now_e = self._now(now)
         with self.transaction() as conn:
             row = self._lease_row(conn, resource)
         self._require_holder(row, resource, owner=owner, token=token)
@@ -418,6 +625,54 @@ class ServerOSStore:
         return {"authorized": True, "resource": resource, "owner": row["owner"],
                 "token": int(row["token"]), "expires_at": row["expires_at"]}
 
+    @contextmanager
+    def lease_guard(self, resource: str, *, owner: str, token: int):
+        """Hold the write fence across the WHOLE effect, not just a check.
+
+        `check_writer` answers at one instant and the caller's write lands in a
+        different transaction. That leaves the TOCTOU #237 B1/T3 names: the old
+        writer checks, its lease expires, a successor acquires, and the old
+        writer's effect still commits. The fence was never consulted between
+        the check and the effect.
+
+        This guard is the atomic form. It opens `BEGIN IMMEDIATE`, validates the
+        holder and the expiry inside that transaction, yields the connection the
+        effect must use, and re-validates both immediately before the commit.
+        Because SQLite's write lock is held for the whole block, a successor
+        cannot acquire between the check and the effect; because the expiry is
+        re-read at the store's trusted clock (`clock()`), a turn that overran
+        its TTL rolls back instead of landing. The block holds SQLite's single
+        write lock, so keep it to the write it gates.
+
+        `now` is deliberately NOT a parameter. A commit boundary must not accept
+        a caller-chosen clock: passing a past `now` to `check_writer` can make an
+        expired lease look live, which is exactly the bypass this method exists
+        to remove.
+        """
+        if not isinstance(resource, str) or not resource.strip():
+            raise LeaseError("NOT_HOLDER", "a lease names a resource; '' names none")
+        started = self.clock()
+        with self.transaction(immediate=True) as conn:
+            row = self._lease_row(conn, resource)
+            self._require_holder(row, resource, owner=owner, token=token)
+            if _lease_epoch(row["expires_at"]) <= started:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {row['expires_at']} before this "
+                    f"effect started; the fence is read at the effect, not only "
+                    f"when the turn began")
+            yield conn
+            finished = self.clock()
+            current = self._lease_row(conn, resource)
+            self._require_holder(current, resource, owner=owner, token=token)
+            if _lease_epoch(current["expires_at"]) <= finished:
+                raise LeaseError(
+                    "LEASE_EXPIRED",
+                    f"{resource!r} lapsed at {current['expires_at']} while this "
+                    f"effect was running (finished at {finished}). The effect is "
+                    f"rolled back: a lease authorizes the instant it covers, not "
+                    f"the turn that overran it")
+
     @staticmethod
     def _require_holder(row, resource, *, owner, token) -> None:
         if row is None:
@@ -425,7 +680,20 @@ class ServerOSStore:
                 "NOT_HOLDER",
                 f"no lease is recorded for {resource!r}, so this caller holds "
                 f"nothing to renew, release or commit on")
-        if str(row["owner"]) != str(owner) or int(row["token"]) != int(token):
+        if not isinstance(owner, str) or not owner.strip():
+            raise LeaseError(
+                "NOT_HOLDER",
+                f"an owner must be a non-empty string, not {owner!r}; an empty "
+                f"owner names no holder and cannot be fenced")
+        # The token is the fence, so it is compared as the integer the store
+        # minted. Coercion (`"1"`, `1.0`, `True`) turns a caller's typing
+        # mistake into a match with a token it never received.
+        if type(token) is not int:
+            raise LeaseError(
+                "STALE_TOKEN",
+                f"a lease token is an integer, not {type(token).__name__}; a "
+                f"coerced value is not the fence that was minted")
+        if str(row["owner"]) != owner or int(row["token"]) != token:
             raise LeaseError(
                 "STALE_TOKEN",
                 f"{resource!r} is held by {row['owner']!r} (token {row['token']}); "
@@ -1246,36 +1514,24 @@ class ServerOSStore:
             if r['state'] in ('SUCCEEDED','FAILED','CANCELLED','INVALID'):
                 e = c.execute(
                     "SELECT * FROM evidence WHERE item_id=? AND run_id=? "
-                    "ORDER BY evidence_id DESC LIMIT 1", (item_id, run_id)
+                    "AND kind='finalize' ORDER BY evidence_id DESC LIMIT 1",
+                    (item_id, run_id)
                 ).fetchone()
-                stored_receipt = None
-                if e:
-                    locator = Path(e['locator'])
-                    if not locator.exists():
-                        tmp = Path(e['locator'] + '.tmp')
-                        if tmp.exists():
-                            tmp.replace(e['locator'])
-                        else:
-                            locator.write_text(json.dumps({
-                                "command": e['command'],
-                                "cases": json.loads(e['cases_json']),
-                                "exit_code": e['exit_code'],
-                                "revision": e['revision'],
-                                "dirty": bool(e['dirty']),
-                                "verdict": e['verdict'],
-                                "authorization": "UNSIGNED",
-                            }) + '\n')
-                    try:
-                        payload = json.loads(locator.read_text(encoding='utf-8'))
-                    except (OSError, ValueError):
-                        payload = {}
-                    candidate = payload.get('runner_receipt')
-                    if isinstance(candidate, dict):
-                        stored_receipt = candidate
+                if e is None:
+                    if r['state'] in ('SUCCEEDED', 'FAILED'):
+                        from .authority import ReceiptError
+                        raise ReceiptError(
+                            "EVIDENCE_MISSING",
+                            "the Run is terminal but has no finalize evidence "
+                            "row; a conclusion with no durable evidence is not "
+                            "a conclusion")
+                    return ({"state": r['state'], "verdict": verdict},
+                            'UNSIGNED', None)
+                stored_receipt = _read_finalize_record(e)
                 authorization = ('T10_VERIFIED' if stored_receipt is not None
                                  else 'UNSIGNED')
                 return ({"state": r['state'],
-                         "verdict": e['verdict'] if e else verdict},
+                         "verdict": e['verdict'] if e['verdict'] else verdict},
                         authorization, stored_receipt)
             if r['state'] != 'FINALIZING':
                 raise ValueError("run must be FINALIZING")
@@ -1306,7 +1562,10 @@ class ServerOSStore:
                     "actor_ref": receipt.actor_ref,
                 }
             payload = json.dumps(body) + '\n'
-            temporary.write_text(payload)
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
             _reject_secrets(json.loads(payload))
             digest = hashlib.sha256(payload.encode()).hexdigest()
             c.execute(
@@ -1327,7 +1586,13 @@ class ServerOSStore:
             c.execute(
                 "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
                 (state, now_iso(), item_id, run_id))
-        temporary.replace(locator)
+            # Promote the file BEFORE the database commit. If this fails the
+            # exception rolls the transaction back and the Run stays FINALIZING;
+            # a recoverable orphan file is preferred to a committed evidence row
+            # whose locator does not exist. (The reverse order — commit, then
+            # rename — is the torn record `_read_finalize_record` refuses.)
+            temporary.replace(locator)
+            _fsync_dir(Path(locator).parent)
         stored_receipt = body.get('runner_receipt')
         return ({"state": state, "verdict": verdict},
                 'T10_VERIFIED' if receipt is not None else 'UNSIGNED',

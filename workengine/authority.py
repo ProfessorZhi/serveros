@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import os
 import re
-import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -265,9 +265,13 @@ class OwnerVerifiedLease:
             raise AuthorityError("ITEM_MISMATCH", "a lease names an Item; '' names none")
         return f"work-write:{item}"
 
-    @staticmethod
-    def _now(now) -> float:
-        return time.time() if now is None else float(now)
+    def _now(self, now) -> float:
+        """`now` is an explicit test seam; absent it, the store's clock.
+
+        The adapter and the store must age a grant and a lease on the SAME
+        clock, or a caller can move one without moving the other.
+        """
+        return self._store.clock() if now is None else float(now)
 
     # -- the three lease verbs --------------------------------------------
 
@@ -325,6 +329,41 @@ class OwnerVerifiedLease:
             return self._store.check_writer(
                 self._resource(item_ref), owner=grant.principal,
                 token=token, now=now_e)
+        except LeaseError as exc:
+            raise AuthorityError(exc.reason_code, exc.detail) from exc
+
+    @contextmanager
+    def commit_guard(self, *, context_ref: str, project: str, item_ref: str,
+                     token: int, expected_epoch: int | None = None):
+        """Re-verify the grant, then hold the exclusive fence across the effect.
+
+        `check_writer` answers at one instant; the caller's effect lands in a
+        different transaction. This guard is the atomic form: it re-verifies the
+        grant at the boundary, opens the store's `lease_guard` (BEGIN IMMEDIATE),
+        yields the connection the effect must use, and re-verifies the grant
+        again after the effect and before the commit. The store guard then
+        re-reads the lease expiry at the trusted store clock. Any refusal raises
+        inside the store transaction, so the effect is rolled back rather than
+        landing on an authorization that moved.
+
+        The clock is the store's, never a caller argument: a commit boundary
+        cannot accept a caller-chosen instant.
+        """
+        grant = self._verified(
+            context_ref, verb="commit", project=project, item_ref=item_ref,
+            expected_epoch=expected_epoch, now=self._store.clock())
+        try:
+            with self._store.lease_guard(
+                    self._resource(item_ref), owner=grant.principal,
+                    token=token) as conn:
+                yield conn
+                # The grant and the lease are two clocks. The lease is re-read
+                # by the store guard on exit; the grant is re-read here, still
+                # inside the same transaction.
+                self._verified(
+                    context_ref, verb="commit", project=project,
+                    item_ref=item_ref, expected_epoch=expected_epoch,
+                    now=self._store.clock())
         except LeaseError as exc:
             raise AuthorityError(exc.reason_code, exc.detail) from exc
 
