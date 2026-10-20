@@ -1788,7 +1788,7 @@
   },
   "review_rc_v6": {
     "branch": "rc/i1-v6-review-20261020",
-    "tip": "b237c1178da5ef858ab0df6df191ae2d1082c19c",
+    "tip": "8620a90e58cf92ba261560b1e4eb5f0797beee09",
     "tested_head": "f27322b",
     "baseline_sha": "c553f11bf1d13036b72a34d4f0c108ff9de75131",
     "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
@@ -1809,15 +1809,21 @@
     },
     "hosted_ci": {
       "final_tip": {
-        "sha": "b237c11",
-        "msvc": "39401235842 pass",
-        "offline_units": "39401235795 pass",
-        "runner_smoke": "39401235795 pass"
+        "sha": "8620a90",
+        "msvc": "39401512073 pass",
+        "offline_units": "39401512160 pass",
+        "runner_smoke": "39401512160 pass"
       },
-      "prior_tip": {
-        "sha": "248cbe5",
-        "runs": "39401065317/39401065223 pass"
-      }
+      "prior_tips": [
+        {
+          "sha": "b237c11",
+          "runs": "39401235842/39401235795 pass"
+        },
+        {
+          "sha": "248cbe5",
+          "runs": "39401065317/39401065223 pass"
+        }
+      ]
     },
     "device_status": {
       "dell_rc_v4": "109 passed/2 failed/23 errors",
@@ -1834,6 +1840,13 @@
     },
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
-    "artifact": "integrations/fleet-v1-release/RC-V6-REVIEW-2026-10-20.md"
+    "artifact": "integrations/fleet-v1-release/RC-V6-REVIEW-2026-10-20.md",
+    "qa_ac": {
+      "status": "independent audit of source PRs; not an RC-v6 signature",
+      "347": "PASS at LOCAL (boundary 49; alias probe 69/69)",
+      "349": "PARTIAL PASS at LOCAL; P2 8.3 short name + drive-relative C:..\\private\\evil reported safe; Windows real NOT_RUN",
+      "345": "PASS at LOCAL; P3 human stderr omits literal token",
+      "rc_v6_at_poll": "PENDING"
+    }
   }
 }
