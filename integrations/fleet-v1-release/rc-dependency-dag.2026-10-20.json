@@ -2,9 +2,10 @@
   "kind": "fleet-v1-dependency-dag",
   "not_a_release_manifest": true,
   "schema": "fleet-v1-dependency-dag.v1",
-  "snapshot_utc": "2026-10-20T05:03:33Z",
+  "snapshot_utc": "2026-10-20T05:05:51Z",
   "initial_pin_read_utc": "2026-10-20T04:59:04Z",
-  "post_snapshot_additions": [299, 300, 301, 302, 304, 305],
+  "snapshot_cutoff_utc": "2026-10-20T05:05:51Z",
+  "post_snapshot_additions": [299, 300, 301, 302, 304, 305, 307, 308, 309, 265],
   "state": "RC_BLOCKED",
   "release_status": "NOT_RELEASE",
   "authoritative_base": {
@@ -23,7 +24,7 @@
     "status": "INDEPENDENT_QA_PARTIAL",
     "signature": null,
     "exact_sha": null,
-    "note": "PR #256 carries the triage, not a signature. Its pins are superseded; checked S1/S2/T10/I1 tips are patch-identical, #255's current tip differs and is unreviewed. None of the post-snapshot heads #299-#302/#304-#305 has an exact-SHA QA receipt."
+    "note": "PR #256 carries the triage, not a signature. Its pins are superseded; checked S1/S2/T10/I1 tips are patch-identical, #255's current tip differs and is unreviewed. None of the post-snapshot heads #299-#302/#304-#305/#307-#309 has an exact-SHA QA receipt."
   },
   "hosted_ci": {
     "status": "QUOTA_WAIVED",
@@ -40,6 +41,7 @@
     {"pr": 268, "lane": "S1", "base": "feat/v1-s1-s2-source-integration-20261018", "base_sha": "2cf7cd1ad54a6eaa81d8aebd6d2bf4cadc4370e4", "head": "41c8c5c5c193cb02f3faf79f9f46838bfb2ddc28", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 272, "lane": "S1", "base": "feat/v1-s1-s2-resource-contract-20261018", "base_sha": "41c8c5c5c193cb02f3faf79f9f46838bfb2ddc28", "head": "fc93590030c218934252920a53aa67277f144844", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 275, "lane": "S1", "base": "feat/v1-s1-s2-grant-epoch-authority-20261018", "base_sha": "fc93590030c218934252920a53aa67277f144844", "head": "92d7a92c971a682078e9d125e3ee7ee80ea2bfb6", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 307, "lane": "S1", "base": "feat/v1-s1-s2-grant-epoch-authority-20261018", "base_sha": "fc93590030c218934252920a53aa67277f144844", "head": "6abefaa7beadb908054cd7d162c1e34c48a29eef", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 258, "lane": "T10", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "007e2ccd44993333cc11e9e349bf1710ad1839e9", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 2, "state": "Draft/OPEN"},
     {"pr": 260, "lane": "T10", "base": "feat/fleet-v1-t10-verdict-evidence-20261018", "base_sha": "007e2ccd44993333cc11e9e349bf1710ad1839e9", "head": "1883479fc6903cc389a36c94afdf47a25b0542c6", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 263, "lane": "T10", "base": "feat/fleet-v1-t10-producer-binding-20261018", "base_sha": "1883479fc6903cc389a36c94afdf47a25b0542c6", "head": "b121a20cf4f0a272ce6fe1cf57eb23cc669b00b4", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
@@ -61,12 +63,15 @@
     {"pr": 232, "lane": "N1", "base": "feat/core-lite-status-schema-20261016", "base_sha": "8f11d6c3e22ad6ebe8bc9c537ef22f04d742eda0", "head": "9e926506b4baf9b8dd74cef3e53ac18d5698a8f1", "merge_base": "e8eccf2", "state": "Draft/OPEN"},
     {"pr": 242, "lane": "N1", "base": "feat/native-bounded-recovery-20261016", "base_sha": "9e926506b4", "head": "c89094d8d3de4637a817a41867dbcb0542f56fae", "merge_base": "e8eccf2", "own_commits": 4, "state": "Draft/OPEN"},
     {"pr": 253, "lane": "N2", "base": "feat/c-line-bounded-recovery-v1-20261016", "base_sha": "c89094d8d3de4637a817a41867dbcb0542f56fae", "head": "7936edea36155a3d1909e0b25f1c5722082fd76b", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 265, "lane": "N2", "base": "feat/n2-windows-core-status-20261017", "base_sha": "7936edea36155a3d1909e0b25f1c5722082fd76b", "head": "1feffa7f26416d41ffa62058a862bc32cf5d2bbc", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 309, "lane": "N2", "base": "feat/n2-win32-scm-readonly-20261018", "base_sha": "1feffa7f26416d41ffa62058a862bc32cf5d2bbc", "head": "c97eb410f63d4eb7664824025d459de071ac4b6b", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 302, "lane": "N1", "base": "feat/c-line-bounded-recovery-v1-20261016", "base_sha": "c89094d8d3de4637a817a41867dbcb0542f56fae", "head": "b88715c251d139e8a3b5482f56a3730a8256f0c8", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 196, "lane": "M1", "base": "feat/v13-shadow-orchestrator-20261014", "base_sha": "08c8709697939f7706f7c17fab21e616b09e9a6c", "head": "a4d376f4af54fd7987c32497b6d021a7fe0526f0", "merge_base": "3236e65", "state": "Draft/OPEN"},
     {"pr": 233, "lane": "M1", "base": "feat/v13-two-surface-integration-candidate-20261014", "base_sha": "a4d376f4af", "head": "f76bc09f7d6eb72ea26e935fa30f3ec6fa24d26d", "merge_base": "e8eccf2", "own_commits": 3, "state": "Draft/OPEN"},
     {"pr": 239, "lane": "M1", "base": "feat/fleet-v1-core-consumption-m1-20261016", "base_sha": "f76bc09f7d6eb72ea26e935fa30f3ec6fa24d26d", "head": "c345f6bedecad5593c0a81fa2683309952b8d180", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
     {"pr": 301, "lane": "M1", "base": "feat/v13-wave2-monitoring-audit-20261016", "base_sha": "c345f6bedecad5593c0a81fa2683309952b8d180", "head": "bbb3905e5c66f7f8faf510097008e9e432ade49f", "merge_base": "e8eccf2", "own_commits": 2, "state": "Draft/OPEN"},
     {"pr": 257, "lane": "R1", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "65ead6df0a182092a3d83a6dacf9f04e9786eada", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 3, "state": "Draft/OPEN"},
+    {"pr": 308, "lane": "R1", "base": "feat/fleet-v1-runtime-parity-r1-20261017", "base_sha": "65ead6df0a182092a3d83a6dacf9f04e9786eada", "head": "3e30b74b28843b0f466fda5c82b8b601fe230772", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 3, "state": "Draft/OPEN"},
     {"pr": 259, "lane": "N3", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "a95991c05eb654802840d7c5cb726ec90cdb8d9e", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 3, "state": "Draft/OPEN"},
     {"pr": 191, "lane": "Journey", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "ddebccdb0fcfc1cb414d57ee85b42b12ad55fbe1", "merge_base": "3236e65", "state": "Draft/OPEN"},
     {"pr": 240, "lane": "Journey", "base": "feat/c-ability-journey-mvp-20261014", "base_sha": "ddebccdb0f", "head": "b2ec70177188a59840b5413568ee25f00cb1e638", "merge_base": "3236e65", "own_commits": 1, "state": "Draft/OPEN"},
@@ -83,6 +88,9 @@
     {"from": 264, "to": 268, "kind": "base"},
     {"from": 268, "to": 272, "kind": "base"},
     {"from": 272, "to": 275, "kind": "base"},
+    {"from": 272, "to": 307, "kind": "base"},
+    {"from": 275, "to": 307, "kind": "conflict", "reason": "both change verify_live_grant in runtime/agent_control_store.py"},
+    {"from": 307, "to": 298, "kind": "conflict", "reason": "inherited #272 vs #295 context/resolver.py duplicate" },
     {"from": 258, "to": 260, "kind": "base"},
     {"from": 260, "to": 263, "kind": "base"},
     {"from": 263, "to": 269, "kind": "base"},
@@ -103,18 +111,22 @@
     {"from": 230, "to": 300, "kind": "base"},
     {"from": 232, "to": 242, "kind": "base"},
     {"from": 242, "to": 253, "kind": "base"},
+    {"from": 253, "to": 265, "kind": "base"},
+    {"from": 265, "to": 309, "kind": "base"},
     {"from": 242, "to": 302, "kind": "base"},
     {"from": 196, "to": 233, "kind": "base"},
     {"from": 233, "to": 239, "kind": "base"},
     {"from": 239, "to": 301, "kind": "base"},
     {"from": 191, "to": 240, "kind": "base"},
+    {"from": 257, "to": 308, "kind": "base"},
     {"from": 254, "to": 278, "kind": "base"}
   ],
   "conflicts": [
     {"left": "#243/#305", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "F1"},
     {"left": "#230/#300", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "P1"},
     {"left": "#255", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "G1/F1"},
-    {"left": "#275", "right": "#295/#296/#297/#298/#304", "files": ["context/resolver.py"], "kind": "duplicate-semantic-and-textual", "owner": "S1+WE", "recommendation": "#275 owns the T6 reader; #295 drops its hunk; #304 inherits"}
+    {"left": "#275", "right": "#295/#296/#297/#298/#304", "files": ["context/resolver.py"], "kind": "duplicate-semantic-and-textual", "owner": "S1+WE", "recommendation": "#275 owns the T6 reader; #295 drops its hunk; #304 inherits"},
+    {"left": "#275", "right": "#307", "files": ["runtime/agent_control_store.py"], "kind": "sibling-conflict", "owner": "S1", "recommendation": "review as one corrective; do not land two versions of verify_live_grant"}
   ],
   "dependency_298_on_272": {
     "default_ref": "fc93590030c218934252920a53aa67277f144844",
@@ -137,9 +149,9 @@
     "blocked_is_not_pass": true
   },
   "release_gates_244": {
-    "three_node_core_monitoring": {"status": "BLOCKED", "reason": "N1 LOCAL/MOCK, N2 SOURCE, N3 SOURCE_ONLY; no device run"},
+    "three_node_core_monitoring": {"status": "BLOCKED", "reason": "N1 LOCAL/MOCK, N2 SOURCE/MOCK (#253/#265/#309, no Windows compiler or read), N3 SOURCE_ONLY; no device run"},
     "linux_windows_bootstrap_recovery": {"status": "BLOCKED", "reason": "REAL_WINDOWS/REAL_TOY/LIVE_NETWORK/PRODUCTION_RECOVERY NOT_RUN"},
-    "authenticated_cc_and_codex": {"status": "BLOCKED", "reason": "R1 SOURCE_FIXTURE; BLOCKED_PROVIDER_SOURCE"},
+    "authenticated_cc_and_codex": {"status": "PARTIAL", "reason": "R1 #257 SOURCE_FIXTURE; #308 REAL_READ_ONLY reads; lifecycle/model NOT_RUN; Codex BLOCKED"},
     "fleet_cloudcli_lifecycle_six_scopes": {"status": "BLOCKED", "reason": "F1 LOCAL/SOURCE; catalogue is not served tools; installed canary differs"},
     "device_abilities_invoked": {"status": "BLOCKED", "reason": "G1 LOCAL projection; QA-P1-1 open; no device invocation"},
     "local_cc_plugin_e2e": {"status": "PARTIAL", "reason": "#300 real Claude Code client over a local stdio fixture (fake device/provider); live Next ingress and owner OAuth NOT_RUN/BLOCKED_BY_OWNER_OAUTH"},
@@ -171,13 +183,13 @@
     {"head": "92d7a92c971a682078e9d125e3ee7ee80ea2bfb6", "tests": ["tests/test_v1_grant_os_principal_schema.py", "tests/test_v1_grant_epoch_authority.py", "tests/test_v1_work_engine_resource_contract.py"], "result": "37 passed", "exit": 0, "seconds": 5.80, "level": "LOCAL"}
   ],
   "landing_order": [
-    "S1/S2 #241 -> #261 -> #262 -> #264 -> #268 -> #272 -> #275, then #299 (re-based onto #264)",
+    "S1/S2 #241 -> #261 -> #262 -> #264 -> #268 -> #272, then #307 + #275 as one corrective, then #299 (re-based onto #264)",
     "WE #295 -> #296 -> #297 -> #298 -> #304 (after #272; drop #295 resolver hunk)",
     "T10 #258 -> #260 -> #263 -> #269 -> #274 -> #277",
-    "N1 #242 -> N2 #253 and #302",
+    "N1 #242 -> N2 #253 -> #265 -> #309, and #302",
     "F1 #243 -> G1 #255 and #305 (after retargeting the non-PR base)",
     "P1 #230 -> #300",
-    "R1 #257, N3 #259, M1 #233/#239 -> #301, Journey #240",
+    "R1 #257 -> #308, N3 #259, M1 #233/#239 -> #301, Journey #240",
     "I1 docs last, re-pinned to the composition SHA"
   ],
   "open_p0": [
@@ -190,6 +202,7 @@
     "P0-G T10 finalize/continuation not ingested by WE",
     "P0-H old QA pins are superseded; most checked tips are patch-identical, #255 differs; no exact-SHA signature",
     "P0-I #254/#278 pins are stale",
-    "P0-J zero hosted check runs; QUOTA_WAIVED"
+    "P0-J zero hosted check runs; QUOTA_WAIVED",
+    "P0-K #275/#307 sibling conflict on verify_live_grant; review as one corrective"
   ]
 }
