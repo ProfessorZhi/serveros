@@ -10,10 +10,12 @@ fact. This file exercises it through the REAL daemon verify/issue routes.
 
 EVIDENCE LEVELS
 ---------------
-* `test_a_real_socket_peer_with_a_live_owner_policy_verifies` is **REAL_TEMP**:
-  a temp AF_UNIX socket, the kernel's real `SO_PEERCRED`, and production
-  daemon/store code. The context, grant and owner policy are TEST FIXTURES;
-  there is no real provider signature and no production owner.
+* `test_a_real_socket_peer_with_a_live_owner_policy_is_commit_fence_blocked`
+  is **REAL_TEMP**: a temp AF_UNIX socket, the kernel's real `SO_PEERCRED`, and
+  production daemon/store code. The context, grant and owner policy are TEST
+  FIXTURES; there is no real provider signature and no production owner. The
+  live policy passes every owner check, and the route still refuses mutation
+  eligibility because no owner commit fence exists.
 * The synthetic-peer case is **LOCAL**: peer metadata is passed to
   `daemon.handle`, so it is not OS evidence. It is labelled SYNTHETIC_PEER.
 * Two real uids are **BLOCKED_MULTIPRINCIPAL_NOT_RUN**: this process is uid
@@ -39,9 +41,6 @@ REPO = Path(__file__).resolve().parent.parent
 ITEM = "SRV-0001"
 PROJECT = "serveros"
 ACTION = "lease.acquire"
-LEASE_GRANT_FIELDS = ("principal", "grant_ref", "project", "items", "actions",
-                      "valid_from", "expires_at", "revoked", "epoch",
-                      "os_principal")
 
 
 def _load(name: str, path: Path):
@@ -216,11 +215,16 @@ def _params(world, **overrides):
 # REAL_TEMP: the real AF_UNIX peer + real daemon route.
 # ---------------------------------------------------------------------------
 
-def test_a_real_socket_peer_with_a_live_owner_policy_verifies(world):
+def test_a_real_socket_peer_with_a_live_owner_policy_is_commit_fence_blocked(
+        world):
+    # The owner checks pass, but a point-in-time read is not a write grant:
+    # without an owner-issued atomic policy/epoch commit fence the route
+    # refuses mutation eligibility. The audit stays for the read-only record.
     answer = verify_over_socket(world["daemon"], _params(world))
-    assert answer["verified"] is True, answer
-    assert set(answer["grant"]) == set(LEASE_GRANT_FIELDS)
-    assert answer["grant"]["os_principal"] == f"uid:{os.getuid()}"
+    assert answer["verified"] is False, answer
+    assert answer["reason"] == "BLOCKED_OWNER_COMMIT_SEAM", answer
+    assert answer["point_in_time"] is True, answer
+    assert "grant" not in answer, answer
     audit = answer["owner_policy"]
     assert audit["policy_ref"] == "policy:test"
     assert audit["issued_by"] == "owner:test"
@@ -405,12 +409,14 @@ def test_a_policy_change_during_resolve_is_blocked_atomicity(world):
     assert answer["reason"] == "BLOCKED_ATOMICITY"
 
 
-def test_the_positive_verdict_is_labelled_point_in_time(world):
+def test_a_live_policy_is_a_point_in_time_audit_not_a_verdict(world):
     answer = verify(world["daemon"],
                     context_ref=world["context"]["context_ref"])
-    assert answer["verified"] is True, answer
-    assert answer["point_in_time"] is True
-    assert answer["atomicity"] == "BLOCKED_OWNER_COMMIT_SEAM"
+    assert answer["verified"] is False, answer
+    assert answer["reason"] == "BLOCKED_OWNER_COMMIT_SEAM", answer
+    assert answer["point_in_time"] is True, answer
+    assert answer["owner_policy"]["policy_ref"] == "policy:test"
+    assert "grant" not in answer, answer
 
 
 def test_a_non_verified_context_is_still_refused(world):

@@ -29,6 +29,13 @@ does not claim that a production parent exists.
   `SO_PEERCRED` peer, and re-checks `delegated_by`, project, Item, action,
   revocation, window and epoch against the live grant. Refusals are answers
   (`verified: False` + `reason` + `because`), never a permissive default.
+* An **owner-backed** reply is a point-in-time read, not a write grant.
+  `ServerOSLeaseAuthority` refuses it unless the reply carries
+  `atomicity: "COMMIT_FENCED"`. The current daemon does not emit that marker;
+  when every owner check passes it answers
+  `verified: False, reason: BLOCKED_OWNER_COMMIT_SEAM` (with an informational
+  `point_in_time` audit and no `grant`), so no owner-backed lease is written.
+  A synthetic signature or a legacy #272 readback is not a commit fence.
 
 The Work Engine side then re-checks the mapped `LeaseGrant` in
 `OwnerVerifiedLease`: exact Item/action, `revoked`, window, positive epoch, and
@@ -98,6 +105,7 @@ The parent must:
 | serverosd: missing grant, no epoch, expected-epoch mismatch | `INVALID_CONTEXT` |
 | serverosd: revoked, expired, not-yet-valid, action/project/Item not granted | `POLICY_DENIED` |
 | transport: missing socket, refused connection, timeout | `BLOCKED_TRUST_SOURCE` |
+| Work Engine: owner-backed answer has no `atomicity: "COMMIT_FENCED"` | `BLOCKED_OWNER_COMMIT_SEAM` |
 | Work Engine: verified answer carries no grant | `UNTRUSTED_ACTOR` |
 | Work Engine: verified grant is not the bound grant | `INVALID_CONTEXT` |
 | Work Engine: peer uid != this process | `OS_PRINCIPAL_MISMATCH` |
@@ -115,7 +123,10 @@ python -m pytest tests/test_serveros_lease_authority.py tests/test_lease_authori
 ```
 
 Result: **50 passed**, no skips (22 adapter cases: 18 ported + 4 hardening, plus
-28 authority cases). The
+28 authority cases). The owner commit-fence chain is covered separately by
+`tests/test_owner_commit_fence.py` (3 passed on this branch): a temp daemon,
+real AF_UNIX/`SO_PEERCRED`, the adapter, `OwnerVerifiedLease` and a temp lease
+store, with an owner revoke after the last read and before `acquire`. The
 test materializes the actual serveros #272 source (PR #272 tip
 `fc93590030c218934252920a53aa67277f144844`, an OPEN pull request not yet on
 `main`) from THIS repository's object store into a temp tree, builds a temp

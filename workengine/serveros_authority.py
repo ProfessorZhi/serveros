@@ -32,6 +32,13 @@ serverosd peer is then that process's kernel uid, and `OwnerVerifiedLease`'s
 A proxy process would change the peer and must be refused; the adapter does not
 paper over that.
 
+An owner-backed answer is a point-in-time read, not a write grant. This adapter
+therefore refuses any reply that carries owner markers unless the parent
+explicitly commits it with `atomicity: "COMMIT_FENCED"`. No production parent
+emits that marker today, so an owner-backed lease remains
+`BLOCKED_OWNER_COMMIT_SEAM`; a revoked owner after the last read must not
+produce a lease. Legacy #272 replies without owner markers are unchanged.
+
 No CLI verb and no MCP tool is registered here. Until an owner-approved parent
 binds this adapter, the production status remains `BLOCKED_TRUST_SOURCE`.
 """
@@ -176,6 +183,19 @@ class ServerOSLeaseAuthority:
                 str(answer.get("reason") or "UNTRUSTED_ACTOR"),
                 str(answer.get("because") or "the trusted parent refused the "
                     "verify read"))
+        # An owner-backed reply is a point-in-time read unless the parent
+        # explicitly commits it against an owner-issued policy/epoch fence.
+        # This adapter is the last place before `OwnerVerifiedLease.acquire`
+        # writes, so it must not swallow a missing fence as decoration: only
+        # the exact COMMIT_FENCED marker permits an owner-backed grant. A
+        # synthetic signature or a legacy grant readback is not that fence.
+        if ("owner_policy" in answer or "point_in_time" in answer
+                or "atomicity" in answer):
+            if answer.get("atomicity") != "COMMIT_FENCED":
+                raise AuthorityError(
+                    "BLOCKED_OWNER_COMMIT_SEAM",
+                    "the owner-backed verify answer is not commit-fenced; a "
+                    "point-in-time read cannot authorize a lease write")
         grant = answer.get("grant")
         if not isinstance(grant, dict):
             raise AuthorityError(

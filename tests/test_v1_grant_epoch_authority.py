@@ -184,6 +184,17 @@ def verify(daemon, *, context_ref, grant_ref="grant:1", action=ACTION,
         peer=peer() if peer_value == "default" else peer_value)["result"]
 
 
+def verify_store(daemon, context, *, grant_ref="grant:1", action=ACTION,
+                 project=PROJECT, item_ref=ITEM, expected_epoch=None,
+                 peer_value=None):
+    """The #272 epoch read itself; the daemon route is owner-fence-blocked."""
+    return daemon_mod.agent_control_store_mod.verify_live_grant(
+        daemon.control_store().grants(), grant_ref=grant_ref,
+        context=context, peer=peer() if peer_value is None else peer_value,
+        action=action, project=project, item_ref=item_ref,
+        expected_epoch=expected_epoch, now=iso(daemon))
+
+
 # ---------------------------------------------------------------------------
 # The positive path.
 # ---------------------------------------------------------------------------
@@ -193,8 +204,7 @@ def test_a_live_grant_with_a_matching_epoch_verifies(daemon):
     grant = a_bound_grant(daemon, ctx)
     assert isinstance(grant["epoch"], int) and grant["epoch"] >= 1
 
-    answer = verify(daemon, context_ref=ctx["context_ref"],
-                    expected_epoch=grant["epoch"])
+    answer = verify_store(daemon, ctx, expected_epoch=grant["epoch"])
     assert answer["verified"] is True
     assert answer["grant"]["principal"] == "human:A"
     assert answer["grant"]["epoch"] == grant["epoch"]
