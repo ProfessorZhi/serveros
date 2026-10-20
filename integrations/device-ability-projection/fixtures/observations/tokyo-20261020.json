@@ -1,0 +1,673 @@
+{
+  "_source": "ability-management control_plane.py scan --agent all --device tokyo-shared-dev-01",
+  "_generated_at": "2026-10-20T04:58:09Z",
+  "_device_id": "tokyo-shared-dev-01",
+  "_sanitized": "location, fingerprint, fingerprint_v2, version, author and provenance were removed before this file entered the repository; only the fields needed to match an observation to a manifest identity remain.",
+  "_fields_removed": [
+    "location",
+    "fingerprint",
+    "fingerprint_v2",
+    "version",
+    "author",
+    "provenance",
+    "os",
+    "device_id",
+    "device_name"
+  ],
+  "observations": [
+    {
+      "type": "hook",
+      "name": "hooks",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "instruction",
+      "name": "CLAUDE.md",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "archguard",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "botmux",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "cloudcli",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "http://127.0.0.1:3011/mcp"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "cloudcli-browser",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "cloudcli-browser",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "github",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "playwright",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "microsoft/playwright-mcp"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "mcp",
+      "name": "playwright",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "microsoft/playwright-mcp"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "plugin",
+      "name": "better-know@better-know",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "VenusFennn/Better-Know"
+      },
+      "stable_id": "better-know@better-know"
+    },
+    {
+      "type": "plugin",
+      "name": "botmux@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "botmux@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "cc-plugin-agents-md@builtin",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "cc-plugin-agents-md@builtin"
+    },
+    {
+      "type": "plugin",
+      "name": "cc-plugin-plugin-authoring@builtin",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "cc-plugin-plugin-authoring@builtin"
+    },
+    {
+      "type": "plugin",
+      "name": "hwz-server-os-linux-work@hwz-server-os-linux-work",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "hwz-server-os-linux-work@hwz-server-os-linux-work"
+    },
+    {
+      "type": "plugin",
+      "name": "hwz-server-os-linux-work@hwz-server-os-linux-work-local",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "hwz-server-os-linux-work@hwz-server-os-linux-work-local"
+    },
+    {
+      "type": "plugin",
+      "name": "marketops-client@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "marketops-client@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "marketops-plugin@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "marketops-plugin@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "marketops-research-assistant@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "marketops-research-assistant@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "marketops@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "marketops@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "meta-cc@meta-cc-marketplace",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "ProfessorZhi/meta-cc"
+      },
+      "stable_id": "meta-cc@meta-cc-marketplace"
+    },
+    {
+      "type": "plugin",
+      "name": "openviking-memory@openviking",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "volcengine/OpenViking"
+      },
+      "stable_id": "openviking-memory@openviking"
+    },
+    {
+      "type": "plugin",
+      "name": "openviking-memory@openviking",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "volcengine/OpenViking"
+      },
+      "stable_id": "openviking-memory@openviking"
+    },
+    {
+      "type": "plugin",
+      "name": "quay@quay",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "yaleh/quay"
+      },
+      "stable_id": "quay@quay"
+    },
+    {
+      "type": "plugin",
+      "name": "serveros-fleet-dev@inline",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "serveros-fleet-dev@inline"
+    },
+    {
+      "type": "plugin",
+      "name": "serveros-testing@serveros-testing",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": "serveros-testing@serveros-testing"
+    },
+    {
+      "type": "plugin",
+      "name": "superpowers@claude-plugins-official",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "anthropics/claude-plugins-official"
+      },
+      "stable_id": "superpowers@claude-plugins-official"
+    },
+    {
+      "type": "plugin",
+      "name": "visualize@openai-bundled",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "openai/codex-builtin"
+      },
+      "stable_id": "visualize@openai-bundled"
+    },
+    {
+      "type": "skill",
+      "name": "backend-solution-design",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "VenusFennn/Backend-Solution-Design"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "bridge-development",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "codex-pr-body",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "design-and-contract",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "dev-doctor",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "document-stewardship",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "document-stewardship",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feature-developer",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feature-development",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feishu-report",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feishu-report",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feishu-space-management",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "feishu-space-management",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "fjllm-switch",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "frontend-design",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "frontend-solution-design",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "VenusFennn/Frontend-Solution-Design"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "good-pr",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "grill-me",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "hwz-image-build",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "information-management",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "information-management",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "inventory-publishing",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "inventory-publishing",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "muc-playwright-e2e",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "muc-playwright-e2e",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "network-environment",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-adapter-author",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-adapter-author",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-autofix",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-autofix",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-browser",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-browser",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-browser-sitemap",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-browser-sitemap",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-sitemap-author",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-sitemap-author",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-usage",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "opencli-usage",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "github",
+        "repo": "jackwener/opencli"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "project-semantics-discovery",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "session-manager",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "work-management",
+      "agent": "claude-code",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    },
+    {
+      "type": "skill",
+      "name": "work-management",
+      "agent": "codex",
+      "canonical_source": {
+        "kind": "unknown"
+      },
+      "stable_id": ""
+    }
+  ]
+}

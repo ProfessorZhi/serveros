@@ -1,0 +1,40 @@
+{
+  "_note": "The one bounded, read-only Ability resolve performed for G1 on 2026-10-20. It is evidence about the CONJUNCTION, not a success story: the resolver named every axis it was never given. The local checkout path printed by the resolver was replaced with the repository identity; no credential, host path or raw identifier is carried here.",
+  "_command": "serverosctl ability resolve --json --request <request> --ability-repo <ability-management checkout> --ability-rev origin/main",
+  "_request": {
+    "ability": "ability:information-management",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "runtime": "claude-code"
+  },
+  "tokyo": {
+    "status": "UNKNOWN",
+    "exit_code": 2,
+    "reason": null,
+    "device_ref": "device:tokyo-shared-dev-01",
+    "runtime": "claude-code",
+    "semantic_owner": "B2",
+    "cross_refs": ["B1"],
+    "product_role_state": "DECLARED",
+    "realization_role": "primary-skill",
+    "inputs_seen": ["ability"],
+    "inputs_missing": [
+      "device_capability",
+      "device_profile",
+      "device_binding",
+      "agent_runtime",
+      "runtime_health",
+      "policy",
+      "task_context"
+    ],
+    "detail": "no input refused, and these were never supplied: the provider set",
+    "source": "ProfessorZhi/ability-management@4a46f2b178e5 (61 abilities, composed from 66 manifest entries)"
+  },
+  "windows_dell_work": {
+    "status": "NOT_RUN",
+    "reason": "No trusted observation channel to this device class was available in this round, and Windows changes are outside this lane's authorization. The authority's installation records for `dell-work` are not execution evidence."
+  },
+  "dell_a6000_linux": {
+    "status": "NOT_RUN",
+    "reason": "The authority declares no device id for this class, so there is no `device_ref` to resolve against. FAIL CLOSED: no id was inferred from a product name."
+  }
+}

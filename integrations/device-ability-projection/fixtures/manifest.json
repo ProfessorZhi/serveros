@@ -1,0 +1,55 @@
+{
+  "_fixture": "A synthetic authority manifest. It mirrors the real manifest's shape (name/id/type/path/family/domain/product_role/revisions[].installations[]) but names nothing real. Two abilities are installed on tokyo-shared-dev-01; one is installed only on a device this projection is not asked about.",
+  "schema_version": 3,
+  "abilities": [
+    {
+      "name": "alpha-ability",
+      "id": "Owner/alpha-ability",
+      "type": "skill",
+      "path": "skills/alpha-ability",
+      "family": "dev-flow",
+      "domain": {"primary": "serveros.work"},
+      "product_role": "B7",
+      "revisions": [
+        {
+          "version": "1.0.0",
+          "fingerprint": "sha256:alpha-rev-1",
+          "installations": [
+            {"device_id": "tokyo-shared-dev-01", "agent": "claude-code"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "beta-ability",
+      "id": "Owner/beta-ability",
+      "type": "skill",
+      "path": "skills/beta-ability",
+      "revisions": [
+        {
+          "version": "0.9.0",
+          "fingerprint": "sha256:beta-rev-1",
+          "installations": [
+            {"device_id": "tokyo-shared-dev-01", "agent": "claude-code"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gamma-ability",
+      "id": "Owner/gamma-ability",
+      "type": "mcp",
+      "path": "mcps/gamma-ability",
+      "family": "dev-flow",
+      "revisions": [
+        {
+          "version": "2.0.0",
+          "fingerprint": "sha256:gamma-rev-1",
+          "installations": [
+            {"device_id": "some-other-device", "agent": "codex"}
+          ]
+        }
+      ]
+    }
+  ]
+}
