@@ -2312,7 +2312,20 @@ class FleetService:
             )
 
     def status(self, principal: Principal) -> dict[str, Any]:
-        """Health of this surface and of every dependency it composes."""
+        """Health of this surface and of every dependency it composes.
+
+        This is a read, and it is gated as one. Before this line it called only
+        `admit()` — the rate limiter — so a credential with no scope, or with
+        only `fleet:send`, could read the enrolled-device inventory, every
+        route's health, `policy.send_allow` and the audit tail. That is more
+        than the diagnostic the tool advertises, and it contradicted
+        `fleet/owner-grant-3devices.md`, which names `fleet:read` for
+        `fleet_status`. A narrow write credential that needs to diagnose a
+        failed write still learns why from the refusal it already received
+        (`UNKNOWN_DEVICE`, `PROVIDER_UNREACHABLE`, `WRITE_NOT_GRANTED`); it
+        does not need the fleet's read surface to do it.
+        """
+        principal.require(SCOPE_READ)
         self.admit(principal)
         providers: list[dict[str, Any]] = []
         for ref, provider in sorted(self.providers.items()):

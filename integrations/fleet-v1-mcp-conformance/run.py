@@ -39,16 +39,19 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_HERE = Path(__file__).resolve().parent
+for _path in (_ROOT, _HERE):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+from authority_matrix import summary as authority_summary  # noqa: E402
 from fleet_mcp import tools as tools_mod  # noqa: E402
 from fleet_mcp.config import (AuditBinding, AuthBinding, CreateGrant,  # noqa: E402
                               FleetConfig, PolicyBinding, ProviderBinding,
                               ServerBinding, provider_key)
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
-from fleet_mcp.fleet import (SCOPE_CREATE, SCOPE_READ, SCOPE_SEND,  # noqa: E402
-                             FleetService, Principal)
+from fleet_mcp.fleet import (SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ,  # noqa: E402
+                             SCOPE_SEND, FleetService, Principal)
 from fleet_mcp.providers.base import ProviderHealth  # noqa: E402
 from fleet_mcp.server import PREFERRED_PROTOCOL_VERSION, McpServer  # noqa: E402
 from fleet_mcp.version import (SERVER_NAME, SERVER_VERSION,  # noqa: E402
@@ -91,6 +94,14 @@ class FakeDevice:
     def send(self, key, message, *, idempotency_key=None) -> dict:
         self.calls.append(("send", key.ref, message))
         return {"ok": True, "served_by": self.runtime}
+
+    def interrupt(self, key) -> dict:
+        self.calls.append(("interrupt", key.ref))
+        # `aborted` is the field the service reads to distinguish "stopped a
+        # run" from "there was no run in flight". A fixture that omitted it
+        # would be testing the service's refusal of a malformed answer, not a
+        # successful control path.
+        return {"aborted": True, "served_by": self.runtime}
 
     def create(self, *, project, message=None, provider="claude", model=None,
                lifecycle_mode=None, permission_mode=None) -> dict:
@@ -182,11 +193,12 @@ def main(argv: list[str] | None = None) -> int:
             send_allow=(SESSION_REF,))
         device = devices[DEVICE]
 
-        def context():
-            principal = Principal(name=PRINCIPAL,
-                                  scopes=frozenset({SCOPE_READ, SCOPE_SEND,
-                                                    SCOPE_CREATE}),
-                                  credential_kind="oauth")
+        def context(scopes=None, name: str = PRINCIPAL):
+            principal = Principal(
+                name=name,
+                scopes=frozenset(scopes if scopes is not None
+                                 else {SCOPE_READ, SCOPE_SEND, SCOPE_CREATE}),
+                credential_kind="oauth")
             return tools_mod.ToolContext(service=service, principal=principal)
 
         server = McpServer(context)
@@ -281,6 +293,87 @@ def main(argv: list[str] | None = None) -> int:
         receipt.record("contract.a_stray_argument_is_refused", "contract",
                        bool((stray or {}).get("result", {}).get("isError")))
 
+        # -- 5b. scope, control and protocol negatives ------------------------
+        #
+        # `tools/list` is discovery and stays open; every live read and every
+        # write is gated. The checks below pin the difference, because a suite
+        # that only counted 33 tools would be reporting discovery as
+        # entitlement.
+        def refusal_code(answer) -> str:
+            if answer is None:
+                return "NO_RESPONSE"
+            if "error" in answer:
+                return f"RPC_{answer['error'].get('code')}"
+            result = answer.get("result", {})
+            if not result.get("isError"):
+                return "OK"
+            return result.get("structuredContent", {}).get("code", "UNKNOWN")
+
+        status_without_read = McpServer(lambda: context({SCOPE_SEND})).handle(
+            {"jsonrpc": "2.0", "id": 20, "method": "tools/call",
+             "params": {"name": "fleet_status", "arguments": {}}})
+        receipt.record("scope.status_without_read_is_refused", "grant",
+                       refusal_code(status_without_read) == "SCOPE_DENIED",
+                       refusal_code(status_without_read))
+
+        status_with_read = McpServer(lambda: context({SCOPE_READ})).handle(
+            {"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+             "params": {"name": "fleet_status", "arguments": {}}})
+        receipt.record("scope.status_with_read_is_served", "grant",
+                       refusal_code(status_with_read) == "OK",
+                       refusal_code(status_with_read))
+
+        device.calls.clear()
+        stopped = McpServer(lambda: context({SCOPE_CONTROL})).handle(
+            {"jsonrpc": "2.0", "id": 22, "method": "tools/call",
+             "params": {"name": "fleet_interrupt_session",
+                        "arguments": {"session_ref": SESSION_REF}}})
+        receipt.record("write.interrupt_reaches_the_device_when_granted", "grant",
+                       refusal_code(stopped) == "OK"
+                       and any(row[0] == "interrupt" for row in device.calls),
+                       f"device_calls={device.calls}")
+
+        no_grant = McpServer(lambda: context({SCOPE_CONTROL},
+                                             name="oauth:conformance-no-grant")).handle(
+            {"jsonrpc": "2.0", "id": 23, "method": "tools/call",
+             "params": {"name": "fleet_interrupt_session",
+                        "arguments": {"session_ref": SESSION_REF}}})
+        receipt.record("grant.control_without_operator_grant_is_refused", "grant",
+                       refusal_code(no_grant) == "APPROVAL_REQUIRED",
+                       refusal_code(no_grant))
+
+        unknown_method = server.handle(
+            {"jsonrpc": "2.0", "id": 24, "method": "tools/does-not-exist",
+             "params": {}})
+        receipt.record("protocol.an_unknown_method_is_minus_32601", "protocol",
+                       (unknown_method or {}).get("error", {}).get("code") == -32601,
+                       json.dumps(unknown_method)[:120])
+
+        device.calls.clear()
+        silent = server.handle(
+            {"jsonrpc": "2.0", "method": "tools/call",
+             "params": {"name": "fleet_send_to_session",
+                        "arguments": {"session_ref": SESSION_REF,
+                                      "message": "notification-write"}}})
+        receipt.record("protocol.a_notification_call_has_no_effect", "protocol",
+                       silent is None and not device.calls,
+                       f"response={silent!r} device_calls={device.calls}")
+
+        empty = McpServer(lambda: context(set()))
+        manifest = empty.handle(
+            {"jsonrpc": "2.0", "id": 25, "method": "tools/call",
+             "params": {"name": "fleet_cloudcli_native_manifest",
+                        "arguments": {}}})
+        receipt.record("contract.discovery_needs_no_scope", "contract",
+                       refusal_code(manifest) == "OK", refusal_code(manifest))
+        capability = empty.handle(
+            {"jsonrpc": "2.0", "id": 26, "method": "tools/call",
+             "params": {"name": "fleet_cloudcli_native_capability",
+                        "arguments": {"device_ref": DEVICE}}})
+        receipt.record("grant.live_capability_needs_read", "grant",
+                       refusal_code(capability) == "SCOPE_DENIED",
+                       refusal_code(capability))
+
         # -- 6. the runtime axis, both directions -----------------------------
         device.calls.clear()
         second_device = devices[provider_key(DEVICE, SECOND)]
@@ -323,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         "mode": "FAKE_DEVICE",
         "counts": receipt.counted(),
         "checks": receipt.checks,
+        "authority_matrix": authority_summary(),
         "real_next_readonly": real,
         "note": "Every check above ran against an in-process fake device. "
                 "`real_next_readonly` is the only section that touches a real "

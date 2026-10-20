@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from .errors import BAD_REQUEST, INTERNAL, FleetRefusal, refuse
+from .errors import BAD_REQUEST, INTERNAL, METHOD_NOT_FOUND, FleetRefusal, refuse
 from .fleet import Principal
 from .tools import ToolContext, SERVED_TOOLS, call_tool, tool_names
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION, TOOL_SURFACE_REVISION
@@ -65,6 +65,14 @@ class McpServer:
             return _error_response(request_id, JSONRPC_INVALID_PARAMS, "`params` must be an object")
 
         is_notification = "id" not in message
+        if is_notification and method == "tools/call":
+            # MCP defines `tools/call` as a request. JSON-RPC allows a request
+            # to be sent without an id, but a tool call is not a notification
+            # method: executing it would deliver a write whose result the
+            # caller can never observe, and a transport that retried it could
+            # deliver the write twice under one intent. Ignore rather than
+            # execute; the caller gets no response, which is what it asked for.
+            return None
         try:
             result = self._dispatch(method, params)
         except FleetRefusal as exc:
@@ -110,7 +118,7 @@ class McpServer:
             return {"resources": []}
         if method == "prompts/list":
             return {"prompts": []}
-        raise refuse(BAD_REQUEST, f"unknown method {method!r}")
+        raise refuse(METHOD_NOT_FOUND, f"unknown method {method!r}")
 
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         requested = params.get("protocolVersion")
@@ -149,6 +157,8 @@ def _rpc_code_for(exc: FleetRefusal) -> int:
     condition and is signalled as such so a client can tell "ask for a better
     token" from "fix your arguments".
     """
+    if exc.code == METHOD_NOT_FOUND:
+        return JSONRPC_METHOD_NOT_FOUND
     if exc.code == "SCOPE_DENIED":
         return OAUTH_REQUIRED
     if exc.code == INTERNAL:

@@ -102,6 +102,14 @@ A distinct code rather than a silent success, because a caller must be able to
 tell "I sent it once and this is that run" from "I just sent it now"."""
 
 # -- surface ----------------------------------------------------------------
+METHOD_NOT_FOUND = "METHOD_NOT_FOUND"
+"""The JSON-RPC method is not one this dispatcher implements.
+
+A protocol question, not an input-shape question: the caller does not need to
+fix its parameters, it needs to use a method this server has. Mapped to JSON-RPC
+`-32601`; keeping it as `BAD_REQUEST` made every unknown method look like
+`-32602`, which points at the wrong half of the request."""
+
 INTERNAL = "INTERNAL"
 """A defect in this surface. Never used for a provider's behaviour."""
 
