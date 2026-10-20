@@ -14,7 +14,7 @@
 
 | 文档 | schema | 本分支的生产者 | 写入者 / 路径 | 消费者 | 状态 |
 |---|---|---|---|---|---|
-| Core readback | `serveros/fleet-core-lite-readback.v1` | **不在本分支**（`fleet_mcp.core_lite_source` 属 F1/#243，未合入） | 无（只读输入） | `fleet_core_bridge.device_from_core_readback` | 生产端不可核验 |
+| Core readback | `serveros/fleet-core-lite-readback.v1` | **不在本分支**（`fleet_mcp/` 不在本基线树中；该 producer 的归属 PR 未在本轮核验） | 无（只读输入） | `fleet_core_bridge.device_from_core_readback` | 生产端不可核验 |
 | 设备条目 | `serveros/fleet-monitor-device.v1` | `fleet_core_bridge` | 内存对象，不落盘 | `fleet_monitor_source.fleet_model` → V13 renderer | 已验证 seam |
 | 双卡状态 | `serveros/card-surface.v1` | `card_surface.SurfaceStore` | `<state>/../cards/surfaces.json`（`card_surface.py:438-439`） | `ShadowRunner` / `surface_cli` | 单一写入者（真实模式另有 `SurfaceLock`） |
 | 样本账本 | `serveros/snapshot-journal.v1` | `surface_cli._record_sample` | `<state>/../cards/samples.json`（`snapshot_journal.py:48-50`） | `surface_cli._report_history`、`tests/test_v13_integration.py` | **唯一活跃样本账本** |
