@@ -224,6 +224,20 @@ int main() {
         CHECK_EQ(refusal_for(plan, "cli"), std::string("VERB_NOT_ALLOWED"));
         CHECK_CONTAINS(plan.refusals[0].reason, "not a licence to do anything");
     }
+    {
+        // A manifest that allows ONLY "stop" cannot make the Core stop
+        // anything. The planner's verbs are start (boot) and restart (tick);
+        // "stop" is not one of them, so a failed unit on a tick is refused as
+        // VERB_NOT_ALLOWED rather than turned into a stop.
+        const Manifest single = parsed(manifest_json(service(
+            "stop-only", "tunnel.service",
+            q("recovery") + ":{" + q("allowed_verbs") + ":[" + q("stop") + "]}")));
+        const Plan plan = build_plan(input_for(single, Trigger::Tick,
+                                               {observed("tunnel.service", Active::Failed)}));
+        CHECK_EQ(plan.actions.size(), std::size_t{0});
+        CHECK_EQ(refusal_for(plan, "stop-only"), std::string("VERB_NOT_ALLOWED"));
+        CHECK_CONTAINS(plan.refusals[0].reason, "stop");
+    }
 
     // ------------------------------------------- the four things it never does
 
