@@ -18,7 +18,8 @@ credential or account is touched.
 | QA AF RC-v7 gate | #359 `467f290ec6e9db4ddaf826ef00e8ddaea3751a88` (`QA_PARTIAL`) |
 | S1 downstream fix | #363 `8840f416169b22122450fb61a85f2b88c73715a0` (QA2 6/6 GREEN; consumer seam RED at #363) |
 | S1 commit-fence fix | #364 `7fe1cccd6b7f103e58140ef7d512d69e436704ec` (QA AG seam probe 10/10 GREEN; no production `COMMIT_FENCED` producer) |
-| RC-v8 review candidate | `rc/i1-v8-review-20261020` @ tested tip `bf785d598dd6c6c602c1d5373fc68db00484bbba` + docs commit |
+| S1 test-only follow-up | #367 `3cb39ae30e1be6811cb474b3b6b83e49db44ab52` (X2 win32 import probe; test/doc only) |
+| RC-v8 review candidate | `rc/i1-v8-review-20261020` @ tested tip `74bae6d41d8e2f5fe23697e9376c42a7f97d0dae` + docs commit |
 
 ## 1. Dependency DAG and ancestry
 
@@ -205,9 +206,10 @@ recorded PID was signalled. No send, settle or provider call occurred.
   the daemon no longer returns a positive owner-backed grant.
 - R1 #361 is independently 25/25 on the adapted QA AG probe; production fields
   remain `BLOCKED_PROVIDER_SOURCE`.
-- The composed review branch has LOCAL/REAL_TEMP evidence, but the X2 synthetic
-  Windows group is red under its documented `PYTHONPATH` and the raw QA2 R1
-  harness reports decision-code drift; neither is a QA signature.
+- The composed review branch has LOCAL/REAL_TEMP evidence; the X2 synthetic
+  Windows group is green at **102 passed/0 skipped** after test-only #367. The
+  raw QA2 R1 harness still reports decision-code drift (stronger
+  `BLOCKED_PROVIDER_SOURCE`, no settle), and no QA signature exists.
 - No signed V1, no `RELEASE`, no main merge, no production deployment. QA2
   #360, QA AG #362 and QA AF #359 are `QA_PARTIAL`; none is a signature.
 
@@ -262,9 +264,10 @@ current production exploit.
   `settle_allowed=false`.
 - The fixture owner policy / synthetic HMAC is **not** production authority.
   No positive production trust may be manufactured.
-- Remaining blockers are recorded in `RC-V8-REVIEW-2026-10-20.md` §5: the
-  X2 default import-path red, QA2 raw-harness decision-code drift, the absent
-  production `COMMIT_FENCED` producer, and the absent QA signature.
+- Remaining blockers are recorded in `RC-V8-REVIEW-2026-10-20.md` §5: the QA2
+  raw-harness decision-code drift, the intended 34/36 S1 controls, the absent
+  production `COMMIT_FENCED` producer, and the absent QA signature. The X2
+  win32 import group is closed by test-only #367 (102 passed/0 skipped).
 
 QA AG is `QA_PARTIAL`, no signature. Main, the canonical checkout, production
 daemons/services and credentials were untouched.
