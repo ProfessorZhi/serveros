@@ -406,6 +406,12 @@ def test_grant_suite_imports_under_win32_without_posix_modules():
     `sys.platform` is set before import and a meta-path finder raises if the
     module touches `workengine` or `fcntl`. Any OTHER import error is left
     uncaught: the subprocess must exit 0 or this test fails with its stderr.
+
+    pytest's default `prepend` import mode inserts the test file's basedir
+    (`tests/`, because `tests/__init__.py` is absent) into `sys.path`.
+    `spec_from_file_location` does not, so this probe adds that directory
+    explicitly to model the real Windows run. It does not bypass any product
+    path; `owner_policy_fixtures` is pure Python and real pytest imports it.
     """
     import subprocess
     import textwrap
@@ -413,6 +419,7 @@ def test_grant_suite_imports_under_win32_without_posix_modules():
     script = textwrap.dedent(f"""
         import importlib.util
         import sys
+        from pathlib import Path
         import pytest  # preload before the blocker
 
         sys.platform = "win32"
@@ -426,6 +433,10 @@ def test_grant_suite_imports_under_win32_without_posix_modules():
 
         sys.meta_path.insert(0, Blocker())
         path = {str(GRANT_SUITE)!r}
+        # Mirror pytest's prepend mode; do not rely on it being implicit.
+        suite_dir = str(Path(path).resolve().parent)
+        if suite_dir not in sys.path:
+            sys.path.insert(0, suite_dir)
         spec = importlib.util.spec_from_file_location("x2_grant_win32", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -448,3 +459,37 @@ def test_grant_suite_imports_under_win32_without_posix_modules():
         timeout=60)
     assert completed.returncode == 0, completed.stderr
     assert "WIN32_IMPORT_OK 13" in completed.stdout
+
+
+def test_win32_probe_needs_the_suite_directory_on_sys_path():
+    """The grant suite's real module-level import needs `tests/` on sys.path.
+
+    pytest's prepend mode supplies it; a bare `python -c` +
+    `spec_from_file_location` does not. This pins the dependency the probe
+    mirrors, without touching the S1 fixture definition itself.
+    """
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import importlib.util
+        import sys
+        import pytest  # preload before faking win32 on a Linux host
+        sys.platform = "win32"
+        path = {str(GRANT_SUITE)!r}
+        spec = importlib.util.spec_from_file_location(
+            "x2_grant_no_suite_dir", path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except ModuleNotFoundError as exc:
+            assert exc.name == "owner_policy_fixtures", exc.name
+            print("NEEDS_SUITE_DIR")
+        else:
+            raise SystemExit("imported without tests/ on sys.path")
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    assert "NEEDS_SUITE_DIR" in completed.stdout
