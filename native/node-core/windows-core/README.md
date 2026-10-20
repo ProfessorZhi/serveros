@@ -10,7 +10,8 @@ share.
 |---|---|
 | `scm_status.cpp` — the parser and the state machine | **BUILT AND TESTED on Linux**. Text in, struct out; none of it is platform-specific. |
 | `status_document.cpp` — the status envelope and its schema | **BUILT AND TESTED on Linux**. A value in, JSON out; `contract/windows-core-status.v1.schema.json` is closed and read by the test. |
-| the `_WIN32` half — the SCM calls, the named pipe, the DACL, the token check | **HOSTED_WINDOWS_BUILD when its workflow passes.** `.github/workflows/serveros-native-windows-contract.yml` compiles this translation unit with MSVC on `windows-latest` and asserts the `_WIN32` branch is present. It never calls the runner's SCM, and the Linux build still does not compile this half. |
+| the `_WIN32` half — the four SCM query calls in `win32_scm.cpp` | **HOSTED_WINDOWS_BUILD when its workflow passes.** `.github/workflows/serveros-native-windows-contract.yml` compiles this translation unit with MSVC on `windows-latest`, validates the constants against `<winsvc.h>`, and asserts the `_WIN32` branch is present. It never calls the runner's SCM, and the Linux build still does not compile this half. |
+| the named pipe, DACL and token check | **NOT IMPLEMENTED.** The status document reports the IPC route as `UNSUPPORTED`; a security descriptor that has never been compiled is not a guarantee. |
 | a live Windows reading | **NOT RUN.** A later, separately authorised step (issue #246). |
 
 `HOSTED_WINDOWS_BUILD` is not a synonym for "working Windows Core": it says the
