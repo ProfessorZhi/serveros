@@ -203,6 +203,92 @@ def test_guard_catches_windows_argv_but_not_the_configured_env_value():
 
 
 # ---------------------------------------------------------------------------
+# Q1 P2 — alias forms the raw-prefix version missed.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("candidate,root,expected", (
+    # `\\?\UNC\...` and `//?/UNC/...` are the long-path forms of the UNC root.
+    (r"\\?\UNC\server\share\private\evil", r"\\server\share\private", True),
+    ("//?/UNC/server/share/private/evil", r"\\server\share\private", True),
+    (r"\\?\UNC\server\share\private2\evil", r"\\server\share\private", False),
+    # `\\.\D:` is the device-namespace spelling of the same D drive.
+    (r"\\.\D:\owner\private\root\evil", r"D:\owner\private\root", True),
+    (r"\\.\D:\owner\private\root2\evil", r"D:\owner\private\root", False),
+    (r"\\.\E:\owner\private\root\evil", r"D:\owner\private\root", False),
+    # Mixed prefix and separator spelling still identifies the same path.
+    ("\\\\?\\D:/owner/private/root/evil", r"D:\owner\private\root", True),
+))
+def test_guard_resolves_windows_alias_forms(candidate, root, expected):
+    import private_path_guard as guard
+
+    assert guard._inside(candidate, root) is expected, (candidate, root)
+
+
+@pytest.mark.parametrize("value", (
+    r"\\.\PhysicalDrive0",
+    r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\evil",
+    r"\\?\GLOBALROOT\Device\HarddiskVolume1\owner\private\root\evil",
+))
+def test_ambiguous_device_namespace_is_conservatively_refused(value):
+    """A device path that is not a plain drive cannot be proven safe."""
+    import private_path_guard as guard
+
+    assert guard._must_refuse(value, (r"D:\owner\private\root",)) is True
+    assert guard._must_refuse(
+        r"E:\public\file", (r"D:\owner\private\root",)) is False
+
+
+def test_guard_detects_a_posix_symlink_alias_into_the_private_root(tmp_path):
+    import private_path_guard as guard
+
+    root = tmp_path / "private"
+    root.mkdir()
+    (root / "secret.txt").write_text("private", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    candidate = str(alias / "secret.txt")
+    assert guard._inside(candidate, str(root)) is True
+    assert guard._must_refuse(candidate, (str(root),)) is True
+
+    sibling = tmp_path / "private2"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("public", encoding="utf-8")
+    assert guard._inside(str(sibling / "secret.txt"), str(root)) is False
+
+
+def test_audit_hook_refuses_an_open_through_a_symlink_alias(tmp_path):
+    import subprocess
+
+    import private_path_guard as guard
+
+    root = tmp_path / "private"
+    root.mkdir()
+    (root / "secret.txt").write_text("private", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(HERE)!r})\n"
+        "import private_path_guard as guard\n"
+        "guard.install_hook()\n"
+        "try:\n"
+        f"    open({str(alias / 'secret.txt')!r}, 'rb').read()\n"
+        "except PermissionError:\n"
+        "    print('BLOCKED')\n"
+        "    raise SystemExit(0)\n"
+        "print('NOT_BLOCKED')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8")
+    env = {**os.environ, guard.ROOTS_ENV: str(root), guard.GUARD_ENV: "1"}
+    completed = subprocess.run(
+        [sys.executable, str(probe)], env=env, capture_output=True,
+        text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    assert "BLOCKED" in completed.stdout
+
+
+# ---------------------------------------------------------------------------
 # The Windows run's 19 skips are an explicit producer boundary, not silence.
 # ---------------------------------------------------------------------------
 
