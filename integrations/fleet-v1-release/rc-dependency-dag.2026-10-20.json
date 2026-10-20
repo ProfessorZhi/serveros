@@ -688,6 +688,76 @@
       "merge_base": "771c81c",
       "own_commits": 1,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 330,
+      "lane": "F1",
+      "base": "rc/i1-v2-review-20261020",
+      "base_sha": "ec43f714",
+      "head": "bf1b514f9bcb1386f14f3a866dfda8162ee5cfc4",
+      "merge_base": "ec43f714",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 332,
+      "lane": "X1",
+      "base": "rc/i1-v2-review-20261020",
+      "base_sha": "ec43f714",
+      "head": "a60ae107423703b200e5f5915ebab1001f4d65f4",
+      "merge_base": "ec43f714",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 335,
+      "lane": "X2",
+      "base": "rc/i1-v2-review-20261020",
+      "base_sha": "ec43f714",
+      "head": "85b953963e008f5777b9eb969fd9b1ffe09e4dbf",
+      "merge_base": "ec43f714",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 334,
+      "lane": "N2",
+      "base": "feat/n2-status-envelope-20261020",
+      "base_sha": "c97eb410",
+      "head": "c984f4a52b159eb6c358a5c573e39dc3c54dd704",
+      "merge_base": "e8eccf2",
+      "own_commits": 3,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 338,
+      "lane": "X1",
+      "base": "rc/i1-v3-review-20261020",
+      "base_sha": "e3dc9c7",
+      "head": "96e0fcf2cd464e5e15fa88ef7032f06139c8a06c",
+      "merge_base": "e3dc9c7",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 337,
+      "lane": "QA",
+      "base": "rc/i1-v3-review-20261020",
+      "base_sha": "e3dc9c7",
+      "head": "d2fbf258c8",
+      "merge_base": "e3dc9c7",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 336,
+      "lane": "I1",
+      "base": "main",
+      "base_sha": "771c81c",
+      "head": "e3dc9c7ca0aeca9dd97e981de85da3a727ed9d8a",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -974,6 +1044,22 @@
     {
       "from": 312,
       "to": 328,
+      "kind": "base"
+    },
+    {
+      "from": 309,
+      "to": 334,
+      "kind": "base"
+    },
+    {
+      "from": 326,
+      "to": 335,
+      "kind": "equivalent",
+      "reason": "#335 carries the #326-equivalent e3d455b; only 85b9539 is unique"
+    },
+    {
+      "from": 336,
+      "to": 338,
       "kind": "base"
     }
   ],
@@ -1524,5 +1610,51 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-V3-REVIEW-2026-10-20.md"
+  },
+  "review_rc_v4": {
+    "branch": "rc/i1-v4-review-20261020",
+    "tip": "40c4b1c46e5d3f3da883045bfa2152acc41da01a",
+    "tested_head": "a0b8795e52b52b5d286d265cc8b1b6f327a9d692",
+    "baseline_sha": "e3dc9c7ca0aeca9dd97e981de85da3a727ed9d8a",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 340,
+    "cherry_picks": {
+      "330": "bf1b514",
+      "332": "a60ae10",
+      "335": "85b9539",
+      "334": [
+        "5000294",
+        "78f2399",
+        "c984f4a"
+      ],
+      "338": "96e0fcf"
+    },
+    "excluded": {
+      "325": "README add/add conflict; aborted"
+    },
+    "tests": {
+      "t10_finalize_same_process": "134 passed",
+      "x2_authority": "42 passed, 0 xfailed",
+      "core": "829 passed/7 xfailed/287 subtests",
+      "fleet_next": "286 passed/133 subtests",
+      "node_core": "89/0 + 88/0",
+      "f1": "29 PASS FAKE_DEVICE",
+      "real_temp": "PASS/REFUSAL",
+      "syntax": "py_compile OK, diff check OK"
+    },
+    "hosted_ci": {
+      "39389009969": "success at bf1b514",
+      "39390576739": "success at c984f4a"
+    },
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V4-REVIEW-2026-10-20.md"
   }
 }
