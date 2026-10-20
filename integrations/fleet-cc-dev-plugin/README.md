@@ -135,3 +135,96 @@ corrected text has still not been run against a model, and that item stays
 What the fixture deliberately does **not** do: it never invokes the `claude` CLI
 (so no `--plugin-dir` load is claimed from a directory assertion), it makes no
 model call, it opens no socket off loopback, and it installs nothing.
+
+## Real Claude Code client over a local stdio fixture (P1, 2026-10-20)
+
+The offline stack above drives the HTTP surface from Python. It cannot say what
+a real Claude Code client does with a plugin, because it never starts one. The
+P1 lane adds a second, deliberately separate artefact for that question:
+
+| | `build_cc_plugin.py` | `build_local_fixture.py` |
+|---|---|---|
+| binding | `type: http` to an observed `/mcp` URL | `type: stdio` to `fixture_stdio_server.py` |
+| device | the real fleet through the real ingress | `device:fixture-node`, invented |
+| credential | OAuth request for `fleet:read` | no credential; a fixture principal holds `fleet:read` |
+| purpose | verify the server side while the release is blocked | let a real client exercise the protocol and the scope gate |
+| installable | no | **no** |
+
+The fixture's stdio command is the point of the second artefact. It is **not**
+a relaxation of the development adapter: `build_cc_plugin.py` still refuses a
+binding with a command or an env block, and its tests still assert that. One
+builder, one shape; two artefacts, two files.
+
+The fixture server imports the **real** `fleet_mcp.server.McpServer`, the real
+`fleet_mcp.tools.SERVED_TOOLS` (all 33, with their annotations) and the real
+`fleet_mcp.fleet.FleetService`. Only the device and the provider are fake, and
+every fake answer says `TEST_FIXTURE`.
+
+### Commands, and what each one proves
+
+```sh
+# 1. package load: a directory and a registration, no tool enumeration
+python3 integrations/fleet-cc-dev-plugin/build_local_fixture.py --out <dir>
+claude plugin validate <dir> --strict
+claude --plugin-dir <dir> plugin details serveros-fleet-dev-fixture
+
+# 2. a real client handshake and tools/list, with no model call
+CLAUDE_CONFIG_DIR=<fresh-dir> claude --plugin-dir <dir> mcp list
+#    the fixture's .fixture-state/mcp-wire.log proves initialize,
+#    notifications/initialized and tools/list, and the 33-tool answer
+
+# 3. the whole receipt; --model-readbacks adds one real claude -p session
+python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
+    --out <evidence-dir> [--model-readbacks]
+```
+
+`run_cc_client_e2e.py` writes `RECEIPT.json` / `RECEIPT.md` and keeps five
+claims apart:
+
+| receipt | measured on 2026-10-20, Claude Code 2.1.272 | what it is not |
+|---|---|---|
+| `PLUGIN_LOAD_OK` | `validate --strict` exit 0; `plugin details` listed **5 Skills / 1 MCP server** | not a tool list |
+| `MCP_INITIALIZE_OK` | the real client sent `initialize` and `notifications/initialized`; the server answered `serveros-fleet-mcp` | not authentication |
+| `TOOLS_LIST_OK` | `tools/list` returned **33** names over the fixture's stdio | not the live Next surface, and not entitlement |
+| `AUTH_SCOPE` | a `fleet:read` principal discovered all 33; `fleet_send_to_session` was refused `SCOPE_DENIED`; the fake provider saw **0** sends | not a real token's grants |
+| `CLIENT_E2E` | one `claude -p` session called `fleet_list_devices`, `fleet_list_sessions` and `fleet_cloudcli_native_capability`; each result was non-error; **no permission denials** | not a real device; the device is `device:fixture-node` |
+
+The model call is opt-in (`--model-readbacks`). The receipt records its cost
+and count. The run uses a fresh `CLAUDE_CONFIG_DIR`, so no global plugin or MCP
+configuration is read as a source of truth or written; no credential value is
+read, copied or printed; and no socket leaves the process.
+
+### Negative cases, all deterministic
+
+`tests/test_fleet_cc_dev_plugin_cc_client.py` drives the same fixture server
+without a model and asserts the refusals:
+
+- a bare `fixture-session-0001` is not an address → `BAD_SESSION_REF`;
+- an unknown tool → `BAD_REQUEST`;
+- `device_ref` instead of `device` on `fleet_list_sessions` → `BAD_REQUEST`
+  (an unknown filter is refused rather than ignored, because ignoring it
+  answers a wider question);
+- a write by a `fleet:read` principal → `SCOPE_DENIED`, with the provider's
+  send count still **0** at shutdown.
+
+### Finding reported, not fixed here
+
+`FleetService._session_control_state` (`fleet_mcp/fleet.py:918`) says it is
+"the same check `_may_send` makes", but `send_to_session`
+(`fleet_mcp/fleet.py:1045`) calls `principal.require(SCOPE_SEND)` at
+`fleet_mcp/fleet.py:1053` first. A read-only principal is therefore shown
+`control_allowed.send_allowed: true` for an allowlisted session on a
+send-enabled device, while the send tool refuses the same principal
+`SCOPE_DENIED`. The fixture's default policy keeps `send_allow` empty so the
+listing is not made to repeat that state; the discrepancy is pinned by
+`KnownFindingReadOnlyControlState` as an `expectedFailure`, and the fix belongs
+to the `fleet_mcp` owner rather than to this plugin lane.
+
+### What this section does not claim
+
+`LOCAL` in the receipt means a real Claude Code client on this host, over local
+stdio, against an invented device. It is **not** `REAL_DEVICE`, **not** the live
+Fleet Next ingress, and **not** `PRODUCTION`. It does not discharge the
+authenticated Next `tools/list` (still `BLOCKED_BY_OWNER_OAUTH`) or any
+device/Core/recovery action. A green fixture is a statement about the client
+and the protocol, not about the fleet.
