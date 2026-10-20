@@ -68,6 +68,19 @@ READ_TOOLS = (
 PLUGIN_NAME = fixture.FIXTURE_NAME
 SERVER_NAME = fixture.SERVER_NAME
 QUALIFIED_SERVER = f"plugin:{PLUGIN_NAME}:{SERVER_NAME}"
+SHARED_SKILLS = ROOT / "integrations" / "fleet-v1-first-install" / "plugin" / "skills"
+
+#: The documented `.claude-plugin/plugin.json` top-level keys. An unknown key is
+#: stripped with a warning at load, so a fixture that invented one would lose it
+#: silently; the acceptance check names the stray key instead.
+DOCUMENTED_MANIFEST_KEYS = {
+    "$schema", "name", "displayName", "version", "description", "author",
+    "homepage", "repository", "license", "keywords", "metadata", "icon",
+    "documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl",
+    "defaultEnabled", "dependencies", "settings", "userConfig", "types",
+    "channels", "skills", "commands", "agents", "hooks", "mcpServers",
+    "lspServers", "outputStyles", "workflows", "experimental",
+}
 # Claude Code normalizes `plugin:<plugin>:<server>` into the tool-name server
 # segment by replacing `:` with `_` and prefixing `plugin_`. Measured on
 # 2.1.272 from a permission-denial receipt; asserted here by the model run.
@@ -134,6 +147,8 @@ class Runner:
         self.claude = shutil.which("claude")
         self.claude_version: str | None = None
         self.model_calls = 0
+        self.negative_results: dict[str, Any] = {}
+        self.global_config_hashes: dict[str, str] = {}
 
     # -- process helpers ---------------------------------------------------
 
@@ -172,6 +187,25 @@ class Runner:
                     {"exit": proc.returncode})
         self.record("GIT_HEAD", "OBSERVED", self._git_head(),
                     {"worktree": str(ROOT)})
+        self.global_config_hashes = self._config_hashes()
+
+    def _config_hashes(self) -> dict[str, str]:
+        """Hash the user-level config files, never their contents.
+
+        The runner's Claude Code calls use a fresh `CLAUDE_CONFIG_DIR`, so these
+        files must not change. Hashing is the cheap check; the values are not
+        copied into the receipt. `~/.claude/.credentials.json` is deliberately
+        not touched: it is the credential store, not a config file.
+        """
+        home = Path.home()
+        hashes: dict[str, str] = {}
+        for label, path in (("claude_json", home / ".claude.json"),
+                            ("settings_json", home / ".claude" / "settings.json")):
+            try:
+                hashes[label] = _sha256(path)
+            except OSError:
+                hashes[label] = "ABSENT"
+        return hashes
 
     def _git_head(self) -> str:
         proc = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
@@ -243,6 +277,71 @@ class Runner:
             {"tool_count": count, "connected": connected,
              "qualified_server": QUALIFIED_SERVER})
         return ok
+
+    def plugin_metadata(self) -> None:
+        """The manifest keys and the Skills bytes, checked structurally.
+
+        This is the `L0_CODE` layer: it reads the generated directory and the
+        one canonical Skills source. It says nothing about whether a client
+        loaded the plugin or whether any tool exists.
+        """
+        manifest = json.loads(
+            (self.plugin / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        stray = sorted(set(manifest) - DOCUMENTED_MANIFEST_KEYS)
+        generated = sorted(p.parent.name for p in (self.plugin / "skills").glob("*/SKILL.md"))
+        source = sorted(p.parent.name for p in SHARED_SKILLS.glob("*/SKILL.md"))
+        identical = generated == source and all(
+            _sha256(self.plugin / "skills" / name / "SKILL.md")
+            == _sha256(SHARED_SKILLS / name / "SKILL.md")
+            for name in source)
+        binding = json.loads((self.plugin / ".mcp.json").read_text(encoding="utf-8"))
+        server = (binding.get("mcpServers") or {}).get(SERVER_NAME) or {}
+        binding_ok = (server.get("type") == "stdio"
+                      and "url" not in server and "oauth" not in server
+                      and "command" in server)
+        ok = (manifest.get("name") == PLUGIN_NAME and not stray
+              and identical and binding_ok)
+        self.record(
+            "PLUGIN_METADATA", "PASS" if ok else "FAIL",
+            "documented manifest keys, five Skills byte-identical, stdio binding"
+            if ok else "metadata, Skills bytes or binding did not match",
+            {"manifest_keys": sorted(manifest), "stray_keys": stray,
+             "skills_generated": generated, "skills_source": source,
+             "binding_type": server.get("type")})
+        self.record(
+            "SKILLS_BYTES", "PASS" if identical else "FAIL",
+            "5/5 SKILL.md byte-identical to the canonical source"
+            if identical else "a SKILL.md was re-typed",
+            {"sha256": {name: _sha256(self.plugin / "skills" / name / "SKILL.md")
+                        for name in generated}})
+
+    def cli_no_side_effect(self) -> None:
+        """No-side-effect CLI commands, under the isolated config directory."""
+        mcp_get = self.run([self.claude, "--plugin-dir", str(self.plugin),
+                            "mcp", "get", QUALIFIED_SERVER], timeout=120)
+        (self.logs / "mcp-get.log").write_text(
+            mcp_get.stdout + mcp_get.stderr, encoding="utf-8")
+        listed = self.run([self.claude, "plugin", "list"], timeout=60)
+        (self.logs / "plugin-list.log").write_text(
+            listed.stdout + listed.stderr, encoding="utf-8")
+        inline_not_installed = PLUGIN_NAME not in (listed.stdout + listed.stderr)
+        after = self._config_hashes()
+        unchanged = after == self.global_config_hashes
+        ok = (mcp_get.returncode == 0 and listed.returncode == 0
+              and inline_not_installed)
+        self.record(
+            "CLI_NO_SIDE_EFFECT", "PASS" if ok else "FAIL",
+            "mcp get and plugin list exit 0; the inline fixture is not installed"
+            if ok else "a no-side-effect CLI command failed or the fixture appeared installed",
+            {"mcp_get_exit": mcp_get.returncode,
+             "plugin_list_exit": listed.returncode,
+             "inline_not_installed": inline_not_installed})
+        self.record(
+            "GLOBAL_CONFIG", "OBSERVED",
+            "user config hashes unchanged during the run" if unchanged
+            else "user config hashes differ; another process may have written them",
+            {"before": self.global_config_hashes, "after": after,
+             "unchanged": unchanged, "credentials_file_touched": False})
 
     def model_readbacks(self) -> None:
         """One real `claude -p` session, restricted to three read tools."""
@@ -455,11 +554,46 @@ class Runner:
         (self.logs / "negative-checks.json").write_text(
             json.dumps(checks, indent=2) + "\n", encoding="utf-8")
         ok = all(checks.values())
+        self.negative_results = results
         self.record("AUTH_SCOPE", "PASS" if ok else "FAIL",
                     "read-only principal: 33 tools discovered, write refused "
                     "SCOPE_DENIED, provider never reached"
                     if ok else f"failed: {[k for k, v in checks.items() if not v]}",
                     {"checks": checks, "results": results})
+
+    def temp_daemon_facts(self) -> None:
+        """The local stdio daemon, restricted to pre-approved virtual facts.
+
+        This is the same process the negative tests use. It is a **temporary
+        daemon**, not `serverosd`, and its device and session are constants in
+        `fixture_stdio_server.py`. Nothing here contacts a real machine.
+        """
+        results = self.negative_results
+        sends = results.get("provider_sends")
+        refused = (results.get("send_refused") or {}).get("code")
+        tools_count = (results.get("tools_list") or {}).get("count")
+        devices_total = (results.get("list_devices") or {}).get("total")
+        sessions_total = (results.get("list_sessions") or {}).get("total")
+        capability_state = (results.get("capability") or {}).get("state")
+        ok = (tools_count == 33 and devices_total == 1 and sessions_total == 1
+              and capability_state == "OBSERVED" and sends == 0)
+        self.record(
+            "TEMP_DAEMON_VIRTUAL_FACTS", "PASS" if ok else "FAIL",
+            "local stdio daemon: 33 tools, one virtual device and session, "
+            "OBSERVED capability" if ok else
+            "the local temporary daemon did not answer the virtual facts",
+            {"virtual_facts": True, "real_device": False,
+             "serverosd_started": False, "device_ref": DEVICE,
+             "session_ref": SESSION_REF, "tools_count": tools_count,
+             "devices_total": devices_total, "sessions_total": sessions_total,
+             "capability_state": capability_state, "provider_sends": sends})
+        self.record(
+            "SEND_SCOPE_DENIED",
+            "PASS" if refused == "SCOPE_DENIED" and sends == 0 else "FAIL",
+            "fleet_send_to_session refused SCOPE_DENIED and the fake provider "
+            "saw 0 sends" if refused == "SCOPE_DENIED" and sends == 0 else
+            "the send was not refused at the scope before the provider",
+            {"code": refused, "provider_sends": sends})
 
     # -- receipt -----------------------------------------------------------
 
@@ -475,9 +609,27 @@ class Runner:
                 "device": "device:fixture-node (TEST_FIXTURE, invented)",
                 "session": SESSION_REF,
                 "network": "none",
+                "real_device": False,
+                "serverosd_started": False,
                 "credential_read": False,
-                "global_config_modified": False,
+                "global_config_modified": not (
+                    self.results.get("GLOBAL_CONFIG", {}).get("evidence") or {}
+                ).get("unchanged", False),
                 "model_calls": self.model_calls,
+            },
+            "layers": {
+                "L0_CODE": {name: self.results.get(name, {}).get("status")
+                            for name in ("FIXTURE_BUILD", "PLUGIN_METADATA",
+                                         "SKILLS_BYTES")},
+                "L1_LOCAL_CLI": {name: self.results.get(name, {}).get("status")
+                                 for name in ("CLAUDE_VERSION", "PLUGIN_LOAD_OK",
+                                              "CLI_NO_SIDE_EFFECT",
+                                              "MCP_INITIALIZE_OK", "TOOLS_LIST_OK")},
+                "L2_TEMP_DAEMON": {name: self.results.get(name, {}).get("status")
+                                   for name in ("TEMP_DAEMON_VIRTUAL_FACTS",
+                                                "SEND_SCOPE_DENIED")},
+                "L3_CLIENT_E2E_MODEL": {
+                    "CLIENT_E2E": self.results.get("CLIENT_E2E", {}).get("status")},
             },
             "results": self.results,
         }
@@ -526,9 +678,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runner.prepare()
         runner.build()
+        runner.plugin_metadata()
         runner.package_load()
         runner.mcp_list()
+        runner.cli_no_side_effect()
         runner.negative_cases()
+        runner.temp_daemon_facts()
         runner.model_readbacks()
     except Exception as exc:  # noqa: BLE001 - a runner failure is the receipt
         runner.record("RUNNER", "BLOCKED", f"{type(exc).__name__}: {exc}")
@@ -538,7 +693,9 @@ def main(argv: list[str] | None = None) -> int:
 
     runner.write_receipt()
     statuses = {name: row["status"] for name, row in runner.results.items()}
-    for name in ("PLUGIN_LOAD_OK", "MCP_INITIALIZE_OK", "TOOLS_LIST_OK",
+    for name in ("PLUGIN_METADATA", "SKILLS_BYTES", "PLUGIN_LOAD_OK",
+                 "CLI_NO_SIDE_EFFECT", "MCP_INITIALIZE_OK", "TOOLS_LIST_OK",
+                 "TEMP_DAEMON_VIRTUAL_FACTS", "SEND_SCOPE_DENIED",
                  "AUTH_SCOPE", "CLIENT_E2E"):
         print(f"{name}: {statuses.get(name, 'NOT_RUN')}")
     failed = [name for name, status in statuses.items()
