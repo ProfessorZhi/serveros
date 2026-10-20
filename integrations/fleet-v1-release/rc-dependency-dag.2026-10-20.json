@@ -120,6 +120,16 @@
     "PASS_only_with_receipt": true,
     "blocked_is_not_pass": true
   },
+  "release_gates_244": {
+    "three_node_core_monitoring": {"status": "BLOCKED", "reason": "N1 LOCAL/MOCK, N2 SOURCE, N3 SOURCE_ONLY; no device run"},
+    "linux_windows_bootstrap_recovery": {"status": "BLOCKED", "reason": "REAL_WINDOWS/REAL_TOY/LIVE_NETWORK/PRODUCTION_RECOVERY NOT_RUN"},
+    "authenticated_cc_and_codex": {"status": "BLOCKED", "reason": "R1 SOURCE_FIXTURE; BLOCKED_PROVIDER_SOURCE"},
+    "fleet_cloudcli_lifecycle_six_scopes": {"status": "BLOCKED", "reason": "F1 LOCAL/SOURCE; catalogue is not served tools; installed canary differs"},
+    "device_abilities_invoked": {"status": "BLOCKED", "reason": "G1 LOCAL projection; QA-P1-1 open; no device invocation"},
+    "local_cc_plugin_e2e": {"status": "BLOCKED", "reason": "offline packaging LOCAL; CLIENT_E2E BLOCKED_BY_OWNER_OAUTH"},
+    "t1_t12": {"status": "PARTIAL", "reason": "T4/T5/T6 LOCAL; T1/T2/T3/T7 partial; T8-T12 BLOCKED"},
+    "independent_multi_repo_rc_and_rollback": {"status": "BLOCKED", "reason": "no composed RC; QA_PARTIAL; three proofs absent; rollback not rehearsed"}
+  },
   "proofs": {
     "authenticated_lease_producer": {"status": "ABSENT", "reason": "BLOCKED_PRODUCER_BOUNDARY"},
     "t10_we_finalize_link": {"status": "ABSENT", "reason": "BLOCKED_WIRING / BLOCKED_TRUST_SOURCE"},
