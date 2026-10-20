@@ -637,7 +637,8 @@ class ThisIsALedgerAndNotATransport(unittest.TestCase):
         # describe it is one the next reader finds while looking for something
         # else.
         self.assertEqual(card_delivery.KINDS,
-                         ("status", "alert", "recovery", "notice", "fault"))
+                         ("status", "alert", "recovery", "notice", "fault",
+                          "period"))
 
     def test_the_diagnostic_reads_one_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:

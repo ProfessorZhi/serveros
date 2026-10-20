@@ -1,0 +1,1101 @@
+#!/usr/bin/env python3
+"""The Fleet monitor card: one logical card for a fleet's hardware and service
+health, and a renderer that turns its view model into Feishu CardKit 2.0 JSON.
+
+Two halves, and the seam between them is the point
+--------------------------------------------------
+`monitor_model` is PURE: it is handed readings and returns a model. It opens no
+file, runs no command and reads no clock — `now` is a parameter. `render_cardkit`
+is PURE too: it is handed a model and returns a card. Neither knows where a
+number came from, and that is deliberate: a renderer that decides what a field
+*means* is a second place the decisions live, which is the rule
+`runtime/cards.py` already writes down for itself.
+
+The third piece — the read-only producer adapter — is NOT here. It lives in
+`runtime/fleet_monitor_source.py`, the only module in this pair allowed to touch
+the machine, and it composes existing readings (`runtime/card_source.py`) rather
+than measuring anything of its own. This is the property `不造平行状态权威`
+asks for: the card is a *view* of readings others already took, never a second
+place they are recorded.
+
+The rules this card will not break
+----------------------------------
+1. UNKNOWN is never rendered as a healthy value, and never as `0`. A reading
+   nobody took renders as a word with a reason; a reading whose last observation
+   is older than its staleness bound renders as 已过期 — a third word, not a
+   green one. `reading_line` is the single place this spelling lives.
+2. A reading with no provenance is not a KNOWN reading. `_staleness` downgrades
+   it to UNKNOWN with a reason, following `runtime/health.py`'s first rule.
+3. Healthy services appear as COUNTS. An anomalous (or unreachable) one is
+   lifted to the top of the card, where a reader who never opens a fold sees it.
+4. A service added to the input enters the counts automatically: the counts are
+   derived from the list, never authored.
+5. Sample data is never presented as live. A model built with `sample=True`
+   carries the mark on the header AND an explicit non-live line on the body —
+   a deliberate divergence from `cards.py` §2's title-only mark, because §2 was
+   protecting a line budget on a card a person asked for, whereas this mark's
+   job is to survive a forwarded crop of a card nobody asked for.
+6. One logical card. `lifecycle` names the in-place update cadence and the
+   rotation API limits force; a physical card rotated on the API limit is a
+   transport concern and not a second logical card.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+
+SCHEMA = "fleet-monitor-card.v1"
+
+#: The card's REFRESH cadence, in place: the half-hour heartbeat slot the
+#: 2026-10-14 two-surface ruling fixed (`:00`/`:30`), NOT the ten minutes an
+#: earlier draft carried. `runtime/card_surface.py` owns the cadence itself
+#: (`SLOT_SECONDS = 1800`) and this is the same number restated for the model's
+#: `lifecycle` block, so the footer a person reads and the scheduler that fires
+#: cannot drift apart. A severe alert BYPASSES the slot and patches immediately;
+#: the heartbeat is the floor, not a ceiling on how fast good news travels.
+DEFAULT_REFRESH_S = 1800
+#: A reading older than this is 已过期 rather than current.
+DEFAULT_STALE_AFTER_S = 1800
+#: The byte budget a single card is held under. Feishu's own ceiling is larger;
+#: this is the smaller ceiling this product sets, and `validate` enforces it so
+#: a card that grew past a screen is caught here rather than in a conversation.
+MAX_CARD_BYTES = 30000
+
+SAMPLE_MARK = "[SAMPLE]"
+SAMPLE_LINE = "⚠️ 样例数据 · 非实时，不代表生产读数"
+CARD_KEY = "fleet-monitor"
+
+STATE_KNOWN = "KNOWN"
+STATE_UNKNOWN = "UNKNOWN"
+STATE_STALE = "STALE"
+
+#: The four axes of a service's health, MIRRORED from `runtime/health.py`'s
+#: `AXES`. The pure module does not import `health`, because `health` loads the
+#: registry and its contracts — I/O — and this module must stay I/O-free. The
+#: two lists are bound instead by a test that imports both and asserts equality,
+#: so the vocabulary cannot drift while the purity holds.
+SERVICE_AXES = ("liveness", "transport", "functional", "readiness")
+
+#: A card is read at 390px (`runtime/cards.py`'s `MOBILE_WIDTH`). A markdown
+#: line past this many characters wraps into a paragraph nobody reads on that
+#: width, so the renderer splits on the budget rather than trusting the source.
+MOBILE_LINE_CHARS = 64
+
+#: The attribution a host-share reading must carry to be shown at all. A share
+#: that nobody attributed to a cgroup is not this user's usage, and showing it
+#: would credit (or charge) the wrong account.
+CGROUP_ATTRIBUTION = "cgroup"
+
+#: The element tags this renderer may emit, and nothing else. `validate` walks a
+#: rendered card and refuses a tag outside this set — inventing a plausible tag
+#: is how a card renders as a blank rectangle in a conversation nobody watches.
+#:
+#: Every tag here is a DOCUMENTED CardKit 2.0 component (`chart` is `图表`, the
+#: others are `markdown`/`hr`/`collapsible_panel`/`column_set`), read from the
+#: SDK's own bundled component reference rather than guessed. `validate`'s job is
+#: now to keep the card inside that reference, not just inside a list.
+VOCABULARY = frozenset({
+    "markdown", "hr", "collapsible_panel", "column_set", "column", "chart",
+    "plain_text", "standard_icon",
+})
+
+#: The one rule every CardKit 2.0 component reference states for `element_id`:
+#: «唯一标识，字母开头 ≤20 字符» — a letter first, at most twenty characters. A
+#: longer id, or one that starts with a digit, is not a smaller mistake than the
+#: wrong tag: the renderer has been emitting `dev-device-tokyo-shared-dev-01-fold`
+#: (31 chars) since before this rule was written down here, and `validate` now
+#: refuses it rather than shipping a field the client may drop or truncate into a
+#: collision.
+ELEMENT_ID_MAX = 20
+_ELEMENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+#: One vocabulary for the four summary states, copied from `runtime/cards.py`'s
+#: own declaration rather than re-derived: the first time the two spellings
+#: diverge, a reader who learned the word on one face finds it meaning something
+#: else on the next.
+FACE_WORDS = {"OK": "正常", "ATTENTION": "建议查看",
+              "CRITICAL": "需要处理", "UNCONFIRMED": "无法确认"}
+NEUTRAL_WORD = "无法确认"
+
+#: Higher first. `attention` is sorted by this, then by input order, so the
+#: ordering is deterministic and the most severe thing is on the first screen.
+SEVERITY_RANK = {"CRITICAL": 0, "ATTENTION": 1, "STALE": 2, "UNKNOWN": 3, "OK": 4}
+
+#: Labels the user has ruled out of this card. A reading whose label carries one
+#: of these is a defect in the model, not a rendering choice: it is caught in
+#: `validate_model` so the exclusion is enforced where the data is built.
+FORBIDDEN_LABEL_TOKENS = (
+    "WiFi 型号", "wifi 型号", "内网测速", "理论部署", "待采集",
+    "部署计划", "未采集",
+)
+
+
+class MonitorCardError(RuntimeError):
+    """A model or card that violates a rule this module exists to keep."""
+
+
+# ---------------------------------------------------------------------------
+# The reading — the one atom everything above this line is made of
+# ---------------------------------------------------------------------------
+
+def reading(label, value, *, unit="", note="", observed_at=None,
+            severity="OK", trend=(), kind="reading", scope=None):
+    """A measured reading. `observed_at` is its provenance and is required.
+
+    A KNOWN reading with no `observed_at` is downgraded to UNKNOWN by
+    `monitor_model`; the constructor does not enforce it here so that the
+    downgrade happens in ONE place (the model step) rather than in two.
+    """
+    return {
+        "kind": kind, "label": label, "value": value, "unit": unit, "note": note,
+        "state": STATE_KNOWN, "observed_at": observed_at,
+        "severity": severity, "trend": list(trend), "scope": scope,
+    }
+
+
+def unobserved(label, *, reason, kind="reading", scope=None):
+    """A reading nobody took. It has a reason and NO value — never `0`.
+
+    `reason` is required and has no default: "we did not measure this" is only
+    useful with the cause, and a default would make every unmeasured reading
+    cite the same word regardless of which source stayed silent.
+    """
+    return {
+        "kind": kind, "label": label, "value": None, "unit": "", "note": "",
+        "state": STATE_UNKNOWN, "reason": reason, "observed_at": None,
+        "severity": None, "trend": [], "scope": scope,
+    }
+
+
+def stale(reading_dict, *, reason):
+    """The same reading, marked 已过期. Its last value is kept and shown.
+
+    Stale keeps the value on purpose: a stale reading is a real reading that
+    has aged, and hiding it would make 已过期 indistinguishable from 无法确认.
+    What changes is the word, and the word is what a reader branches on.
+    """
+    out = dict(reading_dict)
+    out["state"] = STATE_STALE
+    out["reason"] = reason
+    return out
+
+
+def network_reading(value, *, scope, observed_at=None, cap_bps=None,
+                    cap_confirmed=False, unit="Mbps", severity="OK"):
+    """A network flow reading, whose LABEL is decided by its scope.
+
+    `scope` is required and there is no default, because the sentence this
+    prevents is calling an undifferentiated total 公网. `"public"` is a flow
+    measured at the public egress; `"undifferentiated"` is a total that has not
+    been split, and it is labelled as such rather than promoted to the stronger
+    claim by a default.
+    """
+    if scope not in ("public", "undifferentiated"):
+        raise MonitorCardError(
+            f"network scope {scope!r} is not one of public/undifferentiated; "
+            "an unlabelled total must not borrow the 公网 claim")
+    label = "公网出向" if scope == "public" else "网络总流量（口径未区分）"
+    note = ""
+    if scope == "public" and cap_confirmed and cap_bps:
+        note = f"配额 {cap_bps / 1_000_000:.0f} Mbps（用户已确认）"
+    return reading(label, value, unit=unit, note=note, observed_at=observed_at,
+                   severity=severity, kind="network", scope=scope)
+
+
+def quota_reading(bps, *, observed_at, confirmed, label="公网出口配额"):
+    """The CONFIRMED egress quota, or `None` when it is not confirmed.
+
+    `None` rather than an unobserved reading, and the difference is the point:
+    the user confirmed exactly one quota (Tokyo, 100 Mbps) and confirmed none
+    for the other machines. An unobserved quota row on every device would be a
+    placeholder spending a card line to say nothing — the space `不拿…待持续采集
+    占空间` refuses — and inventing a number would be worse. So an unconfirmed
+    quota is simply absent, and `confirmed=True` is the only way a quota exists.
+    """
+    if not confirmed:
+        return None
+    return reading(label, bps / 1_000_000, unit="Mbps",
+                   note="用户已确认", observed_at=observed_at, kind="network",
+                   scope="public")
+
+
+def share_reading(value, *, attribution, observed_at, note="cgroup 归因",
+                  label="用户资源份额"):
+    """A user's share of the host, or `None` when no cgroup attributed it.
+
+    §"东京整机/vince 占用只有真实 cgroup 归因才显示" is the rule, and it is a
+    rule about omission, not about wording: a share reading with no `cgroup`
+    attribution is withheld entirely rather than shown as 无法确认, because a
+    share nobody attributed is not an unknown share — it is not this user's
+    share at all, and a card that printed it would be reading the wrong account.
+    """
+    if attribution != CGROUP_ATTRIBUTION:
+        return None
+    return reading(label, value, note=note, observed_at=observed_at,
+                   kind="host-share", scope=CGROUP_ATTRIBUTION)
+
+
+# ---------------------------------------------------------------------------
+# The account — one UID's use of THIS device (the V13 "user area")
+# ---------------------------------------------------------------------------
+#
+# V13 puts a per-UID block in each device's own section: how much CPU and RAM one
+# account is using, the SUGGESTED allowance for it, and the soft warning line.
+# Two sentences this block must never say, and the shapes that keep them unsaid:
+#
+#   "this is a hard cgroup limit"  — a quota here is a SUGGESTION, not a kernel
+#                                    cap; nothing on this card throttles anyone.
+#                                    `QUOTA_NOTE` is spelled on every account
+#                                    line and the field is named `quota`, never
+#                                    `limit`.
+#   "here is what they ran"        — only uid, an optional display name and the
+#                                    two usage atoms cross the boundary. No argv,
+#                                    no cwd, no env, no open file. `validate_model`
+#                                    refuses an account carrying any of them, so
+#                                    the privacy rule is enforced where the data
+#                                    is built rather than promised in prose.
+
+ACCOUNT = "account"
+UID_SCOPE = "uid"
+QUOTA_NOTE = "额度/警戒线为建议软线，非 cgroup 硬限制；本卡不限制、不结束任何进程"
+
+#: Field names an account may NOT carry, because each is a door onto another
+#: person's files, command line or secrets. A card that leaked one of these would
+#: be reading an account, not measuring it.
+ACCOUNT_FORBIDDEN_FIELDS = (
+    "argv", "cmdline", "environ", "env", "cwd", "open_files", "prompt",
+    "token", "secret", "password",
+)
+
+
+def account(*, uid, observed_at, display_name=None, cpu_used=None, cpu_quota=None,
+            cpu_warn=None, ram_used_gib=None, ram_quota_gib=None, ram_warn_gib=None,
+            severity="OK", trend=(), note=QUOTA_NOTE, source=None):
+    """One account's resource use on this device. PURE.
+
+    `cpu_*` are cores; `ram_*_gib` are GiB. `used` is what is measured now, the
+    `quota` is the SUGGESTED allowance and `warn` the soft warning line — a
+    missing value stays `None` and renders as 未定义 rather than as `0`, so an
+    unset allowance never reads as "no allowance".
+    """
+    label = f"账户 {display_name or ('uid=' + str(uid))}"
+    return {
+        "kind": ACCOUNT, "uid": uid, "display_name": display_name, "label": label,
+        "cpu": {"used": cpu_used, "quota": cpu_quota, "warn": cpu_warn},
+        "ram": {"used": ram_used_gib, "quota": ram_quota_gib, "warn": ram_warn_gib},
+        "state": STATE_KNOWN, "reason": None, "severity": severity,
+        "observed_at": observed_at, "trend": list(trend), "scope": UID_SCOPE,
+        "note": note, "source": source,
+    }
+
+
+def account_unobserved(*, uid, reason, display_name=None):
+    """An account the reader could not establish. A reason, and NO numbers.
+
+    The same rule as `unobserved`: "we did not measure this account" is only
+    useful with the cause, and a quota of `0` beside it would be read as a
+    configured limit rather than an absent one.
+    """
+    label = f"账户 {display_name or ('uid=' + str(uid))}"
+    return {
+        "kind": ACCOUNT, "uid": uid, "display_name": display_name, "label": label,
+        "cpu": {"used": None, "quota": None, "warn": None},
+        "ram": {"used": None, "quota": None, "warn": None},
+        "state": STATE_UNKNOWN, "reason": reason, "severity": None,
+        "observed_at": None, "trend": [], "scope": UID_SCOPE,
+        "note": QUOTA_NOTE, "source": None,
+    }
+
+
+def _account_staleness(acct, now_dt, stale_after_s):
+    """The account twin of `_staleness`, applying the same two rules.
+
+    A KNOWN account with no parseable observation becomes UNKNOWN; one older
+    than the bound becomes STALE with its last numbers kept. Applied in the model
+    step so the rule lives in one place per shape rather than in two.
+    """
+    if acct.get("state") != STATE_KNOWN:
+        return acct
+    when = _parse(acct.get("observed_at"))
+    if when is None:
+        out = dict(acct)
+        out.update({"state": STATE_UNKNOWN, "reason": "账户读数没有可解析的观测时间"})
+        return out
+    if (now_dt - when).total_seconds() > stale_after_s:
+        out = dict(acct)
+        out.update({"state": STATE_STALE,
+                    "reason": f"最后观测 {acct['observed_at']} 已过期"})
+        return out
+    return acct
+
+
+# ---------------------------------------------------------------------------
+# The view model — pure
+# ---------------------------------------------------------------------------
+
+def _parse(instant):
+    if not instant:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(instant).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _staleness(reading_dict, now_dt, stale_after_s):
+    """Apply rule 1 and rule 2 to one reading. The only place they are applied.
+
+    A KNOWN reading with no parseable `observed_at` becomes UNKNOWN (no
+    provenance is not a measurement); one whose age exceeds `stale_after_s`
+    becomes STALE. Everything else is returned unchanged.
+    """
+    if reading_dict.get("state") != STATE_KNOWN:
+        return reading_dict
+    when = _parse(reading_dict.get("observed_at"))
+    if when is None:
+        out = dict(reading_dict)
+        out["state"] = STATE_UNKNOWN
+        out["value"] = None
+        out["reason"] = "读数没有可解析的观测时间，不构成一次测量"
+        return out
+    age = (now_dt - when).total_seconds()
+    if age > stale_after_s:
+        return stale(reading_dict,
+                     reason=f"最后观测 {reading_dict['observed_at']} 距今 "
+                            f"{int(age // 60)} 分钟，超过新鲜度上限 "
+                            f"{stale_after_s // 60} 分钟")
+    return reading_dict
+
+
+def _reachability(device, now_dt, stale_after_s):
+    """A device's reachability as a state word, never as an empty list."""
+    raw = device.get("reachability") or {}
+    state = raw.get("state")
+    if state != STATE_KNOWN:
+        return {"state": STATE_UNKNOWN,
+                "reason": raw.get("reason") or "没有观测到该设备的可达性",
+                "observed_at": raw.get("observed_at")}
+    when = _parse(raw.get("observed_at"))
+    if when is None:
+        return {"state": STATE_UNKNOWN,
+                "reason": "可达性没有可解析的观测时间，不构成一次观测",
+                "observed_at": raw.get("observed_at")}
+    if (now_dt - when).total_seconds() > stale_after_s:
+        return {"state": STATE_STALE,
+                "reason": f"最后观测 {raw['observed_at']} 已过期",
+                "observed_at": raw.get("observed_at")}
+    return {"state": STATE_KNOWN, "reason": None,
+            "observed_at": raw.get("observed_at")}
+
+
+def _normalize_service(service, now_dt, stale_after_s):
+    """One service's four axes, its derived state, and its freshness.
+
+    The derived `state` is the AUTHORITY's word (whatever produced the service
+    health) and is never recomputed here — only DOWNGRADED, and only for the two
+    reasons rule 1 covers: a state that is not one of the three carryable words
+    becomes UNKNOWN, and a carryable state whose observation is missing or old
+    becomes UNKNOWN or STALE. A service is counted by this effective word, so a
+    service whose health nobody re-read does not keep counting as healthy.
+    """
+    axes = {axis: (service.get("axis") or {}).get(axis) for axis in SERVICE_AXES}
+    state = str(service.get("state") or "").upper()
+    observed_at = service.get("observed_at")
+    reason = service.get("reason")
+    if state not in ("OK", "ATTENTION", "CRITICAL"):
+        state, reason = STATE_UNKNOWN, reason or "没有该服务健康状态的判定"
+    elif observed_at is None:
+        state, reason = STATE_UNKNOWN, "健康判定没有观测时间，不构成一次观测"
+    else:
+        when = _parse(observed_at)
+        if when is None:
+            state, reason = STATE_UNKNOWN, "健康判定的观测时间不可解析"
+        elif (now_dt - when).total_seconds() > stale_after_s:
+            state = STATE_STALE
+            reason = f"健康判定 {observed_at} 已过期，不能当作当前健康"
+    return {"name": service.get("name"), "state": state, "axes": axes,
+            "observed_at": observed_at, "reason": reason}
+
+
+def _service_counts(services):
+    """Counts over services ALREADY normalized, keyed by effective state."""
+    counts = {"total": 0, "ok": 0, "attention": 0, "critical": 0,
+              "stale": 0, "unknown": 0}
+    for service in services:
+        counts["total"] += 1
+        key = {"OK": "ok", "ATTENTION": "attention", "CRITICAL": "critical",
+               STATE_STALE: "stale"}.get(service.get("state"), "unknown")
+        counts[key] += 1
+    return counts
+
+
+def _attention(devices, services):
+    """The anomalies, most severe first, deterministically ordered.
+
+    Built from two kinds of finding and never from a score: a device this
+    runtime could not reach, and a reading whose severity has left OK, and a
+    service that is not OK. STALE and UNKNOWN readings are deliberately NOT
+    lifted here — they are not events, and pinning every unmeasured cell would
+    turn the top of the card into a copy of the fold. They keep their own words
+    where they sit, which is enough to keep them honest.
+    """
+    found = []
+    for index, device in enumerate(devices):
+        ref = device.get("device_ref")
+        if device["reachability"]["state"] != STATE_KNOWN \
+                and device.get("observed_ever", True):
+            found.append({
+                "scope": "device", "device_ref": ref, "severity": "CRITICAL",
+                "text": f"{device.get('display_name') or ref}："
+                        f"{'失联' if device['reachability']['state'] == STATE_UNKNOWN else '可达性已过期'}"
+                        f"（{device['reachability']['reason']}）",
+                "_order": (SEVERITY_RANK["CRITICAL"], index, -1),
+            })
+        for r_index, r in enumerate(device.get("readings") or []):
+            sev = str(r.get("severity") or "OK").upper()
+            if sev in ("CRITICAL", "ATTENTION") and r.get("state") == STATE_KNOWN:
+                found.append({
+                    "scope": "reading", "device_ref": ref, "severity": sev,
+                    "text": f"{device.get('display_name') or ref} · {r['label']}："
+                            f"{r.get('value')}{r.get('unit') or ''}"
+                            + (f"（{r['note']}）" if r.get("note") else ""),
+                    "_order": (SEVERITY_RANK[sev], index, r_index),
+                })
+        # An account over its soft warning line is a finding like any other: the
+        # whole point of the per-UID block is that a runaway account reaches the
+        # top of the card without anybody opening a fold. Ordered after the
+        # device's own readings so a host-level fault still leads.
+        for a_index, a in enumerate(device.get("accounts") or []):
+            sev = str(a.get("severity") or "OK").upper()
+            if sev in ("CRITICAL", "ATTENTION") and a.get("state") == STATE_KNOWN:
+                found.append({
+                    "scope": "account", "device_ref": ref, "severity": sev,
+                    "text": f"{device.get('display_name') or ref} · {a['label']}："
+                            f"{_account_numbers(a)}",
+                    "_order": (SEVERITY_RANK[sev], index,
+                               len(device.get("readings") or []) + a_index),
+                })
+    for s_index, service in enumerate(services):
+        state = str(service.get("state") or "").upper()
+        if state in ("CRITICAL", "ATTENTION"):
+            found.append({
+                "scope": "service", "device_ref": None, "severity": state,
+                "text": f"服务 {service.get('name')}："
+                        + (service.get("reason") or FACE_WORDS.get(state, NEUTRAL_WORD)),
+                "_order": (SEVERITY_RANK[state], len(devices), s_index),
+            })
+    found.sort(key=lambda item: item["_order"])
+    for item in found:
+        del item["_order"]
+    return found
+
+
+def monitor_model(*, devices, services=(), network=None, now, sample=False,
+                  refresh_seconds=DEFAULT_REFRESH_S,
+                  stale_after_s=DEFAULT_STALE_AFTER_S):
+    """Compose a fleet monitor view model from readings others already took.
+
+    PURE. It is handed readings — this function measures nothing, opens nothing
+    and reads no clock. `now` is an ISO instant, and it is what staleness is
+    measured against, so two callers with the same `now` get byte-identical
+    models, which is what makes the render deterministic and testable.
+    """
+    now_dt = _parse(now)
+    if now_dt is None:
+        raise MonitorCardError(f"now={now!r} is not a parseable instant")
+
+    built = []
+    for device in devices:
+        readings = [_staleness(r, now_dt, stale_after_s)
+                    for r in (device.get("readings") or [])]
+        accounts = [_account_staleness(a, now_dt, stale_after_s)
+                    for a in (device.get("accounts") or [])]
+        entry = {
+            "device_ref": device.get("device_ref"),
+            "display_name": device.get("display_name") or device.get("device_ref"),
+            "platform": device.get("platform") or "未知",
+            "reachability": _reachability(device, now_dt, stale_after_s),
+            "readings": readings,
+            "accounts": accounts,
+            # NEVER-SEEN vs WENT-SILENT. A declared device that has never had a
+            # provider is a COVERAGE GAP, not an outage: it renders grey and
+            # UNCONFIRMED rather than raising the red an unreachable-but-known
+            # machine raises. The default is True so a caller that says nothing
+            # keeps §1's existing «a device this runtime could not reach is a
+            # finding» behaviour; only the inventory builder marks a device it
+            # has never once observed.
+            "observed_ever": device.get("observed_ever", True),
+        }
+        # A bridge may attach what it knows about the SOURCE of these readings
+        # (a native measurement's `live`/`replayed`). Carried through untouched
+        # so the card can say a fixture is a fixture.
+        if device.get("native"):
+            entry["native"] = device["native"]
+        built.append(entry)
+
+    # A device whose facts came from a fixture (`live` is False) makes the whole
+    # card a sample. A reading that is not of any host must not be drawn as one,
+    # whatever the caller passed for `sample`.
+    if any((d.get("native") or {}).get("live") is False for d in built):
+        sample = True
+
+    services = [_normalize_service(s, now_dt, stale_after_s)
+                for s in (services or [])]
+    service_counts = _service_counts(services)
+    unreached = sum(1 for d in built if d["reachability"]["state"] != STATE_KNOWN)
+    reached = len(built) - unreached
+
+    summary = {
+        "services": service_counts,
+        "devices": {"total": len(built), "reached": reached,
+                    "unreached": unreached},
+    }
+    attention = _attention(built, services)
+
+    model = {
+        "schema": SCHEMA,
+        "card_key": CARD_KEY,
+        "sample": bool(sample),
+        "generated_at": now,
+        "summary": summary,
+        "attention": attention,
+        "services": services,
+        "devices": built,
+        # Rule 6: one logical card. The refresh cadence, the urgent path and the
+        # physical rotation are metadata about THIS card, not about a second one.
+        "lifecycle": {
+            "card_key": CARD_KEY,
+            "single_card": True,
+            "mode": "in_place",
+            "normal_refresh_seconds": refresh_seconds,
+            "urgent_refresh": "on_critical_immediately",
+            "physical_rotation": "on_api_limit",
+        },
+    }
+    if network is not None:
+        net = _staleness(network, now_dt, stale_after_s)
+        model["network"] = net
+    return model
+
+
+# ---------------------------------------------------------------------------
+# Rendering — pure
+# ---------------------------------------------------------------------------
+
+def reading_line(r):
+    """One reading as the ONE sentence its state earns. No colour, no guess.
+
+    This is the only function that spells 无法确认 / 已过期 / a value, so the
+    three can never drift apart. An UNKNOWN reading never carries a number and
+    a STALE reading never reads as current — `test_...` walks the three states
+    and asserts exactly that.
+    """
+    label = r.get("label")
+    if r.get("state") == STATE_UNKNOWN:
+        return f"{label} **无法确认**（{r.get('reason') or '原因未记录'}）"
+    if r.get("state") == STATE_STALE:
+        return (f"{label} **已过期** — 最后读数 {_value(r)}"
+                f"（{r.get('observed_at') or '时间未知'}）")
+    return f"{label} {_value(r)}" + (f"（{r['note']}）" if r.get("note") else "")
+
+
+def _value(r):
+    value = r.get("value")
+    if value is None:
+        return "—"
+    return f"{value}{r.get('unit') or ''}"
+
+
+def _md(content):
+    return {"tag": "markdown", "content": content}
+
+
+def _hr():
+    return {"tag": "hr"}
+
+
+def _panel(element_id, title, blocks, *, expanded=False):
+    """A fold, matching the shape the live cards send (`runtime/cards.py`)."""
+    return {
+        "tag": "collapsible_panel",
+        "element_id": element_id,
+        "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": f"**{title}**"},
+            "vertical_align": "center",
+            "icon": {"tag": "standard_icon",
+                     "token": "down-small-ccm_outlined", "size": "16px 16px"},
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": "grey", "corner_radius": "5px"},
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        # Wrapped here as well as in the device body: a fold's content is still
+        # read on a phone, and the 390px budget is the renderer's rule rather
+        # than a caller's — see `_wrap_lines`.
+        "elements": [_md(_wrap_lines("\n".join(blocks)))],
+    }
+
+
+def _column_set(element_id, cells):
+    """A face grid. `flex_mode: "none"` is what this product sets, and it is
+    load-bearing: under `"none"` a phone narrows the columns, it does not stack
+    them — see `runtime/cards.py`'s `_flex`, which had this wrong once."""
+    return {
+        "tag": "column_set",
+        "element_id": element_id,
+        "flex_mode": "none",
+        "background_style": "default",
+        "columns": [
+            {"tag": "column", "width": "weighted", "weight": 1,
+             "elements": [_md(cell)]}
+            for cell in cells
+        ],
+    }
+
+
+def _chart(eid, *, title, points):
+    """A trend chart. GATED — see `render_cardkit`'s `charts_verified`.
+
+    The shape is taken from the SDK's own component reference for `chart`
+    (VChart): the series lives INSIDE `chart_spec.data.values`, with `xField` /
+    `yField` naming the axis fields. An earlier revision put `data` as a SIBLING
+    of `chart_spec` — the shape a plausible-looking guess produces, and one the
+    reference does not describe. Correcting it here does NOT open the gate: the
+    schema being documented is not the same as a real client rendering a real
+    card, and the reference itself warns that some VChart properties fail on
+    mobile. So `charts_verified` stays the caller's explicit declaration.
+
+    `eid` must already satisfy the `element_id` contract; the `chart` reference
+    restates the same «letter first, ≤ 20 chars» rule as every other component.
+    """
+    return {
+        "tag": "chart",
+        "element_id": eid,
+        "chart_spec": {
+            "type": "line",
+            "title": {"text": title},
+            "data": {"values": [{"x": str(i), "y": float(v)}
+                                for i, v in enumerate(points)]},
+            "xField": "x",
+            "yField": "y",
+        },
+    }
+
+
+def _trend_line(r):
+    blocks = "▁▂▃▄▅▆▇█"
+    points = [float(v) for v in (r.get("trend") or [])]
+    if len(points) < 2:
+        return None
+    low, high = min(points), max(points)
+    span = (high - low) or 1.0
+    spark = "".join(blocks[min(7, int((v - low) / span * 7))] for v in points)
+    return f"趋势 {r['label']} {spark} （{points[0]:g}→{points[-1]:g}）"
+
+
+def _num(value, unit=""):
+    """A number a person reads, or 未定义 — never `0` for "not configured"."""
+    if value is None:
+        return "未定义"
+    try:
+        return f"{float(value):.1f}{unit}"
+    except (TypeError, ValueError):
+        return f"{value}{unit}"
+
+
+def _account_numbers(a):
+    """CPU and RAM as used/allowance, the pair the user asked to see."""
+    cpu, ram = a.get("cpu") or {}, a.get("ram") or {}
+    return (f"CPU {_num(cpu.get('used'))}/{_num(cpu.get('quota'))} 核"
+            f" · 内存 {_num(ram.get('used'))}/{_num(ram.get('quota'))} GiB")
+
+
+def account_line(a):
+    """One account as the ONE sentence its state earns. No colour, no guess.
+
+    The single place 无法确认 / 已过期 / the used-vs-allowance pair is spelled for
+    an account, so the three can never drift — the same discipline `reading_line`
+    keeps for an ordinary reading.
+    """
+    if a.get("state") == STATE_UNKNOWN:
+        return f"**{a['label']}** 无法确认（{a.get('reason') or '原因未记录'}）"
+    if a.get("state") == STATE_STALE:
+        return (f"**{a['label']}** 已过期 — 最后 {_account_numbers(a)}"
+                f"（{a.get('observed_at') or '时间未知'}）")
+    cpu, ram = a.get("cpu") or {}, a.get("ram") or {}
+    warn = []
+    if cpu.get("warn") is not None:
+        warn.append(f"CPU {_num(cpu.get('warn'))} 核")
+    if ram.get("warn") is not None:
+        warn.append(f"内存 {_num(ram.get('warn'))} GiB")
+    # Two lines, and the split is a 390px decision: the used/allowance pair is
+    # what the user asked to see first, and the soft warning line is context for
+    # it. Joining them ran to 71 characters and wrapped mid-number on a phone.
+    line = f"**{a['label']}** · {_account_numbers(a)}"
+    if warn:
+        line += f"\n警戒线 {'、'.join(warn)}（软线）"
+    return line
+
+
+def _account_order(a):
+    """Most severe first, then most RAM used. The ranking, as a sort key.
+
+    `severity` leads because the card is read top-down and a flagged account must
+    beat an unflagged one that merely holds more memory; the RAM figure breaks
+    ties so the order is deterministic and a largest-first reading the user asked
+    for falls out of the same key.
+    """
+    rank = SEVERITY_RANK.get(str(a.get("severity") or "OK").upper(), 9)
+    used = (a.get("ram") or {}).get("used")
+    try:
+        weight = -float(used)
+    except (TypeError, ValueError):
+        weight = 0.0
+    return (rank, weight, str(a.get("uid")))
+
+
+def _accounts_panel(ref, accounts):
+    """The device's user area: one line per account, inside a fold.
+
+    Collapsed by default. A reader who wants the machine's totals should not
+    have to scroll past every account, and «管理员折叠的多用户排名» is exactly a
+    fold whose ORDER is the ranking — `_account_order` puts the most severe and
+    then the largest account first. The soft-line caveat is spelled once, at the
+    foot, so it cannot be read off an individual row as a hard limit.
+    """
+    ordered = sorted(accounts, key=_account_order)
+    blocks = [account_line(a) for a in ordered]
+    blocks.append(f"_共 {len(accounts)} 个账户 · {QUOTA_NOTE}_")
+    return _panel(element_id("acct", ref), f"账户用量（{len(accounts)}）",
+                  blocks, expanded=False)
+
+
+def _device_title(device):
+    """A fold header that says the state, not just the name."""
+    reach = device["reachability"]["state"]
+    word = {"KNOWN": "可达", "STALE": "可达性过期"}.get(reach, "失联")
+    if reach != STATE_KNOWN and not device.get("observed_ever", True):
+        # Never had a provider is not "went silent"; the header says which.
+        word = "尚未接入"
+    readings = device.get("readings") or []
+    bad = [r for r in readings
+           if str(r.get("severity") or "").upper() in ("CRITICAL", "ATTENTION")]
+    mark = {"CRITICAL": "🚨", "ATTENTION": "⚠️"}.get(
+        max((str(r.get("severity")) for r in bad), default=""), "")
+    unknowns = sum(1 for r in readings if r.get("state") != STATE_KNOWN)
+    tail = f" · 无法确认 {unknowns}" if unknowns else ""
+    return f"{mark} {device['display_name']} · {word}{tail}".strip()
+
+
+def _device_elements(device, *, rich, charts_verified, index):
+    ref = device.get("device_ref") or str(index)
+    elements = []
+    readings = device.get("readings") or []
+    known = [r for r in readings
+             if r.get("state") == STATE_KNOWN and r.get("value") is not None]
+    if known and rich:
+        cells = [f"**{r['label']}**\n{_value(r)}"
+                 + (f"\n{r['note']}" if r.get("note") else "") for r in known[:4]]
+        elements.append(_column_set(element_id("face", ref), cells))
+    elif known:
+        # The safe variant: the same readings as ONE markdown line, built from
+        # `markdown`, which every card this node sends already uses.
+        face = " · ".join(f"**{r['label']}** {_value(r)}" for r in known[:6])
+        elements.append(_md(_wrap_lines(face)))
+    elif device["reachability"]["state"] != STATE_KNOWN:
+        elements.append(_md("_未联系到本机，没有读数_"))
+    lines = [reading_line(r) for r in readings]
+    for r in readings:
+        trend = _trend_line(r)
+        if trend:
+            lines.append(trend)
+    if lines:
+        elements.append(_md(_wrap_lines("\n".join(lines))))
+    # The account (per-UID) area, unique to this card: the device's own user
+    # block plus, when a caller supplies them, the other accounts as a fold. It
+    # is placed AFTER the machine's own readings because it is a slice OF them,
+    # and it never replaces the three blocks.
+    accounts = device.get("accounts") or []
+    if accounts:
+        elements.append(_accounts_panel(ref, accounts))
+    if rich and charts_verified:
+        for r in readings:
+            if len(r.get("trend") or []) >= 2:
+                elements.append(_chart(element_id("trend", ref, r["label"]),
+                                       title=f"{device['display_name']} {r['label']}",
+                                       points=r["trend"]))
+    return elements
+
+
+def element_id(prefix, *parts):
+    """A CardKit 2.0 `element_id`: starts with a letter, ≤ 20 characters.
+
+    The component reference states this bound for every element, so it is built
+    here rather than assembled ad hoc at each call site — the shape that produced
+    a 31-character id before. `parts` are folded into a digest, so two different
+    element identities never collide and the same identity is byte-stable across
+    renders (which the determinism test relies on). Two labels that differ only
+    in CJK are two identities here for the same reason: there is no ASCII to
+    keep, so identity comes from the digest and never from a cleaned-up word.
+    """
+    head = re.sub(r"[^A-Za-z]", "", str(prefix))[:1] or "e"
+    digest = hashlib.sha1("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
+    # "<letter><8 hex>-<8 hex>" = 18 chars: letter-first, well inside the 20 ceiling.
+    return f"{head}{digest[:8]}-{digest[8:16]}"
+
+
+def _summary_line(model):
+    s = model["summary"]["services"]
+    d = model["summary"]["devices"]
+    return (f"**服务** 共 {s['total']} · 正常 {s['ok']} · 需关注 "
+            f"{s['attention']} · 需处理 {s['critical']} · 已过期 {s['stale']}"
+            f" · 无法确认 {s['unknown']}"
+            f"\n**设备** 共 {d['total']} · 可达 {d['reached']} · 不可达 "
+            f"{d['unreached']}")
+
+
+def _wrap_lines(text, *, limit=MOBILE_LINE_CHARS):
+    """Split any line past the 390px budget at the last space before it.
+
+    A card is read on a phone and this renderer cannot see the phone. What it
+    can do is refuse to emit a line longer than the width the tree already
+    measured for a card, so a long reading wraps where the source put a space
+    rather than wherever the client happens to break it.
+    """
+    out = []
+    for line in text.split("\n"):
+        while len(line) > limit:
+            cut = line.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            out.append(line[:cut].rstrip())
+            line = line[cut:].lstrip()
+        out.append(line)
+    return "\n".join(out)
+
+
+def _fleet_verdict(model):
+    services = model["summary"]["services"]
+    if services["critical"] or any(a["severity"] == "CRITICAL"
+                                   for a in model["attention"]):
+        return "CRITICAL"
+    if services["attention"] or model["attention"]:
+        return "ATTENTION"
+    # Every service OK but something unmeasured is NOT OK: rule 1 says an
+    # unmeasured reading may not be rounded to a healthy one. STALE counts with
+    # UNKNOWN here — a health word nobody re-read is not a health word. A device
+    # that has NEVER been observed counts here too and not as a CRITICAL outage:
+    # a machine with no provider is a gap in coverage, and rendering it red
+    # forever would teach a reader to ignore the red that matters.
+    if (services["unknown"] or services["stale"]
+            or model["summary"]["devices"]["unreached"]):
+        return "UNCONFIRMED"
+    return "OK"
+
+
+def is_urgent(model):
+    """True when a CRITICAL finding is present, so the next send skips the wait.
+
+    Asked of the MODEL and never of a clock: «severe enough to be immediate» is
+    a property of what is on the card, and the cadence belongs to the caller
+    (`runtime/fleet_monitor_plan.plan_update`).
+    """
+    return any(item.get("severity") == "CRITICAL"
+               for item in (model.get("attention") or []))
+
+
+_TEMPLATES = {"OK": "green", "ATTENTION": "orange",
+              "CRITICAL": "red", "UNCONFIRMED": "grey"}
+
+
+def render_cardkit(model, *, rich=False, charts_verified=False):
+    """The Fleet monitor card as Feishu CardKit 2.0 JSON. PURE.
+
+    The envelope matches `runtime/cards.py`'s `_card`: `schema: 2.0`, a header
+    with `template`/`title`/`subtitle`, and a `body` with `elements`.
+
+    THE SAFE VARIANT IS THE DEFAULT, and the two flags are the whole reason.
+    `rich=False` emits only `markdown`, `hr` and `collapsible_panel` — the
+    vocabulary every card this node already sends uses, so it is known to render
+    in production. `column_set` was REMOVED from the live status card by
+    `runtime/cards.py` (`_flex`: under `flex_mode: "none"` a phone narrows the
+    columns rather than stacking them) and `chart`'s schema is not verified
+    against the SDK here, so `rich=True` (which restores `column_set`) and
+    `charts_verified=True` are BOTH opt-in and BOTH unverified against a real
+    client. Until a real phone reads a real card, the default must not be the
+    one nobody has seen.
+    """
+    verdict = _fleet_verdict(model)
+    title = "Fleet 监控"
+    if model.get("sample"):
+        title = f"{title} · {SAMPLE_MARK}"
+
+    elements = []
+    if model.get("sample"):
+        elements.append(_md(SAMPLE_LINE))
+    elements.append(_md(_wrap_lines(_summary_line(model))))
+
+    if model["attention"]:
+        lines = [f"**⚠️ 需要关注（{len(model['attention'])}）**"]
+        lines += [f"- {item['text']}" for item in model["attention"]]
+        elements.append(_md(_wrap_lines("\n".join(lines))))
+
+    elements.append(_hr())
+    for index, device in enumerate(model["devices"]):
+        fold = _panel(element_id("dev", device.get("device_ref") or index),
+                      _device_title(device), [], expanded=False)
+        fold["elements"] = _device_elements(
+            device, rich=rich, charts_verified=charts_verified, index=index)
+        elements.append(fold)
+
+    if model.get("network"):
+        elements.append(_md(reading_line(model["network"])))
+
+    elements.append(_hr())
+    elements.append(_md("只读 · 本卡不会停止、重启或清理任何东西 · "
+                        f"每 {model['lifecycle']['normal_refresh_seconds'] // 60} "
+                        "分钟原位更新"))
+
+    card = {
+        "schema": "2.0",
+        # CardKit 2.0 `config`, per the SDK's own reference: `update_multi` is
+        # the shared-card flag and v2 «仅支持 true» (this is what makes the
+        # message patchable in place, which is the whole point of the update
+        # cadence) and `width_mode: "default"` is the ≤600px reading rather than
+        # the 1.0 `wide_screen_mode` spelling this renderer used to carry.
+        "config": {"update_multi": True, "width_mode": "default"},
+        "header": {
+            "template": _TEMPLATES.get(verdict, "grey"),
+            "title": {"tag": "plain_text", "content": title},
+            "subtitle": {"tag": "plain_text",
+                         "content": f"{model.get('generated_at')} 更新"},
+        },
+        "body": {"direction": "vertical", "elements": elements},
+    }
+    validate(card)
+    return card
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def _walk_tags(node, out):
+    if isinstance(node, dict):
+        if isinstance(node.get("tag"), str):
+            out.append(node["tag"])
+        for value in node.values():
+            _walk_tags(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _walk_tags(value, out)
+    return out
+
+
+def _walk_element_ids(node, out):
+    if isinstance(node, dict):
+        if "element_id" in node:
+            out.append(node["element_id"])
+        for value in node.values():
+            _walk_element_ids(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _walk_element_ids(value, out)
+    return out
+
+
+def validate(card):
+    """Refuse a card that breaks a structural rule. Raises, never warns.
+
+    Checks, in order: the schema version, that every tag is in the declared
+    vocabulary, that every `element_id` is unique, that the card serialises,
+    and that it fits `MAX_CARD_BYTES`. A card that fails any of these is not a
+    card this module hands to a transport.
+    """
+    if card.get("schema") != "2.0":
+        raise MonitorCardError(f"schema {card.get('schema')!r} is not '2.0'")
+    unknown = sorted(set(_walk_tags(card, [])) - VOCABULARY)
+    if unknown:
+        raise MonitorCardError(
+            f"card emits undeclared element tag(s) {unknown}; the vocabulary "
+            f"is {sorted(VOCABULARY)} and an invented tag renders as a blank")
+    ids = _walk_element_ids(card, [])
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise MonitorCardError(f"duplicate element_id(s) {duplicates}")
+    # The component reference states one rule for every `element_id`: letter
+    # first, ≤ 20 characters. Checked here rather than trusted to each call site,
+    # because the failure it prevents — a truncated id colliding with another —
+    # is invisible in a conversation and only shows up as the wrong fold opening.
+    for eid in ids:
+        if not isinstance(eid, str) or not _ELEMENT_ID_RE.match(eid) \
+                or len(eid) > ELEMENT_ID_MAX:
+            raise MonitorCardError(
+                f"element_id {eid!r} is not «字母开头，≤{ELEMENT_ID_MAX} 字符»; the "
+                f"CardKit 2.0 reference sets that bound for every component")
+    blob = json.dumps(card, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    if len(blob) > MAX_CARD_BYTES:
+        raise MonitorCardError(
+            f"card is {len(blob)} bytes, over the {MAX_CARD_BYTES} budget")
+    return card
+
+
+def validate_model(model):
+    """Refuse a model whose readings break a content rule. Raises, never warns."""
+    for device in model.get("devices") or []:
+        for r in device.get("readings") or []:
+            text = f"{r.get('label') or ''} {r.get('note') or ''}"
+            for token in FORBIDDEN_LABEL_TOKENS:
+                if token in text:
+                    raise MonitorCardError(
+                        f"reading {r.get('label')!r} carries the excluded "
+                        f"topic {token!r}; it must not be on this card")
+            if r.get("state") == STATE_KNOWN and not r.get("observed_at"):
+                raise MonitorCardError(
+                    f"KNOWN reading {r.get('label')!r} has no observed_at; a "
+                    "measurement without provenance is not a measurement")
+            if r.get("state") in (STATE_UNKNOWN, STATE_STALE) and not r.get("reason"):
+                raise MonitorCardError(
+                    f"reading {r.get('label')!r} is {r.get('state')} with no "
+                    "reason; an unestablished fact must say why")
+            # A host share is this user's share only under a real cgroup
+            # attribution; `share_reading` withholds one without it, and this
+            # refuses a model that smuggled one in by another door.
+            if r.get("kind") == "host-share" and r.get("scope") != CGROUP_ATTRIBUTION:
+                raise MonitorCardError(
+                    f"host-share reading {r.get('label')!r} carries "
+                    f"attribution {r.get('scope')!r}, not "
+                    f"{CGROUP_ATTRIBUTION!r}; a share nobody attributed is not "
+                    "this user's share")
+        for a in device.get("accounts") or []:
+            # The privacy boundary, enforced where the data is built: no argv,
+            # no cwd, no environment, no secret. A card that carried one would be
+            # reading the account rather than measuring it.
+            leaked = [k for k in ACCOUNT_FORBIDDEN_FIELDS if k in a]
+            if leaked:
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} carries forbidden field(s) "
+                    f"{leaked}; a UID block may name a uid, a display name and its "
+                    "CPU/RAM figures, and nothing that could carry another "
+                    "person's command line, environment or secrets")
+            if not isinstance(a.get("uid"), int) or isinstance(a.get("uid"), bool):
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} has uid {a.get('uid')!r}; an "
+                    "account is identified by a kernel UID and not by a name")
+            if a.get("kind") != ACCOUNT:
+                raise MonitorCardError(
+                    f"account entry {a.get('label')!r} has kind {a.get('kind')!r}")
+            if a.get("state") == STATE_KNOWN and not a.get("observed_at"):
+                raise MonitorCardError(
+                    f"KNOWN account {a.get('label')!r} has no observed_at; a "
+                    "measurement without provenance is not a measurement")
+            if a.get("state") in (STATE_UNKNOWN, STATE_STALE) and not a.get("reason"):
+                raise MonitorCardError(
+                    f"account {a.get('label')!r} is {a.get('state')} with no "
+                    "reason; an unestablished fact must say why")
+    return model

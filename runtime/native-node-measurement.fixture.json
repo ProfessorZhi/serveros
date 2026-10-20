@@ -1,0 +1,268 @@
+{
+  "_note": "The envelope runtime/fleet_monitor_source.accept_native_measurement consumes (schema serveros/native-node-measurement.v1). Derived READ-ONLY from PR#161's desensitised adapter/fixtures/snapshot.v1.example.json; the provenance block is illustrative (the real one comes from the bounded invocation's receipt). provenance.live is false because THIS FILE is a fixture, not a reading of any host — the card therefore renders it with the sample mark.",
+  "schema": "serveros/native-node-measurement.v1",
+  "readings_available": true,
+  "source": "native-node-core",
+  "provenance": {
+    "action": "resource.snapshot",
+    "executable": "/opt/serveros/bin/serveros-node-resource-snapshot",
+    "argv": [
+      "serveros-node-resource-snapshot",
+      "--interval-ms",
+      "500",
+      "--filesystem",
+      "ROOT_FS=/",
+      "--filesystem",
+      "DATA_FS=/data"
+    ],
+    "status": "DELIVERED",
+    "process_exit_code": 0,
+    "direct_process_exited": true,
+    "effect": "read_only",
+    "output_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "executed_now": true,
+    "replayed": false,
+    "stdout_bytes": 6545,
+    "collector": "serveros-node-core-native",
+    "collector_version": "0.1.0",
+    "source_schema": "serveros/node-resource-snapshot.v1",
+    "language": "c++20",
+    "live": false
+  },
+  "scope": "host-wide",
+  "sample": {
+    "observed_at": "2026-01-01T00:00:03.300000+00:00",
+    "sample_started_at": "2026-01-01T00:00:03.000000+00:00",
+    "sample_seconds": 0.3,
+    "monotonic_seconds": 4242.42,
+    "boot_id": "00000000-0000-4000-8000-000000000000",
+    "enveloped_at": "2026-01-01T00:00:04.000000+00:00"
+  },
+  "freshness": {
+    "state": "FRESH",
+    "why": null
+  },
+  "measurements": {
+    "cpu": {
+      "busy_jiffies": 448,
+      "counters": {
+        "idle": 3395,
+        "iowait": 0,
+        "irq": 0,
+        "nice": 1,
+        "softirq": 0,
+        "steal": 0,
+        "system": 106,
+        "user": 341
+      },
+      "sample_seconds": 0.3,
+      "state": "PRESENT",
+      "total_jiffies": 3843,
+      "used_percent": 11.7
+    },
+    "memory": {
+      "available_bytes": 181079306240,
+      "free_bytes": 83371253760,
+      "scope": "host-wide",
+      "source": "/proc/meminfo",
+      "state": "PRESENT",
+      "total_bytes": 265182715904,
+      "used_percent": 31.7
+    },
+    "filesystems": {
+      "roles": [
+        {
+          "available_bytes": 58000000000,
+          "free_bytes": 60000000000,
+          "fstype": "ext4",
+          "inodes": {
+            "free": 800000,
+            "state": "PRESENT",
+            "total": 1000000,
+            "used": 200000,
+            "used_percent": 20.0
+          },
+          "mount_point": "/",
+          "path": "/",
+          "role": "ROOT_FS",
+          "source": "/dev/vda2",
+          "state": "PRESENT",
+          "total_bytes": 100000000000,
+          "used_bytes": 40000000000,
+          "used_percent": 40.8
+        },
+        {
+          "available_bytes": 58000000000,
+          "free_bytes": 60000000000,
+          "fstype": "xfs",
+          "inodes": {
+            "free": 800000,
+            "state": "PRESENT",
+            "total": 1000000,
+            "used": 200000,
+            "used_percent": 20.0
+          },
+          "mount_point": "/data",
+          "path": "/data",
+          "role": "DATA_FS",
+          "source": "/dev/vdb",
+          "state": "PRESENT",
+          "total_bytes": 100000000000,
+          "used_bytes": 40000000000,
+          "used_percent": 40.8
+        }
+      ]
+    },
+    "disk_io": {
+      "devices_without_a_role": [
+        "loop0",
+        "vda",
+        "vda1",
+        "sr0"
+      ],
+      "note": "sector_size_bytes is the kernel's fixed 512-byte unit for /proc/diskstats, not the device's logical sector size",
+      "roles": [
+        {
+          "name": "vda2",
+          "read_bytes": 1048576,
+          "read_bytes_per_second": 3495253.33,
+          "role": "ROOT_FS",
+          "write_bytes": 524288,
+          "write_bytes_per_second": 1747626.67
+        },
+        {
+          "name": "vdb",
+          "read_bytes": 1048576,
+          "read_bytes_per_second": 3495253.33,
+          "role": "DATA_FS",
+          "write_bytes": 524288,
+          "write_bytes_per_second": 1747626.67
+        }
+      ],
+      "sample_seconds": 0.3,
+      "sector_size_bytes": 512,
+      "unmapped": []
+    },
+    "interfaces": [
+      {
+        "active": true,
+        "kind": "physical",
+        "kind_source": "/sys/class/net/eth0/device",
+        "loopback": false,
+        "name": "eth0",
+        "operstate": "up",
+        "rx_bytes": 900000,
+        "rx_bytes_per_second": 3000000.0,
+        "rx_utilisation_percent": {
+          "reason": "no interface speed, so there is no denominator: the driver reports no link speed (attribute value -1)",
+          "state": "UNAVAILABLE"
+        },
+        "speed_mbps": {
+          "reason": "the driver reports no link speed (attribute value -1)",
+          "state": "UNAVAILABLE"
+        },
+        "tx_bytes": 700000,
+        "tx_bytes_per_second": 2333333.33,
+        "tx_utilisation_percent": {
+          "reason": "no interface speed, so there is no denominator: the driver reports no link speed (attribute value -1)",
+          "state": "UNAVAILABLE"
+        }
+      },
+      {
+        "active": false,
+        "kind": "virtual",
+        "kind_source": "/sys/class/net/lo -> ../../devices/virtual/net/lo",
+        "loopback": true,
+        "name": "lo",
+        "operstate": "unknown",
+        "rx_bytes": 900000,
+        "rx_bytes_per_second": 3000000.0,
+        "rx_utilisation_percent": {
+          "reason": "no interface speed, so there is no denominator: the speed attribute could not be read (EINVAL)",
+          "state": "UNAVAILABLE"
+        },
+        "speed_mbps": {
+          "reason": "the speed attribute could not be read (EINVAL)",
+          "state": "UNAVAILABLE"
+        },
+        "tx_bytes": 700000,
+        "tx_bytes_per_second": 2333333.33,
+        "tx_utilisation_percent": {
+          "reason": "no interface speed, so there is no denominator: the speed attribute could not be read (EINVAL)",
+          "state": "UNAVAILABLE"
+        }
+      },
+      {
+        "active": true,
+        "kind": "virtual",
+        "kind_source": "/sys/class/net/docker0 -> ../../devices/virtual/net/docker0",
+        "loopback": false,
+        "name": "docker0",
+        "operstate": "up",
+        "rx_bytes": 900000,
+        "rx_bytes_per_second": 3000000.0,
+        "rx_utilisation_percent": 0.24,
+        "speed_mbps": 10000,
+        "tx_bytes": 700000,
+        "tx_bytes_per_second": 2333333.33,
+        "tx_utilisation_percent": 0.19
+      }
+    ]
+  },
+  "attribution": {
+    "cgroup_path": "/user.slice/user-1000.slice/session-example.scope",
+    "cgroup_version": 2,
+    "memory_current_bytes": 268435456,
+    "note": "only this process's uid, cgroup path and its own cgroup memory counter are read; no other account's processes, argv or environment are inspected",
+    "scope": "self",
+    "uid": 1000
+  },
+  "unknowns": [
+    {
+      "field": "interfaces.eth0.rx_utilisation_percent",
+      "reason": "no interface speed, so there is no denominator: the driver reports no link speed (attribute value -1)"
+    },
+    {
+      "field": "interfaces.eth0.speed_mbps",
+      "reason": "the driver reports no link speed (attribute value -1)"
+    },
+    {
+      "field": "interfaces.eth0.tx_utilisation_percent",
+      "reason": "no interface speed, so there is no denominator: the driver reports no link speed (attribute value -1)"
+    },
+    {
+      "field": "interfaces.lo.rx_utilisation_percent",
+      "reason": "no interface speed, so there is no denominator: the speed attribute could not be read (EINVAL)"
+    },
+    {
+      "field": "interfaces.lo.speed_mbps",
+      "reason": "the speed attribute could not be read (EINVAL)"
+    },
+    {
+      "field": "interfaces.lo.tx_utilisation_percent",
+      "reason": "no interface speed, so there is no denominator: the speed attribute could not be read (EINVAL)"
+    }
+  ],
+  "refusals": [
+    {
+      "subject": "host_wide_share",
+      "reason": "this reading describes the machine, not one account's share of it"
+    },
+    {
+      "subject": "interface_counter_aggregation",
+      "reason": "interface counters are per-interface; summing double-counts"
+    }
+  ],
+  "field_semantics": [
+    {
+      "field": "measurements.filesystems.roles[].free_bytes",
+      "means": "statvfs f_bfree, including blocks reserved for root",
+      "join_on": "measurements.filesystems.roles[].available_bytes, which is f_bavail"
+    },
+    {
+      "field": "measurements.interfaces[].speed_mbps",
+      "means": "the local link rate, or UNAVAILABLE",
+      "not": "public or internet bandwidth"
+    }
+  ]
+}

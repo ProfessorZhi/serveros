@@ -105,7 +105,17 @@ NOTICE = "notice"
 #: about one FAILED attempt, so its key is the failed attempt's instant and its
 #: `version` is the hash of its own words.
 FAULT = "fault"
-KINDS = (STATUS, ALERT, RECOVERY, NOTICE, FAULT)
+#: A PERIOD card — §11½'s finer-grained sibling of `status`. One message per
+#: named period (上午/下午/夜间/节假日), patched silently through the period and
+#: archived and frozen at its end. Its own kind rather than a second `status`
+#: receipt for the reason `NOTICE` gives above: two kinds sharing a name would
+#: let a later patch aim at whichever of the two the lookup happened to return,
+#: and the DAY's card and the SHIFT's card are different messages about the same
+#: machine. The ruling that separates them — §10's 08:00–20:00 constrains the
+#: routine BROADCAST, not resource sampling nor the silent patch of a card that
+#: already exists — is written down in `runtime/card_period.py`.
+PERIOD = "period"
+KINDS = (STATUS, ALERT, RECOVERY, NOTICE, FAULT, PERIOD)
 
 #: How many sends of EACH KIND are kept. A broadcast ledger is a receipt, not a
 #: historian: its job is to answer "what did the last send carry and did it
