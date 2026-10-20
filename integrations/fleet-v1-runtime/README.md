@@ -43,6 +43,11 @@
 | `tests/test_fleet_v1_runtime_authorization.py` | 69 个断言/参数化用例，含拒绝路径与纯度守卫 |
 | `tests/test_fleet_v1_runtime_client_turn_id.py` | 30 个断言，含 forged id / restart / mismatch |
 | `tests/test_fleet_v1_runtime_reconcile_source.py` | 61 个断言/参数化用例，含 QA2 8 witnesses、forged locator/cross-owner/project/payload/parent |
+| `OBSERVATION-CONTRACT-2026-10-20.md` | 最小 production observation 接口、威胁模型、外部依赖与验收标准 |
+| `observation-contract.yaml` | 三个签名对象的机器可读契约 |
+| `observation_contract.py` | 纯 conformance validator；生产字段恒拒绝 |
+| `fixtures/observation-contract-2026-10-20.json` | 27 个 contract case + synthetic Ed25519/HMAC test verifiers |
+| `tests/test_fleet_v1_runtime_observation_contract.py` | 41 个断言/参数化用例，含 RED-first 的伪造/越权/时间/replay 负测 |
 
 ## 结论摘要（经证据核验）
 
@@ -133,6 +138,27 @@ historical。
 - Claude Code CLI 的 `--session-id <uuid>` + `--resume <session-id>` 是真实
   CLI 级 pre-send id，但未接 BotMux provider，标 `CLI_ONLY_NOT_WIRED`。
 
+## S2 #245 production observation contract（2026-10-20）
+
+见 [`OBSERVATION-CONTRACT-2026-10-20.md`](OBSERVATION-CONTRACT-2026-10-20.md)
+与 [`observation-contract.yaml`](observation-contract.yaml)。
+
+- 三个签名对象：**Core source binding**（provenance 只从这里读）、
+  **owner-signed observation**（稳定 pre-send `client_turn_id`、thread id、
+  writer fence、非空 observation id、fresh `observed_at`）、**provider
+  client-id echo**（production 必须 `live=true, synthetic=false`）。
+- 签名接口：Ed25519；canonical bytes 与 `context/actor.py#signed_bytes` 一致；
+  key authority 必须 `core` / `owner`，execution key 永不 owner。测试 venv 无
+  `cryptography` 时 `Ed25519Verifier` 抛 `VerifierUnavailable`；测试使用显式
+  synthetic verifier，不能通过生产检查。
+- 生产仍 `BLOCKED_PROVIDER_SOURCE`：五个外部依赖
+  `BLOCKED_OWNER_SIGNED_SOURCE` / `BLOCKED_PROVIDER_ECHO` /
+  `BLOCKED_S2_OBSERVATION_FIELD` / `BLOCKED_COMMIT_SEAM` /
+  `BLOCKED_REPLAY_STORE`；`send/retry/resend/settle=false`，无
+  NOT_APPLIED、无 exactly-once。
+- 威胁模型 T1–T18 与每项的验收标准见报告；`REAL_PROVIDER` /
+  `REAL_DEVICE` / `CLIENT_E2E` = NOT_RUN。
+
 ## 运行
 
 ```sh
@@ -143,12 +169,14 @@ PYTHONDONTWRITEBYTECODE=1 nice -n 10 \
   systemd-run --user --scope -q \
     -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
   timeout 120 /data/home/vince/toolchains/serveros-test/bin/pytest \
-    tests/test_fleet_v1_runtime_reconcile_source.py -q -p no:cacheprovider
+    tests/test_fleet_v1_runtime_reconcile_source.py \
+    tests/test_fleet_v1_runtime_observation_contract.py -q -p no:cacheprovider
 ```
 
-本机实测：`61 passed in 0.60s`，exit 0。QA2 #360 原始 probe 在 #356 exact HEAD
+本机实测：`61 + 41 = 102 passed`，exit 0。QA2 #360 原始 probe 在 #356 exact HEAD
 为 **8/8 RED，rc=1**；v2 的 8 witnesses 见 hardening 报告，全部为生产拒绝 /
-synthetic-only refusal。未跑 heavier 186 集。
+synthetic-only refusal。observation contract 的 RED 为 module 缺失
+`FileNotFoundError`、rc=2，GREEN 为 41 passed。未跑 heavier 186 集。
 
 ## 未声称
 

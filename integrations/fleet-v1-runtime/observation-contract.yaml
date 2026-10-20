@@ -1,0 +1,168 @@
+# R1 #248 / S2 #245 — minimal production observation contract.
+#
+# This is the machine-readable interface `observation_contract.py` validates.
+# It is NOT a production grant. The runtime has no Core/owner observation
+# signer and no live provider echo, so every result stays
+# `BLOCKED_PROVIDER_SOURCE` with send/retry/resend/settle false.
+schema: serveros/fleet-v1-runtime-observation-contract.v1
+version: 1
+module: integrations/fleet-v1-runtime/observation_contract.py
+evidence_level: SYNTHETIC_FIXTURE
+
+signature:
+  algorithm: Ed25519
+  canonical: >-
+    JSON, sort_keys=true, UTF-8, separators=(",", ":"), allow_nan=false,
+    signature excluded from the signed bytes; matches
+    context/actor.py#signed_bytes.
+  trust_root: >-
+    Core/owner-owned public-key binding. The observation never carries its own
+    public key, and a caller cannot select the trust root.
+  key_authority:
+    source_binding: core
+    owner_observation: owner
+  execution_key_never_owner: true
+
+objects:
+  source_binding:
+    schema: serveros/core-observation-source-binding.v1
+    signed_by: core
+    provenance_must_equal: core:agent-control
+    validity: "issued_at <= now <= expires_at"
+    fields:
+      - schema
+      - source_id
+      - provenance
+      - adapter
+      - verb
+      - thread_known
+      - read_path
+      - capability
+      - device_ref
+      - project_ref
+      - owner_ref
+      - audience
+      - key_id
+      - issued_at
+      - expires_at
+      - nonce
+      - signature
+  owner_observation:
+    schema: serveros/owner-signed-observation.v1
+    signed_by: owner
+    required_stable_ids: [observation_id, client_turn_id, thread_id]
+    required_fence: [writer_owner, writer_epoch, writer_token]
+    required_binding: [source_binding_id, intent_digest, provider_locator, parent_ref]
+    required_time: [observed_at, issued_at]
+    fields:
+      - schema
+      - observation_id
+      - client_turn_id
+      - thread_id
+      - thread_known
+      - source_binding_id
+      - owner_ref
+      - device_ref
+      - project_ref
+      - intent_digest
+      - provider_locator
+      - parent_ref
+      - state
+      - source
+      - observed_at
+      - writer_owner
+      - writer_epoch
+      - writer_token
+      - audience
+      - key_id
+      - issued_at
+      - nonce
+      - signature
+  provider_echo:
+    schema: serveros/provider-client-id-echo.v1
+    purpose: >-
+      The provider's own readback that the pre-send client id was persisted
+      and can be re-read. It is data from the Core-held provider client, not a
+      caller assertion.
+    production_requires: {live: true, synthetic: false}
+    echo_must_equal: client_turn_id
+    matched_on: userMessage.clientId
+    fields:
+      - schema
+      - capability
+      - adapter
+      - verb
+      - thread_known
+      - read_path
+      - client_turn_id
+      - echoed_value
+      - matched_on
+      - observed_at
+      - live
+      - synthetic
+      - source
+
+capability_matrix:
+  codex-app-server/send/thread_known=true: CLIENT_TURN_ID
+  codex-app-server/send/thread_known=false: RESPONSE_ID_ONLY
+  codex-app-server/create: RESPONSE_ID_ONLY
+  codex-cli/any: NO_SOURCE
+  claude-code-cli/any: CLI_ONLY_NOT_WIRED
+  botmux-agent-session/send: RESPONSE_ID_ONLY
+  cloudcli-mcp/send: NO_SOURCE
+  human-control/send: RESPONSE_ID_ONLY
+
+production_blockers:
+  - BLOCKED_OWNER_SIGNED_SOURCE
+  - BLOCKED_PROVIDER_ECHO
+  - BLOCKED_S2_OBSERVATION_FIELD
+  - BLOCKED_COMMIT_SEAM
+  - BLOCKED_REPLAY_STORE
+
+external_dependencies:
+  - id: BLOCKED_OWNER_SIGNED_SOURCE
+    owner: Core / owner trust domain
+    acceptance: >-
+      A real owner Ed25519 key and a Core-held trust binding sign the exact
+      source binding and observation payload; an execution key cannot satisfy
+      it; no synthetic HMAC is accepted.
+  - id: BLOCKED_PROVIDER_ECHO
+    owner: Provider adapter / Core
+    acceptance: >-
+      One owner-approved bounded Codex send with a known clientUserMessageId,
+      read back as userMessage.clientId with live=true and synthetic=false.
+      Schema-only or synthetic echo is not enough.
+  - id: BLOCKED_S2_OBSERVATION_FIELD
+    owner: S2 kernel / store / daemon
+    acceptance: >-
+      The S2 observation envelope accepts the signed fields and refuses an
+      unsigned or unbound observation. This interface is not wired until that
+      owner lands the field.
+  - id: BLOCKED_COMMIT_SEAM
+    owner: S1 authority lane
+    acceptance: >-
+      An atomic verify->commit seam, or `verified:false` plus
+      BLOCKED_OWNER_COMMIT_SEAM with an independent revoke-before-acquire
+      RED->GREEN. The pure gate cannot provide atomicity.
+  - id: BLOCKED_REPLAY_STORE
+    owner: S2 store
+    acceptance: >-
+      A persistent observation-id replay set, ideally keyed by observation id
+      and writer epoch; a missing set must leave the effect EFFECT_UNKNOWN.
+
+no_resend:
+  effect_unknown: true
+  send_allowed: false
+  retry_allowed: false
+  resend_allowed: false
+  settle_allowed: false
+  not_applied_from_positive_readback: false
+  exactly_once: false
+
+not_claimed:
+  - no production signer or trust binding
+  - no live provider echo
+  - no S2 signed-observation field
+  - no atomic commit seam
+  - no replay store
+  - no real provider/model/token/transcript

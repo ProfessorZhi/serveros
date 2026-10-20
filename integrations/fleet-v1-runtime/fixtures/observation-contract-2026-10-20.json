@@ -1,0 +1,289 @@
+{
+  "schema": "serveros/fleet-v1-runtime-observation-contract-fixture.v1",
+  "recorded_at": "2026-10-20T05:40:00Z",
+  "evidence_level": "SYNTHETIC_FIXTURE",
+  "note": "Signed payloads and keys are synthetic test data. The verifiers in the test are HMAC test doubles; production requires an owner/core Ed25519 verifier and a real provider echo. No real provider, token, transcript or send.",
+  "now": "2026-10-20T05:40:00Z",
+  "max_age_seconds": 300,
+  "trust": {
+    "audience": "serveros:agent-control",
+    "owner_ref": "actor:owner:fixture",
+    "core_key_id": "core-key-fixture",
+    "owner_key_id": "owner-key-fixture",
+    "owner_authority": "owner",
+    "core_authority": "core"
+  },
+  "base_attempt": {
+    "key": "attempt:contract-1",
+    "phase": "EFFECT_UNKNOWN",
+    "principal": "actor:owner:fixture",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "project_ref": "project:fixture",
+    "work_item": "LIT-FIXTURE",
+    "intent_digest": "sha256:fixture-intent-1",
+    "provider_locator": "turn-contract-1",
+    "parent_ref": "attempt:parent-fixture",
+    "writer": {"owner": "actor:owner:fixture", "epoch": 7, "token": "tok-7"},
+    "current_writer": {"owner": "actor:owner:fixture", "epoch": 7, "token": "tok-7"}
+  },
+  "base_source_binding": {
+    "schema": "serveros/core-observation-source-binding.v1",
+    "source_id": "source:codex-app-server:tokyo:send",
+    "provenance": "core:agent-control",
+    "adapter": "codex-app-server",
+    "verb": "send",
+    "thread_known": true,
+    "read_path": "codex:thread/turns/list",
+    "capability": "CLIENT_TURN_ID",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "project_ref": "project:fixture",
+    "owner_ref": "actor:owner:fixture",
+    "audience": "serveros:agent-control",
+    "key_id": "core-key-fixture",
+    "issued_at": "2026-10-20T05:30:00Z",
+    "expires_at": "2026-10-20T05:45:00Z",
+    "nonce": "nonce-source-1"
+  },
+  "base_observation": {
+    "schema": "serveros/owner-signed-observation.v1",
+    "observation_id": "obs-contract-1",
+    "client_turn_id": "ctid-contract-1",
+    "thread_id": "thread-contract-1",
+    "thread_known": true,
+    "source_binding_id": "source:codex-app-server:tokyo:send",
+    "owner_ref": "actor:owner:fixture",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "project_ref": "project:fixture",
+    "intent_digest": "sha256:fixture-intent-1",
+    "provider_locator": "turn-contract-1",
+    "parent_ref": "attempt:parent-fixture",
+    "state": "APPLIED",
+    "source": "codex:thread/turns/list",
+    "observed_at": "2026-10-20T05:39:30Z",
+    "writer_owner": "actor:owner:fixture",
+    "writer_epoch": 7,
+    "writer_token": "tok-7",
+    "audience": "serveros:agent-control",
+    "key_id": "owner-key-fixture",
+    "issued_at": "2026-10-20T05:39:35Z",
+    "nonce": "nonce-observation-1"
+  },
+  "base_provider_echo": {
+    "schema": "serveros/provider-client-id-echo.v1",
+    "capability": "CLIENT_TURN_ID",
+    "adapter": "codex-app-server",
+    "verb": "send",
+    "thread_known": true,
+    "read_path": "codex:thread/turns/list",
+    "client_turn_id": "ctid-contract-1",
+    "echoed_value": "ctid-contract-1",
+    "matched_on": "userMessage.clientId",
+    "observed_at": "2026-10-20T05:39:40Z",
+    "live": false,
+    "synthetic": true,
+    "source": "codex:thread/turns/list"
+  },
+  "cases": [
+    {
+      "name": "contract-satisfied-synthetic",
+      "expect": {
+        "synthetic_decision": "CONTRACT_SATISFIED_SYNTHETIC",
+        "production_blockers": [
+          "BLOCKED_OWNER_SIGNED_SOURCE",
+          "BLOCKED_PROVIDER_ECHO",
+          "BLOCKED_S2_OBSERVATION_FIELD",
+          "BLOCKED_COMMIT_SEAM",
+          "BLOCKED_REPLAY_STORE"
+        ]
+      }
+    },
+    {
+      "name": "provider-echo-live-still-not-production",
+      "echo": {"live": true, "synthetic": false},
+      "expect": {
+        "synthetic_decision": "CONTRACT_SATISFIED_SYNTHETIC",
+        "production_blockers": [
+          "BLOCKED_OWNER_SIGNED_SOURCE",
+          "BLOCKED_S2_OBSERVATION_FIELD",
+          "BLOCKED_COMMIT_SEAM",
+          "BLOCKED_REPLAY_STORE"
+        ]
+      }
+    },
+    {
+      "name": "self-declared-provenance",
+      "observation": {"provenance": "core:agent-control"},
+      "expect": {
+        "synthetic_decision": "REFUSED_SELF_DECLARED_PROVENANCE"
+      }
+    },
+    {
+      "name": "forged-source-binding-signature",
+      "source_sign_with": "wrong-core-key",
+      "expect": {
+        "synthetic_decision": "REFUSED_SOURCE_BINDING_SIGNATURE"
+      }
+    },
+    {
+      "name": "forged-observation-signature",
+      "observation_sign_with": "wrong-owner-key",
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVATION_SIGNATURE"
+      }
+    },
+    {
+      "name": "observation-key-not-owner",
+      "owner_authority": "execution",
+      "expect": {
+        "synthetic_decision": "REFUSED_KEY_AUTHORITY"
+      }
+    },
+    {
+      "name": "source-binding-scope-mismatch",
+      "source_binding": {"device_ref": "device:other"},
+      "expect": {
+        "synthetic_decision": "REFUSED_SOURCE_SCOPE"
+      }
+    },
+    {
+      "name": "source-binding-expired",
+      "source_binding": {"expires_at": "2026-10-20T05:35:00Z"},
+      "expect": {
+        "synthetic_decision": "REFUSED_SOURCE_BINDING_EXPIRED"
+      }
+    },
+    {
+      "name": "capability-inflation-cli",
+      "source_binding": {"adapter": "codex-cli", "verb": "any"},
+      "expect": {
+        "synthetic_decision": "REFUSED_CAPABILITY_MISMATCH"
+      }
+    },
+    {
+      "name": "capability-inflation-thread-unknown",
+      "source_binding": {"thread_known": false},
+      "expect": {
+        "synthetic_decision": "REFUSED_CAPABILITY_MISMATCH"
+      }
+    },
+    {
+      "name": "observation-subject-not-owner",
+      "observation": {"owner_ref": "actor:owner:other"},
+      "expect": {
+        "synthetic_decision": "REFUSED_PRINCIPAL"
+      }
+    },
+    {
+      "name": "missing-observation-id",
+      "observation": {"observation_id": ""},
+      "expect": {
+        "synthetic_decision": "REFUSED_MISSING_OBSERVATION_ID"
+      }
+    },
+    {
+      "name": "replayed-observation-id",
+      "applied_observation_ids": ["obs-contract-1"],
+      "expect": {
+        "synthetic_decision": "REFUSED_REPLAY"
+      }
+    },
+    {
+      "name": "missing-client-turn-id",
+      "observation": {"client_turn_id": ""},
+      "expect": {
+        "synthetic_decision": "REFUSED_MISSING_CLIENT_TURN_ID"
+      }
+    },
+    {
+      "name": "thread-unknown",
+      "observation": {"thread_known": false},
+      "expect": {
+        "synthetic_decision": "REFUSED_THREAD_UNKNOWN"
+      }
+    },
+    {
+      "name": "writer-epoch-mismatch",
+      "attempt": {"current_writer": {"epoch": 8}},
+      "expect": {
+        "synthetic_decision": "REFUSED_STALE_WRITER"
+      }
+    },
+    {
+      "name": "observed-at-stale",
+      "observation": {"observed_at": "2026-10-20T05:00:00Z"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_STALE"
+      }
+    },
+    {
+      "name": "observed-at-future",
+      "observation": {"observed_at": "2026-10-20T05:41:00Z"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_FUTURE"
+      }
+    },
+    {
+      "name": "observed-at-invalid",
+      "observation": {"observed_at": "not-a-time"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_INVALID"
+      }
+    },
+    {
+      "name": "provider-echo-absent",
+      "echo": null,
+      "expect": {
+        "synthetic_decision": "BLOCKED_PROVIDER_ECHO"
+      }
+    },
+    {
+      "name": "provider-echo-mismatch",
+      "echo": {"echoed_value": "ctid-other"},
+      "expect": {
+        "synthetic_decision": "REFUSED_ECHO_MISMATCH"
+      }
+    },
+    {
+      "name": "not-applied-is-not-available",
+      "observation": {"state": "NOT_APPLIED"},
+      "expect": {
+        "synthetic_decision": "REFUSED_NOT_APPLIED_UNAVAILABLE"
+      }
+    },
+    {
+      "name": "changed-payload",
+      "observation": {"intent_digest": "sha256:fixture-intent-2"},
+      "expect": {
+        "synthetic_decision": "REFUSED_INTENT_MISMATCH"
+      }
+    },
+    {
+      "name": "forged-locator",
+      "observation": {"provider_locator": "turn-other"},
+      "expect": {
+        "synthetic_decision": "REFUSED_LOCATOR_MISMATCH"
+      }
+    },
+    {
+      "name": "missing-parent",
+      "attempt": {"parent_ref": ""},
+      "expect": {
+        "synthetic_decision": "REFUSED_MISSING_PARENT"
+      }
+    },
+    {
+      "name": "cross-project",
+      "observation": {"project_ref": "project:other"},
+      "expect": {
+        "synthetic_decision": "REFUSED_CROSS_PROJECT"
+      }
+    },
+    {
+      "name": "phase-settled",
+      "attempt": {"phase": "SETTLED"},
+      "expect": {
+        "synthetic_decision": "REFUSED_NOT_UNKNOWN"
+      }
+    }
+  ]
+}
