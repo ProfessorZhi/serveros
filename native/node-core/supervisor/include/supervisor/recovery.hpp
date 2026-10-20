@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "supervisor/admission.hpp"
 #include "supervisor/model.hpp"
 
 namespace nodecore::supervisor {
@@ -37,6 +38,24 @@ struct RecoveryDecision {
     std::string reason;
     long retry_after_seconds = 0;
 };
+
+//: What an executed verb taught the budget.
+//:
+//: The third value is the one this type exists for. A probe that could not be
+//: attempted is not a failed recovery: the ATTEMPT was made and stands, but
+//: "we could not look" must neither clear the breaker nor advance it. Mapping
+//: that outcome onto a bool is how a transient inability to look trips a
+//: breaker on a service that is fine.
+enum class ActionOutcome {
+    Recovered,
+    NotRecovered,
+    Unmeasured,
+};
+
+//: The bridge from the readiness rule to the budget. A provider failure is a
+//: failed recovery whatever a probe might say; otherwise `Ready` is a recovery,
+//: `NotReady` is a failure, and `Unmeasured` is neither.
+ActionOutcome outcome_for(bool provider_ok, Readiness readiness);
 
 class Recovery {
 public:
@@ -56,6 +75,12 @@ public:
     // Increments the consecutive-failure count and, at the policy's threshold,
     // opens the breaker until `now + cooldown_seconds`.
     void record_failure(const std::string& service_id, const RecoveryPolicy& policy, long now);
+    // Applies one executed verb's outcome. `Unmeasured` is deliberately a
+    // no-op: the attempt was already recorded, but an unreadable probe is not
+    // evidence that the service failed, so it neither clears nor advances the
+    // breaker.
+    void record_outcome(const std::string& service_id, ActionOutcome outcome,
+                        const RecoveryPolicy& policy, long now);
 
     std::vector<long> attempts(const std::string& service_id) const;
     int consecutive_failures(const std::string& service_id) const;

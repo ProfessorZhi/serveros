@@ -123,6 +123,37 @@ void Recovery::record_failure(const std::string& service_id, const RecoveryPolic
     }
 }
 
+ActionOutcome outcome_for(bool provider_ok, Readiness readiness) {
+    if (!provider_ok) {
+        return ActionOutcome::NotRecovered;
+    }
+    switch (readiness) {
+        case Readiness::Ready:
+            return ActionOutcome::Recovered;
+        case Readiness::NotReady:
+            return ActionOutcome::NotRecovered;
+        case Readiness::Unmeasured:
+            return ActionOutcome::Unmeasured;
+    }
+    return ActionOutcome::Unmeasured;
+}
+
+void Recovery::record_outcome(const std::string& service_id, ActionOutcome outcome,
+                              const RecoveryPolicy& policy, long now) {
+    switch (outcome) {
+        case ActionOutcome::Recovered:
+            record_success(service_id);
+            return;
+        case ActionOutcome::NotRecovered:
+            record_failure(service_id, policy, now);
+            return;
+        case ActionOutcome::Unmeasured:
+            // Deliberately nothing. The attempt was recorded when it was made;
+            // this verdict is "we could not look", which is not a failure.
+            return;
+    }
+}
+
 std::string Recovery::to_json() const {
     nodecore::Json root = nodecore::Json::object();
     root.set("schema", nodecore::Json::string(kRecoverySchema));

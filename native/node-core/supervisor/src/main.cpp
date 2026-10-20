@@ -560,32 +560,37 @@ int main(int argc, char** argv) {
                 // of clearing it.
                 const nodecore::supervisor::ServiceDesired* service =
                     find_service(action.service_id);
-                bool recovered = result.ok;
+                // An unmeasured probe is the DEFAULT, not an assumption of
+                // failure: if the service entry is missing or the probe cannot
+                // be attempted, the budget learns nothing.
+                nodecore::supervisor::Readiness ready =
+                    nodecore::supervisor::Readiness::Unmeasured;
                 if (result.ok && service != nullptr) {
                     const nodecore::supervisor::ProbeSpec spec =
                         nodecore::supervisor::probe_spec_of(service->health);
                     const nodecore::supervisor::Observed after = provider.query(action.unit);
-                    const nodecore::supervisor::ProbeOutcome outcome =
+                    const nodecore::supervisor::ProbeOutcome probe =
                         nodecore::supervisor::run_probe(spec, probe_transport);
-                    const nodecore::supervisor::Readiness ready =
-                        nodecore::supervisor::readiness_from_probe(spec, after, outcome);
-                    recovered = ready == nodecore::supervisor::Readiness::Ready;
-                    if (!recovered) {
+                    ready = nodecore::supervisor::readiness_from_probe(spec, after, probe);
+                    if (ready != nodecore::supervisor::Readiness::Ready) {
                         std::fprintf(stderr,
                                      "%s returned %s but is not ready afterwards: %s (%s)\n",
                                      action.unit.c_str(), result.code.c_str(),
                                      nodecore::supervisor::to_word(ready).c_str(),
-                                     outcome.attempted ? outcome.code.c_str()
-                                                       : outcome.reason.c_str());
+                                     probe.attempted ? probe.code.c_str()
+                                                     : probe.reason.c_str());
                     }
                 }
-                if (!recovered) {
-                    if (service != nullptr) {
-                        recovery.record_failure(action.service_id, service->recovery, tick_started);
-                    }
-                } else {
-                    recovery.record_success(action.service_id);
-                }
+                // `outcome_for` is the one place that decides what the budget
+                // learns: a provider failure is a failed recovery; otherwise
+                // only READY clears the breaker, only NOT_READY advances it,
+                // and UNMEASURED is neither. See `Recovery::record_outcome`.
+                const nodecore::supervisor::ActionOutcome outcome =
+                    nodecore::supervisor::outcome_for(result.ok, ready);
+                const nodecore::supervisor::RecoveryPolicy policy =
+                    service != nullptr ? service->recovery
+                                       : nodecore::supervisor::RecoveryPolicy{};
+                recovery.record_outcome(action.service_id, outcome, policy, tick_started);
                 executed.push_back(nodecore::supervisor::ExecutionResult{
                     action.service_id, action.unit, action.verb, result.ok, result.code,
                     result.reason, result.exit_code});

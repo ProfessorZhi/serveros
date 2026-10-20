@@ -152,6 +152,12 @@ informed by that, not by the provider's exit status: a verb that returned succes
 without bringing the service back spends an attempt and counts toward the
 breaker, instead of clearing it.
 
+An `UNMEASURED` reprobe is **neither** a failure **nor** a success: the attempt
+stands (it was made), but the consecutive-failure count and the breaker are
+untouched. Only `NOT_READY` advances the breaker, and only `READY` clears it.
+Treating "we could not look" as a failure is how a transient inability to probe
+trips a breaker on a service that is fine.
+
 The **receipt** still records the provider's own answer. `ExecutionResult` is
 documented as the provider's word, and the receipt schema
 (`serveros/native-core-receipt.v1`) is a versioned cross-language contract;

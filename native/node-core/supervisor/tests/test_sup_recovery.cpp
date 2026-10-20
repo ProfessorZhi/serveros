@@ -150,6 +150,63 @@ int main() {
         CHECK_EQ(state.may_act("a", breaker, 30).code, std::string("BACKOFF"));
     }
 
+    // --------------------------------------------------- what a probe taught us
+
+    {
+        // The bridge from the readiness rule to the budget. This is the mapping
+        // the wiring in `main.cpp` uses, tested where it can be stated without
+        // a service manager: a provider failure is a failed recovery, a READY
+        // probe is a recovery, and an UNMEASURED one is neither.
+        CHECK(outcome_for(true, Readiness::Ready) == ActionOutcome::Recovered);
+        CHECK(outcome_for(true, Readiness::NotReady) == ActionOutcome::NotRecovered);
+        CHECK(outcome_for(true, Readiness::Unmeasured) == ActionOutcome::Unmeasured);
+        CHECK(outcome_for(false, Readiness::Ready) == ActionOutcome::NotRecovered);
+    }
+    {
+        // An UNMEASURED reprobe is not a failed recovery. The attempt was made,
+        // so it stands; the consecutive-failure count and the breaker are
+        // untouched, because "we could not look" is not evidence either way.
+        Recovery state;
+        const RecoveryPolicy breaker = policy_with(3, 3600, {60, 300, 900}, 2, 1800);
+        state.record_attempt("a", 10);
+        state.record_outcome("a", ActionOutcome::Unmeasured, breaker, 10);
+        CHECK_EQ(state.consecutive_failures("a"), 0);
+        CHECK(!state.circuit_open("a", 10));
+        CHECK_EQ(state.attempts("a").size(), std::size_t{1});
+    }
+    {
+        // It neither adds to a failure that is already there nor clears one. A
+        // failure followed by an unmeasured probe is still one failure, and an
+        // OPEN breaker stays open: only a READY probe may clear it.
+        Recovery state;
+        const RecoveryPolicy breaker = policy_with(3, 3600, {60, 300, 900}, 2, 1800);
+        state.record_attempt("a", 10);
+        state.record_outcome("a", ActionOutcome::NotRecovered, breaker, 10);
+        CHECK_EQ(state.consecutive_failures("a"), 1);
+        state.record_outcome("a", ActionOutcome::Unmeasured, breaker, 11);
+        CHECK_EQ(state.consecutive_failures("a"), 1);
+        CHECK(!state.circuit_open("a", 11));
+        state.record_outcome("a", ActionOutcome::NotRecovered, breaker, 12);
+        CHECK(state.circuit_open("a", 12));
+        state.record_outcome("a", ActionOutcome::Unmeasured, breaker, 13);
+        CHECK(state.circuit_open("a", 13));
+        CHECK_EQ(state.consecutive_failures("a"), 2);
+    }
+    {
+        // The two verdicts that DO decide something: a recovery clears the
+        // breaker, and a failed recovery advances it by exactly one.
+        Recovery state;
+        const RecoveryPolicy breaker = policy_with(3, 3600, {60, 300, 900}, 1, 1800);
+        state.record_failure("a", breaker, 10);
+        CHECK(state.circuit_open("a", 10));
+        state.record_outcome("a", ActionOutcome::Recovered, breaker, 11);
+        CHECK(!state.circuit_open("a", 11));
+        CHECK_EQ(state.consecutive_failures("a"), 0);
+        state.record_outcome("a", ActionOutcome::NotRecovered, breaker, 12);
+        CHECK_EQ(state.consecutive_failures("a"), 1);
+        CHECK(state.circuit_open("a", 12));
+    }
+
     // -------------------------------------------------------- the persisted form
 
     {
