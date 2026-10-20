@@ -8,10 +8,41 @@
 # that would produce that text is behind an interface.
 #
 # WHAT THIS TARGET IS NOT, AND MUST NOT BE PRESENTED AS. A working Windows
-# binary. There is no cross compiler on this host (no x86_64-w64-mingw32-g++, no
+# binary. The Linux build has no cross compiler (no x86_64-w64-mingw32-g++, no
 # clang-cl), so the `_WIN32` half — the named pipe, the DACL, the token check —
-# is NOT COMPILED here and its build status is BUILD_UNVERIFIED. The live Windows
-# verification is a separate, separately authorised step (issue #246).
+# is not compiled there. The hosted Windows contract build (the workflow
+# `.github/workflows/serveros-native-windows-contract.yml`) DOES compile that
+# half with MSVC, but it never calls the runner's SCM; the live Windows reading
+# remains a separate, separately authorised step (issue #246).
+#
+# STANDALONE CONFIGURE. As a subdirectory of `native/node-core` this file borrows
+# `nodecore` and `nodecore_supervisor` from the Linux tree. Neither exists when
+# CMake is pointed at THIS directory, which is how the hosted Windows contract
+# build configures it: the Linux supervisor is not portable (systemd, /proc,
+# signalfd), and nothing here needs its compiled half — the shared vocabulary is
+# header-only and the only linked code is `nodecore::Json`. The standalone path
+# therefore defines the same target names from the portable pieces only. A
+# subdirectory build takes neither branch and keeps linking the real supervisor.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  cmake_minimum_required(VERSION 3.20)
+  project(serveros_windows_core_contract LANGUAGES CXX VERSION 0.1.0)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+  enable_testing()
+
+  add_library(nodecore STATIC ../src/json.cpp)
+  target_include_directories(nodecore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../include")
+
+  # Interface only: the Windows contract uses supervisor constants and the
+  # strict JSON reader, both header-only. Compiling the Linux .cpp set here
+  # would fail on Windows for symbols this target never references.
+  add_library(nodecore_supervisor INTERFACE)
+  target_include_directories(nodecore_supervisor INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
+  target_link_libraries(nodecore_supervisor INTERFACE nodecore)
+endif()
 
 add_library(windows_core_scm STATIC
   src/scm_status.cpp

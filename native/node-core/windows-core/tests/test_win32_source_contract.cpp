@@ -2,11 +2,12 @@
 // status, and the Task Scheduler vocabulary.
 //
 // EVERY case here is platform-neutral, which is the point. The four Win32 calls
-// themselves are `_WIN32`-gated and are NOT COMPILED on this host — but every
-// refusal they can produce is a pure mapping from plain integers, so the part
-// that decides what a Core DOES about a Windows service is fully tested on
-// Tokyo. What cannot be tested here is that the calls are spelled correctly,
-// and the build label says so rather than implying otherwise.
+// themselves are `_WIN32`-gated: a Linux build does not compile them, while the
+// hosted Windows workflow does. Every refusal they can produce is a pure mapping
+// from plain integers, so the part that decides what a Core DOES about a Windows
+// service is fully tested on both. What no unit suite can test is that a real
+// SCM answers the way a live host would — that remains the separately authorised
+// step, and nothing here calls the SCM to pretend otherwise.
 #include <iostream>
 #include <string>
 #include <vector>
@@ -139,18 +140,31 @@ int main() {
     // The build's own honesty
     // ---------------------------------------------------------------------
     {
-        // This host has no cross compiler, so the `_WIN32` half is not in this
-        // binary — and the observation says so rather than returning an empty
+        // The build's own honesty, asserted per platform.
+        //
+        // On a POSIX build the `_WIN32` half is not in the binary, so the
+        // observation says UNSUPPORTED_PLATFORM rather than returning an empty
         // service list a caller could read as "nothing is running".
-        CHECK(!win32_scm_available());
+        //
+        // On a Windows build the API half IS compiled — and asserting that is
+        // the whole point of this branch. It does NOT query: a unit suite on a
+        // hosted runner must not read that runner's service database, because
+        // a real machine's state is not a fixture.
         Win32ScmQuery query;
+#if defined(_WIN32)
+        CHECK(win32_scm_available());
+#else
+        CHECK(!win32_scm_available());
         const auto observed = query.query(name);
         CHECK(!observed.measured);
         CHECK_EQ(observed.reason, std::string(kReasonUnsupportedPlatform));
         CHECK(observed.state != kStateStopped);
         CHECK(observed.state != kStateRunning);
+#endif
 
         // The same refusals apply before any API is reached, on every platform.
+        // `\\remote\x` is rejected as a name, so this cannot open an SCM handle
+        // even on Windows.
         const auto rejected = query.query("\\\\remote\\x");
         CHECK(!rejected.measured);
     }
