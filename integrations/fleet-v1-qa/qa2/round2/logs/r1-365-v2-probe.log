@@ -1,0 +1,26 @@
+PASS synth/valid-decision
+PASS synth/valid-settle-flag
+PASS synth/production-fields-refusal
+PASS synth/never-owner-signed
+PASS synth/never-settle-allowed
+PASS synth/no-production-verdict
+PASS prod/blocked
+PASS prod/reason
+PASS prod/no-synthetic-decision
+PASS id/empty
+PASS id/empty/no-settle
+PASS id/absent
+PASS id/absent/no-settle
+PASS source/forged
+PASS time/invalid
+PASS time/future
+PASS time/stale
+PASS source/thread-unknown
+PASS source/cli-adapter
+PASS source/create-verb
+PASS writer/old-epoch
+PASS writer/signed-field-mutation
+PASS replay/nonempty
+PASS source/none
+PASS source/none-production-refusal
+TOTAL 25 FAIL 0

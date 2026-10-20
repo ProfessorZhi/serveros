@@ -1,0 +1,12 @@
+PASS positive/no-lease
+PASS positive/refused-commit-seam
+PASS race/no-lease
+PASS race/refused-commit-seam
+PASS adapter/refuses-unfenced
+PASS adapter/accepts-explicit-commit-fence
+PASS noresolver/refused
+PASS noresolver/no-lease
+PASS noauthority/refused
+PASS noauthority/no-lease
+TOTAL 10 FAIL 0
+GREEN

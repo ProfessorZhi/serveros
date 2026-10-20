@@ -1,0 +1,5 @@
+.ss                                                                      [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_owner_atomic_commit_contract.py:63: BLOCKED_OWNER_ATOMIC_AUTHORITY: no owner-issued policy/epoch authority (D1) and no lease commit in the same serializable transaction as the epoch check (D2). A synthetic COMMIT_FENCED, HMAC or legacy #272 readback would not be a fence.
+SKIPPED [1] tests/test_owner_atomic_commit_contract.py:73: BLOCKED_MULTIPRINCIPAL_NOT_RUN: this process has one uid and no passwordless sudo/setuid; a second real OS principal cannot be attested and is not faked with synthetic peer metadata.
+1 passed, 2 skipped in 1.91s

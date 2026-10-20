@@ -1,0 +1,42 @@
+archived d043521c516033f00e2315ace74858b3aa5cef87 -> /tmp/qa2-round2-repro/checkouts/r1-d043521c516033f00e2315ace74858b3aa5cef87
+archived 471e300707cc68a669ca3e0c8ff81aecdc278805 -> /tmp/qa2-round2-repro/checkouts/s1-471e300707cc68a669ca3e0c8ff81aecdc278805
+reuse /tmp/qa2-round2-repro/checkouts/r1-d043521c516033f00e2315ace74858b3aa5cef87
+reuse /tmp/qa2-round2-repro/checkouts/s1-471e300707cc68a669ca3e0c8ff81aecdc278805
+== R1 #365 @ d043521c516033f00e2315ace74858b3aa5cef87
+  r1-author-102 rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/r1-author-102.log)
+  r1-v2-25 rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/r1-v2-25.log)
+  r1-controls rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/r1-controls.log)
+  r1-findings rc=1  (/tmp/qa2-round2-repro/logs/20261020T142529Z/r1-findings.log)
+reuse /tmp/qa2-round2-repro/checkouts/r1-d043521c516033f00e2315ace74858b3aa5cef87
+reuse /tmp/qa2-round2-repro/checkouts/s1-471e300707cc68a669ca3e0c8ff81aecdc278805
+== S1 #366 @ 471e300707cc68a669ca3e0c8ff81aecdc278805
+  s1-366-contract rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-contract.log)
+  s1-366-364-suites rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-364-suites.log)
+  s1-366-combined rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-combined.log)
+  s1-366-probe-controls rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-probe-controls.log)
+  s1-366-probe-positive rc=2  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-probe-positive.log)
+  s1-366-probe-all rc=2  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-probe-all.log)
+  s1-366-seam-probe-1 rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-seam-probe-1.log)
+  s1-366-seam-probe-2 rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-seam-probe-2.log)
+  s1-366-seam-probe-3 rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-seam-probe-3.log)
+  s1-366-revoked-ttl rc=0  (/tmp/qa2-round2-repro/logs/20261020T142529Z/s1-366-revoked-ttl.log)
+
+== evidence (/tmp/qa2-round2-repro/logs/20261020T142529Z)
+r1-author-102            rc=0
+r1-controls              rc=0
+r1-findings              rc=1
+r1-v2-25                 rc=0
+s1-366-364-suites        rc=0
+s1-366-combined          rc=0
+s1-366-contract          rc=0
+s1-366-probe-all         rc=2
+s1-366-probe-controls    rc=0
+s1-366-probe-positive    rc=2
+s1-366-revoked-ttl       rc=0
+s1-366-seam-probe-1      rc=0
+s1-366-seam-probe-2      rc=0
+s1-366-seam-probe-3      rc=0
+
+Pinned expectations: author/controls/seam/revoked rc=0;
+#365 findings rc=1; #366 positive/all rc=2. A different rc is
+evidence of a changed snapshot or a fixed/regressed probe, not silently a pass.
