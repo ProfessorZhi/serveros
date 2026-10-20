@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""#237 T10 — a real local runner receipt served to Work Engine #14.
+"""#237 T10 — a real local runner receipt served to the public Work Engine.
 
 WHAT THIS PROVES
 ----------------
-Work Engine #14 (`e4c4a2b`) added `ServerOSStore.finalize_run_verified` and the
-`RunnerReceiptAuthority` contract, but left the producer unbound. This file
-builds the T10 side of that seam as an **opt-in PREVIEW-only** adapter and
-proves it with the real Work Engine #14 source, a real temporary git worktree,
-the real `runtime/bounded_invocation.invoke_once`, and a real offline runner:
+The public in-tree `workengine` ships `ServerOSStore.finalize_run_verified` and
+the `RunnerReceiptAuthority` contract, but leaves the producer unbound. This
+file builds the T10 side of that seam as an **opt-in PREVIEW-only** adapter and
+proves it with the public in-tree package, a real temporary git worktree, the
+real `runtime/bounded_invocation.invoke_once`, and a real offline runner:
 
 * the parent mints an opaque `receipt_ref` for the admitted action; a child
   text path, a caller JSON hash, or an arbitrary filesystem path is not one;
@@ -29,6 +29,11 @@ The bridge is not wired into production. The Work Engine seam remains
 `BLOCKED_ORIGINAL_OWNER` and ServerOS remains `BLOCKED_WIRING` until a real
 finalize call site consumes the proof and an independent QA owner signs.
 Evidence level: LOCAL / PREVIEW_ONLY, not REAL_DEVICE or PRODUCTION.
+
+HISTORICAL_PRIVATE_SOURCE_UNVERIFIED: this suite used to extract Work Engine
+#14 (`e4c4a2b…`) from an owner-private checkout. It no longer reads that path
+and does not compare against it. Exact old-source equality is NOT_RUN, never
+PASS; the public in-tree package is the source under test.
 """
 from __future__ import annotations
 
@@ -41,7 +46,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import tarfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,8 +55,10 @@ import pytest
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 RUNTIME = REPO / "runtime"
-WE_REPO = Path("/data/home/vince/workspace/src/work-engine")
-WE_HEAD = "e4c4a2b2b3fb6fb7a0af564fa30d8bc5eea3043a"
+#: The old #14 archive pin, kept only as a historical label. This suite does
+#: not read that checkout, so exact old-source equality is
+#: HISTORICAL_PRIVATE_SOURCE_UNVERIFIED / NOT_RUN — never a pass.
+HISTORICAL_WE14_HEAD = "e4c4a2b2b3fb6fb7a0af564fa30d8bc5eea3043a"
 BRIDGE_PATH = (
     REPO / "integrations" / "fleet-v1-verdict-evidence" / "authority_bridge.py")
 
@@ -106,23 +112,16 @@ def bridge_module():
 
 
 @pytest.fixture(scope="session")
-def we14(tmp_path_factory):
-    """The exact Work Engine #14 source, extracted read-only, not edited."""
-    dest = tmp_path_factory.mktemp("we14")
-    src = dest / "src"
-    src.mkdir()
-    archive = dest / "we14.tar"
-    with archive.open("wb") as fh:
-        subprocess.run(
-            ["git", "-C", str(WE_REPO), "archive", WE_HEAD],
-            stdout=fh, check=True, stderr=subprocess.PIPE)
-    with tarfile.open(archive) as tar:
-        tar.extractall(src, filter="data")
-    sys.path.insert(0, str(src))
-    for name in [name for name in sys.modules
-                 if name == "workengine" or name.startswith("workengine.")]:
-        del sys.modules[name]
-    import workengine  # noqa: F401  (the archive on sys.path is the pin)
+def we14():
+    """The public in-tree Work Engine package, imported normally.
+
+    The former fixture extracted an owner-private #14 checkout and deleted
+    every `workengine*` entry from `sys.modules`. That read a path Dell does not
+    have and changed module identity for every later consumer. This fixture
+    imports the package the tree ships, so it neither reads a private path nor
+    swaps `sys.modules`; the public `workengine.authority` dataclasses are the
+    contract under test.
+    """
     from workengine import WorkItem
     from workengine.authority import ReceiptError, VerifiedRunReceipt
     from workengine.model import Activity, ContextMode, ExecutionContext, RunState
@@ -137,6 +136,21 @@ def we14(tmp_path_factory):
         VerifiedRunReceipt=VerifiedRunReceipt,
         ReceiptError=ReceiptError,
     )
+
+
+def test_the_public_fixture_keeps_the_in_tree_module_identity(we14):
+    """No second `workengine` object is left in `sys.modules`.
+
+    The old fixture deleted and re-imported the package from a private archive,
+    so a later consumer could hold one `ReceiptError` while the store raised
+    another (#332). This fixture imports the in-tree package and must not
+    replace it; the object identity is the assertion.
+    """
+    import workengine.authority
+
+    assert sys.modules["workengine.authority"] is workengine.authority
+    assert we14.ReceiptError is workengine.authority.ReceiptError
+    assert Path(workengine.authority.__file__).resolve().is_relative_to(REPO)
 
 
 def _now() -> str:
@@ -321,13 +335,20 @@ def _authority(fx, head, tree, *, run_state="FINALIZING", anchor=True):
 
 def _bridge(bridge_module, we14, expected, authority, *, receipt_ref=None,
             anchor=None):
+    def receipt(**fields):
+        # The public `VerifiedRunReceipt` adds `actor_ref`; the PREVIEW bridge
+        # predates that field and supplies the other nine. The actor is the
+        # same grant principal the continuation authority already names — this
+        # is a test-local adapter, not a second authority or a caller claim.
+        return we14.VerifiedRunReceipt(**fields, actor_ref=CONTEXT)
+
     return bridge_module.LocalRunnerReceiptAuthority(
         expected=expected,
         authority=authority,
         receipt_ref=receipt_ref or ("serveros-runner-receipt:"
                                     + expected.action_key),
         expected_anchor=(authority.receipt_sha256 if anchor is None else anchor),
-        receipt_factory=we14.VerifiedRunReceipt,
+        receipt_factory=receipt,
         error_factory=we14.ReceiptError,
     )
 
@@ -352,6 +373,7 @@ def test_real_exit_one_with_pass_text_cannot_conclude_success(
         sc.bridge.receipt_ref, item_ref=sc.item.id, run_ref=sc.run.id,
         now=time.time())
     assert isinstance(receipt, we14.VerifiedRunReceipt)
+    assert receipt.actor_ref == CONTEXT
     assert receipt.process_exit_code == 1
     assert receipt.verdict == "FAIL"
     assert receipt.receipt_sha256 == sc.fx.result["receipt_sha256"]

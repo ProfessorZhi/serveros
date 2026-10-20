@@ -11,15 +11,14 @@ durable finalize evidence and the runner receipt, not from a caller's JSON.
 
 WHAT IS REAL HERE
 -----------------
-* The exact Work Engine #15 source (`4bd9e8a`) is extracted read-only with
-  `git archive`; its real `ServerOSStore` writes the evidence and the
-  `finalize.json`.
+* The public in-tree `workengine` package is imported normally; its real
+  `ServerOSStore` writes the evidence and the `finalize.json`.
 * The real `runtime/bounded_invocation.invoke_once` produces the receipt through
   the #269 executor (the Docker worker argv is replaced by a real offline
   synthetic runner in this CPU-only test).
-* The #269 PREVIEW bridge verifies that receipt; a clearly labelled #15
-  test-double wraps its result into the #15 `VerifiedRunReceipt` (which adds
-  `actor_ref`).
+* The #269 PREVIEW bridge verifies that receipt; a clearly labelled test double
+  wraps its result into the public `VerifiedRunReceipt` (which carries
+  `actor_ref`). It is not a production verifier.
 * The new `finalization_result.py` reads `serveros.db` / the evidence file
   read-only and the gate refuses a legacy `SUCCEEDED`/`UNSIGNED` result, a
   caller JSON label, tampering, missing `t10_acceptable`, inconsistent
@@ -30,6 +29,11 @@ WHAT IS NOT CLAIMED
 The production `RunnerReceiptAuthority` / OS-attested parent is still unbound.
 The positive case is `ELIGIBLE` for independent QA only, with
 `production_status=BLOCKED_TRUST_SOURCE`; it is LOCAL/HERMETIC, not production.
+
+HISTORICAL_PRIVATE_SOURCE_UNVERIFIED: this suite used to extract Work Engine
+#15 (`4bd9e8a…`) from an owner-private checkout. It no longer reads that path
+and does not compare against it. Exact old-source equality is NOT_RUN, never
+PASS; the public in-tree package is the source under test.
 """
 from __future__ import annotations
 
@@ -42,7 +46,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import tarfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,8 +55,10 @@ import pytest
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 RUNTIME = REPO / "runtime"
-WE_REPO = Path("/data/home/vince/workspace/src/work-engine")
-WE_HEAD = "4bd9e8a1c6a6a1b24c1717ec65862c8900d5f7be"
+#: The old #15 archive pin, kept only as a historical label. This suite does
+#: not read that checkout, so exact old-source equality is
+#: HISTORICAL_PRIVATE_SOURCE_UNVERIFIED / NOT_RUN — never a pass.
+HISTORICAL_WE15_HEAD = "4bd9e8a1c6a6a1b24c1717ec65862c8900d5f7be"
 SIGNED_PATH = (
     REPO / "integrations" / "fleet-v1-verdict-evidence" / "finalization_result.py")
 BRIDGE_PATH = (
@@ -113,22 +118,16 @@ def signed():
 
 
 @pytest.fixture(scope="session")
-def we15(tmp_path_factory):
-    dest = tmp_path_factory.mktemp("we15")
-    src = dest / "src"
-    src.mkdir()
-    archive = dest / "we15.tar"
-    with archive.open("wb") as fh:
-        subprocess.run(
-            ["git", "-C", str(WE_REPO), "archive", WE_HEAD],
-            stdout=fh, check=True, stderr=subprocess.PIPE)
-    with tarfile.open(archive) as tar:
-        tar.extractall(src, filter="data")
-    sys.path.insert(0, str(src))
-    for name in [name for name in sys.modules
-                 if name == "workengine" or name.startswith("workengine.")]:
-        del sys.modules[name]
-    import workengine  # noqa: F401  (the archive on sys.path is the pin)
+def we15():
+    """The public in-tree Work Engine package, imported normally.
+
+    The former fixture extracted an owner-private #15 checkout and deleted
+    every `workengine*` entry from `sys.modules`. That read a path Dell does not
+    have and changed module identity for every later consumer. This fixture
+    imports the package the tree ships, so it neither reads a private path nor
+    swaps `sys.modules`; the public `workengine.authority` dataclasses are the
+    contract under test.
+    """
     from workengine import WorkItem
     from workengine.authority import ReceiptError, T10Binding, VerifiedRunReceipt
     from workengine.model import Activity, ContextMode, ExecutionContext, RunState
@@ -144,6 +143,21 @@ def we15(tmp_path_factory):
         ReceiptError=ReceiptError,
         T10Binding=T10Binding,
     )
+
+
+def test_the_public_fixture_keeps_the_in_tree_module_identity(we15):
+    """No second `workengine` object is left in `sys.modules`.
+
+    The old fixture deleted and re-imported the package from a private archive,
+    so a later consumer could hold one `ReceiptError` while the store raised
+    another (#332). This fixture imports the in-tree package and must not
+    replace it; the object identity is the assertion.
+    """
+    import workengine.authority
+
+    assert sys.modules["workengine.authority"] is workengine.authority
+    assert we15.ReceiptError is workengine.authority.ReceiptError
+    assert Path(workengine.authority.__file__).resolve().is_relative_to(REPO)
 
 
 def _now() -> str:
