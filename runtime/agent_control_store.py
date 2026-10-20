@@ -496,12 +496,20 @@ def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
     os_principal = os_principal_of(peer)
     if os_principal is None:
         return refuse("UNTRUSTED_ACTOR",
-                      "this call did not arrive with a readable kernel peer "
-                      "credential (SO_PEERCRED), so the caller cannot be bound to "
-                      "an OS principal. A uid in the payload is a claim, not "
-                      "evidence")
-    now = str(now or "")
-    verdict = _actor_module().authorizes(context, now)
+                      "this call did not arrive with a kernel peer credential "
+                      "(SO_PEERCRED), so the caller cannot be bound to an OS "
+                      "principal. A uid in the payload is a claim, not evidence")
+    now_text = str(now or "").strip()
+    # RC-v2 merge resolution (#275 x #318/#307): keep #307's instant parse of
+    # the verification time. The text comparison was a measured fail-open; an
+    # unreadable instant is INVALID_CONTEXT, never a default.
+    now_instant = _instant(now_text)
+    if now_instant is None:
+        return refuse(
+            "INVALID_CONTEXT",
+            f"the verification instant {now!r} is not a zoned timestamp; a "
+            f"window cannot be checked against an instant that is not one")
+    verdict = _actor_module().authorizes(context, now_text)
     if not verdict.get("authorizes"):
         return refuse("UNTRUSTED_ACTOR",
                       f"the presented context does not authorize a mutation: "
@@ -522,11 +530,17 @@ def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
     if grant.get("revoked") is True:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} was revoked at {grant.get('revoked_at')}")
+    # RC-v2 merge resolution (#275 x #318/#307): parse each bound once as an
+    # instant, compare instants (not strings), and keep the epoch-seconds
+    # window required by Work Engine #14's LeaseGrant. Dropping either half
+    # would lose a safety property: text comparison is a measured fail-open,
+    # and a non-LeaseGrant return breaks the trusted-parent consumer.
     window = {}
+    bounds = {}
     for field in ("valid_from", "expires_at"):
         if not grant.get(field):
             return refuse("INVALID_CONTEXT", f"grant {key!r} has no {field}")
-        instant = _grant_seconds(grant[field])
+        instant = _instant(grant[field])
         if instant is None:
             return refuse(
                 "INVALID_CONTEXT",
@@ -534,15 +548,12 @@ def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
                 f"window must be a timezone-bearing ISO-8601 instant; a stamp "
                 f"this read cannot place in time cannot be checked, and Work "
                 f"Engine #14 consumes the window as epoch seconds")
-        window[field] = instant
-    at = _grant_seconds(now)
-    if at is None:
-        return refuse("INVALID_CONTEXT",
-                      f"the verification instant {now!r} is unreadable")
-    if at < window["valid_from"]:
+        bounds[field] = instant
+        window[field] = instant.timestamp()
+    if now_instant < bounds["valid_from"]:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} is not valid until {grant['valid_from']}")
-    if at >= window["expires_at"]:
+    if now_instant >= bounds["expires_at"]:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} expired at {grant['expires_at']}")
 
@@ -1230,27 +1241,157 @@ class AgentControlStore:
     def dispatch_attempts(self) -> dict:
         return dict(self._read().get("dispatch_attempts", {}))
 
-    def close_binding(self, ref: str, *, at: str, reason: str | None = None) -> dict:
+    def close_binding(self, ref: str, *, at: str, reason: str | None = None,
+                      successor: dict | None = None,
+                      actor: str | None = None) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
 
         The record stays. Closing is what makes
         `THREAD_CLOSED_FOR_NEW_WORK` answerable months later, and a store that
         dropped the binding on closure would leave the closed thread looking
         exactly like a thread nobody ever created one for.
+
+        TRANSFER (#237 T1 / #310 F1). A handoff closes the source AND gives the
+        established target the scope's writer claim in the SAME mutation. Two
+        separate writes would leave a window with no authorized writer — the
+        source closed, the target not yet minted — which is the one state a
+        handoff cannot recover from. `successor` is a full binding record the
+        trusted daemon route built from `coordination.mint_writer`; the store
+        validates its identity against the source and writes both records under
+        one lock. A writer supplied by an untrusted request never reaches here.
         """
         with self._mutation():
-            existing = self._data["bindings"].get(str(ref))
+            bindings = self._data["bindings"]
+            existing = bindings.get(str(ref))
             if existing is None:
                 raise StoreError(
                     f"{ref} has no binding to close; closing a thread that was never "
                     f"bound would record a closure of something ServerOS does not "
                     f"hold a statement about")
-            updated = dict(existing)
-            updated["state"] = "CLOSED"
-            updated["closed_at"] = str(at)
+            updated_source = dict(existing)
+            updated_source["state"] = "CLOSED"
+            updated_source["closed_at"] = str(at)
             if reason:
-                updated["closed_reason"] = str(reason)
-            self._data["bindings"][str(ref)] = updated
+                updated_source["closed_reason"] = str(reason)
+            if actor:
+                updated_source["closed_by"] = str(actor)
+
+            updated_successor = None
+            if successor is not None:
+                if str(existing.get("state") or "").upper() == "CLOSED":
+                    raise StoreError(
+                        f"{ref} is already CLOSED; a write-authority transfer "
+                        f"must start from an open source, or it would mint a "
+                        f"second claim from a closure that already happened")
+                if not isinstance(successor, dict):
+                    raise StoreError(
+                        "a successor is a binding record; nothing here names the "
+                        "thread that would receive the write scope")
+                target_ref = str(successor.get("session_ref") or "").strip()
+                if not target_ref:
+                    raise StoreError(
+                        "a write-authority transfer must name the successor "
+                        "session; without one the scope would be left unowned")
+                if target_ref == str(ref):
+                    raise StoreError(
+                        "a thread cannot be its own successor; a transfer names "
+                        "two different sessions")
+                target = bindings.get(target_ref)
+                if target is None:
+                    raise StoreError(
+                        f"successor {target_ref!r} has no binding; a session with "
+                        f"no recorded purpose is not an established writer")
+                if str(target.get("state") or "").upper() == "CLOSED":
+                    raise StoreError(
+                        f"successor {target_ref!r} is CLOSED; a closed thread "
+                        f"takes no new work and cannot receive write authority")
+                source_item = str(existing.get("bound_item_ref") or "")
+                if (not source_item
+                        or str(target.get("bound_item_ref") or "") != source_item):
+                    raise StoreError(
+                        f"successor {target_ref!r} is not bound to the source's "
+                        f"Item {source_item!r}; write authority cannot cross an "
+                        f"Item boundary")
+                if target.get("writer"):
+                    raise StoreError(
+                        f"successor {target_ref!r} already records a writer; a "
+                        f"transfer cannot overwrite a claim that is already there")
+                writer = successor.get("writer")
+                if not isinstance(writer, dict):
+                    raise StoreError(
+                        "a successor carries the writer claim it received; none "
+                        "was supplied")
+                owner = str(writer.get("owner") or "").strip()
+                epoch = writer.get("epoch")
+                token = str(writer.get("token") or "").strip()
+                if (not owner or isinstance(epoch, bool)
+                        or not isinstance(epoch, int) or epoch < 1 or not token):
+                    raise StoreError(
+                        f"successor writer {writer!r} is not an owner/epoch/token "
+                        f"claim; an unshaped writer is not a fence")
+                updated_successor = dict(target)
+                schema = str(successor.get("schema") or "").strip()
+                if schema:
+                    updated_successor["schema"] = schema
+                updated_successor["writer"] = dict(writer)
+                if successor.get("writer_recorded_at"):
+                    updated_successor["writer_recorded_at"] = str(
+                        successor["writer_recorded_at"])
+
+            bindings[str(ref)] = updated_source
+            if updated_successor is not None:
+                bindings[str(updated_successor["session_ref"])] = updated_successor
+            self._flush()
+            result = dict(updated_source)
+            if updated_successor is not None:
+                # Returned, not persisted: the source record stays a closure,
+                # and the successor is read back by its own session_ref.
+                result["successor"] = updated_successor
+            return result
+
+    def claim_writer(self, ref: str, *, writer: dict, schema: str | None,
+                     at: str) -> dict:
+        """Attach a writer claim to an OPEN binding that has none (#237 T1).
+
+        This is the handoff's pre-close half: a target that is already bound to
+        the source's Item must become the current writer BEFORE its resume/send
+        is admitted, because admission fences a no-claim thread on an owned
+        scope. The daemon mints the claim with `coordination.mint_writer`; this
+        store only checks the shape and that it is not overwriting an existing
+        claim. It is not a general "set writer" method: an existing writer is a
+        refusal, and a closed binding is a refusal.
+        """
+        with self._mutation():
+            bindings = self._data["bindings"]
+            existing = bindings.get(str(ref))
+            if existing is None:
+                raise StoreError(
+                    f"{ref} has no binding to claim; a session with no recorded "
+                    f"purpose is not an established writer")
+            if str(existing.get("state") or "").upper() == "CLOSED":
+                raise StoreError(
+                    f"{ref} is CLOSED; a closed thread takes no new work and "
+                    f"cannot receive a writer claim")
+            if existing.get("writer"):
+                raise StoreError(
+                    f"{ref} already records a writer; a claim cannot overwrite "
+                    f"an existing claim")
+            if not isinstance(writer, dict):
+                raise StoreError("a writer claim is a record; none was supplied")
+            owner = str(writer.get("owner") or "").strip()
+            epoch = writer.get("epoch")
+            token = str(writer.get("token") or "").strip()
+            if (not owner or isinstance(epoch, bool)
+                    or not isinstance(epoch, int) or epoch < 1 or not token):
+                raise StoreError(
+                    f"writer {writer!r} is not an owner/epoch/token claim; an "
+                    f"unshaped writer is not a fence")
+            updated = dict(existing)
+            if schema:
+                updated["schema"] = str(schema)
+            updated["writer"] = dict(writer)
+            updated["writer_recorded_at"] = str(at)
+            bindings[str(ref)] = updated
             self._flush()
             return updated
 

@@ -527,12 +527,23 @@ durable_effects:
 # ---------------------------------------------------------------------------
 handoff:
   steps: [checkpoint, resolve_target, target_available, target_ready,
-          context_handed_off, source_released]
+          context_handed_off, write_authority_transferred,
+          source_released]
   rule: >-
     The source session is not stopped unless the target answered. §9 states this
     and the implementation states it as control flow rather than as a comment,
     because a rule a reader has to remember survives only until the first
     refactor.
+  failure_codes:
+    BLOCKED_ATOMICITY: >-
+      The target's writer claim was already minted (and current) but the target
+      route or the source close did not complete. The source is NOT preserved
+      as a writer and the scope is stalled; repair is an owner action. This is
+      not a successful transfer.
+    UNTRUSTED_ACTOR: >-
+      A protected binding mutation (claim or close-with-successor) presented a
+      context that is not FRESH + provenance FACT + provider VERIFIED. The
+      strong `authorizes` verdict, not structural validation alone, is required.
   why_this_order: >-
     The failure modes are not symmetric. A handoff that stops the source and
     then cannot start the target has lost the session. A handoff that starts the

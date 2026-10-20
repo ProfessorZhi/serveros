@@ -1470,6 +1470,7 @@ class Daemon:
             "agent.binding.resolve": self._r_agent_binding_resolve,
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
+            "agent.binding.claim": self._r_agent_binding_claim,
             "agent.binding.close": self._r_agent_binding_close,
             # #245 / S2. The durable dispatch attempt. `agent.dispatch.resolve`
             # is the read the router's replay guard matches a retry against;
@@ -1625,7 +1626,8 @@ class Daemon:
                 # Agent runtime is not a source of a statement about its own
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
-                "agent.binding.record", "agent.binding.close",
+                "agent.binding.record", "agent.binding.claim",
+                "agent.binding.close",
                 # #245 / S2. The durable dispatch attempt: `resolve` reads the
                 # record a retry is matched against, `record` writes it. On this
                 # socket (not the node MCP) for the same reason the bindings are:
@@ -3262,6 +3264,149 @@ class Daemon:
         claim["token"] = str(lease["token"])
         return claim
 
+    def _trusted_actor_for_mutation(self, context_ref, store):
+        """The STRONG admission verdict for a protected binding mutation.
+
+        `validate` + `freshness == FRESH` is not enough: a fresh context with
+        `provider_status != VERIFIED` or `provenance != FACT` passes both, and
+        `actor.build` can mint exactly that. `authorizes` is the project's
+        admission answer — FRESH **and** provenance FACT **and** provider
+        VERIFIED — and it is the only verdict these mutation routes may use.
+        """
+        ref = str(context_ref or "").strip()
+        if not ref:
+            return None, ("UNTRUSTED_ACTOR",
+                          "a protected mutation needs a trusted context_ref")
+        resolved = actor_mod.resolve(ref, store.contexts())
+        if not resolved["found"]:
+            return None, ("UNTRUSTED_ACTOR", resolved["because"])
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return None, ("UNTRUSTED_ACTOR", str(exc))
+        verdict = actor_mod.authorizes(trusted, _iso(self._now()))
+        if not verdict.get("authorizes"):
+            return None, (
+                "UNTRUSTED_ACTOR",
+                (f"the presented context does not authorize a mutation: "
+                 f"{verdict.get('because')}"))
+        return trusted, None
+
+    def _r_agent_binding_claim(self, params) -> dict:
+        """Mint the handoff target's writer claim from the LIVE Work lease.
+
+        #237 T1 / #310 F2. A handoff target that is already bound must become
+        the current writer BEFORE its resume/send is admitted: admission fences
+        a no-claim thread on an owned scope. This route is the trusted half: the
+        caller presents a context_ref and the source ref; the daemon resolves
+        the actor, checks the source is the current writer and the target is an
+        open binding for the same Item, and mints the claim from the LIVE Work
+        Engine lease. The claim's owner/token are the lease's, not a second
+        counter's, and never a caller's string.
+
+        If the lease has not moved (same owner and token as the source claim),
+        there is no new authority to give the target: NOT_CURRENT_WRITER. If
+        there is no live lease at all, the same refusal. The source binding is
+        not closed here; the handoff closes it only after the target is current.
+        """
+        ref = _required(params, "session_ref")
+        from_ref = str(params.get("from_ref") or "").strip()
+        if not from_ref:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("a claim transfer names the source thread it takes "
+                               "over from; none was presented")}
+        store = self.control_store()
+        trusted, refusal = self._trusted_actor_for_mutation(
+            params.get("context_ref"), store)
+        if refusal is not None:
+            reason, detail = refusal
+            return {"claimed": False, "session_ref": ref,
+                    "reason": reason, "detail": detail}
+        actor = trusted["actor_ref"]
+
+        source = store.get_binding(from_ref)
+        target = store.get_binding(ref)
+        if source is None or target is None:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("both the source and the target must have recorded "
+                               "bindings; a session with none is not a writer")}
+        if (str(source.get("state") or "").upper() == "CLOSED"
+                or str(target.get("state") or "").upper() == "CLOSED"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": "a claim transfer needs two open bindings"}
+        item = str(source.get("bound_item_ref") or "")
+        if not item or str(target.get("bound_item_ref") or "") != item:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "THREAD_ITEM_MISMATCH",
+                    "detail": ("the target is not bound to the source's Item; "
+                               "write authority cannot cross an Item boundary")}
+        if target.get("writer"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("the target already records a writer; a claim "
+                               "cannot overwrite an existing claim")}
+        source_writer = source.get("writer")
+        if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the source records no writer claim, so there is "
+                               "no write authority to take over")}
+        current = coordination_mod.current_writer(store.bindings(), item)
+        same_source = (isinstance(current, dict)
+                       and str(current.get("owner")) == str(source_writer.get("owner"))
+                       and str(current.get("epoch")) == str(source_writer.get("epoch"))
+                       and str(current.get("token")) == str(source_writer.get("token")))
+        if not same_source:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"the source is not the current writer of "
+                               f"{item!r}; a handoff claim must take over the "
+                               f"scope the source actually holds")}
+        lease = resolver_mod.live_lease(self._item_roots(), item)
+        if lease is None:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"no live Work lease is recorded for {item!r}; a "
+                               f"handoff cannot mint a writer claim without an "
+                               f"active grant")}
+        if str(lease.get("token")) == str(source_writer.get("token")):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"the Work lease token for {item!r} did not move "
+                               f"(still {lease.get('token')!r}); a handoff cannot "
+                               f"mint a second claim at the same fence token. The "
+                               f"owner must transfer the lease first")}
+        writer = {"owner": str(lease["owner"]),
+                  "epoch": int(source_writer.get("epoch") or 1),
+                  "token": str(lease["token"])}
+        now_iso = _iso(self._now())
+        try:
+            updated = store.claim_writer(
+                ref, writer=writer, schema=coordination_mod.SCHEMA_WRITER,
+                at=now_iso)
+        except agent_control_store_mod.StoreError as exc:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT", "detail": str(exc)}
+        current_after = coordination_mod.current_writer(store.bindings(), item)
+        if (not isinstance(current_after, dict)
+                or str(current_after.get("owner")) != str(writer["owner"])
+                or str(current_after.get("epoch")) != str(writer["epoch"])
+                or str(current_after.get("token")) != str(writer["token"])):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the claim was written but the target is not the "
+                               "current writer; write authority did not move"),
+                    "binding": updated, "current_writer": current_after}
+        return {"claimed": True, "session_ref": ref, "from_ref": from_ref,
+                "binding": updated, "current_writer": current_after,
+                "writer": writer, "actor": actor,
+                "because": ("the target is now the current writer, minted from "
+                            "the live Work lease")}
+
     def _r_agent_binding_close(self, params) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
 
@@ -3270,15 +3415,167 @@ class Daemon:
         thread to be about a different Item is told to start one; there is no
         parameter here for a new `bound_item_ref`, and adding one would be the
         rebind that `put_binding` exists to refuse.
+
+        A handoff may also TRANSFER the closed thread's write scope to an
+        established successor (`successor_ref`). That is a protected write: it
+        requires a trusted, fresh `context_ref`, the source must be the current
+        writer, and the target must be an open binding for the SAME Item with no
+        claim of its own. The successor's writer is minted HERE, by the kernel's
+        one `mint_writer`, and never accepted from the caller. The close and the
+        successor's claim are written in one store mutation, so the scope is
+        never left with zero authorized writers.
         """
         ref = _required(params, "session_ref")
+        successor_ref = str(params.get("successor_ref") or "").strip()
+        store = self.control_store()
+        successor = None
+        actor = None
+        source_item = None
+        source_claim_expired = None
+        target_current = False
+
+        if successor_ref:
+            trusted, refusal = self._trusted_actor_for_mutation(
+                params.get("context_ref"), store)
+            if refusal is not None:
+                reason, detail = refusal
+                return {"closed": False, "session_ref": ref,
+                        "reason": reason, "detail": detail}
+            actor = trusted["actor_ref"]
+
+            source = store.get_binding(ref)
+            target = store.get_binding(successor_ref)
+            if source is None or target is None:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "INVALID_CONTEXT",
+                        "detail": ("both the source and the successor must have "
+                                   "recorded bindings; a session with none is not "
+                                   "a writer")}
+            if (str(source.get("state") or "").upper() == "CLOSED"
+                    or str(target.get("state") or "").upper() == "CLOSED"):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "INVALID_CONTEXT",
+                        "detail": ("a write-authority transfer needs two OPEN "
+                                   "bindings; a closed thread takes no new work")}
+            source_item = str(source.get("bound_item_ref") or "")
+            if (not source_item
+                    or str(target.get("bound_item_ref") or "") != source_item):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "THREAD_ITEM_MISMATCH",
+                        "detail": (f"the successor is not bound to the source's "
+                                   f"Item {source_item!r}; write authority cannot "
+                                   f"cross an Item boundary")}
+            source_writer = source.get("writer")
+            if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": ("the source records no writer claim, so there "
+                                   "is no write authority to transfer")}
+            current = coordination_mod.current_writer(store.bindings(), source_item)
+            target_writer = target.get("writer")
+            source_current = (isinstance(current, dict)
+                              and str(current.get("owner")) == str(source_writer.get("owner"))
+                              and str(current.get("epoch")) == str(source_writer.get("epoch"))
+                              and str(current.get("token")) == str(source_writer.get("token")))
+            target_current = (isinstance(target_writer, dict)
+                              and isinstance(current, dict)
+                              and str(current.get("owner")) == str(target_writer.get("owner"))
+                              and str(current.get("epoch")) == str(target_writer.get("epoch"))
+                              and str(current.get("token")) == str(target_writer.get("token")))
+            now_iso = _iso(self._now())
+            expires = source_writer.get("expires_at")
+            if not expires:
+                source_claim_expired = False
+            else:
+                # The claim's expiry and the daemon clock are compared as
+                # aware instants, not as ISO text: `12:00+08:00` is 04:00Z, and
+                # a string comparison would call it later than `06:00+00:00`.
+                now_instant = _instant(now_iso)
+                expires_instant = _instant(expires)
+                source_claim_expired = (
+                    None if now_instant is None or expires_instant is None
+                    else expires_instant <= now_instant)
+            successor = None
+            expected_writer = None
+            if target_current:
+                # The handoff's claim route already minted the target from the
+                # live Work lease. The close only closes the source; re-minting
+                # here would be a second claim from the same transfer. The
+                # target's claim must still be backed by the live lease.
+                lease = resolver_mod.live_lease(self._item_roots(), source_item)
+                if (lease is None
+                        or str(lease.get("owner")) != str(target_writer.get("owner"))
+                        or str(lease.get("token")) != str(target_writer.get("token"))):
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"the target's claim is not backed by the "
+                                       f"live Work lease for {source_item!r}; a "
+                                       f"handoff does not transfer a scope whose "
+                                       f"grant is not active")}
+                expected_writer = dict(target_writer)
+            elif source_current:
+                lease = resolver_mod.live_lease(self._item_roots(), source_item)
+                if lease is None:
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"no live Work lease is recorded for "
+                                       f"{source_item!r}; a handoff cannot mint a "
+                                       f"successor claim without an active grant")}
+                if str(lease.get("token")) == str(source_writer.get("token")):
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"the Work lease token for {source_item!r} "
+                                       f"did not move (still "
+                                       f"{lease.get('token')!r}); a handoff cannot "
+                                       f"mint a successor claim at the same fence "
+                                       f"token. The owner must transfer the lease "
+                                       f"first")}
+                writer = {"owner": str(lease["owner"]),
+                          "epoch": int(source_writer.get("epoch") or 1),
+                          "token": str(lease["token"])}
+                successor = dict(target)
+                successor["schema"] = coordination_mod.SCHEMA_WRITER
+                successor["writer"] = writer
+                successor["writer_recorded_at"] = now_iso
+                expected_writer = dict(writer)
+            else:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": (f"neither the source nor the target is the "
+                                   f"current writer of {source_item!r}; a handoff "
+                                   f"cannot transfer a scope it does not hold")}
+
         try:
-            closed = self.control_store().close_binding(
-                ref, at=_iso(self._now()), reason=params.get("reason"))
+            closed = store.close_binding(
+                ref, at=_iso(self._now()), reason=params.get("reason"),
+                successor=successor, actor=actor)
         except agent_control_store_mod.StoreError as exc:
             return {"closed": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
-        return {"closed": True, "session_ref": ref, "binding": closed}
+
+        current_after = (coordination_mod.current_writer(
+            store.bindings(), source_item) if successor_ref else None)
+        if successor_ref:
+            transferred = (isinstance(current_after, dict)
+                           and isinstance(expected_writer, dict)
+                           and str(current_after.get("owner")) == str(expected_writer.get("owner"))
+                           and str(current_after.get("epoch")) == str(expected_writer.get("epoch"))
+                           and str(current_after.get("token")) == str(expected_writer.get("token")))
+            if not transferred:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": ("the source was closed but the successor is not "
+                                   "the current writer; write authority did not "
+                                   "transfer"),
+                        "binding": closed, "current_writer": current_after}
+        successor_record = (closed.get("successor")
+                            if isinstance(closed, dict) else None)
+        if successor_record is None and target_current:
+            successor_record = target
+        return {"closed": True, "session_ref": ref, "binding": closed,
+                "successor": successor_record,
+                "current_writer": current_after,
+                "source_claim_expired": source_claim_expired}
 
     def _r_agent_dispatch_resolve(self, params) -> dict:
         """The recorded dispatch attempt for a key, or None (#245).
@@ -4788,6 +5085,23 @@ def _iso(epoch: float) -> str:
     import datetime
 
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+
+
+def _instant(value):
+    """A zoned instant, or None.
+
+    The same rule `context/actor.py::_parse` and #307 state: an unreadable or
+    NAIVE timestamp is not an instant. Comparing two ISO strings would make
+    `12:00+08:00` (04:00Z) sort after `04:00+00:00`, which is the lexicographic
+    trap this helper exists to remove from the handoff's expiry evidence.
+    """
+    import datetime
+    try:
+        parsed = datetime.datetime.fromisoformat(
+            str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _atomic_write(path: Path, payload: dict) -> None:

@@ -509,6 +509,74 @@ class DaemonBindings:
                 str(answer.get("detail") or "serverosd did not record the binding"))
         return answer.get("binding") or {}
 
+    def close(self, ref, *, at=None, reason=None, successor_ref=None,
+              context_ref=None) -> dict:
+        """Close a thread's binding through the daemon (#237 T1 / #310 F1).
+
+        `at` is accepted for the interface the loopback calls, but the DAEMON's
+        clock stamps `closed_at`: a caller-supplied instant is a claim about
+        when a closure happened, and this plane's records are stamped by their
+        owner. `successor_ref` and `context_ref` are present only for a
+        handoff's write-authority transfer; the successor's writer is minted by
+        the daemon, never by this client.
+
+        Unlike `get`, a close is never allowed to degrade. A missing answer, a
+        `closed=false`, or a returned record that is not CLOSED is a refusal.
+        The router turns that into a fail-closed handoff, not a success.
+        """
+        params = {"session_ref": str(ref)}
+        if reason:
+            params["reason"] = str(reason)
+        if successor_ref:
+            params["successor_ref"] = str(successor_ref)
+        if context_ref:
+            params["context_ref"] = str(context_ref)
+        answer = self._call("agent.binding.close", params)
+        if not answer.get("closed"):
+            raise router_mod.TransportFailure(
+                str(answer.get("reason") or "NOT_CURRENT_WRITER"),
+                str(answer.get("detail")
+                    or "serverosd did not close the source binding"))
+        binding = dict(answer.get("binding") or {})
+        if str(binding.get("state") or "").upper() != "CLOSED":
+            raise router_mod.TransportFailure(
+                "NOT_CURRENT_WRITER",
+                (f"serverosd answered closed=true for {ref!r}, but the returned "
+                 f"binding is {binding.get('state')!r}; write authority cannot "
+                 f"be treated as revoked"))
+        binding["current_writer"] = answer.get("current_writer")
+        binding["successor"] = answer.get("successor")
+        binding["source_claim_expired"] = answer.get("source_claim_expired")
+        return binding
+
+    def claim(self, ref, *, from_ref, context_ref=None) -> dict:
+        """Mint the handoff target's writer claim through the daemon (#310 F2).
+
+        The daemon mints the claim from the LIVE Work lease; this method only
+        carries the request and refuses an answer whose claim is not the current
+        writer. No writer, owner, token or epoch is accepted from this client.
+        """
+        answer = self._call("agent.binding.claim", {
+            "session_ref": str(ref), "from_ref": str(from_ref),
+            "context_ref": str(context_ref or "")})
+        if not answer.get("claimed"):
+            raise router_mod.TransportFailure(
+                str(answer.get("reason") or "NOT_CURRENT_WRITER"),
+                str(answer.get("detail")
+                    or "serverosd did not mint the target writer"))
+        binding = dict(answer.get("binding") or {})
+        writer = binding.get("writer")
+        current = answer.get("current_writer")
+        if (not isinstance(writer, dict) or not isinstance(current, dict)
+                or any(str(writer.get(key)) != str(current.get(key))
+                       for key in ("owner", "epoch", "token"))):
+            raise router_mod.TransportFailure(
+                "NOT_CURRENT_WRITER",
+                ("serverosd answered claimed=true but the returned claim is not "
+                 "the current writer; write authority did not move"))
+        binding["current_writer"] = current
+        return binding
+
     def records_for(self, refs) -> dict:
         """The bindings for the sessions a caller just listed, in one read.
 

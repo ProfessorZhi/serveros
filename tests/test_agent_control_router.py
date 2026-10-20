@@ -1223,6 +1223,26 @@ class TestDurableDispatchAttempt(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestHandoff(unittest.TestCase):
+    SOURCE = "session:a:b:c"
+    TARGET = "session:dst:2"
+
+    def _bindings(self):
+        # The handoff is a write-authority transfer: the source must actually
+        # hold a writer claim, and the target must be an established binding
+        # for the SAME Item. The old default assume-bound double minted neither,
+        # which is why #310 F1/F2 could pass here and fail on the daemon.
+        bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
+        bindings.bind(self.SOURCE, bound_item_ref=ITEM,
+                      writer={"owner": "agent:A", "epoch": 1, "token": "1"})
+        bindings.bind(self.TARGET, bound_item_ref=ITEM)
+        return bindings
+
+    def _router(self, service, *, context_store=CONTEXT_STORE):
+        return router(service, bindings=self._bindings(),
+                      context_store=context_store)
+
+    def _resume_target(self, *, context_ref: str = CONTEXT_REF):
+        return resume_to(session_ref=self.TARGET, context_ref=context_ref)
 
     def _source(self):
         return RecordingService()
@@ -1260,14 +1280,14 @@ class TestHandoff(unittest.TestCase):
         # The target here is the local device, so the "target came up" path is
         # genuinely exercised rather than stubbed past.
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertNotIn("stop", source.names())
         self.assertTrue(outcome.source_preserved)
@@ -1296,16 +1316,16 @@ class TestHandoff(unittest.TestCase):
         # that treated its own authority as sufficient to stop a session would
         # be the §22 gate bypassed by a compound action.
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "APPROVAL_REQUIRED")
         self.assertEqual(outcome.stopped_at, "source_released")
@@ -1325,16 +1345,16 @@ class TestHandoff(unittest.TestCase):
             "session.stop": {"state": "UNSUPPORTED",
                              "reason": "thread/archive is not a stop"},
         })
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
         self.assertTrue(outcome.source_preserved)
@@ -1344,14 +1364,14 @@ class TestHandoff(unittest.TestCase):
 
     def test_a_handoff_records_the_checkpoint_it_is_anchored_to(self):
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertEqual(outcome.checkpoint, CHECKPOINT)
         self.assertEqual(outcome.show()["checkpoint"], CHECKPOINT)
@@ -1406,18 +1426,22 @@ class TestHandoff(unittest.TestCase):
         # order of these six steps exists to prevent, arriving through the one
         # door the order does not cover.
         source = AnonymousService()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True})),
-            create_request=resume_to())
+            create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+        # The target's writer claim was minted before the route, and the route
+        # named no session. The source is not the current writer any more; that
+        # is a stalled scope, not "source preserved".
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "context_handed_off")
         self.assertNotIn("context_handed_off", outcome.completed)
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
         self.assertEqual(outcome.checkpoint, CHECKPOINT)
         self.assertNotIn("stop", source.names(),
                          "the source was stopped on an answer that named no session")
@@ -1432,19 +1456,21 @@ class TestHandoff(unittest.TestCase):
         source = self._source()
         context = minted_context()
         now = provider_instance.now_utc()
-        r = router(source, context_store={context["context_ref"]: context})
+        r = self._router(source,
+                         context_store={context["context_ref"]: context})
         stop_approval = approval.issue(
             action="session.stop",
-            target={"device_ref": LOCAL, "session_ref": "session:a:b:c",
+            target={"device_ref": LOCAL, "session_ref": self.SOURCE,
                     "agent_runtime": RUNTIME, "provider": KIND_PROVIDER},
             params={}, context=context, now=now)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True},
                 approvals=[stop_approval])),
-            create_request=resume_to(context_ref=context["context_ref"]))
+            create_request=self._resume_target(
+                context_ref=context["context_ref"]))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertEqual(outcome.completed[-1], "source_released")
         self.assertFalse(outcome.source_preserved)
@@ -1459,7 +1485,8 @@ class TestHandoff(unittest.TestCase):
         source = self._source()
         context = minted_context()
         now = provider_instance.now_utc()
-        r = router(source, context_store={context["context_ref"]: context})
+        r = self._router(source,
+                         context_store={context["context_ref"]: context})
         elsewhere = approval.issue(
             action="session.stop",
             target={"device_ref": LOCAL, "session_ref": "session:another:1",
@@ -1468,10 +1495,11 @@ class TestHandoff(unittest.TestCase):
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True},
                 approvals=[elsewhere])),
-            create_request=resume_to(context_ref=context["context_ref"]))
+            create_request=self._resume_target(
+                context_ref=context["context_ref"]))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "APPROVAL_BINDING_MISMATCH")
         self.assertEqual(outcome.stopped_at, "source_released")
@@ -1513,17 +1541,21 @@ class TestHandoff(unittest.TestCase):
             "session.resume": {"state": "UNSUPPORTED",
                                "reason": "this provider does not resume"},
         })
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
-            create_request=resume_to())
+            create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
+        # The support refusal happens AFTER the handoff minted the target's
+        # writer claim; the source is no longer the current writer. The target
+        # never got a session, so the scope is stalled, not preserved.
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "target_ready")
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
 
     def test_a_target_that_probed_well_and_could_not_be_delivered_is_not_available(self):
         # A route WAS named and nothing answered at the other end of it — the
