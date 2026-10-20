@@ -758,6 +758,46 @@
       "merge_base": "771c81c",
       "own_commits": 1,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 342,
+      "lane": "X2",
+      "base": "rc/i1-v4-review-20261020",
+      "base_sha": "40c4b1c",
+      "head": "eff4c38081818c2b569fd4a995b7f168067fe885",
+      "merge_base": "40c4b1c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 343,
+      "lane": "X1",
+      "base": "rc/i1-v4-review-20261020",
+      "base_sha": "40c4b1c",
+      "head": "032d4698d0d308efc53788bc4f1a3e686ca7ccfe",
+      "merge_base": "40c4b1c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 344,
+      "lane": "X1",
+      "base": "test/x1-t10-public-fixtures-20261020",
+      "base_sha": "032d4698",
+      "head": "9bb87f732558410538e83e5001c0d625214e78fa",
+      "merge_base": "032d4698",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 348,
+      "lane": "I1",
+      "base": "main",
+      "base_sha": "771c81c",
+      "head": "c553f11bf1d13036b72a34d4f0c108ff9de75131",
+      "merge_base": "771c81c",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -1060,6 +1100,11 @@
     {
       "from": 336,
       "to": 338,
+      "kind": "base"
+    },
+    {
+      "from": 343,
+      "to": 344,
       "kind": "base"
     }
   ],
@@ -1656,5 +1701,44 @@
     "qa_signature": null,
     "status": "RC_BLOCKED/NOT_RELEASE",
     "artifact": "integrations/fleet-v1-release/RC-V4-REVIEW-2026-10-20.md"
+  },
+  "review_rc_v5": {
+    "branch": "rc/i1-v5-review-20261020",
+    "tip": "c553f11bf1d13036b72a34d4f0c108ff9de75131",
+    "tested_head": "ac4ce82a73196ed83d16f2abc199aad802b60c9a",
+    "baseline_sha": "40c4b1c46e5d3f3da883045bfa2152acc41da01a",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 348,
+    "cherry_picks": {
+      "342": "eff4c38",
+      "343": "032d469",
+      "344": "9bb87f7"
+    },
+    "tests": {
+      "nine_file_same_process": "138 passed",
+      "nine_file_path_guard": "156 passed",
+      "x2_portability": "37 passed, 0 skipped",
+      "grant_import": "14 passed",
+      "core": "857 passed/7 xfailed/287 subtests",
+      "fleet_next": "286 passed/133 subtests",
+      "node_core": "89/0 + 88/0",
+      "real_temp": "PASS/REFUSAL",
+      "syntax": "OK"
+    },
+    "device_status": {
+      "dell_rc_v4": "109 passed/2 failed/23 errors",
+      "windows_rc_v4": "4 failed/19 skipped",
+      "rc_v5": "not rerun on devices"
+    },
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V5-REVIEW-2026-10-20.md"
   }
 }
