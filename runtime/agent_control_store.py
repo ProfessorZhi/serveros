@@ -455,8 +455,20 @@ def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
                       "this call did not arrive with a kernel peer credential "
                       "(SO_PEERCRED), so the caller cannot be bound to an OS "
                       "principal. A uid in the payload is a claim, not evidence")
-    now = str(now or "")
-    verdict = _actor_module().authorizes(context, now)
+    now_text = str(now or "").strip()
+    # The window is an INTERVAL, so it is compared as instants, not as text.
+    # `str(grant["expires_at"]) <= now` put the two stamps in different
+    # timezone spellings against each other: a grant expiring at
+    # `12:00+08:00` (= 04:00Z) sorted ABOVE `04:00+00:00`, so an expired grant
+    # verified for as long as the offset's hour was ahead of UTC. The same
+    # comparison treated `...:00Z` and `...:00+00:00` as different instants.
+    now_instant = _instant(now_text)
+    if now_instant is None:
+        return refuse(
+            "INVALID_CONTEXT",
+            f"the verification instant {now!r} is not a zoned timestamp; a "
+            f"window cannot be checked against an instant that is not one")
+    verdict = _actor_module().authorizes(context, now_text)
     if not verdict.get("authorizes"):
         return refuse("UNTRUSTED_ACTOR",
                       f"the presented context does not authorize a mutation: "
@@ -477,13 +489,18 @@ def verify_live_grant(grants, *, grant_ref, context, peer, action, project,
     if grant.get("revoked") is True:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} was revoked at {grant.get('revoked_at')}")
-    for field in ("valid_from", "expires_at"):
-        if not grant.get(field):
-            return refuse("INVALID_CONTEXT", f"grant {key!r} has no {field}")
-    if str(grant["valid_from"]) > now:
+    valid_from = _instant(grant.get("valid_from"))
+    expires_at = _instant(grant.get("expires_at"))
+    if valid_from is None or expires_at is None:
+        return refuse(
+            "INVALID_CONTEXT",
+            f"grant {key!r} carries no readable, zoned window "
+            f"({grant.get('valid_from')!r} to {grant.get('expires_at')!r}); a "
+            f"window that cannot be placed on the clock authorizes nothing")
+    if now_instant < valid_from:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} is not valid until {grant['valid_from']}")
-    if str(grant["expires_at"]) <= now:
+    if now_instant >= expires_at:
         return refuse("POLICY_DENIED",
                       f"grant {key!r} expired at {grant['expires_at']}")
 
