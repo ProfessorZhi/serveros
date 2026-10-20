@@ -1,0 +1,594 @@
+{
+  "accounting": {
+    "accounted_total": 53,
+    "additional_gbk_only": 5,
+    "host_dependency_cryptography": 1,
+    "unresolved_against_56": 3,
+    "unresolved_reason": "the Windows runner package set and node IDs are not in the RC artifact; not guessed",
+    "windows_posix_absence": 47
+  },
+  "already_correct_model": {
+    "module": "runtime/surface_lock.py",
+    "pattern": "try: import fcntl except ImportError: fcntl = None, with an explicit WINDOWS IS NOT COVERED docstring"
+  },
+  "baseline": {
+    "local_main_note": "stale (2026-10-17) and an ancestor of 771c81c; not used as baseline",
+    "local_main_ref": "665067ea548a04c2d2496ff73bbdd16f428b1ef0",
+    "rc_ref": "origin/rc/i1-review-20261020",
+    "rc_sha": "3f0240d5ffb2f66edf184cc6b87e04c02c0598ca",
+    "recorded_main": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8"
+  },
+  "date": "2026-10-20",
+  "default_encoding_class": {
+    "gbk_decode_proof": "each target contains non-ASCII and fails bytes.decode(\"gbk\") at the first UTF-8 em dash byte (0x94)",
+    "module_level_reads": [
+      {
+        "file": "tests/test_alert_ownership.py",
+        "line": 133,
+        "target": "runtime/attribution-contract.yaml"
+      },
+      {
+        "file": "tests/test_anomaly.py",
+        "line": 44,
+        "target": "runtime/attribution-contract.yaml"
+      },
+      {
+        "file": "tests/test_control_store_path.py",
+        "line": 64,
+        "target": "runtime/cli.py"
+      },
+      {
+        "file": "tests/test_infrastructure.py",
+        "line": 54,
+        "target": "runtime/managed-runtime-contract.yaml"
+      },
+      {
+        "file": "tests/test_infrastructure.py",
+        "line": 55,
+        "target": "runtime/attribution-contract.yaml"
+      },
+      {
+        "file": "tests/test_resource_anomaly.py",
+        "line": 52,
+        "target": "runtime/attribution-contract.yaml"
+      },
+      {
+        "file": "tests/test_resource_policy.py",
+        "line": 41,
+        "target": "runtime/resource-governance-contract.yaml"
+      },
+      {
+        "file": "tests/test_tunnel_observation.py",
+        "line": 62,
+        "target": "runtime/managed-runtime-contract.yaml"
+      }
+    ],
+    "product_non_explicit_text_reads": 112,
+    "product_subprocess_text_mode_without_encoding": 37,
+    "test_files_with_any_non_explicit_text_read": 68
+  },
+  "host": {
+    "location": "Tokyo",
+    "os": "Linux 6.8",
+    "pytest": "9.1.1",
+    "python": "3.12.3"
+  },
+  "linux_only_product_modules": [
+    {
+      "line": 53,
+      "mechanism": "import fcntl",
+      "module": "runtime/daemon.py",
+      "reason": "systemd, Unix socket, /proc; Linux is the deployment target (daemon.py:4446)"
+    },
+    {
+      "line": 138,
+      "mechanism": "import fcntl",
+      "module": "runtime/agent_control_store.py",
+      "reason": "flock for serverosd; durable state across systemctl restart"
+    },
+    {
+      "line": 79,
+      "mechanism": "os.sysconf",
+      "module": "runtime/attribution.py",
+      "reason": "/proc process attribution; except does not catch AttributeError"
+    },
+    {
+      "line": 6,
+      "mechanism": "import fcntl",
+      "module": "workengine/federation.py",
+      "reason": "file-backed federation lock"
+    },
+    {
+      "line": 50,
+      "mechanism": "import pwd",
+      "module": "context/trust_binding.py",
+      "reason": "uid custody is the security property; Windows needs SID/token"
+    }
+  ],
+  "not_claimed": [
+    "a real Windows run",
+    "a Windows-supported Python suite",
+    "that the 56 errors are exactly reproduced",
+    "that the C++ native core or SCM adapter works on Windows"
+  ],
+  "posix_class_per_file": [
+    {
+      "cause": "AttributeError: module 'os' has no attribute (Windows simulation)",
+      "class": "windows:direct-os-attr",
+      "file": "tests/test_acceptance_lit0104.py",
+      "frames": [
+        "runtime/registry.py:68: in _sibling",
+        "runtime/anomaly.py:66: in <module>",
+        "runtime/anomaly.py:62: in _load",
+        "runtime/attribution.py:79: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryError'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_acceptance_outbound.py",
+      "frames": [
+        "tests/test_acceptance_outbound.py:72: in _load",
+        "runtime/infrastructure.py:61: in <module>",
+        "runtime/infrastructure.py:56: in _load",
+        "runtime/health.py:65: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_action_model.py",
+      "frames": [
+        "tests/test_action_model.py:60: in <module>",
+        "tests/test_action_model.py:54: in _load",
+        "runtime/daemon.py:53: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_actor_context.py",
+      "frames": [
+        "tests/test_actor_context.py:54: in <module>",
+        "tests/test_actor_context.py:46: in _load",
+        "runtime/agent_control_store.py:138: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_admission.py",
+      "frames": [
+        "tests/test_admission.py:91: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_health' has no attribute 'Observation'",
+      "class": "windows:cascade-health",
+      "file": "tests/test_agent_control_router.py",
+      "frames": [
+        "fleet/agent_control_router.py:72: in _load",
+        "abilities/target.py:102: in <module>",
+        "abilities/target.py:97: in _load",
+        "abilities/provider_instance.py:126: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_agent_control_store.py",
+      "frames": [
+        "tests/test_agent_control_store.py:76: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_abilities_provider_instance' has no attribute 'now_utc'",
+      "class": "windows:cascade-provider-instance",
+      "file": "tests/test_agent_mcp.py",
+      "frames": [
+        "tests/test_agent_mcp.py:93: in <module>",
+        "tests/test_agent_mcp.py:77: in minted_context"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryError'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_alert_authorization.py",
+      "frames": [
+        "tests/test_alert_authorization.py:55: in _load",
+        "runtime/hygiene.py:54: in <module>",
+        "runtime/hygiene.py:49: in _load",
+        "runtime/inventory.py:61: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryError'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_alert_delivery.py",
+      "frames": [
+        "tests/test_alert_delivery.py:64: in _load",
+        "runtime/cli.py:75: in <module>",
+        "runtime/cli.py:69: in _load",
+        "runtime/probes.py:81: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_attribution' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_alerting.py",
+      "frames": [
+        "tests/test_alerting.py:56: in _load",
+        "runtime/resource_anomaly.py:85: in <module>",
+        "runtime/resource_anomaly.py:80: in _load",
+        "runtime/graph.py:69: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_anomaly' has no attribute 'DEFAULT_THRESHOLDS'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_anomaly.py",
+      "frames": [
+        "tests/test_anomaly.py:46: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_approval.py",
+      "frames": [
+        "tests/test_approval.py:52: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_attribution' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_card_cli.py",
+      "frames": [
+        "runtime/cli.py:69: in _load",
+        "runtime/view.py:63: in <module>",
+        "runtime/view.py:52: in _load",
+        "runtime/containers.py:102: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryError'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_card_fault.py",
+      "frames": [
+        "runtime/cli.py:69: in _load",
+        "runtime/environment.py:96: in <module>",
+        "runtime/environment.py:88: in _load",
+        "runtime/ownership_gate.py:76: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_continuation.py",
+      "frames": [
+        "tests/test_continuation.py:157: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_continuation_control.py",
+      "frames": [
+        "tests/test_continuation_control.py:102: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_continuation_mcp.py",
+      "frames": [
+        "tests/test_continuation_mcp.py:87: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'Registry'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_daemon.py",
+      "frames": [
+        "tests/test_daemon.py:82: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_delegation.py",
+      "frames": [
+        "tests/test_delegation.py:88: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_anomaly' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_desired_actual.py",
+      "frames": [
+        "tests/test_desired_actual.py:36: in <module>",
+        "tests/test_desired_actual.py:32: in _load",
+        "runtime/desired.py:89: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_daemon' has no attribute 'dispatch_attempts_mod'",
+      "class": "windows:cascade-daemon",
+      "file": "tests/test_dispatch_reconcile_gate.py",
+      "frames": [
+        "tests/test_dispatch_reconcile_gate.py:62: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'cryptography'",
+      "class": "env:cryptography",
+      "file": "tests/test_durable_delegation.py",
+      "frames": [
+        "tests/test_durable_delegation.py:11: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryError'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_filesystem_pressure.py",
+      "frames": [
+        "tests/test_filesystem_pressure.py:6: in <module>",
+        "runtime/inventory.py:61: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_fleet_v1_t10_producer_binding.py",
+      "frames": [
+        "tests/test_fleet_v1_t10_producer_binding.py:68: in <module>",
+        "tests/test_fleet_v1_t10_producer_binding.py:62: in _load",
+        "runtime/agent_control_store.py:138: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_infrastructure' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_focus_source.py",
+      "frames": [
+        "tests/test_focus_source.py:93: in <module>",
+        "runtime/view.py:71: in <module>",
+        "runtime/view.py:52: in _load",
+        "runtime/ports.py:70: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryInvalid'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_named_paths.py",
+      "frames": [
+        "tests/test_named_paths.py:65: in <module>",
+        "tests/test_named_paths.py:61: in _load",
+        "runtime/registration.py:87: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_ports' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_port_ownership.py",
+      "frames": [
+        "tests/test_port_ownership.py:56: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'Registry'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_product_ability_tree.py",
+      "frames": [
+        "tests/test_product_ability_tree.py:6: in <module>",
+        "tests/test_daemon.py:82: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryInvalid'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_registration_admission.py",
+      "frames": [
+        "tests/test_registration_admission.py:52: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'RegistryInvalid'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_registration_pipeline.py",
+      "frames": [
+        "tests/test_registration_pipeline.py:50: in <module>",
+        "tests/test_registration_pipeline.py:46: in _load",
+        "runtime/registration.py:87: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_containers' has no attribute 'build_registry_index'",
+      "class": "windows:cascade-containers",
+      "file": "tests/test_resource_graph.py",
+      "frames": [
+        "tests/test_resource_graph.py:58: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'Registry'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_runtime.py",
+      "frames": [
+        "tests/test_runtime.py:59: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_abilities_target' has no attribute 'runtime_ids'",
+      "class": "windows:cascade-target",
+      "file": "tests/test_runtime_binding.py",
+      "frames": [
+        "tests/test_runtime_binding.py:72: in <module>",
+        "abilities/runtime_binding.py:443: in observation",
+        "abilities/runtime_binding.py:139: in runtime_ids"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_runtime_truth.py",
+      "frames": [
+        "tests/test_runtime_truth.py:92: in <module>",
+        "runtime/daemon.py:53: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'pwd' (Windows simulation)",
+      "class": "windows:direct-pwd",
+      "file": "tests/test_trust_binding.py",
+      "frames": [
+        "tests/test_trust_binding.py:26: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_registry' has no attribute 'Registry'",
+      "class": "windows:cascade-registry(sysconf)",
+      "file": "tests/test_tunnel_lifecycle.py",
+      "frames": [
+        "tests/test_tunnel_lifecycle.py:57: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_infrastructure' has no attribute 'FACT'",
+      "class": "windows:cascade-attribution(sysconf)",
+      "file": "tests/test_tunnel_observation.py",
+      "frames": [
+        "tests/test_tunnel_observation.py:64: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_inventory' has no attribute 'Inventory'",
+      "class": "windows:cascade-inventory",
+      "file": "tests/test_user_observation.py",
+      "frames": [
+        "tests/test_user_observation.py:85: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_abilities_provider_instance' has no attribute 'now_utc'",
+      "class": "windows:cascade-provider-instance",
+      "file": "tests/test_v1_write_fence.py",
+      "frames": [
+        "tests/test_v1_write_fence.py:55: in <module>",
+        "tests/test_agent_control_router.py:71: in <module>",
+        "tests/test_agent_control_router.py:55: in minted_context"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_wake.py",
+      "frames": [
+        "tests/test_wake.py:102: in <module>"
+      ]
+    },
+    {
+      "cause": "AttributeError: module 'serveros_runtime_agent_control_store' has no attribute 'AgentControlStore'",
+      "class": "windows:cascade-store-fcntl",
+      "file": "tests/test_work_delegate.py",
+      "frames": [
+        "tests/test_work_delegate.py:99: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_cognitive_replay.py",
+      "frames": [
+        "tests/test_workengine_v3_cognitive_replay.py:45: in <module>",
+        "workengine/cli.py:18: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_dependency_boundary.py",
+      "frames": [
+        "tests/test_workengine_v3_dependency_boundary.py:34: in <module>",
+        "workengine/cli.py:18: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_federation.py",
+      "frames": [
+        "tests/test_workengine_v3_federation.py:13: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_finalize.py",
+      "frames": [
+        "tests/test_workengine_v3_finalize.py:11: in <module>",
+        "workengine/cli.py:18: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_information.py",
+      "frames": [
+        "tests/test_workengine_v3_information.py:16: in <module>",
+        "workengine/cli.py:18: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    },
+    {
+      "cause": "ModuleNotFoundError: No module named 'fcntl' (Windows simulation)",
+      "class": "windows:direct-fcntl",
+      "file": "tests/test_workengine_v3_run_cancel.py",
+      "frames": [
+        "tests/test_workengine_v3_run_cancel.py:10: in <module>",
+        "workengine/cli.py:18: in <module>",
+        "workengine/federation.py:6: in <module>"
+      ]
+    }
+  ],
+  "reported_windows_errors": 56,
+  "schema": "serveros/fleet-v1-windows-collection-census.v1",
+  "simulated_runs": {
+    "console_script_pytest": {
+      "command": "PYTHONPATH=<plugin-dir> pytest --collect-only -q -p no:cacheprovider -p win_sim_plugin",
+      "errors": 62,
+      "note": "includes 17 workengine/intake path failures, 3 runtime path failures, 1 cryptography; 39 Windows-class",
+      "tests_collected": 6248
+    },
+    "python_m_pytest": {
+      "classes": {
+        "env:cryptography": 1,
+        "windows:cascade-attribution(sysconf)": 7,
+        "windows:cascade-containers": 1,
+        "windows:cascade-daemon": 1,
+        "windows:cascade-health": 1,
+        "windows:cascade-inventory": 1,
+        "windows:cascade-provider-instance": 2,
+        "windows:cascade-registry(sysconf)": 12,
+        "windows:cascade-store-fcntl": 9,
+        "windows:cascade-target": 1,
+        "windows:direct-fcntl": 10,
+        "windows:direct-os-attr": 1,
+        "windows:direct-pwd": 1
+      },
+      "command": "PYTHONPATH=<plugin-dir> python -m pytest --collect-only -q -p no:cacheprovider -p win_sim_plugin",
+      "errors": 48,
+      "tests_collected": 6474
+    }
+  },
+  "static_census": {
+    "collection_blocking_test_modules_static_superset": 73,
+    "note": "static scan is a superset: it follows dynamic _load calls and can over-approximate ambiguous basenames",
+    "test_modules": 212
+  },
+  "verdict": "ANALYSIS_ONLY / WINDOWS_NOT_RUN / NOT_SUPPORTED_CLAIM"
+}
