@@ -287,8 +287,7 @@
           "model_provider": "openai",
           "cliVersion": "0.160.0",
           "permissionMode": null,
-          "permissionMode_provenance": "UNKNOWN",
-          "workspace": "/data/home/vince/workspace"
+          "permissionMode_provenance": "UNKNOWN"
         },
         {
           "alias": "codex-thread-2",
@@ -302,8 +301,7 @@
           "model_provider": "openai",
           "cliVersion": "0.160.0",
           "permissionMode": null,
-          "permissionMode_provenance": "UNKNOWN",
-          "workspace": "/data/home/vince/workspace"
+          "permissionMode_provenance": "UNKNOWN"
         },
         {
           "alias": "codex-thread-3",
