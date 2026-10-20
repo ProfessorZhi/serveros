@@ -13,9 +13,9 @@ credential or account is touched.
 | R1 product candidate | #356 `b4020b73e6b7ec2b1f6301471a9872f8864c1643` (base #311 `34b215c`) |
 | R1 downstream fix | #361 `6a27204300753f129719103d0aee811ac675622a` (base #356) |
 | QA2 audit | #360 `2888d8bda6828bd2c87c68a770440933fdb4ae23` (`QA_PARTIAL`) |
-| QA AG re-run | #362 `d0247f749f` (S1/R1 RED confirmed at the original heads) |
+| QA AG re-run | #362 `dac5f8ae5ff160aeed1c4a268346686f78029021` (S1/R1 RED at originals; GREEN at fix heads) |
 | QA AF RC-v7 gate | #359 `467f290ec6e9db4ddaf826ef00e8ddaea3751a88` (`QA_PARTIAL`) |
-| S1 downstream fix | **no published PR at this snapshot** |
+| S1 downstream fix | #363 `8840f416169b22122450fb61a85f2b88c73715a0` (QA2 6/6 GREEN; **consumer seam RED**) |
 
 ## 1. Dependency DAG and ancestry
 
@@ -83,8 +83,12 @@ unbound**: no owner resolver → `BLOCKED_OWNER_POLICY`, nothing stored;
   thread_known)`, and binds the writer epoch/token. Production remains
   `BLOCKED_PROVIDER_SOURCE` / `BLOCKED_OWNER_SIGNATURE`. **Not independently
   QA'd at #361 yet.**
-- **S1:** **no downstream fix PR is published** as of this snapshot. #358
-  remains RED; it must not be treated as release-ready.
+- **S1:** #363 `8840f41` is published and closes the QA2 6/6 findings at its
+  exact head, but the **cross-module consumer seam is RED** (§7): the daemon
+  returns `verified:true` with `atomicity=BLOCKED_OWNER_COMMIT_SEAM`, and the
+  WorkEngine adapter writes one lease after a revocation. A new atomic-seam
+  fix PR is **not published**; #358/#363 must not be treated as positive
+  authority.
 
 ## 3. Minimal safe composition plan for a future RC-v8
 
