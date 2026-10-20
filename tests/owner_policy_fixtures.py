@@ -80,9 +80,9 @@ class StaticOwnerPolicyResolver:
 
     def resolve(self, *, policy_ref=None, grant=None, context=None, peer=None,
                 project=None, item_ref=None, action=None, now=None):
-        if policy_ref is None and self.default is not None:
-            return self.default
-        return self.policies.get(str(policy_ref))
+        # A missing ref falls back to the fixture's default. The production
+        # resolver has no such fallback; this is a test double only.
+        return self.policies.get(str(policy_ref), self.default)
 
 
 def a_policy(*, policy_ref="policy:test", os_principal, actor_ref,

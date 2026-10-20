@@ -2042,7 +2042,37 @@ class AgentControlStore:
             if existing is not None:
                 issuance = existing.get("issuance") or {}
                 if issuance.get("evidence") == evidence:
-                    # Readback only: a retry never replaces scope or clears revocation.
+                    # Readback only: a retry never replaces scope or clears
+                    # revocation. It is NOT a fresh authorization, so the live
+                    # owner policy is re-read before the old grant is returned:
+                    # a policy revoked/expired since issuance makes a replay
+                    # `issued: false`, never `issued: true`.
+                    if owner_policy_resolver is not None:
+                        policy_mod = _owner_policy_module()
+                        peer = ({"uid": int(str(os_principal).split(":", 1)[1])}
+                                if os_principal is not None
+                                and re.fullmatch(r"uid:\d+", str(os_principal))
+                                else None)
+                        context = self._data["contexts"].get(
+                            existing.get("delegated_by"))
+                        try:
+                            policy = owner_policy_resolver.resolve(
+                                policy_ref=existing.get("owner_policy_ref"),
+                                grant=existing, context=context, peer=peer,
+                                project=None, item_ref=None, action=None,
+                                now=now)
+                        except Exception as exc:  # noqa: BLE001 - a refusal
+                            raise StoreError(
+                                f"BLOCKED_OWNER_POLICY: the owner-policy "
+                                f"resolver did not answer "
+                                f"({type(exc).__name__})") from exc
+                        refusal = policy_mod.check_policy_binding(
+                            grant=existing, context=context, peer=peer,
+                            project=None, item_ref=None, action=None, now=now,
+                            policy=policy)
+                        if refusal is not None:
+                            raise StoreError(
+                                f"{refusal['reason']}: {refusal['because']}")
                     return json.loads(json.dumps(existing))
                 raise StoreError(f"{ref} already has a grant; issuance cannot replace or upgrade it")
             try:
@@ -2055,6 +2085,18 @@ class AgentControlStore:
                     "issuing call, never taken from the signed payload. A document "
                     "that names its own OS principal is one the signer could have "
                     "written for somebody else")
+            # The verifier's allowlist is not the only guard. The provider
+            # approval may not name any field the OWNER binding writes: the
+            # store drops them and records the refusal, so a future/relaxed
+            # verifier cannot smuggle `owner_policy_*`/`actor_ref`/`epoch`/
+            # revocation into a grant. `os_principal` is refused above.
+            smuggled_owner_fields = sorted(
+                set(approved) & (set(OWNER_WRITTEN_GRANT_FIELDS)
+                                 - {"os_principal"}))
+            if smuggled_owner_fields:
+                approved = {
+                    key: value for key, value in approved.items()
+                    if key not in smuggled_owner_fields}
             policy_fields = {}
             if owner_policy_resolver is not None:
                 if (os_principal is None
@@ -2091,8 +2133,12 @@ class AgentControlStore:
                         # Minted HERE, by the store, from a durable monotonic
                         # counter — never supplied by a caller.
                         "epoch": self._next_grant_epoch(),
-                        "issuance": {"schema": actor.ISSUANCE_SCHEMA,
-                                     "accepted_at": now, "evidence": evidence}}
+                        "issuance": {
+                            "schema": actor.ISSUANCE_SCHEMA,
+                            "accepted_at": now, "evidence": evidence,
+                            **({"refused_owner_fields": smuggled_owner_fields}
+                               if smuggled_owner_fields else {}),
+                        }}
             if os_principal is not None:
                 if not re.fullmatch(r"uid:\d+", str(os_principal)):
                     raise StoreError(
