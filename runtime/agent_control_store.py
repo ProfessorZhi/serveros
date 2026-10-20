@@ -301,7 +301,17 @@ REVOCATION_FIELDS = ("revoked", "revoked_at", "revoked_reason")
 #: epoch a caller could choose to keep, which is exactly the generation fence
 #: Work Engine #14's `OwnerVerifiedLease` asks for. Excluded from the
 #: write-once comparison on both sides, so a re-report stays idempotent.
-OWNER_WRITTEN_GRANT_FIELDS = REVOCATION_FIELDS + ("epoch", "os_principal")
+OWNER_WRITTEN_GRANT_FIELDS = REVOCATION_FIELDS + (
+    "epoch", "os_principal",
+    # The owner-policy binding is written by `issue_grant` from the trusted
+    # owner resolver and the kernel peer of the issuing call. A standing
+    # delegation (`put_grant`) cannot name it, for the same reason it cannot
+    # name `os_principal`: a binding a caller could choose is one the caller
+    # could claim for somebody else.
+    "owner_policy_ref", "owner_policy_epoch",
+    "owner_policy_issued_by", "owner_policy_issued_at",
+    "actor_ref",
+)
 
 # The three phases of one admission, in the only order they can happen. Each is
 # a DIFFERENT store's answer being reported back, which is why they are three
@@ -425,6 +435,18 @@ def _actor_module():
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             name, Path(__file__).resolve().parents[1] / "context/actor.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _owner_policy_module():
+    """`runtime/owner_policy.py`, under the daemon's loader name."""
+    name = "serveros_runtime_owner_policy"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("owner_policy.py"))
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
@@ -1990,7 +2012,8 @@ class AgentControlStore:
         return current
 
     def issue_grant(self, evidence: dict, *, now: str,
-                    os_principal: str | None = None) -> dict:
+                    os_principal: str | None = None,
+                    owner_policy_resolver=None) -> dict:
         """Persist a provider-approved scope and its verified issuance atomically.
 
         `os_principal` is the OS principal the calling process was attested as at
@@ -2000,6 +2023,15 @@ class AgentControlStore:
         that has no peer (an in-process call) stores the grant UNBOUND, and the
         read refuses it. That is the fail-closed side: an unbound grant
         authorizes nothing, and nothing here backfills one.
+
+        `owner_policy_resolver` is the OWNER'S uid -> actor -> scope binding.
+        When it is supplied, the grant is issued only if the live policy covers
+        the issuing kernel uid, the verified context's actor, and the whole
+        approved scope; the grant stores the policy ref, policy epoch and the
+        audited actor. A resolver that returns None/raises, or a policy that
+        does not match, refuses `BLOCKED_OWNER_POLICY` and writes nothing. The
+        resolver is a read; it never mints a grant. A daemon with no resolver
+        refuses at the route before calling here.
         """
         actor = _actor_module()
         with self._mutation():
@@ -2023,7 +2055,39 @@ class AgentControlStore:
                     "issuing call, never taken from the signed payload. A document "
                     "that names its own OS principal is one the signer could have "
                     "written for somebody else")
-            recorded = {**approved, "revoked": False,
+            policy_fields = {}
+            if owner_policy_resolver is not None:
+                if (os_principal is None
+                        or not re.fullmatch(r"uid:\d+", str(os_principal))):
+                    raise StoreError(
+                        "BLOCKED_OWNER_POLICY: a grant with an owner-policy "
+                        "binding must come from a call with a kernel peer; an "
+                        "in-process call has no uid to bind")
+                policy_mod = _owner_policy_module()
+                peer = {"uid": int(str(os_principal).split(":", 1)[1])}
+                try:
+                    policy = owner_policy_resolver.resolve(
+                        policy_ref=None, grant=approved, context=context,
+                        peer=peer, project=None, item_ref=None, action=None,
+                        now=now)
+                except Exception as exc:  # noqa: BLE001 - a resolver failure is a refusal
+                    raise StoreError(
+                        f"BLOCKED_OWNER_POLICY: the owner-policy resolver did "
+                        f"not answer ({type(exc).__name__})") from exc
+                refusal = policy_mod.check_issue_policy(
+                    grant=approved, context=context, peer=peer, now=now,
+                    policy=policy)
+                if refusal is not None:
+                    raise StoreError(
+                        f"{refusal['reason']}: {refusal['because']}")
+                policy_fields = {
+                    "owner_policy_ref": policy.policy_ref,
+                    "owner_policy_epoch": int(policy.epoch),
+                    "owner_policy_issued_by": str(policy.issued_by),
+                    "owner_policy_issued_at": str(policy.issued_at),
+                    "actor_ref": str(context["actor_ref"]),
+                }
+            recorded = {**approved, **policy_fields, "revoked": False,
                         # Minted HERE, by the store, from a durable monotonic
                         # counter — never supplied by a caller.
                         "epoch": self._next_grant_epoch(),
@@ -2095,6 +2159,16 @@ class AgentControlStore:
                 "caller could claim for somebody else. A grant stored here is "
                 "UNBOUND, and the verify read refuses it until it is issued "
                 "through a call that has a peer")
+        for field in ("owner_policy_ref", "owner_policy_epoch",
+                      "owner_policy_issued_by", "owner_policy_issued_at",
+                      "actor_ref"):
+            if field in record:
+                raise StoreError(
+                    f"a standing delegation may not name its own `{field}`. The "
+                    f"owner binding is written by `issue_grant` from the owner "
+                    f"policy resolver and the verified context; a binding a "
+                    f"caller could choose is one the caller could claim for "
+                    f"somebody else")
         smuggled = [f for f in REVOCATION_FIELDS
                     if f in record and record[f] != (False if f == "revoked" else None)]
         if smuggled:

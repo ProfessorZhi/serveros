@@ -460,6 +460,11 @@ view_mod = _load("serveros_runtime_view", "view.py")
 # decision a security boundary rests on be tested without a filesystem.
 agent_control_store_mod = _load("serveros_runtime_agent_control_store",
                                 "agent_control_store.py")
+# The owner-issued uid -> actor -> scope binding. A CONTRACT and pure check,
+# not a registry: production binds no resolver and every issue/verify refuses
+# BLOCKED_OWNER_POLICY. Loaded under the same name the store uses, so the
+# `OwnerPolicy` class is one object.
+owner_policy_mod = _load("serveros_runtime_owner_policy", "owner_policy.py")
 # §21. The alert state machine. Loaded here for the same reason the control
 # store is: the daemon is what runs the tick, and the tick is what keeps the
 # register current. It is NOT loaded so the daemon can send anything — the
@@ -883,7 +888,8 @@ class Daemon:
                  host=None, inventory=None, enable_reconcile: bool = False,
                  runner=None, now=None, sleep=None, log=None,
                  dispatch_observation_source=None,
-                 dispatch_grant_verifier=None) -> None:
+                 dispatch_grant_verifier=None,
+                 owner_policy_resolver=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
@@ -925,6 +931,16 @@ class Daemon:
         # object.
         self._dispatch_observation_source = dispatch_observation_source
         self._dispatch_grant_verifier = dispatch_grant_verifier
+        # #237 B3. The OWNER'S uid -> actor -> scope binding. This is the
+        # remaining fact serveros cannot derive: a kernel uid and a
+        # provider-signed human delegation do not, by themselves, say the owner
+        # authorized that uid to act as that actor for that project/Item/action.
+        # Production binds no resolver. Both `agent.grant.issue` and
+        # `agent.lease.authority.verify` then refuse `BLOCKED_OWNER_POLICY`;
+        # nothing here infers a policy from a uid or a context, and no grant is
+        # minted for an unknown user. A resolver is a READ of an owner-issued
+        # fact, never a second grant store.
+        self._owner_policy_resolver = owner_policy_resolver
 
         self.budget = Budget(self.state_dir / "health/reconcile-state.json", now=self._now)
         # Passed `runner`, not `host`: the actuator must not be reachable
@@ -2990,10 +3006,18 @@ class Daemon:
         """
         if set(params) != {"evidence"}:
             raise actor_mod.Rejected("agent.grant.issue accepts signed evidence only")
+        if self._owner_policy_resolver is None:
+            return {"issued": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "detail": ("no owner-issued uid->actor->scope policy "
+                               "resolver is bound to this daemon; a "
+                               "provider-signed delegation alone does not "
+                               "authorize a kernel uid, and no grant is minted")}
         record = self.control_store().issue_grant(
             params["evidence"], now=_iso(self._now()),
-            os_principal=agent_control_store_mod.os_principal_of(_CALLER_PEER.get()))
-        return {"grant": record, "basis": "provider-signed-delegation"}
+            os_principal=agent_control_store_mod.os_principal_of(_CALLER_PEER.get()),
+            owner_policy_resolver=self._owner_policy_resolver)
+        return {"issued": True, "grant": record,
+                "basis": "provider-signed-delegation"}
 
     def _r_agent_lease_authority_verify(self, params) -> dict:
         """May this caller act as this grant's principal, right now? (#237 B3)
@@ -3013,20 +3037,61 @@ class Daemon:
                     "because": ("no context_ref was presented. The actor behind a "
                                 "grant is resolved from a context ServerOS minted, "
                                 "and a caller's word is not one")}
-        resolved = actor_mod.resolve(ref, self.control_store().contexts())
+        store = self.control_store()
+        resolved = actor_mod.resolve(ref, store.contexts())
         if not resolved["found"]:
             return {"verified": False, "reason": "UNTRUSTED_ACTOR",
                     "because": resolved["because"]}
-        return agent_control_store_mod.verify_live_grant(
-            self.control_store().grants(),
+        now_iso = _iso(self._now())
+        peer = _CALLER_PEER.get()
+        result = agent_control_store_mod.verify_live_grant(
+            store.grants(),
             grant_ref=params.get("grant_ref"),
             context=resolved["context"],
-            peer=_CALLER_PEER.get(),
+            peer=peer,
             action=params.get("action"),
             project=params.get("project"),
             item_ref=params.get("item_ref"),
             expected_epoch=params.get("expected_epoch"),
-            now=_iso(self._now()))
+            now=now_iso)
+        if not result.get("verified"):
+            # Preserve the #272 refusal word: the grant's own epoch, window,
+            # os_principal, revocation and scope are checked there first.
+            return result
+        # The owner's uid -> actor -> scope binding. A grant with no binding,
+        # or a daemon with no owner resolver, is BLOCKED_OWNER_POLICY: the
+        # owner-to-uid relation is UNKNOWN and authorizes nothing. A resolver
+        # is a read of the owner's fact; it never mints a grant.
+        grant = store.get_grant(str(params.get("grant_ref") or "").strip()) or {}
+        resolver = self._owner_policy_resolver
+        if resolver is None:
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": ("no owner-issued uid->actor->scope policy "
+                                "resolver is bound to this daemon; the grant "
+                                "cannot be tied to this kernel uid")}
+        policy_ref = str(grant.get("owner_policy_ref") or "").strip()
+        if not policy_ref:
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": ("the grant carries no owner-policy binding; "
+                                "an unbound uid->actor mapping is UNKNOWN and "
+                                "authorizes nothing")}
+        try:
+            policy = resolver.resolve(
+                policy_ref=policy_ref, grant=grant,
+                context=resolved["context"], peer=peer,
+                project=params.get("project"), item_ref=params.get("item_ref"),
+                action=params.get("action"), now=now_iso)
+        except Exception as exc:  # noqa: BLE001 - a resolver failure is a refusal
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": (f"the owner-policy resolver did not answer "
+                                f"({type(exc).__name__})")}
+        refusal = owner_policy_mod.check_policy_binding(
+            grant=grant, context=resolved["context"], peer=peer,
+            project=params.get("project"), item_ref=params.get("item_ref"),
+            action=params.get("action"), now=now_iso, policy=policy)
+        if refusal is not None:
+            return refusal
+        return {**result, "owner_policy": owner_policy_mod.audit(policy)}
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.
