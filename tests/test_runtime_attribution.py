@@ -24,7 +24,10 @@ than as an absence.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -740,3 +743,79 @@ def test_a_group_with_no_session_reports_unknown_origin_rather_than_nothing():
     chain = graph.build_chain(graph.build_groups(table)[0], table, host=host)
     assert chain["device"]["status"] == "UNKNOWN"
     assert chain["transport"]["status"] == "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
+# Platform: a missing sysconf is UNKNOWN, never a plausible default
+# ---------------------------------------------------------------------------
+
+
+def test_attribution_imports_where_the_platform_has_no_sysconf():
+    """Windows has no `os.sysconf`. The module must import anyway.
+
+    The regression was an `AttributeError` raised at import, which took every
+    reader that loads attribution with it — including `serverosctl --help`,
+    which never asks for a clock tick. Run in a subprocess so deleting the
+    attribute cannot leak into other tests.
+    """
+    code = textwrap.dedent(f"""
+        import os
+        del os.sysconf
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "attribution_without_sysconf", {str(RUNTIME / "attribution.py")!r})
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.CLK_TCK is None, module.CLK_TCK
+        print("IMPORTED_WITHOUT_SYSCONF")
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        timeout=30, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "IMPORTED_WITHOUT_SYSCONF" in result.stdout
+
+
+def test_a_missing_clock_tick_marks_cpu_unknown(monkeypatch):
+    """No clock tick is not 100 ticks. A made-up HZ would turn "could not
+    measure" into a number a reader would act on."""
+    monkeypatch.setattr(att, "CLK_TCK", None)
+    host = FakeHost({}, uptime=1000.0)
+    assert att.lifetime_cpu_percent(400000, 100000, 0, 1000.0) is None
+    assert att._age_seconds(0, host) is None
+
+
+def test_process_table_refuses_when_the_clock_tick_is_unknown(monkeypatch):
+    """The table is a measurement; without a tick it cannot be taken, so it
+    says so instead of returning zeroed ages and CPU."""
+    monkeypatch.setattr(att, "CLK_TCK", None)
+    with pytest.raises(att.AttributionError, match="SC_CLK_TCK"):
+        att.process_table(FakeHost({}))
+
+
+def test_page_size_refuses_rather_than_raising_attribute_error(monkeypatch):
+    monkeypatch.delattr(os, "sysconf", raising=False)
+    with pytest.raises(att.AttributionError, match="SC_PAGE_SIZE"):
+        att.LiveHost().page_size()
+
+
+def test_serverosctl_help_imports_where_the_platform_has_no_sysconf():
+    """The CLI loads attribution through registry/anomaly before argparse
+    runs. `--help` must survive a platform without sysconf."""
+    code = textwrap.dedent(f"""
+        import os
+        del os.sysconf
+        import sys
+        sys.path.insert(0, {str(RUNTIME)!r})
+        import cli
+        try:
+            cli.main(["--help"])
+        except SystemExit as exc:
+            raise SystemExit(0 if exc.code == 0 else exc.code)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        timeout=60, cwd=str(REPO),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "usage: serverosctl" in result.stdout
