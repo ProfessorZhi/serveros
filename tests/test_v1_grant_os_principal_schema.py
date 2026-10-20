@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+import owner_policy_fixtures as opf
+
 REPO = Path(__file__).resolve().parent.parent
 RUNTIME = REPO / "runtime"
 ITEM = "SRV-0001"
@@ -95,7 +97,9 @@ def a_registry():
 def daemon(tmp_path):
     return daemon_mod.Daemon(
         a_registry(), state_dir=tmp_path / "state",
-        socket_path=tmp_path / "run/serveros.sock", log=lambda message: None)
+        socket_path=tmp_path / "run/serveros.sock", log=lambda message: None,
+        # A TEST DOUBLE; the owner gate has its own strict tests.
+        owner_policy_resolver=opf.PermissiveOwnerPolicyResolver())
 
 
 def iso(daemon, offset_s: float = 0.0) -> str:
@@ -141,6 +145,14 @@ def a_bound_grant(daemon, context, *, ref="grant:1", uid=None,
         "actions": list(actions),
         "revoked": False,
         "epoch": 1,
+        # The owner binding the trusted issue path stores; this fixture writes
+        # it under the store lock so the verify read (production code) can
+        # exercise the owner gate.
+        "owner_policy_ref": "policy:test",
+        "owner_policy_epoch": 1,
+        "owner_policy_issued_by": "owner:test",
+        "owner_policy_issued_at": iso(daemon),
+        "actor_ref": context["actor_ref"],
     }
     bound = (f"uid:{os.getuid() if uid is None else uid}"
              if os_principal == "auto" else os_principal)
