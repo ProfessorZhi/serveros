@@ -144,6 +144,12 @@ acceptance.
 
 ## 6. External approval / wiring blocker
 
+The owner-backed positive is additionally `BLOCKED_OWNER_ATOMIC_AUTHORITY`:
+there is no owner-issued policy/epoch commit store and no lease commit in the
+same serializable transaction as the epoch check. See
+`docs/s1-owner-atomic-commit-contract.md` and the runnable
+`tests/probes/s1_owner_atomic_commit_probe.py`.
+
 Production remains `BLOCKED_TRUST_SOURCE` because:
 
 * No owner-approved Work Engine caller constructs this adapter. The CLI and MCP

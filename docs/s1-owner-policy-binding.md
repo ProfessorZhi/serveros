@@ -265,15 +265,20 @@ no production owner. The synthetic-peer negative is `LOCAL` and labelled
 * **Two real uids are `BLOCKED_MULTIPRINCIPAL_NOT_RUN`.** The test process is
   uid 1002 with no passwordless sudo/setuid; synthetic peer metadata is only a
   LOCAL negative, never REAL_OS.
-* **Atomic owner-authority commit is `BLOCKED_OWNER_COMMIT_SEAM`.** The
-  existing ledger has no owner-authority snapshot/epoch seam, so the verify
-  path re-reads and refuses on change but cannot make the resolve→return window
-  atomic. A protocol requirement remains: an upstream owner issuance interface
-  that commits an authority snapshot/generation the verify path can pin in one
-  read. Until then the daemon returns `verified: false` with that reason and a
+* **Atomic owner-authority commit is `BLOCKED_OWNER_COMMIT_SEAM` /
+  `BLOCKED_OWNER_ATOMIC_AUTHORITY`.** The existing ledger has no
+  owner-authority snapshot/epoch seam, so the verify path re-reads and refuses
+  on change but cannot make the resolve→return window atomic. A protocol
+  requirement remains: an upstream owner issuance interface that commits an
+  authority snapshot/generation the verify path can pin in one read, and a
+  lease commit in the same serializable transaction as that epoch check. Until
+  then the daemon returns `verified: false` with that reason and a
   point-in-time audit only; the WorkEngine adapter requires the exact
   `COMMIT_FENCED` marker for any owner-backed reply, and no production code
   emits it. No synthetic atomicity is promoted to production.
+  The exact trust map, interface contract, race matrix and blocking
+  dependencies are in `docs/s1-owner-atomic-commit-contract.md`; the runnable
+  receipt is `tests/probes/s1_owner_atomic_commit_probe.py`.
 * The `LeaseGrant` window/uid/epoch checks are #272's; this slice adds the
   owner binding, not a second grant source.
 * No real provider, model request, credential or paid send; no merge,
