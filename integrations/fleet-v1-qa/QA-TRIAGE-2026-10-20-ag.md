@@ -230,11 +230,37 @@ adds the adapter marker. Same real-chain probe:
 | no resolver | `BLOCKED_OWNER_POLICY`, 0 leases |
 | no trusted authority | `BLOCKED_TRUST_SOURCE`, 0 leases |
 
-The probe is **10/10 GREEN**. This closes the negative seam; it does **not**
-create a positive owner authority: no production parent emits
-`COMMIT_FENCED`, so V1 Work Engine lease authority remains
-`BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`. The #363 RED and #364 GREEN are
-both at exact exported SHAs; no product source was edited by this lane.
+A repeat run at the fixed head reproduced **10/10 GREEN** (especially
+`race/no-lease` and `race/refused-commit-seam`); R1 #361 was also re-run at
+**25/25**. This closes the negative seam; it does **not** create a positive
+owner authority: no production parent emits `COMMIT_FENCED`, so V1 Work Engine
+lease authority remains `BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`. The #363
+RED and #364 GREEN are both at exact exported SHAs; no product source was
+edited by this lane.
+
+### 5d. QA2 controls at #364: 34/36 is re-attribution, not masking
+
+The old QA2 S1 controls were 36/36 at #358; at #364 exactly two fail:
+
+| Control | Actual | Expected (old) |
+|---|---|---|
+| `valid-policy-10-field-dto` | `verified:false`, `BLOCKED_OWNER_COMMIT_SEAM`, no grant | `verified:true`, full 10-field grant |
+| `caller-actor-ref-ignored` | `verified:false`, `BLOCKED_OWNER_COMMIT_SEAM` | `verified:true` |
+
+These are the route-level owner-backed positives that #364 intentionally turns
+into refusals. The author did not delete the #272 coverage: the diff moves
+those DTO/epoch/uid positives to `verify_store`, which calls the production
+`verify_live_grant` at its own boundary, and renames the route test to
+`..._is_commit_fence_blocked`, asserting `verified:false`, the exact reason,
+`point_in_time:true`, and **no grant**. The QA2 findings remain **6/6 pass**,
+and the independent real-chain seam probe is **10/10** with zero leases.
+
+Conclusion: the 34/36 is the expected semantic re-attribution of a
+route-level positive to a commit-fence refusal, not a covered-up failure — but
+it must not be quoted as 36/36, and it does not create a positive lease
+authority. The underlying #272 grant DTO/epoch/uid checks still run at their
+own boundary; the owner-backed route positive remains unavailable until a real
+`COMMIT_FENCED` producer exists.
 
 ## 6. Judgment
 
@@ -274,5 +300,9 @@ authority is not.
 | R1 #361 v1 probe | — | incompatible with v2 result shape (documented above) |
 | S1 #364 author | 0 | 97 passed, 1 skipped, 23 subtests |
 | S1 #364 seam probe | 0 | `r19-seam-364.log` (10/10 GREEN) |
+| S1 #364 seam recheck | 0 | `r20-seam-364-recheck.log` (10/10 GREEN) |
+| S1 #364 QA2 controls | 1 | 34/36; 2 re-attributed route positives |
+| S1 #364 QA2 findings | 0 | 6/6 pass |
+| R1 #361 recheck | 0 | `r20-r1-361-recheck.log` (25/25) |
 | #363 seam RED | 1 | `r18-seam-363.log` (race wrote 1 lease) |
 | Fix-PR poll | — | `r16-s1r1-fix-poll.log`; `r18-seam-fix-poll.log` |
