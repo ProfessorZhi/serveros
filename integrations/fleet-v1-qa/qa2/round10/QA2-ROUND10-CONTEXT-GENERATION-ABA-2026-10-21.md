@@ -71,6 +71,13 @@ a composed finalize/effect; counted as neither RED nor GREEN.
 | round-6 production findings | 1 | 3 RED: legacy P0×2, peer P2 |
 | `check_scope.py` | 0 | changed=3 allowed=3 forbidden=0 |
 
+Status: **PASS** = author 62, round10 controls 43, round-6 controls 29,
+`check_scope`; **FAIL** = round10 findings 10 (8×P1, 2×P2), round-6 production
+findings 3 (P0×2, P2); **SKIP** = 0; **NOT_RUN** = real owner/key/reissue,
+two real uids, kernel `SO_PEERCRED`, production wiring/migration, real Windows,
+Provider/OAuth, power-loss/fsync, composed finalize/effect, and the PR's
+`#364 production fail-closed control` claim (not independently rerun here).
+
 ## 4. What #379 genuinely fixes (GREEN)
 
 - API ABA: `rebind_context` CAS advances `context_epoch` 1→2→3 for grant and
