@@ -173,7 +173,7 @@ Two causes must be separated:
    `grant_epoch`/`policy_epoch`; the prototype has no owner reissue interface,
    so it cannot manufacture that generation itself.
 
-The README (lines 116–120) explicitly discloses: “a same-epoch in-place
+The README (lines 117–121) explicitly discloses: “a same-epoch in-place
 grant/policy content mutation beyond actor/ref/epoch is not fully detectable
 and remains an owner-protocol requirement.” D is therefore classified **P2**
 (disclosed, prototype-local detection gap) plus **PRODUCTION_DEPENDENCY**, not
