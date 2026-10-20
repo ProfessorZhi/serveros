@@ -36,12 +36,13 @@
 | `CLIENT-TURN-ID-2026-10-20.md` | S2 #245 交互：client turn id 与 provider readback 的证据矩阵 |
 | `client_turn_id.py` | 合成 Codex readback 源；`SCHEMA_ONLY`，无 IO / send |
 | `fixtures/client-turn-id-2026-10-20.json` | 16 个 readback case + 7 个 capability case |
-| `RECONCILE-SOURCE-2026-10-20.md` | S2 #245 reconcile source 能力矩阵与 FAIL CLOSED 回归 |
-| `reconcile_source_gate.py` | 纯 gate；默认不发送/不重试/不自动 settle |
-| `fixtures/reconcile-source-2026-10-20.json` | owner-signed observation 负测与 capability matrix |
+| `RECONCILE-SOURCE-2026-10-20.md` | v1 能力矩阵（historical；已被 hardening 取代） |
+| `RECONCILE-SOURCE-HARDENING-2026-10-20.md` | QA2 #360 修复：生产字段恒定拒绝、synthetic 独立、8 witnesses GREEN |
+| `reconcile_source_gate.py` | v2 纯 gate；共享生产字段恒定拒绝 |
+| `fixtures/reconcile-source-2026-10-20.json` | v2 fixture：28 cases + capability matrix + QA2 witnesses |
 | `tests/test_fleet_v1_runtime_authorization.py` | 69 个断言/参数化用例，含拒绝路径与纯度守卫 |
 | `tests/test_fleet_v1_runtime_client_turn_id.py` | 30 个断言，含 forged id / restart / mismatch |
-| `tests/test_fleet_v1_runtime_reconcile_source.py` | 35 个断言，含 forged locator / cross-owner / project / payload / parent |
+| `tests/test_fleet_v1_runtime_reconcile_source.py` | 61 个断言/参数化用例，含 QA2 8 witnesses、forged locator/cross-owner/project/payload/parent |
 
 ## 结论摘要（经证据核验）
 
@@ -107,38 +108,47 @@
 - BotMux / human-control 是 `RESPONSE_ID_ONLY`；CloudCLI 是 `NO_SOURCE`；
   Codex create 是 `RESPONSE_ID_ONLY`（thread id 在丢失的响应里）。
 
-## S2 #245 reconcile source（2026-10-20）
+## S2 #245 reconcile source（v2, 2026-10-20）
 
-见 [`RECONCILE-SOURCE-2026-10-20.md`](RECONCILE-SOURCE-2026-10-20.md)。
+见 [`RECONCILE-SOURCE-HARDENING-2026-10-20.md`](RECONCILE-SOURCE-HARDENING-2026-10-20.md)。
+v1 的 [`RECONCILE-SOURCE-2026-10-20.md`](RECONCILE-SOURCE-2026-10-20.md) 已标
+historical。
 
-- Codex app-server **send 到已知 thread** 有 schema 级 pre-send id +
-  `userMessage.clientId` 回读；public docs 也描述该回显。
-- 但 **owner-signed observation 不存在**：S2 kernel/store/daemon 只有
-  principal、writer、intent/locator、`source` provenance，没有签名字段；
-  production source 是 `None`。因此 production 仍 `BLOCKED_PROVIDER_SOURCE`。
-- 本轮交付 FAIL CLOSED gate 与负测：forged locator、cross-owner、
-  cross-project、changed payload、missing parent、cross-device、unsigned/bad
-  signature、replay、stale writer、NOT_APPLIED unavailable。
-- 默认：**不发送、不重试、不自动 settle**；synthetic HMAC 仅测试用，不能提升为
-  owner authority。
+- **共享生产字段恒定拒绝**：`decision=production_decision=
+  BLOCKED_PROVIDER_SOURCE`、`production_eligible/send_allowed/retry_allowed/
+  settle_allowed=false`、`owner_signed=false`、`s2_verdict=null`、
+  `s2_status=BLOCKED_PROVIDER_SOURCE`。
+- **synthetic 独立字段**：`synthetic_decision`、`synthetic_signature_valid`、
+  `synthetic_settle_allowed`；`SYNTHETIC_ACCEPTED_APPLIED` 不再是
+  `SETTLE_APPLIED`，test HMAC 不能提升为 owner authority。
+- QA2 #360 的 8 项攻击全部保留并拒绝：空/缺失 `observation_id`、
+  forged signed source、invalid/future/stale `observed_at`、矛盾 source 声明、
+  writer epoch 7→8。
+- source 声明按 `(adapter, verb, thread_known)` 交叉检查；signed source 必须
+  匹配 `codex:thread/turns/list` 或 `codex:thread/read`；writer
+  owner/epoch/token 进入签名；`now` 由调用方提供，`max_age` 1..3600s。
+- 生产仍 `BLOCKED_PROVIDER_SOURCE`（无 owner-signed observation、
+  production source 为 `None`）；没有 send/retry/settle、NOT_APPLIED 或
+  exactly-once。
 - Claude Code CLI 的 `--session-id <uuid>` + `--resume <session-id>` 是真实
   CLI 级 pre-send id，但未接 BotMux provider，标 `CLI_ONLY_NOT_WIRED`。
 
 ## 运行
 
 ```sh
-cd /data/home/vince/workspace/worktrees/serveros/r1-provider-parity-20261020
+cd /data/home/vince/workspace/worktrees/serveros/r1-reconcile-hardening-20261020
 
 PYTHONDONTWRITEBYTECODE=1 nice -n 10 \
-  flock -n /tmp/serveros-fleet-v1-runtime.lock \
+  flock -n /tmp/serveros-fleet-v1-runtime-hardening.lock \
   systemd-run --user --scope -q \
     -p MemoryMax=1G -p MemorySwapMax=0 -p CPUQuota=25% -- \
   timeout 120 /data/home/vince/toolchains/serveros-test/bin/pytest \
-    tests/test_fleet_v1_runtime_authorization.py -q -p no:cacheprovider
+    tests/test_fleet_v1_runtime_reconcile_source.py -q -p no:cacheprovider
 ```
 
-本机实测：`69 passed in 0.69s`，exit 0；与 #257 的
-`tests/test_fleet_v1_runtime_parity.py` 合跑 `121 passed in 1.30s`，exit 0。
+本机实测：`61 passed in 0.60s`，exit 0。QA2 #360 原始 probe 在 #356 exact HEAD
+为 **8/8 RED，rc=1**；v2 的 8 witnesses 见 hardening 报告，全部为生产拒绝 /
+synthetic-only refusal。未跑 heavier 186 集。
 
 ## 未声称
 

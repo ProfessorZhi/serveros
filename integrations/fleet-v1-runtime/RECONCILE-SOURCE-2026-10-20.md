@@ -1,5 +1,11 @@
 # R1 #248 / S2 #245 · reconcile source capability（2026-10-20）
 
+> **SUPERSEDED by [`RECONCILE-SOURCE-HARDENING-2026-10-20.md`](RECONCILE-SOURCE-HARDENING-2026-10-20.md).**
+> v1 exposed synthetic outcomes under production field names; v2 keeps every
+> shared production field as a constant refusal and moves synthetic evidence to
+> `synthetic_*`. The capability matrix and the `BLOCKED_PROVIDER_SOURCE`
+> verdict still apply; the field names below are historical.
+
 > **证据级别**：`CODE` + `LOCAL` + `SYNTHETIC_FIXTURE`。
 > 没有真实 send / model call / 付费消息；没有读取 token、transcript 或环境值；
 > 没有触碰 production Provider、serverosd、FleetNext/Connector、I1 RC-v7 或任何
