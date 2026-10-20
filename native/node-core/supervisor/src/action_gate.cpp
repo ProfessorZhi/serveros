@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace nodecore::supervisor {
 namespace {
@@ -46,6 +47,28 @@ StatePathVerdict path_ok(std::string reason) {
 }
 
 std::string errno_text(int value) { return std::string(std::strerror(value)); }
+
+//: Absolute components, with repeated slashes collapsed. The path is refused
+//: if any component is `.` or `..`, so the lexical walk and the kernel cannot
+//: disagree about where the file is.
+std::vector<std::string> split_components(const std::string& path) {
+    std::vector<std::string> parts;
+    std::string current;
+    for (const char c : path) {
+        if (c == '/') {
+            if (!current.empty()) {
+                parts.push_back(current);
+                current.clear();
+            }
+        } else {
+            current.push_back(c);
+        }
+    }
+    if (!current.empty()) {
+        parts.push_back(current);
+    }
+    return parts;
+}
 
 }  // namespace
 
@@ -98,6 +121,18 @@ StatePathVerdict check_state_path(const std::string& path) {
     if (path[0] != '/') {
         return path_refuse(kStatePathNotAbsolute, "\"" + path + "\" is not absolute");
     }
+    if (path.back() == '/') {
+        return path_refuse(kStatePathNotAFile,
+                           "\"" + path + "\" names a directory, not a state file");
+    }
+    for (const std::string& part : split_components(path)) {
+        if (part == "." || part == "..") {
+            return path_refuse(kStatePathNotNormalized,
+                               "\"" + path +
+                                   "\" contains a \".\" or \"..\" component; a state path is "
+                                   "refused if its lexical form is not its resolved form");
+        }
+    }
 
     const std::size_t slash = path.find_last_of('/');
     const std::string parent = slash == 0 ? std::string("/") : path.substr(0, slash);
@@ -105,6 +140,38 @@ StatePathVerdict check_state_path(const std::string& path) {
     if (base.empty()) {
         return path_refuse(kStatePathNotAFile,
                            "\"" + path + "\" names a directory, not a state file");
+    }
+
+    // Every ancestor ABOVE the immediate parent must be a real directory, not a
+    // symlink. `lstat(parent)` alone follows an intermediate link: for
+    // `a/link/sub/state.json` it reports `sub`, never `link`. The immediate
+    // parent is checked below, preserving its own PARENT_* vocabulary.
+    const std::vector<std::string> parent_parts = split_components(parent);
+    std::string ancestor;
+    for (std::size_t index = 0; index + 1 < parent_parts.size(); ++index) {
+        ancestor += "/";
+        ancestor += parent_parts[index];
+        struct stat ancestor_info;
+        if (::lstat(ancestor.c_str(), &ancestor_info) != 0) {
+            const int error = errno;
+            if (error == ENOENT) {
+                return path_refuse(kStateAncestorMissing,
+                                   "the state ancestor \"" + ancestor + "\" does not exist");
+            }
+            return path_refuse(kStatePathUnusable, "the state ancestor \"" + ancestor +
+                                                       "\" could not be inspected: " +
+                                                       errno_text(error));
+        }
+        if (S_ISLNK(ancestor_info.st_mode)) {
+            return path_refuse(kStateAncestorSymlink,
+                               "the state ancestor \"" + ancestor +
+                                   "\" is a symlink; a state file reached through an "
+                                   "intermediate link is not necessarily this account's");
+        }
+        if (!S_ISDIR(ancestor_info.st_mode)) {
+            return path_refuse(kStateAncestorNotADirectory,
+                               "the state ancestor \"" + ancestor + "\" is not a directory");
+        }
     }
 
     // The PARENT is checked first, for both an existing and an absent file: a

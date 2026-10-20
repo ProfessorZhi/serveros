@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "supervisor/action_gate.hpp"
+#include "supervisor/action_journal.hpp"
 #include "supervisor/admission.hpp"
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
@@ -432,6 +433,9 @@ int main(int argc, char** argv) {
     //: single-pass path turns it into exit 2; the resident path never writes
     //: state because it is observe-only.
     bool state_write_failed = false;
+    //: Set when an action could not be issued from a durable attempt (lease or
+    //: verb refusal). The single-pass path turns it into exit 2 as well.
+    bool action_failed = false;
     //: The clock reading the persisted budget was loaded in. The write takes a
     //: fresh instant but keeps the same boot id, so both halves of the file
     //: name one boot.
@@ -462,6 +466,17 @@ int main(int argc, char** argv) {
         }
         recovery = loaded.state;
     }
+
+    //: The durable journal at the effect boundary. It writes the SAME
+    //: `recovery` ledger the planner consults and owns no budget of its own.
+    const auto recovery_clock = [&state_clock]() {
+        nodecore::supervisor::RecoveryClock clock;
+        clock.monotonic = monotonic_seconds();
+        clock.wall_epoch = wall_epoch_seconds();
+        clock.boot_id = state_clock.boot_id;
+        return clock;
+    };
+    nodecore::supervisor::ActionJournal journal(state_path, &recovery, recovery_clock);
 
     nodecore::supervisor::SystemdUserProvider provider(systemctl_path, allowlist.allowlist, &iso_now);
 
@@ -593,15 +608,30 @@ int main(int argc, char** argv) {
 
         if (allow_execution && act && plan.ok) {
             for (const nodecore::supervisor::Action& action : plan.actions) {
-                nodecore::supervisor::ProviderResult result;
-                if (action.verb == "start") {
-                    result = provider.start(action.unit);
-                } else if (action.verb == "restart") {
-                    result = provider.restart(action.unit);
-                } else {
-                    result = provider.stop(action.unit);
+                // PREWRITE BEFORE THE EFFECT. `execute_effect` records and
+                // atomically persists this attempt, and only then invokes the
+                // provider. A prewrite failure means no effect is issued.
+                const nodecore::supervisor::EffectExecution effect =
+                    nodecore::supervisor::execute_effect(provider, journal, writer_lease.held(),
+                                                         action.service_id, action.unit,
+                                                         action.verb, tick_started);
+                if (effect.prewrite_failed) {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 effect.error.c_str());
+                    plan.refusals.push_back(
+                        {action.service_id, "STATE_PREWRITE_FAILED", effect.error});
+                    state_write_failed = true;
+                    break;
                 }
-                recovery.record_attempt(action.service_id, tick_started);
+                if (!effect.ok) {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 effect.error.c_str());
+                    plan.refusals.push_back(
+                        {action.service_id, "ACTION_NOT_EXECUTED", effect.error});
+                    action_failed = true;
+                    break;
+                }
+                const nodecore::supervisor::ProviderResult& result = effect.provider;
 
                 // A VERB THAT EXITED 0 IS NOT A SERVICE THAT ANSWERS. The
                 // provider's `ok` says the verb was carried out; it says nothing
@@ -651,31 +681,25 @@ int main(int argc, char** argv) {
                     service != nullptr ? service->recovery
                                        : nodecore::supervisor::RecoveryPolicy{};
                 recovery.record_outcome(action.service_id, outcome, policy, tick_started);
+
+                // THE OUTCOME IS A SEPARATE WRITE. If it fails, the attempt from
+                // the prewrite is already durable; the outcome is unknown. Do
+                // not report success and do not retry blindly.
+                std::string outcome_error;
+                if (!journal.write_outcome(outcome_error)) {
+                    std::fprintf(stderr,
+                                 "the effect on %s was issued but its outcome was not "
+                                 "persisted: %s\n",
+                                 action.unit.c_str(), outcome_error.c_str());
+                    state_write_failed = true;
+                    executed.push_back(nodecore::supervisor::ExecutionResult{
+                        action.service_id, action.unit, action.verb, result.ok, result.code,
+                        result.reason, result.exit_code});
+                    break;
+                }
                 executed.push_back(nodecore::supervisor::ExecutionResult{
                     action.service_id, action.unit, action.verb, result.ok, result.code,
                     result.reason, result.exit_code});
-            }
-            if (!state_path.empty()) {
-                nodecore::supervisor::RecoveryClock write_clock;
-                write_clock.monotonic = monotonic_seconds();
-                write_clock.wall_epoch = wall_epoch_seconds();
-                write_clock.boot_id = state_clock.boot_id;
-                if (write_clock.boot_id.empty() || write_clock.wall_epoch <= 0 ||
-                    write_clock.monotonic < 0) {
-                    std::fprintf(stderr,
-                                 "refusing to write the recovery state: the boot/clock anchor is "
-                                 "not usable\n");
-                    state_write_failed = true;
-                    return nodecore::supervisor::TickOutcome{};
-                }
-                std::ofstream state(state_path, std::ios::trunc);
-                state << recovery.to_json(write_clock) << "\n";
-                if (!state.good()) {
-                    std::fprintf(stderr, "the recovery state could not be written to %s\n",
-                                 state_path.c_str());
-                    state_write_failed = true;
-                    return nodecore::supervisor::TickOutcome{};
-                }
             }
         }
 
@@ -796,10 +820,11 @@ int main(int argc, char** argv) {
     if (!tick_outcome.ok) {
         std::fprintf(stderr, "%s\n", tick_outcome.error.c_str());
     }
-    if (state_write_failed) {
-        // The budget could not be persisted after an action. Reporting success
+    if (state_write_failed || action_failed) {
+        // The durable attempt or its outcome could not be persisted, or the
+        // action could not be issued from a durable attempt. Reporting success
         // here would let the next run start with a stale budget, so the pass
-        // exits non-zero and the caller must look at the state path.
+        // exits non-zero.
         return 2;
     }
     const std::string receipt = nodecore::supervisor::build_receipt(

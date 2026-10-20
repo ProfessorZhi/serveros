@@ -50,6 +50,7 @@ ActionGateVerdict check_action_gate(const ActionGateInput& input);
 inline constexpr const char* kStatePathOk = "USABLE";
 inline constexpr const char* kStatePathEmpty = "STATE_PATH_EMPTY";
 inline constexpr const char* kStatePathNotAbsolute = "STATE_PATH_NOT_ABSOLUTE";
+inline constexpr const char* kStatePathNotNormalized = "STATE_PATH_NOT_NORMALIZED";
 inline constexpr const char* kStatePathNotAFile = "STATE_PATH_NOT_A_FILE";
 inline constexpr const char* kStatePathSymlink = "STATE_PATH_SYMLINK";
 inline constexpr const char* kStatePathWrongOwner = "STATE_PATH_WRONG_OWNER";
@@ -61,6 +62,11 @@ inline constexpr const char* kStateParentNotADirectory = "STATE_PARENT_NOT_A_DIR
 inline constexpr const char* kStateParentSymlink = "STATE_PARENT_SYMLINK";
 inline constexpr const char* kStateParentWrongOwner = "STATE_PARENT_WRONG_OWNER";
 inline constexpr const char* kStateParentGroupWritable = "STATE_PARENT_GROUP_WRITABLE";
+//: An ancestor ABOVE the immediate parent. The immediate-parent check alone
+//: follows it, because `lstat("a/link/sub")` reports `sub`, not `link`.
+inline constexpr const char* kStateAncestorSymlink = "STATE_ANCESTOR_SYMLINK";
+inline constexpr const char* kStateAncestorNotADirectory = "STATE_ANCESTOR_NOT_A_DIRECTORY";
+inline constexpr const char* kStateAncestorMissing = "STATE_ANCESTOR_MISSING";
 
 struct StatePathVerdict {
     bool ok = false;
@@ -69,7 +75,8 @@ struct StatePathVerdict {
 };
 
 //: Whether `path` is a state file this account can durably own:
-//:   * absolute, with a non-empty basename;
+//:   * absolute, normalised (no `.` or `..`), with a non-empty basename;
+//:   * no ancestor above the immediate parent is a symlink or a non-directory;
 //:   * its parent exists, is a real directory (not a symlink), is owned by this
 //:     uid, and is not writable by group or other (otherwise the file can be
 //:     replaced by rename);
@@ -81,6 +88,11 @@ struct StatePathVerdict {
 //: The path is never created here. Creating an empty file at startup would make
 //: a later truncation look like a legitimate first run, which is the budget
 //: reset this product must never allow.
+//:
+//: REMAINING BLOCKER: the ancestor walk is lexical plus `lstat`, not a dirfd
+//: walk. A directory can be replaced by a symlink between the check and a later
+//: path-based `open`/`rename` (TOCTOU). Closing that needs `openat`-relative
+//: resolution anchored at a directory fd, which is a separate change.
 StatePathVerdict check_state_path(const std::string& path);
 
 }  // namespace nodecore::supervisor

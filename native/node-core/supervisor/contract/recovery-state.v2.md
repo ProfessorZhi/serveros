@@ -149,7 +149,44 @@ asserts that each invocation carries `--state`, `--lease`, `--link-state` and
 `--agent-state`, so the documented manual recipe cannot drift away from the gate
 without a failing test.
 
-## 5. What this does not do
+## 5. The effect boundary
+
+The budget is persisted **at the effect boundary**, not once after the actions
+loop. For each planned effect:
+
+1. **Prewrite.** `ActionJournal::prewrite_attempt` records the attempt in the
+   same `Recovery` ledger the planner consults, then replaces the state file
+   atomically: a unique `0600` temp file in the same directory, `fsync` of the
+   file, `rename` over the final path, `fsync` of the directory. If this fails,
+   the provider is **not called**.
+2. **Effect.** `execute_effect` invokes exactly one `start` / `restart` / `stop`
+   on the provider. It refuses before the prewrite if the writer lease is not
+   held or the verb is not one this stage implements.
+3. **Determine the outcome.** The caller reprobes readiness and records the
+   outcome in the ledger.
+4. **Outcome write.** `ActionJournal::write_outcome` persists the post-effect
+   ledger separately. If it fails, the attempt from step 1 is already durable;
+   the outcome is **unknown**. The pass exits 2, reports the failure, and does
+   **not** retry blindly.
+
+A crash between 1 and 2 leaves an attempt with no effect: the budget is
+conservatively spent. A crash between 2 and 4 leaves an attempt with an unknown
+outcome: the attempt holds its place in the window, the breaker is neither
+cleared nor advanced, and the next tick plans against the service's new
+observation. There is no path that issues an effect without a durable attempt.
+
+The old single write after the actions loop is gone. A run with no actions writes
+nothing; an existing state file is left exactly as it was.
+
+`check_state_path` now walks every ancestor above the immediate parent and
+refuses any symlink or non-directory, and refuses `.`/`..` components. **The
+ancestor walk is lexical plus `lstat`, not a dirfd walk**: a directory can still
+be replaced by a symlink between the check and the path-based `open`/`rename`
+(TOCTOU). Closing that needs `openat`-relative resolution anchored at a directory
+fd; it is tracked as a separate blocker. The write itself uses `rename`, so a
+symlink at the final path is replaced rather than followed.
+
+## 6. What this does not do
 
 - **It does not use the wall clock for durations.** `window_seconds`,
   `backoff_seconds`, `cooldown_seconds` and every `may_act` comparison stay in

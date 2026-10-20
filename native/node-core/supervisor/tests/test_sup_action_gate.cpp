@@ -197,6 +197,22 @@ void test_the_state_path_must_be_safe_to_write() {
     CHECK_EQ(check_state_path(dir + "/fresh.json").code, std::string(kStatePathUnwritable));
     CHECK(::chmod(dir.c_str(), 0700) == 0);
 
+    // An INTERMEDIATE ancestor symlink is refused too. The immediate parent
+    // (`dir/link/sub`) is a real directory reached through the link, so a check
+    // of the immediate parent alone would miss it.
+    CHECK(::mkdir((dir + "/real").c_str(), 0700) == 0);
+    CHECK(::mkdir((dir + "/real/sub").c_str(), 0700) == 0);
+    CHECK(::symlink((dir + "/real").c_str(), (dir + "/link").c_str()) == 0);
+    CHECK_EQ(check_state_path(dir + "/link/sub/state.json").code,
+             std::string(kStateAncestorSymlink));
+
+    // A non-normalised path is refused rather than lexically reinterpreted.
+    CHECK_EQ(check_state_path(dir + "/real/../state.json").code,
+             std::string(kStatePathNotNormalized));
+
+    ::unlink((dir + "/link").c_str());
+    ::rmdir((dir + "/real/sub").c_str());
+    ::rmdir((dir + "/real").c_str());
     ::unlink((dir + "/link.json").c_str());
     ::unlink((dir + "/state.json").c_str());
     ::rmdir((dir + "/sub").c_str());

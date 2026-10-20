@@ -20,6 +20,7 @@ set(supervisor_cases
   test_sup_status_socket
   test_sup_admission
   test_sup_action_gate
+  test_sup_action_journal
   test_sup_probe
   test_sup_lease
 )
