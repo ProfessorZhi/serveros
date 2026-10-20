@@ -277,6 +277,39 @@ def _with_policy(world, policy):
             {policy.policy_ref: policy}))
 
 
+def _daemon_with(world, resolver, name):
+    return daemon_mod.Daemon(
+        a_registry(), state_dir=world["daemon"].state_dir,
+        socket_path=world["tmp_path"] / "run" / f"{name}.sock",
+        log=lambda message: None, owner_policy_resolver=resolver)
+
+
+class RevokingGrantResolver:
+    """The QA2 race: revoke the grant while the route resolves policy."""
+
+    def __init__(self, store, grant_ref, policy):
+        self.store = store
+        self.grant_ref = grant_ref
+        self.policy = policy
+
+    def resolve(self, *, now=None, **_):
+        self.store.revoke_grant(self.grant_ref, at=now, reason="test race")
+        return self.policy
+
+
+class ChangingPolicyResolver:
+    """Return a valid policy, then a changed one on the second read."""
+
+    def __init__(self, first, second):
+        self.first = first
+        self.second = second
+        self.calls = 0
+
+    def resolve(self, **_):
+        self.calls += 1
+        return self.first if self.calls == 1 else self.second
+
+
 def test_a_revoked_policy_is_policy_denied(world):
     policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
                           actor_ref="human:A", revoked=True)
@@ -329,6 +362,55 @@ def test_an_out_of_scope_policy_is_policy_denied(world):
                     context_ref=world["context"]["context_ref"])
     assert answer["verified"] is False
     assert answer["reason"] == "POLICY_DENIED"
+
+
+def test_a_non_bool_revoked_policy_is_blocked(world):
+    """A data error is not an owner decision: never read as unrevoked."""
+    for value in (1, 0, "yes", "false", None):
+        policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                              actor_ref="human:A", revoked=value)
+        answer = verify(_with_policy(world, policy),
+                        context_ref=world["context"]["context_ref"])
+        assert answer["verified"] is False, value
+        assert answer["reason"] == "BLOCKED_OWNER_POLICY", (value, answer)
+
+
+def test_a_future_issued_policy_is_blocked(world):
+    policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                          actor_ref="human:A",
+                          issued_at="2999-01-01T00:00:00Z")
+    answer = verify(_with_policy(world, policy),
+                    context_ref=world["context"]["context_ref"])
+    assert answer["verified"] is False
+    assert answer["reason"] == "BLOCKED_OWNER_POLICY"
+
+
+def test_a_grant_revoke_during_resolve_is_blocked_atomicity(world):
+    store = world["daemon"].control_store()
+    resolver = RevokingGrantResolver(store, "grant:1", world["policy"])
+    daemon = _daemon_with(world, resolver, "race-grant")
+    answer = verify(daemon, context_ref=world["context"]["context_ref"])
+    assert answer["verified"] is False
+    assert answer["reason"] == "BLOCKED_ATOMICITY"
+    assert store.get_grant("grant:1")["revoked"] is True
+
+
+def test_a_policy_change_during_resolve_is_blocked_atomicity(world):
+    changed = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                           actor_ref="human:A", revoked=True)
+    resolver = ChangingPolicyResolver(world["policy"], changed)
+    daemon = _daemon_with(world, resolver, "race-policy")
+    answer = verify(daemon, context_ref=world["context"]["context_ref"])
+    assert answer["verified"] is False
+    assert answer["reason"] == "BLOCKED_ATOMICITY"
+
+
+def test_the_positive_verdict_is_labelled_point_in_time(world):
+    answer = verify(world["daemon"],
+                    context_ref=world["context"]["context_ref"])
+    assert answer["verified"] is True, answer
+    assert answer["point_in_time"] is True
+    assert answer["atomicity"] == "BLOCKED_OWNER_COMMIT_SEAM"
 
 
 def test_a_non_verified_context_is_still_refused(world):
@@ -419,6 +501,103 @@ def test_the_store_issue_binds_the_owner_policy_atomically(tmp_path, monkeypatch
     assert record["os_principal"] == f"uid:{os.getuid()}"
     assert daemon.control_store().get_grant("grant:issued")["owner_policy_ref"] \
         == "policy:test"
+
+
+def _approved_with_forged_owner_fields(context):
+    return {
+        "grant_ref": "grant:forged",
+        "delegated_by": context["context_ref"],
+        "valid_from": "2000-01-01T00:00:00Z",
+        "expires_at": "2999-01-01T00:00:00Z",
+        "projects": [PROJECT], "items": [ITEM], "actions": [ACTION],
+        "owner_policy_ref": "policy:forged",
+        "owner_policy_epoch": 9,
+        "owner_policy_issued_by": "owner:forged",
+        "owner_policy_issued_at": "2026-01-01T00:00:00Z",
+        "actor_ref": "human:B",
+    }
+
+
+def test_issue_grant_drops_approved_owner_fields(tmp_path, monkeypatch):
+    policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                          actor_ref="human:A")
+    resolver = opf.StaticOwnerPolicyResolver({}, default=policy)
+    daemon = a_daemon(tmp_path, resolver=resolver)
+    context = a_context(daemon)
+    approved = _approved_with_forged_owner_fields(context)
+    monkeypatch.setattr(daemon_mod.actor_mod, "verify_delegation",
+                        lambda evidence, *, now: (dict(approved), dict(context)))
+    record = daemon.control_store().issue_grant(
+        {}, now=iso(daemon), os_principal=f"uid:{os.getuid()}",
+        owner_policy_resolver=resolver)
+    assert record["owner_policy_ref"] == "policy:test"
+    assert record["owner_policy_epoch"] == 1
+    assert record["actor_ref"] == "human:A"
+    assert "refused_owner_fields" in record["issuance"]
+    assert "owner_policy_ref" in record["issuance"]["refused_owner_fields"]
+
+
+def test_issue_grant_without_resolver_drops_forged_owner_fields(
+        tmp_path, monkeypatch):
+    daemon = a_daemon(tmp_path, resolver=None)
+    context = a_context(daemon)
+    approved = _approved_with_forged_owner_fields(context)
+    monkeypatch.setattr(daemon_mod.actor_mod, "verify_delegation",
+                        lambda evidence, *, now: (dict(approved), dict(context)))
+    record = daemon.control_store().issue_grant(
+        {}, now=iso(daemon), os_principal=f"uid:{os.getuid()}",
+        owner_policy_resolver=None)
+    assert "owner_policy_ref" not in record
+    assert "owner_policy_epoch" not in record
+    assert "actor_ref" not in record
+    assert "refused_owner_fields" in record["issuance"]
+    # The forged binding is not authority: a resolver-bound verify refuses.
+    policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                          actor_ref="human:A")
+    checker = daemon_mod.Daemon(
+        a_registry(), state_dir=daemon.state_dir,
+        socket_path=tmp_path / "run" / "checker.sock",
+        log=lambda message: None,
+        owner_policy_resolver=opf.StaticOwnerPolicyResolver(
+            {"policy:forged": policy}))
+    answer = verify(checker, context_ref=context["context_ref"],
+                    grant_ref="grant:forged")
+    assert answer["verified"] is False
+    assert answer["reason"] == "BLOCKED_OWNER_POLICY"
+
+
+def test_idempotent_issue_readback_rechecks_the_owner_policy(
+        tmp_path, monkeypatch):
+    policy = opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                          actor_ref="human:A")
+    resolver = opf.StaticOwnerPolicyResolver({}, default=policy)
+    daemon = a_daemon(tmp_path, resolver=resolver)
+    context = a_context(daemon)
+    approved = {
+        "grant_ref": "grant:readback",
+        "delegated_by": context["context_ref"],
+        "valid_from": iso(daemon, -60),
+        "expires_at": iso(daemon, 600),
+        "projects": [PROJECT], "items": [ITEM], "actions": [ACTION],
+    }
+    evidence = {"payload": {"grant": {"grant_ref": "grant:readback"}}}
+    monkeypatch.setattr(daemon_mod.actor_mod, "verify_delegation",
+                        lambda evidence, *, now: (dict(approved), dict(context)))
+    first = daemon.handle(
+        {"method": "agent.grant.issue", "params": {"evidence": evidence}},
+        peer=a_peer())["result"]
+    assert first["issued"] is True
+    daemon._owner_policy_resolver = opf.StaticOwnerPolicyResolver(
+        {}, default=opf.a_policy(os_principal=f"uid:{os.getuid()}",
+                                 actor_ref="human:A", revoked=True))
+    second = daemon.handle(
+        {"method": "agent.grant.issue", "params": {"evidence": evidence}},
+        peer=a_peer())["result"]
+    assert second["issued"] is False
+    assert second["reason"] == "POLICY_DENIED"
+    stored = daemon.control_store().get_grant("grant:readback")
+    assert stored["owner_policy_ref"] == "policy:test"
+    assert stored["revoked"] is False
 
 
 def test_the_store_issue_writes_nothing_when_the_policy_is_unknown(

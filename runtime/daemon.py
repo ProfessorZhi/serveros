@@ -3012,10 +3012,24 @@ class Daemon:
                                "resolver is bound to this daemon; a "
                                "provider-signed delegation alone does not "
                                "authorize a kernel uid, and no grant is minted")}
-        record = self.control_store().issue_grant(
-            params["evidence"], now=_iso(self._now()),
-            os_principal=agent_control_store_mod.os_principal_of(_CALLER_PEER.get()),
-            owner_policy_resolver=self._owner_policy_resolver)
+        try:
+            record = self.control_store().issue_grant(
+                params["evidence"], now=_iso(self._now()),
+                os_principal=agent_control_store_mod.os_principal_of(
+                    _CALLER_PEER.get()),
+                owner_policy_resolver=self._owner_policy_resolver)
+        except agent_control_store_mod.StoreError as exc:
+            # A typed refusal, not an error envelope: the idempotent readback
+            # and the owner-policy checks must be readable as `issued: false`
+            # with the refusal word (e.g. POLICY_DENIED), never as a success.
+            text = str(exc)
+            code, _, detail = text.partition(":")
+            return {"issued": False,
+                    "reason": (code.strip() or "INVALID_CONTEXT"),
+                    "detail": detail.strip() or text}
+        except actor_mod.Rejected as exc:
+            return {"issued": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": str(exc)}
         return {"issued": True, "grant": record,
                 "basis": "provider-signed-delegation"}
 
@@ -3091,7 +3105,49 @@ class Daemon:
             action=params.get("action"), now=now_iso, policy=policy)
         if refusal is not None:
             return refusal
-        return {**result, "owner_policy": owner_policy_mod.audit(policy)}
+        # TOCTOU. The grant was read before `resolver.resolve`, and the
+        # resolver is a read of another authority: a concurrent
+        # `revoke_grant` during it would be invisible to the snapshot above.
+        # Re-read the SAME Agent Control ledger and re-run the #272 checks,
+        # then re-resolve the owner policy and require an equal snapshot.
+        # This closes the observed revoke-during-resolve race; it is still a
+        # point-in-time answer, not an atomic commit (see `atomicity` below),
+        # and the Work Engine commit boundary must re-verify.
+        second = agent_control_store_mod.verify_live_grant(
+            store.grants(), grant_ref=params.get("grant_ref"),
+            context=resolved["context"], peer=peer,
+            action=params.get("action"), project=params.get("project"),
+            item_ref=params.get("item_ref"),
+            expected_epoch=params.get("expected_epoch"), now=now_iso)
+        if not second.get("verified"):
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": ("the grant changed or was revoked between the "
+                                "first read and the owner-policy check; the "
+                                "earlier verdict is not a current snapshot"),
+                    "point_in_time": False}
+        try:
+            policy_again = resolver.resolve(
+                policy_ref=policy_ref, grant=store.get_grant(
+                    str(params.get("grant_ref") or "").strip()) or {},
+                context=resolved["context"], peer=peer,
+                project=params.get("project"), item_ref=params.get("item_ref"),
+                action=params.get("action"), now=now_iso)
+        except Exception as exc:  # noqa: BLE001 - a failed re-read is a refusal
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": (f"the owner policy re-read failed "
+                                f"({type(exc).__name__}); no positive verdict "
+                                f"is issued"),
+                    "point_in_time": False}
+        if policy_again != policy:
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": ("the owner policy changed (epoch, revocation "
+                                "or window) during verification; the first "
+                                "snapshot is stale"),
+                    "point_in_time": False}
+        return {**second,
+                "owner_policy": owner_policy_mod.audit(policy_again),
+                "point_in_time": True,
+                "atomicity": "BLOCKED_OWNER_COMMIT_SEAM"}
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.

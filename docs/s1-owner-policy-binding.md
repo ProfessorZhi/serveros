@@ -9,6 +9,7 @@
 | Owner policy | external owner-issued fact; a resolver injected at daemon construction |
 | Production `serverosd` | passes no resolver → every issue/verify refuses `BLOCKED_OWNER_POLICY` |
 | Test evidence | `REAL_TEMP` (real AF_UNIX + real `SO_PEERCRED`), `LOCAL` (synthetic peer negatives) |
+| QA2 #360 S1 findings | independently reproduced 6/6 RED at `#358` `b183aab`; 6/6 `ok` and 36/36 controls on this branch |
 | Two real uids | `BLOCKED_MULTIPRINCIPAL_NOT_RUN` (no passwordless sudo/setuid) |
 | New registry / grant store | **none** |
 
@@ -80,6 +81,28 @@ kernel-peer `os_principal`, scope). If they pass, it:
 The 10-field `grant` is unchanged, so the Work Engine `LeaseGrant` consumer
 still constructs it. The Work Engine adapter itself is not modified.
 
+## 3.5 QA2 #360 hardening (stacked branch)
+
+QA2's independent S1 probe was run against `#358` head `b183aab` before any
+change: **6/6 findings RED**. Each finding and the fix in this branch:
+
+| QA2 finding | Pre-fix RED behaviour | Fix |
+|---|---|---|
+| P1 `revoked=1` | `revoked is True` is false → treated as unrevoked | `revoked` must be a `bool`; any other value is `BLOCKED_OWNER_POLICY` (no truthiness, no normalization) |
+| P1 `revoked="yes"` | same | same |
+| P2 `issued_at=2999` | a policy issued in the future authorized | `issued_at > now` → `BLOCKED_OWNER_POLICY`; `issued_at > expires_at` also refuses |
+| P1 TOCTOU | revoke between `resolve` and `return` still returned `VERIFIED` | a second `verify_live_grant` over the same ledger plus a second `resolver.resolve`; any change is `BLOCKED_ATOMICITY`. The positive answer labels `atomicity: BLOCKED_OWNER_COMMIT_SEAM` and `point_in_time: true` — the post-return seam is stated, not claimed atomic |
+| P2 `approved` owner fields | `issue_grant` stored caller-supplied owner fields | owner-written fields are stripped from `approved` before storage; the refusal is recorded as `issuance.refused_owner_fields` (non-owner fields are untouched) |
+| P2 idempotent readback | equal evidence returned the old grant before any policy read | when a resolver exists, the existing grant is re-checked against the live policy over its own grant/context/peer; a revoked/expired/stale policy raises `StoreError` (`POLICY_DENIED`/`BLOCKED_OWNER_POLICY`), never a second grant |
+
+The TOCTOU fix does **not** invent an atomic owner-authority commit. The
+existing grant ledger has no owner-authority epoch/snapshot seam, so the code
+re-reads the same ledger and refuses on change; the residual window after the
+answer is returned is explicitly labelled `BLOCKED_OWNER_COMMIT_SEAM` and the
+answer is never promoted to `VERIFIED` for an atomicity claim it cannot make.
+A true atomic commit requires the upstream owner issuance interface; that
+remains a protocol requirement (section 6).
+
 ## 4. Refusal matrix
 
 | Case | Result |
@@ -87,6 +110,10 @@ still constructs it. The Work Engine adapter itself is not modified.
 | production daemon (no resolver) | `BLOCKED_OWNER_POLICY` |
 | grant has no owner binding | `BLOCKED_OWNER_POLICY` |
 | resolver returns `None`/raises | `BLOCKED_OWNER_POLICY` |
+| `revoked` is not a `bool` (`1`, `"yes"`, `None`) | `BLOCKED_OWNER_POLICY` |
+| policy issued in the future / after its own expiry | `BLOCKED_OWNER_POLICY` |
+| grant or policy changed between the two reads | `BLOCKED_ATOMICITY` |
+| idempotent issue readback with a dead live policy | `StoreError` `POLICY_DENIED` / `BLOCKED_OWNER_POLICY` |
 | policy revoked | `POLICY_DENIED` |
 | policy expired / not yet valid | `POLICY_DENIED` |
 | policy epoch differs from the grant binding | `BLOCKED_OWNER_POLICY` |
@@ -97,6 +124,24 @@ still constructs it. The Work Engine adapter itself is not modified.
 | no kernel peer | `UNTRUSTED_ACTOR` |
 
 ## 5. Evidence
+
+### QA2 S1 findings at `#358` head `b183aab` (independent reproduction)
+
+QA2's runner was extracted from PR #360 head into a read-only temp checkout and
+run against the `#358` worktree (no mutation of `#358`):
+
+```text
+integrations/fleet-v1-qa/qa2/qa2-run.sh s1
+  author       86 passed, 1 skipped, 23 subtests   rc=0
+  controls     36 passed                           rc=0
+  s1-signed    BLOCKED_CRYPTOGRAPHY (venv has no cryptography; not a pass)
+  s1-findings  6/6 confirmed, rc=1
+```
+
+The six RED names: `f1-revoked-int`, `f1-revoked-str`,
+`f2-policy-issued-in-future`, `f3-revoke-after-verify-before-return`,
+`f4-issue-without-resolver-stores-approved-owner-fields`,
+`f5-idempotent-issue-readback-skips-revoked-policy`.
 
 ### RED at the pre-fix base `8620a90`
 
@@ -113,21 +158,39 @@ FAILED test_the_issue_route_refuses_without_an_owner_resolver
 2 failed
 ```
 
-### GREEN on this branch
+### GREEN on this branch (haircut `#358` + hardening)
+
+QA2's own probe, run against this branch's worktree:
 
 ```text
-15 passed, 1 skipped   tests/test_owner_policy_binding.py
-  (the skip is BLOCKED_MULTIPRINCIPAL_NOT_RUN)
-2 passed               tests/test_owner_policy_reduced_gate.py
-63 passed, 1 skipped   owner-policy + reduced gate + #272 grant suites +
-                       agent_control_store
-26 passed              test_v1_grant_epoch_authority.py +
-                       test_v1_grant_os_principal_schema.py
-43 passed, 23 subtests test_fleet_owner_grant.py +
-                       test_fleet_owner_grant_template.py
-30 passed              lease gate/producer + daemon method-coverage selection
-72 passed, 177 subtests test_agent_mcp.py
+s1_probe.py --mode findings  {"failed": 0, "total": 6}
+  f1-int/f1-str → BLOCKED_OWNER_POLICY
+  f2 future issued_at → BLOCKED_OWNER_POLICY
+  f3 revoke during resolve → BLOCKED_ATOMICITY (stored_revoked: true)
+  f4 stored owner ref null, verified false
+  f5 second `issued: false`
+s1_probe.py --mode controls  {"failed": 0, "total": 36}
 ```
+
+The author and focused regression suites on this branch:
+
+```text
+114 passed, 1 skipped, 23 subtests
+  test_owner_policy_binding.py + test_owner_policy_reduced_gate.py +
+  test_v1_grant_epoch_authority.py + test_v1_grant_os_principal_schema.py +
+  test_fleet_owner_grant.py + test_fleet_owner_grant_template.py +
+  test_agent_control_store.py
+  (the skip is BLOCKED_MULTIPRINCIPAL_NOT_RUN)
+86 passed, 8 subtests
+  test_lease_authority.py + test_serveros_lease_authority.py +
+  test_v1_lease_authority_gate.py + test_handoff_daemon_bindings.py +
+  test_grant_window_authority.py
+72 passed, 177 subtests  test_agent_mcp.py
+```
+
+All were run with `MemoryMax=1G`, `MemorySwapMax=0`, `CPUQuota=25%`,
+`TasksMax=64`, `nice -n 10`, an inner timeout and `-p no:cacheprovider`; no
+full-suite pytest was run on the shared host.
 
 The real-socket positive is `REAL_TEMP`: a temp AF_UNIX socket, the kernel's
 real `SO_PEERCRED` uid, and production daemon/store code. The context, grant
@@ -146,6 +209,14 @@ no production owner. The synthetic-peer negative is `LOCAL` and labelled
 * **Two real uids are `BLOCKED_MULTIPRINCIPAL_NOT_RUN`.** The test process is
   uid 1002 with no passwordless sudo/setuid; synthetic peer metadata is only a
   LOCAL negative, never REAL_OS.
+* **Atomic owner-authority commit is `BLOCKED_OWNER_COMMIT_SEAM`.** The
+  existing ledger has no owner-authority snapshot/epoch seam, so the verify
+  path re-reads and refuses on change but cannot make the resolve→return window
+  atomic. A protocol requirement remains: an upstream owner issuance interface
+  that commits an authority snapshot/generation the verify path can pin in one
+  read. Until then the answer says `point_in_time: true` and
+  `atomicity: BLOCKED_OWNER_COMMIT_SEAM`; no synthetic atomicity is promoted to
+  production.
 * The `LeaseGrant` window/uid/epoch checks are #272's; this slice adds the
   owner binding, not a second grant source.
 * No real provider, model request, credential or paid send; no merge,

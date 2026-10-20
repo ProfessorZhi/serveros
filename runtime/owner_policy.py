@@ -115,7 +115,15 @@ def _common_refusal(*, policy, grant, context, peer, now, require_binding):
             "the owner-policy resolver returned no OwnerPolicy")
     if not str(policy.policy_ref or "").strip():
         return _refusal(BLOCKED_OWNER_POLICY, "the owner policy has no ref")
-    if policy.revoked is True:
+    if not isinstance(policy.revoked, bool):
+        # `revoked=1` / `"yes"` / None is a data error, not an owner decision.
+        # It cannot be read as unrevoked, and silently normalizing it would
+        # turn a broken policy source into an authorization.
+        return _refusal(
+            BLOCKED_OWNER_POLICY,
+            f"the owner policy revoked field {policy.revoked!r} is not a bool; "
+            f"a non-boolean revocation state cannot be read as unrevoked")
+    if policy.revoked:
         return _refusal("POLICY_DENIED",
                         f"{policy.policy_ref} was revoked by the owner")
     if isinstance(policy.epoch, bool) or not isinstance(policy.epoch, int) \
@@ -126,7 +134,8 @@ def _common_refusal(*, policy, grant, context, peer, now, require_binding):
     if not str(policy.issued_by or "").strip():
         return _refusal(BLOCKED_OWNER_POLICY,
                         "the owner policy has no audited issuer")
-    if instant(policy.issued_at) is None:
+    issued_at_instant = instant(policy.issued_at)
+    if issued_at_instant is None:
         return _refusal(
             BLOCKED_OWNER_POLICY,
             f"the owner policy issued_at {policy.issued_at!r} is not a "
@@ -147,6 +156,17 @@ def _common_refusal(*, policy, grant, context, peer, now, require_binding):
     if now_instant >= expires_at:
         return _refusal("POLICY_DENIED",
                         f"{policy.policy_ref} expired at {policy.expires_at}")
+    if issued_at_instant > now_instant:
+        return _refusal(
+            BLOCKED_OWNER_POLICY,
+            f"{policy.policy_ref} was issued at {policy.issued_at}, after the "
+            f"verification instant; a policy that has not been issued yet "
+            f"authorizes nothing")
+    if issued_at_instant > expires_at:
+        return _refusal(
+            BLOCKED_OWNER_POLICY,
+            f"{policy.policy_ref} was issued at {policy.issued_at}, after its "
+            f"own expiry {policy.expires_at}; the audit order is impossible")
 
     peer_principal = os_principal_of(peer)
     if peer_principal is None:
