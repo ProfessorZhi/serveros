@@ -1,9 +1,11 @@
 {
-  "schema": "serveros/fleet-v1-runtime-reconcile-source-fixture.v1",
+  "schema": "serveros/fleet-v1-runtime-reconcile-source-fixture.v2",
   "recorded_at": "2026-10-20T05:40:00Z",
   "evidence_level": "SYNTHETIC_FIXTURE",
-  "note": "The observation, attempt and HMAC key are synthetic test data. The key is not a production secret and the synthetic signature is not an owner authority.",
+  "note": "The observation, attempt and HMAC key are synthetic test data. The key is not a production secret and the synthetic signature is not an owner authority. `now` is a caller-supplied simulated clock, never the host clock.",
   "test_key": "r1-synthetic-test-key-not-a-production-secret",
+  "now": "2026-10-20T05:40:00Z",
+  "max_age_seconds": 300,
   "base_attempt": {
     "key": "attempt:fixture-1",
     "phase": "EFFECT_UNKNOWN",
@@ -28,6 +30,9 @@
     "state": "APPLIED",
     "source": "codex:thread/turns/list",
     "observed_at": "2026-10-20T05:39:30Z",
+    "writer_owner": "actor:owner:fixture",
+    "writer_epoch": 7,
+    "writer_token": "tok-7",
     "signature_algorithm": "TEST_HMAC_SHA256"
   },
   "base_source": {
@@ -35,188 +40,298 @@
     "capability": "CLIENT_TURN_ID",
     "adapter": "codex-app-server",
     "verb": "send",
-    "thread_known": true
+    "thread_known": true,
+    "read_path": "codex:thread/turns/list"
   },
   "cases": [
     {
       "name": "valid-synthetic-signed",
       "expect": {
-        "decision": "SYNTHETIC_ACCEPTED_APPLIED",
-        "s2_verdict": "SETTLE_APPLIED",
-        "settle_allowed": true,
-        "owner_signed": true,
-        "signature_authority": "SYNTHETIC_TEST_ONLY"
+        "synthetic_decision": "SYNTHETIC_ACCEPTED_APPLIED",
+        "synthetic_settle_allowed": true,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "production-mode-always-blocked",
       "mode": "production",
       "expect": {
-        "decision": "BLOCKED_OWNER_SIGNATURE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false,
-        "signature_authority": null
+        "synthetic_decision": null,
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "no-source",
       "source": {"present": false},
       "expect": {
-        "decision": "BLOCKED_PROVIDER_SOURCE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false
+        "synthetic_decision": "BLOCKED_PROVIDER_SOURCE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_PROVIDER_SOURCE"
       }
     },
     {
       "name": "response-id-only",
       "source": {"capability": "RESPONSE_ID_ONLY"},
       "expect": {
-        "decision": "BLOCKED_PROVIDER_SOURCE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false
+        "synthetic_decision": "BLOCKED_PROVIDER_SOURCE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_PROVIDER_SOURCE"
       }
     },
     {
       "name": "unknown-capability",
       "source": {"capability": "UNKNOWN"},
       "expect": {
-        "decision": "BLOCKED_PROVIDER_SOURCE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false
+        "synthetic_decision": "BLOCKED_PROVIDER_SOURCE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_PROVIDER_SOURCE"
       }
     },
     {
       "name": "unsigned-observation",
       "sign": false,
       "expect": {
-        "decision": "BLOCKED_OWNER_SIGNATURE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false
+        "synthetic_decision": "BLOCKED_OWNER_SIGNATURE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "bad-signature",
       "signature_override": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "expect": {
-        "decision": "BLOCKED_OWNER_SIGNATURE",
-        "s2_verdict": null,
-        "settle_allowed": false,
-        "owner_signed": false
+        "synthetic_decision": "BLOCKED_OWNER_SIGNATURE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "phase-settled",
       "attempt": {"phase": "SETTLED"},
       "expect": {
-        "decision": "REFUSED_NOT_UNKNOWN",
-        "s2_verdict": "REFUSE_NOT_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_NOT_UNKNOWN",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "cross-owner",
       "observation": {"owner_ref": "actor:owner:other"},
       "expect": {
-        "decision": "REFUSED_PRINCIPAL",
-        "s2_verdict": "REFUSE_PRINCIPAL",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_PRINCIPAL",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "cross-device",
       "observation": {"device_ref": "device:other"},
       "expect": {
-        "decision": "REFUSED_CROSS_DEVICE",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_CROSS_DEVICE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "cross-project",
       "observation": {"project_ref": "project:other"},
       "expect": {
-        "decision": "REFUSED_CROSS_PROJECT",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_CROSS_PROJECT",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "missing-parent",
       "attempt": {"parent_ref": ""},
       "expect": {
-        "decision": "REFUSED_MISSING_PARENT",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_MISSING_PARENT",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "forged-locator",
       "observation": {"provider_locator": "turn-forged-9999"},
       "expect": {
-        "decision": "REFUSED_LOCATOR_MISMATCH",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_LOCATOR_MISMATCH",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "changed-payload",
       "observation": {"intent_digest": "sha256:fixture-intent-2"},
       "expect": {
-        "decision": "REFUSED_INTENT_MISMATCH",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_INTENT_MISMATCH",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "stale-writer",
       "attempt": {"writer": {"token": "tok-6"}},
       "expect": {
-        "decision": "REFUSED_STALE_WRITER",
-        "s2_verdict": "REFUSE_STALE_WRITER",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_STALE_WRITER",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "replayed-observation",
       "applied_observation_ids": ["obs-fixture-1"],
       "expect": {
-        "decision": "REFUSED_REPLAY",
-        "s2_verdict": "REFUSE_NOT_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_REPLAY",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "not-applied-is-not-available-from-this-readback",
       "observation": {"state": "NOT_APPLIED"},
       "expect": {
-        "decision": "REFUSED_NOT_APPLIED_UNAVAILABLE",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "REFUSED_NOT_APPLIED_UNAVAILABLE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
       }
     },
     {
       "name": "observation-unknown",
       "observation": {"state": "UNKNOWN"},
       "expect": {
-        "decision": "UNKNOWN",
-        "s2_verdict": "REFUSE_UNKNOWN",
-        "settle_allowed": false,
-        "owner_signed": true
+        "synthetic_decision": "UNKNOWN",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p1-empty-observation-id",
+      "observation": {"observation_id": ""},
+      "applied_observation_ids": [""],
+      "expect": {
+        "synthetic_decision": "REFUSED_MISSING_OBSERVATION_ID",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p1-absent-observation-id",
+      "observation": {"observation_id": null},
+      "applied_observation_ids": [""],
+      "expect": {
+        "synthetic_decision": "REFUSED_MISSING_OBSERVATION_ID",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-forged-signed-source",
+      "observation": {"source": "forged:source"},
+      "expect": {
+        "synthetic_decision": "REFUSED_SOURCE_MISMATCH",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-observed-at-invalid",
+      "observation": {"observed_at": "not-a-time"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_INVALID",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-observed-at-future",
+      "observation": {"observed_at": "2026-10-20T05:41:00Z"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_FUTURE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-observed-at-stale",
+      "observation": {"observed_at": "2026-10-20T05:00:00Z"},
+      "expect": {
+        "synthetic_decision": "REFUSED_OBSERVED_AT_STALE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p1-synthetic-production-field-names",
+      "expect": {
+        "synthetic_decision": "SYNTHETIC_ACCEPTED_APPLIED",
+        "synthetic_settle_allowed": true,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-writer-epoch-7-to-8",
+      "attempt": {"writer": {"epoch": 8}, "current_writer": {"epoch": 8}},
+      "expect": {
+        "synthetic_decision": "REFUSED_STALE_WRITER",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": true,
+        "production_reason": "BLOCKED_OWNER_SIGNATURE"
+      }
+    },
+    {
+      "name": "qa2-p2-source-thread-known-false",
+      "source": {"thread_known": false},
+      "expect": {
+        "synthetic_decision": "BLOCKED_PROVIDER_SOURCE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_PROVIDER_SOURCE"
+      }
+    },
+    {
+      "name": "qa2-p2-source-cli-adapter",
+      "source": {"adapter": "codex-cli", "verb": "any"},
+      "expect": {
+        "synthetic_decision": "BLOCKED_PROVIDER_SOURCE",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_PROVIDER_SOURCE"
+      }
+    },
+    {
+      "name": "qa2-missing-now",
+      "now": null,
+      "expect": {
+        "synthetic_decision": "BLOCKED_TIME_UNTRUSTED",
+        "synthetic_settle_allowed": false,
+        "synthetic_signature_valid": false,
+        "production_reason": "BLOCKED_TIME_UNTRUSTED"
       }
     }
   ],
