@@ -1467,10 +1467,28 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                      "be minted from the live Work lease; the source keeps its "
                      "write authority and the handoff is not a transfer")},
             checkpoint=checkpoint)
+    pre_claimed = bool(pre_claim and pre_claim.get("claimed"))
     created = router.route(target_request)
     if not created.ok:
-        # Nothing was stopped. The source session is exactly as it was, and the
-        # reason is the target's own — not a handoff-specific rewording of it.
+        if pre_claimed:
+            # The target already holds the current-writer claim. The provider
+            # refusing now does not undo that: the source is no longer the
+            # current writer, and the target has no established session. This
+            # is a stalled scope, not "source preserved".
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                _stop_step(created), False,
+                {"target": created.show(), "claim": pre_claim,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "target route; the provider refused, so the target "
+                         "holds the claim without an established session and "
+                         "the source is no longer the current writer. This is "
+                         "not a transfer and the source's write authority is "
+                         "not preserved; the scope is stalled until repaired")},
+                checkpoint=checkpoint)
+        # Nothing was stopped and no claim was minted. The source session is
+        # exactly as it was, and the reason is the target's own.
         return HandoffOutcome(False, created.reason, tuple(completed),
                               _stop_step(created), True,
                               {"target": created.show()},
@@ -1490,6 +1508,18 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
     # has no business establishing on the provider's behalf.
     handed = created.result or {}
     if not handed.get("session_ref"):
+        if pre_claimed:
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "context_handed_off", False,
+                {"target": created.show(), "claim": pre_claim,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "route, but the target named no session. The target "
+                         "holds the claim without an established session and "
+                         "the source is not the current writer; this is not a "
+                         "transfer and the scope is stalled")},
+                checkpoint=checkpoint)
         return HandoffOutcome(
             False, "INVALID_CONTEXT", tuple(completed), "context_handed_off", True,
             {"target": created.show(),
@@ -1503,11 +1533,26 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
     # A create target was bound by the route just now; claim it before the
     # source is closed. A resume target was claimed before the route.
     claim = pre_claim
+    claim_written = pre_claimed
     if claim is None or not claim.get("claimed"):
         claim = _claim_handoff_target(
             router, request, target_ref=handed.get("session_ref"),
             target_device=target_request.device_ref)
+        claim_written = claim_written or bool(
+            isinstance(claim, dict)
+            and isinstance(claim.get("binding"), dict)
+            and claim["binding"].get("writer"))
         if claim is not None and not claim.get("claimed"):
+            if claim_written:
+                return HandoffOutcome(
+                    False, "BLOCKED_ATOMICITY", tuple(completed),
+                    "context_handed_off", False,
+                    {"target": handed, "claim": claim, "scope_stalled": True,
+                     "why": ("the target's writer claim was written but the "
+                             "handoff could not confirm it as the current "
+                             "writer; the source is not preserved as a writer "
+                             "and the scope is stalled")},
+                    checkpoint=checkpoint)
             return HandoffOutcome(
                 False, str(claim.get("reason") or "NOT_CURRENT_WRITER"),
                 tuple(completed), "context_handed_off", True,
@@ -1552,24 +1597,38 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                            for field in ("owner", "epoch", "token")))
     if not transferred:
         # The target answered with a session, but write authority did not move.
-        # This is NOT a successful handoff: the stale source would remain a
-        # writer (or, if the close landed without a target claim, the scope
-        # would be unowned). Both are fail-closed; the detail names which.
+        # If the target's claim was already minted, the source is NOT the
+        # current writer even though its binding may still be OPEN. Saying
+        # "source preserved" there would be false; say the scope is stalled.
         closed = revocation.get("closed")
-        source_preserved = not (
-            isinstance(closed, dict)
-            and str(closed.get("state") or "").upper() == "CLOSED")
+        source_closed = (isinstance(closed, dict)
+                         and str(closed.get("state") or "").upper() == "CLOSED")
+        target_claimed = pre_claimed or bool(
+            isinstance(successor, dict)
+            and isinstance(successor.get("writer"), dict))
+        if target_claimed and not source_closed:
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "context_handed_off", False,
+                {"target": handed, "revocation": revocation,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was already current, but "
+                         "the source close did not complete. The source is not "
+                         "the current writer; the scope is stalled and must be "
+                         "repaired. This is not a successful transfer")},
+                checkpoint=checkpoint)
+        source_preserved = not source_closed
         return HandoffOutcome(
             False,
             str(revocation.get("transport") or "NOT_CURRENT_WRITER"),
             tuple(completed), "context_handed_off", source_preserved,
             {"target": handed,
              "revocation": revocation,
+             "scope_stalled": False,
              "why": ("the target answered with a session, but write authority "
-                     "did not move to it. The handoff is not a transfer: the "
-                     "source keeps its write authority unless the close already "
-                     "happened, and a target without the current writer claim "
-                     "is not an established writer")},
+                     "did not move to it. The source keeps its write authority "
+                     "unless the close already happened, and a target without "
+                     "the current writer claim is not an established writer")},
             checkpoint=checkpoint)
 
     completed.append("write_authority_transferred")
@@ -1683,11 +1742,25 @@ def _claim_handoff_target(router, request: AgentControlRequest, *, target_ref,
     if not hasattr(target_bindings, "claim") or not hasattr(source_bindings, "get"):
         return None
     try:
-        target = (target_bindings.get(target_ref) or {}).get("binding")
+        target_read = target_bindings.get(target_ref) or {}
+        target = target_read.get("binding")
         if not target:
             return None
         if target.get("writer"):
-            return {"claimed": True, "binding": target, "already": True}
+            # An existing claim is a pre-claim only when it IS the current
+            # writer. A stale claim from an earlier attempt does not make the
+            # target current, and treating it as one would report the source
+            # stalled when it is still the owner.
+            current = target_read.get("current_writer")
+            writer = target.get("writer")
+            if (isinstance(writer, dict) and isinstance(current, dict)
+                    and all(str(writer.get(field)) == str(current.get(field))
+                            for field in ("owner", "epoch", "token"))):
+                return {"claimed": True, "binding": target, "already": True}
+            return {"claimed": False, "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the target records a writer that is not the "
+                               "current writer; the handoff cannot treat a "
+                               "stale claim as the transfer")}
         source = (source_bindings.get(request.session_ref) or {}).get("binding")
         if not source or not source.get("bound_item_ref"):
             return None

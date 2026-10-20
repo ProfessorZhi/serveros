@@ -87,6 +87,27 @@ class UnreachableHandle:
         raise OSError("daemon is not reachable")
 
 
+class CloseFailingBindings:
+    """The real bindings, except that the close transport fails.
+
+    The claim half still reaches the daemon, so the handoff can reach the
+    pre-claimed state; the close failure is the atomicity case under test.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def get(self, ref):
+        return self._inner.get(ref)
+
+    def claim(self, ref, *, from_ref, context_ref=None):
+        return self._inner.claim(ref, from_ref=from_ref, context_ref=context_ref)
+
+    def close(self, *args, **kwargs):
+        raise router_mod.TransportFailure(
+            "NODE_RUNTIME_UNAVAILABLE", "the source close transport failed")
+
+
 class HandoffDaemonBindingsTest(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
@@ -153,6 +174,22 @@ class HandoffDaemonBindingsTest(unittest.TestCase):
             "bound_item_ref": rt.ITEM,
             "device_ref": rt.LOCAL,
         })
+
+    def _context(self, *, status="VERIFIED", provenance="FACT",
+                 actor_ref="human:A"):
+        now = daemon_mod._iso(self.daemon._now())
+        return daemon_mod.actor_mod.build({
+            "human_control_provider": "provider:test",
+            "transport": "feishu",
+            "transport_identity": "test",
+            "conversation_ref": "oc_actor_gate",
+            "message_ref": "om_actor_gate",
+            "observed_at": now,
+            "provider_status": status,
+            "provenance": provenance,
+            "actor_ref": actor_ref,
+            "provider_pid": os.getpid(),
+        }, now=now)
 
     def _send(self, ref: str, *, key="k1", router=None):
         router = router or self.router
@@ -278,6 +315,79 @@ class HandoffDaemonBindingsTest(unittest.TestCase):
         self.assertEqual(stale.reason, "THREAD_CLOSED_FOR_NEW_WORK")
         self.assertTrue(self._send(TARGET, key="k9", router=router).ok)
 
+    # -- the strong actor verdict at the mutation boundary ----------------
+
+    def test_an_unverified_context_cannot_claim(self):
+        self._lease(owner="agent:B", token="2")
+        context = self._context(status="BLOCKED", provenance="UNKNOWN",
+                                actor_ref="human:unverified")
+        self.store.put_context(context)
+        answer = self.handle.call("agent.binding.claim", {
+            "session_ref": TARGET, "from_ref": SOURCE,
+            "context_ref": context["context_ref"]})
+        self.assertFalse(answer.get("claimed"), answer)
+        self.assertEqual(answer.get("reason"), "UNTRUSTED_ACTOR")
+        self.assertIsNone(self.store.get_binding(TARGET).get("writer"),
+                          "an unverified actor minted a writer claim")
+
+    def test_an_unverified_context_cannot_close_with_successor(self):
+        self._lease(owner="agent:B", token="2")
+        context = self._context(status="BLOCKED", provenance="UNKNOWN",
+                                actor_ref="human:unverified")
+        self.store.put_context(context)
+        answer = self.handle.call("agent.binding.close", {
+            "session_ref": SOURCE, "successor_ref": TARGET,
+            "context_ref": context["context_ref"]})
+        self.assertFalse(answer.get("closed"), answer)
+        self.assertEqual(answer.get("reason"), "UNTRUSTED_ACTOR")
+        self.assertEqual(self.store.get_binding(SOURCE)["state"], "OPEN")
+        self.assertIsNone(self.store.get_binding(TARGET).get("writer"),
+                          "an unverified actor transferred write authority")
+
+    # -- the pre-claim is not free: every failure must say what it left --
+
+    def test_a_target_provider_failure_after_preclaim_is_blocked_atomicity(self):
+        self._lease(owner="agent:B", token="2")
+        # The provider does not carry the target's resume. The support refusal
+        # happens at the resolver's `support` step, AFTER the handoff has
+        # already minted the target's writer claim from the live lease.
+        router = self._router(self.bindings, rt.ok_service(support={
+            "session.create": {"state": "SUPPORTED"},
+            "session.inspect": {"state": "SUPPORTED"},
+            "session.result": {"state": "SUPPORTED"},
+            "session.send": {"state": "SUPPORTED"},
+            "session.resume": {"state": "UNSUPPORTED",
+                               "reason": "this provider does not resume"},
+        }))
+        outcome = self._handoff(router=router)
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
+        self.assertFalse(outcome.source_preserved,
+                         "the target's preclaim was already current, so the "
+                         "source's write authority is not preserved")
+        self.assertEqual(self.store.get_binding(TARGET)["writer"],
+                         self._current())
+        self.assertEqual(self.store.get_binding(SOURCE)["state"], "OPEN")
+        denied = self._send(SOURCE, key="k10", router=router)
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.reason, "NOT_CURRENT_WRITER")
+
+    def test_a_close_transport_failure_after_preclaim_is_blocked_atomicity(self):
+        self._lease(owner="agent:B", token="2")
+        router = self._router(CloseFailingBindings(self.bindings), self.service)
+        outcome = self._handoff(router=router)
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
+        self.assertFalse(outcome.source_preserved,
+                         "the target's preclaim was already current, so the "
+                         "source's write authority is not preserved")
+        self.assertEqual(self.store.get_binding(TARGET)["writer"],
+                         self._current())
+        self.assertEqual(self.store.get_binding(SOURCE)["state"], "OPEN")
+        denied = self._send(SOURCE, key="k11", router=router)
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.reason, "NOT_CURRENT_WRITER")
+
     def test_an_expired_source_claim_is_recovered_by_the_transfer(self):
         """The clock moves, the source claim expires, the handoff recovers."""
         with tempfile.TemporaryDirectory() as td:
@@ -290,13 +400,20 @@ class HandoffDaemonBindingsTest(unittest.TestCase):
             router = self._router(bindings, rt.RecordingService())
             store = daemon.control_store()
             store.put_context(rt.CONTEXT)
+            # Two hours in the past, expressed in +08:00. The UTC instant is
+            # expired; the LOCAL text sorts AFTER a UTC now at the same date,
+            # which is exactly the lexicographic trap #307 names.
+            expired = (datetime.datetime.now(datetime.timezone.utc)
+                       - datetime.timedelta(hours=2)).astimezone(
+                           datetime.timezone(datetime.timedelta(hours=8))
+                       ).isoformat()
             store.put_binding({
                 "schema": "serveros/thread-binding.v2",
                 "session_ref": SOURCE, "session_role": "execution",
                 "bound_item_ref": rt.ITEM, "bound_item_ref_frozen": True,
                 "state": "OPEN",
                 "writer": {"owner": "agent:A", "epoch": 1, "token": "1",
-                           "expires_at": "2000-01-01T00:00:00Z"},
+                           "expires_at": expired},
             })
             store.put_binding({
                 "schema": "serveros/thread-binding.v1",

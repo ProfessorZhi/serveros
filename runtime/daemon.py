@@ -3222,6 +3222,35 @@ class Daemon:
         claim["token"] = str(lease["token"])
         return claim
 
+    def _trusted_actor_for_mutation(self, context_ref, store):
+        """The STRONG admission verdict for a protected binding mutation.
+
+        `validate` + `freshness == FRESH` is not enough: a fresh context with
+        `provider_status != VERIFIED` or `provenance != FACT` passes both, and
+        `actor.build` can mint exactly that. `authorizes` is the project's
+        admission answer — FRESH **and** provenance FACT **and** provider
+        VERIFIED — and it is the only verdict these mutation routes may use.
+        """
+        ref = str(context_ref or "").strip()
+        if not ref:
+            return None, ("UNTRUSTED_ACTOR",
+                          "a protected mutation needs a trusted context_ref")
+        resolved = actor_mod.resolve(ref, store.contexts())
+        if not resolved["found"]:
+            return None, ("UNTRUSTED_ACTOR", resolved["because"])
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return None, ("UNTRUSTED_ACTOR", str(exc))
+        verdict = actor_mod.authorizes(trusted, _iso(self._now()))
+        if not verdict.get("authorizes"):
+            return None, (
+                "UNTRUSTED_ACTOR",
+                (f"the presented context does not authorize a mutation: "
+                 f"{verdict.get('because')}"))
+        return trusted, None
+
     def _r_agent_binding_claim(self, params) -> dict:
         """Mint the handoff target's writer claim from the LIVE Work lease.
 
@@ -3246,30 +3275,13 @@ class Daemon:
                     "reason": "INVALID_CONTEXT",
                     "detail": ("a claim transfer names the source thread it takes "
                                "over from; none was presented")}
-        context_ref = str(params.get("context_ref") or "").strip()
-        if not context_ref:
-            return {"claimed": False, "session_ref": ref,
-                    "reason": "UNTRUSTED_ACTOR",
-                    "detail": ("a writer claim is a protected write and needs a "
-                               "trusted context_ref; none was presented")}
         store = self.control_store()
-        resolved = actor_mod.resolve(context_ref, store.contexts())
-        if not resolved["found"]:
+        trusted, refusal = self._trusted_actor_for_mutation(
+            params.get("context_ref"), store)
+        if refusal is not None:
+            reason, detail = refusal
             return {"claimed": False, "session_ref": ref,
-                    "reason": "UNTRUSTED_ACTOR", "detail": resolved["because"]}
-        trusted = resolved["context"]
-        try:
-            actor_mod.validate(trusted)
-        except actor_mod.Rejected as exc:
-            return {"claimed": False, "session_ref": ref,
-                    "reason": "UNTRUSTED_ACTOR", "detail": str(exc)}
-        freshness = actor_mod.freshness(trusted, _iso(self._now()))
-        if freshness.get("state") != "FRESH":
-            return {"claimed": False, "session_ref": ref,
-                    "reason": "UNTRUSTED_ACTOR",
-                    "detail": (f"the presented context is "
-                               f"{freshness.get('state')!r}, which authorizes "
-                               f"nothing: {freshness.get('because')}")}
+                    "reason": reason, "detail": detail}
         actor = trusted["actor_ref"]
 
         source = store.get_binding(from_ref)
@@ -3381,31 +3393,12 @@ class Daemon:
         target_current = False
 
         if successor_ref:
-            context_ref = str(params.get("context_ref") or "").strip()
-            if not context_ref:
+            trusted, refusal = self._trusted_actor_for_mutation(
+                params.get("context_ref"), store)
+            if refusal is not None:
+                reason, detail = refusal
                 return {"closed": False, "session_ref": ref,
-                        "reason": "UNTRUSTED_ACTOR",
-                        "detail": ("a write-authority transfer is a protected "
-                                   "write and needs a trusted context_ref; none "
-                                   "was presented")}
-            resolved = actor_mod.resolve(context_ref, store.contexts())
-            if not resolved["found"]:
-                return {"closed": False, "session_ref": ref,
-                        "reason": "UNTRUSTED_ACTOR",
-                        "detail": resolved["because"]}
-            trusted = resolved["context"]
-            try:
-                actor_mod.validate(trusted)
-            except actor_mod.Rejected as exc:
-                return {"closed": False, "session_ref": ref,
-                        "reason": "UNTRUSTED_ACTOR", "detail": str(exc)}
-            freshness = actor_mod.freshness(trusted, _iso(self._now()))
-            if freshness.get("state") != "FRESH":
-                return {"closed": False, "session_ref": ref,
-                        "reason": "UNTRUSTED_ACTOR",
-                        "detail": (f"the presented context is "
-                                   f"{freshness.get('state')!r}, which authorizes "
-                                   f"nothing: {freshness.get('because')}")}
+                        "reason": reason, "detail": detail}
             actor = trusted["actor_ref"]
 
             source = store.get_binding(ref)
@@ -3449,7 +3442,17 @@ class Daemon:
                               and str(current.get("token")) == str(target_writer.get("token")))
             now_iso = _iso(self._now())
             expires = source_writer.get("expires_at")
-            source_claim_expired = bool(expires) and str(expires) <= now_iso
+            if not expires:
+                source_claim_expired = False
+            else:
+                # The claim's expiry and the daemon clock are compared as
+                # aware instants, not as ISO text: `12:00+08:00` is 04:00Z, and
+                # a string comparison would call it later than `06:00+00:00`.
+                now_instant = _instant(now_iso)
+                expires_instant = _instant(expires)
+                source_claim_expired = (
+                    None if now_instant is None or expires_instant is None
+                    else expires_instant <= now_instant)
             successor = None
             expected_writer = None
             if target_current:
@@ -4813,6 +4816,23 @@ def _iso(epoch: float) -> str:
     import datetime
 
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+
+
+def _instant(value):
+    """A zoned instant, or None.
+
+    The same rule `context/actor.py::_parse` and #307 state: an unreadable or
+    NAIVE timestamp is not an instant. Comparing two ISO strings would make
+    `12:00+08:00` (04:00Z) sort after `04:00+00:00`, which is the lexicographic
+    trap this helper exists to remove from the handoff's expiry evidence.
+    """
+    import datetime
+    try:
+        parsed = datetime.datetime.fromisoformat(
+            str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _atomic_write(path: Path, payload: dict) -> None:

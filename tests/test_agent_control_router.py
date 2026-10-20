@@ -1434,10 +1434,14 @@ class TestHandoff(unittest.TestCase):
                 params={"checkpoint": CHECKPOINT, "release_source": True})),
             create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+        # The target's writer claim was minted before the route, and the route
+        # named no session. The source is not the current writer any more; that
+        # is a stalled scope, not "source preserved".
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "context_handed_off")
         self.assertNotIn("context_handed_off", outcome.completed)
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
         self.assertEqual(outcome.checkpoint, CHECKPOINT)
         self.assertNotIn("stop", source.names(),
                          "the source was stopped on an answer that named no session")
@@ -1545,9 +1549,13 @@ class TestHandoff(unittest.TestCase):
                 params={"checkpoint": CHECKPOINT})),
             create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
+        # The support refusal happens AFTER the handoff minted the target's
+        # writer claim; the source is no longer the current writer. The target
+        # never got a session, so the scope is stalled, not preserved.
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "target_ready")
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
 
     def test_a_target_that_probed_well_and_could_not_be_delivered_is_not_available(self):
         # A route WAS named and nothing answered at the other end of it — the
