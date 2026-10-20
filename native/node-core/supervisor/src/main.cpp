@@ -132,6 +132,36 @@ long monotonic_seconds() {
     return duration_cast<seconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+//: The wall clock at the same instant as `monotonic_seconds()`. The ONLY
+//: cross-boot bridge the persisted budget has; it is never used as a duration.
+long long wall_epoch_seconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+}
+
+//: The kernel's boot id, which says which boot owns the monotonic clock. It is
+//: kernel-provided and read-only; an unreadable id is a refusal, never a guess.
+bool read_boot_id(std::string& out) {
+    std::ifstream file("/proc/sys/kernel/random/boot_id");
+    if (!file.good()) {
+        return false;
+    }
+    std::string line;
+    if (!std::getline(file, line)) {
+        return false;
+    }
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' || line.back() == ' ' ||
+            line.back() == '\t')) {
+        line.pop_back();
+    }
+    if (line.empty() || line.size() > 128) {
+        return false;
+    }
+    out = line;
+    return true;
+}
+
 bool read_file(const std::string& path, std::string& out) {
     std::ifstream stream(path);
     if (!stream.good()) {
@@ -391,11 +421,33 @@ int main(int argc, char** argv) {
     }
 
     nodecore::supervisor::Recovery recovery;
+    //: Set inside the tick lambda when the state cannot be persisted. The
+    //: single-pass path turns it into exit 2; the resident path never writes
+    //: state because it is observe-only.
+    bool state_write_failed = false;
+    //: The clock reading the persisted budget was loaded in. The write takes a
+    //: fresh instant but keeps the same boot id, so both halves of the file
+    //: name one boot.
+    nodecore::supervisor::RecoveryClock state_clock;
     if (act && !state_path.empty()) {
+        state_clock.monotonic = monotonic_seconds();
+        state_clock.wall_epoch = wall_epoch_seconds();
+        if (!read_boot_id(state_clock.boot_id)) {
+            std::fprintf(stderr,
+                         "refusing to act: the kernel boot id could not be read, so a persisted "
+                         "monotonic budget cannot be placed in a boot\n");
+            return 2;
+        }
+        if (state_clock.wall_epoch <= 0 || state_clock.monotonic < 0) {
+            std::fprintf(stderr,
+                         "refusing to act: the wall or monotonic clock is not usable, so a "
+                         "persisted budget cannot be placed in time\n");
+            return 2;
+        }
         std::string state_text;
         const bool present = read_file(state_path, state_text);
         const nodecore::supervisor::RecoveryLoaded loaded =
-            nodecore::supervisor::load_recovery(present ? &state_text : nullptr);
+            nodecore::supervisor::load_recovery(present ? &state_text : nullptr, state_clock);
         if (!loaded.ok) {
             std::fprintf(stderr, "refusing to act: %s\n", loaded.error.c_str());
             return 2;
@@ -596,8 +648,26 @@ int main(int argc, char** argv) {
                     result.reason, result.exit_code});
             }
             if (!state_path.empty()) {
+                nodecore::supervisor::RecoveryClock write_clock;
+                write_clock.monotonic = monotonic_seconds();
+                write_clock.wall_epoch = wall_epoch_seconds();
+                write_clock.boot_id = state_clock.boot_id;
+                if (write_clock.boot_id.empty() || write_clock.wall_epoch <= 0 ||
+                    write_clock.monotonic < 0) {
+                    std::fprintf(stderr,
+                                 "refusing to write the recovery state: the boot/clock anchor is "
+                                 "not usable\n");
+                    state_write_failed = true;
+                    return nodecore::supervisor::TickOutcome{};
+                }
                 std::ofstream state(state_path, std::ios::trunc);
-                state << recovery.to_json() << "\n";
+                state << recovery.to_json(write_clock) << "\n";
+                if (!state.good()) {
+                    std::fprintf(stderr, "the recovery state could not be written to %s\n",
+                                 state_path.c_str());
+                    state_write_failed = true;
+                    return nodecore::supervisor::TickOutcome{};
+                }
             }
         }
 
@@ -717,6 +787,12 @@ int main(int argc, char** argv) {
     const nodecore::supervisor::TickOutcome tick_outcome = observe_and_plan(true);
     if (!tick_outcome.ok) {
         std::fprintf(stderr, "%s\n", tick_outcome.error.c_str());
+    }
+    if (state_write_failed) {
+        // The budget could not be persisted after an action. Reporting success
+        // here would let the next run start with a stale budget, so the pass
+        // exits non-zero and the caller must look at the state path.
+        return 2;
     }
     const std::string receipt = nodecore::supervisor::build_receipt(
         manifest, last_plan, executed, act ? "active" : "observe-only", snapshot.started_at,
