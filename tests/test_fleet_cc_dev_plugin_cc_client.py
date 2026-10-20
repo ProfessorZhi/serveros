@@ -299,13 +299,11 @@ class KnownFindingReadOnlyControlState(unittest.TestCase):
     `send_allowed: true` for a session that `fleet_send_to_session` will refuse
     `SCOPE_DENIED`.
 
-    The fix belongs to the `fleet_mcp` owner, not to this plugin lane, so the
-    assertion is `expectedFailure`: it is a receipt that the discrepancy is
-    real, and it turns into an unexpected success when the owner fixes it —
-    which is the signal to delete this class, not to weaken it.
+    RC-v2: #305 fixed this finding (`send_allowed` now includes the caller's
+    `fleet:send`). The former `expectedFailure` is promoted to a real assertion
+    here; it remains the regression guard and is not weakened.
     """
 
-    @unittest.expectedFailure
     def test_a_read_only_principal_must_not_be_told_send_is_allowed(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="cc-fixture-finding-"))
         self.addCleanup(shutil.rmtree, tmp, True)
