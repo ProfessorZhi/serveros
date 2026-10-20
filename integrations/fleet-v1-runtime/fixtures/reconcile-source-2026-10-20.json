@@ -1,0 +1,232 @@
+{
+  "schema": "serveros/fleet-v1-runtime-reconcile-source-fixture.v1",
+  "recorded_at": "2026-10-20T05:40:00Z",
+  "evidence_level": "SYNTHETIC_FIXTURE",
+  "note": "The observation, attempt and HMAC key are synthetic test data. The key is not a production secret and the synthetic signature is not an owner authority.",
+  "test_key": "r1-synthetic-test-key-not-a-production-secret",
+  "base_attempt": {
+    "key": "attempt:fixture-1",
+    "phase": "EFFECT_UNKNOWN",
+    "principal": "actor:owner:fixture",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "project_ref": "project:fixture",
+    "work_item": "LIT-FIXTURE",
+    "intent_digest": "sha256:fixture-intent-1",
+    "provider_locator": "turn-fixture-0001",
+    "parent_ref": "attempt:parent-fixture",
+    "writer": {"owner": "actor:owner:fixture", "epoch": 7, "token": "tok-7"},
+    "current_writer": {"owner": "actor:owner:fixture", "epoch": 7, "token": "tok-7"}
+  },
+  "base_observation": {
+    "observation_id": "obs-fixture-1",
+    "owner_ref": "actor:owner:fixture",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "project_ref": "project:fixture",
+    "intent_digest": "sha256:fixture-intent-1",
+    "provider_locator": "turn-fixture-0001",
+    "parent_ref": "attempt:parent-fixture",
+    "state": "APPLIED",
+    "source": "codex:thread/turns/list",
+    "observed_at": "2026-10-20T05:39:30Z",
+    "signature_algorithm": "TEST_HMAC_SHA256"
+  },
+  "base_source": {
+    "present": true,
+    "capability": "CLIENT_TURN_ID",
+    "adapter": "codex-app-server",
+    "verb": "send",
+    "thread_known": true
+  },
+  "cases": [
+    {
+      "name": "valid-synthetic-signed",
+      "expect": {
+        "decision": "SYNTHETIC_ACCEPTED_APPLIED",
+        "s2_verdict": "SETTLE_APPLIED",
+        "settle_allowed": true,
+        "owner_signed": true,
+        "signature_authority": "SYNTHETIC_TEST_ONLY"
+      }
+    },
+    {
+      "name": "production-mode-always-blocked",
+      "mode": "production",
+      "expect": {
+        "decision": "BLOCKED_OWNER_SIGNATURE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false,
+        "signature_authority": null
+      }
+    },
+    {
+      "name": "no-source",
+      "source": {"present": false},
+      "expect": {
+        "decision": "BLOCKED_PROVIDER_SOURCE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false
+      }
+    },
+    {
+      "name": "response-id-only",
+      "source": {"capability": "RESPONSE_ID_ONLY"},
+      "expect": {
+        "decision": "BLOCKED_PROVIDER_SOURCE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false
+      }
+    },
+    {
+      "name": "unknown-capability",
+      "source": {"capability": "UNKNOWN"},
+      "expect": {
+        "decision": "BLOCKED_PROVIDER_SOURCE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false
+      }
+    },
+    {
+      "name": "unsigned-observation",
+      "sign": false,
+      "expect": {
+        "decision": "BLOCKED_OWNER_SIGNATURE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false
+      }
+    },
+    {
+      "name": "bad-signature",
+      "signature_override": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "decision": "BLOCKED_OWNER_SIGNATURE",
+        "s2_verdict": null,
+        "settle_allowed": false,
+        "owner_signed": false
+      }
+    },
+    {
+      "name": "phase-settled",
+      "attempt": {"phase": "SETTLED"},
+      "expect": {
+        "decision": "REFUSED_NOT_UNKNOWN",
+        "s2_verdict": "REFUSE_NOT_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "cross-owner",
+      "observation": {"owner_ref": "actor:owner:other"},
+      "expect": {
+        "decision": "REFUSED_PRINCIPAL",
+        "s2_verdict": "REFUSE_PRINCIPAL",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "cross-device",
+      "observation": {"device_ref": "device:other"},
+      "expect": {
+        "decision": "REFUSED_CROSS_DEVICE",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "cross-project",
+      "observation": {"project_ref": "project:other"},
+      "expect": {
+        "decision": "REFUSED_CROSS_PROJECT",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "missing-parent",
+      "attempt": {"parent_ref": ""},
+      "expect": {
+        "decision": "REFUSED_MISSING_PARENT",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "forged-locator",
+      "observation": {"provider_locator": "turn-forged-9999"},
+      "expect": {
+        "decision": "REFUSED_LOCATOR_MISMATCH",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "changed-payload",
+      "observation": {"intent_digest": "sha256:fixture-intent-2"},
+      "expect": {
+        "decision": "REFUSED_INTENT_MISMATCH",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "stale-writer",
+      "attempt": {"writer": {"token": "tok-6"}},
+      "expect": {
+        "decision": "REFUSED_STALE_WRITER",
+        "s2_verdict": "REFUSE_STALE_WRITER",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "replayed-observation",
+      "applied_observation_ids": ["obs-fixture-1"],
+      "expect": {
+        "decision": "REFUSED_REPLAY",
+        "s2_verdict": "REFUSE_NOT_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "not-applied-is-not-available-from-this-readback",
+      "observation": {"state": "NOT_APPLIED"},
+      "expect": {
+        "decision": "REFUSED_NOT_APPLIED_UNAVAILABLE",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    },
+    {
+      "name": "observation-unknown",
+      "observation": {"state": "UNKNOWN"},
+      "expect": {
+        "decision": "UNKNOWN",
+        "s2_verdict": "REFUSE_UNKNOWN",
+        "settle_allowed": false,
+        "owner_signed": true
+      }
+    }
+  ],
+  "matrix_expect": [
+    {"adapter": "codex-app-server", "verb": "send", "capability": "CLIENT_TURN_ID", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "codex-app-server", "verb": "create", "capability": "RESPONSE_ID_ONLY", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "codex-cli", "verb": "any", "capability": "NO_SOURCE", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "claude-code-cli", "verb": "any", "capability": "CLI_ONLY_NOT_WIRED", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "botmux-agent-session", "verb": "send", "capability": "RESPONSE_ID_ONLY", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "cloudcli-mcp", "verb": "send", "capability": "NO_SOURCE", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"},
+    {"adapter": "human-control", "verb": "send", "capability": "RESPONSE_ID_ONLY", "owner_signed_observation": "ABSENT", "production_decision": "BLOCKED_PROVIDER_SOURCE"}
+  ]
+}
