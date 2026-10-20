@@ -24,16 +24,27 @@ EVIDENCE LEVELS
 """
 from __future__ import annotations
 
+import os
+
+import pytest
+
+# POSIX-ONLY, and before any POSIX import: this module loads
+# `runtime/daemon.py` at module scope, which imports `fcntl`; the tests use
+# AF_UNIX, `SO_PEERCRED` and `uid`. On Windows the module cannot be collected
+# at all. Only `os.name == "nt"` is skipped; Linux keeps every assertion below.
+if os.name == "nt":
+    pytest.skip(
+        "POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use "
+        "AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows",
+        allow_module_level=True)
+
 import importlib.util
 import json
-import os
 import socket
 import subprocess
 import sys
 import threading
 from pathlib import Path
-
-import pytest
 
 import owner_policy_fixtures as opf
 

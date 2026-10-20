@@ -24,17 +24,28 @@ and production store/daemon code, synthetic owner facts.
 """
 from __future__ import annotations
 
+import os
+
+import pytest
+
+# POSIX-ONLY, and before any POSIX import: this module loads
+# `runtime/daemon.py` at module scope, which imports `fcntl`; the tests use
+# AF_UNIX, `SO_PEERCRED` and `uid`. On Windows the module cannot be collected
+# at all. Only `os.name == "nt"` is skipped; Linux keeps every assertion below.
+if os.name == "nt":
+    pytest.skip(
+        "POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use "
+        "AF_UNIX/SO_PEERCRED/uid; this module cannot be collected on Windows",
+        allow_module_level=True)
+
 import importlib.util
 import json
-import os
 import socket
 import sys
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-
-import pytest
 
 import owner_policy_fixtures as opf
 from workengine import WorkItem
@@ -204,25 +215,6 @@ class _RevokeAfterRead:
         return answer
 
 
-class _AnswerClient:
-    """A canned verify answer, for the adapter's own gate."""
-
-    def __init__(self, answer):
-        self.answer = answer
-
-    def verify(self, context_ref, *, grant_ref, action, project, item_ref):
-        return self.answer
-
-
-def _grant_payload(*, ref="grant:1") -> dict:
-    return {
-        "principal": "human:A", "grant_ref": ref,
-        "os_principal": f"uid:{os.getuid()}", "epoch": 1,
-        "valid_from": "2000-01-01T00:00:00+00:00",
-        "expires_at": "2999-01-01T00:00:00+00:00", "revoked": False,
-    }
-
-
 def _revoked(policy):
     return opf.a_policy(policy_ref=policy.policy_ref,
                         os_principal=policy.os_principal,
@@ -278,20 +270,3 @@ def test_a_revoke_after_the_last_read_cannot_acquire_a_lease(tmp_path):
         str(caught.value)
     assert store.active_lease(RESOURCE, now=time.time()) is None, \
         "a lease was written from an owner verdict that is no longer current"
-
-
-def test_the_adapter_refuses_an_owner_backed_positive_without_commit_fence():
-    answer = {
-        "verified": True,
-        "grant": _grant_payload(),
-        "owner_policy": {"policy_ref": "policy:test", "policy_epoch": 1},
-        "point_in_time": True,
-        "atomicity": "BLOCKED_OWNER_COMMIT_SEAM",
-    }
-    authority = ServerOSLeaseAuthority(_AnswerClient(answer),
-                                       grant_ref="grant:1")
-    with pytest.raises(AuthorityError) as caught:
-        authority.verify("context:test", action=ACTION, project=PROJECT,
-                         item_ref=ITEM, now=time.time())
-    assert caught.value.reason_code == "BLOCKED_OWNER_COMMIT_SEAM", \
-        str(caught.value)

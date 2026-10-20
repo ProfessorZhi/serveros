@@ -14,8 +14,21 @@ Unix socket fills from `SO_PEERCRED`; the real-socket positive is in
 """
 from __future__ import annotations
 
-import importlib.util
 import os
+
+import pytest
+
+# POSIX-ONLY, and before any POSIX import: this module loads
+# `runtime/daemon.py` at module scope, which imports `fcntl`; the tests use
+# uid/peer semantics. On Windows the module cannot be collected at all. Only
+# `os.name == "nt"` is skipped; Linux keeps every assertion below.
+if os.name == "nt":
+    pytest.skip(
+        "POSIX_ONLY: runtime/daemon.py imports fcntl and these tests use "
+        "uid/peer semantics; this module cannot be collected on Windows",
+        allow_module_level=True)
+
+import importlib.util
 import sys
 from pathlib import Path
 
