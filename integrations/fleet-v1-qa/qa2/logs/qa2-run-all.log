@@ -1,0 +1,27 @@
+archived b183aab0b8913ed36e5de539c50223d3eaf508f1 -> /tmp/qa2-independent-security-repro/checkouts/s1-b183aab0b8913ed36e5de539c50223d3eaf508f1
+archived b4020b73e6b7ec2b1f6301471a9872f8864c1643 -> /tmp/qa2-independent-security-repro/checkouts/r1-b4020b73e6b7ec2b1f6301471a9872f8864c1643
+reuse /tmp/qa2-independent-security-repro/checkouts/s1-b183aab0b8913ed36e5de539c50223d3eaf508f1
+reuse /tmp/qa2-independent-security-repro/checkouts/r1-b4020b73e6b7ec2b1f6301471a9872f8864c1643
+== S1 #358 @ b183aab0b8913ed36e5de539c50223d3eaf508f1
+  s1-author rc=0  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/s1-author.log)
+  s1-controls rc=0  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/s1-controls.log)
+  s1-signed rc=0  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/s1-signed.log)
+  s1-findings rc=1  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/s1-findings.log)
+reuse /tmp/qa2-independent-security-repro/checkouts/s1-b183aab0b8913ed36e5de539c50223d3eaf508f1
+reuse /tmp/qa2-independent-security-repro/checkouts/r1-b4020b73e6b7ec2b1f6301471a9872f8864c1643
+== R1 #356 @ b4020b73e6b7ec2b1f6301471a9872f8864c1643
+  r1-author rc=0  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/r1-author.log)
+  r1-controls rc=0  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/r1-controls.log)
+  r1-findings rc=1  (/tmp/qa2-independent-security-repro/logs/20261020T101745Z/r1-findings.log)
+
+== evidence (/tmp/qa2-independent-security-repro/logs/20261020T101745Z)
+r1-author      rc=0
+r1-controls    rc=0
+r1-findings    rc=1
+s1-author      rc=0
+s1-controls    rc=0
+s1-findings    rc=1
+s1-signed      rc=0
+
+A findings rc of 1 means the adversarial probe confirmed the
+documented gaps. A controls rc of 0 means the fail-closed controls held.

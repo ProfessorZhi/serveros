@@ -1,0 +1,11 @@
+{"actual": {"approved_grant_ref": "grant:qa2-signed"}, "expected": {"approved_grant_ref": "grant:qa2-signed"}, "name": "real-signature-verifies", "ok": true}
+{"actual": {"actor_ref": "human:A", "owner_policy_epoch": 1, "owner_policy_ref": "policy:qa2-local"}, "expected": {"actor_ref": "human:A", "owner_policy_epoch": 1, "owner_policy_ref": "policy:qa2-local"}, "name": "resolver-writes-owner-binding", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-owner_policy_ref", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-owner_policy_epoch", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-owner_policy_issued_by", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-owner_policy_issued_at", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-actor_ref", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-os_principal", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-epoch", "ok": true}
+{"actual": {"actual": "DELEGATION_SCOPE_INVALID"}, "expected": {"rejected": "DELEGATION_SCOPE_INVALID"}, "name": "allowlist-refuses-revoked", "ok": true}
+{"failed": 0, "failed_names": [], "total": 10}
