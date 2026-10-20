@@ -1,0 +1,374 @@
+{
+  "schema": "serveros/fleet-v1-runtime-parity-tri-node-observation.v1",
+  "recorded_at": "2026-10-18T07:12:34Z",
+  "evidence_level": "REAL_READ_ONLY",
+  "scope": "one read-only tri-node capability/entitlement matrix; no session lifecycle executed",
+  "sources": [
+    {
+      "id": "serveros-agent-mcp",
+      "kind": "ServerOS Agent MCP read-only tools",
+      "tools": [
+        "device_inspect",
+        "agent_provider_list",
+        "agent_list",
+        "agent_session_list"
+      ],
+      "provenance": "provider-response"
+    },
+    {
+      "id": "serverosctl-device-help",
+      "kind": "documented local CLI capability inspection",
+      "command": "serverosctl device --help",
+      "provenance": "CLI surface declaration"
+    },
+    {
+      "id": "fleet-mcp-unauthenticated-initialize",
+      "kind": "read-only control-plane auth probe",
+      "endpoint": "http://127.0.0.1:3401/mcp",
+      "provenance": "HTTP response"
+    },
+    {
+      "id": "agent-local-version-probe",
+      "kind": "benign command presence/version on the Tokyo host",
+      "commands": ["claude --version", "codex --version", "id -un"],
+      "provenance": "FACT"
+    }
+  ],
+  "redactions": [
+    "session titles and message content are omitted",
+    "native session ids are replaced with sha256 prefixes",
+    "cwd and workspace paths are omitted; cwd is not used as project identity",
+    "credentials, tokens, auth material, argv and environment were never read",
+    "the Fleet OAuth metadata host is replaced with <fleet-tailnet>",
+    "the BotMux dashboard credential requirement is named without its value or environment key"
+  ],
+  "fleet_policy_read": {
+    "state": "READ_AUTH_REQUIRED",
+    "endpoint": "http://127.0.0.1:3401/mcp",
+    "server": "serveros-fleet-mcp/0.1.0",
+    "probe": "unauthenticated POST initialize",
+    "http_status": 401,
+    "error": "invalid_token",
+    "error_description": "no Authorization header",
+    "auth_challenge": "OAuth protected-resource metadata presented (host redacted)",
+    "credential_read": false,
+    "credential_used": false,
+    "observed_at": "2026-10-18T07:12:13Z",
+    "consequence": "create_allow and session_create are GRANT_UNKNOWN on every device; raw policy files were not read"
+  },
+  "devices": [
+    {
+      "device_ref": "device:tokyo-shared-dev-01",
+      "display_name": "Tokyo-Shared-Dev-01",
+      "platform": "linux",
+      "environment_profile": "linux-shared-multiuser",
+      "enrollment": "enrolled",
+      "reachability": {
+        "state": "KNOWN_ONLINE",
+        "provenance": "local-loopback",
+        "observed_at": "2026-10-18T07:11:23.211830Z"
+      },
+      "node_runtime": {
+        "state": "ABSENT",
+        "reason": "no connector declared for this node; the local provider inventory is still readable"
+      },
+      "os_principal": {
+        "value": "vince",
+        "state": "OBSERVED",
+        "provenance": "local-loopback: provider binary under /data/home/vince and local account"
+      },
+      "declared_bindings": ["agent-runtime:claude-code"],
+      "declared_agents": ["claude-code"],
+      "provider_inventory": {
+        "state": "KNOWN",
+        "observed_at": "2026-10-18T07:11:23.802566Z"
+      },
+      "providers": [
+        {
+          "provider": "provider:botmux-agent-session",
+          "family": "claude-code",
+          "kind": "botmux-dashboard-adapter",
+          "control_plane": "RUNNING",
+          "control_plane_source": "botmux:/api/sessions",
+          "execution_readiness": "UNKNOWN",
+          "execution_readiness_reason": "the provider publishes no readiness endpoint; probed 404",
+          "agent_list": "NEEDS_LOGIN",
+          "agent_list_reason": "the provider requires dashboard authentication; no credential was read, copied or injected",
+          "session_list": "READ_AUTHORIZED",
+          "sessions_observed": 1,
+          "declared_verbs": {
+            "create": "UNKNOWN",
+            "send": "SUPPORTED",
+            "get_run": "SUPPORTED",
+            "resume": "UNSUPPORTED",
+            "interrupt": "UNSUPPORTED",
+            "end": "SUPPORTED"
+          },
+          "observed_verbs": ["session.list", "session.inspect metadata"],
+          "effective_model": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native model field was present in the authorized session metadata read"
+          },
+          "effective_permission_mode": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native permissionMode field was present in the authorized session metadata read"
+          },
+          "observed_at": "2026-10-18T07:11:38.095486Z"
+        },
+        {
+          "provider": "provider:codex-app-server",
+          "family": "codex",
+          "kind": "codex-app-server",
+          "control_plane": "RUNNING",
+          "control_plane_source": "codex:initialize",
+          "execution_readiness": "UNKNOWN",
+          "execution_readiness_reason": "the provider publishes no readiness endpoint; probed 404",
+          "agent_list": "READ_AUTHORIZED",
+          "session_list": "READ_AUTHORIZED",
+          "sessions_observed": 2,
+          "declared_verbs": {
+            "create": "SUPPORTED",
+            "send": "SUPPORTED",
+            "get_run": "SUPPORTED",
+            "resume": "SUPPORTED",
+            "interrupt": "SUPPORTED",
+            "end": "UNSUPPORTED"
+          },
+          "observed_verbs": [
+            "initialize",
+            "agent inventory read",
+            "thread/list metadata read"
+          ],
+          "effective_model": {
+            "value": "gpt-6-astra",
+            "provenance": "FACT",
+            "source": "codex:thread/list"
+          },
+          "effective_permission_mode": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native permissionMode field was present in the authorized session metadata read"
+          },
+          "observed_at": "2026-10-18T07:11:38.135866Z"
+        }
+      ],
+      "sessions": [
+        {
+          "session_id": "sha256:1e7a955981fa",
+          "family": "claude-code",
+          "provider": "provider:botmux-agent-session",
+          "status": "IDLE",
+          "status_provenance": "INFERRED",
+          "model": null,
+          "model_provenance": "UNKNOWN",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-18T07:11:38.420721Z",
+          "title_redacted": true
+        },
+        {
+          "session_id": "sha256:09b42e6b6b68",
+          "family": "codex",
+          "provider": "provider:codex-app-server",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-18T07:11:38.619485Z",
+          "title_redacted": true
+        },
+        {
+          "session_id": "sha256:1d5d51e75792",
+          "family": "codex",
+          "provider": "provider:codex-app-server",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-18T07:11:38.679149Z",
+          "title_redacted": true
+        }
+      ],
+      "cli": {
+        "claude-code": "2.1.272 (Claude Code)",
+        "codex": "codex-cli 0.160.0",
+        "provenance": "FACT",
+        "observed_at": "2026-10-18T07:12:34Z"
+      },
+      "project": {
+        "state": "UNKNOWN",
+        "reason": "the authorized metadata read exposes cwd, not a project id; cwd was not used as project identity"
+      },
+      "create_allow": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "the deployed Fleet MCP policy status requires owner OAuth; no token was read or used"
+      },
+      "session_create": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "no authorized policy status read; provider execution readiness is UNKNOWN; codex is unbound"
+      }
+    },
+    {
+      "device_ref": "device:work-fj",
+      "display_name": "FJPCOS",
+      "platform": "windows",
+      "environment_profile": "windows-corporate",
+      "enrollment": "enrolled",
+      "reachability": {
+        "state": "UNKNOWN",
+        "provenance": "NOT_MEASURED",
+        "reason": "no transport observed this device's presence"
+      },
+      "node_runtime": {
+        "state": "ABSENT",
+        "reason": "NODE_RUNTIME_UNAVAILABLE"
+      },
+      "os_principal": {
+        "value": null,
+        "state": "UNKNOWN",
+        "reason": "no provider or transport read reached this device"
+      },
+      "declared_bindings": ["agent-runtime:claude-code", "agent-runtime:codex"],
+      "declared_agents": ["claude-code", "codex"],
+      "provider_inventory": {
+        "state": "UNKNOWN",
+        "reason": "the transport returned no inventory; this control plane has not asked the device anything",
+        "observed_at": null
+      },
+      "agent_list": {
+        "state": "UNKNOWN",
+        "reason": "this control plane holds providers for device:tokyo-shared-dev-01; reaching another device needs a provider running there"
+      },
+      "session_list": {
+        "state": "UNKNOWN",
+        "reason": "this control plane owns device:tokyo-shared-dev-01; another device's sessions need a transport that has asked it"
+      },
+      "providers": [],
+      "sessions": [],
+      "cli": {
+        "claude-code": null,
+        "codex": null,
+        "provenance": "UNKNOWN",
+        "reason": "Windows is not a local probe target in this milestone"
+      },
+      "project": {
+        "state": "UNKNOWN",
+        "reason": "no provider or transport read reached this device"
+      },
+      "create_allow": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "the deployed Fleet MCP policy status requires owner OAuth; no token was read or used"
+      },
+      "session_create": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "no node runtime or provider inventory reached this device"
+      }
+    },
+    {
+      "device_ref": "device:llm-lab-dell",
+      "display_name": null,
+      "platform": null,
+      "environment_profile": null,
+      "enrollment": "NOT_ENROLLED",
+      "reachability": {
+        "state": "DEVICE_NOT_ENROLLED",
+        "reason_code": "INVALID_CONTEXT",
+        "detail": "UnknownDevice: no enrolled device with id 'llm-lab-dell'",
+        "observed_at": "2026-10-18T07:11:23Z"
+      },
+      "node_runtime": {
+        "state": "UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "os_principal": {
+        "value": null,
+        "state": "UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "declared_bindings": [],
+      "declared_agents": [],
+      "provider_inventory": {
+        "state": "REFUSED",
+        "reason_code": "INVALID_CONTEXT",
+        "detail": "UnknownDevice: no enrolled device with id 'llm-lab-dell'"
+      },
+      "agent_list": {
+        "state": "REFUSED",
+        "reason_code": "INVALID_CONTEXT",
+        "detail": "UnknownDevice: no enrolled device with id 'llm-lab-dell'"
+      },
+      "session_list": {
+        "state": "REFUSED",
+        "reason_code": "INVALID_CONTEXT",
+        "detail": "UnknownDevice: no enrolled device with id 'llm-lab-dell'"
+      },
+      "providers": [],
+      "sessions": [],
+      "cli": {
+        "claude-code": null,
+        "codex": null,
+        "provenance": "UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "project": {
+        "state": "UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "create_allow": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "session_create": {
+        "state": "GRANT_UNKNOWN",
+        "reason": "the device ref is not enrolled"
+      },
+      "note": "No fallback to device:personal-dell or device:server-beijing. An existing A6000 read-only terminal proof is not a lifecycle test."
+    }
+  ],
+  "behavioral": {
+    "state": "NOT_RUN",
+    "live": false,
+    "reason": "read-only milestone: no create, send, resume, interrupt, end or model call"
+  },
+  "no_fallback": true,
+  "approval_required": [
+    {
+      "id": "A1",
+      "owner": "owner / F1",
+      "approval": "declare agent-runtime:codex in device:tokyo-shared-dev-01 runtime_bindings, or explicitly keep it unbound",
+      "why": "Codex provider is observed and readable but unbound; no create/send can be authorized from an unbound family"
+    },
+    {
+      "id": "A2",
+      "owner": "owner",
+      "approval": "make the BotMux dashboard credential available to the provider process for agent inventory reads",
+      "why": "Claude Code agent inventory is NEEDS_LOGIN; no credential was read, copied or injected"
+    },
+    {
+      "id": "A3",
+      "owner": "owner",
+      "approval": "authorize a read-only Fleet MCP status call with an owner OAuth token, or run it yourself",
+      "why": "the deployed Fleet MCP returned 401 invalid_token without an Authorization header; create_allow and session_create are GRANT_UNKNOWN"
+    },
+    {
+      "id": "A4",
+      "owner": "owner",
+      "approval": "provide the correct enrolled Dell A6000 device ref or enroll it",
+      "why": "device:llm-lab-dell is not enrolled (UnknownDevice/INVALID_CONTEXT); no fallback identity was tried"
+    },
+    {
+      "id": "A5",
+      "owner": "owner",
+      "approval": "authorize the minimal real create/send/get_run/resume/interrupt/end acceptance run, with grants",
+      "why": "this milestone is read-only; actual lifecycle acceptance remains BLOCKED_BY_OWNER"
+    }
+  ]
+}

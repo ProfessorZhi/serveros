@@ -1,0 +1,300 @@
+# R1 #248 — Runtime Session authorization contract, 2026-10-20.
+#
+# This file is the vocabulary for `authorization.py` and the fixture. It is
+# not a second source of truth: every source-level claim names the file it was
+# read from at the authoritative pin, and every reason word is copied from the
+# source's closed vocabulary.
+schema: serveros/fleet-v1-runtime-authorization.v1
+version: 1
+module: integrations/fleet-v1-runtime/authorization.py
+evidence_level: SOURCE_READ
+observation_evidence_level: REAL_READ_ONLY
+
+pin:
+  authoritative_repo: ProfessorZhi/serveros
+  authoritative_main: 771c81c
+  workspace_head: 665067e
+  prior_r1_head: 65ead6df0a182092a3d83a6dacf9f04e9786eada
+  note: >-
+    The prior R1 branch's body pins main 4a3162, which is not the branch's
+    merge base and is not present in this checkout. The authoritative pin for
+    this contract is 771c81c.
+
+# ---------------------------------------------------------------------------
+# Three kinds of "no". They are separate because they are repaired by
+# different people.
+# ---------------------------------------------------------------------------
+decisions:
+  PRECONDITIONS_MET: >-
+    every source-level gate that was evaluated passed. This is NOT a grant:
+    admission remains with Agent Control, and the verb was not executed.
+  REFUSED: >-
+    the source refused in its own closed reason vocabulary. The first refusal
+    in the source's step order wins.
+  UNKNOWN: >-
+    nothing refused, and a fact needed for a decision was never established
+    (readiness, grant, a protocol field). UNKNOWN is neither a deny nor an
+    allow, and nothing was dispatched.
+  BLOCKED: >-
+    an owner, consent, enrollment or adapter boundary stopped the lane before
+    the source could answer. These are R1 boundary codes, not source reasons.
+
+# ---------------------------------------------------------------------------
+# Surfaces. Only the ServerOS Agent MCP is admission-controlled. CloudCLI is a
+# separate control plane whose bearer token is ambient to the MCP client.
+# ---------------------------------------------------------------------------
+surfaces:
+  serveros-agent-mcp:
+    authority: Agent Control / Agent Session service
+    tools:
+      read: [agent.session.inspect, agent.session.result, agent.session.list]
+      create: [agent.session.create]
+      send: [agent.session.send]
+      get_run: [agent.session.result]
+      resume: [agent.session.resume]
+      interrupt: []
+      end: [agent.session.stop]
+    notes:
+      interrupt: >-
+        Deliberately absent from the MCP surface. `session.interrupt` exists at
+        the router/provider layer and is turn-scoped; the semantic lifecycle
+        verb exposed to an Agent is `agent.session.stop`.
+      get_run: >-
+        ServerOS has no `get_run` tool; `agent.session.result` is the
+        asynchronous turn-result read and is the get_run analogue.
+  cloudcli-mcp:
+    authority: CloudCLI bearer token held by the MCP client
+    is_serveros_admission: false
+    tools:
+      read: [sessions_list, session_get, session_read]
+      create: [session_create]
+      send: [session_send]
+      get_run: [run_get]
+      resume: []
+      interrupt: [session_interrupt]
+      end: [session_close]
+    notes:
+      resume: >-
+        No session_resume tool. `session_start` starts a resident host; it is
+        not a resume.
+      get_run: >-
+        `run_get` is declared with parameter `run`, while the server requires
+        `runId`. The run id exposed by `session_get` for an active host lease
+        was rejected with `This runId was never issued.` The tool is not usable
+        as declared in this observation.
+      mutations: >-
+        A CloudCLI mutation is a real model request authorized by the ambient
+        bearer token. It is not a ServerOS context_ref or grant, and this lane
+        did not execute one.
+  codex-app-server:
+    authority: provider-native app-server protocol
+    action_support:
+      session.create: SUPPORTED
+      session.inspect: SUPPORTED
+      session.send: SUPPORTED
+      session.result: SUPPORTED
+      session.resume: SUPPORTED
+      session.interrupt: SUPPORTED
+      session.stop: UNSUPPORTED
+      session.handoff: UNKNOWN
+    notes:
+      interrupt: turn/interrupt only; it does not end the session.
+      stop: >-
+        No session-stop verb. thread/archive is a reversible hide and
+        thread/delete destroys history; neither ends a running session.
+  botmux-agent-session:
+    authority: BotMux Dashboard HTTP API
+    instance_action_support: UNPUBLISHED
+    per_session_action_support:
+      session.inspect: SUPPORTED
+      session.send: SUPPORTED
+      session.result: SUPPORTED
+      session.resume: UNSUPPORTED
+      session.interrupt: UNSUPPORTED
+      session.stop: SUPPORTED
+      session.handoff: UNKNOWN
+      session.create: NOT_IN_INSTANCE_TABLE
+    notes:
+      support: >-
+        The adapter has no public `actions()` method. The resolver's
+        `provider_action_support` reads `provider.actions()` and therefore sees
+        an empty instance table; the per-session table on agent.session.list is
+        not consulted by the resolver. Every routed BotMux verb is refused with
+        ACTION_UNSUPPORTED before readiness or admission.
+      create: >-
+        `SessionService.create` does not consult a declared action table. The
+        provider method raises BotMuxUnsupported when workspace is set and
+        BotMuxCredentialMissing when the dashboard token is absent.
+  claude-code-native:
+    authority: none
+    state: ABSENT
+    note: >-
+      No Claude Code provider adapter exists at 771c81c. The local
+      fleet-cc-dev-plugin is a client plugin, not a Session provider.
+
+# ---------------------------------------------------------------------------
+# Admission classes, copied from runtime/agent-session-contract.yaml.
+# ---------------------------------------------------------------------------
+admission:
+  read_only: [agent.list, agent.inspect, session.list, session.inspect, session.result]
+  delegation: [session.create, session.resume, session.send]
+  human_gated: [session.interrupt, session.stop, session.handoff]
+  rules:
+    - a mutating action requires a trusted context_ref; the actor is resolved from it and is never an argument.
+    - a presented context_ref that does not resolve is refused with INVALID_CONTEXT.
+    - delegation grants no new host privilege; downstream policy remains in force.
+    - human-gated control is never inferred from a delegation grant; provider support and a separate approval are both required.
+    - create binds a thread: session_role is required; execution requires bound_item_ref; coordinator forbids it.
+    - send and resume admit against the thread binding and the bound Item's state.
+
+# ---------------------------------------------------------------------------
+# Source reason vocabulary. Copied from abilities/target-contract.yaml.
+# These are the only reasons a REFUSED record may carry.
+# ---------------------------------------------------------------------------
+reason_vocabulary:
+  - DEVICE_UNREACHABLE
+  - NODE_RUNTIME_UNAVAILABLE
+  - AGENT_RUNTIME_UNAVAILABLE
+  - PROVIDER_UNAVAILABLE
+  - ACTION_UNSUPPORTED
+  - READINESS_UNKNOWN
+  - POLICY_DENIED
+  - APPROVAL_REQUIRED
+  - APPROVAL_BINDING_MISMATCH
+  - APPROVAL_CONTEXT_MISMATCH
+  - APPROVAL_EXPIRED
+  - APPROVAL_ALREADY_CONSUMED
+  - SESSION_NOT_FOUND
+  - TURN_FAILED
+  - PROVIDER_ERROR
+  - TIMEOUT
+  - INVALID_CONTEXT
+  - UNTRUSTED_ACTOR
+  - THREAD_ITEM_MISMATCH
+  - READ_ONLY_CLOSURE
+  - THREAD_CLOSED_FOR_NEW_WORK
+
+# ---------------------------------------------------------------------------
+# R1 boundary codes. These say which authority stopped the lane before the
+# source answered; they are not source reasons and never replace one.
+# ---------------------------------------------------------------------------
+blocked_codes:
+  BLOCKED_OWNER_LOGIN: >-
+    the provider requires a credential that the provider process does not hold
+    (BotMux dashboard authentication). Session metadata remains readable.
+  BLOCKED_OWNER_CONSENT: >-
+    a real mutation or model request was not authorized by this lane. Used for
+    direct provider mutations and for CloudCLI session_create/send/interrupt/
+    close.
+  BLOCKED_GRANT_UNKNOWN: >-
+    no readable grant covers the verb. UNKNOWN is not a deny and not an allow.
+  BLOCKED_RUNTIME_NOT_DECLARED: >-
+    the device's registry does not declare the requested agent-runtime, so the
+    resolver refuses before provider support is evaluated.
+  BLOCKED_PROVIDER_SUPPORT_UNPUBLISHED: >-
+    the provider publishes no instance-level action_support table. The
+    resolver reports ACTION_UNSUPPORTED even when a per-session row says
+    SUPPORTED.
+  BLOCKED_PROVIDER_ADAPTER_ABSENT: >-
+    no provider adapter exists for the family at the authoritative pin.
+  BLOCKED_EXECUTION_UNVERIFIED: >-
+    execution readiness is UNKNOWN. The resolver reports the target as UNKNOWN
+    and the router does not dispatch; this is not a refusal and not a deny.
+  BLOCKED_MCP_TOOL_ABSENT: >-
+    the verb is not exposed by the surface (ServerOS interrupt; CloudCLI
+    resume).
+  BLOCKED_PROTOCOL_FIELD_MISMATCH: >-
+    the declared tool schema and the server's required field disagree, or a
+    provider-reported id is not resolvable by the tool that consumes it.
+  BLOCKED_NODE_RUNTIME_UNAVAILABLE: >-
+    a remote device has no ServerOS node runtime, so there is nothing to route
+    a request to. The local loopback is not affected.
+  BLOCKED_DEVICE_NOT_ENROLLED: >-
+    the live control plane does not know the device ref.
+  BLOCKED_AUTHORED_NOT_LIVE: >-
+    the device exists only in an uncommitted registry working tree and has not
+    been observed by the live control plane.
+
+# ---------------------------------------------------------------------------
+# CC-first is the first milestone; full V1 requires Codex as well. The two
+# tiers are not interchangeable.
+# ---------------------------------------------------------------------------
+tiers:
+  CC_FIRST:
+    requires:
+      - agent-runtime:claude-code is declared on the device
+      - the Claude Code provider control plane is readable
+      - session metadata read is authorized
+    does_not_require:
+      - Codex
+      - a CloudCLI mutation
+      - a ServerOS routed lifecycle
+    observed_state: PARTIAL
+    why_partial: >-
+      The inventory is readable (agent.provider.list / agent.session.list and
+      CloudCLI sessions_list / session_get), but the ServerOS routed Claude
+      Code verbs are refused at the support step because BotMux publishes no
+      instance-level actions() table.
+  FULL_V1_CODEX:
+    requires:
+      - agent-runtime:codex is declared in runtime_bindings and the agents projection
+      - the Codex provider publishes a complete instance action_support table
+      - execution readiness is a known positive, or an explicit owner waiver
+      - a trusted context_ref and a grant covering the verb
+      - a real create/send/read/get_run/resume/interrupt cycle
+    observed_state: BLOCKED
+    blockers:
+      - Codex is installed and its provider is RUNNING, but Tokyo declares only claude-code.
+      - The resolver refuses at the runtime step before provider support.
+      - Execution readiness is EXECUTION_UNVERIFIED.
+      - No context_ref or grant was presented, and no lifecycle verb was executed.
+
+# ---------------------------------------------------------------------------
+# Source-level corrections to the prior R1 material. These are findings, not
+# edits to another lane's files.
+# ---------------------------------------------------------------------------
+source_corrections:
+  cloudcli_bridge_absent: >-
+    fleet_mcp/cloudcli_native.py, cited by the prior R1 contract, does not
+    exist at 771c81c or at the prior R1 head 65ead6d. The live CloudCLI MCP
+    surface is a separate control plane, and its capability table must be read
+    from the tool surface actually exposed, not from an absent ServerOS bridge.
+  measured_version_drift: >-
+    mcp/codex_app_server_provider.py declares MEASURED_AGAINST codex-cli
+    0.153.4. The live provider handshake reports codex-cli 0.160.0. The
+    measured version is stale; the protocol methods were not re-measured here.
+  runtime_gate_reads_projection: >-
+    abilities/target.py#_step_agent_runtime reads device.agents, while
+    abilities/runtime_binding.py says runtime_bindings is authoritative and
+    agents is its projection. They agree for every current device, but the
+    control path reads the derived list.
+  botmux_support_unpublished: >-
+    BotMuxProvider implements _actions() for session rows but no public
+    actions(); provider_action_support therefore returns an empty table and
+    every routed BotMux verb is ACTION_UNSUPPORTED.
+  readiness_unknown_is_not_a_refusal: >-
+    SessionService._preflight refuses only a KNOWN NEGATIVE. The target
+    resolver, however, reports an unevaluated readiness step as overall
+    UNKNOWN, and the router does not dispatch an UNKNOWN target. The two
+    layers use different words for the same observation.
+  interrupt_surface: >-
+    mcp/agent_mcp.py intentionally exposes no agent.session.interrupt.
+    Provider-level interrupt support (Codex turn/interrupt) does not create an
+    MCP tool.
+
+not_claimed:
+  - no live create/send/get_run/resume/interrupt/end
+  - no model call
+  - no credential, token, transcript or environment read
+  - no grant, registry, service or production change
+  - no Windows or Dell execution
+  - no claim that a declared binding is an installed or executable capability
+  - no claim that the uncommitted llm-lab-dell registry row is live
+
+validation:
+  command: >-
+    PYTHONDONTWRITEBYTECODE=1 nice -n 10 flock -n
+    /tmp/serveros-fleet-v1-runtime.lock timeout 120
+    /data/home/vince/toolchains/serveros-test/bin/pytest
+    tests/test_fleet_v1_runtime_authorization.py -q -p no:cacheprovider
+  expected: "exit 0; all cases pass; no provider, network or credential access"

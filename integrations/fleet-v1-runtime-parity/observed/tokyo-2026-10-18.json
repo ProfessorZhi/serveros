@@ -1,0 +1,237 @@
+{
+  "schema": "serveros/fleet-v1-runtime-parity-observation.v1",
+  "recorded_at": "2026-10-17T22:17:00Z",
+  "evidence_level": "REAL_READ_ONLY",
+  "device_ref": "device:tokyo-shared-dev-01",
+  "device_owner": "vince",
+  "sources": [
+    {
+      "id": "serveros-agent-mcp",
+      "kind": "ServerOS Agent MCP read-only tools",
+      "tools": [
+        "device_list",
+        "device_inspect",
+        "agent_provider_list",
+        "agent_provider_inspect",
+        "agent_list",
+        "agent_session_list"
+      ],
+      "provenance": "provider-response"
+    },
+    {
+      "id": "serverosctl-device-agents-probe",
+      "kind": "documented local read-only probe",
+      "command": "serverosctl device agents --device device:tokyo-shared-dev-01 --probe --json",
+      "provenance": "cli-version + surface presence"
+    },
+    {
+      "id": "agent-local-version-probe",
+      "kind": "benign command presence/version",
+      "commands": ["claude --version", "codex --version"],
+      "provenance": "FACT"
+    }
+  ],
+  "redactions": [
+    "session titles and message content are omitted",
+    "native session ids are replaced with sha256 prefixes",
+    "cwd and workspace paths are omitted",
+    "credentials, tokens, auth material, argv and environment were never read",
+    "the BotMux dashboard credential requirement is named without its value or environment key"
+  ],
+  "device": {
+    "bindings": ["agent-runtime:claude-code"],
+    "declared_agents": ["claude-code"],
+    "binding_source": "fleet/registry.yaml runtime_bindings",
+    "binding_observed_at": "2026-10-17T22:16:57.942933Z",
+    "structural_parity": {
+      "verdict": "CONFORMANT",
+      "scope": "structural only: declared ids, adapter surfaces and presence; the behavioural session smoke is not inferred",
+      "observed_at": "2026-10-17T22:16:58.443739Z"
+    }
+  },
+  "runtimes": {
+    "claude-code": {
+      "cli": {
+        "installed": true,
+        "version": "2.1.272 (Claude Code)",
+        "provenance": "FACT",
+        "source": "claude --version",
+        "observed_at": "2026-10-17T22:16:58.443739Z"
+      },
+      "binding": {
+        "state": "BOUND",
+        "declared": ["agent-runtime:claude-code"]
+      },
+      "direct_provider": {
+        "state": "ABSENT",
+        "reason": "no direct Claude Code provider instance appears in the device provider inventory",
+        "source": "agent_provider_list",
+        "observed_at": "2026-10-17T22:16:48.026698Z"
+      },
+      "providers": [
+        {
+          "provider": "provider:botmux-agent-session",
+          "kind": "botmux-dashboard-adapter",
+          "control_plane": "RUNNING",
+          "control_plane_source": "botmux:/api/sessions",
+          "execution_readiness": "UNKNOWN",
+          "execution_readiness_reason": "the provider publishes no readiness endpoint; probed 404",
+          "agent_list": "NEEDS_LOGIN",
+          "agent_list_reason": "the provider requires dashboard authentication; no credential was read, copied or injected",
+          "session_list": "READ_AUTHORIZED",
+          "session_list_source": "botmux:/api/sessions",
+          "sessions_observed": 1,
+          "actions": {
+            "session.inspect": "SUPPORTED",
+            "session.send": "SUPPORTED",
+            "session.result": "SUPPORTED",
+            "session.stop": "SUPPORTED",
+            "session.resume": "UNSUPPORTED",
+            "session.interrupt": "UNSUPPORTED",
+            "session.handoff": "UNKNOWN"
+          },
+          "effective_model": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native model field was present in the authorized session metadata read"
+          },
+          "effective_permission_mode": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native permissionMode field was present in the authorized session metadata read"
+          },
+          "observed_at": "2026-10-17T22:16:56.965946Z"
+        }
+      ],
+      "session_metadata": [
+        {
+          "session_id": "sha256:1e7a955981fa",
+          "provider": "provider:botmux-agent-session",
+          "agent_runtime": "agent-runtime:claude-code",
+          "native_runtime": "claude-code",
+          "status": "IDLE",
+          "status_provenance": "INFERRED",
+          "status_reason": "BotMux derives idle from CLI screen content",
+          "can_accept_input": true,
+          "can_accept_input_note": "provider-reported capability, not a grant or an entitlement",
+          "model": null,
+          "model_provenance": "UNKNOWN",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-17T22:16:56.965946Z",
+          "title_redacted": true
+        }
+      ],
+      "states": {
+        "cli": "INSTALLED_ONLY",
+        "direct_provider": "ABSENT",
+        "agent_list": "NEEDS_LOGIN",
+        "session_list": "READ_AUTHORIZED"
+      }
+    },
+    "codex": {
+      "cli": {
+        "installed": true,
+        "version": "codex-cli 0.160.0",
+        "provenance": "FACT",
+        "sources": [
+          "codex --version",
+          "codex:initialize user_agent serveros/0.160.0"
+        ],
+        "observed_at": "2026-10-17T22:16:48.106009Z"
+      },
+      "binding": {
+        "state": "UNBOUND",
+        "declared": ["agent-runtime:claude-code"],
+        "reason": "the device registry does not declare agent-runtime:codex, although the provider is present",
+        "observed_at": "2026-10-17T22:16:57.942933Z"
+      },
+      "direct_provider": {
+        "state": "PRESENT",
+        "provider": "provider:codex-app-server"
+      },
+      "providers": [
+        {
+          "provider": "provider:codex-app-server",
+          "kind": "codex-app-server",
+          "control_plane": "RUNNING",
+          "control_plane_source": "codex:initialize",
+          "execution_readiness": "UNKNOWN",
+          "execution_readiness_reason": "the provider publishes no readiness endpoint; probed 404",
+          "agent_list": "READ_AUTHORIZED",
+          "session_list": "READ_AUTHORIZED",
+          "session_list_source": "codex:thread/list",
+          "sessions_observed": 2,
+          "actions": {
+            "session.create": "SUPPORTED",
+            "session.inspect": "SUPPORTED",
+            "session.send": "SUPPORTED",
+            "session.result": "SUPPORTED",
+            "session.resume": "SUPPORTED",
+            "session.interrupt": "SUPPORTED",
+            "session.stop": "UNSUPPORTED",
+            "session.handoff": "UNKNOWN"
+          },
+          "effective_model": {
+            "value": "gpt-6-astra",
+            "provenance": "FACT",
+            "source": "codex:thread/list"
+          },
+          "effective_permission_mode": {
+            "value": null,
+            "provenance": "UNKNOWN",
+            "reason": "no provider-native permissionMode field was present in the authorized session metadata read"
+          },
+          "observed_at": "2026-10-17T22:16:57.168796Z"
+        }
+      ],
+      "session_metadata": [
+        {
+          "session_id": "sha256:09b42e6b6b68",
+          "provider": "provider:codex-app-server",
+          "agent_runtime": "agent-runtime:codex",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "status_reason": "unmapped codex thread status 'notLoaded'",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-17T22:16:57.168796Z",
+          "title_redacted": true
+        },
+        {
+          "session_id": "sha256:1d5d51e75792",
+          "provider": "provider:codex-app-server",
+          "agent_runtime": "agent-runtime:codex",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "status_reason": "unmapped codex thread status 'notLoaded'",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "observed_at": "2026-10-17T22:16:57.229904Z",
+          "title_redacted": true
+        }
+      ],
+      "states": {
+        "cli": "INSTALLED_ONLY",
+        "direct_provider": "READ_AUTHORIZED",
+        "agent_list": "READ_AUTHORIZED",
+        "session_list": "READ_AUTHORIZED"
+      }
+    }
+  },
+  "behavioral": {
+    "state": "NOT_RUN",
+    "reason": "read-only milestone: no provider send, model call, create, resume or interrupt",
+    "live": false
+  },
+  "entitlement": {
+    "state": "NOT_INFERRED_FROM_SESSION_READ",
+    "reason": "an already-authorized session list is not a new Claude Code or Codex account entitlement; create/send/resume/interrupt remain unproven"
+  }
+}
