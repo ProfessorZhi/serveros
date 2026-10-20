@@ -1,0 +1,5 @@
+# The pinned fixtures are byte-exact contracts. Keep LF in every checkout,
+# including a Windows working tree with core.autocrlf=true. The test suite also
+# canonicalizes a PURE CRLF transcription defensively; anything mixed, BOM'd or
+# semantically changed is rejected.
+*.json text eol=lf

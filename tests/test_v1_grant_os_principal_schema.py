@@ -51,7 +51,12 @@ import v1_portability_harness as H  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
-    reason="X2 evidence scope: Linux (Tokyo / Dell fjd) only")
+    reason=(
+        "PRODUCER_BOUNDARY_POSIX_ONLY: Windows FJPCOS has no verified X2 "
+        "producer; this suite executes the POSIX daemon/uid grant read, so its "
+        "13 cases are skipped rather than run against a fake Windows producer. "
+        "Manifest: "
+        "tests/v1_portability/fixtures/windows-skip-manifest.v1.json"))
 
 
 def _load_at(name: str, path: Path):

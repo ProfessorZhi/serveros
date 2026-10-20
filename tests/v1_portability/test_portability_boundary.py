@@ -8,7 +8,9 @@ workengine code and pinned public fixtures.
 from __future__ import annotations
 
 import ast
+import codecs
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -17,6 +19,10 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import v1_portability_harness as H  # noqa: E402
 SUITES = (
     REPO / "tests" / "test_fleet_v1_t10_legacy_compatibility.py",
     REPO / "tests" / "test_v1_grant_os_principal_schema.py",
@@ -64,8 +70,48 @@ PINNED_FIXTURES = {
 def test_public_fixture_is_pinned(name: str, digest: str) -> None:
     path = HERE / "fixtures" / name
     assert path.is_file(), path
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, (
+    raw = path.read_bytes()
+    canonical = H.canonical_fixture_bytes(name)
+    # The only accepted on-disk representations are the canonical LF bytes and
+    # a PURE CRLF transcription of them (Windows core.autocrlf). Mixed endings,
+    # a BOM, a lone CR or a changed field are rejected by the canonicalizer or
+    # by the pin below.
+    assert raw in (canonical, canonical.replace(b"\n", b"\r\n")), (
+        f"{name} has a non-portable byte representation")
+    assert hashlib.sha256(canonical).hexdigest() == digest, (
         f"{name} changed; update the pin only with a reviewed contract change")
+
+
+def test_crlf_is_normalized_to_the_pinned_canonical_bytes():
+    canonical = H.fixture_bytes(H.T10_FIXTURE)
+    crlf = canonical.replace(b"\n", b"\r\n")
+    assert crlf != canonical
+    assert H.canonical_json_bytes(crlf) == canonical
+    assert hashlib.sha256(H.canonical_json_bytes(crlf)).hexdigest() == (
+        PINNED_FIXTURES[H.T10_FIXTURE])
+
+
+def test_changed_field_is_not_laundered_by_crlf():
+    canonical = H.fixture_bytes(H.T10_FIXTURE)
+    changed = canonical.replace(b'"verdict": "PASS"', b'"verdict": "FAIL"')
+    assert changed != canonical
+    crlf_changed = changed.replace(b"\n", b"\r\n")
+    assert hashlib.sha256(H.canonical_json_bytes(crlf_changed)).hexdigest() != (
+        PINNED_FIXTURES[H.T10_FIXTURE])
+
+
+@pytest.mark.parametrize("transform,code", (
+    (lambda canonical: codecs.BOM_UTF8 + canonical, "BOM"),
+    (lambda canonical: codecs.BOM_UTF16_LE + canonical, "BOM"),
+    (lambda canonical: canonical.replace(b"\n", b"\r\n").replace(
+        b"\r\n", b"\r", 1), "LONE_CR"),
+    (lambda canonical: canonical.replace(b"\n", b"\r\n", 1), "MIXED_EOL"),
+))
+def test_non_canonical_byte_forms_are_rejected(transform, code):
+    canonical = H.fixture_bytes(H.T10_FIXTURE)
+    with pytest.raises(H.FixtureBytesError) as exc:
+        H.canonical_json_bytes(transform(canonical))
+    assert code in str(exc.value), str(exc.value)
 
 
 def test_harness_loads_only_the_in_tree_workengine():
@@ -103,3 +149,91 @@ def test_guard_catches_argv_but_not_the_configured_env_value():
         {guard.ROOTS_ENV: root}))
     values = guard._values(*clean)
     assert not any(guard._inside(value, root) for value in values), values
+
+
+@pytest.mark.parametrize("candidate,root,expected", (
+    # Windows drive paths, case-insensitive, with both separators.
+    (r"D:\owner\private\root\evil", r"D:\owner\private\root", True),
+    ("D:/owner/private/root/evil", r"D:\owner\private\root", True),
+    (r"d:\OWNER\PRIVATE\ROOT\evil", r"D:\owner\private\root", True),
+    (r"D:\owner\private\root2\evil", r"D:\owner\private\root", False),
+    (r"D:\owner\private\root\..\other", r"D:\owner\private\root", False),
+    # Long-path drive alias must not escape.
+    (r"\\?\D:\owner\private\root\evil", r"D:\owner\private\root", True),
+    # Drive-relative and bare drive are not the absolute root.
+    (r"D:relative\evil", r"D:\owner\private\root", False),
+    (r"D:", r"D:\owner\private\root", False),
+    # A different drive is a different path family, not an alias.
+    (r"E:\owner\private\root\evil", r"D:\owner\private\root", False),
+    # UNC share, case-insensitive; sibling share prefix must not match.
+    (r"\\server\share\private\evil", r"\\server\share\private", True),
+    (r"\\SERVER\SHARE\PRIVATE\EVIL", r"\\server\share\private", True),
+    (r"\\server\share\private2\evil", r"\\server\share\private", False),
+    (r"\\server\share\private\..\other", r"\\server\share\private", False),
+    (r"\\server2\share\private\evil", r"\\server\share\private", False),
+    (r"\\server\share2\private\evil", r"\\server\share\private", False),
+    # POSIX keeps working and stays case-sensitive.
+    ("/owner/private/root/evil", "/owner/private/root", True),
+    ("/owner/private/root2/evil", "/owner/private/root", False),
+    ("/owner/private/root/../other", "/owner/private/root", False),
+    ("/OWNER/PRIVATE/ROOT/evil", "/owner/private/root", False),
+))
+def test_guard_normalizes_both_candidate_and_root(candidate, root, expected):
+    import private_path_guard as guard
+
+    assert guard._inside(candidate, root) is expected, (candidate, root)
+
+
+def test_guard_catches_windows_argv_but_not_the_configured_env_value():
+    """Synthetic Windows paths on Linux exercise the same rule as Windows."""
+    import private_path_guard as guard
+
+    root = r"D:\owner\private\root"
+    event = ("subprocess.Popen", (
+        "git.exe", ["git", "-C", root + r"\evil", "show"], r"C:\work",
+        {guard.ROOTS_ENV: root}))
+    values = guard._values(*event)
+    assert any(guard._inside(value, root) for value in values), values
+
+    clean = ("subprocess.Popen", (
+        "python.exe", ["python.exe", "-c", "pass"], r"C:\work",
+        {guard.ROOTS_ENV: root}))
+    values = guard._values(*clean)
+    assert not any(guard._inside(value, root) for value in values), values
+
+
+# ---------------------------------------------------------------------------
+# The Windows run's 19 skips are an explicit producer boundary, not silence.
+# ---------------------------------------------------------------------------
+
+SKIP_MANIFEST = HERE / "fixtures" / "windows-skip-manifest.v1.json"
+
+
+def _suite_test_names(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return [node.name for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name.startswith("test_")]
+
+
+def test_windows_skip_manifest_explains_every_suite_test():
+    manifest = json.loads(SKIP_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["schema"] == "serveros/x2-windows-skip-manifest.v1"
+    assert manifest["reason_code"] == "PRODUCER_BOUNDARY_POSIX_ONLY"
+    assert manifest["measured_windows_run"]["skipped"] == 19
+    assert manifest["measured_windows_run"]["failed"] == 4
+    for suite, names in manifest["suites"].items():
+        path = REPO / suite
+        assert _suite_test_names(path) == names, suite
+    legacy = manifest["suites"][
+        "tests/test_fleet_v1_t10_legacy_compatibility.py"]
+    assert len(legacy) == 19
+
+
+def test_suite_skip_reason_is_the_manifest_reason():
+    manifest = json.loads(SKIP_MANIFEST.read_text(encoding="utf-8"))
+    for suite in manifest["suites"]:
+        text = (REPO / suite).read_text(encoding="utf-8")
+        assert manifest["reason_code"] in text, suite
+        assert "pytest.xfail(" not in text, suite
+        assert "pytest.skip(" not in text, suite

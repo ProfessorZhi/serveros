@@ -25,6 +25,7 @@ Two kinds of fixture data are also kept apart:
 """
 from __future__ import annotations
 
+import codecs
 import dataclasses
 import datetime
 import hashlib
@@ -140,8 +141,68 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+class FixtureBytesError(ValueError):
+    """A pinned fixture is not in a canonical, faithful byte form."""
+
+
+_BOMS = (
+    codecs.BOM_UTF8,
+    codecs.BOM_UTF16_LE,
+    codecs.BOM_UTF16_BE,
+    codecs.BOM_UTF32_LE,
+    codecs.BOM_UTF32_BE,
+)
+
+
+def canonical_json_bytes(raw: bytes) -> bytes:
+    """Return the canonical LF bytes, or refuse an unfaithful representation.
+
+    Windows `core.autocrlf` may hand the suite a PURE CRLF transcription of the
+    same file.  That one transformation is accepted, and only that one:
+
+    * no BOM of any encoding;
+    * every CR is part of a CRLF and every LF is part of a CRLF (no lone CR,
+      no mixed endings);
+    * the result is valid UTF-8 JSON.
+
+    A changed field or an extra byte is NOT detected here; it is detected by
+    the pinned SHA-256 over the returned canonical bytes.  This function only
+    removes a line-ending transcription, never a semantic difference.
+    """
+    if raw.startswith(_BOMS):
+        raise FixtureBytesError("BOM: a pinned fixture must not carry a byte-order mark")
+    cr = raw.count(b"\r")
+    lf = raw.count(b"\n")
+    crlf = raw.count(b"\r\n")
+    if cr or crlf:
+        if cr != crlf:
+            raise FixtureBytesError(
+                "LONE_CR: every CR in a pinned fixture must be part of CRLF")
+        if lf != crlf:
+            raise FixtureBytesError(
+                "MIXED_EOL: a pinned fixture must be all-LF or all-CRLF")
+        normalized = raw.replace(b"\r\n", b"\n")
+    else:
+        normalized = raw
+    try:
+        text = normalized.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FixtureBytesError("UTF8: a pinned fixture must be UTF-8") from exc
+    try:
+        json.loads(text)
+    except ValueError as exc:
+        raise FixtureBytesError("JSON: a pinned fixture must be valid JSON") from exc
+    return normalized
+
+
+def canonical_fixture_bytes(name: str) -> bytes:
+    """The canonical bytes the suite actually consumes, independent of EOL."""
+    return canonical_json_bytes((FIXTURES / name).read_bytes())
+
+
 def fixture_bytes(name: str) -> bytes:
-    return (FIXTURES / name).read_bytes()
+    """Canonical LF bytes, so every consumer hashes the same contract."""
+    return canonical_fixture_bytes(name)
 
 
 def fixture_sha256(name: str) -> str:

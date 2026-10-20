@@ -19,10 +19,16 @@ suite that is genuinely public-safe runs unchanged under it.
 from __future__ import annotations
 
 import os
+import posixpath
+import re
 import sys
 
 GUARD_ENV = "SERVEROS_PORTABILITY_GUARD"
 ROOTS_ENV = "SERVEROS_PRIVATE_LEGACY_ROOTS"
+
+_WINDOWS_DRIVE = re.compile(r"^([A-Za-z]):(?:[\\/](.*))?$")
+_UNC = re.compile(r"^(?:\\\\|//)([^\\/]+)[\\/]([^\\/]+)(?:[\\/](.*))?$")
+_DEVICE_PREFIXES = ("\\\\.\\", "//./")
 
 _WATCHED = frozenset({
     "open",
@@ -35,22 +41,74 @@ _WATCHED = frozenset({
 })
 
 
-def _normalise(value) -> str | None:
+def _windows_form(slash: str) -> tuple[str, str] | None:
+    """Canonical form for a drive, UNC or device path written with `/`."""
+    if slash.startswith("//"):
+        unc = _UNC.match(slash)
+        if unc is None:
+            return ("device", slash.casefold())
+        server, share, rest = unc.group(1), unc.group(2), unc.group(3) or ""
+        path = posixpath.normpath(
+            "/" + "/".join(part for part in (share, rest) if part))
+        return ("unc", f"//{server}{path}".casefold())
+    drive = _WINDOWS_DRIVE.match(slash)
+    if drive is None:
+        return None
+    letter = drive.group(1).lower()
+    rest = drive.group(2)
+    if rest is None:
+        # `D:` or `D:relative` is drive-relative, never the absolute root.
+        return ("drive-relative", f"{letter}:")
+    return ("win", f"{letter}:{posixpath.normpath('/' + rest)}".casefold())
+
+
+def _normalise(value) -> tuple[str, str] | None:
+    """A comparison key that does not depend on the host's separator style.
+
+    A drive/UNC path is compared case-insensitively and with `/` separators, on
+    every host.  A POSIX path keeps the host's `normcase` semantics (identity
+    on Linux, case-folded on Windows).  Resolution is lexical (`normpath`), so
+    a path string under the private root is refused even if a symlink would
+    later resolve elsewhere: the access still names the private root.
+    """
     try:
         raw = os.fsdecode(os.fspath(value))
     except (TypeError, ValueError):
         return None
     if not raw:
         return None
-    return os.path.normcase(os.path.abspath(raw))
+    # The long-path prefix names the same file; a device namespace does not.
+    if raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    elif raw.startswith("//?/"):
+        raw = raw[4:]
+    elif raw.startswith(_DEVICE_PREFIXES):
+        return ("device", raw.casefold().replace("\\", "/"))
+
+    slash = raw.replace("\\", "/")
+    form = _windows_form(slash)
+    if form is not None:
+        return form
+
+    absolute = os.path.abspath(raw)
+    slash = absolute.replace("\\", "/")
+    form = _windows_form(slash)
+    if form is not None:
+        return form
+    if os.name == "nt":
+        return ("win-native", os.path.normcase(absolute).replace("\\", "/").casefold())
+    return ("posix", os.path.normcase(absolute))
 
 
 def _configured_roots() -> tuple[str, ...]:
+    """Raw roots from the environment; `_inside` normalizes both sides.
+
+    The list is split on the NATIVE separator (`;` on Windows, `:` elsewhere).
+    The synthetic Windows-path tests call `_inside` directly instead of asking
+    a Linux host to split a `D:\\...` root on `:`.
+    """
     raw = os.environ.get(ROOTS_ENV, "")
-    return tuple(
-        root for root in (_normalise(part) for part in raw.split(os.pathsep))
-        if root
-    )
+    return tuple(part for part in raw.split(os.pathsep) if part)
 
 
 def _values(event: str, args: tuple) -> list[str]:
@@ -93,10 +151,17 @@ def _values(event: str, args: tuple) -> list[str]:
 
 
 def _inside(value: str, root: str) -> bool:
+    """Whether `value` names `root` or a descendant, in the same path family."""
     candidate = _normalise(value)
-    if candidate is None:
+    expected = _normalise(root)
+    if candidate is None or expected is None:
         return False
-    return candidate == root or candidate.startswith(root + os.sep)
+    if candidate[0] != expected[0]:
+        return False
+    c_path, r_path = candidate[1], expected[1]
+    if c_path == r_path:
+        return True
+    return c_path.startswith(r_path.rstrip("/") + "/")
 
 
 def install_hook() -> None:

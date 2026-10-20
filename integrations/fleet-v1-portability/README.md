@@ -1,6 +1,6 @@
 # X2 — public-safe V1 test portability and public-authority conformance
 
-Base: `rc/i1-v2-review-20261020` @ `ec43f714`
+Base: `rc/i1-v4-review-20261020` @ `40c4b1c` (X2 #335 @ `85b9539` is composed in)
 Lane: X2 (independent test portability / private-legacy boundary)
 Evidence level: **LOCAL / HERMETIC**
 Scope: tests and documentation only. No product source, no Q1 trusted seam, no
@@ -139,3 +139,78 @@ trusted parent; the V1 decision remains `ELIGIBLE_FOR_QA` only with
 `v1_acceptable=False`, `production_status="BLOCKED_TRUST_SOURCE"`. It is not
 `REAL_DEVICE`, not a production acceptance, not a QA signature, and not a
 release. The historical private producer remains unverified.
+
+## 9. Windows FJPCOS portability repair (RC-v4 @ 40c4b1c)
+
+The real Windows agent reported **4 failed + 19 skipped** on this exact RC-v4
+head. None of the four was a product/trust failure; all were test-portability
+defects. The 19 skips are the legacy suite's explicit producer boundary, not
+silence.
+
+### 9.1 Fixture pinning under `core.autocrlf`
+
+`finalize_t10_verified.v1.json` is **613 LF bytes / sha256 `81f51a...`** in Git;
+a Windows `core.autocrlf` working tree had **633 bytes / CR=20 / sha256
+`7a8e0c...`**. Three `test_public_fixture_is_pinned` cases compared the raw
+working-tree bytes and failed.
+
+Repair:
+
+* `tests/v1_portability/fixtures/.gitattributes` sets `*.json text eol=lf`, so
+  a fresh checkout is canonical on every platform.
+* `canonical_json_bytes()` accepts a PURE CRLF transcription and normalizes it
+  to LF. It rejects a BOM, a lone CR, mixed endings, non-UTF-8 and invalid JSON.
+* The pin is over the CANONICAL bytes, so a changed field or an extra byte is
+  still a hard failure; CRLF cannot launder a semantic change.
+* Negative tests: pure CRLF passes; changed field fails; UTF-8/UTF-16 BOM
+  fails; lone CR fails; mixed EOL fails.
+* Measured on Linux with all pinned fixtures converted to pure CRLF (the exact
+  633-byte / `7a8e0c...` form): the boundary suite is **34 passed**.
+
+Operator re-checkout on Windows (not run by this lane):
+
+```text
+git add --renormalize tests/v1_portability/fixtures
+git checkout -- tests/v1_portability/fixtures
+```
+
+### 9.2 Guard root normalization
+
+`_inside` normalized only the candidate and compared it with the raw root. On
+Windows the normalized candidate (`d:\...`, `normcase`) never matched the raw
+`D:\...` root; on Linux a synthetic backslash root also escaped because
+`os.sep` is `/`.
+
+Repair: BOTH candidate and root are canonicalized into the same path family
+(`win`, `unc`, `drive-relative`, `device`, `posix`, `win-native`), with `/`
+separators and case-folding for Windows semantics. The long-path `\\?\` prefix
+names the same file; `\\.\` and drive-relative paths are different families and
+never match. Sibling prefixes (`root2`) and traversal (`root\..\other`) are
+refused. The env-vs-argv rule is unchanged: environment values are not scanned.
+
+Synthetic Windows cases on Linux cover drive case, both separators, the
+long-path alias, drive-relative, UNC case, sibling share and traversal; POSIX
+case-sensitivity is preserved.
+
+### 9.3 The 19 skips
+
+`tests/v1_portability/fixtures/windows-skip-manifest.v1.json` lists all **19**
+legacy cases (and the 13 grant cases) with
+`reason_code: PRODUCER_BOUNDARY_POSIX_ONLY`. The module-level reason string in
+both suites names that code and the manifest. Windows FJPCOS has no verified X2
+producer; the POSIX bounded runner / in-tree finalize / uid grant read are not
+run against a fake Windows producer. No skip is removed to manufacture green.
+The portable boundary, fixture-pin and guard tests remain enabled on Windows.
+
+### 9.4 Measured after the repair (Tokyo Linux, bounded 1 GiB / swap 0 / 25% CPU)
+
+| Run | Result |
+| --- | --- |
+| X2 three files | **66 passed, 0 skipped** |
+| Same process + X1 `test_finalize_entry.py` + `test_finalize_consistency.py` | **99 passed** |
+| Same process under the private-path guard | **99 passed** |
+| Boundary suite with all pinned fixtures converted to pure CRLF | **34 passed** |
+| Windows pre-fix (reported at RC-v4) | **4 failed, 19 skipped** |
+
+The remote Windows retest is requested through #250/#244; this lane does not
+touch or install anything on the user's Windows worktrees.
