@@ -1,0 +1,169 @@
+{
+  "kind": "fleet-v1-dependency-dag",
+  "not_a_release_manifest": true,
+  "schema": "fleet-v1-dependency-dag.v1",
+  "snapshot_utc": "2026-10-20T04:59:04Z",
+  "state": "RC_BLOCKED",
+  "release_status": "NOT_RELEASE",
+  "authoritative_base": {
+    "repo": "ProfessorZhi/serveros",
+    "ref": "main",
+    "sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8"
+  },
+  "claims": {
+    "code_composed_rc": false,
+    "final_acceptance": false,
+    "live_device": false,
+    "client_e2e": false,
+    "production": false
+  },
+  "qa": {
+    "status": "INDEPENDENT_QA_PARTIAL",
+    "signature": null,
+    "exact_sha": null,
+    "note": "PR #256 carries the triage, not a signature. Its pins are superseded; checked S1/S2/T10/I1 tips are patch-identical, #255's current tip differs and is unreviewed."
+  },
+  "hosted_ci": {
+    "status": "QUOTA_WAIVED",
+    "evidence": "check_runs.total_count = 0 for #275, #298, #277, #243, #242 and #230; combined status pending."
+  },
+  "source_merge_performed": false,
+  "candidates": [
+    {"pr": 241, "lane": "S1", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "429a717bedf1f6c28057a5e355970ff351100571", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 5, "state": "Draft/OPEN"},
+    {"pr": 261, "lane": "S1", "base": "feat/v1-session-write-fence-20261016", "base_sha": "429a717bedf1f6c28057a5e355970ff351100571", "head": "aa4755fdd1bd466cecd2e86877f2ae09b83a850c", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 262, "lane": "S1", "base": "feat/v1-s1-lease-authority-send-gate-20261018", "base_sha": "aa4755fdd1bd466cecd2e86877f2ae09b83a850c", "head": "ab2c59e60f497edcad7df43043053d79ce49a02c", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 252, "lane": "S2", "base": "feat/v1-session-write-fence-20261016", "base_sha": "429a717bedf1f6c28057a5e355970ff351100571", "head": "05fe298a050746116debb08bcdccd57aca96e3ec", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 6, "state": "Draft/OPEN"},
+    {"pr": 264, "lane": "S1+S2", "base": "feat/v1-s1-lease-acquire-producer-20261018", "base_sha": "ab2c59e60f497edcad7df43043053d79ce49a02c", "head": "2cf7cd1ad54a6eaa81d8aebd6d2bf4cadc4370e4", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 7, "state": "Draft/OPEN"},
+    {"pr": 268, "lane": "S1", "base": "feat/v1-s1-s2-source-integration-20261018", "base_sha": "2cf7cd1ad54a6eaa81d8aebd6d2bf4cadc4370e4", "head": "41c8c5c5c193cb02f3faf79f9f46838bfb2ddc28", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 272, "lane": "S1", "base": "feat/v1-s1-s2-resource-contract-20261018", "base_sha": "41c8c5c5c193cb02f3faf79f9f46838bfb2ddc28", "head": "fc93590030c218934252920a53aa67277f144844", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 275, "lane": "S1", "base": "feat/v1-s1-s2-grant-epoch-authority-20261018", "base_sha": "fc93590030c218934252920a53aa67277f144844", "head": "92d7a92c971a682078e9d125e3ee7ee80ea2bfb6", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 258, "lane": "T10", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "007e2ccd44993333cc11e9e349bf1710ad1839e9", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 2, "state": "Draft/OPEN"},
+    {"pr": 260, "lane": "T10", "base": "feat/fleet-v1-t10-verdict-evidence-20261018", "base_sha": "007e2ccd44993333cc11e9e349bf1710ad1839e9", "head": "1883479fc6903cc389a36c94afdf47a25b0542c6", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 263, "lane": "T10", "base": "feat/fleet-v1-t10-producer-binding-20261018", "base_sha": "1883479fc6903cc389a36c94afdf47a25b0542c6", "head": "b121a20cf4f0a272ce6fe1cf57eb23cc669b00b4", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 269, "lane": "T10", "base": "feat/fleet-v1-t10-continuation-provenance-20261018", "base_sha": "b121a20cf4f0a272ce6fe1cf57eb23cc669b00b4", "head": "dde347ceb2beeea83f343feff7fd5c8c0aa38550", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 274, "lane": "T10", "base": "feat/fleet-v1-t10-authority-bridge-20261018", "base_sha": "dde347ceb2beeea83f343feff7fd5c8c0aa38550", "head": "e2778344151d736c9bf788331afbaaba857b7c04", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 277, "lane": "T10", "base": "feat/fleet-v1-t10-signed-finalization-20261018", "base_sha": "e2778344151d736c9bf788331afbaaba857b7c04", "head": "7b84ae191b67b74f398dee2652339d4b9a218d84", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 295, "lane": "WE", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "99e08f01d910f3941fcf7ff78a6c5968309ac250", "merge_base": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "own_commits": 2, "state": "Draft/OPEN"},
+    {"pr": 296, "lane": "WE", "base": "feat/we-lease-fencing-289-20261020", "base_sha": "99e08f01d910f3941fcf7ff78a6c5968309ac250", "head": "12845228d161e042dc230bcd64023b8c5cc7eaa1", "merge_base": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 297, "lane": "WE", "base": "feat/we-authority-290-20261020", "base_sha": "12845228d161e042dc230bcd64023b8c5cc7eaa1", "head": "8d42916fce746de447e6c1f0443a3b862449aab5", "merge_base": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 298, "lane": "WE", "base": "feat/we-t10-finalize-291-20261020", "base_sha": "8d42916fce746de447e6c1f0443a3b862449aab5", "head": "e1f783fd93d77b0f1a3fddc183f740285d442b72", "merge_base": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 231, "lane": "F1", "base": "stack/fleet-v1-pre-core-lite-wiring", "base_sha": "129740b4ae757d06838244d860a5264e15578d53", "head": "c55992376d16c227ebc22db0ca0c57334a916e61", "merge_base": "3236e65", "state": "Draft/OPEN", "note": "declared base is a branch, not a PR head"},
+    {"pr": 243, "lane": "F1", "base": "feat/fleet-v1-core-lite-status-wiring-20261016", "base_sha": "c55992376d", "head": "d0af2da80f994e638017a36eb591d186c33b3468", "merge_base": "3236e65", "own_commits": 3, "state": "Draft/OPEN"},
+    {"pr": 255, "lane": "G1", "base": "integration/fleet-v1-candidate-20261017", "base_sha": "d0af2da80f994e638017a36eb591d186c33b3468", "head": "21b79b226e6f4ba64b0ec30086d36e60e966fa0c", "merge_base": "3236e65", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 227, "lane": "P1", "base": "feat/fleet-v1-integration-20261015", "base_sha": "366aa90484260095d675d85e13906baaf8cc3140", "head": "f39d5b4cbd16770333dffb68546bab99d6d3eacf", "merge_base": "3236e65", "state": "Draft/OPEN"},
+    {"pr": 230, "lane": "P1", "base": "fix/fleet-v1-build-outside-source-20261016", "base_sha": "f39d5b4cbd", "head": "deb0476fc031d28e87d93e34ae37b66eaa5ad35b", "merge_base": "3236e65", "own_commits": 4, "state": "Draft/OPEN"},
+    {"pr": 232, "lane": "N1", "base": "feat/core-lite-status-schema-20261016", "base_sha": "8f11d6c3e22ad6ebe8bc9c537ef22f04d742eda0", "head": "9e926506b4baf9b8dd74cef3e53ac18d5698a8f1", "merge_base": "e8eccf2", "state": "Draft/OPEN"},
+    {"pr": 242, "lane": "N1", "base": "feat/native-bounded-recovery-20261016", "base_sha": "9e926506b4", "head": "c89094d8d3de4637a817a41867dbcb0542f56fae", "merge_base": "e8eccf2", "own_commits": 4, "state": "Draft/OPEN"},
+    {"pr": 253, "lane": "N2", "base": "feat/c-line-bounded-recovery-v1-20261016", "base_sha": "c89094d8d3de4637a817a41867dbcb0542f56fae", "head": "7936edea36155a3d1909e0b25f1c5722082fd76b", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 196, "lane": "M1", "base": "feat/v13-shadow-orchestrator-20261014", "base_sha": "08c8709697939f7706f7c17fab21e616b09e9a6c", "head": "a4d376f4af54fd7987c32497b6d021a7fe0526f0", "merge_base": "3236e65", "state": "Draft/OPEN"},
+    {"pr": 233, "lane": "M1", "base": "feat/v13-two-surface-integration-candidate-20261014", "base_sha": "a4d376f4af", "head": "f76bc09f7d6eb72ea26e935fa30f3ec6fa24d26d", "merge_base": "e8eccf2", "own_commits": 3, "state": "Draft/OPEN"},
+    {"pr": 239, "lane": "M1", "base": "feat/fleet-v1-core-consumption-m1-20261016", "base_sha": "f76bc09f7d6eb72ea26e935fa30f3ec6fa24d26d", "head": "c345f6bedecad5593c0a81fa2683309952b8d180", "merge_base": "e8eccf2", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 257, "lane": "R1", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "65ead6df0a182092a3d83a6dacf9f04e9786eada", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 3, "state": "Draft/OPEN"},
+    {"pr": 259, "lane": "N3", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "a95991c05eb654802840d7c5cb726ec90cdb8d9e", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 3, "state": "Draft/OPEN"},
+    {"pr": 191, "lane": "Journey", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "ddebccdb0fcfc1cb414d57ee85b42b12ad55fbe1", "merge_base": "3236e65", "state": "Draft/OPEN"},
+    {"pr": 240, "lane": "Journey", "base": "feat/c-ability-journey-mvp-20261014", "base_sha": "ddebccdb0f", "head": "b2ec70177188a59840b5413568ee25f00cb1e638", "merge_base": "3236e65", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 254, "lane": "I1", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "2b52728e0943c1dbfe9bba53dbfebaa90e8e8ad5", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 9, "state": "Draft/OPEN"},
+    {"pr": 278, "lane": "I1", "base": "feat/v1-i1-rc-manifest-20261017", "base_sha": "2b52728e0943c1dbfe9bba53dbfebaa90e8e8ad5", "head": "533905ce13dc7f91c98dd356fe82a0d51adeed36", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 1, "state": "Draft/OPEN"},
+    {"pr": 256, "lane": "QA", "base": "main", "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8", "head": "65f80d93c1c596637a40b67112b4d93503577510", "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0", "own_commits": 17, "state": "Draft/OPEN"}
+  ],
+  "edges": [
+    {"from": 241, "to": 261, "kind": "base"},
+    {"from": 261, "to": 262, "kind": "base"},
+    {"from": 262, "to": 264, "kind": "base"},
+    {"from": 252, "to": 264, "kind": "absorbed"},
+    {"from": 264, "to": 268, "kind": "base"},
+    {"from": 268, "to": 272, "kind": "base"},
+    {"from": 272, "to": 275, "kind": "base"},
+    {"from": 258, "to": 260, "kind": "base"},
+    {"from": 260, "to": 263, "kind": "base"},
+    {"from": 263, "to": 269, "kind": "base"},
+    {"from": 269, "to": 274, "kind": "base"},
+    {"from": 274, "to": 277, "kind": "base"},
+    {"from": 295, "to": 296, "kind": "base"},
+    {"from": 296, "to": 297, "kind": "base"},
+    {"from": 297, "to": 298, "kind": "base"},
+    {"from": 272, "to": 298, "kind": "semantic", "reason": "agent.lease.authority.verify and work_write_resource live on #272"},
+    {"from": 275, "to": 295, "kind": "conflict", "reason": "duplicate held_leases() T6 reader in context/resolver.py"},
+    {"from": 231, "to": 243, "kind": "base"},
+    {"from": 243, "to": 255, "kind": "base"},
+    {"from": 227, "to": 230, "kind": "base"},
+    {"from": 232, "to": 242, "kind": "base"},
+    {"from": 242, "to": 253, "kind": "base"},
+    {"from": 196, "to": 233, "kind": "base"},
+    {"from": 233, "to": 239, "kind": "base"},
+    {"from": 191, "to": 240, "kind": "base"},
+    {"from": 254, "to": 278, "kind": "base"}
+  ],
+  "conflicts": [
+    {"left": "#243", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "F1"},
+    {"left": "#230", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "P1"},
+    {"left": "#255", "right": "main@771c81c", "files": ["runtime/actuator-contract.yaml"], "kind": "textual", "owner": "G1/F1"},
+    {"left": "#275", "right": "#295/#296/#297/#298", "files": ["context/resolver.py"], "kind": "duplicate-semantic-and-textual", "owner": "S1+WE", "recommendation": "#275 owns the T6 reader; #295 drops its hunk"}
+  ],
+  "dependency_298_on_272": {
+    "default_ref": "fc93590030c218934252920a53aa67277f144844",
+    "ref_env": "SERVEROS_LEASE_AUTHORITY_REF",
+    "skip_condition": "tests/test_serveros_lease_authority.py setUpClass raises unittest.SkipTest when the ref object is absent",
+    "protocol": "agent.lease.authority.verify over AF_UNIX newline-JSON",
+    "canonical_resource": "context/resolver.py::work_write_resource",
+    "must_land_before": 298,
+    "qa_requirement": "a #298 pass requires skipped == 0 and the #272 object present"
+  },
+  "supersedes": {
+    "archived_repo": "ProfessorZhi/work-engine",
+    "archived_prs": [13, 14, 15, 16],
+    "replacement": "#295-#298 in-tree workengine/",
+    "note": "do not pin the archived repository in the release manifest"
+  },
+  "evidence_levels": {
+    "defined": ["CODE", "LOCAL", "REAL_TEMP", "REAL_DEVICE", "CLIENT_E2E"],
+    "PASS_only_with_receipt": true,
+    "blocked_is_not_pass": true
+  },
+  "proofs": {
+    "authenticated_lease_producer": {"status": "ABSENT", "reason": "BLOCKED_PRODUCER_BOUNDARY"},
+    "t10_we_finalize_link": {"status": "ABSENT", "reason": "BLOCKED_WIRING / BLOCKED_TRUST_SOURCE"},
+    "independent_exact_sha_negative_qa": {"status": "ABSENT", "reason": "QA_PARTIAL; no exact-SHA signature"}
+  },
+  "t1_t12": {
+    "T1": "NOT_RUN",
+    "T2": "PARTIAL",
+    "T3": "PARTIAL",
+    "T4": "CLOSED_LOCAL",
+    "T5": "CLOSED_LOCAL",
+    "T6": "CLOSED_LOCAL_AT_RISK_DUPLICATE",
+    "T7": "PARTIAL_BLOCKED",
+    "T8": "BLOCKED",
+    "T9": "BLOCKED",
+    "T10": "BLOCKED",
+    "T11": "BLOCKED",
+    "T12": "BLOCKED"
+  },
+  "bounded_conformance": [
+    {"head": "e1f783fd93d77b0f1a3fddc183f740285d442b72", "tests": ["tests/test_serveros_lease_authority.py", "tests/test_lease_authority.py"], "result": "50 passed", "exit": 0, "seconds": 8.10, "level": "LOCAL"},
+    {"head": "e1f783fd93d77b0f1a3fddc183f740285d442b72", "tests": ["tests/test_lease.py", "tests/test_resolver.py"], "result": "36 passed, 7 subtests passed", "exit": 0, "seconds": 8.21, "level": "LOCAL"},
+    {"head": "92d7a92c971a682078e9d125e3ee7ee80ea2bfb6", "tests": ["tests/test_v1_grant_os_principal_schema.py", "tests/test_v1_grant_epoch_authority.py", "tests/test_v1_work_engine_resource_contract.py"], "result": "37 passed", "exit": 0, "seconds": 5.80, "level": "LOCAL"}
+  ],
+  "landing_order": [
+    "S1/S2 #241 -> #261 -> #262 -> #264 -> #268 -> #272 -> #275",
+    "WE #295 -> #296 -> #297 -> #298 (after #272; drop #295 resolver hunk)",
+    "T10 #258 -> #260 -> #263 -> #269 -> #274 -> #277",
+    "N1 #242 -> N2 #253",
+    "F1 #243 -> G1 #255 (after retargeting the non-PR base)",
+    "P1 #230",
+    "R1 #257, N3 #259, M1 #233/#239, Journey #240",
+    "I1 docs last, re-pinned to the composition SHA"
+  ],
+  "open_p0": [
+    "P0-A #275/#295 duplicate T6 reader",
+    "P0-B #243/#230/#255 actuator-contract conflict",
+    "P0-C #243 non-PR base branch",
+    "P0-D #298 depends on #272 outside its base chain; skip without the object",
+    "P0-E archived work-engine repo still pinned in the old manifest",
+    "P0-F no authenticated lease producer",
+    "P0-G T10 finalize/continuation not ingested by WE",
+    "P0-H old QA pins are superseded; most checked tips are patch-identical, #255 differs; no exact-SHA signature",
+    "P0-I #254/#278 pins are stale",
+    "P0-J zero hosted check runs; QUOTA_WAIVED"
+  ]
+}
