@@ -1,0 +1,235 @@
+{
+  "schema": "serveros/fleet-v1-verdict-evidence/fixtures.v1",
+  "authority": {
+    "repo": "ProfessorZhi/work-engine",
+    "head": "40b062209de4a989a84b04ea57b6cc8657e1be1e",
+    "tables": ["runs", "evidence"],
+    "finalize_kind": "finalize",
+    "why": "workengine.store.finalize_run writes the kind=finalize evidence row and sets runs.state=SUCCEEDED iff verdict==PASS and exit_code==0; a child's prose is not read by this gate."
+  },
+  "base": {
+    "expected": {
+      "item_id": "SRV-0100",
+      "run_id": "RUN-0001",
+      "revision": "0123456789abcdef0123456789abcdef01234567",
+      "principal": "agent:alice",
+      "command": "python -m pytest tests/test_fleet_v1_verdict_evidence.py -q",
+      "recognized_runners": {
+        "agent:alice": ["claude-code"],
+        "agent:bob": ["codex"]
+      }
+    },
+    "run": {
+      "worker": "claude-code",
+      "state": "SUCCEEDED",
+      "artifact_dir": "run-artifacts"
+    },
+    "evidence": {
+      "kind": "finalize",
+      "locator": "finalize.json",
+      "command": "python -m pytest tests/test_fleet_v1_verdict_evidence.py -q",
+      "cases_json": "[\"test_fleet_v1_verdict_evidence\"]",
+      "exit_code": 0,
+      "revision": "0123456789abcdef0123456789abcdef01234567",
+      "dirty": 0,
+      "verdict": "PASS"
+    }
+  },
+  "cases": [
+    {
+      "name": "valid_receipt_is_eligible_but_not_accepted",
+      "claim": "implemented; all tests passed",
+      "want": {
+        "decision": "ELIGIBLE",
+        "includes": []
+      }
+    },
+    {
+      "name": "text_success_without_receipt",
+      "claim": "SUCCESS: all tests passed, exit 0",
+      "run": {"state": "RUNNING"},
+      "evidence": [],
+      "want": {
+        "decision": "UNKNOWN",
+        "includes": ["MISSING_RECEIPT"]
+      }
+    },
+    {
+      "name": "run_succeeded_without_receipt",
+      "claim": "SUCCESS",
+      "evidence": [],
+      "want": {
+        "decision": "UNKNOWN",
+        "includes": ["MISSING_RECEIPT"]
+      }
+    },
+    {
+      "name": "tests_fail_child_claims_success",
+      "claim": "All tests passed; task SUCCESS",
+      "run": {"state": "FAILED"},
+      "evidence": [{"exit_code": 1, "verdict": "FAIL"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["TESTS_FAILED", "VERDICT_NOT_PASS", "RUN_FAILED"]
+      }
+    },
+    {
+      "name": "forged_pass_with_nonzero_exit",
+      "claim": "PASS exit 0",
+      "evidence": [{"exit_code": 1, "verdict": "PASS"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["TESTS_FAILED"]
+      }
+    },
+    {
+      "name": "stale_sha",
+      "claim": "PASS",
+      "evidence": [{"revision": "fedcba9876543210fedcba9876543210fedcba98"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["STALE_REVISION"]
+      }
+    },
+    {
+      "name": "cross_run_receipt",
+      "claim": "PASS",
+      "evidence": [{"item_id": "SRV-0999", "run_id": "RUN-9999"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["CROSS_RUN_RECEIPT"]
+      }
+    },
+    {
+      "name": "cross_principal_receipt",
+      "claim": "PASS",
+      "run": {"worker": "codex"},
+      "want": {
+        "decision": "DENY",
+        "includes": ["CROSS_PRINCIPAL"]
+      }
+    },
+    {
+      "name": "unrecognized_runner",
+      "claim": "PASS",
+      "run": {"worker": "mystery-runner"},
+      "want": {
+        "decision": "DENY",
+        "includes": ["UNRECOGNIZED_RUNNER"]
+      }
+    },
+    {
+      "name": "not_a_finalize_receipt",
+      "claim": "PASS",
+      "evidence": [{"kind": "test"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["NOT_FINALIZE_RECEIPT"]
+      }
+    },
+    {
+      "name": "dirty_revision",
+      "claim": "PASS",
+      "evidence": [{"dirty": 1}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["DIRTY_REVISION"]
+      }
+    },
+    {
+      "name": "digest_mismatch",
+      "claim": "PASS",
+      "evidence": [{"sha256": "0000000000000000000000000000000000000000000000000000000000000000"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["DIGEST_MISMATCH"]
+      }
+    },
+    {
+      "name": "missing_artifact",
+      "claim": "PASS",
+      "evidence": [{"fixture_artifact": {"omit": true}}],
+      "want": {
+        "decision": "UNKNOWN",
+        "includes": ["MISSING_ARTIFACT"]
+      }
+    },
+    {
+      "name": "artifact_contradicts_row",
+      "claim": "PASS",
+      "evidence": [{
+        "fixture_artifact": {
+          "content": {
+            "command": "python -m pytest tests/test_fleet_v1_verdict_evidence.py -q",
+            "cases": ["test_fleet_v1_verdict_evidence"],
+            "exit_code": 1,
+            "revision": "0123456789abcdef0123456789abcdef01234567",
+            "dirty": false,
+            "verdict": "FAIL"
+          }
+        }
+      }],
+      "want": {
+        "decision": "DENY",
+        "includes": ["ARTIFACT_CONTRADICTION"]
+      }
+    },
+    {
+      "name": "evidence_outside_run_artifacts",
+      "claim": "PASS",
+      "evidence": [{"locator": "../other-run/finalize.json"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["EVIDENCE_OUTSIDE_RUN_ARTIFACTS"]
+      }
+    },
+    {
+      "name": "ambiguous_finalize_receipts",
+      "claim": "PASS",
+      "evidence": [
+        {"locator": "finalize.json"},
+        {"locator": "finalize-2.json", "revision": "fedcba9876543210fedcba9876543210fedcba98"}
+      ],
+      "want": {
+        "decision": "DENY",
+        "includes": ["AMBIGUOUS_RECEIPT"]
+      }
+    },
+    {
+      "name": "run_not_terminal",
+      "claim": "PASS",
+      "run": {"state": "RUNNING"},
+      "want": {
+        "decision": "UNKNOWN",
+        "includes": ["RUN_NOT_TERMINAL"]
+      }
+    },
+    {
+      "name": "run_cancelled",
+      "claim": "PASS",
+      "run": {"state": "CANCELLED"},
+      "want": {
+        "decision": "DENY",
+        "includes": ["RUN_FAILED"]
+      }
+    },
+    {
+      "name": "invalid_revision_format",
+      "claim": "PASS",
+      "evidence": [{"revision": "deadbeef"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["INVALID_REVISION"]
+      }
+    },
+    {
+      "name": "command_mismatch",
+      "claim": "PASS",
+      "evidence": [{"command": "pytest"}],
+      "want": {
+        "decision": "DENY",
+        "includes": ["COMMAND_MISMATCH"]
+      }
+    }
+  ]
+}
