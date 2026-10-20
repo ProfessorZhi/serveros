@@ -33,7 +33,11 @@
 | `fixtures/authorization-2026-10-20.json` | 最小兼容性 fixture：33 个 case，覆盖四个 decision 与全部 12 个 blocked 码 |
 | `observed/tokyo-2026-10-20.json` | 2026-10-20 Tokyo 真实只读快照（已脱敏） |
 | `OWNER-MATRIX-2026-10-20.md` | 三设备/四面矩阵、CC-first 与 Full V1 Codex 分档、owner 批准清单 |
+| `CLIENT-TURN-ID-2026-10-20.md` | S2 #245 交互：client turn id 与 provider readback 的证据矩阵 |
+| `client_turn_id.py` | 合成 Codex readback 源；`SCHEMA_ONLY`，无 IO / send |
+| `fixtures/client-turn-id-2026-10-20.json` | 16 个 readback case + 7 个 capability case |
 | `tests/test_fleet_v1_runtime_authorization.py` | 69 个断言/参数化用例，含拒绝路径与纯度守卫 |
+| `tests/test_fleet_v1_runtime_client_turn_id.py` | 30 个断言，含 forged id / restart / mismatch |
 
 ## 结论摘要（经证据核验）
 
@@ -84,6 +88,20 @@
     installed here and never has been”，但本机 `codex-cli 0.160.0` 与
     `provider:codex-app-server` 均存在；这是“authored registry 不是 measurement”
     的直接例子。
+
+## S2 #245 交互（2026-10-20）
+
+见 [`CLIENT-TURN-ID-2026-10-20.md`](CLIENT-TURN-ID-2026-10-20.md)。
+
+- Codex app-server **send 到已知 thread** 存在 stable v2 schema 级
+  `TurnStartParams.clientUserMessageId` 与 `ThreadItem.userMessage.clientId`
+  回读；推荐 `thread/turns/list` + `itemsView: "full"`。
+- 但该映射**未 live-proven**；production 仍 `BLOCKED_PROVIDER_SOURCE`，直到
+  owner 批准一次 bounded echo test。
+- 回读是 **positive-only**：匹配 + intent digest 相同 → APPLIED；miss →
+  UNKNOWN，绝不 NOT_APPLIED；不释放 retry，不声称 exactly-once。
+- BotMux / human-control 是 `RESPONSE_ID_ONLY`；CloudCLI 是 `NO_SOURCE`；
+  Codex create 是 `RESPONSE_ID_ONLY`（thread id 在丢失的响应里）。
 
 ## 运行
 
