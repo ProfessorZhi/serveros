@@ -36,8 +36,12 @@
 | `CLIENT-TURN-ID-2026-10-20.md` | S2 #245 交互：client turn id 与 provider readback 的证据矩阵 |
 | `client_turn_id.py` | 合成 Codex readback 源；`SCHEMA_ONLY`，无 IO / send |
 | `fixtures/client-turn-id-2026-10-20.json` | 16 个 readback case + 7 个 capability case |
+| `RECONCILE-SOURCE-2026-10-20.md` | S2 #245 reconcile source 能力矩阵与 FAIL CLOSED 回归 |
+| `reconcile_source_gate.py` | 纯 gate；默认不发送/不重试/不自动 settle |
+| `fixtures/reconcile-source-2026-10-20.json` | owner-signed observation 负测与 capability matrix |
 | `tests/test_fleet_v1_runtime_authorization.py` | 69 个断言/参数化用例，含拒绝路径与纯度守卫 |
 | `tests/test_fleet_v1_runtime_client_turn_id.py` | 30 个断言，含 forged id / restart / mismatch |
+| `tests/test_fleet_v1_runtime_reconcile_source.py` | 35 个断言，含 forged locator / cross-owner / project / payload / parent |
 
 ## 结论摘要（经证据核验）
 
@@ -102,6 +106,23 @@
   UNKNOWN，绝不 NOT_APPLIED；不释放 retry，不声称 exactly-once。
 - BotMux / human-control 是 `RESPONSE_ID_ONLY`；CloudCLI 是 `NO_SOURCE`；
   Codex create 是 `RESPONSE_ID_ONLY`（thread id 在丢失的响应里）。
+
+## S2 #245 reconcile source（2026-10-20）
+
+见 [`RECONCILE-SOURCE-2026-10-20.md`](RECONCILE-SOURCE-2026-10-20.md)。
+
+- Codex app-server **send 到已知 thread** 有 schema 级 pre-send id +
+  `userMessage.clientId` 回读；public docs 也描述该回显。
+- 但 **owner-signed observation 不存在**：S2 kernel/store/daemon 只有
+  principal、writer、intent/locator、`source` provenance，没有签名字段；
+  production source 是 `None`。因此 production 仍 `BLOCKED_PROVIDER_SOURCE`。
+- 本轮交付 FAIL CLOSED gate 与负测：forged locator、cross-owner、
+  cross-project、changed payload、missing parent、cross-device、unsigned/bad
+  signature、replay、stale writer、NOT_APPLIED unavailable。
+- 默认：**不发送、不重试、不自动 settle**；synthetic HMAC 仅测试用，不能提升为
+  owner authority。
+- Claude Code CLI 的 `--session-id <uuid>` + `--resume <session-id>` 是真实
+  CLI 级 pre-send id，但未接 BotMux provider，标 `CLI_ONLY_NOT_WIRED`。
 
 ## 运行
 
