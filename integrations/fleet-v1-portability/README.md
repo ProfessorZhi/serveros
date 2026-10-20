@@ -3,6 +3,7 @@
 Base: `rc/i1-v4-review-20261020` @ `40c4b1c` (X2 #335 @ `85b9539` is composed in)
 P2 stack: #342 @ `eff4c38` (Windows fixture/guard portability)
 FINAL stack: #347 @ `a0053c9` (guard alias under-blocking)
+Windows slice: #349 @ `558c324` (host privilege + unresolvable aliases)
 Lane: X2 (independent test portability / private-legacy boundary)
 Evidence level: **LOCAL / HERMETIC**
 Scope: tests and documentation only. No product source, no Q1 trusted seam, no
@@ -328,3 +329,80 @@ Expected shape after this slice:
 
 Report the exact passed/failed/skipped/error counts and the Python version.
 This lane does not touch or install anything on the user's Windows worktrees.
+
+## 12. Windows host-privilege and unresolvable-alias slice (base #349 @ 558c324)
+
+The Windows FJPCOS owner ran **#349 exact `558c324`** for real:
+
+| Suite | Real Windows result |
+| --- | --- |
+| `test_portability_boundary.py` | **49 passed + 2 failed** |
+| `test_v1_grant_os_principal_schema.py` | **13 skipped / 0 errors** |
+| `test_fleet_v1_t10_legacy_compatibility.py` | **19 skipped / 0 errors** |
+
+The two failures were the live symlink alias tests: `Path.symlink_to` raised
+**WinError 1314** because the current Windows account has no
+`SeCreateSymbolicLinkPrivilege` and Developer Mode is off. That is a host
+privilege limitation, not a guard/production failure.
+
+### 12.1 Symlink privilege: skip only the two live tests
+
+`make_directory_symlink_or_skip()` now catches `OSError` and calls
+`symlink_privilege_reason()`:
+
+* **only** `os.name == "nt"` **and** `exc.winerror == 1314` →
+  `pytest.skip("HOST_PRIVILEGE_NO_SYMLINK: ...")`;
+* every other `OSError` (missing path, disk error, POSIX failure) is re-raised
+  and stays a **failure** — no blanket skip;
+* a synthetic `OSError` with `winerror=1314` is tested, including the negative
+  cases `platform="posix"`, `winerror=5` and no `winerror`;
+* on Linux and on a Windows host that *does* grant the privilege, both live
+  symlink tests still run and must detect the private access.
+
+On Windows without the privilege the boundary suite therefore reports
+**56 passed + 2 skipped**; with the privilege it reports **58 passed**.
+
+### 12.2 Unresolvable Windows aliases are refused conservatively
+
+`_must_refuse` now refuses, rather than assuming “outside”:
+
+* **drive-relative** paths such as `D:relative\path`, whose target depends on a
+  per-drive current directory the test guard cannot know (tested under two
+  different CWDs);
+* **8.3 short names** such as `OWNER~1`;
+* components with a **trailing space or dot**, which Windows normalizes.
+
+Normal absolute paths, inside paths and sibling paths (`root2`) are still
+classified correctly and are **not** refused. This is a test-guard stance, not
+proof about a real Windows filesystem: fully resolving 8.3 names, trailing
+spaces and per-drive CWDs needs `GetLongPathName` /
+`GetFinalPathNameByHandle` and a real filesystem mapping. That residual is
+recorded here rather than guessed.
+
+### 12.3 Measured (Tokyo Linux, bounded 1 GiB / swap 0 / 25% CPU, nice 10)
+
+| Run | Result |
+| --- | --- |
+| RED at `558c324` (boundary) | **9 failed, 49 passed** |
+| GREEN boundary | **58 passed** |
+| GREEN X2 three files | **90 passed** |
+| Same process + X1 finalize tests | **123 passed** |
+| Same process under the private-path guard | **123 passed** |
+| Boundary with all pinned fixtures in pure CRLF | **58 passed** |
+
+### 12.4 Windows recheck (FJPCOS owner, exact SHA of this PR)
+
+```text
+python -m pytest -q tests/v1_portability/test_portability_boundary.py
+python -m pytest -q tests/test_v1_grant_os_principal_schema.py
+python -m pytest -q tests/test_fleet_v1_t10_legacy_compatibility.py
+```
+
+Expected on a Windows host without the symlink privilege: boundary
+**56 passed + 2 skipped** (`HOST_PRIVILEGE_NO_SYMLINK`), grant
+**13 skipped / 0 errors**, legacy **19 skipped / 0 errors**. With the privilege,
+boundary is **58 passed**. Report exact counts and the Python version.
+
+**No REAL_WINDOWS claim is made** until the FJPCOS owner reruns this exact SHA.
+The guard remains a check-time TEST aid, not a filesystem sandbox; the TOCTOU,
+8.3, trailing-space and per-drive-cwd limits above are explicit residuals.

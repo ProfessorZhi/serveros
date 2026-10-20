@@ -260,7 +260,7 @@ def test_guard_detects_a_posix_symlink_alias_into_the_private_root(tmp_path):
     root.mkdir()
     (root / "secret.txt").write_text("private", encoding="utf-8")
     alias = tmp_path / "alias"
-    alias.symlink_to(root, target_is_directory=True)
+    guard.make_directory_symlink_or_skip(alias, root)
     candidate = str(alias / "secret.txt")
     assert guard._inside(candidate, str(root)) is True
     assert guard._must_refuse(candidate, (str(root),)) is True
@@ -280,7 +280,7 @@ def test_audit_hook_refuses_an_open_through_a_symlink_alias(tmp_path):
     root.mkdir()
     (root / "secret.txt").write_text("private", encoding="utf-8")
     alias = tmp_path / "alias"
-    alias.symlink_to(root, target_is_directory=True)
+    guard.make_directory_symlink_or_skip(alias, root)
     probe = tmp_path / "probe.py"
     probe.write_text(
         "import sys\n"
@@ -301,6 +301,85 @@ def test_audit_hook_refuses_an_open_through_a_symlink_alias(tmp_path):
         text=True, timeout=30)
     assert completed.returncode == 0, completed.stderr
     assert "BLOCKED" in completed.stdout
+
+
+# ---------------------------------------------------------------------------
+# Windows host privilege and unresolvable aliases (test-only guard).
+# ---------------------------------------------------------------------------
+
+def _oserror_with_winerror(winerror=None) -> OSError:
+    exc = OSError(22, "not permitted")
+    if winerror is not None:
+        exc.winerror = winerror
+    return exc
+
+
+def test_symlink_privilege_reason_only_for_windows_1314():
+    import private_path_guard as guard
+
+    reason = guard.symlink_privilege_reason(
+        _oserror_with_winerror(1314), platform="nt")
+    assert reason is not None
+    assert "HOST_PRIVILEGE_NO_SYMLINK" in reason
+    assert guard.symlink_privilege_reason(
+        _oserror_with_winerror(1314), platform="posix") is None
+    assert guard.symlink_privilege_reason(
+        _oserror_with_winerror(5), platform="nt") is None
+    assert guard.symlink_privilege_reason(
+        _oserror_with_winerror(None), platform="nt") is None
+
+
+def test_make_directory_symlink_skips_only_on_win32_1314():
+    import private_path_guard as guard
+
+    class Fake1314:
+        def symlink_to(self, *args, **kwargs):
+            raise _oserror_with_winerror(1314)
+
+    with pytest.raises(pytest.skip.Exception):
+        guard.make_directory_symlink_or_skip(
+            Fake1314(), "target", platform="nt")
+
+    class Fake5:
+        def symlink_to(self, *args, **kwargs):
+            raise _oserror_with_winerror(5)
+
+    with pytest.raises(OSError):
+        guard.make_directory_symlink_or_skip(
+            Fake5(), "target", platform="nt")
+
+
+def test_drive_relative_is_refused_independently_of_cwd(tmp_path, monkeypatch):
+    import private_path_guard as guard
+
+    roots = (r"D:\owner\private\root",)
+    for name in ("drive-cwd-a", "drive-cwd-b"):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        with monkeypatch.context() as patch:
+            patch.chdir(cwd)
+            assert guard._must_refuse(
+                r"D:relative\path", roots, windows=True) is True
+            # Absolute and sibling paths stay unambiguous.
+            assert guard._must_refuse(
+                r"D:\public\file", roots, windows=True) is False
+            assert guard._must_refuse(
+                r"D:\owner\private\root2\evil", roots, windows=True) is False
+            assert guard._must_refuse(
+                r"D:\owner\private\root\file", roots, windows=True) is True
+
+
+@pytest.mark.parametrize("value", (
+    r"D:\OWNER~1\PRIVATE\ROOT\evil",
+    r"D:\owner\private\root \evil",
+    r"D:\owner\private\root.\evil",
+    r"\\server\share\PRIVAT~1\evil",
+))
+def test_unresolvable_windows_aliases_are_conservatively_refused(value):
+    import private_path_guard as guard
+
+    assert guard._must_refuse(
+        value, (r"D:\owner\private\root",), windows=True) is True
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,13 @@ This is a TEST guard, not a filesystem sandbox.
 * A device namespace that is not a plain drive (`\\.\PhysicalDrive0`,
   `\\?\Volume{...}`, `\\?\GLOBALROOT\...`) cannot be proven equivalent to a
   root.  It is refused conservatively rather than treated as unrestricted.
+* A drive-relative path (`D:relative`) resolves against a per-drive current
+  directory this test guard cannot know.  It is refused conservatively.
+* An 8.3 short name (`OWNER~1`) or a component with a trailing space/dot may
+  alias a real path.  Resolving those needs Windows filesystem mapping
+  (`GetLongPathName` / `GetFinalPathNameByHandle`); without it the guard
+  refuses them rather than guessing.  This is a best-effort TEST aid, not a
+  sandbox.
 * An environment mapping is never scanned; only the actual audited path, argv
   and CWD are.  The guard is configured through an environment variable, so
   scanning the environment would make the guard refuse itself.
@@ -43,7 +50,12 @@ GUARD_ENV = "SERVEROS_PORTABILITY_GUARD"
 ROOTS_ENV = "SERVEROS_PRIVATE_LEGACY_ROOTS"
 
 _DRIVE = re.compile(r"^([A-Za-z]):(?:[\\/](.*))?$")
+_DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:(?![\\/])")
 _WINDOWS_HINT = re.compile(r"^(?:[A-Za-z]:|\\\\|//)")
+_SHORT_NAME = re.compile(r"~[0-9]+")
+
+HOST_PRIVILEGE_NO_SYMLINK = "HOST_PRIVILEGE_NO_SYMLINK"
+_WINERROR_SYMLINK_PRIVILEGE = 1314
 
 _WATCHED = frozenset({
     "open",
@@ -263,10 +275,70 @@ def _inside(value: str, root: str, *, windows: bool | None = None) -> bool:
     return False
 
 
+def symlink_privilege_reason(exc: OSError, *,
+                             platform: str | None = None) -> str | None:
+    """A skip reason ONLY for Windows without SeCreateSymbolicLinkPrivilege.
+
+    Every other error (a missing path, a disk error, a POSIX failure) returns
+    None so the caller re-raises it; this must never become a blanket skip.
+    """
+    platform = os.name if platform is None else platform
+    if (platform == "nt"
+            and getattr(exc, "winerror", None) == _WINERROR_SYMLINK_PRIVILEGE):
+        return (
+            f"{HOST_PRIVILEGE_NO_SYMLINK}: this Windows host did not grant "
+            "SeCreateSymbolicLinkPrivilege (WinError 1314). The two live "
+            "symlink alias tests are skipped; every other guard/fixture test "
+            "still runs. Any other error remains a failure.")
+    return None
+
+
+def make_directory_symlink_or_skip(link, target, *,
+                                   platform: str | None = None) -> None:
+    """Create a directory symlink, skipping ONLY on Windows WinError 1314."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        reason = symlink_privilege_reason(exc, platform=platform)
+        if reason is None:
+            raise
+        import pytest
+
+        pytest.skip(reason)
+
+
+def _uncertain_windows_alias(forms) -> bool:
+    """An 8.3 / trailing-space-or-dot component cannot be resolved lexically."""
+    for family, path in forms:
+        if family not in {"win", "unc"}:
+            continue
+        for component in path.split("/"):
+            if not component or component in {".", ".."}:
+                continue
+            if _SHORT_NAME.search(component):
+                return True
+            if component != component.strip() or component.endswith("."):
+                return True
+    return False
+
+
 def _must_refuse(value: str, roots, *, windows: bool | None = None) -> bool:
-    """Inside a private root, or a device path that cannot be proven safe."""
-    _, ambiguous = _forms(value, windows=windows)
+    """Inside a private root, or a path that cannot be proven safe.
+
+    Drive-relative paths depend on a per-drive CWD the guard cannot know, and
+    8.3/trailing-space aliases need real filesystem mapping.  Both are refused
+    conservatively instead of being assumed outside.
+    """
+    forms, ambiguous = _forms(value, windows=windows)
     if ambiguous:
+        return True
+    try:
+        raw = os.fsdecode(os.fspath(value))
+    except (TypeError, ValueError):
+        return False
+    if _DRIVE_RELATIVE.match(raw):
+        return True
+    if _uncertain_windows_alias(forms):
         return True
     return any(_inside(value, root, windows=windows) for root in roots)
 
