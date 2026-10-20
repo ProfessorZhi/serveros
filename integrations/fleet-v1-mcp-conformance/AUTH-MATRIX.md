@@ -135,6 +135,13 @@ documented contract (`fleet_status`) and the two protocol behaviours below.
 * **A `tools/call` sent as a JSON-RPC notification is not executed.** It used
   to run before the dispatcher checked for an id, delivering a write whose
   result the caller could never observe.
+* **`control_allowed.send_allowed` includes the caller's `fleet:send` scope.**
+  A read-only caller on a send-enabled device with an allowlisted session used
+  to be told `true` and then refused `SCOPE_DENIED`. The listing now uses the
+  same upper bound as `send_to_session` (scope × runtime binding × device
+  `allow_send` × session allowlist or operator `send`), and `selftest.py`
+  asserts the reported value and the gate agree across the matrix, including
+  grant revocation, another principal, another runtime and an unbound runtime.
 
 ## 6. What this table does not claim
 

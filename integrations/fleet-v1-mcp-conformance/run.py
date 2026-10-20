@@ -51,8 +51,8 @@ from fleet_mcp.config import (AuditBinding, AuthBinding, CreateGrant,  # noqa: E
                               ServerBinding, provider_key)
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.fleet import (SCOPE_CONTROL, SCOPE_CREATE, SCOPE_READ,  # noqa: E402
-                             SCOPE_SEND, FleetService, Principal)
-from fleet_mcp.providers.base import ProviderHealth  # noqa: E402
+                             SCOPE_SEND, FleetService, Principal, SessionKey)
+from fleet_mcp.providers.base import ProviderHealth, SessionSummary  # noqa: E402
 from fleet_mcp.server import PREFERRED_PROTOCOL_VERSION, McpServer  # noqa: E402
 from fleet_mcp.version import (SERVER_NAME, SERVER_VERSION,  # noqa: E402
                                TOOL_SURFACE_REVISION)
@@ -76,6 +76,8 @@ class FakeDevice:
         self.device_ref = device_ref
         self.runtime = runtime
         self.calls: list[tuple] = []
+        #: Rows the listing answers with. Empty unless a check installs one.
+        self.sessions: list[SessionSummary] = []
 
     def health(self) -> ProviderHealth:
         self.calls.append(("health",))
@@ -85,7 +87,7 @@ class FakeDevice:
 
     def list_sessions(self, *, limit: int, project=None, state=None) -> list:
         self.calls.append(("list_sessions", limit, project, state))
-        return []
+        return list(self.sessions)
 
     def get_session(self, key) -> dict:
         self.calls.append(("get_session", key.ref))
@@ -373,6 +375,61 @@ def main(argv: list[str] | None = None) -> int:
         receipt.record("grant.live_capability_needs_read", "grant",
                        refusal_code(capability) == "SCOPE_DENIED",
                        refusal_code(capability))
+
+        # -- 5c. the read surface and the gate share one upper bound ----------
+        #
+        # A read-only credential on a send-enabled device with an allowlisted
+        # session used to be told `send_allowed: true` and then refused
+        # `SCOPE_DENIED`. The listing must report the same caller scope the
+        # execution path checks first — the read surface may not promise a
+        # capability stronger than the gate.
+        device.sessions = [SessionSummary(
+            key=SessionKey.compose(DEVICE, "claude", SESSION),
+            title="conformance", classification="RUNNING_AGENT", running=True,
+            resident_host=False, host_state=None, lifecycle_mode=None,
+            project_id=None, last_activity=None)]
+        read_only = McpServer(lambda: context({SCOPE_READ}))
+        listed = read_only.handle(
+            {"jsonrpc": "2.0", "id": 27, "method": "tools/call",
+             "params": {"name": "fleet_list_sessions",
+                        "arguments": {"device": DEVICE}}})
+        rows = (listed or {}).get("result", {}).get(
+            "structuredContent", {}).get("sessions", [])
+        reported = bool(rows and rows[0]["control_allowed"]["send_allowed"])
+        refused_send = read_only.handle(
+            {"jsonrpc": "2.0", "id": 28, "method": "tools/call",
+             "params": {"name": "fleet_send_to_session",
+                        "arguments": {"session_ref": SESSION_REF,
+                                      "message": "read-only"}}})
+        receipt.record("contract.a_read_only_caller_is_not_told_it_may_send",
+                       "grant",
+                       len(rows) == 1 and reported is False
+                       and refusal_code(refused_send) == "SCOPE_DENIED",
+                       f"rows={len(rows)} reported={reported} "
+                       f"actual={refusal_code(refused_send)}")
+
+        device.calls.clear()
+        sender = McpServer(lambda: context({SCOPE_READ, SCOPE_SEND}))
+        listed_sender = sender.handle(
+            {"jsonrpc": "2.0", "id": 29, "method": "tools/call",
+             "params": {"name": "fleet_list_sessions",
+                        "arguments": {"device": DEVICE}}})
+        rows_sender = (listed_sender or {}).get("result", {}).get(
+            "structuredContent", {}).get("sessions", [])
+        reported_sender = bool(
+            rows_sender and rows_sender[0]["control_allowed"]["send_allowed"])
+        sent = sender.handle(
+            {"jsonrpc": "2.0", "id": 30, "method": "tools/call",
+             "params": {"name": "fleet_send_to_session",
+                        "arguments": {"session_ref": SESSION_REF,
+                                      "message": "with-scope"}}})
+        receipt.record("contract.a_send_scoped_caller_is_told_it_may_send",
+                       "grant",
+                       reported_sender is True and refusal_code(sent) == "OK"
+                       and any(row[0] == "send" for row in device.calls),
+                       f"reported={reported_sender} actual={refusal_code(sent)} "
+                       f"device_calls={device.calls}")
+        device.sessions = []
 
         # -- 6. the runtime axis, both directions -----------------------------
         device.calls.clear()

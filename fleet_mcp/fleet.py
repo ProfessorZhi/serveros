@@ -1043,11 +1043,20 @@ class FleetService:
         }
 
     def _session_control_state(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
-        """What `principal` may do with `key` — the same check `_may_send` makes.
+        """What `principal` may do with `key` — the same upper bound `send_to_session` enforces.
 
-        Takes the principal because the gate it reports on does. A control state
-        computed without one would answer "may anyone", and reporting that under
-        the key `send_allowed` would tell a caller it may send to a session that
+        `send_to_session` asks two questions before it sends: does this
+        credential carry `fleet:send`, and does `_may_send` admit this
+        device/session/principal? This function must answer both. It used to
+        answer only the second, so a read-only credential — device send-enabled,
+        session allowlisted, no operator grant — was reported `send_allowed:
+        true` and then refused `SCOPE_DENIED`. The scope is the first gate on the
+        execution path, so it is the first term here; a read surface that omits
+        it reports a capability the machine will not exercise.
+
+        Takes the principal because both gates do. A control state computed
+        without one would answer "may anyone", and reporting that under the key
+        `send_allowed` would tell a caller it may send to a session that
         `send_to_session` will refuse — a read surface disagreeing with the
         machine about the one question it was asked, which is worse than not
         reporting it.
@@ -1056,8 +1065,10 @@ class FleetService:
         device_ok = bool(binding and binding.allow_send)
         session_ok = key.ref in self.config.policy.send_allow
         grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
+        scope_ok = SCOPE_SEND in principal.scopes
         return {
-            "send_allowed": bool(device_ok and (session_ok or "send" in grant_verbs)),
+            "send_allowed": bool(scope_ok and device_ok
+                                 and (session_ok or "send" in grant_verbs)),
             "device_authorized": device_ok,
             "session_allowlisted": bool(session_ok),
             # Reported as the verbs the grant actually supplied, and empty for
@@ -1083,9 +1094,10 @@ class FleetService:
             **self._session_control_state(principal, key),
             "note": "control is a separate grant from creation. A session this "
                     "caller may not send to is reported, not hidden: sending "
-                    "requires `allow_send` on the device and either the session "
-                    "in `policy.send_allow` or a `send` grant for this principal "
-                    "on this device in `policy.operator_grants`.",
+                    "requires the credential to carry `fleet:send`, `allow_send` "
+                    "on the device, and either the session in `policy.send_allow` "
+                    "or a `send` grant for this principal on this device in "
+                    "`policy.operator_grants`.",
         }
 
     def resolve_session(self, principal: Principal, *, session_ref: str | None,

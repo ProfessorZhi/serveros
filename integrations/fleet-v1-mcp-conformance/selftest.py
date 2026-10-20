@@ -34,7 +34,9 @@ if str(HERE) not in sys.path:
 import authority_matrix as matrix  # noqa: E402
 import run as conformance  # noqa: E402
 from fleet_mcp import tools as tools_mod  # noqa: E402
-from fleet_mcp.fleet import Principal  # noqa: E402
+from fleet_mcp.errors import FleetRefusal  # noqa: E402
+from fleet_mcp.fleet import Principal, SessionKey  # noqa: E402
+from fleet_mcp.providers.base import SessionSummary  # noqa: E402
 from fleet_mcp.scopes import (ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES,  # noqa: E402
                               IMPLEMENTED_SCOPES, SCOPE_CONTROL, SCOPE_CREATE,
                               SCOPE_READ, SCOPE_SEND)
@@ -45,17 +47,56 @@ from fleet_mcp.server import (JSONRPC_METHOD_NOT_FOUND,  # noqa: E402
 class Harness:
     """One in-process surface over one fake device, built like `run.py`."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, grants=None, send_allow=(conformance.SESSION_REF,)) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="fleet-conformance-")
         self.tmp = Path(self._tmp.name)
         self.service, self.devices = conformance.build(
             self.tmp,
-            grants={conformance.PRINCIPAL: {
-                conformance.DEVICE: ("send", "create", "control")}},
+            grants=(grants if grants is not None
+                    else {conformance.PRINCIPAL: {
+                        conformance.DEVICE: ("send", "create", "control")}}),
             create_allow={conformance.PROJECT: conformance.CreateGrant()},
-            send_allow=(conformance.SESSION_REF,),
+            send_allow=send_allow,
         )
         self.device = self.devices[conformance.DEVICE]
+        self.session_key = SessionKey.compose(
+            conformance.DEVICE, "claude", conformance.SESSION)
+
+    def visible_session(self) -> SessionKey:
+        """Make the fake device list one session, so the read surface answers.
+
+        The production `list_sessions` attaches `control_allowed` per row; a
+        fixture with no rows would let the misreport hide behind an empty list.
+        """
+        summary = SessionSummary(
+            key=self.session_key, title="conformance", classification="RUNNING_AGENT",
+            running=True, resident_host=False, host_state=None, lifecycle_mode=None,
+            project_id=None, last_activity=None)
+        self.device.list_sessions = lambda **kwargs: [summary]
+        return self.session_key
+
+    def reported_and_actual(self, *, scopes, name=None, key=None):
+        """What the read surface says, and what the gate actually does."""
+        principal = Principal(name=name or conformance.PRINCIPAL,
+                              scopes=frozenset(scopes), credential_kind="oauth")
+        key = key or self.session_key
+        if key == self.session_key:
+            rows = self.service.list_sessions(
+                principal, device=conformance.DEVICE)["sessions"]
+            reported = rows[0]["control_allowed"]["send_allowed"]
+        else:
+            # `list_sessions` reports an unbound runtime under
+            # `devices_unreachable` rather than as a row, so a session on
+            # another runtime is read from the same function that builds the
+            # row's `control_allowed`.
+            reported = self.service._session_control_state(
+                principal, key)["send_allowed"]
+        try:
+            self.service.send_to_session(principal, key, message="conformance")
+            actual, code = True, None
+        except FleetRefusal as exc:
+            actual, code = False, exc.code
+        return reported, actual, code
 
     def close(self) -> None:
         self._tmp.cleanup()
@@ -267,6 +308,105 @@ class TheControlScopeHasAFloorOnBothSides(unittest.TestCase):
             self.h.server({SCOPE_READ, SCOPE_CREATE}), "fleet_create_session",
             {"device": conformance.DEVICE, "project": "not-allowed"})
         self.assertIn(self.h.refusal(result), {"APPROVAL_REQUIRED", "WRITE_NOT_GRANTED"})
+
+
+class TheCapabilityReadMatchesTheGate(unittest.TestCase):
+    """`send_allowed` is a promise the send gate must keep.
+
+    The read surface used to omit the caller's `fleet:send` scope, so a
+    read-only credential on a send-enabled device with an allowlisted session
+    was told `send_allowed: true` and then refused `SCOPE_DENIED`. Every case
+    below asserts the property, not just the boolean: what the listing reports
+    equals what `send_to_session` does.
+    """
+
+    READ_ONLY = {SCOPE_READ}
+    READ_SEND = {SCOPE_READ, SCOPE_SEND}
+
+    def test_read_only_caller_is_reported_unable_to_send(self):
+        """The P1: read-only caller, send-enabled device, allowlisted session."""
+        h = Harness(grants={conformance.PRINCIPAL: {
+            conformance.DEVICE: ("send",)}})
+        self.addCleanup(h.close)
+        h.visible_session()
+        reported, actual, code = h.reported_and_actual(scopes=self.READ_ONLY)
+        self.assertFalse(reported, "the listing promised a send the gate refuses")
+        self.assertFalse(actual)
+        self.assertEqual(code, "SCOPE_DENIED")
+
+    def test_reported_and_actual_agree_over_the_matrix(self):
+        cases = [
+            ("read-only with grant", self.READ_ONLY, conformance.PRINCIPAL,
+             {conformance.PRINCIPAL: {conformance.DEVICE: ("send",)}},
+             (), False, "SCOPE_DENIED"),
+            ("read-only with allowlist, no grant", self.READ_ONLY,
+             conformance.PRINCIPAL, {}, (conformance.SESSION_REF,),
+             False, "SCOPE_DENIED"),
+            ("read+send with grant", self.READ_SEND, conformance.PRINCIPAL,
+             {conformance.PRINCIPAL: {conformance.DEVICE: ("send",)}},
+             (), True, None),
+            ("read+send with allowlist", self.READ_SEND, conformance.PRINCIPAL,
+             {}, (conformance.SESSION_REF,), True, None),
+            ("read+send with neither", self.READ_SEND, conformance.PRINCIPAL,
+             {}, (), False, "APPROVAL_REQUIRED"),
+            ("read+send, another principal", self.READ_SEND,
+             "oauth:someone-else",
+             {conformance.PRINCIPAL: {conformance.DEVICE: ("send",)}},
+             (), False, "APPROVAL_REQUIRED"),
+            ("read+send, control-only grant", self.READ_SEND,
+             conformance.PRINCIPAL,
+             {conformance.PRINCIPAL: {conformance.DEVICE: ("control",)}},
+             (), False, "APPROVAL_REQUIRED"),
+        ]
+        for label, scopes, name, grants, send_allow, expected, expected_code in cases:
+            with self.subTest(label=label):
+                h = Harness(grants=grants, send_allow=send_allow)
+                self.addCleanup(h.close)
+                h.visible_session()
+                reported, actual, code = h.reported_and_actual(scopes=scopes,
+                                                               name=name)
+                self.assertEqual(reported, actual,
+                                 "the read surface promised what the gate refused")
+                self.assertEqual(actual, expected)
+                self.assertEqual(code, expected_code)
+
+    def test_revoking_the_grant_flips_the_read_surface_and_the_gate_together(self):
+        h = Harness(grants={conformance.PRINCIPAL: {
+            conformance.DEVICE: ("send",)}}, send_allow=())
+        self.addCleanup(h.close)
+        h.visible_session()
+        self.assertEqual(h.reported_and_actual(scopes=self.READ_SEND),
+                         (True, True, None))
+        h.service.config.policy.operator_grants.pop(conformance.PRINCIPAL)
+        self.assertEqual(h.reported_and_actual(scopes=self.READ_SEND),
+                         (False, False, "APPROVAL_REQUIRED"))
+
+    def test_a_grant_for_another_runtime_does_not_authorize_this_one(self):
+        """The runtime binding is part of the upper bound, not the device alone."""
+        h = Harness(grants={conformance.PRINCIPAL: {
+            conformance.DEVICE: ("send",)}}, send_allow=())
+        self.addCleanup(h.close)
+        h.visible_session()
+        second = SessionKey.compose(conformance.DEVICE, conformance.SECOND,
+                                    conformance.SESSION)
+        reported, actual, code = h.reported_and_actual(scopes=self.READ_SEND,
+                                                       key=second)
+        self.assertFalse(reported)
+        self.assertFalse(actual)
+        self.assertEqual(code, "APPROVAL_REQUIRED")
+
+    def test_an_unbound_runtime_has_no_send_capability(self):
+        h = Harness(grants={conformance.PRINCIPAL: {
+            conformance.DEVICE: ("send",)}}, send_allow=())
+        self.addCleanup(h.close)
+        h.visible_session()
+        unbound = SessionKey.compose(conformance.DEVICE, "no-such-runtime",
+                                     conformance.SESSION)
+        reported, actual, code = h.reported_and_actual(scopes=self.READ_SEND,
+                                                       key=unbound)
+        self.assertFalse(reported)
+        self.assertFalse(actual)
+        self.assertEqual(code, "UNKNOWN_DEVICE")
 
 
 class DiscoveryIsNotEntitlement(unittest.TestCase):
