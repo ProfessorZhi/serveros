@@ -1,0 +1,171 @@
+{
+  "base": {
+    "evaluated_at": "2026-10-17T12:00:00Z",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "device_owner": "vince",
+    "device_bindings": [
+      {"agent_runtime": "agent-runtime:claude-code", "family": "claude", "runtime_tag": "claude-primary"},
+      {"agent_runtime": "agent-runtime:codex", "family": "codex", "runtime_tag": "codex-primary"}
+    ],
+    "provider": {
+      "family": "claude",
+      "agent_runtime": "agent-runtime:claude-code",
+      "transport": "cloudcli-mcp-http",
+      "runtime_tag": "claude-primary",
+      "os_principal": "vince",
+      "profile": "primary",
+      "credential_instance_ref": "credential-instance:tokyo-shared-dev-01/vince/primary",
+      "installed": true,
+      "readiness": "AVAILABLE",
+      "readiness_detail": null,
+      "declared_native_tools": [
+        "sessions_list", "session_get", "session_read", "run_get",
+        "session_create", "session_send", "session_interrupt",
+        "session_start", "session_close", "approvals_list"
+      ]
+    },
+    "project": {"id": "p-fleet-r1-fixture", "bound": true},
+    "session": {
+      "ref": "agent-session:device%3Atokyo-shared-dev-01/claude-primary/native-fixture-001",
+      "observed_at": "2026-10-17T11:59:30Z",
+      "status": "IDLE"
+    },
+    "defaults": {
+      "requested": {"model": "claude-fixture-model", "permissionMode": "plan"},
+      "resolved": {"model": "claude-fixture-model", "permissionMode": "plan", "by": "caller"},
+      "effective": {
+        "model": null,
+        "model_source": null,
+        "model_provenance": "UNKNOWN",
+        "permissionMode": null,
+        "permissionMode_source": null,
+        "permissionMode_provenance": "UNKNOWN"
+      }
+    },
+    "grant": {
+      "scopes": ["fleet:read", "fleet:create", "fleet:send", "fleet:control"],
+      "allow_create": true,
+      "allow_send": true,
+      "allow_control": true,
+      "epoch": "grant-epoch:fixture-1"
+    }
+  },
+  "cases": [
+    {
+      "name": "principal-mismatch",
+      "patch": {
+        "device_bindings": [
+          {"agent_runtime": "agent-runtime:claude-code", "family": "claude", "runtime_tag": "claude-fjd-primary"},
+          {"agent_runtime": "agent-runtime:codex", "family": "codex", "runtime_tag": "codex-primary"}
+        ],
+        "provider": {
+          "os_principal": "fjd",
+          "runtime_tag": "claude-fjd-primary"
+        },
+        "session": {
+          "ref": "agent-session:device%3Atokyo-shared-dev-01/claude-fjd-primary/native-fixture-001"
+        }
+      },
+      "expect": {"refusals": ["PRINCIPAL_MISMATCH"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "missing-installed-cli",
+      "patch": {
+        "provider": {"installed": false, "readiness": "UNAVAILABLE", "readiness_detail": "NOT_INSTALLED"}
+      },
+      "expect": {"refusals": ["PROVIDER_NOT_INSTALLED"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "missing-grant",
+      "patch": {"grant": null},
+      "expect": {"refusals": ["GRANT_MISSING"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "stale-session",
+      "patch": {"session": {"observed_at": "2026-10-17T10:00:00Z"}},
+      "expect": {"refusals": ["SESSION_STALE"], "dispatch": "MIXED"}
+    },
+    {
+      "name": "unbound-provider",
+      "patch": {
+        "device_bindings": [
+          {"agent_runtime": "agent-runtime:codex", "family": "codex", "runtime_tag": "codex-primary"}
+        ]
+      },
+      "expect": {"refusals": ["PROVIDER_UNBOUND"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "needs-login",
+      "patch": {"provider": {"readiness": "NEEDS_LOGIN"}},
+      "expect": {"refusals": ["NEEDS_LOGIN"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "effective-unproven",
+      "patch": {
+        "defaults": {
+          "effective": {
+            "model": "claude-fixture-model",
+            "model_source": "requested",
+            "model_provenance": "REQUESTED",
+            "permissionMode": "plan",
+            "permissionMode_source": "default-label",
+            "permissionMode_provenance": "DEFAULT"
+          }
+        }
+      },
+      "expect": {"refusals": [], "dispatch": "MIXED"}
+    },
+    {
+      "name": "secret-shaped-credential-ref",
+      "patch": {
+        "provider": {
+          "credential_instance_ref": "credential-instance:tokyo-shared-dev-01/vince/sk-fixture-not-a-real-key"
+        }
+      },
+      "expect": {"refusals": ["CREDENTIAL_REF_INVALID"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "runtime-tag-axis",
+      "patch": {"provider": {"runtime_tag": "agent-runtime:claude-code"}},
+      "expect": {"refusals": ["RUNTIME_TAG_MISMATCH"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "family-agent-runtime-id",
+      "patch": {"provider": {"family": "claude-code"}},
+      "expect": {"refusals": ["FAMILY_INVALID"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "project-unbound",
+      "patch": {"project": {"bound": false}},
+      "expect": {"refusals": ["PROJECT_UNBOUND"], "dispatch": "REFUSED"}
+    },
+    {
+      "name": "session-ref-mismatch",
+      "patch": {
+        "session": {
+          "ref": "agent-session:device%3Atokyo-shared-dev-01/codex-primary/native-fixture-001"
+        }
+      },
+      "expect": {"refusals": ["SESSION_REF_MISMATCH"], "dispatch": "MIXED"}
+    },
+    {
+      "name": "claude-native-adapter-absent",
+      "patch": {
+        "provider": {
+          "transport": "claude-code-native",
+          "declared_native_tools": null
+        }
+      },
+      "expect": {
+        "refusals": [],
+        "blockers": ["PROVIDER_ADAPTER_ABSENT"],
+        "dispatch": "UNKNOWN"
+      }
+    },
+    {
+      "name": "readiness-absent",
+      "patch": {"provider": {"readiness": null}},
+      "expect": {"refusals": [], "dispatch": "MIXED"}
+    }
+  ]
+}

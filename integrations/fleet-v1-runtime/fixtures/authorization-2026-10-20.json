@@ -1,0 +1,675 @@
+{
+  "schema": "serveros/fleet-v1-runtime-authorization-fixture.v1",
+  "recorded_at": "2026-10-20T04:56:20Z",
+  "evidence_level": "SOURCE_READ + REAL_READ_ONLY",
+  "note": "The base observation is a redacted, minimal projection of observed/tokyo-2026-10-20.json. Cases marked hypothetical patch the observation to ask what the protocol would answer after an owner decision; they are not evidence that the decision was made.",
+  "base_observation": {
+    "recorded_at": "2026-10-20T04:56:20Z",
+    "devices": {
+      "device:tokyo-shared-dev-01": {
+        "device_ref": "device:tokyo-shared-dev-01",
+        "local": true,
+        "enrolled": true,
+        "platform": "linux",
+        "node_runtime": "ABSENT",
+        "declared_runtimes": ["agent-runtime:claude-code"]
+      },
+      "device:work-fj": {
+        "device_ref": "device:work-fj",
+        "local": false,
+        "enrolled": true,
+        "platform": "windows",
+        "node_runtime": "ABSENT",
+        "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+      },
+      "device:personal-dell": {
+        "device_ref": "device:personal-dell",
+        "local": false,
+        "enrolled": true,
+        "platform": "windows",
+        "node_runtime": "ABSENT",
+        "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+      }
+    },
+    "providers": {
+      "botmux": {
+        "provider": "provider:botmux-agent-session",
+        "family": "claude-code",
+        "instance_action_support": {},
+        "execution_readiness": "UNKNOWN",
+        "execution_readiness_reason": "EXECUTION_UNVERIFIED",
+        "agent_inventory": {"state": "NEEDS_LOGIN"},
+        "session_inventory": {"state": "READ_AUTHORIZED", "sessions_observed": 1},
+        "effective_model": {
+          "value": null,
+          "provenance": "UNKNOWN",
+          "reason": "no provider-native model field in authorized session metadata"
+        },
+        "effective_permission_mode": {
+          "value": null,
+          "provenance": "UNKNOWN",
+          "reason": "no provider-native permissionMode field in authorized session metadata"
+        }
+      },
+      "codex": {
+        "provider": "provider:codex-app-server",
+        "family": "codex",
+        "instance_action_support": {
+          "session.create": "SUPPORTED",
+          "session.inspect": "SUPPORTED",
+          "session.send": "SUPPORTED",
+          "session.result": "SUPPORTED",
+          "session.resume": "SUPPORTED",
+          "session.interrupt": "SUPPORTED",
+          "session.stop": "UNSUPPORTED",
+          "session.handoff": "UNKNOWN"
+        },
+        "execution_readiness": "UNKNOWN",
+        "execution_readiness_reason": "EXECUTION_UNVERIFIED",
+        "agent_inventory": {"state": "READ_AUTHORIZED"},
+        "session_inventory": {"state": "READ_AUTHORIZED", "sessions_observed": 3},
+        "effective_model": {
+          "value": "gpt-6-astra",
+          "provenance": "FACT",
+          "source": "codex:thread/list"
+        },
+        "effective_permission_mode": {
+          "value": null,
+          "provenance": "UNKNOWN",
+          "reason": "no provider-native permissionMode field; sandbox/approvalPolicy are configuration"
+        }
+      },
+      "cloudcli": {
+        "provider": "cloudcli-mcp",
+        "family": "claude",
+        "instance_action_support": {
+          "sessions_list": "SUPPORTED",
+          "session_get": "SUPPORTED",
+          "session_read": "SUPPORTED",
+          "session_create": "SUPPORTED",
+          "session_send": "SUPPORTED",
+          "session_interrupt": "SUPPORTED",
+          "session_close": "SUPPORTED",
+          "run_get": "SUPPORTED"
+        },
+        "execution_readiness": "UNKNOWN",
+        "execution_readiness_reason": "EXECUTION_UNVERIFIED",
+        "effective_model": {
+          "value": null,
+          "provenance": "UNKNOWN",
+          "reason": "session_get carries no model field"
+        },
+        "effective_permission_mode": {
+          "value": null,
+          "provenance": "UNKNOWN",
+          "reason": "session_get carries no permissionMode field"
+        }
+      }
+    }
+  },
+  "base_request": {
+    "evaluated_at": "2026-10-20T05:00:00Z",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "surface": "serveros-agent-mcp",
+    "family": "claude",
+    "runtime_tag": "claude",
+    "verb": "read"
+  },
+  "cases": [
+    {
+      "name": "cc-first-session-metadata-read",
+      "request": {"route": "direct", "read_scope": "session_metadata"},
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "cc-first-agent-inventory-needs-login",
+      "request": {"route": "direct", "read_scope": "agent_inventory"},
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_OWNER_LOGIN"]
+      }
+    },
+    {
+      "name": "cc-first-routed-inspect-support-unpublished",
+      "request": {"route": "routed"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "ACTION_UNSUPPORTED",
+        "blocked_codes": ["BLOCKED_PROVIDER_SUPPORT_UNPUBLISHED"]
+      }
+    },
+    {
+      "name": "codex-routed-inspect-runtime-not-declared",
+      "request": {"family": "codex", "runtime_tag": "codex", "route": "routed"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "AGENT_RUNTIME_UNAVAILABLE",
+        "blocked_codes": ["BLOCKED_RUNTIME_NOT_DECLARED"]
+      }
+    },
+    {
+      "name": "codex-create-runtime-not-declared",
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "session_role": "coordinator",
+        "grant": {"scopes": ["fleet:read", "fleet:create"], "allow_create": true}
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "AGENT_RUNTIME_UNAVAILABLE",
+        "blocked_codes": ["BLOCKED_RUNTIME_NOT_DECLARED"]
+      }
+    },
+    {
+      "name": "serveros-interrupt-tool-absent",
+      "request": {"family": "codex", "runtime_tag": "codex", "verb": "interrupt"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "ACTION_UNSUPPORTED",
+        "blocked_codes": ["BLOCKED_MCP_TOOL_ABSENT"]
+      }
+    },
+    {
+      "name": "codex-create-hypothetical-readiness-unknown",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "session_role": "coordinator",
+        "grant": {"scopes": ["fleet:create"], "allow_create": true}
+      },
+      "expect": {
+        "decision": "UNKNOWN",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_EXECUTION_UNVERIFIED"]
+      }
+    },
+    {
+      "name": "codex-create-hypothetical-readiness-available-grant-unknown",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "session_role": "coordinator",
+        "grant": null
+      },
+      "expect": {
+        "decision": "UNKNOWN",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_GRANT_UNKNOWN"]
+      }
+    },
+    {
+      "name": "codex-create-hypothetical-no-session-role",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "grant": {"scopes": ["fleet:create"], "allow_create": true}
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "INVALID_CONTEXT",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-create-hypothetical-execution-without-item",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "session_role": "execution",
+        "grant": {"scopes": ["fleet:create"], "allow_create": true}
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "INVALID_CONTEXT",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-create-hypothetical-execution-with-item",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "create",
+        "context_ref": "ctx-fixture",
+        "session_role": "execution",
+        "bound_item_ref": "LIT-FIXTURE",
+        "grant": {"scopes": ["fleet:create"], "allow_create": true}
+      },
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-send-hypothetical-binding-missing",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "send",
+        "context_ref": "ctx-fixture",
+        "grant": {"scopes": ["fleet:send"], "allow_send": true},
+        "binding": "missing"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "INVALID_CONTEXT",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-send-hypothetical-binding-present",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "send",
+        "context_ref": "ctx-fixture",
+        "grant": {"scopes": ["fleet:send"], "allow_send": true},
+        "binding": "present"
+      },
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-end-hypothetical-approval-required",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {
+            "execution_readiness": "AVAILABLE",
+            "instance_action_support": {"session.stop": "SUPPORTED"}
+          }
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "end",
+        "context_ref": "ctx-fixture"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "APPROVAL_REQUIRED",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-end-hypothetical-approval-bound",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {
+            "execution_readiness": "AVAILABLE",
+            "instance_action_support": {"session.stop": "SUPPORTED"}
+          }
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "end",
+        "context_ref": "ctx-fixture",
+        "approval_ref": "appr-fixture",
+        "expected_approval_ref": "appr-fixture"
+      },
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-end-hypothetical-provider-unsupported",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {"execution_readiness": "AVAILABLE"}
+        }
+      },
+      "request": {
+        "family": "codex",
+        "runtime_tag": "codex",
+        "verb": "end",
+        "context_ref": "ctx-fixture",
+        "approval_ref": "appr-fixture",
+        "expected_approval_ref": "appr-fixture"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "ACTION_UNSUPPORTED",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "codex-readiness-known-negative",
+      "hypothetical": true,
+      "patch_observation": {
+        "devices": {
+          "device:tokyo-shared-dev-01": {
+            "declared_runtimes": ["agent-runtime:claude-code", "agent-runtime:codex"]
+          }
+        },
+        "providers": {
+          "codex": {
+            "execution_readiness": "UNAVAILABLE",
+            "execution_readiness_reason": "EXECUTION_FAILED"
+          }
+        }
+      },
+      "request": {"family": "codex", "runtime_tag": "codex", "route": "routed"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "PROVIDER_UNAVAILABLE",
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "cloudcli-read-projects",
+      "request": {"surface": "cloudcli-mcp", "verb": "read"},
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": []
+      }
+    },
+    {
+      "name": "cloudcli-create-blocked-owner-consent",
+      "request": {"surface": "cloudcli-mcp", "verb": "create"},
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_OWNER_CONSENT"]
+      }
+    },
+    {
+      "name": "cloudcli-send-blocked-owner-consent",
+      "request": {"surface": "cloudcli-mcp", "verb": "send"},
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_OWNER_CONSENT"]
+      }
+    },
+    {
+      "name": "cloudcli-interrupt-blocked-owner-consent",
+      "request": {"surface": "cloudcli-mcp", "verb": "interrupt"},
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_OWNER_CONSENT"]
+      }
+    },
+    {
+      "name": "cloudcli-resume-unsupported",
+      "request": {"surface": "cloudcli-mcp", "verb": "resume"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "ACTION_UNSUPPORTED",
+        "blocked_codes": ["BLOCKED_MCP_TOOL_ABSENT"]
+      }
+    },
+    {
+      "name": "cloudcli-run-get-protocol-mismatch",
+      "request": {"surface": "cloudcli-mcp", "verb": "get_run"},
+      "expect": {
+        "decision": "UNKNOWN",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_PROTOCOL_FIELD_MISMATCH"]
+      }
+    },
+    {
+      "name": "work-fj-node-runtime-unavailable",
+      "request": {
+        "device_ref": "device:work-fj",
+        "route": "routed"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "NODE_RUNTIME_UNAVAILABLE",
+        "blocked_codes": ["BLOCKED_NODE_RUNTIME_UNAVAILABLE"]
+      }
+    },
+    {
+      "name": "personal-dell-node-runtime-unavailable",
+      "request": {
+        "device_ref": "device:personal-dell",
+        "route": "routed"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "NODE_RUNTIME_UNAVAILABLE",
+        "blocked_codes": ["BLOCKED_NODE_RUNTIME_UNAVAILABLE"]
+      }
+    },
+    {
+      "name": "llm-lab-dell-live-not-enrolled",
+      "request": {
+        "device_ref": "device:llm-lab-dell",
+        "route": "routed"
+      },
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_DEVICE_NOT_ENROLLED"]
+      }
+    },
+    {
+      "name": "llm-lab-dell-authored-only-not-live",
+      "patch_observation": {
+        "devices": {
+          "device:llm-lab-dell": {
+            "device_ref": "device:llm-lab-dell",
+            "local": false,
+            "enrolled": true,
+            "authored_only": true,
+            "platform": "linux",
+            "node_runtime": "ABSENT",
+            "declared_runtimes": ["agent-runtime:claude-code"]
+          }
+        }
+      },
+      "request": {
+        "device_ref": "device:llm-lab-dell",
+        "route": "routed"
+      },
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_AUTHORED_NOT_LIVE"]
+      }
+    },
+    {
+      "name": "claude-code-native-adapter-absent",
+      "request": {"surface": "claude-code-native", "verb": "read"},
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_PROVIDER_ADAPTER_ABSENT"]
+      }
+    },
+    {
+      "name": "codex-direct-read-authorized",
+      "request": {"surface": "codex-app-server", "family": "codex", "verb": "read"},
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": [],
+        "effective": {
+          "model": {"value": "gpt-6-astra", "provenance": "FACT", "source": "codex:thread/list"},
+          "permissionMode": {"value": null, "provenance": "UNKNOWN"}
+        }
+      }
+    },
+    {
+      "name": "codex-direct-create-blocked-owner-consent",
+      "request": {
+        "surface": "codex-app-server",
+        "family": "codex",
+        "verb": "create"
+      },
+      "expect": {
+        "decision": "BLOCKED",
+        "reason": null,
+        "blocked_codes": ["BLOCKED_OWNER_CONSENT"]
+      }
+    },
+    {
+      "name": "botmux-direct-read-support-unpublished",
+      "request": {"surface": "botmux-agent-session", "verb": "read"},
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "ACTION_UNSUPPORTED",
+        "blocked_codes": ["BLOCKED_PROVIDER_SUPPORT_UNPUBLISHED"]
+      }
+    },
+    {
+      "name": "effective-unproven-not-promoted",
+      "patch_observation": {
+        "providers": {
+          "codex": {
+            "effective_model": {
+              "value": "gpt-6-astra",
+              "provenance": "REQUESTED",
+              "source": null
+            },
+            "effective_permission_mode": {
+              "value": "plan",
+              "provenance": "DEFAULT",
+              "source": "default-label"
+            }
+          }
+        }
+      },
+      "request": {"surface": "codex-app-server", "family": "codex", "verb": "read"},
+      "expect": {
+        "decision": "PRECONDITIONS_MET",
+        "reason": null,
+        "blocked_codes": [],
+        "effective": {
+          "model": {"value": null, "provenance": "UNKNOWN"},
+          "permissionMode": {"value": null, "provenance": "UNKNOWN"}
+        }
+      }
+    },
+    {
+      "name": "secret-shaped-runtime-tag-refused-without-echo",
+      "request": {
+        "runtime_tag": "sk-fixture-not-a-real-key"
+      },
+      "expect": {
+        "decision": "REFUSED",
+        "reason": "INVALID_CONTEXT",
+        "blocked_codes": [],
+        "not_contains": "sk-fixture-not-a-real-key"
+      }
+    }
+  ]
+}

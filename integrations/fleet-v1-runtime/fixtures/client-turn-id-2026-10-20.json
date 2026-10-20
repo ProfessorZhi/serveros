@@ -1,0 +1,426 @@
+{
+  "schema": "serveros/fleet-v1-runtime-client-turn-id-fixture.v1",
+  "recorded_at": "2026-10-20T05:30:00Z",
+  "evidence_level": "SCHEMA_ONLY + SYNTHETIC_FIXTURE",
+  "note": "The readback is synthetic. It is not a transcript and contains no real session text. The schema evidence was read from `codex-cli 0.160.0` with an empty temporary CODEX_HOME; no production provider was touched.",
+  "schema_evidence": {
+    "codex_version": "codex-cli 0.160.0",
+    "generation": "codex app-server generate-json-schema --out <temp> with CODEX_HOME=<empty temp>",
+    "files": [
+      {
+        "file": "stable/v2/TurnStartParams.json",
+        "sha256": "2dfcf68705896fadc344ccfeb2e9fe5a6bcbbb8b9a90cf449ce232b636daf05a",
+        "field": "clientUserMessageId:string|null"
+      },
+      {
+        "file": "stable/v2/ThreadReadParams.json",
+        "sha256": "dfe040c6ac71d30795b8be3f3ff232e66f362a37f883b491e5d1ea367f470db4",
+        "field": "includeTurns:boolean (deprecated for paginated threads)"
+      },
+      {
+        "file": "stable/v2/ThreadReadResponse.json",
+        "sha256": "3a0aaf9cff80796d07130b85723ca825f9203796d15c878f452083cf9f9a6f0a",
+        "field": "ThreadItem.userMessage.clientId:string|null; Turn.id; Turn.items:ThreadItem[]"
+      },
+      {
+        "file": "stable/v2/ThreadTurnsListParams.json",
+        "sha256": "2a8b93d7d4437cc25e16a1dde16d8db3c338d39e16c5eece2a56e943a21577d7",
+        "field": "threadId; itemsView:notLoaded|summary|full; cursor; no clientId filter"
+      },
+      {
+        "file": "stable/v2/ThreadItemsListParams.json",
+        "sha256": "d5cf9784413f1d1abba756e04e48b273a9d12ab2c5675442e91b6a4ee55e19f0",
+        "field": "threadId; optional turnId; no clientId filter"
+      },
+      {
+        "file": "stable/v2/ThreadTurnsListResponse.json",
+        "sha256": "8db83d38553204a223cf349680c59b0cc674ba95a4637e1995bfeabd73c80219",
+        "field": "ThreadItem.userMessage.clientId:string|null"
+      }
+    ],
+    "limit": "The schema permits both fields. It does not state that the provider copies clientUserMessageId into clientId; that echo is NOT live-proven in this lane."
+  },
+  "base_request": {
+    "client_turn_id": "ctid-fixture-0001",
+    "intent_text": "R1 synthetic fixed echo",
+    "thread_id": "thread-fixture-0001",
+    "read_path": "codex:thread/turns/list"
+  },
+  "base_readback": {
+    "thread_found": true,
+    "thread_id": "thread-fixture-0001",
+    "items_view": "full",
+    "pages": [
+      {
+        "data": [
+          {
+            "id": "turn-fixture-0001",
+            "status": "completed",
+            "items": [
+              {
+                "type": "userMessage",
+                "id": "item-fixture-0001",
+                "clientId": "ctid-fixture-0001",
+                "content": [
+                  {"type": "text", "text": "R1 synthetic fixed echo"}
+                ]
+              },
+              {
+                "type": "agentMessage",
+                "id": "item-fixture-0002",
+                "text": "echo"
+              }
+            ]
+          }
+        ],
+        "nextCursor": null
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "applied-exact-match",
+      "expect": {
+        "state": "APPLIED",
+        "reason": null,
+        "source": "codex:thread/turns/list",
+        "provenance": "FACT",
+        "matched_on": "userMessage.clientId",
+        "provider_turn_id": "turn-fixture-0001",
+        "provider_item_id": "item-fixture-0001",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "applied-exact-match-thread-read",
+      "request": {"read_path": "codex:thread/read"},
+      "expect": {
+        "state": "APPLIED",
+        "reason": null,
+        "source": "codex:thread/read",
+        "provenance": "FACT",
+        "matched_on": "userMessage.clientId",
+        "provider_turn_id": "turn-fixture-0001",
+        "provider_item_id": "item-fixture-0001",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "forged-client-id",
+      "request": {"client_turn_id": "ctid-forged-9999"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "CLIENT_ID_NOT_FOUND",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "unknown-restart-empty-history",
+      "readback": {"pages": []},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "NO_TURNS",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "intent-mismatch",
+      "request": {"intent_text": "a different intent"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "CLIENT_ID_MATCH_INTENT_MISMATCH",
+        "provenance": "UNKNOWN",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": true
+      }
+    },
+    {
+      "name": "duplicate-client-id",
+      "readback": {
+        "pages": [
+          {
+            "data": [
+              {
+                "id": "turn-fixture-0001",
+                "status": "completed",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "id": "item-fixture-0001",
+                    "clientId": "ctid-fixture-0001",
+                    "content": [{"type": "text", "text": "R1 synthetic fixed echo"}]
+                  }
+                ]
+              },
+              {
+                "id": "turn-fixture-0002",
+                "status": "completed",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "id": "item-fixture-0003",
+                    "clientId": "ctid-fixture-0001",
+                    "content": [{"type": "text", "text": "R1 synthetic fixed echo"}]
+                  }
+                ]
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      },
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "CLIENT_ID_DUPLICATE",
+        "provenance": "UNKNOWN",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": true
+      }
+    },
+    {
+      "name": "summary-only-items",
+      "readback": {"items_view": "summary"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "THREAD_ITEMS_UNAVAILABLE",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false
+      }
+    },
+    {
+      "name": "thread-not-found",
+      "readback": {"thread_found": false},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "THREAD_NOT_FOUND",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "thread-mismatch",
+      "readback": {"thread_id": "thread-other"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "THREAD_MISMATCH",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false
+      }
+    },
+    {
+      "name": "malformed-pages",
+      "readback": {"pages": "not-a-list"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "SOURCE_MALFORMED",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false
+      }
+    },
+    {
+      "name": "malformed-turn-items",
+      "readback": {"pages": [{"data": [{"id": "turn-x", "items": "not-a-list"}]}]},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "SOURCE_MALFORMED",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false
+      }
+    },
+    {
+      "name": "incomplete-pagination-miss",
+      "request": {"client_turn_id": "ctid-forged-9999"},
+      "readback": {"pages": [{"data": [], "nextCursor": "cursor-2"}]},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "CLIENT_ID_NOT_FOUND",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false
+      }
+    },
+    {
+      "name": "non-text-content",
+      "readback": {
+        "pages": [
+          {
+            "data": [
+              {
+                "id": "turn-fixture-0001",
+                "status": "completed",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "id": "item-fixture-0001",
+                    "clientId": "ctid-fixture-0001",
+                    "content": [{"type": "image", "url": "fixture://image"}]
+                  }
+                ]
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      },
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "INTENT_UNVERIFIABLE",
+        "provenance": "UNKNOWN",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "null-client-id",
+      "request": {"client_turn_id": "ctid-null"},
+      "readback": {
+        "pages": [
+          {
+            "data": [
+              {
+                "id": "turn-fixture-0001",
+                "status": "completed",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "id": "item-fixture-0001",
+                    "clientId": null,
+                    "content": [{"type": "text", "text": "R1 synthetic fixed echo"}]
+                  }
+                ]
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      },
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "CLIENT_ID_NOT_FOUND",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "missing-provider-id",
+      "readback": {
+        "pages": [
+          {
+            "data": [
+              {
+                "id": "turn-fixture-0001",
+                "status": "completed",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "clientId": "ctid-fixture-0001",
+                    "content": [{"type": "text", "text": "R1 synthetic fixed echo"}]
+                  }
+                ]
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      },
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "SOURCE_MALFORMED",
+        "provenance": "UNKNOWN",
+        "lookup_miss": false,
+        "scan_complete": true,
+        "conflict": false
+      }
+    },
+    {
+      "name": "secret-shaped-client-id",
+      "request": {"client_turn_id": "sk-0123456789abcdef"},
+      "expect": {
+        "state": "UNKNOWN",
+        "reason": "INVALID_CLIENT_TURN_ID",
+        "provenance": "UNKNOWN",
+        "lookup_miss": true,
+        "scan_complete": false,
+        "conflict": false,
+        "not_contains": "sk-0123456789abcdef"
+      }
+    }
+  ],
+  "capability_cases": [
+    {
+      "name": "codex-send-thread-known",
+      "adapter": "codex-app-server",
+      "verb": "send",
+      "thread_known": true,
+      "expect": "CLIENT_TURN_ID"
+    },
+    {
+      "name": "codex-send-thread-unknown",
+      "adapter": "codex-app-server",
+      "verb": "send",
+      "thread_known": false,
+      "expect": "RESPONSE_ID_ONLY"
+    },
+    {
+      "name": "codex-create",
+      "adapter": "codex-app-server",
+      "verb": "create",
+      "thread_known": false,
+      "expect": "RESPONSE_ID_ONLY"
+    },
+    {
+      "name": "botmux-send",
+      "adapter": "botmux-agent-session",
+      "verb": "send",
+      "thread_known": true,
+      "expect": "RESPONSE_ID_ONLY"
+    },
+    {
+      "name": "cloudcli-send",
+      "adapter": "cloudcli-mcp",
+      "verb": "send",
+      "thread_known": true,
+      "expect": "NO_SOURCE"
+    },
+    {
+      "name": "human-control-send",
+      "adapter": "human-control",
+      "verb": "send",
+      "thread_known": true,
+      "expect": "RESPONSE_ID_ONLY"
+    },
+    {
+      "name": "unknown-adapter",
+      "adapter": "unknown",
+      "verb": "send",
+      "thread_known": true,
+      "expect": "NO_SOURCE"
+    }
+  ]
+}

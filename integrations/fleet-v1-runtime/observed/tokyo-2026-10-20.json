@@ -1,0 +1,506 @@
+{
+  "schema": "serveros/fleet-v1-runtime-observation.v1",
+  "recorded_at": "2026-10-20T04:56:20Z",
+  "recorded_until": "2026-10-20T05:00:00Z",
+  "evidence_level": "REAL_READ_ONLY",
+  "scope": "One bounded read-only observation of the three-node R1 surface. No create, send, resume, interrupt, stop, model call, credential read, transcript read, grant change, registry change or production change.",
+  "pin": {
+    "authoritative_repo": "ProfessorZhi/serveros",
+    "authoritative_main": "771c81c",
+    "workspace_head": "665067e",
+    "r1_prior_head": "65ead6df0a182092a3d83a6dacf9f04e9786eada",
+    "note": "The prior R1 branch is based on 665067e, not on its body's pinned 4a3162. The authoritative main is 771c81c."
+  },
+  "sources": [
+    {
+      "id": "serveros-agent-mcp",
+      "kind": "ServerOS Agent Control MCP, read-only tools",
+      "tools": [
+        "device_list",
+        "device_inspect",
+        "agent_provider_list",
+        "agent_list",
+        "agent_session_list",
+        "agent_session_inspect"
+      ],
+      "provenance": "provider-response"
+    },
+    {
+      "id": "serverosctl-device",
+      "kind": "local authored device projection",
+      "commands": ["serverosctl device show --json", "serverosctl device agents --json"],
+      "provenance": "authored registry plus structural surface presence"
+    },
+    {
+      "id": "cloudcli-mcp",
+      "kind": "CloudCLI MCP HTTP surface at the locally running CloudCLI server",
+      "tools": ["projects_list", "sessions_list", "session_get", "run_get"],
+      "provenance": "provider-response"
+    },
+    {
+      "id": "local-auth-state",
+      "kind": "benign local login-state commands; no credential value was read",
+      "commands": ["claude auth status", "codex login status"],
+      "provenance": "FACT"
+    },
+    {
+      "id": "local-version",
+      "kind": "benign local version commands",
+      "commands": ["claude --version", "codex --version", "cloudcli --version"],
+      "provenance": "FACT"
+    },
+    {
+      "id": "process-owner",
+      "kind": "process owner only; argv was not retained",
+      "commands": ["ps -o user=,pid=,comm= -p <provider-pid>"],
+      "provenance": "host-measurement"
+    }
+  ],
+  "redactions": [
+    "session titles and message content are omitted",
+    "provider-native session and thread ids are replaced with stable aliases in this file; the aliases are not join keys",
+    "cwd and workspace paths are omitted from provider rows; cwd is not used as project identity",
+    "no credential, token, cookie, key, auth file or environment value was read or recorded",
+    "one process listing displayed argv that contained token-shaped values; no value was copied into this file or into any report",
+    "the CloudCLI bearer credential and the BotMux dashboard credential are named only as a requirement, never as a value"
+  ],
+  "host": {
+    "device_ref": "device:tokyo-shared-dev-01",
+    "display_name": "Tokyo-Shared-Dev-01",
+    "platform": "linux",
+    "os_family": "linux-ubuntu-24.04",
+    "environment_profile": "linux-shared-multiuser",
+    "ownership": "company",
+    "enrollment": "enrolled",
+    "reachability": {
+      "state": "KNOWN_ONLINE",
+      "provenance": "local-loopback",
+      "observed_at": "2026-10-20T04:55:42.648075Z"
+    },
+    "node_runtime": {
+      "state": "ABSENT",
+      "provenance": "no connector declared for this node",
+      "consequence": "The local provider inventory is still readable; there is no ServerOS node runtime to route a remote request to."
+    },
+    "os_principal": {
+      "value": "vince",
+      "state": "OBSERVED",
+      "provenance": "local process owner for the CloudCLI, BotMux and Codex provider processes"
+    }
+  },
+  "fleet_devices_live": [
+    {
+      "device_ref": "device:tokyo-shared-dev-01",
+      "enrollment": "enrolled",
+      "platform": "linux",
+      "reachability": "KNOWN_ONLINE",
+      "node_runtime": "ABSENT",
+      "declared_agents": ["claude-code"],
+      "declared_runtime_bindings": ["agent-runtime:claude-code"],
+      "runtime_summary": "UNKNOWN before the provider inventory is asked"
+    },
+    {
+      "device_ref": "device:work-fj",
+      "display_name": "FJPCOS",
+      "enrollment": "enrolled",
+      "platform": "windows",
+      "os_family": "windows-10",
+      "environment_profile": "windows-corporate",
+      "reachability": "UNKNOWN",
+      "presence_provenance": "NOT_MEASURED",
+      "node_runtime": "ABSENT",
+      "runtime_summary": {
+        "state": "UNAVAILABLE",
+        "reason": "NODE_RUNTIME_UNAVAILABLE",
+        "runnable": false
+      },
+      "declared_agents": ["claude-code", "codex"],
+      "declared_runtime_bindings": ["agent-runtime:claude-code", "agent-runtime:codex"],
+      "provider_inventory": {
+        "state": "UNKNOWN",
+        "reason": "the transport returned no inventory; this control plane has not asked the device anything"
+      },
+      "os_principal": null
+    },
+    {
+      "device_ref": "device:personal-dell",
+      "display_name": "DellPCOS",
+      "enrollment": "enrolled",
+      "platform": "windows",
+      "os_family": "windows-11",
+      "environment_profile": "windows-personal",
+      "reachability": "UNKNOWN",
+      "presence_provenance": "NOT_MEASURED",
+      "node_runtime": "ABSENT",
+      "runtime_summary": {
+        "state": "UNAVAILABLE",
+        "reason": "NODE_RUNTIME_UNAVAILABLE",
+        "runnable": false
+      },
+      "declared_agents": ["claude-code", "codex"],
+      "declared_runtime_bindings": ["agent-runtime:claude-code", "agent-runtime:codex"],
+      "provider_inventory": {
+        "state": "UNKNOWN",
+        "reason": "the transport returned no inventory; this control plane has not asked the device anything"
+      },
+      "os_principal": null
+    },
+    {
+      "device_ref": "device:server-beijing",
+      "display_name": "Beijing-Server",
+      "enrollment": "enrolled",
+      "platform": "linux",
+      "environment_profile": "linux-server",
+      "role": "fleet-controller-primary",
+      "reachability": "UNKNOWN",
+      "presence_provenance": "NOT_MEASURED",
+      "node_runtime": "ABSENT",
+      "runtime_summary": {
+        "state": "UNAVAILABLE",
+        "reason": "NODE_RUNTIME_UNAVAILABLE",
+        "runnable": false
+      },
+      "declared_agents": ["claude-code", "codex"],
+      "declared_runtime_bindings": ["agent-runtime:claude-code", "agent-runtime:codex"]
+    }
+  ],
+  "dell_a6000": {
+    "device_ref": "device:llm-lab-dell",
+    "live_control_plane": {
+      "state": "REFUSED",
+      "reason_code": "INVALID_CONTEXT",
+      "detail": "UnknownDevice: no enrolled device with id 'llm-lab-dell'",
+      "observed_at": "2026-10-20T04:58:00Z"
+    },
+    "authored_only": {
+      "state": "PRESENT_IN_UNCOMMITTED_WORKING_TREE",
+      "source": "canonical src/serveros working tree fleet/registry.yaml, not committed and not observed by the live daemon",
+      "platform": "linux",
+      "os_family": "linux-ubuntu-26.04",
+      "environment_profile": "linux-gpu-compute",
+      "ownership": "company",
+      "agents": ["claude-code"],
+      "runtime_bindings": ["agent-runtime:claude-code"],
+      "not_live": true
+    },
+    "consequence": "The campaign's Dell A6000 node has no live device identity for this control plane. It must not be replaced by a Windows laptop or by the uncommitted registry row."
+  },
+  "providers": [
+    {
+      "provider": "provider:botmux-agent-session",
+      "family": "claude-code",
+      "kind": "botmux-dashboard-adapter",
+      "control_plane": "RUNNING",
+      "control_plane_source": "botmux:/api/sessions",
+      "control_plane_observed_at": "2026-10-20T04:56:20.277811Z",
+      "execution_readiness": "UNKNOWN",
+      "execution_readiness_reason": "EXECUTION_UNVERIFIED",
+      "execution_readiness_detail": "the provider publishes no readiness endpoint; probed 404",
+      "instance_action_support": {},
+      "instance_action_support_state": "UNPUBLISHED",
+      "agent_inventory": {
+        "state": "NEEDS_LOGIN",
+        "reason": "BotMuxCredentialMissing: /api/bots requires dashboard authentication; no credential was read, copied or injected"
+      },
+      "session_inventory": {
+        "state": "READ_AUTHORIZED",
+        "sessions_observed": 1,
+        "source": "botmux:/api/sessions"
+      },
+      "per_session_action_support": {
+        "session.inspect": "SUPPORTED",
+        "session.send": "SUPPORTED",
+        "session.result": "SUPPORTED",
+        "session.resume": "UNSUPPORTED",
+        "session.interrupt": "UNSUPPORTED",
+        "session.stop": "SUPPORTED",
+        "session.handoff": "UNKNOWN",
+        "session.create": "NOT_IN_INSTANCE_TABLE"
+      },
+      "create_method": {
+        "state": "PROVIDER_METHOD_PRESENT",
+        "refuses_arbitrary_workspace": true,
+        "requires_dashboard_auth": true,
+        "typed_refusal": false,
+        "detail": "the method raises BotMuxUnsupported when workspace is set, and BotMuxCredentialMissing when the dashboard token is absent; SessionService.create does not consult a declared action table"
+      },
+      "effective_model": {
+        "value": null,
+        "provenance": "UNKNOWN",
+        "reason": "no provider-native model field was present in the authorized session metadata read"
+      },
+      "effective_permission_mode": {
+        "value": null,
+        "provenance": "UNKNOWN",
+        "reason": "no provider-native permissionMode field was present in the authorized session metadata read"
+      }
+    },
+    {
+      "provider": "provider:codex-app-server",
+      "family": "codex",
+      "kind": "codex-app-server",
+      "control_plane": "RUNNING",
+      "control_plane_source": "codex:initialize",
+      "control_plane_observed_at": "2026-10-20T04:56:20.322720Z",
+      "binary": "/data/home/vince/.local/bin/codex",
+      "user_agent": "serveros/0.160.0 (Ubuntu 24.4.0; x86_64)",
+      "execution_readiness": "UNKNOWN",
+      "execution_readiness_reason": "EXECUTION_UNVERIFIED",
+      "execution_readiness_detail": "the provider publishes no readiness endpoint; probed 404",
+      "instance_action_support": {
+        "session.create": "SUPPORTED",
+        "session.inspect": "SUPPORTED",
+        "session.send": "SUPPORTED",
+        "session.result": "SUPPORTED",
+        "session.resume": "SUPPORTED",
+        "session.interrupt": "SUPPORTED",
+        "session.stop": "UNSUPPORTED",
+        "session.handoff": "UNKNOWN"
+      },
+      "instance_action_support_notes": {
+        "session.interrupt": "turn/interrupt only; it does not end the session",
+        "session.stop": "the app-server protocol has no session-stop; thread/archive is a hide and thread/delete destroys history",
+        "session.handoff": "ServerOS-level semantics; no codex app-server verb"
+      },
+      "agent_inventory": {
+        "state": "READ_AUTHORIZED",
+        "agents_observed": 1,
+        "agent_id": "codex-app-server",
+        "measured_against": "codex-cli 0.153.4",
+        "measured_against_drift": "the live provider handshake reports codex-cli 0.160.0"
+      },
+      "session_inventory": {
+        "state": "READ_AUTHORIZED",
+        "sessions_observed": 3,
+        "source": "codex:thread/list"
+      },
+      "sessions": [
+        {
+          "alias": "codex-thread-1",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "status_reason": "unmapped codex thread status 'notLoaded'",
+          "provider_status": "notLoaded",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "model_provider": "openai",
+          "cliVersion": "0.160.0",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        },
+        {
+          "alias": "codex-thread-2",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "status_reason": "unmapped codex thread status 'notLoaded'",
+          "provider_status": "notLoaded",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "model_provider": "openai",
+          "cliVersion": "0.160.0",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN"
+        },
+        {
+          "alias": "codex-thread-3",
+          "status": "UNKNOWN",
+          "status_provenance": "UNKNOWN",
+          "status_reason": "unmapped codex thread status 'notLoaded'",
+          "provider_status": "notLoaded",
+          "model": "gpt-6-astra",
+          "model_provenance": "FACT",
+          "model_source": "codex:thread/list",
+          "model_provider": "openai",
+          "cliVersion": "0.160.0",
+          "permissionMode": null,
+          "permissionMode_provenance": "UNKNOWN",
+          "workspace": "/data/home/vince/workspace"
+        }
+      ],
+      "effective_model": {
+        "value": "gpt-6-astra",
+        "provenance": "FACT",
+        "source": "codex:thread/list"
+      },
+      "effective_permission_mode": {
+        "value": null,
+        "provenance": "UNKNOWN",
+        "reason": "no provider-native permissionMode field was present in the authorized thread metadata read; sandbox and approvalPolicy are configuration, not effective mode"
+      }
+    }
+  ],
+  "routed_serveros_reads": [
+    {
+      "tool": "agent.session.inspect",
+      "runtime": "agent-runtime:claude-code",
+      "provider": "provider:botmux-agent-session",
+      "result": {
+        "ok": false,
+        "reason": "ACTION_UNSUPPORTED",
+        "detail": "session.inspect is not in the provider's action_support table",
+        "dispatched": false
+      },
+      "why": "agent_control_router.provider_action_support reads provider.actions(); BotMux publishes no public actions() method, so the instance table is {}. The per-session table on agent.session.list is not consulted by the resolver."
+    },
+    {
+      "tool": "agent.session.inspect",
+      "runtime": "agent-runtime:codex",
+      "provider": "provider:codex-app-server",
+      "result": {
+        "ok": false,
+        "reason": "AGENT_RUNTIME_UNAVAILABLE",
+        "detail": "device:tokyo-shared-dev-01 does not declare the codex runtime; it declares claude-code",
+        "dispatched": false
+      },
+      "why": "abilities/target.py#_step_agent_runtime reads the registry's agents projection first; the provider being RUNNING and reporting three threads does not override the runtime gate."
+    }
+  ],
+  "cloudcli": {
+    "server": {
+      "package": "@yalehwang/cloudcli",
+      "version": "1.39.0",
+      "listener": "127.0.0.1:3011",
+      "owner": "vince",
+      "database_present": true,
+      "mcp_endpoint": "http://127.0.0.1:3011/mcp",
+      "authority": "CloudCLI bearer token held by the MCP client; this is not a ServerOS context_ref, grant or admission decision"
+    },
+    "tools_visible_to_this_session": [
+      "projects_list",
+      "sessions_list",
+      "session_get",
+      "session_read",
+      "run_get",
+      "session_create",
+      "session_send",
+      "session_start",
+      "session_interrupt",
+      "session_close",
+      "session_cancel_queued",
+      "session_reconfigure",
+      "session_background",
+      "approvals_list",
+      "approval_answer"
+    ],
+    "missing_tools": {
+      "session_resume": "absent; session_start starts a resident host, it is not a resume"
+    },
+    "observed_reads": [
+      {
+        "tool": "projects_list",
+        "result": "KNOWN",
+        "projects_observed": 26
+      },
+      {
+        "tool": "sessions_list",
+        "result": "KNOWN",
+        "sessions_observed": 146,
+        "providers_seen": ["claude", "codex"]
+      },
+      {
+        "tool": "session_get",
+        "target": "cloudcli-self-session",
+        "result": "KNOWN",
+        "provider": "claude",
+        "lifecycleMode": "per-run",
+        "hostState": "busy",
+        "pid": null,
+        "host_lease_run_present": true
+      }
+    ],
+    "protocol_defects": [
+      {
+        "tool": "run_get",
+        "declared_parameter": "run",
+        "server_required_parameter": "runId",
+        "observed_call_with_declared_parameter": {
+          "result": "error",
+          "detail": "\"runId\" is required and must be a non-empty string."
+        },
+        "observed_call_with_server_parameter": {
+          "run_alias": "cloudcli-self-host-lease-run",
+          "result": "error",
+          "detail": "This runId was never issued."
+        },
+        "consequence": "The tool is not usable as declared, and the run id exposed by session_get for an active host lease is not resolvable by run_get in this observation. get_run is therefore NOT verified end to end."
+      }
+    ],
+    "mutations_not_run": [
+      "session_create",
+      "session_send",
+      "session_start",
+      "session_interrupt",
+      "session_close",
+      "session_reconfigure",
+      "session_cancel_queued",
+      "approval_answer"
+    ]
+  },
+  "auth_state": {
+    "claude": {
+      "loggedIn": true,
+      "authMethod": "oauth_token",
+      "apiProvider": "firstParty",
+      "credential_owner": "vince",
+      "credential_value_read": false
+    },
+    "codex": {
+      "login_state": "Logged in using ChatGPT",
+      "credential_owner": "vince",
+      "credential_value_read": false
+    },
+    "cloudcli": {
+      "bearer_credential_present_in_client_configuration": true,
+      "credential_owner": "vince",
+      "credential_value_read": false,
+      "not_a_serveros_grant": true
+    },
+    "botmux_dashboard": {
+      "state": "MISSING_IN_PROVIDER_PROCESS",
+      "effect": "agent inventory NEEDS_LOGIN; session metadata read remains available",
+      "credential_value_read": false
+    }
+  },
+  "versions": {
+    "claude-code": "2.1.272 (Claude Code)",
+    "codex": "codex-cli 0.160.0",
+    "cloudcli": "1.39.0",
+    "provenance": "FACT"
+  },
+  "cc_first": {
+    "state": "PARTIAL",
+    "available_read_paths": [
+      "ServerOS agent.provider.list / agent.session.list (direct, not routed)",
+      "CloudCLI projects_list / sessions_list / session_get"
+    ],
+    "not_available": [
+      "ServerOS routed agent.session.inspect for Claude Code: ACTION_UNSUPPORTED",
+      "ServerOS routed agent.session.inspect for Codex: AGENT_RUNTIME_UNAVAILABLE",
+      "Any ServerOS mutation: readiness UNKNOWN and/or support/runtime refusal"
+    ],
+    "verdict": "CC-first is not yet a usable ServerOS lifecycle. It is a readable inventory plus a live Claude Code session surface in CloudCLI."
+  },
+  "full_v1_codex": {
+    "state": "BLOCKED",
+    "blockers": [
+      "codex is not declared in the Tokyo runtime bindings",
+      "the resolver refuses before provider support is evaluated",
+      "no ServerOS context_ref grant was presented",
+      "execution readiness is EXECUTION_UNVERIFIED",
+      "no create/send/get_run/resume/interrupt was executed"
+    ]
+  },
+  "not_run": [
+    "session.create",
+    "session.send",
+    "session.resume",
+    "session.interrupt",
+    "session.stop / session.close",
+    "session.handoff",
+    "any model call",
+    "any credential, token, transcript or environment read",
+    "any registry, grant, service or production change"
+  ]
+}

@@ -1,0 +1,347 @@
+# R1 #248 — runtime-parity projection contract.
+#
+# This file is the vocabulary and the source reading; parity.py is the pure
+# projection over it. A test compares the two so they cannot drift into two
+# answers to one question.
+#
+# Evidence level is SOURCE_FIXTURE. Nothing here is a live Runtime, a credential
+# read, a provider send, or an authorization.
+schema: serveros/fleet-v1-runtime-parity.v1
+version: 1
+module: integrations/fleet-v1-runtime-parity/parity.py
+evidence_level: SOURCE_FIXTURE
+
+scope: >-
+  One record per (device, OS principal, credential-instance reference, family,
+  transport, runtime tag, project) observation. It joins requested/resolved/
+  effective model and permission mode with the Session lifecycle the source
+  actually supports, and it refuses or says UNKNOWN where the source cannot.
+
+non_goals:
+  - "not a second Session owner: no create/send/interrupt calls and no provider import"
+  - "not an authorizer: PRECONDITIONS_MET is not a grant; admission stays with Agent Control"
+  - "not a live probe: no socket, process, clock, transcript, environment or credential read"
+  - "not a second registry: the capability table is a reading of pinned source with the source named"
+
+axes:
+  device_ref: "typed device:<id>; authored identity, never a hostname or address"
+  os_principal: "the OS account the provider actually runs as"
+  device_owner: "the device's own OS account, authored (F1 provider-contract `device_default_account`)"
+  credential_instance_ref:
+    grammar: "credential-instance:<device-id>/<os-principal>/<profile>"
+    is: "a REFERENCE to one credential instance, never the credential value"
+    never: "a token, Bearer value, key, cookie, password or raw hardware identifier"
+  agent_runtime: [agent-runtime:claude-code, agent-runtime:codex]
+  family: [claude, codex]
+  runtime_tag: >-
+    the session-ref middle segment. It is derived from family + OS account +
+    credential profile; it is not the family name and not the agent-runtime id.
+    The device's own account with no profile keeps the bare family tag.
+  transport: [cloudcli-mcp-http, codex-app-server, claude-code-native]
+  project: "a project id the grant is scoped to; unbound is refused"
+
+families: [claude, codex]
+lifecycle_verbs: [read, create, send, get_run, resume, interrupt]
+support_states: [SUPPORTED, UNSUPPORTED, UNKNOWN]
+dispatch_states: [PRECONDITIONS_MET, REFUSED, UNKNOWN]
+readiness_states: [AVAILABLE, DEGRADED, UNAVAILABLE, INCOMPATIBLE, UNKNOWN]
+session_ttl_seconds: 900
+
+# A refusal is an answer. `UNKNOWN` is not a refusal; it says nobody established
+# the fact. Both are kept apart from a silent default.
+refusal_codes:
+  - CREDENTIAL_DEVICE_MISMATCH
+  - CREDENTIAL_PROFILE_MISMATCH
+  - CREDENTIAL_REF_INVALID
+  - DEVICE_OWNER_INVALID
+  - DEVICE_REF_INVALID
+  - EVALUATED_AT_INVALID
+  - FAMILY_INVALID
+  - GRANT_MISSING
+  - NEEDS_LOGIN
+  - PRINCIPAL_MISMATCH
+  - PROJECT_UNBOUND
+  - PROVIDER_NOT_INSTALLED
+  - PROVIDER_NOT_READY
+  - PROVIDER_UNBOUND
+  - RUNTIME_MISMATCH
+  - RUNTIME_TAG_MISMATCH
+  - SESSION_FRESHNESS_UNKNOWN
+  - SESSION_REF_MISMATCH
+  - SESSION_STALE
+blocker_codes: [PROVIDER_ADAPTER_ABSENT, TOOL_LIST_NOT_READ]
+
+# The scope is the Fleet scope; the flag is the per-device grant F1 keeps
+# separate from it. Capability and readiness never substitute for either.
+required_grants:
+  read: {scope: fleet:read, flag: null}
+  create: {scope: fleet:create, flag: allow_create}
+  send: {scope: fleet:send, flag: allow_send}
+  get_run: {scope: fleet:read, flag: null}
+  resume: {scope: fleet:control, flag: allow_control}
+  interrupt: {scope: fleet:control, flag: allow_control}
+
+# ---------------------------------------------------------------------------
+# Source reading. Each cell names the pinned source it was read from.
+#
+# CloudCLI records 22 native verbs (cloudcli_native.py#NATIVE_TOOLS). There is no
+# session_resume; session_start starts a resident host, so resume is UNSUPPORTED
+# over CloudCLI. `run_get` is the get-run verb. `session_interrupt` stops the run
+# in flight, not the session.
+#
+# Codex app-server declares create/inspect/send/result/resume/interrupt
+# SUPPORTED via `actions()`, and stop UNSUPPORTED (thread/archive is a hide and
+# thread/delete destroys history; neither ends a running session). resume is
+# thread/resume; interrupt is turn/interrupt and is turn-scoped.
+#
+# No Claude Code provider adapter exists at the pinned source. The local
+# fleet-cc-dev-plugin is a client plugin, so its provider lifecycle is UNKNOWN
+# with an explicit PROVIDER_ADAPTER_ABSENT blocker. It is not filled in by
+# inference.
+# ---------------------------------------------------------------------------
+capability_matrix:
+  claude:
+    cloudcli-mcp-http:
+      read:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[sessions_list,session_get,session_read]"
+      create:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_create]"
+      send:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_send]"
+      get_run:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[run_get]"
+      resume:
+        state: UNSUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS: no session_resume; session_start starts a host, it does not resume"
+      interrupt:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_interrupt]"
+    codex-app-server:
+      read:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+      create:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+      send:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+      get_run:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+      resume:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+      interrupt:
+        state: UNSUPPORTED
+        source: "mcp/codex_app_server_provider.py#RUNTIME_REF=agent-runtime:codex; the app-server transport serves the codex family only"
+    claude-code-native:
+      read:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+      create:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+      send:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+      get_run:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+      resume:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+      interrupt:
+        state: UNKNOWN
+        source: "mcp/# no Claude Code provider adapter at the pinned source; integrations/fleet-cc-dev-plugin is a client plugin, not a session provider"
+  codex:
+    cloudcli-mcp-http:
+      read:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[sessions_list,session_get,session_read]"
+      create:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_create]"
+      send:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_send]"
+      get_run:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[run_get]"
+      resume:
+        state: UNSUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS: no session_resume; session_start starts a host, it does not resume"
+      interrupt:
+        state: SUPPORTED
+        source: "fleet_mcp/cloudcli_native.py#NATIVE_TOOLS[session_interrupt]"
+    codex-app-server:
+      read:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.inspect]; thread/list + thread/read"
+      create:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.create]; thread/start + first turn"
+      send:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.send]; turn/start"
+      get_run:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.result]; turn completion + thread/read"
+      resume:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.resume]; thread/resume"
+      interrupt:
+        state: SUPPORTED
+        source: "mcp/codex_app_server_provider.py#actions[session.interrupt]; turn/interrupt (current turn only)"
+    claude-code-native:
+      read:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+      create:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+      send:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+      get_run:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+      resume:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+      interrupt:
+        state: UNSUPPORTED
+        source: "the claude-code-native transport does not serve agent-runtime:codex"
+
+# ---------------------------------------------------------------------------
+# requested / resolved / effective are three facts.
+#
+# `requested` is captured before anything completes it.
+# `resolved` is what the policy/runtime rule completed it to; `by` names the
+#   resolver. It is still not a readback from the device.
+# `effective` is null unless the device/provider reported it, per field, with a
+#   named source and FACT provenance. Model and permission mode are resolved
+#   independently because a provider can report one without the other.
+# ---------------------------------------------------------------------------
+defaults:
+  requested:
+    meaning: "what the caller asked for, before any policy completion"
+  resolved:
+    meaning: "what the runtime/project rule completed it to, with `by` naming the resolver"
+    not: "a device readback"
+  effective:
+    meaning: "what the device/provider actually applied"
+    accepted_only_with: "a non-empty provider-response source field and FACT provenance"
+    otherwise: null
+    rule: >-
+      effective is never copied from requested, resolved, a policy override or
+      a default label. Null means UNKNOWN, never "the resolved values were used".
+    per_field: "model and permissionMode have separate provenance and source"
+
+# Dispatch is a projection of preconditions in the source contract's order:
+# support -> readiness -> session-freshness -> grant. It is not authorization,
+# and UNKNOWN is not a refusal.
+dispatch_order: [support, readiness, session-freshness, grant]
+
+# ---------------------------------------------------------------------------
+# Observed vs declared (real read-only snapshot, 2026-10-18).
+#
+# The five observed states are per surface, not per runtime, because one runtime
+# can be INSTALLED_ONLY while an existing session on it is READ_AUTHORIZED and a
+# different read surface (the agent inventory) is NEEDS_LOGIN. Collapsing them
+# into one word would lose the distinction the milestone exists to make.
+# ---------------------------------------------------------------------------
+observed_vs_declared:
+  observation_schema: serveros/fleet-v1-runtime-parity-observation.v1
+  projection_schema: serveros/fleet-v1-runtime-parity-observed.v1
+  evidence_level: REAL_READ_ONLY
+  observed_states: [ABSENT, INSTALLED_ONLY, READ_AUTHORIZED, NEEDS_LOGIN, UNKNOWN]
+  binding_states: [BOUND, UNBOUND, UNKNOWN]
+  new_work_verbs: [create, send, resume, interrupt]
+  entitlement: NOT_INFERRED_FROM_SESSION_READ
+
+  rules:
+    ABSENT: >-
+      the provider inventory contains no such instance. It is not inferred from
+      a failed read; a failed read is UNKNOWN and keeps its reason.
+    INSTALLED_ONLY: >-
+      a benign version/presence command established a CLI and its version with
+      FACT provenance. The CLI existing is not a provider instance, a session
+      entitlement, or execution readiness.
+    READ_AUTHORIZED: >-
+      a documented read-only provider/session read answered with authoritative
+      provider-response evidence. It covers exactly the surface that was read;
+      it does not promote a different surface at the same provider.
+    NEEDS_LOGIN: >-
+      the provider itself answered that authentication is required. It is not
+      ABSENT and it is not READ_AUTHORIZED; a human can change it, so new work is
+      UNKNOWN with NEEDS_LOGIN rather than a capability refusal. No credential is
+      read, copied or injected to discharge it.
+    UNKNOWN: >-
+      nobody established the fact. Absence of an observation is not a no.
+
+  invariants:
+    session_read_is_not_entitlement: >-
+      An already-authorized session list is not a new Claude Code or Codex
+      account entitlement. create/send/resume/interrupt never become
+      PRECONDITIONS_MET from a read; they stay UNKNOWN or REFUSED with the
+      observed blocker named.
+    declared_or_desired_model_is_not_effective: >-
+      Effective model and permission mode are accepted per field only from a
+      provider-native field with FACT provenance and a named source. A declared,
+      desired, requested, resolved or config-default value is not effective.
+    structural_conformant_is_not_behavioral_live: >-
+      `CONFORMANT` from `serverosctl device agents --probe` is a structural
+      verdict over declared ids, surfaces and presence. It is carried with that
+      scope; behavioural session lifecycle remains NOT_RUN and `live` is false.
+    observed_but_unbound_is_refused: >-
+      A provider that answers reads but is absent from the device's
+      `runtime_bindings` is observed and unbound. New work is REFUSED with
+      PROVIDER_UNBOUND; no other family, account or runtime is tried.
+
+# ---------------------------------------------------------------------------
+# Tri-node capability/entitlement matrix (2026-10-18).
+#
+# A connector state, a runtime binding, a provider declaration and a grant are
+# four different facts. This block keeps them apart for Tokyo, the requested
+# Dell A6000 ref and Windows FJPCOS.
+# ---------------------------------------------------------------------------
+tri_node_matrix:
+  observation_schema: serveros/fleet-v1-runtime-parity-tri-node-observation.v1
+  projection_schema: serveros/fleet-v1-runtime-parity-tri-node.v1
+  evidence_level: REAL_READ_ONLY
+  connector_states: [ENROLLED_REACHABLE, ENROLLED_UNREACHABLE, DEVICE_NOT_ENROLLED, UNKNOWN]
+  policy_states: [GRANT_OBSERVED, GRANT_UNKNOWN, READ_AUTH_REQUIRED, READ_UNAVAILABLE]
+  verb_states: [OBSERVED, DECLARED_ONLY, UNSUPPORTED, UNKNOWN]
+  lifecycle_verbs: [create, send, get_run, resume, interrupt, end]
+
+  invariants:
+    declared_is_not_observed: >-
+      A provider that declares `session.create` SUPPORTED has told us what its
+      protocol can do. It has not performed a create, and the matrix records
+      DECLARED_ONLY until an actual observation names the verb. An existing
+      thread listing is not a create observation.
+    grant_requires_a_policy_read: >-
+      create_allow / session_create are GRANT_UNKNOWN unless an authorized
+      policy status read established them. A declared binding, a provider
+      capability and an existing session are not a grant. The deployed Fleet
+      MCP requires owner OAuth; an unauthenticated initialize returning 401 is
+      READ_AUTH_REQUIRED, not an assumed allow or deny.
+    unknown_device_is_not_unreachable: >-
+      A device ref that is not enrolled is DEVICE_NOT_ENROLLED. It is not
+      repaired by substituting another enrolled Dell, server or personal device.
+    unreachable_device_has_no_provider_claims: >-
+      A device with no node runtime and no provider inventory contributes no
+      verbs, no sessions, no OS principal, no project and no grant. Nothing is
+      filled in from its declared bindings.
+    no_fallback: >-
+      No device, family, account or runtime is substituted for a missing or
+      unbound one. `fallback` is null.
+    a6000_readonly_proof_is_not_lifecycle: >-
+      An existing read-only terminal proof on the A6000 is not create/send/
+      resume/interrupt/end acceptance. The actual lifecycle run remains
+      BLOCKED_BY_OWNER and is not claimed here.
