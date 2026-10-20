@@ -1,0 +1,20 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+#
+# INSTALL PATH IS STABLE, NOT THE WORKTREE: the operator copies `surface_cli.py`
+# (and the `runtime/` modules it loads) to the path below and makes the launcher
+# executable. A unit that pointed at a temporary worktree would break the day the
+# worktree moved, and a broken unit's failure is silent.
+[Unit]
+Description=ServerOS V13 LIVE surface — half-hour heartbeat (DISABLED TEMPLATE)
+Documentation=file://%h/.local/lib/serveros-v13-surfaces/README.md
+ConditionPathExists=%h/.local/lib/serveros-v13-surfaces/surface_cli.py
+
+[Service]
+Type=oneshot
+# --live-heartbeat is its OWN mode: the heartbeat never closes a period, and a
+# boundary never rides on it.
+ExecStart=%h/.local/lib/serveros-v13-surfaces/surface_cli.py --live-heartbeat --i-understand-this-sends --state %h/state/serveros/runtime/cards/surfaces.json
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=200%
+TimeoutStartSec=300

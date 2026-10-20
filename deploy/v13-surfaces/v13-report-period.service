@@ -1,0 +1,22 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+#
+# The report's boundary is derived from the BUSINESS CALENDAR DECLARATION at run
+# time, not from this unit: the command asks `business_calendar` which period the
+# instant falls in and closes whichever report is no longer current. The timer's
+# OnCalendar below is therefore a RECOMMENDATION that must be kept in step with
+# the declaration in use — see README "报告边界" for the check, which is NOT
+# automated here.
+[Unit]
+Description=ServerOS V13 CORE REPORT — period boundary (DISABLED TEMPLATE)
+Documentation=file://%h/.local/lib/serveros-v13-surfaces/README.md
+ConditionPathExists=%h/.local/lib/serveros-v13-surfaces/surface_cli.py
+
+[Service]
+Type=oneshot
+# --report-period is its OWN mode: it may close and archive a period, which the
+# heartbeat must never do.
+ExecStart=%h/.local/lib/serveros-v13-surfaces/surface_cli.py --report-period --i-understand-this-sends --state %h/state/serveros/runtime/cards/surfaces.json
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=200%
+TimeoutStartSec=300

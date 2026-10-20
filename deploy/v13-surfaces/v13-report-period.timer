@@ -1,0 +1,15 @@
+# DISABLED TEMPLATE — do NOT enable/start/reload. See README.md.
+[Unit]
+Description=ServerOS V13 CORE REPORT at period boundaries (DISABLED TEMPLATE)
+
+[Timer]
+# The DEFAULT period table's boundaries: 上午 09:00–12:00, 下午 12:00–18:00,
+# 夜间 18:00–次日 09:00. A DIFFERENT declaration needs a different calendar —
+# verify before enabling (README 「报告边界」).
+OnCalendar=*-*-* 09,12,18:00:00
+Persistent=false
+AccuracySec=60s
+Unit=v13-report-period.service
+
+[Install]
+WantedBy=timers.target
