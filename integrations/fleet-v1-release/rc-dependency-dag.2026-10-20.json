@@ -838,6 +838,26 @@
       "merge_base": "771c81c",
       "own_commits": 2,
       "state": "Draft/OPEN"
+    },
+    {
+      "pr": 353,
+      "lane": "X2",
+      "base": "test/x2-realwindows-slice-20261020",
+      "base_sha": "558c324",
+      "head": "21962267ca6c9c7166bb9fccfae3b2947ea21caf",
+      "merge_base": "558c324",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 357,
+      "lane": "I1",
+      "base": "main",
+      "base_sha": "771c81c",
+      "head": "85c79b20c62da8db2f4d5c98284a34728b6e8f81",
+      "merge_base": "771c81c",
+      "own_commits": 2,
+      "state": "Draft/OPEN"
     }
   ],
   "edges": [
@@ -1150,6 +1170,11 @@
     {
       "from": 347,
       "to": 349,
+      "kind": "base"
+    },
+    {
+      "from": 349,
+      "to": 353,
       "kind": "base"
     }
   ],
@@ -1848,5 +1873,52 @@
       "345": "PASS at LOCAL; P3 human stderr omits literal token",
       "rc_v6_at_poll": "PENDING"
     }
+  },
+  "review_rc_v7": {
+    "branch": "rc/i1-v7-review-20261020",
+    "tip": "85c79b20c62da8db2f4d5c98284a34728b6e8f81",
+    "tested_head": "560f715",
+    "baseline_sha": "8620a90e58cf92ba261560b1e4eb5f0797beee09",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "draft_pr": 357,
+    "cherry_picks": {
+      "353": "21962267"
+    },
+    "tests": {
+      "x2_windows_cli": "101 passed, 0 skipped",
+      "nine_file_same_process": "138 passed",
+      "light_core_s1": "366 passed/213 subtests",
+      "fleet_next": "286 passed/133 subtests",
+      "native": "89/0 + 88/0",
+      "real_temp": "PASS/REFUSAL",
+      "syntax": "OK"
+    },
+    "hosted_ci": {
+      "final_tip": {
+        "sha": "85c79b2",
+        "msvc": "39405130872 pass",
+        "offline_units": "39405130930 pass",
+        "runner_smoke": "39405130930 pass"
+      },
+      "prior_tip": {
+        "sha": "a1b78d1",
+        "runs": "39404986867/39404986745 pass"
+      }
+    },
+    "qa_ae": {
+      "353": "PASS 36/36",
+      "real_windows_readonly": "boundary 56P/2S; grant 13 skip/0 error; legacy 19 skip/0 error",
+      "rc_v7": "PENDING at AE poll"
+    },
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-V7-REVIEW-2026-10-20.md"
   }
 }
