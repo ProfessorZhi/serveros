@@ -40,6 +40,25 @@ from workengine.cli import main
 from workengine.model import Activity, ContextMode, ExecutionContext, RunState
 from workengine.store import ServerOSStore
 
+import v1_import_isolation
+
+# Captured at collection time, while the in-tree `workengine` is the one in
+# `sys.modules`. The T10 suites replace it with a pinned archive during their
+# session fixtures; restoring these exact objects is what keeps this module's
+# `ReceiptError` and `ServerOSStore` the ones its route calls. See the helper.
+_WORKENGINE = v1_import_isolation.snapshot()
+
+
+def setUpModule():
+    """Undo a preceding T10 fixture's process-wide `workengine` swap."""
+    v1_import_isolation.restore(_WORKENGINE)
+
+
+def tearDownModule():
+    """Leave the in-tree package in place for whatever module runs next."""
+    v1_import_isolation.restore(_WORKENGINE)
+
+
 ITEM = "DEM-0001"
 ACTION = "action:test:1"
 ACTOR = "human:hwz"
