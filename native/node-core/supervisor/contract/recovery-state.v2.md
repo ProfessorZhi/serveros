@@ -100,7 +100,56 @@ A corrupt JSON document, an unreadable file, or a wrong schema keeps the
 existing rule: `ok = false` and the caller refuses to act. The file is never
 rewritten or removed by the loader.
 
-## 4. What this does not do
+## 4. The acting gate requires this file
+
+`--enable-actions` requires `--state`. A caller that enables a side effect
+without a persistent recovery budget is refused **before** the manifest is read
+and before any observation or verb:
+
+```
+--enable-actions refused: an acting Core must name a persistent --state file … (STATE_REQUIRED)
+```
+
+The budget is the only thing that makes the repeated-restart cap outlive a
+process. `--lease`, `--link-state` and `--agent-state` already have no safe
+defaults; the state path is the fourth fact, and its absence is the same kind of
+permissive-by-omission failure.
+
+### The path must be one this account can durably own
+
+`check_state_path` refuses, by name:
+
+| refused | because |
+|---|---|
+| empty or relative | a relative path resolves against whatever directory the Core started in |
+| the path names a directory | it is not a state file |
+| the parent is missing / not a directory / a symlink / another account's | there is no safe place to put a first-run file |
+| the parent is group- or other-writable | another account can replace the state by rename, defeating a 0600 file inside it |
+| the file is a symlink | a state file reached through a link is not necessarily this account's |
+| the file is not a regular file, or is another account's | it is not this Core's budget |
+| the file is group- or other-writable | another account can rewrite the budget |
+| the file cannot be opened `O_RDWR` | a budget that cannot be written cannot be spent from |
+| an absent file in an unwritable parent | the first run could not persist its attempt |
+
+The check **does not create the file**. Creating an empty file at startup would
+make a later truncation indistinguishable from a legitimate first run, which is
+exactly the budget reset this format exists to prevent. The parent directory is
+checked as well as the file: a group-writable directory can replace a 0600 file
+by rename.
+
+The structural check is not the final authority. The post-action write still
+runs; a failed write exits **2** and does not report a successful pass. A state
+file whose version is not `v2` (including `v1`), a corrupt document, or a file
+whose boot/clock anchor cannot be placed is refused before the pass begins — the
+Core never degrades to "no budget, so allow".
+
+The opt-in `tests/toy/service_recovery_toy.sh` passes `--state` on every
+`--enable-actions` invocation. A source-level unit test reads the harness and
+asserts that each invocation carries `--state`, `--lease`, `--link-state` and
+`--agent-state`, so the documented manual recipe cannot drift away from the gate
+without a failing test.
+
+## 5. What this does not do
 
 - **It does not use the wall clock for durations.** `window_seconds`,
   `backoff_seconds`, `cooldown_seconds` and every `may_act` comparison stay in

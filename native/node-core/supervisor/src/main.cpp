@@ -37,6 +37,7 @@
 #include <string>
 #include <vector>
 
+#include "supervisor/action_gate.hpp"
 #include "supervisor/admission.hpp"
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
@@ -79,8 +80,9 @@ void print_usage(std::FILE* out) {
                  "  --trigger boot|tick    boot proves absence and uses start_on_boot;\n"
                  "                         tick restarts only a failed unit (default tick).\n"
                  "                         Ignored by --serve, which is always a tick.\n"
-                 "  --state FILE           persisted recovery budget. READ in observe mode\n"
-                 "                         and never written there.\n"
+                 "  --state FILE           persisted recovery budget. REQUIRED with\n"
+                 "                         --enable-actions, where it is read and written;\n"
+                 "                         observe-only never uses it.\n"
                  "  --systemctl PATH       the systemctl to run (default %s).\n"
                  "  --serve                run the resident loop: monotonic ticks, a status\n"
                  "                         socket, and a clean exit on SIGTERM.\n"
@@ -364,29 +366,34 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (act) {
-        // ACTING REQUIRES ALL THREE. Each is the specific fact that turns a
-        // correct plan into a wrong action, and none of them has a safe default:
-        // two writers each believe they own the budget, a restart spent on a
-        // network fault outlives the fault, and a service that is busy is not a
-        // service that is broken. Refused with a named reason rather than
-        // defaulted, because a caller that did not think about these is exactly
-        // the caller that should be told.
-        if (lease_path.empty()) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --lease: two Cores acting on one host each "
-                         "believe they own the recovery budget, and neither receipt shows it\n");
+        // ACTING REQUIRES EVERY FACT. Each is the specific thing that turns a
+        // correct plan into a wrong action, and none has a safe default: two
+        // writers each believe they own the budget, a restart spent on a
+        // network fault outlives the fault, a busy service is not a broken one,
+        // and a budget that is not persisted resets at every process restart or
+        // reboot. Refused with a named reason rather than defaulted.
+        nodecore::supervisor::ActionGateInput gate;
+        gate.act = true;
+        gate.have_lease = !lease_path.empty();
+        gate.link_known = link.known;
+        gate.agent_known = agent.known;
+        gate.state_path = state_path;
+        const nodecore::supervisor::ActionGateVerdict verdict =
+            nodecore::supervisor::check_action_gate(gate);
+        if (!verdict.ok) {
+            std::fprintf(stderr, "--enable-actions refused: %s (%s)\n",
+                         verdict.reason.c_str(), verdict.code.c_str());
             return 2;
         }
-        if (!link.known) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --link-state: a restart cannot fix a host that "
-                         "is not connected, and this Core does not know which it is\n");
-            return 2;
-        }
-        if (!agent.known) {
-            std::fprintf(stderr,
-                         "--enable-actions requires --agent-state: an agent mid-task on a service "
-                         "is a reason to wait, and this Core does not know whether one is\n");
+        // The flags are complete; now the path must be one this account can
+        // durably own. This check is structural. The post-action write is still
+        // the authority, and a write failure exits 2 rather than reporting
+        // success on a budget that was never persisted.
+        const nodecore::supervisor::StatePathVerdict state_verdict =
+            nodecore::supervisor::check_state_path(state_path);
+        if (!state_verdict.ok) {
+            std::fprintf(stderr, "--enable-actions refused: --state %s (%s)\n",
+                         state_verdict.reason.c_str(), state_verdict.code.c_str());
             return 2;
         }
     }
@@ -429,7 +436,8 @@ int main(int argc, char** argv) {
     //: fresh instant but keeps the same boot id, so both halves of the file
     //: name one boot.
     nodecore::supervisor::RecoveryClock state_clock;
-    if (act && !state_path.empty()) {
+    if (act) {
+        // The acting gate above guarantees a non-empty, validated state path.
         state_clock.monotonic = monotonic_seconds();
         state_clock.wall_epoch = wall_epoch_seconds();
         if (!read_boot_id(state_clock.boot_id)) {
