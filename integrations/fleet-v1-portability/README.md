@@ -1,6 +1,7 @@
 # X2 — public-safe V1 test portability and public-authority conformance
 
 Base: `rc/i1-v4-review-20261020` @ `40c4b1c` (X2 #335 @ `85b9539` is composed in)
+P2 stack: #342 @ `eff4c38` (Windows fixture/guard portability)
 Lane: X2 (independent test portability / private-legacy boundary)
 Evidence level: **LOCAL / HERMETIC**
 Scope: tests and documentation only. No product source, no Q1 trusted seam, no
@@ -214,3 +215,35 @@ The portable boundary, fixture-pin and guard tests remain enabled on Windows.
 
 The remote Windows retest is requested through #250/#244; this lane does not
 touch or install anything on the user's Windows worktrees.
+
+## 10. Q1 P2 guard hardening (test-only, base #342 @ eff4c38)
+
+Independent Q1 on #342 found path-guard **under-blocking** variants. These are
+test-only guard bypasses, not a production vulnerability. The guard claims the
+suite never reads the private checkout; that claim has to hold for every
+spelling of the path.
+
+| Variant | Before (eff4c38) | After |
+| --- | --- | --- |
+| `\\?\UNC\server\share\private\foo` | stripped to `UNC\...`, **not** inside | UNC long-path → inside |
+| `//?/UNC/server/share/private/foo` | not recognized | UNC long-path → inside |
+| `\\.\D:\owner\private\root\file` | `device` family ≠ `win` family | same D drive → inside |
+| `\\.\PhysicalDrive0`, `\\?\Volume{...}`, `\\?\GLOBALROOT\...` | treated as unrelated | **conservatively refused** |
+| symlink outside the root pointing into it | lexical path passed `open` | `realpath` form → refused |
+| sibling `root2`, `root\..\other`, different drive/share | not inside | still not inside |
+| environment value equal to the root | not scanned | still not scanned |
+
+Tests are RED first at `eff4c38`: **8 failed, 41 passed**. GREEN is
+**boundary 49**, **X2 three files 81**, **same process + X1 finalize 114**,
+**guarded same process 114**, and **boundary 49** with every pinned fixture in
+the Windows CRLF form.
+
+Limits, stated rather than hidden:
+
+* `realpath` is resolved at CHECK time. A racing rename between the check and
+  the access can still escape (TOCTOU). This is a test guard, not a filesystem
+  sandbox.
+* A device namespace that is not a plain drive cannot be proven equivalent to a
+  root; it is refused conservatively instead of being inferred unrestricted.
+* Only the actual audited path, argv and CWD are scanned; an environment
+  mapping is not.
