@@ -9,6 +9,7 @@ share.
 | part | status |
 |---|---|
 | `scm_status.cpp` — the parser and the state machine | **BUILT AND TESTED on Linux**. Text in, struct out; none of it is platform-specific. |
+| `status_document.cpp` — the status envelope and its schema | **BUILT AND TESTED on Linux**. A value in, JSON out; `contract/windows-core-status.v1.schema.json` is closed and read by the test. |
 | the `_WIN32` half — the SCM calls, the named pipe, the DACL, the token check | **BUILD_UNVERIFIED.** No cross compiler on this host: `x86_64-w64-mingw32-g++`, `i686-w64-mingw32-g++` and `clang-cl` are all absent. |
 | a live Windows reading | **NOT RUN.** A later, separately authorised step (issue #246). |
 

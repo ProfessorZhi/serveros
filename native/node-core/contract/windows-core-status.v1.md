@@ -113,6 +113,7 @@ as a fault.
 | part | status |
 |---|---|
 | the parser, the state machine, the vocabulary | **BUILT AND TESTED** on Tokyo — none of it is Windows-specific: text in, struct out |
+| the status envelope and its schema | **BUILT AND TESTED** on Tokyo — a value in, JSON out; `contract/windows-core-status.v1.schema.json` is closed and the test reads it |
 | `from_win32` — the mapping every Win32 refusal lives in | **BUILT AND TESTED** on Tokyo. It takes plain integers and strings, so a mistake in it is a failing unit test rather than an incident |
 | `Win32ScmQuery::query` — the four API calls | **SOURCE ONLY / BUILD_UNVERIFIED**. `#if defined(_WIN32)`, never compiled here |
 | the `_WIN32` half — named pipe, DACL, token check, `sc` invocation | **BUILD_UNVERIFIED**. There is no cross compiler on this host: `x86_64-w64-mingw32-g++`, `i686-w64-mingw32-g++` and `clang-cl` are all absent |
@@ -183,6 +184,27 @@ on this host and no owner authorisation to exercise one on a real machine, so
 The status is a **constant**, not a computation: a later change that wants to
 claim the route works has to change that line and the test that pins it, which is
 a visible decision rather than a silent drift.
+
+### 4d. The machine-checkable envelope
+
+`status_document.hpp` and `contract/windows-core-status.v1.schema.json` are the
+typed document a Windows Core may answer with. The document carries:
+
+- the **same** readiness words (`READY` / `NOT_READY` / `UNMEASURED`) and
+  admission words (`kAdmit*`) as the Linux contract;
+- the **same** `identity_verdict` shape as
+  `contract/core-lite-status.v1.schema.json`, with `principal_identity` and
+  `device_identity` both `UNKNOWN` / `NONE` and a reason naming the missing
+  Windows readback. A `MATCHED` here would be a claim nobody made;
+- `ipc` as a constant `UNSUPPORTED` / `NO_VERIFIED_SECURITY_DESCRIPTOR`;
+- **no** POSIX secure-route mechanism. There is no `O_NOFOLLOW`, no mode bit,
+  no peer uid and no socket path in the document, because a Windows pipe has
+  none of those and the rule that matters there is instance squatting.
+
+An unmeasured row is `UNKNOWN`, `UNMEASURED`, `INSTALL_STATE_UNKNOWN`, and it
+**omits** `raw_state`: a reader must not be able to mistake "we could not look"
+for a state number. The schema is closed (`additionalProperties: false`
+everywhere), and the test drives the producer and asserts the document fits it.
 
 ## 5. Task Scheduler: declared, not yet implemented
 
