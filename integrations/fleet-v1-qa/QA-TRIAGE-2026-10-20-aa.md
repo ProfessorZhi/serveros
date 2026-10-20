@@ -143,7 +143,7 @@ fake provider is not production trust.
 
 ## 5. RC-v5
 
-Four read-only polls at 90 seconds (08:59Z–09:05Z) found **no
+Four read-only polls at 90 seconds (08:59Z–09:04Z) found **no
 `rc/i1-v5*` branch and no matching PR**. RC-v5 is **PENDING**; no RC-v5
 checkout was created and no S1/T10/Core/Native/Fleet Next/REAL_TEMP spot-check
 was run against it. The I1 worktree was not accessed.
