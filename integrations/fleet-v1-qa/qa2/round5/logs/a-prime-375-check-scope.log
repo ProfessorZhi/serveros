@@ -1,0 +1,6 @@
+base=31bfc28d9ff4a1d0a56914fb8e4b82ec6ebf85fd changed=4 allowed=4 forbidden=0
+ok        integrations/fleet-v1-atomic-prototype/README.md
+ok        integrations/fleet-v1-atomic-prototype/atomic_fence.py
+ok        integrations/fleet-v1-atomic-prototype/check_scope.py
+ok        tests/test_s1_atomic_prototype.py
+SCOPE_OK: prototype and dedicated test only
