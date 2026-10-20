@@ -1,0 +1,79 @@
+{
+  "schema": "serveros/desired-state.v1",
+  "node": "device:tokyo-shared-dev-01",
+  "principal": "vince",
+  "observe_only": true,
+  "generation": 1,
+  "services": [
+    {
+      "id": "tunnel",
+      "owner": "vince",
+      "unit": "serveros-tunnel.service",
+      "desired": "running",
+      "start_on_boot": true,
+      "depends_on": [],
+      "health": {
+        "probe": "unix-socket-connect",
+        "probe_path": "/run/user/1000/serveros-tunnel.sock",
+        "stale_after_seconds": 120
+      },
+      "recovery": {
+        "max_attempts": 3,
+        "window_seconds": 3600,
+        "backoff_seconds": [60, 300, 900],
+        "circuit": { "consecutive_failures": 3, "cooldown_seconds": 1800 },
+        "allowed_verbs": ["start", "restart"],
+        "offline_recoverable": true
+      }
+    },
+    {
+      "id": "fleet-node",
+      "owner": "vince",
+      "unit": "serveros-fleet-node.service",
+      "desired": "running",
+      "start_on_boot": true,
+      "depends_on": ["tunnel"],
+      "health": {
+        "probe": "tcp-connect",
+        "probe_host": "127.0.0.1",
+        "probe_port": 3401,
+        "stale_after_seconds": 120
+      },
+      "recovery": {
+        "max_attempts": 2,
+        "window_seconds": 3600,
+        "backoff_seconds": [120, 600],
+        "circuit": { "consecutive_failures": 2, "cooldown_seconds": 3600 },
+        "allowed_verbs": ["restart"]
+      }
+    },
+    {
+      "id": "cloudcli",
+      "owner": "vince",
+      "unit": "serveros-cloudcli.service",
+      "desired": "running",
+      "start_on_boot": false,
+      "depends_on": ["fleet-node"],
+      "health": { "probe": "systemd-is-active", "stale_after_seconds": 300 },
+      "recovery": {
+        "max_attempts": 1,
+        "window_seconds": 3600,
+        "backoff_seconds": [300],
+        "circuit": { "consecutive_failures": 1, "cooldown_seconds": 7200 },
+        "allowed_verbs": ["restart"]
+      }
+    },
+    {
+      "id": "notebook",
+      "owner": "vince",
+      "unit": "serveros-notebook.service",
+      "desired": "manual",
+      "start_on_boot": false,
+      "depends_on": [],
+      "health": { "probe": "systemd-is-active", "stale_after_seconds": 120 },
+      "recovery": { "max_attempts": 1, "window_seconds": 3600, "backoff_seconds": [300],
+                    "circuit": { "consecutive_failures": 1, "cooldown_seconds": 1800 },
+                    "allowed_verbs": [] }
+    }
+  ]
+}

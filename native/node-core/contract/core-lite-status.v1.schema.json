@@ -1,0 +1,1212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "serveros/core-lite-status.v1",
+  "title": "Core-Lite status — one read-only document, three machines",
+  "description": "The machine-checkable form of contract/core-lite-status.v1.md. It exists because a consumer had to GUESS the value shapes before it did, and three of those guesses disagreed with what this producer emits. Every object is additionalProperties:false, so a reader can tell from this file alone which keys may appear.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "node",
+    "principal",
+    "platform",
+    "generation",
+    "mode",
+    "freshness",
+    "live",
+    "principal_identity",
+    "device_identity",
+    "observations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "serveros/core-lite-status.v1"
+    },
+    "node": {
+      "type": "string",
+      "description": "A CLAIM. Nothing in V1 can attest a device reference; a consumer must compare it against the route it already holds."
+    },
+    "principal": {
+      "type": "string",
+      "description": "A CLAIM until principal_identity says MATCHED, which only this process's own OS readback can establish."
+    },
+    "platform": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer"
+    },
+    "mode": {
+      "const": "observe-only"
+    },
+    "observed_at": {
+      "type": "string",
+      "description": "The SOURCE's own sample time, copied. Absent when the source stated none — which is not the same as now."
+    },
+    "freshness": {
+      "const": "NOT_ASSERTED",
+      "description": "This producer has no clock it trusts. Deciding a reading is stale belongs to a trusted Node or Fleet reader."
+    },
+    "principal_identity": {
+      "$ref": "#/$defs/identity_verdict"
+    },
+    "device_identity": {
+      "$ref": "#/$defs/identity_verdict"
+    },
+    "live": {
+      "type": "boolean",
+      "description": "True only when the principal MATCHED and the device MATCHED on an ATTESTED basis. False for every document this revision emits."
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "oneOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "cpu"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "cpu"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/cpu_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "memory"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "memory"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/memory_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "swap"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "swap"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/swap_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.cpu"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.cpu"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/psi_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.memory"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.memory"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/psi_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.io"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "psi.io"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/psi_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "storage.readonly"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "storage.readonly"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/storage_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "services"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "services"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/services_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "reason"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "gpu.readonly"
+                  },
+                  "state": {
+                    "const": "UNAVAILABLE"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/reason"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "state",
+                  "value"
+                ],
+                "properties": {
+                  "name": {
+                    "const": "gpu.readonly"
+                  },
+                  "state": {
+                    "const": "PRESENT"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/gpu_value"
+                  },
+                  "completeness": {
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL"
+                    ]
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "observed_at": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "state",
+              "reason"
+            ],
+            "properties": {
+              "name": {
+                "const": "connector"
+              },
+              "state": {
+                "const": "UNAVAILABLE"
+              },
+              "reason": {
+                "$ref": "#/$defs/reason"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "description": "Connector has no trusted typed source, so this producer never reports it PRESENT — an unauthenticated health endpoint is not evidence that a device is connected. Its reason is NOT_IMPLEMENTED when a snapshot was read (the collector has no block for it) and NO_SOURCE when none was (the adapter was asked and had nothing). Both are legitimate and a schema that allowed only one would have been wrong: validating this file against real documents is what found it."
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "unavailable": {
+      "description": "The shape this producer uses for every fact it could not measure. Never null, and never a zero standing in for an absence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "const": "UNAVAILABLE"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reason": {
+      "description": "The closed UNAVAILABLE vocabulary. A reason outside this set is refused by the producer, so a typo cannot become a new word a reader has never seen.",
+      "enum": [
+        "UNSUPPORTED_PLATFORM",
+        "NOT_IMPLEMENTED",
+        "NO_SOURCE",
+        "STALE",
+        "IDENTITY_UNKNOWN"
+      ]
+    },
+    "basis": {
+      "description": "How an identity was established. Only ATTESTED may support a `live` claim, and nothing in V1 can attest a device reference — which is why `live` is false for every document this producer emits today.",
+      "enum": [
+        "ATTESTED",
+        "LOCAL_DECLARATION",
+        "CALLER_SUPPLIED",
+        "NONE"
+      ]
+    },
+    "identity_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "claimed",
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "MATCHED",
+            "MISMATCH",
+            "UNKNOWN"
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "claimed": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "role": {
+      "type": "string",
+      "pattern": "[A-Za-z0-9_-]{1,32}",
+      "description": "The one free-text field in this document. A role replaces a device name, so the device name never travels."
+    },
+    "filesystem_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available_bytes",
+        "role",
+        "total_bytes",
+        "used_bytes"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "total_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "available_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "used_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      }
+    },
+    "device_io_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read_bytes",
+        "role",
+        "write_bytes"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "read_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "write_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      }
+    },
+    "storage_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "filesystems": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "roles"
+          ],
+          "properties": {
+            "roles": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/filesystem_row"
+              }
+            }
+          }
+        },
+        "disk_io": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "roles"
+          ],
+          "properties": {
+            "roles": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/device_io_row"
+              }
+            }
+          }
+        }
+      },
+      "minProperties": 1,
+      "description": "Two blocks and one observation. Either may be absent; at least one is present."
+    },
+    "psi_line": {
+      "description": "One kernel-windowed line. `some` or `full` may be an explicit UNAVAILABLE when the kernel does not provide that line — which is a different fact from a measured zero and must not be read as one.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "avg10",
+            "avg300",
+            "avg60"
+          ],
+          "properties": {
+            "avg10": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                {
+                  "$ref": "#/$defs/unavailable"
+                }
+              ]
+            },
+            "avg60": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                {
+                  "$ref": "#/$defs/unavailable"
+                }
+              ]
+            },
+            "avg300": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                {
+                  "$ref": "#/$defs/unavailable"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/unavailable"
+        }
+      ]
+    },
+    "psi_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full",
+        "some"
+      ],
+      "properties": {
+        "some": {
+          "$ref": "#/$defs/psi_line"
+        },
+        "full": {
+          "$ref": "#/$defs/psi_line"
+        }
+      }
+    },
+    "service_row": {
+      "description": "One declared unit. `NOT_INSTALLED` and `INACTIVE` are different facts: systemd answers `ActiveState=inactive` for a unit that does not exist.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "state",
+            "unit"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "state": {
+              "const": "UNAVAILABLE"
+            },
+            "reason": {
+              "$ref": "#/$defs/reason"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "state",
+            "unit"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "state": {
+              "enum": [
+                "ACTIVE",
+                "INACTIVE",
+                "FAILED",
+                "ACTIVATING",
+                "DEACTIVATING",
+                "NOT_INSTALLED"
+              ]
+            },
+            "sub_state": {
+              "type": "string"
+            },
+            "observed_at": {
+              "type": "string"
+            },
+            "age_seconds": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "services_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "services"
+      ],
+      "properties": {
+        "services": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/service_row"
+          }
+        }
+      }
+    },
+    "gpu_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gpu_util_percent",
+        "index",
+        "label",
+        "memory_total_bytes",
+        "memory_used_bytes",
+        "temperature_c"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "gpu_util_percent": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "memory_used_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "memory_total_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "temperature_c": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": -40,
+              "maximum": 150
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      }
+    },
+    "gpu_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gpus"
+      ],
+      "properties": {
+        "gpus": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/gpu_row"
+          }
+        },
+        "sample_time": {
+          "type": "string"
+        }
+      }
+    },
+    "cpu_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "used_percent"
+      ],
+      "properties": {
+        "used_percent": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      }
+    },
+    "memory_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available_bytes",
+        "free_bytes",
+        "total_bytes",
+        "used_percent"
+      ],
+      "properties": {
+        "total_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "available_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "free_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "used_percent": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      }
+    },
+    "swap_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "free_bytes",
+        "pages_in_per_second",
+        "pages_out_per_second",
+        "total_bytes",
+        "used_bytes"
+      ],
+      "properties": {
+        "total_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "free_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "used_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "pages_in_per_second": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        },
+        "pages_out_per_second": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/unavailable"
+            }
+          ]
+        }
+      },
+      "description": "The STOCK (bytes in use) and the FLOW (pages per second) are separate fields because only the flow says whether the machine is paging. `used_percent` is deliberately NOT here: it is the field most likely to be mistaken for a paging signal."
+    }
+  }
+}
