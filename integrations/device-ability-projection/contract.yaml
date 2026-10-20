@@ -90,6 +90,56 @@ resolver_axes:
   policy: grant 的判据
   task_context: 已声明、本版本未实现（resolver 自己记录这一点）
 
+# ── family coverage（21 families × device classes） ────────────────────────────
+#
+# `effective.py` 回答一台设备上的一个 Ability。G1 还要回答一个更粗的问题：权威的 21 个
+# 语义 family，在三类设备上分别是什么状态。粗问题最容易把四件事压成一个整数，所以
+# `coverage.py` 把它们分开报，并且每个 device cell 都写明自己在回答哪一件。
+coverage:
+  module: integrations/device-ability-projection/coverage.py
+  question: >-
+    对每一个声明的 family，哪些 identity 声明了 `product_role.primary`？权威为哪个
+    device id 记了 installation？设备观察里有没有匹配项？哪些词因为没人观察而只能是
+    UNKNOWN？
+  words:
+    declared:
+      source: product-tree.yaml（21 个 L2 词汇）
+      means: family 在词汇里存在；矩阵永远有 21 行。
+    realized:
+      source: manifest `product_role.primary`
+      means: 有 identity 声明拥有这个职责。0 个 realization 是「无主」，不是「零覆盖」。
+    installed:
+      source: manifest `revisions[].installations[]`
+      means: 权威为这个 device id 记了安装。它是权威事实，不是设备观察。
+    observed:
+      source: device observation snapshot
+      means: 设备快照里有匹配项。它只说明「观察到」，不说明「可调用」。
+  observed_strength:
+    strong: >-
+      observation 的 `stable_id` 或 canonical source 命中唯一 identity。等同权威的
+      SAME 证据。
+    probable: >-
+      仅 `(type, name)` 命中唯一 identity。权威规则：name-only 是 PROBABLE MATCH，
+      永不升级为 SAME；矩阵把它单独计数。
+    ambiguous: 命中多个 identity，不归属任何 family。
+    unmatched: 权威没有任何匹配；不新登记、不猜 identity。
+  unknown_rules:
+    not_observed: >-
+      权威知道 device id 但没有快照：保留 authority installation 数，observation 记
+      NOT_OBSERVED。`0 observed` 会被读成「看过，没有」。
+    unresolved: >-
+      权威没有这个 device class 的 device id：identity 记 UNRESOLVED，所有设备相关词
+      记 UNKNOWN。按产品名推断 id 是禁止的。
+    ready_grant: >-
+      本轮快照没有 health / per-principal policy 观察：ready 与 grant 一律 UNKNOWN。
+      UNKNOWN 不是 false；「拒绝」也不是默认。
+  gap_words:
+    - NO_PRIMARY_REALIZATION
+  never:
+    - 不是第二份 registry：manifest / vocabulary 只读，输出是派生视图。
+    - 不是第二个 resolver：可调用性仍由 `effective.project_device` 经 `abilities/resolver.py` 回答。
+    - 不把 21 个声明语义读成 21 个已安装或已测试 Ability。
+
 # ── 不做什么 ──────────────────────────────────────────────────────────────────
 not_this:
   - 不是第二个 registry：manifest 只读，不注册、不缓存、不写。

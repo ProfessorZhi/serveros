@@ -55,6 +55,51 @@ effective = resolver.provider
 
 `effective` 是 **provider id 或 null**，永远不是 `true`：一个 `true` 说不出「由谁提供」。
 
+## 21 个 family × 三类设备：覆盖矩阵
+
+`coverage.py` 回答一个更粗的问题：权威的 **21 个语义 family**，在 Tokyo / Windows /
+Dell A6000 三类设备上分别是什么状态。它把四个容易压成一个整数的词分开报：
+
+| 词 | 来源 | 含义 |
+|---|---|---|
+| `declared` | `product-tree.yaml` | family 存在（永远 21 行） |
+| `realized` | manifest `product_role.primary` | 有 identity 声明拥有这个职责；0 是**无主**，不是零覆盖 |
+| `installed` | manifest `revisions[].installations[]` | **权威**为这个 device id 记了安装 |
+| `observed` | 设备快照 | **设备**报出了匹配项；`strong`（stable_id/canonical source）与 `probable`（仅名字）分开 |
+
+`ready` / `grant` 在本轮一律 `UNKNOWN`：扫描快照没有 health / per-principal policy 观察。
+`NOT_OBSERVED` 是「这轮没人看」，`UNRESOLVED` 是「权威根本没有这个 device id」，
+**都不等于 false**。按产品名把 Dell A6000 映射到 `dell-work`（Windows）是禁止的。
+
+2026-10-20、权威 `4a46f2b` 的实测结果（详见
+[`DEVICE-COVERAGE-MATRIX.md`](DEVICE-COVERAGE-MATRIX.md)）：
+
+- 21 个 family 中 **19 个有 primary realization**；**B1 / B3 无 primary owner**（但被
+  其他 family 的 identity cross-reference —— 是「无主」，不是「不存在」）。
+- 61 个 identity 中 **38 个没有 `product_role.primary`**，无法归属任何 family；其中
+  13 个有 Tokyo 安装记录、12 个有 `dell-work` 安装记录。**family 覆盖数是下界，不是全量。**
+- Tokyo：权威记 **19 个 identity** 安装；设备快照 70 条观察（19 strong / 27 probable /
+  1 ambiguous / 23 unmatched）。`ready` / `grant` = `UNKNOWN`。
+- Windows（`dell-work`）：权威记 13 个 identity 安装，**本轮没有快照** →
+  `NOT_OBSERVED`；观察相关的词全部 `UNKNOWN`。
+- Dell A6000（Linux）：权威**没有 device id** → `UNRESOLVED`；设备相关词全部 `UNKNOWN`。
+
+一次有界的只读 `ability resolve`（Tokyo，`ability:information-management`）返回
+`status: UNKNOWN`，`inputs_missing` 列出 7 个轴（含 `policy`）—— 这是「可调用是合取」
+的正面证据，不是失败被隐藏。Dell/Windows 两类没有 `device_ref`，记 `NOT_RUN`。
+
+复现（需要权威 manifest；它不被复制进本仓库）：
+
+```bash
+python3 integrations/device-ability-projection/coverage.py \
+  --manifest <ability-management>/abilities-manifest.yaml \
+  --revision 4a46f2b178e5f93de12b7a27c9d0df00e45683ea \
+  --evidence integrations/device-ability-projection/fixtures/resolve-evidence.json --check
+```
+
+**不要把 21 个声明语义读成 21 个已安装或已测试 Ability。** 矩阵的每个 cell 都在说它
+回答的是哪一件事实。
+
 ## 输入
 
 ```python
@@ -110,9 +155,16 @@ systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200
 可选：`SERVEROS_ABILITY_REPO=<checkout>` 会让最后一个测试真的去解析权威 manifest
 （`origin/main` 的 git object），而不是只看 fixture。
 
-## 没有验证的（不要读成已验证）
+## 验证边界（不要读成已验证）
 
-- **没有联系任何设备**：所有 device 记录都是合成 fixture。
-- **没有调用任何 Ability**，没有 GPU、没有飞书、没有凭据、没有权限变更。
-- **没有证明**真实设备会报出这些观察，也没有证明权威 manifest 的安装记录与某台真实机器一致。
-- 本目录之外的文件一个都没改。
+- Tokyo 的 observation 是一次**本地只读** `control_plane.py scan` 的真实结果，已脱敏
+  （移除 `location` / `fingerprint` / `version` / `author` 等字段才进入仓库）。它证明
+  「本机观察到 70 条 capability」，**不证明** Dell 或 Windows 的任何事。
+- Dell A6000 与 Windows 两类**没有快照**：分别是 `UNRESOLVED` 与 `NOT_OBSERVED`，
+  观察相关的词只能是 `UNKNOWN`。
+- 一次只读 `ability resolve` 返回 `UNKNOWN`（缺 7 个轴，含 `policy`）；**没有执行**任何
+  有副作用的 Ability 调用，没有 GPU / 飞书 / 凭据 / 权限变更，没有改 Windows。
+- **没有证明**权威 installation 记录与真实机器一致。事实上 Tokyo 的 manifest 安装记录
+  （19 个 identity）与扫描观察（70 条 capability）明显不一致 —— 这正是矩阵要显示的事实，
+  不是矩阵的误差。
+- 本目录之外的文件一个都没改（测试文件除外，它在 `tests/`）。
