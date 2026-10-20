@@ -843,6 +843,152 @@ class TestTheReadPath(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# What the daemon may reach, read from what it executes.
+# ---------------------------------------------------------------------------
+
+# The daemon must not depend on the BotMux provider (it reaches providers only
+# through the router), and it must not open a network path of its own. These
+# are the same four tokens the original text search used; what changed is where
+# they may appear.
+_FORBIDDEN_EXECUTABLE_TOKENS = ("botmux", "urllib", "http://", "https://")
+
+
+def _documentation_nodes(tree: ast.AST) -> set[int]:
+    """Ids of string expression statements: docstrings and other bare literals.
+
+    Python attaches a docstring to the first statement of a module, class or
+    function body; any other bare string statement is evaluated and discarded.
+    Neither can import, call or fetch anything, so neither is part of the
+    executable structure this boundary is about. Comments never enter the AST
+    at all, so they need no handling here.
+    """
+    documentation = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for statement in body:
+            if not isinstance(statement, ast.Expr):
+                continue
+            value = statement.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes)):
+                documentation.add(id(value))
+            elif (isinstance(value, ast.JoinedStr)
+                  and not any(isinstance(part, ast.FormattedValue)
+                              for part in value.values)):
+                # An f-string with no interpolation is a literal; one with a
+                # placeholder evaluates its expression and is not documentation.
+                # Mark the literal pieces too, or the scan below would still
+                # visit them through the parent node.
+                documentation.update(id(part) for part in ast.walk(value))
+    return documentation
+
+
+def _annotation_nodes(tree: ast.AST) -> set[int]:
+    """Ids of annotation subtrees, which name types without executing them.
+
+    A forward reference is a string in the AST, and `from __future__ import
+    annotations` makes every annotation one. Naming a provider in a type is not
+    importing it or calling it, so it belongs with the docstrings rather than
+    with the executable surface.
+    """
+    annotations = set()
+    for node in ast.walk(tree):
+        for attribute in ("annotation", "returns"):
+            value = getattr(node, attribute, None)
+            if isinstance(value, ast.AST):
+                annotations.update(id(child) for child in ast.walk(value))
+    return annotations
+
+
+def _literal_text(node: ast.AST) -> str | None:
+    """The constant text of a literal, or None when it is not one.
+
+    Adjacent constants are folded by the parser, but `"https://" + host` and
+    f-strings are not, and a check that only sees the pieces would miss a URL
+    split across them. Bytes are decoded because an endpoint does not have to
+    be written as `str` to be executable.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        if isinstance(node.value, bytes):
+            return node.value.decode("utf-8", "replace")
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            _literal_text(part) or "" for part in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _literal_text(node.left), _literal_text(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _call_name(func: ast.AST) -> str:
+    """The dotted name of a call target, empty when it has no static name."""
+    parts = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _daemon_boundary_violations(source: str) -> list[str]:
+    """Reasons `source` may not be the daemon, read from its executable shape.
+
+    An import, a call, or a string that feeds code is a dependency; a sentence
+    saying what the daemon does not do is not. The returned messages are
+    deliberately bounded — a failure must not echo a 4,000-line docstring back
+    into the test log.
+    """
+    tree = ast.parse(source)
+    documentation = _documentation_nodes(tree)
+    non_executable = documentation | _annotation_nodes(tree)
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if any(token in alias.name.lower()
+                       for token in ("botmux", "urllib")):
+                    violations.append(
+                        f"line {node.lineno}: imports {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            imported = " ".join(
+                [node.module or ""] + [alias.name for alias in node.names])
+            if any(token in imported.lower()
+                   for token in ("botmux", "urllib")):
+                violations.append(
+                    f"line {node.lineno}: imports from {imported}")
+        elif isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if any(token in name.lower() for token in ("botmux", "urllib")):
+                violations.append(f"line {node.lineno}: calls {name}")
+
+    seen: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if id(node) in non_executable:
+            continue
+        text = _literal_text(node)
+        if text is None:
+            continue
+        lowered = text.lower()
+        for token in _FORBIDDEN_EXECUTABLE_TOKENS:
+            if token not in lowered:
+                continue
+            marker = (token, node.lineno)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            violations.append(
+                f"line {node.lineno}: executable string contains "
+                f"{token!r}: {text[:60]!r}")
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # The surface cannot become something else.
 # ---------------------------------------------------------------------------
 
@@ -922,11 +1068,91 @@ class TestTheSurfaceCannotBecomeAShell(unittest.TestCase):
         })
 
     def test_daemon_never_imports_or_calls_botmux_provider(self):
-        source = (REPO / "runtime/daemon.py").read_text().lower()
-        self.assertNotIn("botmux", source)
-        self.assertNotIn("urllib", source)
-        self.assertNotIn("http://", source)
-        self.assertNotIn("https://", source)
+        """The daemon's vocabulary is not the boundary; what it executes is.
+
+        This used to search the whole lowercased file for the token, so a
+        sentence explaining BotMux's `RESPONSE_ID_ONLY` capability failed the
+        same check a real import would fail. Prose about a provider and a
+        dependency on one are different claims, and only the second is the
+        safety boundary. Comments never reach the AST; documentation strings
+        are expression statements with no effect; imports, calls and strings
+        that feed code are the executable structure, and those are what this
+        checks.
+        """
+        source = (REPO / "runtime/daemon.py").read_text()
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_docstring_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            '"""BotMux is RESPONSE_ID_ONLY; this module explains that."""\n'
+            "\n"
+            "\n"
+            "def dispatch_state() -> str:\n"
+            '    """BotMux needs a trigger_id that a lost response never gave."""\n'
+            "    return 'idle'\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_comment_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            "# BotMux is deliberately not imported here.\n"
+            "import json\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_an_annotation_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            "from __future__ import annotations\n"
+            "\n"
+            "def dispatch_state() -> \"BotMuxDispatchState\":\n"
+            "    return None\n"
+            "\n"
+            "cache: \"https://botmux.example/v1\" = \"idle\"\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_real_botmux_import_is_a_boundary_violation(self):
+        for source in (
+            "import serveros_botmux_provider\n",
+            "from serveros_botmux_provider import dispatch\n",
+            "from . import serveros_botmux_provider\n",
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_a_real_botmux_call_is_a_boundary_violation(self):
+        for source in (
+            "def f():\n    return serveros_botmux_provider.dispatch()\n",
+            "def f():\n    return dispatch_botmux()\n",
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_a_botmux_provider_url_in_executable_code_is_a_violation(self):
+        for source in (
+            'BASE = "https://botmux.example/v1"\n',
+            'BASE = f"https://botmux.example/{version}"\n',
+            'BASE = "https://" + "botmux.example/v1"\n',
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_executable_network_access_is_a_boundary_violation(self):
+        for source in (
+            "import urllib.request\n",
+            'ENDPOINT = "http://127.0.0.1:9000/health"\n',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(_daemon_boundary_violations(source))
 
     def test_a_parameter_the_router_does_not_declare_cannot_be_passed(self):
         client, service, _daemon = build()
