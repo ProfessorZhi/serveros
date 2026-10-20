@@ -487,8 +487,17 @@ class DaemonBindings:
         answer = self._call("agent.binding.resolve", {"session_ref": str(ref)})
         # Both halves of one read. `admit_work` joins them, and joining two
         # separately-fetched records would decide about a thread using an Item
-        # state from a different moment than the binding.
+        # state from a different moment than the binding. The CURRENT WRITER
+        # (#237 B1) travels in the same answer for the same reason: the gate
+        # compares the binding's claim against the scope's owner, and two
+        # separately-fetched records would be a decision about a moment that
+        # never existed.
         return {"binding": answer.get("binding"), "item": answer.get("item"),
+                "current_writer": answer.get("current_writer"),
+                # The Work Engine lease the admission checks the claim against
+                # (#237 B3). Forwarded, never re-derived here: this process does
+                # not hold the lease store.
+                "write_authority": answer.get("write_authority"),
                 "found": bool(answer.get("found"))}
 
     def put(self, record) -> dict:
@@ -564,6 +573,64 @@ def _refused(reason_code: str, detail: str, **extra) -> dict:
 # ---------------------------------------------------------------------------
 # The tool implementations.
 # ---------------------------------------------------------------------------
+
+class DaemonAttempts:
+    """#245's durable dispatch attempts, read and written through serverosd.
+
+    The same join as `DaemonBindings`: the records live in the daemon's control
+    store, this process holds a socket to it, and the router's replay guard is
+    the one caller. `get_dispatch_attempt` answers a retry's match; the two
+    writes record CALL_NOT_SENT before a dispatch and its outcome after.
+
+    A call that cannot be ANSWERED raises rather than returning "no record", for
+    the reason `DaemonBindings` draws one screen up: an empty read means "nothing
+    was ever dispatched under this key", which is what a FIRST dispatch looks
+    like — and reporting a daemon that is down as that would turn "we cannot
+    tell whether this was sent" into "go ahead and send it again".
+    """
+
+    def __init__(self, daemon) -> None:
+        self._daemon = daemon
+
+    def _call(self, method: str, params: dict) -> dict:
+        try:
+            return self._daemon.call(method, params) or {}
+        except Exception as exc:  # noqa: BLE001 - any failure to reach the daemon
+            raise router_mod.TransportFailure(
+                "NODE_RUNTIME_UNAVAILABLE",
+                f"{method} could not be answered by serverosd: "
+                f"{type(exc).__name__}: {exc}. ServerOS cannot say whether a "
+                f"retry of this intent is a second effect, so it will not "
+                f"dispatch one") from exc
+
+    def get_dispatch_attempt(self, key) -> dict | None:
+        answer = self._call("agent.dispatch.resolve", {"key": str(key)})
+        return answer.get("attempt")
+
+    def put_dispatch_attempt(self, record, *, context_ref=None) -> dict:
+        """Write one attempt, against the trusted context of the call that did it.
+
+        `context_ref` is NOT optional here: the daemon resolves the actor from it
+        and takes the record's principal from that, so a write presented without
+        one cannot be attributed — and an unattributed phase is exactly the
+        self-asserted `SETTLED` the independent QA found (#245 P0-2). Refused
+        before the call rather than letting the daemon answer for nobody.
+        """
+        if not context_ref:
+            raise router_mod.TransportFailure(
+                "UNTRUSTED_ACTOR",
+                "a dispatch attempt is written against the trusted context of the "
+                "call that dispatched it. Without one the daemon cannot tell who "
+                "is asserting the phase, and it will not take the principal from "
+                "the payload")
+        answer = self._call("agent.dispatch.record", {
+            "context_ref": str(context_ref), "attempt": dict(record)})
+        if not answer.get("recorded"):
+            raise router_mod.TransportFailure(
+                str(answer.get("reason") or "INVALID_CONTEXT"),
+                str(answer.get("detail") or "serverosd did not record the attempt"))
+        return answer.get("attempt") or {}
+
 
 class AgentControlClient:
     """§11's tool set, over the fleet router and the fleet view.
@@ -1092,6 +1159,12 @@ def build(*, daemon=None, providers=None, registry=None, local_device_ref=None):
     router = router_mod.FleetAgentControlRouter(
         local_device_ref=device_ref, transports=[loopback, node],
         registry=registry, context_store=DaemonContexts(daemon),
+        # #245. The durable dispatch attempt, over the same daemon store the
+        # bindings use. Without it the replay guard is the in-process dict the
+        # contract declares non-durable, and a retry after a restart is a second
+        # effect; with it, CALL_NOT_SENT is recorded before the dispatch leaves
+        # and a retry whose outcome is unknown is refused.
+        attempts=DaemonAttempts(daemon),
     )
     view = view_mod.FleetView(routing=router,
                               sessions=_sessions_for(service, device_ref),

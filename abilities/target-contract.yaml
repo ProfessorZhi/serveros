@@ -215,14 +215,20 @@ record:
 #                     answered and the answer was spent".
 #
 #   coordination      `runtime/coordination.py` produces THREAD_ITEM_MISMATCH,
-#   kernel            READ_ONLY_CLOSURE and THREAD_CLOSED_FOR_NEW_WORK for §17.
+#   kernel            READ_ONLY_CLOSURE, THREAD_CLOSED_FOR_NEW_WORK for §17 and
+#                     NOT_CURRENT_WRITER for #237 B1.
 #                     Each names a different field for the caller to change:
 #                     the Item in the payload, the thread (its Item is
-#                     finished), or the thread (it was closed while its provider
-#                     session is still accepting turns). Reporting the last two
-#                     as ACTION_UNSUPPORTED would say the provider has no way to
-#                     accept the turn — which is false, and would stop a caller
-#                     from ever retrying.
+#                     finished), the thread (it was closed while its provider
+#                     session is still accepting turns), or the WRITE SCOPE the
+#                     caller thinks it holds — which moved to another
+#                     owner/epoch/token, or expired, or could not be checked.
+#                     Reporting the last two as ACTION_UNSUPPORTED would say the
+#                     provider has no way to accept the turn — which is false,
+#                     and would stop a caller from ever retrying. Reporting
+#                     NOT_CURRENT_WRITER as POLICY_DENIED would tell a caller to
+#                     ask a person for permission, when what it must do is
+#                     re-read the current writer and stop.
 #
 # A test asserts this list equals the brief's fifteen plus exactly the verdicts
 # those two kernels can return, so the two cannot drift. The test that matters
@@ -252,6 +258,7 @@ reasons:
     - THREAD_ITEM_MISMATCH
     - READ_ONLY_CLOSURE
     - THREAD_CLOSED_FOR_NEW_WORK
+    - NOT_CURRENT_WRITER
   from_brief: 15
   declared_here_only:
     - APPROVAL_CONTEXT_MISMATCH
@@ -260,12 +267,13 @@ reasons:
     - THREAD_ITEM_MISMATCH
     - READ_ONLY_CLOSURE
     - THREAD_CLOSED_FOR_NEW_WORK
+    - NOT_CURRENT_WRITER
   produced_by:
     runtime/approval.py: [APPROVAL_REQUIRED, APPROVAL_BINDING_MISMATCH,
                           APPROVAL_CONTEXT_MISMATCH, APPROVAL_EXPIRED,
                           APPROVAL_ALREADY_CONSUMED]
     runtime/coordination.py: [THREAD_ITEM_MISMATCH, READ_ONLY_CLOSURE,
-                              THREAD_CLOSED_FOR_NEW_WORK]
+                              THREAD_CLOSED_FOR_NEW_WORK, NOT_CURRENT_WRITER]
   produced_by_rule: >-
     A word in `values` that no file in `produced_by` can return is a word with
     no producer, which is the defect this repository keeps finding one plane
