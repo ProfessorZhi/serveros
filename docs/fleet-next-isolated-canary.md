@@ -31,7 +31,7 @@ NOT provide dual-stack isolation; it can restart/overwrite the existing V1.
 
 Do not run this installer for Next. First provide and review a Next-only
 installer that maintains:
-- systemd unit: serveros-fleet-example-mcp.service
+- systemd unit: serveros-fleet-next-mcp.service
 - own runtime/revision tree and current/previous symlinks
 - own binding file, OAuth state/issuer configuration and audit
 - own loopback port, own HTTPS MCP route and plugin registration

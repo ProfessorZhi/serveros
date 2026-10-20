@@ -35,7 +35,7 @@ UMask=0077
 NoNewPrivileges=yes
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=serveros-fleet-example-mcp
+SyslogIdentifier=serveros-fleet-next-mcp
 
 [Install]
 WantedBy=default.target

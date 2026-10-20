@@ -33,7 +33,7 @@ if str(_ROOT) not in sys.path:
 from fleet_mcp.deploy import next_dual_stack_preflight as gate
 
 UNIT = gate.NEXT_UNIT
-TEMPLATE = "fleet_mcp/deploy/serveros-fleet-example-mcp.service"
+TEMPLATE = "fleet_mcp/deploy/serveros-fleet-next-mcp.service"
 COMPOSITION = "ingress-next"
 
 #: Commands that publish a Next revision WITHOUT starting it. Both are
@@ -169,7 +169,7 @@ def plan(proposal: dict, command: str, *, no_start: bool = False) -> dict:
                 "blockers": ["limits: must match the Next service template"],
                 "writes": [], "executes": []}
     if not recovery:
-        template = _HERE / "serveros-fleet-example-mcp.service"
+        template = _HERE / "serveros-fleet-next-mcp.service"
         if not template.is_file():
             return {"decision": "BLOCKED", "blockers": ["Next unit template missing"],
                     "writes": [], "executes": []}
@@ -270,7 +270,7 @@ def _load_legacy_installer():
     spec.loader.exec_module(mod)
     mod.UNIT_NAME = UNIT
     mod.UNIT_TEMPLATE = TEMPLATE
-    mod.SERVICE_NAME = "serveros-fleet-example-mcp"
+    mod.SERVICE_NAME = "serveros-fleet-next-mcp"
     mod.COMPOSITION = COMPOSITION
     return mod
 
@@ -870,7 +870,7 @@ def _unit_identity_errors(mod, revision: dict, config_path: Path,
                           v1_paths: list[str]) -> list[str]:
     """Whether the unit about to be started runs THESE bytes and THIS binding.
 
-    The unit's name is not evidence. `serveros-fleet-example-mcp.service` can be
+    The unit's name is not evidence. `serveros-fleet-next-mcp.service` can be
     left over from an earlier render pointing at another revision root, another
     binding, or a launcher outside the staged tree — and `systemctl start`
     would then start something no reviewer looked at, under a receipt that says

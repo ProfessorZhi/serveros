@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = "serveros/fleet-next-dual-stack-preflight.v1"
 V1_UNIT = "serveros-fleet-mcp.service"
-NEXT_UNIT = "serveros-fleet-example-mcp.service"
+NEXT_UNIT = "serveros-fleet-next-mcp.service"
 
 IDENTITY_FIELDS = frozenset({
     "service_unit", "runtime_root", "config_path", "oauth_state_root",

@@ -84,9 +84,9 @@ def legacy_stage_receipt(**over) -> str:
     contract the wrapper consumes and republishes.
     """
     payload = {
-        "unit_path": "/home/operator/.config/systemd/user/serveros-fleet-example-mcp.service",
+        "unit_path": "/home/operator/.config/systemd/user/serveros-fleet-next-mcp.service",
         "started": False,
-        "next": "systemctl --user start serveros-fleet-example-mcp.service",
+        "next": "systemctl --user start serveros-fleet-next-mcp.service",
         "tree_sha256": "0" * 64,
     }
     payload.update(over)
@@ -96,7 +96,7 @@ def legacy_stage_receipt(**over) -> str:
 def legacy_full_receipt(**over) -> str:
     """What `install.py::install()` prints on the start path."""
     payload = {
-        "unit_path": "/home/operator/.config/systemd/user/serveros-fleet-example-mcp.service",
+        "unit_path": "/home/operator/.config/systemd/user/serveros-fleet-next-mcp.service",
         "started": True,
         "health": {"ok": True},
         "files": 42,
@@ -151,7 +151,7 @@ class NextOnlyInstaller(unittest.TestCase):
     def test_safe_preview_names_next_unit_and_has_no_effect(self):
         preview = next_install.plan(candidate(), "install")
         self.assertEqual(preview["decision"], "DRY_RUN_READY")
-        self.assertEqual(preview["unit"], "serveros-fleet-example-mcp.service")
+        self.assertEqual(preview["unit"], "serveros-fleet-next-mcp.service")
         self.assertFalse(preview["same_as_v1"])
         self.assertEqual(preview["writes"], [])
         self.assertEqual(preview["executes"], [])
@@ -224,7 +224,7 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertEqual(output["decision"], "EXECUTED")
         self.assertEqual(output["unit"], gate.NEXT_UNIT)
         self.assertEqual(output["unit_path"],
-                         "/home/operator/.config/systemd/user/serveros-fleet-example-mcp.service")
+                         "/home/operator/.config/systemd/user/serveros-fleet-next-mcp.service")
         self.assertIs(output["started"], False)
         self.assertFalse(output["v1_action"])
         self.assertEqual(output["executes"], [gate.NEXT_UNIT])
@@ -284,12 +284,18 @@ class NextOnlyInstaller(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(doc["decision"], "BLOCKED")
 
+    def test_template_name_is_the_next_unit_and_exists(self):
+        self.assertEqual(Path(next_install.TEMPLATE).name, next_install.UNIT)
+        self.assertTrue((ROOT / next_install.TEMPLATE).is_file())
+        self.assertNotEqual(next_install.UNIT, gate.V1_UNIT)
+
     def test_template_uses_separate_journal_and_real_limits(self):
-        content = (ROOT / "fleet_mcp/deploy/serveros-fleet-example-mcp.service").read_text()
+        content = (ROOT / "fleet_mcp/deploy/serveros-fleet-next-mcp.service").read_text()
         for line in ("MemoryMax=1536M", "MemorySwapMax=0", "CPUQuota=40%",
                      "TasksMax=96", "NoNewPrivileges=yes",
-                     "SyslogIdentifier=serveros-fleet-example-mcp"):
+                     "SyslogIdentifier=serveros-fleet-next-mcp"):
             self.assertIn(line, content)
+        self.assertNotIn("SyslogIdentifier=serveros-fleet-mcp", content)
 
     def test_no_v1_installer_constants_are_edited_in_source(self):
         shared = (ROOT / "fleet_mcp/deploy/install.py").read_text()

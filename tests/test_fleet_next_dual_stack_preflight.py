@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -31,7 +32,7 @@ def proposal() -> dict:
             "plugin_id": "plugin_asdk_app_old_example_123",
         },
         "next": {
-            "service_unit": "serveros-fleet-example-mcp.service",
+            "service_unit": "serveros-fleet-next-mcp.service",
             "runtime_root": "/home/operator/runtime-assets/fleet-next",
             "config_path": "/home/operator/.config/fleet-next/binding.yaml",
             "oauth_state_root": "/home/operator/.local/state/fleet-next-oauth",
@@ -59,6 +60,27 @@ def blockers(p: dict) -> list[str]:
 
 
 class OfflineDoubleStackSafety(unittest.TestCase):
+    def test_the_committed_next_template_is_the_unit_the_gate_names(self):
+        """The gate's name must be a file in this tree, not a rename in prose.
+
+        A unit name that no committed template carries is not a naming
+        preference: the preview cannot render it, and the installer refuses
+        before any other check runs.
+        """
+        path = ROOT / "fleet_mcp" / "deploy" / gate.NEXT_UNIT
+        self.assertTrue(path.is_file(), f"{gate.NEXT_UNIT} must be committed")
+        self.assertNotEqual(gate.NEXT_UNIT, gate.V1_UNIT)
+
+    def test_the_workflow_path_filters_name_files_that_exist(self):
+        """A path filter naming a missing template never triggers on the real one."""
+        text = (ROOT / ".github" / "workflows"
+                / "fleet-next-isolated-contracts.yml").read_text(encoding="utf-8")
+        paths = set(re.findall(r"'(fleet_mcp/deploy/[^']+\.service)'", text))
+        self.assertTrue(paths, "workflow must name the Next template explicitly")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file(), path)
+
     def test_complete_isolated_candidate_is_only_a_human_canary_precheck(self):
         result = gate.evaluate(proposal())
         self.assertEqual(result["decision"], "PRECHECK_READY_FOR_HUMAN_CANARY")
