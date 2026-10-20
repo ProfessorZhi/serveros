@@ -346,11 +346,11 @@
       "lane": "P1",
       "base": "feat/fleet-cc-dev-plugin-20261016",
       "base_sha": "deb0476fc031d28e87d93e34ae37b66eaa5ad35b",
-      "head": "31207030659529b9f39411e7aec5d38b152047ae",
+      "head": "6b37909c85",
       "merge_base": "3236e65",
       "own_commits": 2,
       "state": "Draft/OPEN",
-      "note": "live-read preflight: 401 invalid_token -> BLOCKED_OWNER_OAUTH; REAL_READ_ONLY NOT_RUN"
+      "note": "live preflight BLOCKED_OWNER_OAUTH; live REAL_READ_ONLY NOT_RUN"
     },
     {
       "pr": 232,
@@ -546,6 +546,26 @@
       "base_sha": "4452ddfa3cda3404cc4038acf8086772d868c578",
       "head": "2a3e1352b442b0a307deba50e293a10c8ef34d61",
       "merge_base": "665067ea548a04c2d2496ff73bbdd16f428b1ef0",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 313,
+      "lane": "N1",
+      "base": "feat/n1-unmeasured-budget-20261020",
+      "base_sha": "ac978156000d93315134cfbd0f4c9d3b4ff5023f",
+      "head": "ac978156000d93315134cfbd0f4c9d3b4ff5023f",
+      "merge_base": "e8eccf2",
+      "own_commits": 1,
+      "state": "Draft/OPEN"
+    },
+    {
+      "pr": 314,
+      "lane": "N1",
+      "base": "feat/n1-persistent-budget-20261020",
+      "base_sha": "ac978156000d93315134cfbd0f4c9d3b4ff5023f",
+      "head": "48f7259512eb9ce1daed31df22dd19a847196b9a",
+      "merge_base": "e8eccf2",
       "own_commits": 1,
       "state": "Draft/OPEN"
     }
@@ -790,6 +810,16 @@
       "to": 255,
       "kind": "conflict",
       "reason": "actuator-contract old-base vs main-base"
+    },
+    {
+      "from": 302,
+      "to": 313,
+      "kind": "base"
+    },
+    {
+      "from": 313,
+      "to": 314,
+      "kind": "base"
     }
   ],
   "conflicts": [
@@ -1171,5 +1201,52 @@
       ],
       "required_base": "#301 -> main"
     }
-  ]
+  ],
+  "review_rc": {
+    "branch": "rc/i1-review-20261020",
+    "sha": "3f0240d5ffb2f66edf184cc6b87e04c02c0598ca",
+    "base_sha": "771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8",
+    "merged": [
+      275,
+      312,
+      277,
+      309,
+      314,
+      311,
+      301,
+      303
+    ],
+    "excluded": [
+      307,
+      295,
+      296,
+      297,
+      298,
+      304,
+      305,
+      300,
+      255
+    ],
+    "feature_tests": {
+      "result": "307 passed, 7 xfailed, 23 subtests passed",
+      "exit": 0,
+      "seconds": 56.6,
+      "level": "LOCAL"
+    },
+    "real_temp": {
+      "result": "PASS/REFUSAL; serverosd start + serverosctl status + refusals + stop + temp cleanup",
+      "exit": 0,
+      "level": "REAL_TEMP"
+    },
+    "claims": {
+      "code_composed_rc": true,
+      "final_acceptance": false,
+      "live_device": false,
+      "client_e2e": false,
+      "production": false
+    },
+    "qa_signature": null,
+    "status": "RC_BLOCKED/NOT_RELEASE",
+    "artifact": "integrations/fleet-v1-release/RC-REVIEW-2026-10-20.md"
+  }
 }
