@@ -119,6 +119,18 @@ or `SO_PEERCRED` binding exists. Production must route every lease mutation,
 revoke and effect through one fenced transaction domain before any positive
 authorization can be claimed.
 
+## Residual P2 / not claimed
+
+* `proto_commit` is a **lease-acquisition audit**, not an effect/finalize
+  commit. There is no FK or trigger tying `leases` to it; a manual or legacy
+  insert can create a lease with no commit row (the negative test does exactly
+  that). Production migration must add the constraint and one fenced
+  entrypoint.
+* `check_scope.py` includes committed and working-tree paths, but it is a diff
+  receipt, not a runtime control.
+* The 50-test result is self-reported in this Draft; no hosted CI check is
+  attached.
+
 ## Authoritative-source premise
 
 The real source of truth would be a **real owner** writing policy/epoch and
