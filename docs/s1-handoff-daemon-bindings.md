@@ -84,12 +84,32 @@ ledger is created.
   `HANDOFF_STEPS` / `fleet/agent-control-contract.yaml#handoff.steps`;
 * includes the revocation evidence in the success and failure details.
 
+### 2.5 Admission clock and provider exceptions
+
+* `runtime/coordination.py::writer_axis` and the Work-lease branch of
+  `admit_work` compare `expires_at` and `now` as **aware instants**
+  (`_instant`). A malformed or naive timestamp fails closed (`EXPIRED` /
+  `NOT_CURRENT_WRITER`); it is never CURRENT. The Q1 example
+  `2023-11-15T05:13:20+08:00` (21:13:20Z) against `2023-11-14T22:13:20Z` is the
+  regression, and a real-daemon test uses an expired `+08:00` lease row and
+  asserts the provider's `send` was never called.
+* `handoff()` wraps `router.route(target_request)`. A raising provider or
+  transport is a typed answer, not an escape:
+  * after a pre-claim: `BLOCKED_ATOMICITY`, `source_preserved=false`,
+    `scope_stalled=true`, with the exception type/detail and the target claim;
+  * with no claim: the transport's reason if it is in the reason vocabulary,
+    otherwise `PROVIDER_ERROR`, with `source_preserved=true`.
+  No automatic rollback is attempted.
+
 ## 3. Refusal matrix
 
 | Case | Result |
 |---|---|
 | fresh context with `provider_status != VERIFIED` or `provenance != FACT` | `UNTRUSTED_ACTOR`, no mutation |
+| malformed or naive writer/lease expiry | `EXPIRED` / `NOT_CURRENT_WRITER` (never CURRENT) |
 | target claim minted, target route/provider refuses | `BLOCKED_ATOMICITY`, `source_preserved=false`, `scope_stalled=true` |
+| target claim minted, provider/transport route raises | `BLOCKED_ATOMICITY`, `source_preserved=false`, `scope_stalled=true` |
+| target route raises before any claim | transport reason or `PROVIDER_ERROR`, source untouched |
 | target claim minted, source close transport fails | `BLOCKED_ATOMICITY`, `source_preserved=false`, `scope_stalled=true` |
 | target claim written but not confirmed current | `BLOCKED_ATOMICITY`, `scope_stalled=true` |
 | source has no writer claim | `NOT_CURRENT_WRITER`, source preserved |
@@ -110,7 +130,7 @@ and `stop` are not gated; only new sends/resumes are refused with
 
 ## 4. End-to-end evidence
 
-`tests/test_handoff_daemon_bindings.py` (13 tests) uses a real `Daemon`, a real
+`tests/test_handoff_daemon_bindings.py` (16 tests) uses a real `Daemon`, a real
 temp `serveros.db` with a live `leases` row, the real `DaemonBindings`, and the
 real router/loopback:
 
@@ -132,17 +152,24 @@ real router/loopback:
 * **new**: a target provider refusal after the pre-claim and a close transport
   failure after the pre-claim both return `BLOCKED_ATOMICITY` with
   `source_preserved=false` and `scope_stalled=true`; the source is open but no
-  longer the current writer, and its send is `NOT_CURRENT_WRITER`.
+  longer the current writer, and its send is `NOT_CURRENT_WRITER`;
+* **new**: an expired `+08:00` lease is refused at real `session.send`
+  admission (`NOT_CURRENT_WRITER`), and the provider's `send` is never called;
+* **new**: a provider `resume` that raises after the pre-claim and a source
+  `close` that raises a plain `RuntimeError` after the pre-claim both return
+  `BLOCKED_ATOMICITY` with `source_preserved=false` and `scope_stalled=true`;
+  the target is the only current writer and no `send` reaches the service.
 
-RED at #315 `7d35535`: the five new tests failed (unverified actor claimed and
-closed; both pre-claim failures reported `source_preserved=true`; the offset
-expiry was read as not expired). GREEN at this branch.
+RED at #318 `2640bce`: the kernel offset/naive expiry tests failed, the
+real-daemon offset-lease admission test was ADMITTED, and the provider
+exception escaped the handoff (`5 failed, 57 passed`; the close-`RuntimeError`
+case already returned the typed outcome). GREEN at this branch.
 
 Focused suites, all exit 0:
 
 ```text
-13 passed               tests/test_handoff_daemon_bindings.py
-55 passed               test_v1_write_fence.py + test_handoff_daemon_bindings.py
+16 passed               tests/test_handoff_daemon_bindings.py
+60 passed, 2 subtests   test_v1_write_fence.py + test_handoff_daemon_bindings.py
 93 passed, 7 subtests   test_agent_control_router.py
 83 passed, 164 subtests test_agent_control_store.py + test_agent_mcp.py
 53 passed               test_coordination.py

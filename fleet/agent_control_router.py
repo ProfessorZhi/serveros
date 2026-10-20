@@ -1468,7 +1468,40 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                      "write authority and the handoff is not a transfer")},
             checkpoint=checkpoint)
     pre_claimed = bool(pre_claim and pre_claim.get("claimed"))
-    created = router.route(target_request)
+    try:
+        created = router.route(target_request)
+    except Exception as exc:  # noqa: BLE001 - a provider exception is an answer
+        reason = getattr(exc, "reason", None)
+        detail = getattr(exc, "detail", str(exc))
+        if pre_claimed:
+            # The persisted preclaim is already the current writer. An escaping
+            # provider/transport exception does not undo it, and it must not
+            # escape the procedure: the scope is stalled and the caller needs
+            # the typed word for that.
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "target_ready", False,
+                {"error": f"{type(exc).__name__}: {exc}",
+                 "provider_reason": reason,
+                 "claim": pre_claim, "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "target route; the provider/transport raised instead "
+                         "of answering, so the target holds the claim without "
+                         "an established session and the source is not the "
+                         "current writer. This is not a transfer; repair is an "
+                         "owner action")},
+                checkpoint=checkpoint)
+        # No claim was minted: the source is untouched. The exception is still
+        # a typed target failure, not an escape out of the handoff.
+        typed_reason = (str(reason) if reason in reason_vocabulary()
+                        else "PROVIDER_ERROR")
+        return HandoffOutcome(
+            False, typed_reason, tuple(completed), "target_ready", True,
+            {"error": f"{type(exc).__name__}: {detail}",
+             "provider_reason": reason,
+             "why": ("the target route raised instead of answering; no writer "
+                     "claim was minted and the source is untouched")},
+            checkpoint=checkpoint)
     if not created.ok:
         if pre_claimed:
             # The target already holds the current-writer claim. The provider

@@ -463,6 +463,37 @@ class TestWriterFenceKernel(unittest.TestCase):
         self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
         self.assertIn("expired", ctx.exception.detail)
 
+    def test_an_expired_claim_with_a_non_utc_offset_is_refused(self):
+        """The Q1 example: the string sorts later, the instant is earlier.
+
+        `2023-11-15T05:13:20+08:00` is 2023-11-14T21:13:20Z. The UTC now is
+        22:13:20Z, so the claim is an hour past its expiry; lexicographically
+        the local text is a DAY later. The admission must parse instants.
+        """
+        record = self._binding(owner="agent:A", epoch=3, token="7",
+                               expires_at="2023-11-15T05:13:20+08:00")
+        with self.assertRaises(coordination.ThreadRefused) as ctx:
+            coordination.admit_work(
+                binding_record=record, work_item=self.ITEM, item_state="ACTIVE",
+                current_writer=writer(owner="agent:A", epoch=3, token="7"),
+                now="2023-11-14T22:13:20Z")
+        self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+        self.assertIn("expired", ctx.exception.detail)
+
+    def test_a_malformed_or_naive_expiry_fails_closed(self):
+        for expires in ("not-a-time", "2023-11-15T05:13:20"):
+            with self.subTest(expires=expires):
+                record = self._binding(owner="agent:A", epoch=3, token="7",
+                                       expires_at=expires)
+                with self.assertRaises(coordination.ThreadRefused) as ctx:
+                    coordination.admit_work(
+                        binding_record=record, work_item=self.ITEM,
+                        item_state="ACTIVE",
+                        current_writer=writer(owner="agent:A", epoch=3,
+                                              token="7"),
+                        now="2023-11-14T22:13:20Z")
+                self.assertEqual(ctx.exception.reason, "NOT_CURRENT_WRITER")
+
     def test_a_claim_with_no_verifiable_source_is_refused(self):
         # #237: "when no verifiable source, explicit UNKNOWN/refuse".
         record = self._binding(owner="agent:A", epoch=3, token="7")
