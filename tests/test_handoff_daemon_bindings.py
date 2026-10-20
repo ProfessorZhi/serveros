@@ -108,6 +108,13 @@ class CloseFailingBindings:
             "NODE_RUNTIME_UNAVAILABLE", "the source close transport failed")
 
 
+class CloseRaisingBindings(CloseFailingBindings):
+    """The real bindings, except that close raises a plain provider error."""
+
+    def close(self, *args, **kwargs):
+        raise RuntimeError("the source close exploded")
+
+
 class HandoffDaemonBindingsTest(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
@@ -155,6 +162,18 @@ class HandoffDaemonBindingsTest(unittest.TestCase):
                 "%Y-%m-%dT%H:%M:%SZ")
         conn.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?)",
                      (LEASE_RESOURCE, owner, token, expires))
+        conn.commit()
+        conn.close()
+
+    def _lease_raw(self, *, owner: str, token: str,
+                   expires_at: str) -> None:
+        db = self.root / "serveros.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, "
+            "owner TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?)",
+                     (LEASE_RESOURCE, owner, token, expires_at))
         conn.commit()
         conn.close()
 
@@ -387,6 +406,64 @@ class HandoffDaemonBindingsTest(unittest.TestCase):
         denied = self._send(SOURCE, key="k11", router=router)
         self.assertFalse(denied.ok)
         self.assertEqual(denied.reason, "NOT_CURRENT_WRITER")
+
+    # -- the ADMISSION clock, not only the report flag --------------------
+
+    def test_an_expired_offset_lease_is_refused_at_real_admission(self):
+        """The lease instant is two hours past; its +08:00 text sorts later.
+
+        The temp `leases` row is filtered by SQL text and then checked by
+        `coordination.admit_work`; both used to see the local text as "later
+        than now" and admit the stale worker. The same instant as a zoned
+        `datetime` is expired, so the send must be refused before the provider.
+        """
+        expired = (datetime.datetime.now(datetime.timezone.utc)
+                   - datetime.timedelta(hours=2)).astimezone(
+                       datetime.timezone(datetime.timedelta(hours=8))
+                   ).isoformat()
+        self._lease_raw(owner="agent:A", token="1", expires_at=expired)
+        response = self._send(SOURCE, key="k-offset")
+        self.assertFalse(response.ok)
+        self.assertEqual(response.reason, "NOT_CURRENT_WRITER")
+        self.assertNotIn("send", self.service.names(),
+                         "an expired lease reached the provider")
+
+    # -- provider exceptions after the preclaim ---------------------------
+
+    def test_a_provider_resume_exception_after_preclaim_is_blocked_atomicity(self):
+        self._lease(owner="agent:B", token="2")
+        service = rt.RecordingService(
+            refuse={"on": "resume", "message": "provider exploded"})
+        router = self._router(self.bindings, service)
+        try:
+            outcome = self._handoff(router=router)
+        except Exception as exc:  # noqa: BLE001 - the escape is the defect
+            self.fail(f"handoff raised {type(exc).__name__}: {exc}; a "
+                      f"pre-claimed scope must return BLOCKED_ATOMICITY")
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
+        self.assertEqual(self.store.get_binding(TARGET)["writer"],
+                         self._current())
+        self.assertEqual(self.store.get_binding(SOURCE)["state"], "OPEN")
+        self._send(SOURCE, key="k12", router=router)
+        self.assertNotIn("send", service.names(),
+                         "a denied source reached the provider")
+
+    def test_a_source_close_exception_after_preclaim_is_blocked_atomicity(self):
+        self._lease(owner="agent:B", token="2")
+        router = self._router(CloseRaisingBindings(self.bindings), self.service)
+        outcome = self._handoff(router=router)
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
+        self.assertEqual(self.store.get_binding(TARGET)["writer"],
+                         self._current())
+        self.assertEqual(self.store.get_binding(SOURCE)["state"], "OPEN")
+        self._send(SOURCE, key="k13", router=router)
+        self.assertNotIn("send", self.service.names())
 
     def test_an_expired_source_claim_is_recovered_by_the_transfer(self):
         """The clock moves, the source claim expires, the handoff recovers."""

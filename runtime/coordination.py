@@ -103,6 +103,8 @@ path that predates it.
 """
 from __future__ import annotations
 
+import datetime
+
 SCHEMA = "serveros/thread-binding.v1"
 
 # A binding that RECORDS a writer is versioned separately (#237 B1). The schema
@@ -345,6 +347,21 @@ def normalize_writer(writer) -> dict:
     return out
 
 
+def _instant(value):
+    """A zoned instant, or None. Unreadable or naive is not an instant.
+
+    The same rule #307 states for the grant window: `12:00+08:00` is 04:00Z,
+    and a string comparison would call it later than `06:00+00:00`. A claim
+    whose expiry cannot be placed on the clock is not CURRENT.
+    """
+    try:
+        parsed = datetime.datetime.fromisoformat(
+            str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def writer_axis(binding_record, *, current_writer=None, now=None) -> str:
     """Which world a thread's recorded writer is in — one of `WRITER_AXIS`.
 
@@ -363,8 +380,15 @@ def writer_axis(binding_record, *, current_writer=None, now=None) -> str:
     if not writer:
         return "UNKNOWN"
     expires = writer.get("expires_at")
-    if expires and now is not None and str(expires) <= str(now):
-        return "EXPIRED"
+    if expires and now is not None:
+        expires_instant = _instant(expires)
+        now_instant = _instant(now)
+        if expires_instant is None or now_instant is None:
+            # A claim that cannot be aged cannot be shown to be unexpired;
+            # expired is the fail-closed bucket, not CURRENT.
+            return "EXPIRED"
+        if expires_instant <= now_instant:
+            return "EXPIRED"
     if current_writer is None:
         return "UNKNOWN"
     current = current_writer or {}
@@ -554,11 +578,19 @@ def admit_work(*, binding_record, work_item=None, item_state=None,
                 f"current writer. A lapsed, revoked or never-acquired lease "
                 f"authorizes nothing; acquire it in work-engine before sending")
         expires = lease.get("expires_at")
-        if expires and now is not None and str(expires) <= str(now):
-            raise ThreadRefused(
-                "NOT_CURRENT_WRITER",
-                f"the Work lease for {bound!r} expired at {expires}, so it no longer "
-                f"authorizes a write")
+        if expires and now is not None:
+            expires_instant = _instant(expires)
+            now_instant = _instant(now)
+            if expires_instant is None or now_instant is None:
+                raise ThreadRefused(
+                    "NOT_CURRENT_WRITER",
+                    f"the Work lease expiry for {bound!r} is not a readable "
+                    f"zoned instant ({expires!r}); it authorizes nothing")
+            if expires_instant <= now_instant:
+                raise ThreadRefused(
+                    "NOT_CURRENT_WRITER",
+                    f"the Work lease for {bound!r} expired at {expires}, so it "
+                    f"no longer authorizes a write")
         if (str(claim.get("owner")) != str(lease.get("owner"))
                 or str(claim.get("token")) != str(lease.get("token"))):
             raise ThreadRefused(
