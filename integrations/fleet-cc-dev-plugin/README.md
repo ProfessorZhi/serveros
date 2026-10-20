@@ -228,3 +228,51 @@ Fleet Next ingress, and **not** `PRODUCTION`. It does not discharge the
 authenticated Next `tools/list` (still `BLOCKED_BY_OWNER_OAUTH`) or any
 device/Core/recovery action. A green fixture is a statement about the client
 and the protocol, not about the fleet.
+
+## Live Fleet Next read preflight (2026-10-20) — `BLOCKED_OWNER_OAUTH`
+
+`preflight_live_read.py` is the gate in front of a **live** read. It makes no
+model call, reads no token store, and sends no `Authorization` header. It
+answers four questions: is the surface up; what does its OAuth discovery
+advertise; does an isolated `CLAUDE_CONFIG_DIR` already hold a Fleet MCP entry;
+and what does the surface say to an unauthenticated `initialize` and
+`tools/list`.
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/preflight_live_read.py \
+    --surface http://127.0.0.1:3411 \
+    --cc-home <isolated-CLAUDE_CONFIG_DIR> \
+    --out <receipt.json>
+```
+
+Observed on 2026-10-20T06:06:58Z against the loopback Next entrance (installed
+revision `fleet-mcp-20261016@008a336`):
+
+| check | result |
+|---|---|
+| `/health` | **200**, `auth_required: true` |
+| OAuth discovery | **200**; six scopes advertised and grantable, including `fleet:read`; `authorization_code` + `refresh_token`; a registration endpoint is published |
+| unauthenticated `initialize` | **401 `invalid_token`**, no `result` |
+| unauthenticated `tools/list` | **401 `invalid_token`**, no `result` and no `tools` |
+| isolated CC config | present, **no Fleet MCP entry** |
+| global CC config | **no Fleet MCP entry** |
+| `credentials_read` / `model_calls` | **false / 0** |
+| verdict | **`BLOCKED_OWNER_OAUTH`** |
+
+A 401 is a refusal, not an empty tool list. "Six scopes are advertised and
+grantable" is not "this client holds six"; no CC configuration here presents a
+live Fleet grant, and the owner PAT anchor was not read. The only existing
+`fleet:read` in this lane is the **synthetic fixture principal** from the
+section above.
+
+What would unblock a live read: the owner completes OAuth consent (or has
+already registered and consented to a client), and an isolated
+`CLAUDE_CONFIG_DIR` holds that client. The preflight can then confirm the
+client and the read; it still does not read the token. Until then,
+`CLIENT_E2E_TEST (live)` and `REAL_READ_ONLY` are **NOT_RUN / BLOCKED**, and
+the fixture's `CLIENT_E2E` remains a **LOCAL** result, not a live one.
+
+`tests/test_fleet_cc_dev_plugin_live_preflight.py` pins the refusal, the
+`BLOCKED_SURFACE_UNREACHABLE` and unexpected-status paths, and the redaction
+rule: a planted `headers.Authorization`, `oauth.clientSecret` and URL query are
+never copied into the receipt, and a stdio `command` is not reported at all.
