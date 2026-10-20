@@ -1,6 +1,6 @@
 """A' PROTOTYPE: owner policy/epoch and lease commit in one SQLite transaction.
 
-STATUS: PROTOTYPE_HARDENING / NOT_V1_SIGNED / V1_NOT_RELEASE.
+STATUS: PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.
 
 Flags:
   PROD_DEFAULT_BLOCKED       production #364 still returns BLOCKED_OWNER_COMMIT_SEAM
@@ -272,6 +272,8 @@ class AtomicFencePrototype:
                     request_digest TEXT NOT NULL,
                     grant_ref TEXT NOT NULL,
                     policy_ref TEXT NOT NULL,
+                    context_ref TEXT NOT NULL,
+                    context_actor TEXT NOT NULL,
                     grant_epoch INTEGER NOT NULL,
                     policy_epoch INTEGER NOT NULL,
                     authority_epoch INTEGER NOT NULL,
@@ -624,11 +626,13 @@ class AtomicFencePrototype:
             committed_at = _lease_stamp(now_e)
             conn.execute(
                 "INSERT INTO proto_commit("
-                "request_id,request_digest,grant_ref,policy_ref,grant_epoch,"
-                "policy_epoch,authority_epoch,resource,owner,token,expires_at,"
-                "committed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "request_id,request_digest,grant_ref,policy_ref,context_ref,"
+                "context_actor,grant_epoch,policy_epoch,authority_epoch,"
+                "resource,owner,token,expires_at,committed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, digest, str(grant["grant_ref"]),
-                 str(policy["policy_ref"]), int(grant["grant_epoch"]),
+                 str(policy["policy_ref"]), context_ref,
+                 str(context["actor_ref"]), int(grant["grant_epoch"]),
                  int(policy["policy_epoch"]), int(policy["authority_epoch"]),
                  resource,
                  str(policy["actor_ref"]), token, expires_at, committed_at))
@@ -651,6 +655,8 @@ class AtomicFencePrototype:
                 "request_id": request_id,
                 "grant_ref": str(grant["grant_ref"]),
                 "policy_ref": str(policy["policy_ref"]),
+                "context_ref": context_ref,
+                "context_actor": str(context["actor_ref"]),
                 "grant_epoch": int(grant["grant_epoch"]),
                 "policy_epoch": int(policy["policy_epoch"]),
                 "authority_epoch": int(policy["authority_epoch"]),
@@ -707,15 +713,20 @@ class AtomicFencePrototype:
                 "the policy epoch changed before COMMIT")
 
     def check_writer_fenced(self, resource, *, owner, token) -> dict:
-        """Prototype-only writer check that re-reads the authority epoch NOW.
+        """Prototype-only writer check that re-reads the authority lineage NOW.
 
         `ServerOSStore.check_writer` reads only the lease row, so a token
         acquired before a revoke still looks authorized. This method reads the
-        `proto_commit` row, the current policy and the current grant in one
-        `BEGIN IMMEDIATE`, checks the commit/grant/policy lineage and refuses
-        after a revoke or a policy/authority/grant epoch change. It is still
-        NOT an effect transaction: a caller must hold the fence across its
-        effect.
+        committed context/grant/policy lineage, the CURRENT context row and the
+        current policy/grant in one `BEGIN IMMEDIATE`.
+
+        Priority is explicit: lease holder/expiry -> committed context snapshot
+        -> current context row (missing, grant rebind or actor remap) ->
+        policy/grant rows -> policy revocation -> policy/authority/grant epoch
+        -> policy/grant windows. A context rebind therefore wins over a
+        simultaneous revoke or epoch bump and returns BLOCKED_STALE_CONTEXT.
+        It is still NOT an effect transaction: a caller must hold the fence
+        across its effect.
         """
         if not isinstance(resource, str) or not resource.strip():
             raise PrototypeRefusal("NOT_HOLDER", "a lease names a resource")
@@ -746,46 +757,67 @@ class AtomicFencePrototype:
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY",
                     "the lease has no fenced commit row")
-            policy = conn.execute(
-                "SELECT * FROM proto_owner_policy WHERE policy_ref=?",
-                (str(commit["policy_ref"]),)).fetchone()
-            if policy is None:
+            keys = set(commit.keys())
+            if "context_ref" not in keys or "context_actor" not in keys:
                 raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY", "the fenced commit has no policy")
+                    "BLOCKED_STALE_CONTEXT",
+                    "the fenced commit has no context snapshot")
+            context_ref = str(commit["context_ref"])
+            context_actor = str(commit["context_actor"])
+            context = conn.execute(
+                "SELECT actor_ref,grant_ref FROM proto_context WHERE context_ref=?",
+                (context_ref,)).fetchone()
+            if context is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_CONTEXT",
+                    "the committed context_ref no longer exists")
+            if str(context["grant_ref"]) != str(commit["grant_ref"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_CONTEXT",
+                    "the context was rebound to a different grant")
+            if str(context["actor_ref"]) != context_actor:
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_CONTEXT",
+                    "the context actor changed after the commit")
             grant = conn.execute(
                 "SELECT * FROM proto_grant WHERE grant_ref=?",
                 (str(commit["grant_ref"]),)).fetchone()
             if grant is None:
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY", "the fenced commit has no grant")
-            # The commit row, the grant row and the policy row must be the
-            # same authority lineage, and the grant generation must still be
-            # the one the lease was committed under. A bump of grant_epoch
-            # invalidates the historical token even when policy/authority
-            # epochs are unchanged.
-            if str(commit["grant_ref"]) != str(grant["grant_ref"]):
+            policy = conn.execute(
+                "SELECT * FROM proto_owner_policy WHERE policy_ref=?",
+                (str(commit["policy_ref"]),)).fetchone()
+            if policy is None:
                 raise PrototypeRefusal(
-                    "BLOCKED_OWNER_POLICY",
-                    "the fenced commit's grant_ref does not match the grant")
+                    "BLOCKED_OWNER_POLICY", "the fenced commit has no policy")
+            if not (context_actor == str(grant["actor_ref"])
+                    == str(policy["actor_ref"])):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_CONTEXT",
+                    "the context, grant and policy actors do not agree")
             if str(grant["policy_ref"]) != str(commit["policy_ref"]):
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY",
                     "the grant's policy_ref does not match the commit")
-            if int(commit["grant_epoch"]) != int(grant["grant_epoch"]):
-                raise PrototypeRefusal(
-                    "BLOCKED_STALE_EPOCH",
-                    f"the grant epoch moved from {commit['grant_epoch']} to "
-                    f"{grant['grant_epoch']}; the token is historical")
-            self._check_commit_windows(policy, grant, row["expires_at"], now_e)
             if _strict_flag(policy["revoked"], "policy.revoked"):
                 raise PrototypeRefusal(
                     "POLICY_DENIED", "the owner policy is revoked")
+            if _strict_flag(grant["revoked"], "grant.revoked"):
+                raise PrototypeRefusal(
+                    "POLICY_DENIED", "the grant is revoked")
             if int(commit["policy_epoch"]) != int(policy["policy_epoch"]):
                 raise PrototypeRefusal(
                     "BLOCKED_STALE_EPOCH", "the policy epoch moved after commit")
             if int(commit["authority_epoch"]) != int(policy["authority_epoch"]):
                 raise PrototypeRefusal(
                     "BLOCKED_STALE_EPOCH", "the authority epoch moved after commit")
+            if int(commit["grant_epoch"]) != int(grant["grant_epoch"]):
+                raise PrototypeRefusal(
+                    "BLOCKED_STALE_EPOCH",
+                    f"the grant epoch moved from {commit['grant_epoch']} to "
+                    f"{grant['grant_epoch']}; the token is historical")
+            self._check_commit_windows(policy, grant, row["expires_at"], now_e)
             return {
                 "prototype_status": PROTOTYPE_FENCED_CHECK,
                 "simulated_owner": True,
@@ -796,6 +828,10 @@ class AtomicFencePrototype:
                 "resource": str(resource),
                 "owner": str(owner),
                 "token": token,
+                "context_ref": context_ref,
+                "context_actor": context_actor,
+                "grant_ref": str(commit["grant_ref"]),
+                "policy_ref": str(commit["policy_ref"]),
                 "grant_epoch": int(grant["grant_epoch"]),
                 "policy_epoch": int(policy["policy_epoch"]),
                 "authority_epoch": int(policy["authority_epoch"]),
@@ -892,6 +928,8 @@ class AtomicFencePrototype:
             "request_id": str(row["request_id"]),
             "grant_ref": str(row["grant_ref"]),
             "policy_ref": str(row["policy_ref"]),
+            "context_ref": str(row["context_ref"]),
+            "context_actor": str(row["context_actor"]),
             "grant_epoch": int(row["grant_epoch"]),
             "policy_epoch": int(row["policy_epoch"]),
             "authority_epoch": int(row["authority_epoch"]),

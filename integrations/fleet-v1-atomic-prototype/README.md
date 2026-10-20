@@ -1,6 +1,6 @@
 # A′ atomic authority epoch + lease commit prototype
 
-**PROTOTYPE_HARDENING / NOT_V1_SIGNED / V1_NOT_RELEASE.**
+**PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.**
 
 Round 2 hardness notes are below; the production default is still blocked.
 
@@ -79,13 +79,17 @@ production store clock or kernel `SO_PEERCRED` (`NO_TRUSTED_CLOCK`,
   `historical: true`, `effect_eligible: false` even if the policy is still
   live. It is an audit record, not current authority and not effect-eligible.
   The idempotency digest includes the expected authority/grant epoch pins.
-* **Fenced writer check.** `check_writer_fenced` re-reads the commit policy
-  and grant epoch, the current policy and the current grant in one
-  `BEGIN IMMEDIATE`, checks the commit/grant/policy lineage, and refuses a
-  pre-revoke token after a revoke, an expired policy/grant window, or a
-  `grant_epoch` bump (QA2 witness: commit at grant epoch 1, grant bumped to 2
-  → `BLOCKED_STALE_EPOCH`). It is still a point-in-time check, not an effect
-  transaction.
+* **Fenced writer check.** `check_writer_fenced` re-reads the committed
+  `context_ref`/`context_actor` snapshots, the CURRENT context row, the commit
+  policy/grant epochs and the current policy/grant in one `BEGIN IMMEDIATE`.
+  It checks commit/grant/policy lineage and refuses a pre-revoke token after a
+  revoke, an expired policy/grant window, a `grant_epoch` bump (QA2 witness:
+  commit at grant epoch 1, grant bumped to 2 → `BLOCKED_STALE_EPOCH`), or a
+  same-epoch context rebind/deletion/actor remap (`BLOCKED_STALE_CONTEXT`).
+  Priority is: holder/expiry → committed context snapshot → current context
+  binding → policy/grant rows → policy revoke → policy/authority/grant epoch →
+  windows. A rebind therefore wins over a simultaneous revoke/epoch bump.
+  It is still a point-in-time check, not an effect transaction.
 * **Barrier evidence.** The acquire-vs-revoke test starts an independent
   SQLite connection with `busy_timeout=0` and proves its `BEGIN IMMEDIATE`
   raises `database is locked` while the acquirer holds the write lock; no
@@ -94,6 +98,28 @@ production store clock or kernel `SO_PEERCRED` (`NO_TRUSTED_CLOCK`,
   the parent reopens the DB, verifies the lease/commit/token, WAL mode and
   `integrity_check=ok`. This is a process-kill durability test, not a
   power-loss/fsync proof.
+
+## Round-3 context-lineage witness
+
+QA2's witness: acquire at `grant_epoch=1` with `context_ref=ctx:proto` bound to
+`grant:proto`; insert `grant:proto-2` with the same policy and same grant
+epoch; rebind `proto_context` to `grant:proto-2`; the old token still returned
+`PROTOTYPE_FENCED_CHECK authorized:true` because the check fetched the grant
+by the commit's own `grant_ref` (a tautology).
+
+The commit row now persists `context_ref` and `context_actor`; the fenced
+check reads the current context row in the same transaction and refuses a
+missing context, a grant rebind, or an actor remap as
+`BLOCKED_STALE_CONTEXT`. The commit/grant/policy lineage and grant epoch are
+also checked. `ROUND3_RED` was reproduced before this change; the new tests
+are GREEN.
+
+**Production dependency / NOT_PROVEN:** a real context rebind or grant rewrite
+needs an atomic owner reissue that bumps the grant epoch (or a durable context
+generation) in the same authority transaction. The prototype has no such
+owner interface; a same-epoch in-place grant/policy content mutation beyond
+actor/ref/epoch is not fully detectable and remains an owner-protocol
+requirement.
 
 ## Why a pure experimental module is not enough
 
@@ -155,7 +181,7 @@ Engine as-is.
 | D crash | `os._exit(17)` after writes but before COMMIT leaves no lease/commit/token; a child that commits, flushes and `os._exit(23)` reopens with lease/commit/token intact, WAL and `integrity_check=ok`; power loss **NOT_PROVEN** |
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
-| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry and grant-epoch bump (51 tests) |
+| Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, and same-epoch context rebind/deletion/actor remap (54 tests) |
 
 ## Run
 

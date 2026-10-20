@@ -130,6 +130,35 @@ def _refused(p, code, request=None):
     assert p.commit_count() == 0
 
 
+def _seed_second_grant(p, ref="grant:proto-2", **overrides):
+    values = dict(GRANT)
+    values["grant_ref"] = ref
+    values.update(overrides)
+    p.seed_grant(**values)
+
+
+def _rebind_context(p, *, grant_ref, actor_ref=ACTOR):
+    conn = sqlite3.connect(p.db_path, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE proto_context SET grant_ref=?, actor_ref=? WHERE context_ref=?",
+            (grant_ref, actor_ref, CONTEXT_REF))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _delete_context(p):
+    conn = sqlite3.connect(p.db_path, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM proto_context WHERE context_ref=?", (CONTEXT_REF,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _bump_grant_epoch(p, epoch=2):
     """Test-only owner grant generation bump, in the same temp SQLite DB."""
     conn = sqlite3.connect(p.db_path, isolation_level=None)
@@ -616,6 +645,66 @@ def test_fenced_check_refuses_after_grant_epoch_bump(tmp_path):
     assert caught.value.code == "BLOCKED_STALE_EPOCH", str(caught.value)
 
 
+def test_fenced_check_refuses_same_epoch_context_rebind(tmp_path):
+    """QA2 witness: a context rebind to a different grant must invalidate token 1.
+
+    A second grant with the same owner policy and the same grant_epoch is
+    inserted, and proto_context is rebound to it. The commit row still names
+    grant:proto; the token is historical and must be refused.
+    """
+    p = _make(tmp_path)
+    receipt = p.acquire(_request())
+    _seed_second_grant(p, "grant:proto-2")
+    _rebind_context(p, grant_ref="grant:proto-2")
+    store = proto.ServerOSStore(str(p.state_dir))
+    legacy = store.check_writer(RESOURCE, owner=ACTOR,
+                                token=receipt["token"], now=NOW)
+    assert legacy["authorized"] is True
+    with pytest.raises(proto.PrototypeRefusal) as caught:
+        p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                              token=receipt["token"])
+    assert caught.value.code == "BLOCKED_STALE_CONTEXT", str(caught.value)
+
+
+def test_fenced_check_refuses_deleted_or_actor_remapped_context(tmp_path):
+    for label, mutation, code in (
+            ("deleted", lambda p: _delete_context(p),
+             "BLOCKED_STALE_CONTEXT"),
+            ("actor", lambda p: _rebind_context(p, grant_ref=GRANT_REF,
+                                                actor_ref="human:B"),
+             "BLOCKED_STALE_CONTEXT"),
+    ):
+        case = tmp_path / label
+        case.mkdir()
+        p = _make(case)
+        receipt = p.acquire(_request())
+        mutation(p)
+        with pytest.raises(proto.PrototypeRefusal) as caught:
+            p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                  token=receipt["token"])
+        assert caught.value.code == code, str(caught.value)
+
+
+def test_context_rebind_priority_over_policy_revoke_and_epoch_bump(tmp_path):
+    for label, mutate in (
+            ("revoke", lambda p: p.revoke_policy(
+                POLICY_REF, expected_policy_epoch=1)),
+            ("epoch", lambda p: _bump_grant_epoch(p, 2)),
+    ):
+        case = tmp_path / label
+        case.mkdir()
+        p = _make(case)
+        receipt = p.acquire(_request())
+        _seed_second_grant(p, "grant:proto-2")
+        _rebind_context(p, grant_ref="grant:proto-2")
+        mutate(p)
+        with pytest.raises(proto.PrototypeRefusal) as caught:
+            p.check_writer_fenced(RESOURCE, owner=ACTOR,
+                                  token=receipt["token"])
+        assert caught.value.code == "BLOCKED_STALE_CONTEXT", (
+            label, str(caught.value))
+
+
 def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
         tmp_path):
     p = _make(tmp_path)
@@ -624,7 +713,11 @@ def test_fenced_check_writer_accepts_before_revoke_and_never_effect_eligible(
                                     token=receipt["token"])
     assert checked["prototype_status"] == "PROTOTYPE_FENCED_CHECK"
     assert checked["authorized"] is True
+    assert checked["historical"] is False
     assert checked["effect_eligible"] is False
+    assert checked["context_ref"] == CONTEXT_REF
+    assert checked["context_actor"] == ACTOR
+    assert checked["grant_ref"] == GRANT_REF
 
 
 # ---------------------------------------------------------------------------
