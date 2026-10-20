@@ -881,7 +881,9 @@ class Daemon:
 
     def __init__(self, registry, *, state_dir: Path, socket_path: Path | None = None,
                  host=None, inventory=None, enable_reconcile: bool = False,
-                 runner=None, now=None, sleep=None, log=None) -> None:
+                 runner=None, now=None, sleep=None, log=None,
+                 dispatch_observation_source=None,
+                 dispatch_grant_verifier=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
@@ -904,6 +906,25 @@ class Daemon:
         # a sleep that advance each other; the daemon passes neither.
         self._sleep = sleep or time.sleep
         self._log = log or (lambda message: None)
+
+        # #245 / S2. The two authorities a reconciliation needs are DAEMON-
+        # HELD, not request fields:
+        #
+        #   * the observation source is the provider read that can be asked by
+        #     the client turn id this node still holds after the response was
+        #     lost (`CLIENT_TURN_ID`); an adapter that can only be asked by the
+        #     id that arrived in the lost response is not usable;
+        #   * the grant verifier is the read that says the recorded grant is
+        #     still current (the future #272 `agent.lease.authority.verify`
+        #     adapter, once its parent is owner-approved).
+        #
+        # Production passes neither. `agent.dispatch.reconcile` then refuses
+        # `BLOCKED_PROVIDER_SOURCE` / `BLOCKED_GRANT_UNKNOWN`; it never falls
+        # back to a caller-supplied source, capability or owner, and it never
+        # marks an effect settled. A request cannot register or replace either
+        # object.
+        self._dispatch_observation_source = dispatch_observation_source
+        self._dispatch_grant_verifier = dispatch_grant_verifier
 
         self.budget = Budget(self.state_dir / "health/reconcile-state.json", now=self._now)
         # Passed `runner`, not `host`: the actuator must not be reachable
@@ -1453,6 +1474,14 @@ class Daemon:
             # makes a crash BETWEEN those two distinguishable from one after.
             "agent.dispatch.resolve": self._r_agent_dispatch_resolve,
             "agent.dispatch.record": self._r_agent_dispatch_record,
+            # #245 / S2. The RECONCILIATION read/driver entry. It asks the
+            # daemon-held observation source what happened to an EFFECT_UNKNOWN
+            # attempt and records the answer in the SAME dispatch-attempt
+            # ledger. It is not a send path and cannot mark success: with no
+            # trusted source (the production state) it refuses
+            # BLOCKED_PROVIDER_SOURCE and leaves the attempt exactly where it
+            # was.
+            "agent.dispatch.reconcile": self._r_agent_dispatch_reconcile,
             # §M. Which session a conversation is addressing. Two methods and
             # not four: a selection has no close, because selecting another
             # session is what supersedes one, and a conversation that has
@@ -1597,6 +1626,7 @@ class Daemon:
                 # the record is the daemon's store, and the router that dispatches
                 # reaches it through here.
                 "agent.dispatch.resolve", "agent.dispatch.record",
+                "agent.dispatch.reconcile",
                 # §M. Both, and reachable from a conversation by way of the
                 # CLI. This is the one console operation no provider serves:
                 # no provider has an opinion about which session a person is
@@ -3291,6 +3321,233 @@ class Daemon:
             return {"recorded": False, "reason": "INVALID_CONTEXT",
                     "detail": str(exc)}
         return {"recorded": True, "key": stored["key"], "attempt": stored}
+
+    @staticmethod
+    def _effect_reconciliation_driver():
+        """The #299 driver, loaded by path like every sibling module.
+
+        Loaded lazily so a node that never reconciles does not depend on the
+        integration slice at import time. A missing driver is a refusal at the
+        call site, not a daemon that cannot start. The synthetic name is the
+        one the driver's own tests use, so the `AttemptRefused` class it sees
+        is the one this daemon loaded.
+        """
+        name = "serveros_integrations_effect_reconciliation"
+        if name in sys.modules:
+            return sys.modules[name]
+        path = (_HERE.parent / "integrations" / "v1-effect-reconciliation"
+                / "effect_reconciliation.py")
+        if not path.is_file():
+            return None
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+        return module
+
+    @staticmethod
+    def _dispatch_answer(key: str, result: dict) -> dict:
+        """The driver's answer, with no success boolean and no send claim."""
+        return {
+            "key": str(result.get("key") or key),
+            "status": result.get("status"),
+            "phase": result.get("phase"),
+            "attempt": result.get("attempt"),
+            "observation": result.get("observation"),
+            "source_called": bool(result.get("source_called")),
+            "source_capability": result.get("source_capability"),
+            "because": result.get("because"),
+            "dispatching": False,
+        }
+
+    @staticmethod
+    def _dispatch_refusal(key: str, reason: str, attempt, detail: str) -> dict:
+        return {
+            "key": key,
+            "status": reason,
+            "phase": (attempt or {}).get("phase"),
+            "attempt": attempt,
+            "observation": None,
+            "source_called": False,
+            "source_capability": None,
+            "because": detail,
+            "dispatching": False,
+        }
+
+    def _r_agent_dispatch_reconcile(self, params) -> dict:
+        """Ask the owner what happened to an EFFECT_UNKNOWN attempt (#245 / S2).
+
+        READ, plus at most ONE write to the SAME `dispatch_attempts` ledger
+        `agent.dispatch.record` writes. It never dispatches, never retries and
+        never marks success: the #299 driver can only turn an EFFECT_UNKNOWN
+        into SETTLED / CALL_NOT_SENT, or leave it exactly where it was.
+
+        AUTHORITY IS RESOLVED, NEVER ASSERTED. The request carries only a
+        `context_ref` and a `key`. The principal comes from the resolved, FRESH
+        context; the writer comes from the attempt's own session binding; the
+        observation source and the grant verifier are daemon-held objects. A
+        request that sends `principal`, `writer`, `source`, `capability`,
+        `observation`, `grant_ref`, `phase` or `result` is refused rather than
+        silently ignored, so a caller cannot believe it supplied an authority.
+
+        PROVIDER CAPABILITY IS THE PRODUCTION ANSWER. R1 #308 and the #299
+        capability table measure both current adapters as `RESPONSE_ID_ONLY`
+        after a lost send response: BotMux needs the `trigger_id` that arrived
+        in the lost response, and the Codex app-server read filters by the
+        `turn.id` that arrived in it. With no `CLIENT_TURN_ID` source bound,
+        this route refuses `BLOCKED_PROVIDER_SOURCE` and the attempt stays
+        EFFECT_UNKNOWN. That is a gate, not a missing feature.
+        """
+        for forbidden in ("principal", "writer", "current_writer", "source",
+                          "source_capability", "capability", "observation",
+                          "reconciler", "verifier", "grant", "grant_ref",
+                          "grant_verifier", "attempt", "phase", "result",
+                          "success"):
+            if forbidden in params:
+                return self._dispatch_refusal(
+                    str(params.get("key") or ""), "INVALID_CONTEXT", None,
+                    (f"{forbidden!r} is not an input to this call. The principal "
+                     f"is resolved from the trusted context, the writer from the "
+                     f"attempt's own binding, and the observation source and "
+                     f"grant verifier from the daemon's own registration"))
+
+        context_ref = str(params.get("context_ref") or "").strip()
+        if not context_ref:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                ("a reconciliation is attributed to a trusted context_ref; none "
+                 "was presented, so nobody can be shown to be the actor"))
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                resolved["because"])
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None, str(exc))
+        freshness = actor_mod.freshness(trusted, _iso(self._now()))
+        if freshness.get("state") != "FRESH":
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                (f"the presented context is {freshness.get('state')!r}, which "
+                 f"authorizes nothing: {freshness.get('because')}"))
+        principal = trusted["actor_ref"]
+
+        key = str(params.get("key") or "").strip()
+        if not key:
+            return self._dispatch_refusal(
+                key, "INVALID_CONTEXT", None,
+                ("no key was presented; a reconciliation is about a recorded "
+                 "dispatch attempt"))
+        store = self.control_store()
+        attempt = store.get_dispatch_attempt(key)
+        if attempt is None:
+            return self._dispatch_refusal(
+                key, "NO_ATTEMPT", None,
+                ("no attempt is recorded under this key, so there is no unknown "
+                 "outcome to reconcile"))
+
+        recorded_principal = str(attempt.get("principal") or "").strip()
+        if recorded_principal != principal:
+            return self._dispatch_refusal(
+                key, "REFUSE_PRINCIPAL", attempt,
+                (f"this attempt was dispatched by {recorded_principal!r} and the "
+                 f"trusted context is {principal!r}. An observation from a "
+                 f"different principal is not evidence about this effect"))
+
+        # A terminal/in-flight attempt already has its answer. Do not read a
+        # grant or ask a source for it: a late reply must not overwrite it, and
+        # there is nothing here to authorize. This mirrors the driver's own
+        # phase gate and keeps the refusal from depending on a grant it does
+        # not need.
+        phase = str(attempt.get("phase") or "").strip().upper()
+        if phase != dispatch_attempts_mod.EFFECT_UNKNOWN:
+            return self._dispatch_refusal(
+                key, "NOT_UNKNOWN", attempt,
+                (f"this attempt is {phase or 'unphased'}, not EFFECT_UNKNOWN. "
+                 f"A late reply does not overwrite an attempt that already has "
+                 f"its own answer"))
+
+        grant_ref = str(attempt.get("grant_ref") or "").strip()
+        if grant_ref:
+            verifier = self._dispatch_grant_verifier
+            if verifier is None:
+                return self._dispatch_refusal(
+                    key, "BLOCKED_GRANT_UNKNOWN", attempt,
+                    (f"the attempt names grant {grant_ref!r} but no trusted grant "
+                     f"verifier is bound to this daemon, so its current epoch and "
+                     f"revocation cannot be proved"))
+            try:
+                # Copies: a verifier may read the record and the context, but
+                # it must not be able to mutate the in-memory store through
+                # them. The authoritative write is the store's, under its lock.
+                verdict = verifier(dict(attempt), context=dict(trusted),
+                                   now=_iso(self._now()))
+            except Exception as exc:
+                return self._dispatch_refusal(
+                    key, "BLOCKED_GRANT_UNKNOWN", attempt,
+                    (f"the grant verifier did not answer "
+                     f"({type(exc).__name__}); an unproved grant authorizes "
+                     f"nothing"))
+            if not isinstance(verdict, dict) or verdict.get("verified") is not True:
+                reason = (str(verdict.get("reason") or "BLOCKED_GRANT_UNKNOWN")
+                          if isinstance(verdict, dict) else "BLOCKED_GRANT_UNKNOWN")
+                because = (str(verdict.get("because") or "")
+                           if isinstance(verdict, dict) else "")
+                return self._dispatch_refusal(
+                    key, reason, attempt,
+                    because or (f"the grant verifier refused {grant_ref!r}"))
+
+        # The writer is the claim recorded on THIS attempt's session binding,
+        # never a request field. `current_writer` is the kernel's one
+        # derivation from the same binding store the admission gate reads.
+        writer = None
+        session_ref = str(attempt.get("session_ref") or "").strip()
+        if session_ref:
+            binding = store.get_binding(session_ref)
+            claimed = (binding or {}).get("writer")
+            writer = dict(claimed) if isinstance(claimed, dict) else None
+        work_item = str(attempt.get("work_item") or "").strip()
+        current_writer = (coordination_mod.current_writer(
+            store.bindings(), work_item) if work_item else None)
+
+        try:
+            driver_mod = self._effect_reconciliation_driver()
+        except Exception as exc:
+            return self._dispatch_refusal(
+                key, "BLOCKED_PROVIDER_SOURCE", attempt,
+                (f"the reconciliation driver is not usable "
+                 f"({type(exc).__name__}); the attempt was not settled"))
+        if driver_mod is None:
+            return self._dispatch_refusal(
+                key, "BLOCKED_PROVIDER_SOURCE", attempt,
+                ("the reconciliation driver is not installed on this node; the "
+                 "attempt was not settled"))
+        try:
+            result = driver_mod.EffectReconciler(
+                attempts=store,
+                observation_source=self._dispatch_observation_source,
+                now=_iso(self._now()),
+            ).reconcile(key, principal=principal, writer=writer,
+                        current_writer=current_writer)
+        except agent_control_store_mod.AttemptRefused as exc:
+            return self._dispatch_refusal(key, exc.reason_code, attempt, exc.detail)
+        except agent_control_store_mod.StoreError as exc:
+            return self._dispatch_refusal(
+                key, "INVALID_CONTEXT", attempt, str(exc))
+        except Exception as exc:
+            return self._dispatch_refusal(
+                key, "SOURCE_UNAVAILABLE", attempt,
+                (f"the reconciliation driver raised "
+                 f"({type(exc).__name__}); the attempt was not settled"))
+        return self._dispatch_answer(key, result)
 
     def _r_agent_binding_list(self, params) -> dict:
         """Every binding this node holds, by role. Never by actor, never by Item.
