@@ -28,10 +28,8 @@ fills from `SO_PEERCRED`. That is not REAL_DEVICE evidence.
 """
 from __future__ import annotations
 
-import dataclasses
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -42,8 +40,13 @@ RUNTIME = REPO / "runtime"
 ITEM = "SRV-0001"
 PROJECT = "serveros"
 ACTION = "lease.acquire"
-WE_REPO = Path("/data/home/vince/workspace/src/work-engine")
-WE14 = "e4c4a2b2b3fb6fb7a0af564fa30d8bc5eea3043a"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "v1_portability"))
+import v1_portability_harness as H  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="X2 evidence scope: Linux (Tokyo / Dell fjd) only")
 
 
 def _load_at(name: str, path: Path):
@@ -176,40 +179,70 @@ def test_the_positive_result_is_the_full_lease_grant_shape(daemon):
     assert grant["os_principal"] == f"uid:{os.getuid()}"
 
 
-def test_the_result_constructs_the_real_work_engine_lease_grant(daemon, tmp_path):
-    """Instantiate WE #14's OWN dataclass from the returned value.
+def test_the_positive_result_matches_the_pinned_public_contract(daemon):
+    """The returned grant is checked against a PINNED public fixture.
 
-    The dataclass is read out of the Work Engine repository at the exact commit
-    (read-only `git show`), not restated here: a copy of the field list would
-    agree with itself and prove nothing. `workengine.authority` imports only
-    `LeaseError` from its package, so the sibling module is stubbed to let the
-    REAL class definition load without dragging the whole package in.
+    The fixture is a contract description (field names and wire types), not a
+    copy of any private class definition. It proves the daemon's answer is the
+    shape a Work Engine #14 consumer expects without reading another user's
+    checkout.
     """
-    if not (WE_REPO / ".git").exists():
-        pytest.skip("the Work Engine checkout is not present on this host")
-    source = subprocess.run(
-        ["git", "-C", str(WE_REPO), "show", f"{WE14}:workengine/authority.py"],
-        check=True, capture_output=True, text=True).stdout
-    package = tmp_path / "we14" / "workengine"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "store.py").write_text("class LeaseError(Exception):\n    pass\n",
-                                      encoding="utf-8")
-    (package / "authority.py").write_text(source, encoding="utf-8")
-    sys.path.insert(0, str(package.parent))
-    try:
-        module = importlib.import_module("workengine.authority")
-        assert module.LeaseGrant.__dataclass_fields__.keys() == set(LEASE_GRANT_FIELDS)
-        ctx = a_context(daemon)
-        a_bound_grant(daemon, ctx)
-        grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
-        built = module.LeaseGrant(**grant)      # the TypeError the QA measured
-        assert built.valid_from == grant["valid_from"]
-        assert built.items == (ITEM,)
-        assert built.os_principal == f"uid:{os.getuid()}"
-        assert built.epoch == grant["epoch"]
-    finally:
-        sys.path.remove(str(package.parent))
+    contract = H.lease_grant_contract()
+    fields = contract["fields"]
+    assert set(fields) == set(LEASE_GRANT_FIELDS)
+
+    ctx = a_context(daemon)
+    a_bound_grant(daemon, ctx)
+    grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
+    assert set(grant) == set(fields), sorted(grant)
+
+    for name, kind in fields.items():
+        value = grant[name]
+        if kind == "string":
+            assert isinstance(value, str) and value, (name, value)
+        elif kind == "array[string]":
+            assert isinstance(value, (list, tuple)), (name, value)
+            assert all(isinstance(item, str) for item in value), (name, value)
+        elif kind == "number":
+            assert isinstance(value, float), (name, value)
+        elif kind == "integer":
+            assert isinstance(value, int) and not isinstance(value, bool)
+        elif kind == "boolean":
+            assert isinstance(value, bool), (name, value)
+        else:  # pragma: no cover - a fixture typo must be loud
+            raise AssertionError(f"unknown contract type {kind!r} for {name}")
+    assert grant["items"] == (ITEM,)
+    assert grant["os_principal"] == f"uid:{os.getuid()}"
+
+
+def test_the_real_work_engine_lease_grant_dataclass_is_private_legacy_source_required(
+        daemon):
+    """Instantiate WE #14's OWN dataclass when, and only when, it is public.
+
+    `workengine/authority.py` is absent from the sanitized public tree. Reading
+    the owner-private archive to obtain it is exactly the portability defect
+    this suite removes, so the absence is classified
+    `PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN`, not hidden behind a blanket
+    skip. If the module ever ships in-tree, this test runs the original
+    assertion and the classification must be removed deliberately.
+    """
+    authority = H.in_tree_authority()
+    if authority is None or not hasattr(authority, "LeaseGrant"):
+        pytest.xfail(
+            "PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN: the public in-tree "
+            "workengine has no LeaseGrant class. Proving WE #14's own dataclass "
+            "accepts this answer needs the owner-private archive, which this "
+            "suite must not read. See integrations/fleet-v1-portability/"
+            "README.md.")
+
+    ctx = a_context(daemon)
+    a_bound_grant(daemon, ctx)
+    grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
+    built = authority.LeaseGrant(**grant)      # the TypeError the QA measured
+    assert built.valid_from == grant["valid_from"]
+    assert built.items == (ITEM,)
+    assert built.os_principal == f"uid:{os.getuid()}"
+    assert built.epoch == grant["epoch"]
 
 
 def test_an_unreadable_time_refuses(daemon):
