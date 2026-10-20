@@ -25,6 +25,11 @@ WHAT THIS FILE PINS
 
 LOCAL only: the peer is supplied to `handle(peer=…)`, the seam the Unix socket
 fills from `SO_PEERCRED`. That is not REAL_DEVICE evidence.
+
+X2 conformance at rc/i1-v2-review-20261020 @ `ec43f714`: the REAL public
+in-tree `workengine.authority.LeaseGrant` (#304) is imported and instantiated
+from the daemon's verified wire. The old owner-private class is labeled
+`HISTORICAL_PRIVATE_SOURCE_UNVERIFIED`; it is not read, extracted or copied.
 """
 from __future__ import annotations
 
@@ -215,34 +220,43 @@ def test_the_positive_result_matches_the_pinned_public_contract(daemon):
     assert grant["os_principal"] == f"uid:{os.getuid()}"
 
 
-def test_the_real_work_engine_lease_grant_dataclass_is_private_legacy_source_required(
-        daemon):
-    """Instantiate WE #14's OWN dataclass when, and only when, it is public.
+def test_the_real_public_work_engine_lease_grant_accepts_the_verified_wire(daemon):
+    """Instantiate the REAL public in-tree `LeaseGrant` from the daemon's answer.
 
-    `workengine/authority.py` is absent from the sanitized public tree. Reading
-    the owner-private archive to obtain it is exactly the portability defect
-    this suite removes, so the absence is classified
-    `PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN`, not hidden behind a blanket
-    skip. If the module ever ships in-tree, this test runs the original
-    assertion and the classification must be removed deliberately.
+    RC-v2 (`ec43f714`) ships `workengine/authority.py` (#304), so this no longer
+    needs an owner-private checkout. The class definition is imported from the
+    public tree; only the daemon's verified wire is an input.
     """
     authority = H.in_tree_authority()
-    if authority is None or not hasattr(authority, "LeaseGrant"):
-        pytest.xfail(
-            "PRIVATE_LEGACY_SOURCE_REQUIRED / NOT_RUN: the public in-tree "
-            "workengine has no LeaseGrant class. Proving WE #14's own dataclass "
-            "accepts this answer needs the owner-private archive, which this "
-            "suite must not read. See integrations/fleet-v1-portability/"
-            "README.md.")
+    assert authority is not None, (
+        "rc/i1-v2-review-20261020 must ship public workengine/authority.py")
+    assert set(authority.LeaseGrant.__dataclass_fields__) == set(
+        LEASE_GRANT_FIELDS)
 
     ctx = a_context(daemon)
     a_bound_grant(daemon, ctx)
     grant = verify(daemon, context_ref=ctx["context_ref"])["grant"]
     built = authority.LeaseGrant(**grant)      # the TypeError the QA measured
-    assert built.valid_from == grant["valid_from"]
+    assert built.principal == "human:A"
+    assert built.grant_ref == "grant:1"
+    assert built.project == PROJECT
     assert built.items == (ITEM,)
-    assert built.os_principal == f"uid:{os.getuid()}"
+    assert built.actions == (ACTION,)
+    assert built.valid_from == grant["valid_from"]
+    assert built.expires_at == grant["expires_at"]
+    assert built.revoked is False
     assert built.epoch == grant["epoch"]
+    assert built.os_principal == f"uid:{os.getuid()}"
+
+
+def test_the_public_authority_module_exposes_the_exact_seams():
+    """The positive T10/grant work depends on these public names existing."""
+    authority = H.in_tree_authority()
+    assert authority is not None
+    for name in ("LeaseGrant", "ReceiptError", "T10Binding",
+                 "VerifiedRunReceipt", "OwnerVerifiedLease"):
+        assert hasattr(authority, name), name
+    assert authority.ReceiptError.__name__ == "ReceiptError"
 
 
 def test_an_unreadable_time_refuses(daemon):

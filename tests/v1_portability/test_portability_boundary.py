@@ -74,9 +74,17 @@ def test_harness_loads_only_the_in_tree_workengine():
     package = harness.workengine()
     location = Path(package.__file__).resolve()
     assert location.is_relative_to(REPO), location
-    assert harness.in_tree_authority() is None, (
-        "the public tree unexpectedly ships workengine/authority.py; the "
-        "PRIVATE_LEGACY_SOURCE_REQUIRED classification must be revisited")
+    authority = harness.in_tree_authority()
+    assert authority is not None, (
+        "rc/i1-v2-review-20261020 must ship public workengine/authority.py")
+    assert Path(authority.__file__).resolve().is_relative_to(REPO)
+
+
+@pytest.mark.parametrize("path", SUITES, ids=lambda p: p.name)
+def test_suite_has_no_blanket_skip_or_xfail(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert "pytest.xfail(" not in text, f"{path.name} still xfails a proof"
+    assert "pytest.skip(" not in text, f"{path.name} still skips a proof"
 
 
 def test_guard_catches_argv_but_not_the_configured_env_value():
