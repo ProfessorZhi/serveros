@@ -3,12 +3,15 @@
 **Status: `QA_PARTIAL` / `NOT_RELEASE`. The QA2 findings are independently
 reproduced at the exact PR heads (S1 6/6, R1 8/8; 2 P1 findings each, no P0),
 and both downstream fix PRs now pass the same attack set at their exact SHAs:
-S1 #363 `8840f41` and R1 #361 `6a27204`. **A separate critical consumer seam is
-RED at #363: `verified:true` with `atomicity:BLOCKED_OWNER_COMMIT_SEAM` is still
-consumed by `OwnerVerifiedLease.acquire`, which writes a new lease after a
-post-read policy revoke. This is `BLOCKED_OWNER_COMMIT_SEAM` / `NOT_V1_SIGNED`;
-a new S1 fix PR is pending.** The fixes are stacked Drafts, not in RC-v7 and
-not an RC-v8 signature. No QA/V1/RC signature.**
+S1 #363 `8840f41` and R1 #361 `6a27204`. **A separate critical consumer seam
+was RED at #363 (`verified:true` + `atomicity:BLOCKED_OWNER_COMMIT_SEAM` was
+consumed by `OwnerVerifiedLease.acquire`, writing a post-read lease) and is
+GREEN/fail-closed at the new S1 fix #364 `7fe1ccd`: the owner-backed positive
+and the revoke-after-read race both produce zero leases and
+`BLOCKED_OWNER_COMMIT_SEAM`. No COMMIT_FENCED producer exists, so this is
+explicitly `BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`, not a positive lease
+authority. The fixes are stacked Drafts, not in RC-v7 and not an RC-v8
+signature. No QA/V1/RC signature.**
 
 Lane: independent Q1 QA (#244/#250, register #256). QA2's Draft #360 was used
 read-only as the harness; the QA2 branch was not modified. All work was done
@@ -25,7 +28,8 @@ provider, OAuth, credential, service or device was touched.
 | QA2 harness | #360 `2888d8bda6828bd2c87c68a770440933fdb4ae23`, base RC-v7 `85c79b2` |
 | S1 owner policy (RED) | #358 `b183aab0b8913ed36e5de539c50223d3eaf508f1`, base RC-v6 `8620a90` |
 | R1 reconcile source (RED) | #356 `b4020b73e6b7ec2b1f6301471a9872f8864c1643`, base #311 `34b215c` |
-| S1 fix (GREEN candidate) | #363 `8840f416169b22122450fb61a85f2b88c73715a0`, base #358 |
+| S1 fix (QA2 GREEN) | #363 `8840f416169b22122450fb61a85f2b88c73715a0`, base #358 |
+| S1 commit-fence fix | #364 `7fe1cccd6b7f103e58140ef7d512d69e436704ec`, base #363 |
 | R1 fix (GREEN candidate) | #361 `6a27204300753f129719103d0aee811ac675622a`, base #356 |
 | Main | `771c81c06f6c0b6a5fac65fdf36e51cd52a0f4b8` |
 | RC-v7 | `85c79b20c62da8db2f4d5c98284a34728b6e8f81` (neither #358 nor #356 is in it) |
@@ -209,11 +213,28 @@ authority → `BLOCKED_TRUST_SOURCE`, zero leases.
 Required fix: either the daemon returns `verified:false,
 reason:BLOCKED_OWNER_COMMIT_SEAM` until a real atomic commit fence exists, or
 the mutating Work/lease boundary enforces an authoritative fence the adapter
-validates. Renaming the reason or adding another read is not a fence. **No new
-S1 fix PR is published yet; GREEN is NOT_RUN.** This is a future activation /
-V1 release blocker (`BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`), not evidence
-of a current production exploit because the installed daemon binds no
-resolver.
+validates. Renaming the reason or adding another read is not a fence.
+
+### GREEN at S1 fix #364 `7fe1cccd6b7f103e58140ef7d512d69e436704ec`
+
+The new S1 PR (#364, base #363) makes the owner-backed answer a refusal and
+adds the adapter marker. Same real-chain probe:
+
+| Check | Result |
+|---|---|
+| Author seven files | **97 passed, 1 skipped, 23 subtests** |
+| owner-backed positive | **0 leases**, `BLOCKED_OWNER_COMMIT_SEAM` |
+| revoke-after-last-read race | **0 leases**, `BLOCKED_OWNER_COMMIT_SEAM` |
+| adapter unfenced owner answer | refused |
+| adapter explicit `COMMIT_FENCED` (synthetic contract control) | accepted |
+| no resolver | `BLOCKED_OWNER_POLICY`, 0 leases |
+| no trusted authority | `BLOCKED_TRUST_SOURCE`, 0 leases |
+
+The probe is **10/10 GREEN**. This closes the negative seam; it does **not**
+create a positive owner authority: no production parent emits
+`COMMIT_FENCED`, so V1 Work Engine lease authority remains
+`BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED`. The #363 RED and #364 GREEN are
+both at exact exported SHAs; no product source was edited by this lane.
 
 ## 6. Judgment
 
@@ -226,10 +247,12 @@ without a production resolver; R1 remains `SYNTHETIC_FIXTURE` with production
 production trust signature. Real owner resolver and two real UIDs, a real
 provider/owner signature, live OAuth, Windows real SCM/REAL_DEVICE,
 CLIENT_E2E and full T1–T12 remain BLOCKED; RC-v8 is not published. The
-consumer seam at #363 is independently RED (`BLOCKED_OWNER_COMMIT_SEAM /
-NOT_V1_SIGNED`): `OwnerVerifiedLease.acquire` writes a new lease from a
-point-in-time `verified:true` answer after a post-read revoke. Until a new S1
-fix is published and re-tested, no V1 Work Engine lease-authority signature.
+consumer seam was independently RED at #363 and is GREEN/fail-closed at #364
+for the same real-chain attack: zero leases on the owner-backed positive and
+on the post-read revoke, `BLOCKED_OWNER_COMMIT_SEAM`. It remains
+`BLOCKED_OWNER_COMMIT_SEAM / NOT_V1_SIGNED` because no production
+`COMMIT_FENCED` parent exists; the negative is closed, the positive lease
+authority is not.
 
 ## 7. Receipts
 
@@ -249,4 +272,7 @@ fix is published and re-tested, no V1 Work Engine lease-authority signature.
 | R1 #361 author | 0 | 61 passed |
 | R1 #361 independent v2 probe | 0 | `qa2-fix-20261020/r17-r1-361-probe.log` (25/25) |
 | R1 #361 v1 probe | — | incompatible with v2 result shape (documented above) |
-| Fix-PR poll | — | `r16-s1r1-fix-poll.log` |
+| S1 #364 author | 0 | 97 passed, 1 skipped, 23 subtests |
+| S1 #364 seam probe | 0 | `r19-seam-364.log` (10/10 GREEN) |
+| #363 seam RED | 1 | `r18-seam-363.log` (race wrote 1 lease) |
+| Fix-PR poll | — | `r16-s1r1-fix-poll.log`; `r18-seam-fix-poll.log` |
