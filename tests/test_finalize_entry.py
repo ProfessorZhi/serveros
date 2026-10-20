@@ -27,6 +27,7 @@ production parent exists; production remains `BLOCKED_TRUST_SOURCE`.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -37,6 +38,7 @@ from unittest.mock import patch
 from workengine import WorkItem
 from workengine.authority import ReceiptError, T10Binding, VerifiedRunReceipt
 from workengine.cli import main
+from workengine.engine import RootUnbound
 from workengine.model import Activity, ContextMode, ExecutionContext, RunState
 from workengine.store import ServerOSStore
 
@@ -108,6 +110,32 @@ class FinalizeEntryTest(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
+
+        # A LOCAL, synthetic host profile. The CLI's `_server()` resolves an
+        # artifacts root through the device profile when `--artifacts-root` is
+        # not supplied; this fixture supplies the roots and nothing else. It is
+        # not the user's profile, is not a device identity, and grants no
+        # authority: `t10_required` still refuses without a trusted parent.
+        profile = Path(self._td.name) / "host-profile.yaml"
+        roots = {
+            "state_root": Path(self._td.name) / "profile-state",
+            "artifacts_root": Path(self._td.name) / "profile-artifacts",
+            "workspace_root": Path(self._td.name) / "workspace",
+            "runtime_assets_root": Path(self._td.name) / "runtime-assets",
+        }
+        for path in roots.values():
+            path.mkdir(parents=True, exist_ok=True)
+        profile.write_text(
+            "schema: serveros/host-profile.v1\n"
+            "node:\n"
+            "  roots:\n"
+            + "".join(f"    {name}: {path}\n" for name, path in roots.items()),
+            encoding="utf-8")
+        self._profile_env = patch.dict(
+            os.environ, {"SERVEROS_HOST_PROFILE": str(profile)})
+        self._profile_env.start()
+        self.addCleanup(self._profile_env.stop)
+
         self.store = ServerOSStore(Path(self._td.name) / "state")
         self.store.register_project("demo", "DEM")
         self.item = self.store.create_item(
@@ -196,6 +224,33 @@ class FinalizeEntryTest(unittest.TestCase):
         with self.store.connection() as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0], 0)
+
+    def test_cli_without_a_host_profile_is_root_unbound(self):
+        """No device profile and no explicit artifacts root: refuse, never guess."""
+        missing = Path(self._td.name) / "absent" / "host-profile.yaml"
+        with patch.dict(os.environ, {"SERVEROS_HOST_PROFILE": str(missing)}):
+            with self.assertRaises(RootUnbound) as ctx:
+                main([
+                    "run", "finalize", self.item.id, self.run.id,
+                    "--verdict", "PASS", "--exit-code", "0",
+                    "--command", "pytest", "--revision", "r", "--case", "one",
+                    "--state-dir", str(Path(self._td.name) / "state"),
+                ])
+        self.assertIn("is unreadable", str(ctx.exception))
+
+    def test_cli_with_an_unreadable_host_profile_is_root_unbound(self):
+        """A path that is not a readable document is still no authored root."""
+        unreadable = Path(self._td.name) / "profile-is-a-directory"
+        unreadable.mkdir()
+        with patch.dict(os.environ, {"SERVEROS_HOST_PROFILE": str(unreadable)}):
+            with self.assertRaises(RootUnbound) as ctx:
+                main([
+                    "run", "finalize", self.item.id, self.run.id,
+                    "--verdict", "PASS", "--exit-code", "0",
+                    "--command", "pytest", "--revision", "r", "--case", "one",
+                    "--state-dir", str(Path(self._td.name) / "state"),
+                ])
+        self.assertIn("is unreadable", str(ctx.exception))
 
     # -- the T10-required store route, no trusted parent -------------------
 
