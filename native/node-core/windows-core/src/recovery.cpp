@@ -166,7 +166,7 @@ RecoveryResult RecoveryEngine::recover(UnitRole role, std::int64_t now) {
     else if (!started || after == ProbeReadiness::NotReady) {
         s.failures = std::min(s.failures + 1, 3U);
         if (s.failures >= 3)
-            s.circuit_until = now + 3600;
+            s.circuit_until = now + 1800;
     }
     if (!tx->save(s))
         return {true, "OUTCOME_UNKNOWN"};

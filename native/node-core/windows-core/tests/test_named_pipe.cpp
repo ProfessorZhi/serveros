@@ -8,6 +8,10 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "win32_detail.hpp"
+#include <shlobj.h>
+#include <sstream>
+#include <iomanip>
 #endif
 using namespace nodecore::windows_core;
 struct UnknownProbe : FunctionalProbe {
@@ -22,6 +26,15 @@ int main() {
 #if defined(_WIN32)
     PipeIdentity self;
     CHECK(current_pipe_identity(self));
+    {
+        std::wstring sid(self.owner_sid.begin(), self.owner_sid.end());
+        CHECK(detail::task_execute_descriptor(L"O:" + sid + L"G:" + sid + L"D:(A;;0x1200a0;;;" +
+                                              sid + L")"));
+        CHECK(!detail::task_execute_descriptor(L"O:" + sid + L"G:" + sid + L"D:(D;;FA;;;" + sid +
+                                               L")"));
+        CHECK(!detail::task_execute_descriptor(L"D:(A;;FA;;;" + sid + L")"));
+        CHECK(!detail::task_execute_descriptor(L"invalid descriptor"));
+    }
     {
         std::promise<PipeIdentity> ready;
         auto wait = ready.get_future();
@@ -55,7 +68,8 @@ int main() {
         server.join();
         if (pipe != INVALID_HANDLE_VALUE)
             ::CloseHandle(pipe);
-        CHECK(served.ok);
+        CHECK(!served.ok);
+        CHECK_EQ(served.code, std::string("DEADLINE_OR_PROTOCOL"));
         CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(2));
     }
     {
@@ -102,6 +116,12 @@ int main() {
         if (tx) {
             RecoveryState state;
             CHECK(tx->load(state));
+            tx.reset();
+            tx = store.lock(g);
+            CHECK(tx != nullptr);
+            CHECK(tx && tx->load(state));
+            if (!tx)
+                return check::report("windows_named_pipe_and_store");
             state.last_seen = 10000;
             state.pending = true;
             state.attempts = {10000};
@@ -115,6 +135,30 @@ int main() {
                 CHECK(reopened->load(out));
                 CHECK(out.pending);
                 CHECK_EQ(out.attempts, state.attempts);
+                reopened.reset();
+                // Delete only this test's unique native journal on the hosted
+                // runner; the old lock must prevent silently resetting it.
+                PWSTR local = nullptr;
+                CHECK(SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)));
+                if (local) {
+                    std::uint64_t hash = 14695981039346656037ULL;
+                    for (unsigned char c : unit_key(g)) {
+                        hash ^= c;
+                        hash *= 1099511628211ULL;
+                    }
+                    std::wostringstream name;
+                    name << std::hex << std::setfill(L'0') << std::setw(16) << hash;
+                    auto path =
+                        std::wstring(local) + L"\\ServerOS\\Core\\" + name.str() + L".journal";
+                    ::CoTaskMemFree(local);
+                    CHECK(::DeleteFileW(path.c_str()) != 0);
+                    auto missing = store.lock(g);
+                    CHECK(missing != nullptr);
+                    if (missing) {
+                        RecoveryState absent;
+                        CHECK(!missing->load(absent));
+                    }
+                }
             }
         }
     }

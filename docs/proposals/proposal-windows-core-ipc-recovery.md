@@ -25,3 +25,8 @@ Linux sockets/SO_PEERCRED do not implement Windows ACL/token semantics. Shell sc
 
 ## Open Questions
 Real Windows service/task identity and functional probe configurations require local integration; this change does not guess deployed unit names. Live Windows behavior and authenticated Fleet integration remain NOT_RUN. Trusted grant creation/launch integration is documented rather than silently installing global policy.
+
+## Reviewed implementation corrections and resident extension
+Independent review found three concrete blockers in the first source candidate: AccessCheck lacked owner/group; CancelIoEx followed by infinite GetOverlappedResult violated deadlines; first healthy/refused transaction never initialized its journal. Request the complete task descriptor and exercise real AccessCheck fixtures; heap-own every OVERLAPPED and kernel-facing buffer, retain incomplete cancellations in a process-lifetime registry capped at 128, and close failed pipe instances; initialize the journal durably under its first exclusive lock before exposing it. Reopening a deleted committed record remains a refusal.
+
+The next commit adds a minimal resident Windows watch console/SCM service wrapper, fixed owner-protected local desired configuration, per-target functional loopback HTTP JSON probes and per-pass status publication. It reuses running/manual/disabled, observe_only and generation semantics; it does not install a service or invent a second machine authority. The watch must remain responsive when a status client stalls. Native service actions remain real-device NOT_RUN.

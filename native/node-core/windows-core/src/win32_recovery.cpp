@@ -87,33 +87,13 @@ bool open_service(const UnitGrant &g, Service &manager, Service &service) {
 }
 bool task_execute_grant(IRegisteredTask *task) {
     Bstr descriptor;
-    if (FAILED(task->GetSecurityDescriptor(DACL_SECURITY_INFORMATION, &descriptor.s)))
+    if (FAILED(task->GetSecurityDescriptor(OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                                               DACL_SECURITY_INFORMATION,
+                                           &descriptor.s)))
         return false;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptor, SDDL_REVISION_1, &sd,
-                                                                nullptr))
-        return false;
-    HANDLE raw = nullptr, dup = nullptr;
-    bool allowed = false;
-    if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &raw)) {
-        detail::Handle token(raw);
-        if (::DuplicateToken(token, SecurityImpersonation, &dup)) {
-            detail::Handle impersonation(dup);
-            GENERIC_MAPPING map{FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE,
-                                FILE_ALL_ACCESS};
-            DWORD desired = GENERIC_EXECUTE;
-            ::MapGenericMask(&desired, &map);
-            alignas(PRIVILEGE_SET) BYTE bytes[4096];
-            DWORD count = sizeof(bytes), granted = 0;
-            BOOL access = FALSE;
-            if (::AccessCheck(sd, impersonation, desired, &map,
-                              reinterpret_cast<PRIVILEGE_SET *>(bytes), &count, &granted, &access))
-                allowed = access != FALSE;
-        }
-    }
-    ::LocalFree(sd);
-    return allowed;
+    return descriptor.s && detail::task_execute_descriptor(descriptor.s);
 }
+
 bool open_task(const UnitGrant &g, Com<ITaskService> &service, Com<IRegisteredTask> &task) {
     if (FAILED(::CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_ITaskService, reinterpret_cast<void **>(&service.p))))

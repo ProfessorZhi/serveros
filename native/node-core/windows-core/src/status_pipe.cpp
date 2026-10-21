@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <vector>
 namespace nodecore::windows_core {
 bool valid_pipe_limits(PipeLimits l) {
     return l.transaction_ms >= 1 && l.transaction_ms <= 10000 &&
@@ -46,14 +50,60 @@ DWORD remaining(ULONGLONG end) {
     auto now = ::GetTickCount64();
     return now >= end ? 0 : static_cast<DWORD>(std::min<ULONGLONG>(end - now, 60000));
 }
-bool finish(HANDLE h, OVERLAPPED &ov, ULONGLONG end, DWORD &count) {
+// An abandoned cancellation can outlive the handle and the deadline. Every
+// OVERLAPPED and kernel-facing buffer therefore has heap-owned lifetime. Never
+// wait indefinitely and never release an outstanding operation on timeout.
+struct PendingIo;
+struct IoRegistry {
+    std::atomic<unsigned> slots{0};
+    std::mutex mutex;
+    std::vector<std::unique_ptr<PendingIo>> retired;
+};
+IoRegistry &registry() {
+    // Deliberately OS-lifetime storage: static destructors must not free a
+    // still-pending kernel buffer before process termination cancels all I/O.
+    static auto *state = new IoRegistry;
+    return *state;
+}
+struct PendingIo {
+    OVERLAPPED ov{};
+    Handle event{::CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    std::vector<unsigned char> bytes;
+    explicit PendingIo(DWORD size) : bytes(size) { ov.hEvent = event; }
+    ~PendingIo() { registry().slots.fetch_sub(1); }
+};
+std::unique_ptr<PendingIo> operation(DWORD size) {
+    auto &state = registry();
+    {
+        std::lock_guard<std::mutex> guard(state.mutex);
+        for (auto it = state.retired.begin(); it != state.retired.end();) {
+            if (::WaitForSingleObject((*it)->event, 0) == WAIT_OBJECT_0)
+                it = state.retired.erase(it);
+            else
+                ++it;
+        }
+    }
+    if (state.slots.fetch_add(1) >= 128) {
+        state.slots.fetch_sub(1);
+        return {};
+    }
+    auto op = std::make_unique<PendingIo>(size);
+    if (!op->event.valid())
+        return {};
+    return op;
+}
+bool finish(HANDLE h, std::unique_ptr<PendingIo> &op, ULONGLONG end, DWORD &count) {
     DWORD left = remaining(end);
-    if (!left || ::WaitForSingleObject(ov.hEvent, left) != WAIT_OBJECT_0) {
-        ::CancelIoEx(h, &ov);
-        ::GetOverlappedResult(h, &ov, &count, TRUE);
+    if (!left || ::WaitForSingleObject(op->event, left) != WAIT_OBJECT_0) {
+        ::CancelIoEx(h, &op->ov);
+        if (::WaitForSingleObject(op->event, 0) != WAIT_OBJECT_0) {
+            auto &state = registry();
+            std::lock_guard<std::mutex> guard(state.mutex);
+            state.retired.push_back(std::move(op));
+        }
         return false;
     }
-    return ::GetOverlappedResult(h, &ov, &count, FALSE) != 0;
+    return ::GetOverlappedResult(h, &op->ov, &count, FALSE) != 0;
 }
 bool transfer(HANDLE h, void *buffer, DWORD len, bool write, ULONGLONG end) {
     auto *bytes = static_cast<unsigned char *>(buffer);
@@ -61,18 +111,20 @@ bool transfer(HANDLE h, void *buffer, DWORD len, bool write, ULONGLONG end) {
     while (done < len) {
         if (!remaining(end))
             return false;
-        Handle event(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        if (!event.valid())
+        auto op = operation(len - done);
+        if (!op)
             return false;
-        OVERLAPPED ov{};
-        ov.hEvent = event;
+        if (write)
+            std::copy(bytes + done, bytes + len, op->bytes.begin());
         DWORD n = 0;
-        BOOL ok = write ? ::WriteFile(h, bytes + done, len - done, &n, &ov)
-                        : ::ReadFile(h, bytes + done, len - done, &n, &ov);
-        if (!ok && (::GetLastError() != ERROR_IO_PENDING || !finish(h, ov, end, n)))
+        BOOL ok = write ? ::WriteFile(h, op->bytes.data(), len - done, &n, &op->ov)
+                        : ::ReadFile(h, op->bytes.data(), len - done, &n, &op->ov);
+        if (!ok && (::GetLastError() != ERROR_IO_PENDING || !finish(h, op, end, n)))
             return false;
         if (n == 0)
             return false;
+        if (!write)
+            std::copy_n(op->bytes.begin(), n, bytes + done);
         done += n;
     }
     return true;
@@ -169,31 +221,27 @@ PipeResult serve_status_pipe(const std::string &status, PipeLimits limits,
     for (unsigned count = 0; count < limits.max_connections; count++) {
         if (::GetTickCount64() >= lifetime)
             return {true, "LIFETIME_EXHAUSTED", {}};
-        Handle event(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        if (!event.valid())
-            return {false, "EVENT_FAILED", {}};
-        OVERLAPPED ov{};
-        ov.hEvent = event;
+        auto op = operation(0);
+        if (!op)
+            return {false, "IO_BUDGET_EXHAUSTED", {}};
         DWORD n = 0;
-        bool connected = ::ConnectNamedPipe(pipe, &ov) != 0;
+        bool connected = ::ConnectNamedPipe(pipe, &op->ov) != 0;
         if (!connected) {
             auto error = ::GetLastError();
             connected = error == ERROR_PIPE_CONNECTED ||
-                        (error == ERROR_IO_PENDING && finish(pipe, ov, lifetime, n));
+                        (error == ERROR_IO_PENDING && finish(pipe, op, lifetime, n));
         }
         if (!connected)
             return {true, "LIFETIME_EXHAUSTED", {}};
         auto deadline = std::min(lifetime, ::GetTickCount64() + limits.transaction_ms);
         std::string request;
-        if (read_frame(pipe, request, deadline) && request == "status.v1" &&
-            client_owner(pipe, id.owner_sid)) {
+        if (!read_frame(pipe, request, deadline))
+            return {false, "DEADLINE_OR_PROTOCOL", {}};
+        if (request == "status.v1" && client_owner(pipe, id.owner_sid)) {
             std::string receipt;
-            if (remaining(deadline) && write_frame(pipe, status, deadline)) {
-                // DisconnectNamedPipe discards unread buffered bytes. A bounded receipt
-                // confirms the client consumed the frame without unbounded
-                // FlushFileBuffers.
-                read_frame(pipe, receipt, deadline);
-            }
+            if (!remaining(deadline) || !write_frame(pipe, status, deadline) ||
+                !read_frame(pipe, receipt, deadline) || receipt != "received.v1")
+                return {false, "DEADLINE_OR_PROTOCOL", {}};
         }
         ::DisconnectNamedPipe(pipe);
     }

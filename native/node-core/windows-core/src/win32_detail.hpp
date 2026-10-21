@@ -100,6 +100,41 @@ struct OwnerSecurity {
             ::LocalFree(descriptor);
     }
 };
+// AccessCheck requires owner and primary group as well as the DACL. Refuse
+// incomplete descriptors before checking actual current-process token rights.
+inline bool task_execute_descriptor(const std::wstring &descriptor) {
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptor.c_str(), SDDL_REVISION_1,
+                                                                &sd, nullptr))
+        return false;
+    PSID owner = nullptr, group = nullptr;
+    BOOL ignored = FALSE;
+    bool complete = ::IsValidSecurityDescriptor(sd) &&
+                    ::GetSecurityDescriptorOwner(sd, &owner, &ignored) && owner &&
+                    ::IsValidSid(owner) && ::GetSecurityDescriptorGroup(sd, &group, &ignored) &&
+                    group && ::IsValidSid(group);
+    HANDLE raw = nullptr, dup = nullptr;
+    bool allowed = false;
+    if (complete &&
+        ::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &raw)) {
+        Handle token(raw);
+        if (::DuplicateToken(token, SecurityImpersonation, &dup)) {
+            Handle impersonation(dup);
+            GENERIC_MAPPING map{FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE,
+                                FILE_ALL_ACCESS};
+            DWORD desired = GENERIC_EXECUTE;
+            ::MapGenericMask(&desired, &map);
+            alignas(PRIVILEGE_SET) BYTE bytes[4096];
+            DWORD count = sizeof(bytes), granted = 0;
+            BOOL access = FALSE;
+            if (::AccessCheck(sd, impersonation, desired, &map,
+                              reinterpret_cast<PRIVILEGE_SET *>(bytes), &count, &granted, &access))
+                allowed = access != FALSE;
+        }
+    }
+    ::LocalFree(sd);
+    return allowed;
+}
 inline bool creation_time(HANDLE p, std::uint64_t &out) {
     FILETIME c{}, e{}, k{}, u{};
     if (!::GetProcessTimes(p, &c, &e, &k, &u))

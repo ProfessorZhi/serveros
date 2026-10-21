@@ -190,6 +190,13 @@ std::unique_ptr<RecoveryTransaction> Win32RecoveryStore::lock(const UnitGrant &g
     auto tx = std::make_unique<NativeTransaction>(file, path, key, grant.owner_sid, created);
     if (!tx->acquire())
         return {};
+    if (created) {
+        // Healthy/disabled/unmeasured early returns still need a committed
+        // empty journal. Do not make a subsequent absence look like first use.
+        RecoveryState initial;
+        if (!tx->load(initial) || !tx->save(initial))
+            return {};
+    }
     return tx;
 }
 } // namespace nodecore::windows_core
