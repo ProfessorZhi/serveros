@@ -260,7 +260,8 @@ class FleetService:
             detail = provider.get_session(key)
         detail = normalize_detail(key, detail, binding)
         native = detail.get("session")
-        if (not isinstance(native, dict) or native.get("provider") != key.provider
+        if (not isinstance(native, dict) or "session_ref" in native
+                or native.get("provider") != key.provider
                 or not any(name in native for name in
                            ("id", "sessionId", "session_id", "native_session_id"))):
             raise refuse(BAD_SESSION_REF, "native session family or identity is unverified")
@@ -1662,8 +1663,9 @@ class FleetService:
             if payload.get(field) is not None and payload[field] != expected[field]:
                 raise refuse(BAD_SESSION_REF, "run metadata contradicts its requested target")
         binding = self.config.session_binding(key)
+        native_family = key.provider if key.provider in runtime_identity.FAMILIES else binding.family
         providers = (key.provider,) if payload.get("session_ref") is not None else (
-            key.provider, binding.family)
+            key.provider, native_family)
         if payload.get("provider") is not None and payload["provider"] not in providers:
             raise refuse(BAD_SESSION_REF, "run metadata names another session family")
         self.audit.record(

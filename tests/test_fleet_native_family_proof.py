@@ -8,6 +8,7 @@ from fleet_mcp.fleet import FleetService
 from fleet_mcp.identity import SessionKey
 from fleet_mcp.providers.cloudcli import CloudCliProvider
 from fleet_mcp.providers.fleet_node import FleetNodeProvider
+from fleet_mcp.session_detail import normalize_detail
 from test_fleet_dispatch_claims import owner_store
 from test_fleet_native_family_routes import SessionFixture, DEVICE
 
@@ -154,13 +155,52 @@ class ActualNativeFamily(SessionFixture):
         self.install("codex")
         original = self.adapter._call
         for wrong in ({"session_ref": DEVICE + "|claude|belongs-to-codex"},
-                      {"native_session_id": "another-session"}, {"run_id": "another-run"}):
+                      {"native_session_id": "another-session"}, {"run_id": "another-run"},
+                      {"provider": "claude", "run_id": "original-run"}):
             with self.subTest(wrong=wrong):
                 self.adapter._call = lambda tool, args, **kwargs: (
                     {"state": "completed", **wrong} if tool == "run_get"
                     else original(tool, args, **kwargs))
                 with self.assertRaises(FleetRefusal):
                     self.service.get_run(self.principal, self.key, "original-run")
+
+    def test_raw_run_family_can_match_a_declared_profile_without_replacing_its_namespace(self):
+        for family in ("claude", "codex"):
+            with self.subTest(family=family):
+                self.install(family)
+                profile = replace(self.config.provider_for(DEVICE), runtime=family + "-work",
+                                  family=family, multiplex_native_families=False)
+                key = SessionKey(DEVICE, profile.runtime, self.key.native_session_id)
+                self.adapter.binding = profile
+                self.service.config = replace(self.config, providers={provider_key(DEVICE, profile.runtime): profile})
+                self.service.providers = {provider_key(DEVICE, profile.runtime): self.adapter}
+                self.adapter._call = lambda *a, **k: {"provider": family, "run_id": "original-run", "state": "completed"}
+                result = self.service.get_run(self.principal, key, "original-run")
+                self.assertEqual(result["provider"], profile.runtime)
+                self.assertEqual(result["session_ref"], key.ref)
+
+    def test_routing_only_node_wrappers_never_become_native_family_proof(self):
+        for family in ("claude", "codex"):
+            with self.subTest(family=family):
+                self.install(family, owner=True)
+                node = FleetNodeProvider(self.config.provider_for(DEVICE))
+                wrapper = {**self.key.as_dict(), "title": "routing metadata only"}
+                # Simulate multiple normalizers, as deployed connector wrappers
+                # can be wrapped by both the adapter and the final service.
+                wrapper = normalize_detail(self.key, wrapper, node.binding)
+                wrapper = normalize_detail(self.key, wrapper, node.binding)
+                calls = []
+                def request(method, path, payload=None, **kwargs):
+                    calls.append(method)
+                    return wrapper if method == "GET" else {"runId": "forbidden-effect", "accepted": True}
+                node._request = request
+                self.service.providers[DEVICE] = node
+                with self.assertRaises(FleetRefusal):
+                    self.service.send_to_session(self.principal, self.key,
+                        message="complete task", idempotency_key="routing-only")
+                self.assertEqual(calls, ["GET"])
+                self.assertFalse(any(r["phase"] == "ACCEPTED"
+                    for r in owner_store(self.owner_path).dispatch_attempts().values()))
 
     def test_failed_family_proof_remains_unknown_after_owner_reconstruction(self):
         self.install("claude", "codex", owner=True)
