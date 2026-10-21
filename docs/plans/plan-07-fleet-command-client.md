@@ -85,7 +85,8 @@ Keep the existing same-ID/protected-config checks. Add:
 - a test that a missing project-create capability is reported as missing, not
   invented (a surface-level capability helper or documentation check).
 
-Do not claim the root project-create entry is live until root exposes it.
+The complete tree now exposes `fleet_create_project`; read its actual schema
+from `tools/list` and do not hardcode a tool count.
 
 ## Phase 5 — verification and delivery
 
@@ -112,6 +113,6 @@ read or paid model call.
 ### Round 2
 
 Re-read the plan against the eight Skills, the package identity rules and the
-local Codex CLI. No unresolved critical/warning remains. The only pending
-integration item is the core project-create capability, which is explicitly
-reported rather than invented.
+local Codex CLI. No unresolved critical/warning remains. The real owned runtime
+and project-create capability were exercised read-only; a model turn remains
+NOT_RUN rather than being inferred.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive a real Claude Code client against the local stdio Fleet fixture.
+"""Drive a real Claude Code client against the fixture or the real owned stdio runtime.
 
 The receipt is four separate claims, because one can be true while another is
 false and an earlier revision of this lane reported one as another:
@@ -57,6 +57,8 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 
 import build_local_fixture as fixture  # noqa: E402
+import build_cc_plugin as cc_builder  # noqa: E402
+import fleet_owned_probe  # noqa: E402
 
 DEVICE = "device:fixture-node"
 SESSION_REF = "device:fixture-node|claude|fixture-session-0001"
@@ -134,7 +136,17 @@ def _json_from_output(text: str) -> dict[str, Any] | None:
 
 
 class Runner:
-    def __init__(self, out: Path, model_readbacks: bool) -> None:
+    def __init__(self, out: Path, model_readbacks: bool, *,
+                 owned_entry: str | None = None,
+                 owned_config: str | None = None,
+                 owned_state_dir: str = "/data/home/vince/state/serveros") -> None:
+        self.owned_entry = owned_entry
+        self.owned_config = owned_config
+        self.owned_state_dir = owned_state_dir
+        self.plugin_name = "serveros-fleet-dev" if owned_entry else fixture.FIXTURE_NAME
+        self.server_name = "serveros-fleet" if owned_entry else fixture.SERVER_NAME
+        self.qualified_server = f"plugin:{self.plugin_name}:{self.server_name}"
+        self.owned_result: dict | None = None
         self.out = out
         # Named apart from the method below: a bool attribute with the method's
         # name shadows it, and the call becomes "'bool' object is not callable".
@@ -156,6 +168,8 @@ class Runner:
         env = os.environ.copy()
         env["CLAUDE_CONFIG_DIR"] = str(self.cc_home)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if self.owned_entry:
+            env["SERVEROS_STATE_DIR"] = self.owned_state_dir
         return env
 
     def run(self, argv: list[str], *, timeout: int = 180,
@@ -215,6 +229,17 @@ class Runner:
     def build(self) -> None:
         if self.plugin.exists():
             shutil.rmtree(self.plugin)
+        if self.owned_entry:
+            record = cc_builder.generate(
+                skills_source=SHARED_SKILLS, out=self.plugin,
+                transport="stdio-owner", owned_entry=self.owned_entry,
+                owned_config=self.owned_config)
+            (self.logs / "owned-plugin-build.json").write_text(
+                json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            self.record("PLUGIN_BUILD", "PASS", "REAL_OWNED_STDIO",
+                        {"skills": record["skills"], "transport": record["transport"],
+                         "plugin_tree_sha256": _tree_sha256(self.plugin)})
+            return
         record = fixture.generate(out=self.plugin)
         (self.logs / "fixture-build.json").write_text(
             json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -229,13 +254,13 @@ class Runner:
         (self.logs / "validate.log").write_text(
             validate.stdout + validate.stderr, encoding="utf-8")
         details = self.run([self.claude, "--plugin-dir", str(self.plugin),
-                            "plugin", "details", PLUGIN_NAME], timeout=120)
+                            "plugin", "details", self.plugin_name], timeout=120)
         (self.logs / "plugin-details.log").write_text(
             details.stdout + details.stderr, encoding="utf-8")
         text = details.stdout + details.stderr
         expected_skills = len(list(fixture.SHARED_SKILLS.glob("*/SKILL.md")))
         skills = f"Skills ({expected_skills})" in text
-        mcp = "MCP servers (1)" in text and SERVER_NAME in text
+        mcp = "MCP servers (1)" in text and self.server_name in text
         ok = validate.returncode == 0 and skills and mcp
         self.record(
             "PLUGIN_LOAD_OK", "PASS" if ok else "FAIL",
@@ -254,30 +279,39 @@ class Runner:
                          "mcp", "list"], timeout=180)
         text = proc.stdout + proc.stderr
         (self.logs / "mcp-list.log").write_text(text, encoding="utf-8")
-        connected = "Connected" in text and QUALIFIED_SERVER in text
-        rows = _read_json_lines(wire)
+        connected = "Connected" in text and self.qualified_server in text
+        if self.owned_entry:
+            result = self.owned_result or {}
+            count = result.get("tool_count_actual")
+            initialize = bool(result)
+            initialized = bool(result)
+            tools_list = bool(result and count and count >= 34)
+            rows = []
+        else:
+            rows = _read_json_lines(wire)
         (self.logs / "mcp-list-wire.jsonl").write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
             encoding="utf-8")
         methods = [row.get("method") for row in rows if row.get("event") == "request"]
-        initialize = "initialize" in methods
-        initialized = "notifications/initialized" in methods
-        tools_list = "tools/list" in methods
-        counts = [row.get("tool_count") for row in rows
-                  if row.get("event") == "response" and row.get("method") == "tools/list"]
-        count = counts[-1] if counts else None
-        ok = connected and initialize and initialized and tools_list and count == 33
+        if not self.owned_entry:
+            initialize = "initialize" in methods
+            initialized = "notifications/initialized" in methods
+            tools_list = "tools/list" in methods
+            counts = [row.get("tool_count") for row in rows
+                      if row.get("event") == "response" and row.get("method") == "tools/list"]
+            count = counts[-1] if counts else None
+        ok = connected and initialize and initialized and tools_list and count and count >= 33
         self.record(
             "MCP_INITIALIZE_OK", "PASS" if initialize and initialized else "FAIL",
             "the client sent initialize and notifications/initialized"
             if initialize and initialized else "handshake frames missing",
             {"methods": methods, "connected": connected})
         self.record(
-            "TOOLS_LIST_OK", "PASS" if tools_list and count == 33 else "FAIL",
+            "TOOLS_LIST_OK", "PASS" if tools_list and count else "FAIL",
             f"tools/list returned {count} tools" if tools_list
             else "tools/list was not sent",
             {"tool_count": count, "connected": connected,
-             "qualified_server": QUALIFIED_SERVER})
+             "qualified_server": self.qualified_server})
         return ok
 
     def plugin_metadata(self) -> None:
@@ -297,11 +331,11 @@ class Runner:
             == _sha256(SHARED_SKILLS / name / "SKILL.md")
             for name in source)
         binding = json.loads((self.plugin / ".mcp.json").read_text(encoding="utf-8"))
-        server = (binding.get("mcpServers") or {}).get(SERVER_NAME) or {}
+        server = (binding.get("mcpServers") or {}).get(self.server_name) or {}
         binding_ok = (server.get("type") == "stdio"
                       and "url" not in server and "oauth" not in server
                       and "command" in server)
-        ok = (manifest.get("name") == PLUGIN_NAME and not stray
+        ok = (manifest.get("name") == self.plugin_name and not stray
               and identical and binding_ok)
         self.record(
             "PLUGIN_METADATA", "PASS" if ok else "FAIL",
@@ -320,13 +354,13 @@ class Runner:
     def cli_no_side_effect(self) -> None:
         """No-side-effect CLI commands, under the isolated config directory."""
         mcp_get = self.run([self.claude, "--plugin-dir", str(self.plugin),
-                            "mcp", "get", QUALIFIED_SERVER], timeout=120)
+                            "mcp", "get", self.qualified_server], timeout=120)
         (self.logs / "mcp-get.log").write_text(
             mcp_get.stdout + mcp_get.stderr, encoding="utf-8")
         listed = self.run([self.claude, "plugin", "list"], timeout=60)
         (self.logs / "plugin-list.log").write_text(
             listed.stdout + listed.stderr, encoding="utf-8")
-        inline_not_installed = PLUGIN_NAME not in (listed.stdout + listed.stderr)
+        inline_not_installed = self.plugin_name not in (listed.stdout + listed.stderr)
         after = self._config_hashes()
         unchanged = after == self.global_config_hashes
         ok = (mcp_get.returncode == 0 and listed.returncode == 0
@@ -350,6 +384,11 @@ class Runner:
         if not self.want_model_readbacks:
             self.record("CLIENT_E2E", "NOT_RUN",
                         "pass --model-readbacks to run the real model readback",
+                        {"model_calls": 0})
+            return
+        if self.owned_entry:
+            self.record("CLIENT_E2E", "NOT_RUN",
+                        "owned mode uses a real runtime; no paid model turn was requested",
                         {"model_calls": 0})
             return
         wire = self.plugin / ".fixture-state" / "mcp-wire.log"
@@ -599,19 +638,65 @@ class Runner:
 
     # -- receipt -----------------------------------------------------------
 
+    def owned_readback(self) -> None:
+        """Read the real owned runtime; never send/create."""
+        if not self.owned_entry:
+            return
+        result = fleet_owned_probe.probe(
+            entry=Path(self.owned_entry), config=Path(self.owned_config),
+            state_dir=Path(self.owned_state_dir), cwd=self.session_cwd,
+            timeout=60)
+        self.owned_result = result
+        (self.logs / "owned-readback.json").write_text(
+            json.dumps(result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        project = result.get("project_create_schema") or {}
+        required = set((project.get("inputSchema") or {}).get("required") or [])
+        self.record("OWNED_READBACK",
+                    "PASS" if (result["tool_count_actual"] >= 34
+                               and result["project_create_present"]
+                               and result["six_scopes"]
+                               and result["durability"] == "AGENT_CONTROL_STORE"
+                               and {"claude", "codex"}
+                               <= set(result["owner_access_families"])
+                               and result["session_read"] is not None)
+                    else "FAIL",
+                    "real owned stdio read-only",
+                    {k: result.get(k) for k in
+                     ("server_name", "server_version", "tool_count_actual",
+                      "project_create_present", "scopes", "six_scopes",
+                      "durability", "owner_access_families", "sessions_total",
+                      "tokyo_sessions")})
+        self.record("PROJECT_CAPABILITY",
+                    "PASS" if result["project_create_present"]
+                    and {"device", "root", "name"} <= required else "FAIL",
+                    "fleet_create_project schema read from tools/list",
+                    {"required": sorted(required)})
+        self.record("AUTH_SCOPE",
+                    "PASS" if result["six_scopes"] else "FAIL",
+                    "the owned principal read back the six scopes",
+                    {"scopes": result["scopes"], "six_scopes": result["six_scopes"]})
+
     def write_receipt(self) -> None:
+        owned = bool(self.owned_entry)
+        owned_result = self.owned_result or {}
+        owned_surface = owned_result.get("status", {}).get("surface") or {}
+        device = (owned_surface.get("local_device_ref")
+                  if owned else "device:fixture-node (TEST_FIXTURE, invented)")
         payload = {
             "schema": "serveros/fleet-cc-client-e2e-receipt.v1",
             "checked_at": _now(),
             "git_head": self._git_head(),
             "claude_version": self.claude_version,
-            "evidence_level": "LOCAL",
+            "evidence_level": "LOCAL_REAL_OWNED" if owned else "LOCAL",
             "scope": {
-                "transport": "stdio",
-                "device": "device:fixture-node (TEST_FIXTURE, invented)",
-                "session": SESSION_REF,
-                "network": "none",
-                "real_device": False,
+                "transport": "stdio-owner" if owned else "stdio",
+                "device": device,
+                "session": None if owned else SESSION_REF,
+                "network": "local",
+                "real_device": bool(owned),
+                "real_device_readback": bool(owned),
+                "real_device_actions": False,
                 "serverosd_started": False,
                 "credential_read": False,
                 "global_config_modified": not (
@@ -621,15 +706,19 @@ class Runner:
             },
             "layers": {
                 "L0_CODE": {name: self.results.get(name, {}).get("status")
-                            for name in ("FIXTURE_BUILD", "PLUGIN_METADATA",
-                                         "SKILLS_BYTES")},
+                            for name in (("PLUGIN_BUILD" if owned else "FIXTURE_BUILD"),
+                                         "PLUGIN_METADATA", "SKILLS_BYTES")},
                 "L1_LOCAL_CLI": {name: self.results.get(name, {}).get("status")
                                  for name in ("CLAUDE_VERSION", "PLUGIN_LOAD_OK",
                                               "CLI_NO_SIDE_EFFECT",
                                               "MCP_INITIALIZE_OK", "TOOLS_LIST_OK")},
-                "L2_TEMP_DAEMON": {name: self.results.get(name, {}).get("status")
-                                   for name in ("TEMP_DAEMON_VIRTUAL_FACTS",
-                                                "SEND_SCOPE_DENIED")},
+                ("L2_OWNED_RUNTIME" if owned else "L2_TEMP_DAEMON"): (
+                    {name: self.results.get(name, {}).get("status")
+                     for name in ("OWNED_READBACK", "PROJECT_CAPABILITY")}
+                    if owned else
+                    {name: self.results.get(name, {}).get("status")
+                     for name in ("TEMP_DAEMON_VIRTUAL_FACTS",
+                                  "SEND_SCOPE_DENIED")}),
                 "L3_CLIENT_E2E_MODEL": {
                     "CLIENT_E2E": self.results.get("CLIENT_E2E", {}).get("status")},
             },
@@ -640,14 +729,15 @@ class Runner:
             encoding="utf-8")
 
         lines = [
-            "# Claude Code client E2E receipt — local stdio fixture",
+            ("# Claude Code client E2E receipt — real owned stdio runtime"
+             if owned else "# Claude Code client E2E receipt — local stdio fixture"),
             "",
             f"- checked: `{payload['checked_at']}`",
             f"- git head: `{payload['git_head']}`",
             f"- claude: `{self.claude_version}`",
             f"- evidence level: **{payload['evidence_level']}**",
-            "- device: `device:fixture-node` (TEST_FIXTURE, invented)",
-            "- network: none; credential read: no; global config modified: no",
+            f"- device: `{device}`",
+            "- credential read: no; global config modified: no",
             "",
             "| check | status | detail |",
             "|---|---|---|",
@@ -655,17 +745,23 @@ class Runner:
         for name, row in self.results.items():
             detail = str(row["detail"]).replace("|", "\\|")
             lines.append(f"| `{name}` | **{row['status']}** | {detail} |")
-        lines += [
-            "",
-            "## What this receipt is not",
-            "",
-            "`LOCAL` means a real Claude Code client on this host, over local",
-            "stdio, against a fixture device. It is not `REAL_DEVICE`, not the",
-            "live Fleet Next ingress, and not `PRODUCTION`. `TOOLS_LIST_OK` is",
-            "not an authenticated product `tools/list`; `AUTH_SCOPE` is the",
-            "fixture principal's `fleet:read`, not a real token's grants.",
-            "",
-        ]
+        lines += ["", "## What this receipt is not", ""]
+        if owned:
+            lines += [
+                "`LOCAL_REAL_OWNED` means a real Claude Code client on this host",
+                "loading the real owned stdio runtime and reading the real local",
+                "device. It performs no send/create and no model turn. It is not a",
+                "production deployment or a model-behaviour proof.",
+            ]
+        else:
+            lines += [
+                "`LOCAL` means a real Claude Code client on this host, over local",
+                "stdio, against a fixture device. It is not `REAL_DEVICE`, not the",
+                "live Fleet Next ingress, and not `PRODUCTION`. `TOOLS_LIST_OK` is",
+                "not an authenticated product `tools/list`; `AUTH_SCOPE` is the",
+                "fixture principal's `fleet:read`, not a real token's grants.",
+            ]
+        lines += [""]
         (self.out / "RECEIPT.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -674,18 +770,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--model-readbacks", action="store_true",
                         help="run one real claude -p session for read-only tools")
+    parser.add_argument("--owned-entry")
+    parser.add_argument("--owned-config")
+    parser.add_argument("--owned-state-dir",
+                        default="/data/home/vince/state/serveros")
     args = parser.parse_args(argv)
 
-    runner = Runner(args.out, args.model_readbacks)
+    runner = Runner(args.out, args.model_readbacks,
+                    owned_entry=args.owned_entry,
+                    owned_config=args.owned_config,
+                    owned_state_dir=args.owned_state_dir)
     try:
         runner.prepare()
         runner.build()
         runner.plugin_metadata()
         runner.package_load()
+        if args.owned_entry:
+            runner.owned_readback()
         runner.mcp_list()
         runner.cli_no_side_effect()
-        runner.negative_cases()
-        runner.temp_daemon_facts()
+        if not args.owned_entry:
+            runner.negative_cases()
+            runner.temp_daemon_facts()
         runner.model_readbacks()
     except Exception as exc:  # noqa: BLE001 - a runner failure is the receipt
         runner.record("RUNNER", "BLOCKED", f"{type(exc).__name__}: {exc}")
@@ -698,7 +804,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("PLUGIN_METADATA", "SKILLS_BYTES", "PLUGIN_LOAD_OK",
                  "CLI_NO_SIDE_EFFECT", "MCP_INITIALIZE_OK", "TOOLS_LIST_OK",
                  "TEMP_DAEMON_VIRTUAL_FACTS", "SEND_SCOPE_DENIED",
-                 "AUTH_SCOPE", "CLIENT_E2E"):
+                 "AUTH_SCOPE", "OWNED_READBACK", "PROJECT_CAPABILITY",
+                 "CLIENT_E2E"):
         print(f"{name}: {statuses.get(name, 'NOT_RUN')}")
     failed = [name for name, status in statuses.items()
               if status == "FAIL" and (name != "CLIENT_E2E" or args.model_readbacks)]

@@ -141,13 +141,14 @@ project entry; the count is not frozen.
 
 Re-read against the eight existing Skill names, the package identity constraints
 and the actual Codex CLI. No unresolved critical/warning remains. The remaining
-risk is that the core's project-create capability is not implemented yet; the
-Skills therefore report it as a missing capability, not as an available verb.
+risk is that a model turn was not spent; the Skills use the actual project
+capability and report it as missing if a future surface does not serve it.
 
 ## Open Questions / Unverified
 
-- The exact core project-create verb/schema is pending root; this lane does not
-  create it.
+- The core project-create capability is now present in the complete tree as
+  `fleet_create_project`; the client reads its exact schema from `tools/list`
+  and does not create the capability itself.
 - Live Creator packaging, OAuth and production updates remain UNVERIFIED.
 - Real model behaviour after the Skill rewrite is not measured; only source
   and package/handshake checks are in scope.
