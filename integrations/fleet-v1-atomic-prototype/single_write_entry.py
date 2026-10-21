@@ -263,12 +263,30 @@ class SingleWriteEntry:
                         hashlib.sha256).hexdigest()
 
     def acquire(self, request) -> dict:
-        """Acquire through the prototype and return an in-process capability."""
-        receipt = self._writer.acquire(request)
-        receipt = dict(receipt)
-        receipt["capability"] = self._capability(receipt)
-        receipt["capability_scope"] = "API_ONLY"
+        """Acquire through the prototype.
+
+        Only a fresh `PROTOTYPE_FENCED_COMMIT` receipt gets an in-process
+        capability. A historical replay (`authorized:false`, `historical:true`,
+        `replayed:true`) is audit-only: the capability field is omitted and
+        `capability_scope` is `HISTORICAL_AUDIT_ONLY`. The ORIGINAL capability
+        from the first acquire is not revoked by a replay; it stays valid only
+        while the lease/epoch fence remains live.
+        """
+        receipt = dict(self._writer.acquire(request))
         receipt["production_effect_eligible"] = False
+        fresh = (
+            receipt.get("prototype_status") == atomic.PROTOTYPE_FENCED_COMMIT
+            and receipt.get("authorized") is True
+            and receipt.get("historical") is False
+            and receipt.get("replayed") is False
+        )
+        if fresh:
+            receipt["capability"] = self._capability(receipt)
+            receipt["capability_scope"] = "API_ONLY"
+        else:
+            # Fail closed: an unknown/historical status never gets a capability.
+            receipt.pop("capability", None)
+            receipt["capability_scope"] = "HISTORICAL_AUDIT_ONLY"
         return receipt
 
     def check_use(self, request_id, token, capability) -> dict:

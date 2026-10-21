@@ -155,6 +155,70 @@ def test_effect_replay_is_idempotent_and_conflicting_payload_is_refused(tmp_path
     assert first["effect_ref"] == "effect:1"
 
 
+def test_historical_replay_omits_capability_and_cannot_effect(tmp_path):
+    w = _writer(tmp_path)
+    first = w.acquire(_request())
+    replay = w.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
+    assert replay["historical"] is True
+    assert replay["replayed"] is True
+    assert replay["capability_scope"] == "HISTORICAL_AUDIT_ONLY"
+    assert "capability" not in replay
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.check_use(replay["request_id"], replay["token"], None)
+    assert caught.value.code == "BLOCKED_CAPABILITY"
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(replay["request_id"], replay["token"], None,
+                        effect_ref="effect:replay", payload_digest="d")
+    assert caught.value.code == "BLOCKED_CAPABILITY"
+    assert _effect_count(w) == 0
+    assert first["capability"]
+
+
+def test_original_capability_remains_valid_while_live(tmp_path):
+    w = _writer(tmp_path)
+    first = w.acquire(_request())
+    replay = w.acquire(_request())
+    assert "capability" not in replay
+    checked = w.check_use(first["request_id"], first["token"],
+                          first["capability"])
+    assert checked["authorized"] is True
+    marker = w.commit_effect(first["request_id"], first["token"],
+                             first["capability"], effect_ref="effect:original",
+                             payload_digest="d")
+    assert marker["effect_marker"] is True
+    assert _effect_count(w) == 1
+
+
+def test_replay_after_revoke_is_historical_without_capability(tmp_path):
+    w = _writer(tmp_path)
+    first = w.acquire(_request())
+    w.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+    replay = w.acquire(_request())
+    assert replay["prototype_status"] == "PROTOTYPE_HISTORICAL_REPLAY"
+    assert replay["authorized"] is False
+    assert replay["capability_scope"] == "HISTORICAL_AUDIT_ONLY"
+    assert "capability" not in replay
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.check_use(replay["request_id"], replay["token"], None)
+    assert caught.value.code == "BLOCKED_CAPABILITY"
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.check_use(first["request_id"], first["token"],
+                    first["capability"])
+    assert caught.value.code == "POLICY_DENIED"
+    assert _effect_count(w) == 0
+
+
+def test_acquire_replay_with_different_facts_still_conflicts(tmp_path):
+    w = _writer(tmp_path)
+    w.acquire(_request())
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.acquire(_request(ttl_s=31.0))
+    assert caught.value.code == "IDEMPOTENCY_CONFLICT"
+    assert _effect_count(w) == 0
+
+
 def test_api_only_cannot_supply_authority_facts(tmp_path):
     w = _writer(tmp_path)
     with pytest.raises(TypeError):

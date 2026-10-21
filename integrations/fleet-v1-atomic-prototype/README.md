@@ -2,7 +2,7 @@
 
 **PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.**
 
-Rounds 2–6 hardness notes are below; the production default is still blocked.
+Rounds 2–7 hardness notes are below; the production default is still blocked.
 
 | Flag | Value |
 |---|---|
@@ -218,6 +218,28 @@ owner key. The A category is therefore `API_ONLY_CORRECTNESS`; B/C remain
 `RAW_DB_WRITE_BYPASS_EXPECTED`/`BLOCKED_DB_WRITER_ISOLATION` and
 `OS_ISOLATION_NOT_RUN`; effect is still `EFFECT_COMMIT_NOT_PROVEN`.
 
+## Round-7 historical replay carries no capability
+
+QA2's remaining API-only P1: `SingleWriteEntry.acquire` re-attached a fresh
+capability to a historical replay receipt. A caller holding only the replay
+could run `check_use`/`commit_effect` and write a `proto_effect` marker while
+the lease/epochs were still live.
+
+The writer now attaches a capability ONLY to a fresh
+`PROTOTYPE_FENCED_COMMIT` (`authorized:true`, `historical:false`,
+`replayed:false`). A historical replay is `HISTORICAL_AUDIT_ONLY`: the
+`capability` field is omitted, and `check_use`/`commit_effect` without a
+capability return `BLOCKED_CAPABILITY` and write no marker.
+
+A replay does **not** revoke the original capability. If the original caller
+still holds it and the lease/epoch fence is live, that capability keeps its
+original semantics; the code does not claim a revocation. Once the lease,
+policy, grant or context epoch moves, the fence refuses it.
+
+RED at #381: the replay receipt had `capability_scope: API_ONLY` and a usable
+capability; `check_use` and `commit_effect` succeeded. GREEN: replay has no
+capability; no-capability calls are `BLOCKED_CAPABILITY` with marker 0.
+
 ## Why a pure experimental module is not enough
 
 This module proves the transaction shape, not a production integration. It
@@ -279,6 +301,7 @@ Engine as-is.
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
 | Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, context generation/ABA, same-epoch content digests, and immutable commit (62 tests) |
+| Round-7 historical replay | replay is audit-only with no capability; no-capability check/effect `BLOCKED_CAPABILITY`; original live capability remains valid (4 tests) |
 | Round-6 exact commit/token binding | cross-token/cross-capability refused, post-hold TTL/policy/grant re-check rolls the marker back, cross-resource capability, effect-first/concurrent-revoke barrier (7 tests) |
 | Round-5 single writer | `single_write_entry.py` API-only issue/acquire/use-check/effect marker, capability tamper/revoke/ABA/stale/TTL/replay, raw-DB bypass EXPECTED, legacy-store bypass, OS isolation NOT_RUN (13 tests) |
 
