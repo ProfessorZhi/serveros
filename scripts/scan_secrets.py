@@ -31,23 +31,43 @@ import re
 import sys
 from pathlib import Path
 
-# Each rule: a name, and a pattern anchored on a prefix that only a real
-# credential carries. The trailing length requirement keeps prose like
-# "ghp_ tokens" from matching.
-RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("private-key",
-     re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----")),
-    ("github-token",
-     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
-    ("aws-access-key-id",
-     re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("slack-token",
-     re.compile(r"\bxox[baprs]-[A-Za-z0-9][A-Za-z0-9-]{9,}\b")),
-    ("anthropic-or-openai-key",
-     # `sk-` followed by enough entropy to be a key rather than a hyphenated
-     # word. 32 is below every vendor's real length and above any English word.
-     re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b")),
-)
+def _credential_shapes():
+    """The rules, from the one module that defines them.
+
+    Each rule: a name, and a pattern anchored on a prefix that only a real
+    credential carries. The trailing length requirement keeps prose like
+    "ghp_ tokens" from matching. They are no longer written here, because a
+    second consumer now asks the same question from somewhere this script
+    cannot serve:
+
+      * `runtime/launcher_guard.py` judges a command line before an agent
+        client is handed it, and it runs from an INSTALLED REVISION — where
+        `scripts/` does not exist, because `scripts/build.py`'s `CORE_MODULES`
+        ships `runtime` and `fleet` and not `scripts`. A definition that lived
+        in this file could only be reached from a checkout.
+
+      * `fleet/controller.py` states the rule for its own list, and it is the
+        same rule: "Reuses the transport contract's list rather than keeping a
+        second one: two lists of forbidden secret names drift, and the one
+        that drifts is the one nobody re-read."
+
+    Loaded by path rather than imported by name, which is the idiom
+    `runtime/bounded_invocation.py` uses: `bin/serverosctl` puts `runtime/` on
+    `sys.path` and imports by bare name, pytest imports the directory as a
+    namespace package, and a by-path load is the one form correct under both.
+    """
+    import importlib.util
+    if "credential_shapes" in sys.modules:
+        return sys.modules["credential_shapes"]
+    path = Path(__file__).resolve().parents[1] / "runtime" / "credential_shapes.py"
+    spec = importlib.util.spec_from_file_location("credential_shapes", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["credential_shapes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+RULES: tuple[tuple[str, re.Pattern[str]], ...] = _credential_shapes().SHAPES
 
 # Paths whose purpose is to hold fake credentials, so a match there is the
 # fixture working rather than a leak.

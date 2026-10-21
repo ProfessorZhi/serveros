@@ -166,18 +166,93 @@ if [ ! -x "${claude_bin}" ]; then
   exit 2
 fi
 
-# The envelope path is interpolated into the MCP config rather than left to be
+# The envelope path is stated in the MCP config rather than left to be
 # inherited. It IS inherited — `invoke_once` puts it in this process's
 # environment and Claude Code passes its environment to stdio servers — but
 # "inherited" is a property of a client this file does not control, and the one
 # thing that must not happen is a woken Parent whose adapter resolved a
 # DIFFERENT wake's envelope. Stated in the config, it cannot.
-mcp_config=$(printf '{"mcpServers":{"continuation":{"command":"%s","env":{"SERVEROS_CONTINUATION_ENVELOPE":"%s"}}}}' \
-  "${adapter}" "${envelope}")
+#
+# ---------------------------------------------------------------------------
+# THE CONFIG IS A FILE, AND THE LINE CARRIES ONLY ITS PATH — 2026-10-14
+#
+# Until today the config was built inline and handed over as
+# `--mcp-config "${mcp_config}"`. Two measured facts make that wrong on a host
+# several people share, and they compound:
+#
+#   * `--mcp-config` takes "JSON files or strings" — measured on this node,
+#     `claude --help`, 2026-10-14. The STRING form puts the whole config onto a
+#     command line, and a command line is readable by every account with `ps`.
+#     That is issue #171.
+#   * What the config holds is not fixed. Today it is this wake's envelope
+#     PATH. An MCP server entry is exactly where an `Authorization` header
+#     goes, and on the day one is added, the leak is that same `ps`.
+#
+# So the config goes in a 0600 file inside a private directory this launcher
+# creates, and the argument carries the path. `mktemp -d` is atomic and 0700 by
+# construction; the file is chmod 600 before anything reads it; and the trap
+# removes two exact paths inside a directory that did not exist before this
+# process started, so there is no other file it could be removing.
+runtime_root="${adapter%/mcp/bin/serveros-continuation-mcp}"
+guard="${runtime_root}/runtime/launcher_guard.py"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "serveros-wake-parent: python3 is not on PATH, so the preflight that" >&2
+  echo "  judges this wake's command line cannot run. A launcher that started" >&2
+  echo "  anyway would be the one thing that preflight exists to prevent." >&2
+  echo "  Nothing is started." >&2
+  exit 2
+fi
+if [ ! -f "${guard}" ]; then
+  echo "serveros-wake-parent: ${guard} is missing from this revision. That file" >&2
+  echo "  is the preflight that refuses a credential on this wake's command line," >&2
+  echo "  and a revision without it cannot start a Parent this launcher vouches" >&2
+  echo "  for. Nothing is started." >&2
+  exit 2
+fi
 
-exec "${claude_bin}" \
-  --restricted \
-  --strict-mcp-config --mcp-config "${mcp_config}" \
-  --tools "Read,Edit,Write,Glob,Grep" \
-  --allowedTools "mcp__continuation" \
-  -p "${briefing}"
+config_dir="$(mktemp -d "${TMPDIR:-/tmp}/serveros-wake-parent.XXXXXXXX")" || {
+  echo "serveros-wake-parent: could not create a private directory for this" >&2
+  echo "  wake's MCP config. Nothing is started." >&2
+  exit 2
+}
+config_file="${config_dir}/mcp.json"
+remove_our_own_config() {
+  # Both paths were made by this process, inside a directory `mktemp` created
+  # for it alone. `-f`, and the `rmdir`'s trailing `|| true`, because cleanup
+  # can run twice — the trap on the way out, and nothing else ever touches
+  # either path — and a cleanup that failed loudly on its second call would be
+  # worse than the file it was removing.
+  rm -f -- "${config_file}"
+  rmdir -- "${config_dir}" 2>/dev/null || true
+}
+trap remove_our_own_config EXIT INT TERM HUP
+
+printf '{"mcpServers":{"continuation":{"command":"%s","env":{"SERVEROS_CONTINUATION_ENVELOPE":"%s"}}}}' \
+  "${adapter}" "${envelope}" > "${config_file}"
+chmod 600 "${config_file}"
+
+# The posture as one list, so the preflight and the launch cannot disagree
+# about what is about to be started.
+claude_argv=(--restricted --strict-mcp-config --mcp-config "${config_file}" --tools "Read,Edit,Write,Glob,Grep" --allowedTools "mcp__continuation" -p "${briefing}")
+
+# THE PREFLIGHT. Every token of the line, and the config the line points at.
+# The tokens go in on STDIN rather than as arguments, because a guard invoked
+# as `guard <token>` would put the value it is judging onto a command line of
+# its own, where `ps` can read it — the check would leak what it was called to
+# catch. What it prints names a code, a rule and a position, never a value.
+if ! printf '%s\0' "${claude_argv[@]}" | python3 "${guard}" check-argv --mcp-config "${config_file}"; then
+  echo "serveros-wake-parent: refused before starting anything. The reason codes" >&2
+  echo "  above name the rule and the position, and never the value. Nothing is" >&2
+  echo "  started." >&2
+  exit 2
+fi
+
+# NO `exec`, and the file above is why: a replaced process runs no trap, so an
+# exec'd launcher would leave this wake's config on disk for the life of the
+# host. `runtime/bounded_invocation.invoke_once` spawns this launcher with
+# `start_new_session=True` and reaps the whole group with `killpg`, so a
+# foreground child is signalled exactly as it is today. What changes is only
+# that this process survives long enough to remove what it made.
+"${claude_bin}" "${claude_argv[@]}"
+status=$?
+exit "${status}"
