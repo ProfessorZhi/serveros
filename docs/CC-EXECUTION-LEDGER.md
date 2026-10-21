@@ -160,7 +160,7 @@ source revision 一列给的是**指纹成立的那次 revision**，也就是 pa
 | A4 | 运行环境/Fleet | runtime-management、test-management | `skills/runtime-management`、`skills/test-management` | Skill ×2 | 早于本轮 | `serverosd`、`serveros-node` MCP | 原生 | srv0003.20260915a | DONE | DONE | ENABLED | — |
 | A5 | Fleet 交接 | fleet-coordination | `skills/fleet-coordination` | Skill | 早于本轮 | 已授权 transport | **UNBOUND** | srv0003.20260915a | DONE | DONE | PARTIAL | 单设备路径，跨设备动词 absent |
 | A6 | 委派 | cc-quay-delegation | `skills/cc-quay-delegation` | Skill | 早于本轮 | 原生 Quay 0.11.0 | 原生（quay@quay 已装） | srv0003.20260915a | DONE | DONE | ENABLED | — |
-| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260927a` | DONE | DONE | **ENABLED** | 见 §3.3、§9.50 |
+| A7 | 自动化测试 | automated-testing | `skills/automated-testing` + `plugin/profiles/testing.yaml` | Skill + Plugin composition `serveros-testing` | ce6e103（Skill）/ f5e563b（profile） | 目标 CC 以正规 install 加载 | 原生 | `1.0.0+srvtest0001.20260927b` | DONE | DONE | **ENABLED** | 见 §3.3、§9.50、§9.50.7 |
 | A8 | 构建发布 | build-release | `skills/build-release` | Skill | **ce6e103** | 项目 builder/CI | 原生 | 随 `srv0003.20260922a` | DONE | DONE | ENABLED | 已加进 `pack:litellm-development`（§7 第 5 条） |
 | A9 | 生产观察 | production-observation | `skills/production-observation` | Skill | **ce6e103** | 既有 API/CLI/跳板 | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 未装进任何 composition |
 | A10 | 生产变更 | production-change | `skills/production-change` | Skill | **ce6e103** | 调用 A9 + 真实 Runbook | **UNBOUND** | 无 | DONE | NOT_MEASURED | NOT_ENABLED | 同 A8；且 READY≠切流授权 |
@@ -853,7 +853,7 @@ MarketOps、没有两处 LiteLLM、没有 `records/` 脏资产。它正是内存
 `records/information/understanding/{people,projects,topics}/*.md` | **两侧都已接线**：读 `serverosctl work understanding`（`intake/understanding_delta.py`）、写 `serverosctl work understanding-patch`（`intake/understanding_patch.py`） | — | **两半都补上了**：读的一侧见 §9.7（14 份卡逐份对账到源，`BEHIND 3 · UNMEASURABLE 7 · UNTRACEABLE 4`）；写的一侧见 §9.9（15 条提议全 `AWAITING`，`--write`+`--verify` ok）。设计要的「最小 incremental writer」不再缺口。**仍未 LIVE**：没有任何消费者读这份 patch |
 | P3 | Minutes / MeetingBundle | 无 Python 类。`space/meeting-policy.schema.yaml:30` 声明结构；内核 `space/meeting_relevance.py:69`；**生产者 `space/meeting_bundle.py`（§9.15）** + 契约 `space/meeting-bundle-contract.yaml` | ~~`python3 space/meeting_relevance.py --request`（**未接 serverosctl**）~~ **已接线**：`serverosctl space meeting`（`--request` 与 `--sidecars` 两条入口） | — | 内核 working，**接线已补**（§9.5）；**生产者也补上了**（§9.15）：会议自己声明的 sidecar 现在能组装成内核收得下的 bundle，`COMPLETE` 才把问题递给内核，`INCOMPLETE`/`MIXED_SCOPE` 只给读数不给问题。**仍未 LIVE**：本机没有任何真实会议 manifest 可测，四个探针声明是合成的（`RUN-20260922-raw-coverage/meeting-bundle/*.json`） |
 | P3 | 记忆账本/投影/scope | `memory/{record,projection,scope,handoff}.py` | `serverosctl memory {audit,project,status,subject}` (`cli.py:6479`) | — | working；`docs/memory-fabric.md` 逐条点名这些模块 |
-| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移）。**2026-09-27 更新（§9.50）**：那条处置**已被执行，而且第一次是量出来的**。两个 composition 的 cachebuster 各自移到 `27a`（`50a86fa` / `512f886`），promote 与 install 都真的落了盘（`installed_plugins.json`：`…linux-work` `3.1.0+srv0003.20260927a` `lastUpdated 2026-09-26T16:11:47Z`；`serveros-testing` `1.0.0+srvtest0001.20260927a` `16:33:29Z`）。把本仓这条规则指向**已装载荷**的 `skills/`（不是指向仓库）：`27a` 两个各 **0** 条，被取代的 `23d` **13** 条、`22b` **1** 条，而两版 `skills/` 文件清单逐条相同（26 文件 / 5 条 Skill），所以这是同一套文件上的比较。**第一个落点关闭。** 第二个落点 `runtime-assets/hwz-server-os/current`（`3.1.0+srv0003.20260923c`）**仍逐字节只差第 143 行**，但它**没有消费者**：`enabledPlugins` 与 `extraKnownMarketplaces` 里都没有 `hwz-server-os`，四棵配置面 `command grep` 这棵树 **0 命中**，`ps` 无一条引用它，`skillUsage["hwz-server-os:serveros"]` 最后读于 **2026-09-20 01:30**。「那句错话躺在一个载体里」与「有 Agent 正在被这句话教」是两句不同的话：**前者成立，后者不成立**。这一格的处置因此从「待做」变成**一条 proposal**——重建这个基座 composition，或退役这个被取代的载体；理由与读数见 §9.50.4 |
+| P12 | **活着的**技能面落后于 canonical | canonical：本仓 `skills/serveros/SKILL.md`（157 行，`21281cfc3c0b`）。装到机上的：插件缓存 `~/.claude/plugins/cache/hwz-server-os-linux-work/hwz-server-os-linux-work/3.1.0-srv0003.20260923d/skills/serveros/SKILL.md`（157 行，`fbfbefbc5870`）；另有 `runtime-assets/hwz-server-os/current/skills/serveros/SKILL.md` 同样落后 | — | — | **P12 待做**（不属 HUMAN_EXECUTED：装 vince 用户级 runtime/插件在本轮授权内）。**实测**：两份**逐字节只差第 143 行**，而差的那一行是**北京搬迁留下的错话** —— 活的那份还在说「`/` 是系统盘，`/opt/applications` 是数据盘」，而本机 `ls -ld /opt/applications` → **No such file or directory**；canonical 已改成与节点无关的「数据盘（机器策略里的 `DATA_ROOT`）」。同一处陈旧还落在 `skills/serveros/scripts/architecture_check.py`：两份只差一段**注释折行**，canonical 那份带着 `# node-path-ok: 考古记录` 标记而装的那份没有。**判据不是「两份文件不一样」，而是「Agent 现在照着读的那句话是不是真的」—— 它现在不是。**处置走 build→promote→restart（不手改派生安装：手改会在下次 promote 时被盖掉并再次漂移）。**2026-09-27 更新（§9.50）**：那条处置**已被执行，而且第一次是量出来的**。两个 composition 的 cachebuster 各自移到 `27a`（`50a86fa` / `512f886`），promote 与 install 都真的落了盘（`installed_plugins.json`：`…linux-work` `3.1.0+srv0003.20260927a` `lastUpdated 2026-09-26T16:11:47Z`；`serveros-testing` `1.0.0+srvtest0001.20260927a` `16:33:29Z`）。把本仓这条规则指向**已装载荷**的 `skills/`（不是指向仓库）：`27a` 两个各 **0** 条，被取代的 `23d` **13** 条、`22b` **1** 条，而两版 `skills/` 文件清单逐条相同（26 文件 / 5 条 Skill），所以这是同一套文件上的比较。**第一个落点关闭。** 第二个落点 `runtime-assets/hwz-server-os/current`（`3.1.0+srv0003.20260923c`）**仍逐字节只差第 143 行**，但它**没有消费者**：`enabledPlugins` 与 `extraKnownMarketplaces` 里都没有 `hwz-server-os`，四棵配置面 `command grep` 这棵树 **0 命中**，`ps` 无一条引用它，`skillUsage["hwz-server-os:serveros"]` 最后读于 **2026-09-20 01:30**。「那句错话躺在一个载体里」与「有 Agent 正在被这句话教」是两句不同的话：**前者成立，后者不成立**。这一格的处置因此从「待做」变成**一条 proposal**——重建这个基座 composition，或退役这个被取代的载体；理由与读数见 §9.50.4。**2026-09-28 复测（§9.50.7）**：第一个落点在**今天实际在机的** `3.1.0+srv0005.20260927g` 与 `1.0.0+srvtest0001.20260927b` 上复量为 **0 / 0**；对照组 `27a` 仍 0、`23d` 仍 13（分母同为 26），所以这不是量具漂移——**从 `27a` 走到 `27g`，那 13 条一条也没有回来**。同时量出第二个落点其实是**同一份 `3.1.0+srv0003.20260923c` 的两份拷贝**（`runtime-assets/hwz-server-os/current` 与孤儿缓存 `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260923c`：两份 `ARTIFACT.json` sha256 同为 `3a3f168e…`，两棵 `skills/` `diff -rq` 无差异），各量到 **2** 条且是同两行。另记一条**射程**：这条正则要求根之后还有 `/段`，所以第 143 行那句话**不在** 13 → 0 的射程里，它靠逐字节 diff 验——「载体量到 0」不等于「整份文件与 canonical 一致」 |
 | P4 | 文档关系边 | `relations/project.py:61`（`serveros/relations.v1`），`relations/schema.yaml:29` | `python3 project.py --records ROOT --write relations/current.jsonl` | — | **partial**（比上一版进了一步）：8 个谓词里 3 个有生产者（`belongs_to`、`derived_from`、`attached_to`），其余 5 个 `declared_only`。本机实测 239 行 / 19 条报出，见 §9.8；另 5 个谓词逐条查过，**本机没有载体**，不是差功夫 |
 | P4 | Feishu 空间适配 / 共享 publisher | `skills/feishu-space-management/`：**只有 SKILL.md 文本，本仓没有代码**。`skills/document-stewardship/`：本仓同样只有文本，但**外仓有代码**——`~/.claude/skills/document-stewardship/scripts/maintain.py`，且 `plugin/profiles/linux-work.yaml:119-123` 声明它 `available` | — | — | partial。**上一版这一格把两者合成了一句「只有 SKILL.md 文本，没有代码」，那是错的**：`document-stewardship` 在外仓有实现，且 ability-management 注册表（HEAD `8d98aff`）**不持有**它——与那 8 条跨仓红同族。**§9.23 再纠一次**：那个实现里**没有 publisher 循环**。文件只有 `refresh` 与 `audit` 两个动词，它自己的 docstring 写着「**它从不写文档正文，也从不写 profile**」。原来那句「取 revision N → 定位 → 校验 → 候选 patch → …」描述的是**契约要求**，被读成了**已有实现**——恰好是这一格本来要防的那种误读。真正的 publisher 是本轮新写的 `intake/document_publish.py` + `runtime/document_transport.py` |
 | P5 | 员工 KB 生产者 | `src/litellm-support/scripts/build_agent_kb.py`，输出 `dist/employee-kb/`（`dist/` 被 gitignore） | `python3 scripts/build_agent_kb.py` | — | working，但**在 ServerOS 之外** |
@@ -7602,6 +7602,111 @@ promote 会盖掉它并再次漂移。
 机器策略要求它在动手前先取新快照。本片只写 `docs/CC-EXECUTION-LEDGER.md` 一个文件，
 它没有被那 6 个文件里的任何一个碰过。
 
+#### 9.50.7 2026-09-28 复测：那个 0 不再只在一个被取代的版本上成立，以及这把量具的射程
+
+9.50.5 末尾那条限定的话是：「`27a` 这一版按规则量到 0」成立，「这台机器上的载体现在是干净的」
+只在下一次 `build→promote→install` 之前成立。**下一次已经发生过了，而且不止一次。** cachebuster
+从 `27a` 一路走到 `27g`（`27d` / `27e` / `27f` / `27g` 几次移动记在 §15 与 §9.55 里），
+今天在机的两版是：
+
+| composition | 版本 | `lastUpdated`（UTC） | 北京 |
+| --- | --- | --- | --- |
+| `hwz-server-os-linux-work` | `3.1.0+srv0005.20260927g` | `2026-09-27T15:09:41Z` | 09-27 23:09 |
+| `serveros-testing` | `1.0.0+srvtest0001.20260927b` | `2026-09-27T14:42:23Z` | 09-27 22:42 |
+
+把 9.50.2 那把量具（同一份正则、同一份后缀表、同一份 `node-path-ok` 豁免，只换根）指向**今天
+真正在机的两版**，并把 9.50.3 的两行对照一起重量：
+
+| 载荷 | 装在机上？ | 读到的文件 | 违规 |
+| --- | --- | --- | --- |
+| `hwz-server-os-linux-work/3.1.0-srv0005.20260927g` | **是，ENABLED**（09-27 23:09 装） | 26 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0005.20260928c` | **是，ENABLED**（09-28 12:33 装；当天在它之前已又换过一次） | 26 | **0** |
+| `serveros-linux-work/current` → `…cleanmain-28d-union-actor-20260928@7f75503` | 是，09-28 15:42 的 promote 落点 | 26 | **0** |
+| `serveros-testing/1.0.0-srvtest0001.20260927b` | **是，ENABLED** | 2 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260927a`（上一版） | 否，已被取代 | 26 | **0** |
+| `hwz-server-os-linux-work/3.1.0-srv0003.20260923d`（修前） | 否，已被取代 | 26 | **13** |
+
+对照组逐条与 9.50.3 相同（`27a` 仍 0、`23d` 仍 13，分母都是 26），所以这**不是量具漂了**，
+是同一把尺子在同一套文件上又量了一次。于是那句话可以换成一句更强的：
+
+- **旧读法**：`27a` 那一刻干净。
+- **新读法**：从 `27a` 到 `27g`，**那 13 条一条也没有回来**。第一个落点关闭的不是一个版本，
+  是一条流水线。
+
+这一条不是自证的：`23d` 的 13 条是**修前**的同一套文件量出来的，而 `23d` 与 `27g` 的
+`skills/` 文件清单相同（26 文件 / 5 条 Skill）。改的是那几行文字，不是让扫描够不着它们。
+
+**但量具有射程，这里必须说清楚，否则这个 0 会被读成它没有量到的东西。**
+
+`NODE_PATH` 要求根之后**还有 `/` 加一段**。所以 P12 被引述得最多的那一句——`skills/serveros/SKILL.md`
+第 143 行的「`/opt/applications` 是数据盘」——**根本不在上面那个 13 → 0 里**：那后面跟的是
+反引号和句读，不是 `/<段>`。它一直是靠**逐字节 diff** 验的，不是靠这条规则验的。两件事都做了，
+但它们是两把尺子：
+
+| 查什么 | 量具 | `27g` 的读数 |
+| --- | --- | --- |
+| 13 条形如 `/根/段` 的行 | 本仓 `tests/test_no_node_absolute_paths.py` 指向载荷的 `skills/` | **0** |
+| 第 143 行那一句 | 与 canonical `skills/serveros/SKILL.md` 逐字节 diff | 逐字节相同（`diff` 空） |
+
+于是「载体量到 0」与「那句错话不在了」仍是两句不同的话：前者只覆盖正则形状的那些行，后者要
+另一次 diff。**把 0 读成「整份文件与 canonical 一致」是这一步最容易犯的错**，因为这个 0 看起来
+正是那个意思。
+
+**第三个载体，这次才量到。** 9.50.4 点出 `hwz-server-os` 孤儿缓存有三代（`15a` / `23a` /
+`23c`），但**没有量过它们的技能面**。同一把尺子：
+
+| 载荷 | 读到的文件 | 违规 |
+| --- | --- | --- |
+| `~/.claude/plugins/cache/hwz-server-os/hwz-server-os/3.1.0-srv0003.20260923c` | 20 | **2** |
+| `runtime-assets/hwz-server-os/current`（同题） | 20 | **2** |
+
+两条都是 `ability-management/control_plane.py:3499`（`/home/hwz`）与
+`serveros/scripts/architecture_check.py:1763`（`/opt/applications/data`）。分母 **20** 而不是 26
+是有原因的，不是扫描被截断：这个 composition 只有 3 条 Skill（它的 `ARTIFACT.json` 的 `skills`
+字段写着 `ability-management` / `runtime-management` / `serveros`），所以 `workspace-management`
+那 8 条与 `test-management` 那 1 条本来就不在它里面。
+
+**这两处是同一份东西的两个副本，这是量出来的**：两份 `ARTIFACT.json` 的 sha256 相同
+（`3a3f168e0fb43cfb0e4a46ee77cd2498e65d0d8fff90c282d7dac6eca063a323`），`diff -rq` 两棵
+`skills/` 无差异，两侧 `find -type f | sort | md5sum` 都是 `8b4bb92a55254239d103885fb4377b9b`。
+所以 §9.50.4 那句「那句错话还躺在一个载体里」应改成**「躺在两个载体里，而那是同一份
+`3.1.0+srv0003.20260923c` 的两份拷贝」**。没有消费者的结论不变（两处都查了），处置仍是
+proposal，不是动作。
+
+**9.50.7 自己也说错过一句，就地更正——因为错法比错本身更值得记。**
+
+它原来写的是「`runtime-assets/hwz-server-os/` 下的 `.prev-*` / `.retired-*` / `.staging-*` /
+`.candidate-*` 已全部清掉，该目录现在只剩 `current` 与两个 composition 目录」。**那是错的。**
+那句结论来自 `ls -1 $R`，而 **`ls -1` 默认不列点开头的条目**：20 个 `.prev-*` / `.retired-*` /
+`.staging-*` 一个都没有进输出，「**没显示**」被读成了「**不在了**」。带 `-a` 再看：
+
+```text
+$ ls -1a runtime-assets/hwz-server-os/
+.  ..  .agents  current
+.prev-3.1.0-srv0003.20260910f  .prev-3.1.0-srv0003.20260911a  .prev-3.1.0-srv0003.20260911b
+.prev-3.1.0-srv0003.20260914a  .prev-3.1.0-srv0003.20260915a
+.retired-3.1.0-srv0003.20260915a  .retired-3.1.0-srv0003.20260923a
+.staging-check  .staging-final-check
+.staging-serveros-28a-20260928  .staging-serveros-28a-verify-20260928
+.staging-serveros-28b-20260928  .staging-serveros-28c-20260928
+.staging-serveros-cachebuster-27g-20260927  .staging-serveros-cachebuster-27h-20260928
+.staging-serveros-cachebuster-27i-20260928  .staging-serveros-cachebuster-27j-20260928
+serveros-linux-work  serveros-testing
+```
+
+**残留不但没被清掉，比 09-27 那次列的还多**：`.staging-*` 从 4 个长到 9 个（`28a` /
+`28a-verify` / `28b` / `28c` 四个是 09-28 10:47–12:32 新建的），`.prev-*` 仍是 5 个、
+`.retired-*` 仍是 2 个。**清理在本项目是 proposal-only，所以这不是本片要处置的事**；它的意义是
+09-27 那张清单**还开着、而且在长**。
+
+`/tmp/sys24` 那半句是对的，而且用两种查法各验了一遍：`ls -ld` 报 `No such file or directory`，
+`[ -e ]` 报不存在——那是「没有」，不是「没显示」。
+
+**教训一句话**：`ls -1` 与 `ls -1a` 对同一棵树给出的「有什么」不一样，而**只有一种否定可下**
+——带 `-a` 的列表，或者 `[ -e ]`。拿不带 `-a` 的输出去断言「已经清掉」，拿到的是一个看起来
+像测量结果的默认行为。这条与内存里那条「`grep` 说没有不等于没有」同族：**量具的默认参数会
+替你说一句你没说过的话。**
+
 ## §9.51 Human Control 的两半：可信上下文能产出 grant，grant 能停，且 wake 真的问它
 
 §9.25.5 与 §9.27.7 都记着同一条 PARTIAL：「首次真实 grant 走可信用户控制」——
@@ -7643,6 +7748,14 @@ AUTHORIZED 的记录调 `intake/daily_cycle.standing_reason`（`envelope_of` 之
 「在效但不点名这个 Item」各有各的句子。未读得懂的 `now` 报 `CLOCK_UNREADABLE` 并归入
 `not_standing`——一个读不出来的瞬间不是能确立权威的瞬间。
 
+**2026-09-28 订正（§9.51.6）**：上面那句「树里其它每条路都补了这一问……**只有 wake 这条路谁
+都没问**」不完整。`runtime/cli.py` 的**读入路径**确实调 `standing_reason`（`:6761`），
+`agent_control_store._authorizing_grant` 也自己判——但 `envelopes()` 的第三个消费者
+`cmd_work_grants`（`:7321`）**同样谁都没问**，而它恰恰是那个把答案印成人能读的一行
+（`authorizing N of M`）的动词。它不漏权威（准入前的 `select_focus` 已按行挡掉），
+所以它不是 §9.51.2 那条 fail-open 的第二个实例，而是同一族里**报词**的那一个。
+读数与射程见 §9.51.6。
+
 ### 9.51.3 服务：BotMux turn 内铸上下文
 
 `~/.claude/settings.json` 的 `UserPromptSubmit` 增了一条 hook（**BotMux 自己那条未动**）：
@@ -7661,6 +7774,21 @@ AUTHORIZED 的记录调 `intake/daily_cycle.standing_reason`（`envelope_of` 之
 不是按实测写的）。所以本片的 live 状态是 PARTIAL，理由是「生产者已存在且已装，等待一次
 真人回合」，**不是**「没有实现」。
 
+**2026-09-28 订正（§9.51.6）**：**那一次真人回合发生了**，就在这一节被写下的第二天。
+上面那句「`botmux actor current` 在 turn 内的 VERIFIED 输出至今没有被实测过」也就地订正：
+本轮（用户消息 `测试 Human Control`）的 ingress 第一次写出 `ATTACHED`，store 第一次持有
+一条 `provider_status: VERIFIED` / `provenance: FACT` 的上下文。**本片的 PARTIAL 因此闭合**，
+而闭合它的不是一次实现，是 §9.51.3 那条 hook 在真的回合里被真的跑到了一次。
+同一天更早的两条 ingress 是 `BLOCKED` / `current_actor_unverified`。**把这条变化归给哪一项，
+本轮量不出来**：hook 那一行与装着的 `mcp/human_control.py` 我都只量了**当下**这一份，
+没有量过它们在两次 `BLOCKED` 之间没变过——所以「变的是 BotMux 自己」是一句**推断，
+不是读数**（能确定的是 BotMux 在 09-28 重启过两次：15:18 v3.23.1、15:46
+v3.31.0-2-g3153891d）。要把它变成读数，得先有一份当时的载荷哈希。
+
+（另：这两行与用户回合并**不**一一对应，别把这份 jsonl 的行数读成回合数——§9.51.6 有一张
+对齐表。）
+读数与前后对照见 §9.51.6。
+
 ### 9.51.5 测试
 
 `tests/test_work_delegate.py` 21 passed：无 ref / ref 不在 store / **store 层自己那道守卫**
@@ -7673,6 +7801,438 @@ CLI 写下的 grant 被 `wake.authority` 认作 authorizing 且 `wake.plan` 给�
 回归：`test_wake` / `test_delegation` / `test_continuation` / `test_admission` /
 `test_control_store_path` / `test_cross_device_handoff` / `test_core_freeze`
 **433 passed, 1 skipped**。
+
+### 9.51.6 2026-09-28 真人回合实测：生产者那一半闭合了，另一个读者说了相反的话
+
+用户消息 `测试 Human Control` 是本节点**第一次真实人类 turn 铸出可信上下文**。这一节记它的
+读数，也记同一次测试里被量出来的**第三个读者**。
+
+#### 一、§9.51.4 缺的那一件，现在有了
+
+`/data/home/vince/logs/serveros/human-control/ingress.jsonl` 第三条——也是第一条 `ATTACHED`：
+
+```json
+{"actor_identified": true, "at": "2026-09-28T16:14:20.015315+08:00", "attached": true,
+ "context_ref": "human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826",
+ "detail": null, "provider": "provider:botmux-human-control",
+ "schema": "serveros/human-control-ingress.v1", "state": "ATTACHED", "transport": "feishu"}
+```
+
+另两条是 `BLOCKED` / `current_actor_unverified`。**但「ingress 一行 = 一个回合」不成立**，
+这一点得先记下来，否则这份 jsonl 的行数会被读成回合数。本群最近 40 条消息与这 3 行对齐
+（北京时间）：
+
+| 用户消息 | 同一秒的 ingress 行 |
+|---|---|
+| 09-28 `00:56:43` `1` | **无** |
+| 09-28 `09:33:26` `1` | `09:33:29` BLOCKED |
+| 09-28 `15:58:13` `1` | **无** |
+| 09-28 `16:14:17` `测试 Human Control` | `16:14:20` **ATTACHED** |
+| ——本群无对应消息—— | `09-28 01:46:14` BLOCKED |
+
+**四个用户回合里，两个一行都没留下；而 3 行 ingress 里另有 1 行在本群找不到对应消息。**
+三个可能的成因本轮**都没量**：hook 的闸门是
+`[ -n "$BOTMUX_TURN_ID" ] || exit 0`，标记缺席就静默跳过、**不写行**，所以「没写分行」是
+**预期行为之一**；而 `01:46:14` 那一行可能是**另一个会话**的——ingress 是节点级的，但 BLOCKED
+行按设计**不带 `conversation_ref`**（那时还没铸出上下文），所以「这一行属于哪个会话」在记录里
+**不可判**，本轮没有去别的会话里找它。**结论**：这份 jsonl 记的是「attach 被尝试过几次、
+各自什么结果」，**不是**「有几个回合」；本轮要的那一行在，而它的分母不是 4。
+
+**「为什么这一次成了」本轮答不了**：hook 那一行与装着的 `mcp/human_control.py` 我量的都是
+**当下**这一份，没有量过它们在两次 `BLOCKED` 之间变过没有；能确定的是 BotMux 在 09-28 重启过
+两次（15:18 v3.23.1、15:46 v3.31.0-2-g3153891d）。所以这一句到此为止：**不是我改对了什么，
+是这一次它成了**——原因未测。store 里那条上下文记录（六项，`observed_at` / `expires_at` 相隔
+**900s**）：
+
+```text
+actor_ref        feishu:union:<redacted-union-id>
+context_ref      human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826
+conversation_ref <redacted-chat-id>
+transport        feishu        transport_identity  botmux-verified-enterprise-user
+observed_at      2026-09-28T08:14:19.943316+00:00
+expires_at       2026-09-28T08:29:19.943316+00:00
+provider_status  VERIFIED      provenance          FACT      schema  serveros/trusted-actor-context.v1
+```
+
+§9.51.4 里那句「`botmux actor current` 在 turn 内的 VERIFIED 输出至今没有被实测过」就地处
+订正为：本轮实测的是**它的产物**（上面这条 store 记录），不是它的 stdout——`botmux actor
+current` 本身在本机要求 `--json`，本轮没有重跑它。**本片的 PARTIAL 闭合。**
+
+#### 二、半边一：能产出 grant
+
+| # | 命令 | 读数 |
+|---|---|---|
+| N1 | `work delegate` **不带** `--context-ref` | 拒，退出码 1：「There is deliberately no flag that supplies an actor directly: a verb that could do that could sign its own authority.」 |
+| N2 | `… --context-ref human-context:i-made-this-up` | 拒，退出码 1：「no trusted context 'human-context:i-made-this-up' is held by …/store.json, so 'hc-negctl-n2' has nothing to derive from. … minting one against a context this store has never held is authority with no root.」 |
+| N3 | 同上、再点名一个不存在的 ref | 拒，退出码 1，同一句话 |
+| P | `work delegate --grant-ref hc-smoke-20260928 --item SRV-0011 --action human-control-smoke --valid-from 2026-09-28T08:14:00Z --expires-at 2026-09-28T08:40:00Z --wall-seconds 60 --max-attempts 1 --max-output-bytes 4096` | 落盘，`grants: 1` |
+
+（三条负对照的退出码是**单独跑**量的——上面第一次量它们时我把 `serverosctl` 接进了管道，
+那时读到的 `rc=0` 是管道末端 `tail` 的，不是动词的。同一类坑见 §9.50.7 的量具射程。）
+
+#### 三、半边二：grant 能停，而且 wake 真的问它
+
+§9.51.2 那处修改在本轮**第一次走真路径**（此前只有测试）：
+
+| 时刻 | 命令 | 读数 |
+|---|---|---|
+| 撤销前 | `work wake --item SRV-0011 --dry-run` | `SRV-0011#1  WAKE  READY`，`authority  hc-smoke-20260928` |
+| — | `work revoke --grant-ref hc-smoke-20260928 --reason '…用完即撤'` | `revoked True at 2026-09-28T08:15:17.311972+00:00` |
+| 撤销后 | 同一条 `work wake --item SRV-0011` | `REFUSE  NO_AUTHORIZING_GRANT` |
+
+**具名拒绝，不是伪装成一次唤醒**——正是 §9.51.2 要的那句。没有启动任何东西（`--dry-run`
+只判不动），没有清理任何残留。
+
+#### 四、但同一分钟里，第三个读者说了相反的话
+
+时间 **16:18:10 CST（08:18:10Z）**，同一次读、同一个 store、同样这两条记录：
+
+```text
+$ serverosctl work grants
+recorded    2
+authorizing 2 of 2 (the rest are excluded, each with its reason below)
+states      AUTHORIZED 2
+
+e2e-hc-20260928  AUTHORIZED  (in the envelope)
+  revoked       False
+  window        2026-09-28T16:19:00+08:00      ← 此刻是 16:18:10，还没到
+  until         2026-09-28T16:29:00+08:00
+hc-smoke-20260928  AUTHORIZED  (in the envelope)
+  revoked       True at 2026-09-28T08:15:17.311972+00:00   ← 撤销了
+```
+
+```text
+$ serverosctl work wake --item SRV-0011
+reasons       NO_AUTHORIZING_GRANT 1
+SRV-0011#1  REFUSE  NO_AUTHORIZING_GRANT
+  says  nothing authorizes waking SRV-0011: e2e-hc-20260928 is recorded and
+        GRANT_NOT_CURRENT, hc-smoke-20260928 is recorded and MISSING_OR_REVOKED_GRANT
+```
+
+**`grants` 说 2 of 2 授权，`wake` 说 0 of 2**；而 `grants` 自己那一行下面紧跟着
+`revoked True` 与一个还没到的时间窗——**同一个输出里有两句互相矛盾的话，而印在最上面、
+最像结论的那句是错的那句**。这个动词的 docstring 写着它存在的理由：
+「can be run before a cycle to see whether one may start at all」——它回答的正是这个问题，
+而它答反了。
+
+**不是时钟问题，是这个问题它压根没问。** 把 `--now` 钉在撤销前后来回试：
+
+| `--now` | 上下文 age | grants 的判词 |
+|---|---|---|
+| `08:16:00Z` | 100s | `AUTHORIZED 1` |
+| `08:20:00Z` | 340s | `DELEGATION_DOES_NOT_AUTHORIZE 1` |
+| `08:35:00Z` | 1240s | `DELEGATION_DOES_NOT_AUTHORIZE 1` |
+
+也就是说 **`grants` 的状态只跟着上下文的新鲜度走**；`revoked` 与 grant 自己的窗口从不参与。
+直接对模块读同一条记录，两句并排：
+
+```text
+delegation.derivation -> AUTHORIZED
+standing_reason       -> MISSING_OR_REVOKED_GRANT
+```
+
+**顺带量出一条容易读错的量**：`authorizes`（`context/actor.py:348`）要的是 **FRESH**，
+不是「没过 `expires_at`」。契约 `freshness` 是 `stale_after_seconds: 300` /
+`window_seconds: 900` 两个不同的数——上下文在 **300s 就停止授权**，而它到 **900s 才**
+被叫作 EXPIRED。所以 `expires_at` 那个字段读起来像闸门，它后面还有一条 5 分钟的线。
+
+**根因：`envelopes()` 有三个消费者，其中一个少调了一次。** `derivation` 按自己的 docstring
+只判「有没有一份**仍然新鲜**的委派」，`revoked` 与 grant 自己的窗口按设计分给
+`standing_reason` / `grant_reason`；那么 `envelopes()` 的 docstring——「Only `AUTHORIZED`
+grants enter the map」以及那个 map 是「the map a cycle may be admitted under」——在
+**被撤销的**与**窗口未到的**两格上就不成立：map 里确实进了不再授权的记录。
+
+| 消费者 | 是否另问那两问 | 后果 |
+|---|---|---|
+| `work focus` 路径（`cli.py:7053`） | 是——`select_focus`（`intake/daily_cycle.py:547`）逐行调 `classify`（`:594`），由它调 `grant_reason`（`:270`） | 撤销/未到期的 grant 进不了 `selected` |
+| `runtime/wake.py:415` | 是（§9.51.2 的修法，`:416`） | 具名拒绝，两句话都点名 |
+| **`cmd_work_grants`（`cli.py:7321`）** | **否** | **`AUTHORIZED` / `authorizing N of M` / `(in the envelope)`** |
+
+`cmd_work_grants` 的 docstring 里那句「The two verbs share `context/delegation.py`, so
+**a grant cannot authorize in one and not the other**」**实测为假**——差别恰恰是 `wake` 多调的
+那一次 `standing_reason`。
+
+**它漏得动吗：目前漏不动，但说错话的地方就是它存在的理由。** 准入面上 `admission()` 的
+`GRANT_NOT_RECORDED` 读的正是这个 map，可 `select_focus` 已经先按行挡掉了，撤销的 grant
+到不了那一步。**这一条只量到 CLI 的三个读者**：work-engine 的原子准入门本轮没有量，
+不写成结论（要做，先把它自己的 `envelopes()` 调用点找出来，而不是推断它一定用了同一个 map）。
+
+**处置（proposal，不在本轮做）**：与 §9.51.2 同形的修法——`cmd_work_grants` 在打印前，对每条
+`in_envelope: True` 的记录调一次 `standing_reason`（`envelope_of` 之后的形态，因为 store 的
+键是 `grant_ref` 而它读 `ref`），让 `authorizing N of M` 与行后缀 `(in the envelope)` 建立在
+**两问都过**的记录上；`revoked` / `window` 那几行原样保留，由它们自己说明为什么。
+`derivation` / `envelopes` 的判词一个字不改——**调用，不重写**，与 §9.51.2 同一条纪律。
+**不在本轮做的理由**：它改的是 `runtime/cli.py`，改完要么停在源码（§3.1 那一行就成了又一个
+「源码有、实机没有」），要么走完整条 build → cachebuster → promote → install——那是一条
+**全节点生效**的链。本轮拿到的授权是**测试**，不是**发布**。
+
+#### 五、这次测试里出现了一个我控制不了的写入者（DEFER）
+
+**16:17:12 CST**，store 里多出第二条 grant，`store.json` 的 mtime 就是这一刻：
+
+```text
+e2e-hc-20260928   revoked: False   items: ['SRV-0011']   actions: []
+valid_from 2026-09-28T16:19:00+08:00   expires_at 2026-09-28T16:29:00+08:00
+delegated_by human-context:provider%3Abotmux-human-control/ed3eb47df9770123706f7a57ba7a3826
+```
+
+**不是我写的。** 本轮我只写过一条 `hc-smoke-20260928`；三条负对照全部被拒（退出码 1）且
+不落盘。而且 **ingress 仍然只有 3 行——没有第二个真人回合铸过上下文**，它用的是 store 里
+**已经持有的那条 ref**。它后来的读数正好成了上面第四节的第二个独立样本。
+
+三点如实记下：
+
+- **「谁写的」在本机不可判**，而且这是**设计**：记录里没有指向写入者的字段，`delegated_by`
+  记的是**上下文**，不是写下它的人。按机器策略，未知 owner = **DEFER**；本轮**没有碰**这条
+  grant——它现在是一条**活的、未撤销的**授权（窗口 16:19–16:29），不是我该动的东西。
+- 它顺带量出闸门**强度的边界**：判据是「store 已经持有这个 ref」，不是「这个 ref 出自这一
+  回合」。docstring 说的正是前者（「must name a trusted context this store ALREADY holds」），
+  所以**不是实现与声明不符**；但把一个 0600 store 里的 ref 读出来再呈上去，与「回合内铸出来
+  的」在记录上不可区分。记下来，不下判词。
+- **这一刻没有并发进程在写**（`ps` 里没有 `serverosctl` / `human_control`），mtime 停在
+  16:17:12 没再动。上面所有读数都是在这一刻之后、记录不再变化时取的。
+
+#### 六、这一片没有做的事
+
+没有推任何分支；没有为了让读数好看去动 store（那条撤销的 grant 现在仍写着
+`revoked: True`，`grants` 的四张表都指着它）；没有跑 build / promote / install；没有清理
+`runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）；
+没有跑全量回归（本工作树同时有第二个写入者，§9.50.6 的告诫仍然有效）。
+
+### 9.51.7 2026-09-28 18:26 真 Native Parent 第一次被 wake 起来，而它的授权根出自**另一轮**
+
+用户消息 `测试 Slice 2`（18:25:57）。这一节记它量到了什么，也记这次跑**是谁跑的**——
+因为答案不是本会话，而这件事直接决定了读数该怎么读。
+
+#### 一、这一次跑不是本会话做的
+
+harness 在 `artifacts/work-items/serveros/SRV-9901/slice2-native-parent-20260928/`，
+mtime 落在 18:05–18:26。跑它的是另一个并发会话：`eb00aeba-d062-485a-8455-e01f82d6d991`
+（pid 4044019，cwd `/data/home/vince`），它的 transcript 18:26:06 有那次
+`Bash run-slice2.sh`，18:26:21 拿到 tool_result，18:27:02 写下「Slice 2 通了」。
+
+它 18:05 就造好了 harness、**并停掉了 `serveros-continuation-wake.timer`**（`run.log` 第 0 步
+`timer inactive`，为的是不让产品定时器和它这次手跑的 wake 抢同一个 checkpoint），然后等一个
+真人回合。18:26:02 它收到一句「发了」，18:26:06 起跑，18:26:49 把定时器恢复
+（现在 `is-active`、`is-enabled` 都是 active/enabled）。
+
+本会话这一轮**只做读数**：没重跑、没改任何东西、没动他的产物。
+
+#### 二、授权根是发给我这一轮的那条消息（量出来的，不是推的）
+
+```json
+{"actor_identified": true, "at": "2026-09-28T18:26:00.704651+08:00", "attached": true,
+ "context_ref": "human-context:provider%3Abotmux-human-control/a337d9f30a6faa1e22e42d7ccfd416f5",
+ "detail": null, "provider": "provider:botmux-human-control",
+ "schema": "serveros/human-control-ingress.v1", "state": "ATTACHED", "transport": "feishu"}
+```
+
+它 `message_ref` 是 `<redacted-message-id>`。按 message id 逐 transcript 数：
+
+| transcript | 该 message id 出现 | 该消息（`测试 Slice 2`）出现 |
+|---|---|---|
+| `4ab56455…`（本会话） | 4 | 19 |
+| `eb00aeba…`（跑 harness 的那个） | **0** | 1 |
+| `1ae3aff7…` | 0 | 0 |
+| `e5debb56…` | 0 | 0 |
+
+本会话 `10:25:59.766Z` 那条 user 就是这条消息。而 harness 的第 1 步是「**从 store 里取最新的
+FRESH 可信上下文**」——它没有自己铸一个。时间账：
+
+```text
+10:25:59.766Z  这一轮开始（botmux 把这条消息交给我）
+10:26:00.630Z  上下文 observed（0.86 s 后，hook 在回合内铸的）
+10:26:18.960Z  wake 真起子进程
+= 19.2 s，远在 300 s 的授权窗内
+```
+
+所以：**你发给我这一条消息，就是那次唤醒的授权来源**；跑它的会话只是把这个 ref 从 store 里
+读出来用掉。这不是事故——看它 18:26:02 的 think（「The user says they sent it. Run the script
+NOW.」）和时间线，这是**用户自己安排的**：把真人回合送到这一轮，让另一轮在 300 秒内消费。
+
+意义有两面，都要记：
+
+- 好的一面：§9.51.6 第一节闭合的那半边的**第一个真实消费者**出现了。一天前「只有 wake 这条路
+  谁都没问」的那条链，现在被一个不是它自己造的场景真的用掉了一次，而且**用的是一次真实人类
+  turn 铸出来的上下文**，不是 `--now` 蒙过去的。
+- 要记的一面：这与 §9.51.6 第五节那条**同一个边界**——闸门要的是「store 已经持有这个 ref」，
+  于是**授权可以从一轮借到另一轮**。记录里 `delegated_by` 记的是上下文，不是消费它的那一轮；
+  「这一轮」和「用掉它的那一轮」不是同一个会话，**从记录里看不出来**。本机此刻有 **6 个**
+  进程仍活着的 Claude 会话锁（含本会话），这条边界的现实面比昨天更宽。
+
+#### 三、读数
+
+| 项 | 值 |
+|---|---|
+| wake 判词 | `SRV-9901#1  WAKE  READY`；`authority slice2-disposable-20260928`；`attempt 1 of 1` |
+| action key | `continuation-wake-SRV-9901-e1-a1` |
+| 起子进程 | `WOKEN  EXITED  exit 0`，`10:26:18.959992Z` → `10:26:20.786398Z`（1.826 s） |
+| receipt | `process_exit_code 0` / `status EXITED` / `executed_now true` |
+| receipt 没夸大的三格 | `effect UNVERIFIED`、`descendants_verified false`、`worker_stopped false` |
+| Parent stdout（132 B，verbatim） | `SRV-9901 (epoch 1): next safe action is to read the stdin briefing and reply with one line and nothing else — which is this line.` |
+| cwd 影响面 | 只有 `WHAT-THIS-IS.txt`（18:05:16，harness 自己放的）；Parent 一个字节没写 |
+| 立刻第二次 | `REFUSE  ATTEMPTS_EXHAUSTED`，没有第二个子进程 |
+| 收尾 | grant `revoked True at 10:26:46.081275Z`；checkpoint `parked 10:26:45.770794Z`（带理由）；timer 18:26:49 恢复 |
+
+launcher 侧自证落盘了（`briefing-as-read.txt` / `briefing-read-proof.txt`），记的是
+2937 B / 49 行 / `sha256 50d0ceca…`。Parent 的 stderr 有一条
+`[claude-code:unrecognized_model] {"model":"v4.1flash-anthropic[1m]","query_source":"sdk"}`——
+受限子进程继承了本会话注入的模型名，SDK 那条路不认它，它仍然答了。这是「launcher 继承环境」
+的一条读数，不是失败。
+
+#### 四、一处对不上的字节，以及它为什么不是两份东西
+
+receipt 的 `.stdin` 是 **2938 B**，自证说 **2937 B**。差额是尾部换行：launcher 的
+`briefing="$(cat)"` 剥掉了它，`printf '%s'` 又不会再补。复算：
+
+```text
+$ printf '%s' "$(cat continuation-wake-SRV-9901-e1-a1.stdin)" | sha256sum
+50d0cecaa75f08a4108a9aa948845465d0eb8432393e21e48254c20bf5d9a4f6  -
+```
+
+与自证的 `sha256` 逐位相同 → **对得上，不是 Parent 读了两份东西**。但这条量具的射程要写下来：
+那份自证里的 `sha256` 证的是一份**被剥掉尾换行的文本**，不是 receipt 记的那 2938 字节。拿它去比
+receipt 会读出「Parent 读的不是这一份」的**假结论**——一个看起来像证据对不上的东西，其实是两个
+量具的口径差。
+
+#### 五、没测到的：产品那条 launcher 本体
+
+harness 自己声明了三处刻意差别（证据、权限、拒绝面）：它用受限替身
+（`--restricted`、`--strict-mcp-config` 空 MCP、先落盘自证再 exec），产品那条是
+`~/.local/bin/serveros-wake-parent` 走 `claude -p`，而本机 `~/.claude/settings.json` 带
+`permissions.defaultMode = "bypassPermissions"`。所以这一片的判词要分两半：
+
+- **测到了**：一个真实的 Native Parent 进程能被 `work wake` 起来、briefing 从 stdin 进得去、
+  它的退出码原样进 receipt、同一个 key 的第二次唤醒被具名拒绝且不起第二个子进程。
+- **没测到**：产品 launcher 那一步本身。它仍然只是「形状」。
+
+记忆 `human-control-wake-chain-is-measured` 里那句「真 Parent（`claude -p`）仍未启动过」现在
+要改成：真 Parent 起过了，**但经的是替身 launcher**——产品那一条仍未启动过。
+
+#### 六、`work grants` 的第二个独立样本（与 §9.51.6 第四节同一个缺陷）
+
+同一时刻（`now 2026-09-28T10:29:30.243401+00:00`）的 `work grants`，verbatim：
+
+```text
+slice2-disposable-20260928  AUTHORIZED  (in the envelope)
+  delegated by  human-context:provider%3Abotmux-human-control/a337d9f30a6faa1e22e42d7ccfd416f5
+  revoked       True at 2026-09-28T10:26:46.081275+00:00
+  window        2026-09-28T10:26:07.168885+00:00
+  until         2026-09-28T10:30:07.179807+00:00
+  items         SRV-9901
+```
+
+**一条已经撤销的 grant，在 `grants` 里是 `AUTHORIZED`。** 与 §9.51.6 第四节同一根因：
+`derivation` 只判上下文，`cmd_work_grants` 是三个 `envelopes()` 消费者里唯一不另问
+`standing_reason` 的那个。store 里此刻三条撤销的 grant，另两条落在
+`DELEGATION_DOES_NOT_AUTHORIZE`——但那是因为**根上下文过期了**，不是撤销被看见了；只有这一条
+的根上下文仍新鲜，于是**撤销在那一条上真的没被看见**。判词不变：**报告缝，不是 fail-open**
+（准入由 `select_focus` 逐行把关）；修法不变：加一次调用，仍未做（本轮授权是**测试**，不是
+**发布**）。
+
+#### 七、这一片没有做的事
+
+没有重跑 harness；没有改任何源码；没有 build / promote / install；没有动跑它那一轮的产物
+（harness 目录、receipt、它写的 park 记录都是他的证据，一律不碰）；没有推任何分支；没有清理
+`runtime-assets/hwz-server-os/` 下的任何残留（§9.50.7 的 proposal 仍然只是 proposal）。
+
+### 9.51.8 2026-09-29 00:42 产品 launcher 本体第一次起 Parent；而它买到的文件围栏，在生产路径上宽到几乎不存在
+
+#### 一、这一轮也不是我跑的（与 §9.51.7 同一情形）
+
+harness 是并发会话 `eb00aeba…` 在 00:42:36 建的（`slice3-production-chain-20260929/`），
+真人回合 **00:42:27** 到达的是**本会话**。授权根因此又是发给本会话的那一条 `1`：
+context `8d328043d94ede23a7068174704d1639`，observed 00:42:27 → wake 起子进程 00:42:48.84，
+**约 21 秒**。这是「授权可以从一轮借到另一轮」（§9.51.7 第三节）的**第二个独立样本**，
+发生在同一台机器上、相隔六小时。生产定时器照旧先停后恢复，恢复后它自己那一跳读数
+`reasons PARKED 3`。
+
+#### 二、读数
+
+| 项 | 值 |
+| --- | --- |
+| receipt | `continuation-wake-SRV-9902-e1-a1` · `WOKEN  EXITED  exit 0` |
+| 起止 | 16:42:48.844656Z → 16:42:55.721574Z，**6.877 秒** |
+| receipt 自称 | `effect UNVERIFIED` / `descendants_verified false` / `worker_stopped false` |
+| Parent 自己报的工具面 | `SRV-9902 epoch 1 — tools: Bash, Edit, Glob, Grep, Read, Write`（64 B，一行） |
+| 立刻第二次 | `REFUSE ATTEMPTS_EXHAUSTED`，零第二个子进程 |
+| effect 面 | `cwd/WHAT-THIS-IS.txt` 一件，没有别的写入 |
+
+时间对照：探针 13.7 毫秒 → 18:26 替身 1.826 秒 → 这次 **6.877 秒**。三者用的是同一条决策、
+同一套 `invoke_once`、同一份 receipt 形状，差别就是「真的起了一个 agent」。
+
+#### 三、这一片真的换了东西：一处结构拒绝，三处同一身份
+
+- **安装件 == canonical == git HEAD**：`~/.local/bin/serveros-wake-parent`、
+  `workspace/ops/scripts/serveros/serveros-wake-parent` 与 `ops` 的 HEAD 三者同 sha256
+  `8b8d5360…`；旧件存为 `BEFORE-20260929`（`49a8356e…`，mtime 09-27 00:15:19）留作前后对照。
+- **我自己重放承重那一格**：`claude --restricted --permission-mode bypassPermissions` →
+  **exit 1**，stderr `Error: bypassPermissions not supported in restricted mode`。
+  对照条件成立：`~/.claude/settings.json` 此刻仍写 `permissions.defaultMode = "bypassPermissions"`，
+  而产品 Parent 照常起来 —— `--restricted` 确实**不读用户设置**。
+- `src/serveros` 里 `bypassPermissions|permission-mode` **零命中**；systemd 单元文件未改
+  （mtime 仍是 09-27 00:15:25）。
+- 这条 launcher 是**节点本地、不进发布链的**产物：`release.py continuation-wake` 只校验它是一个
+  绝对、无空白、可执行的路径，不生成它。所以「改了什么」只有 `ops` 的那一个提交记得住
+  （`6b2d0b3`）。
+
+#### 四、围栏：机制为真，但**生产路径上的宽度不是被测量的那个宽度**
+
+peer 的 H 探针把机制测掉了，verbatim：
+
+```text
+BLOCKED /data/home/vince/artifacts/work-items/serveros/SRV-9902/p0-launcher-posture-20260928/outside-cwd.txt
+is outside /data/home/vince/artifacts/work-items/serveros/SRV-9902/p0-launcher-posture-20260928/cwd;
+--restricted confines the file tools to the working directory.
+```
+
+所以**围栏宽度 = Parent 的 cwd**。而每一个测到它的调用都给了一个**窄** cwd：18:26 的替身
+自己 `cd` 进 oneshot 目录；§9.51.7 那次与这次 slice 3 都传 `--cwd "$R/cwd"`。
+
+生产路径**不给**：
+
+- 单元 `ExecStart` 里没有 `--cwd`（§9.51 起未变），`WorkingDirectory=%h`；
+- `wk_wake.add_argument("--cwd", default="")`（`cli.py:12174`），空则
+  `cwd = Path(args.cwd) if args.cwd else Path.home()`（`cli.py:8813`）；
+- `wake()` 自己的原话：「`cwd` IS THE CALLER'S AND NOT THIS MODULE'S … the working directory a
+  Parent starts in is a decision the install makes (`--cwd`, or the unit's `WorkingDirectory=`)」；
+- 新 launcher **自己不 `cd`**（第 103 行是裸 `exec`，与 18:26 那个替身不同——替身有 `cd`）。
+
+于是生产路径上的 cwd 是 `/data/home/vince`，围栏圈住的是**整个数据根**：`workspace/`、
+`artifacts/`、`state/`、`.secrets/vault/` 全在里面。合起来：
+
+> `--restricted` 买到的是一个 **cwd 无关的结构性拒绝**（`bypassPermissions` 那条，exit 1），
+> 加上一个 **在真实路径上几乎不圈东西的文件围栏**。
+
+判词不是「谁测错了」，而是**被测的宽度 ≠ 生产的宽度**——与 §9.50.4 同一族。这一条与
+「`Bash` 是特意点名要回来的、可越过围栏」是**两个独立**的削弱，且在真实路径上叠加。
+
+#### 五、`work grants` 的第三个独立样本
+
+同一时刻 verbatim：
+
+```text
+slice3-production-20260929  AUTHORIZED  (in the envelope)
+  revoked       True at 2026-09-28T16:43:13.153481+00:00
+```
+
+与 §9.51.6 第四节、§9.51.7 第六节同一根因：`derivation` 只判上下文时钟，`cmd_work_grants`
+是三个 `envelopes()` 消费者里唯一不另问 `standing_reason` 的那个。peer 独立得出同一判词，
+逐字写进了它 `SRV-9902#2` 的 park reason（「Enforcement correct, label wrong; reported as a
+finding, not fixed.」）。三个样本、两个观测者、判词不变：**报告缝，不是 fail-open**；
+修法不变：加一次调用；仍未做（本轮授权是**测试**，不是**发布**）。
+
+#### 六、这一片没有做的事
+
+没有重跑 harness；没有改任何源码；没有 build / promote / install；没有动 peer 的证据目录；
+没有推任何分支——`ops` 的 `6b2d0b3` 是 `main...origin/main [ahead 1]`（**未推**），
+本 worktree 的四个提交同样未推；没有清理 `runtime-assets/hwz-server-os/` 下的任何残留。
+
+#### 七、订正
+
+§9.51.7 第五节末句「**产品 launcher 那一步本身**……它仍然只是『形状』」与记忆里同一句，
+自本节起作废：产品 launcher 本体在 2026-09-29 00:42（北京）真的起过 Parent，
+`exit 0` / 6.877 秒。被这一节**换掉**的是那句结论，不是那一节的其它读数。
 
 ## §9.52 我自己那一片撞了 §25 的棘轮：bootstrap 长了，而长进去的是一段属于 owner 的过程
 
