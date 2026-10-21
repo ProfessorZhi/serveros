@@ -125,6 +125,24 @@ class CloudCliProvider(DeviceProvider):
 
     # -- health ------------------------------------------------------------
 
+    def create_project(self, *, root: str, name: str, project_path: str,
+                       display_name: str | None = None):
+        """An explicit extension; never REST auth or arbitrary native passthrough."""
+        client = self._client()
+        try:
+            advertised = client.tools_list()
+            tool = next((t for t in advertised if t.get("name") == "project_create"), {})
+            fresh = tool.get("inputSchema", {}).get("properties", {}).get("requireFresh", {})
+            if fresh.get("type") != "boolean":
+                raise refuse("CAPABILITY_UNSUPPORTED",
+                             "gateway does not advertise target-local fresh project creation")
+            arguments = {"projectPath": project_path, "requireFresh": True}
+            if display_name is not None:
+                arguments["customName"] = display_name
+            return structured(client.tools_call("project_create", arguments))
+        except ProviderRefusal as exc:
+            raise _translate(exc) from None
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE native tool by a name this build records. Never a proxy.

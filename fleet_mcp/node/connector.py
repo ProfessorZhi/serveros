@@ -803,6 +803,7 @@ class Connector:
             # on *this* device, and a caller that saw BAD_REQUEST would go
             # looking at its own arguments.
             "WRITE_NOT_GRANTED": (403, "WRITE_NOT_GRANTED"),
+            "CAPABILITY_UNSUPPORTED": (400, "CAPABILITY_UNSUPPORTED"),
         }
         status, code = mapping.get(exc.code, (400, "BAD_REQUEST"))
         return status, code
@@ -887,6 +888,8 @@ class Connector:
             if method.upper() == "POST":
                 return 200, self._create(payload)
             return 200, self._sessions(args)
+        if parts == ["v1", "projects"]:
+            return 200, self._create_project(payload)
         if len(parts) == 3 and parts[:2] == ["v1", "sessions"]:
             return 200, self.provider.get_session(self._key(parts[2]))
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "read":
@@ -1239,6 +1242,28 @@ class Connector:
             after=payload.get("after"),
             cursor=payload.get("cursor"),
         )
+
+    def _create_project(self, payload: dict[str, Any]):
+        from ..owner_access import build_project_path, OwnerAccessError
+        profile = self.config.owner_access
+        if profile is None:
+            raise FleetRefusal("WRITE_NOT_GRANTED", "this Node has no owner project-creation profile")
+        if set(payload) - {"root", "name", "display_name"}:
+            raise FleetRefusal(BAD_REQUEST, "project creation accepts only a named root and project name")
+        label = payload.get("display_name")
+        if label is not None and (not isinstance(label, str) or not label.strip()
+                or len(label) > 256 or any(ord(c) < 32 for c in label)):
+            raise FleetRefusal(BAD_REQUEST, "invalid project display_name")
+        try:
+            target = build_project_path(profile, payload.get("root"), payload.get("name"),
+                                        local_check=True)
+        except OwnerAccessError as exc:
+            raise FleetRefusal(BAD_REQUEST, str(exc)) from None
+        creator = getattr(self.provider, "create_project", None)
+        if creator is None:
+            raise FleetRefusal("CAPABILITY_UNSUPPORTED", "local provider has no fresh project operation")
+        return creator(root=payload["root"], name=payload["name"], project_path=target,
+                       display_name=label)
 
     def _create(self, payload: dict[str, Any]):
         """Mint a session here, if this machine has said that may happen.

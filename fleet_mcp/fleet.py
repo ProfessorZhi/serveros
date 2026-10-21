@@ -55,6 +55,8 @@ from .errors import (
     refuse,
 )
 from .identity import SessionKey
+from .owner_access import build_project_path, OwnerAccessError
+from .version import SERVER_VERSION
 from .session_detail import normalize_detail
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
@@ -1206,7 +1208,8 @@ class FleetService:
         reporting it.
         """
         binding = self.config.session_binding(key)
-        device_ok = bool(binding and binding.enabled and binding.allow_send)
+        device_ok = bool(binding and binding.enabled and (binding.allow_send
+                         or self._owner_profile(principal, key.device_ref, key.provider) is not None))
         session_ok = key.ref in self.config.policy.send_allow
         grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
         scope_ok = SCOPE_SEND in principal.scopes
@@ -1234,6 +1237,10 @@ class FleetService:
         grant, checked per principal, per device and per session, and this block
         is the answer to that check rather than a promise about it.
         """
+        if self._owner_profile(principal, key.device_ref, key.provider) is not None:
+            return {**self._session_control_state(principal, key),
+                    "note": "Owner-max is configured for this runtime. The current credential's "
+                            "scopes apply; no new per-session or per-project grant is needed."}
         return {
             **self._session_control_state(principal, key),
             "note": "control is a separate grant from creation. A session this "
@@ -1493,6 +1500,65 @@ class FleetService:
         if message:
             answer["message"] = message
         return answer
+
+    def create_project(self, principal: Principal, *, device: str, root: str,
+                       name: str, display_name: str | None = None,
+                       runtime: str = BASE_RUNTIME, idempotency_key: str | None = None):
+        """Create one new project through an exact owner's named local root."""
+        principal.require(SCOPE_CREATE)
+        self.admit(principal)
+        self._validate_runtime_selector(runtime)
+        if not isinstance(device, str) or not device.strip():
+            raise refuse(BAD_REQUEST, "device is required")
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        binding = self.config.namespace_binding(device_ref, runtime)
+        profile = self._owner_profile(principal, device_ref, runtime)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
+        if profile is None:
+            raise refuse(APPROVAL_REQUIRED, "project creation requires the selected owner-max profile")
+        if display_name is not None and (not isinstance(display_name, str)
+                or not display_name.strip() or len(display_name) > 256
+                or any(ord(c) < 32 for c in display_name)):
+            raise refuse(BAD_REQUEST, "display_name must be a nonempty label of at most 256 characters")
+        try:
+            target = build_project_path(profile, root, name, local_check=False)
+        except OwnerAccessError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        adapter = self._require_provider(device_ref, binding.runtime)
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, "project.create", provider_key(device_ref, binding.runtime),
+                idempotency_key, device_ref=device_ref, runtime=binding.runtime,
+                params={"namespace": runtime, "root": root, "name": name,
+                        "display_name": display_name}, expected_project_path=target)
+            if claim.replay is not None:
+                return {**claim.replay, "device_ref": device_ref, "runtime": runtime,
+                        "binding_runtime": binding.runtime, "idempotent_replay": True,
+                        "idempotency_durability": self.dispatch.durability}
+        creator = getattr(adapter, "create_project", None)
+        if creator is None:
+            raise refuse("CAPABILITY_UNSUPPORTED", "provider has no project creation operation")
+        payload = creator(root=root, name=name, project_path=target, display_name=display_name)
+        if (not isinstance(payload, dict) or payload.get("freshDirectoryCreated") is not True
+                or payload.get("accepted", True) is not True
+                or not isinstance(payload.get("projectId"), str) or not payload["projectId"].strip()
+                or payload["projectId"] != payload["projectId"].strip() or len(payload["projectId"]) > 512
+                or payload.get("path") != target
+                or payload.get("isArchived") is not None and payload.get("isArchived") is not False
+                or payload.get("outcome", "created") != "created"):
+            raise refuse(INTERNAL, "project creation may have happened but its fresh ACK is malformed",
+                         retry_safe=False)
+        receipt = {"project_id": payload["projectId"], "project_path": target, "accepted": True}
+        if claim is not None:
+            self.dispatch.complete(claim, receipt)
+        self.audit.record("fleet.project.create", principal=principal.name,
+                          device_ref=device_ref, runtime=runtime, project_id=receipt["project_id"])
+        return {**receipt, "device_ref": device_ref, "runtime": runtime,
+                "binding_runtime": binding.runtime, "idempotent_replay": False,
+                "fresh_directory_created": True,
+                "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
 
     def create_session(
         self,
@@ -2474,7 +2540,7 @@ class FleetService:
         return {
             "surface": {
                 "server_name": "serveros-fleet-mcp",
-                "version": "0.1.0",
+                "version": SERVER_VERSION,
                 "local_device_ref": self.config.local_device_ref,
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
@@ -2497,6 +2563,16 @@ class FleetService:
                 "max_read_messages": self.config.policy.max_read_messages,
             },
             "principal": principal.as_dict(),
+            "owner_access": [
+                {"device_ref": namespace.partition("|")[0],
+                 "runtime": namespace.partition("|")[2] or BASE_RUNTIME,
+                 "root_refs": list(profile.project_roots),
+                 "permission_mode": profile.permission_mode}
+                for namespace in self.config.policy.owner_max.get(principal.name, ())
+                if (profile := self._owner_profile(
+                    principal, namespace.partition("|")[0],
+                    namespace.partition("|")[2] or BASE_RUNTIME)) is not None
+            ],
             "recent_audit": self.audit.tail(20),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

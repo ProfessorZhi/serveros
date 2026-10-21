@@ -44,6 +44,7 @@ def test_owner_new_project_gets_maximum_mode_without_project_grant(tmp_path, fam
     assert h.providers[TOKYO].created[0]["permission_mode"] == "bypassPermissions"
     assert h.providers[TOKYO].created[0]["provider"] == family
     assert result["provider"] == family
+    assert result["control"]["send_allowed"] is True
     assert h.config.policy.create_allow == {}
 
 

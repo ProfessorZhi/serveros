@@ -264,6 +264,7 @@ class RouteClosure(_Base):
             ("POST", f"/v1/sessions/{ALLOWED}/interrupt", {}),
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
             ("POST", "/v1/sessions", {"project": "p-1"}),
+            ("POST", "/v1/projects", {"root": "work", "name": "new"}),
             ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
             ("GET", "/v1/core/status", None),
         ]
@@ -271,6 +272,10 @@ class RouteClosure(_Base):
         for method, path, body in cases:
             with self.subTest(route=f"{method} {path}"):
                 status, payload = self.request(method, path, body)
+                if path == "/v1/projects":
+                    self.assertEqual(status, 403, payload)
+                    self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
+                    continue
                 self.assertEqual(status, 200, payload)
                 if path == "/v1/core/status":
                     self.assertEqual(payload["state"], "NOT_CONFIGURED")

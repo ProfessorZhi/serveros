@@ -802,11 +802,11 @@ class SurfaceTest(unittest.TestCase):
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
         self.assertEqual(len(mirrored), 22)
-        # nine hand-written + 22 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 33)
+        # ten hand-written + 22 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 34)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
-        self.assertEqual(len(tools_mod.tool_names()), 9)
+        self.assertEqual(len(tools_mod.tool_names()), 10)
 
     def test_mirror_annotations_match_the_manifest(self):
         by_name = {t.name: t for t in tools_mod.NATIVE_MIRROR_TOOLS}

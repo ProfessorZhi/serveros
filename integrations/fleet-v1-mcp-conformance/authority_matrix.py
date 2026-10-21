@@ -1,4 +1,4 @@
-"""The 33-tool catalogue's authorization contract, in one table.
+"""The 34-tool catalogue's authorization contract, in one table.
 
 Why this module exists
 ----------------------
@@ -93,7 +93,7 @@ def _dual(name: str, family: str, alternatives: tuple[tuple[str, ...], ...], *,
 
 
 AUTHORITY: tuple[Authority, ...] = (
-    # -- the nine hand-written tools -------------------------------------
+    # -- the ten hand-written tools --------------------------------------
     _tool("fleet_list_devices", "authored", READ, gates="—",
           note="Enrolled devices and route reachability."),
     _tool("fleet_list_sessions", "authored", READ, gates="—"),
@@ -113,6 +113,8 @@ AUTHORITY: tuple[Authority, ...] = (
     _tool("fleet_interrupt_session", "authored", CONTROL,
           gates="device allow_control AND (control_allow contains session OR "
                 "operator 'control' grant)"),
+    _tool("fleet_create_project", "authored", CREATE,
+          gates="exact owner-max principal/namespace AND configured root AND target-local fresh creation"),
 
     # -- the 22 mirrored CloudCLI verbs ----------------------------------
     _tool("fleet_cloudcli_overview", "mirror", READ, gates="—"),

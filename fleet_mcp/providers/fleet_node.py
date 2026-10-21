@@ -268,6 +268,13 @@ class FleetNodeProvider(DeviceProvider):
         """
         return NodeCoreLiteSource(self)
 
+    def create_project(self, *, root: str, name: str, project_path: str,
+                       display_name: str | None = None):
+        body = {"root": root, "name": name}
+        if display_name is not None:
+            body["display_name"] = display_name
+        return self._request("POST", "/v1/projects", body)
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE mirrored native tool on this node, over the signed route.

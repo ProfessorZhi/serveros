@@ -223,6 +223,13 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 # The surface
 # --------------------------------------------------------------------------
 
+def _create_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.create_project(
+        ctx.principal, device=args.get("device"), root=args.get("root"), name=args.get("name"),
+        display_name=args.get("display_name"), idempotency_key=args.get("idempotency_key"),
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool(
         name="fleet_list_devices",
@@ -655,6 +662,34 @@ TOOLS: tuple[Tool, ...] = (
             "openWorldHint": True,
         },
         handler=_interrupt_session,
+    ),
+    Tool(
+        name="fleet_create_project",
+        title="Create a project on a managed device",
+        description=("Create one new project below a named owner-configured root. "
+                     "fleet_status.owner_access reports the available root refs. "
+                     "The configured owner needs no per-project approval. The target "
+                     "must support exclusive fresh-directory creation; existing "
+                     "directories are refused. Preserve the returned project_id for "
+                     "fleet_create_session. Supply a stable idempotency_key; an "
+                     "accepted replay returns without provider IO. UNKNOWN requires "
+                     "reconciliation, never a blind second create."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "root": _string("An owner-configured root ref from fleet_status.owner_access."),
+                "name": _string("A safe single-component project directory name."),
+                "display_name": _string("Optional human-readable project label."),
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+                "idempotency_key": _string("Stable key for this project intent; keep it across retries."),
+            },
+            "required": ["device", "root", "name"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": True},
+        handler=_create_project,
     ),
 )
 
