@@ -73,3 +73,24 @@ Live, against real transient user units:
 Offline: 44 Python unittests (this host has no pytest, so `test_daemon.py` cannot run and is
 reported as NOT_RUN rather than claimed); `test_sup_facts` 65 checks and all 14 other
 supervisor suites pass.
+
+## Revision 3 — after the independent review of b25a9e8 (CHANGES_REQUIRED)
+
+| # | finding | fix |
+|---|---|---|
+| N1 | `from probes import Host` — no such class, so a real busy agent read as UNKNOWN | `_runtime_module` (the canonical `_load` idiom) resolves `probes.py` by path and uses the real `LiveHost`. Ancestors are excluded from `pgrep -f` results: a wrapper shell that merely quotes the pattern is not a user of the service. Live: idle → `busy:false, known:true`; busy → `busy:true`; unmeasurable → `known:false` |
+| N2 | `realpath(parent) == parent.resolve()` is a tautology; a deep symlink plus mkdir-before-check escaped | `open_secure_dir` walks every component from `/` with `O_NOFOLLOW` on an already-open descriptor, applies the same trusted-directory rule as `state_directory.cpp` (own/sticky), creates the final directory **only after** the chain is verified, and returns a **held fd**. Every write, rename and unlink is `*at(dir_fd=…)`. Applied to facts, owner map and lease alike |
+| N3 | the lease was checked once at `acquire`; rename-and-replace gave a second writer a new inode while `held` stayed true | `SafeLease.revalidate()` re-checks fd↔path dev/ino, uid, mode, nlink and the whole parent chain; `RecoveryActor.recover` and the C++ effect loop call it **immediately before every effect**. The C++ `WriterLease` got the same treatment: `O_NOFOLLOW`, regular/own/one-link/no-g-o-write, and `revalidate()` |
+| N4 | `bin/serverosd` had no `--native-lease`/`--owner-map`; the Core and Daemon had no common default; an unlisted unit was acted on | real CLI flags wired through to `Daemon`; a shared default lease path; the owner map is **re-read on every reconcile**, never cached; an unlisted unit is refused `OWNER_UNKNOWN` even with an empty map (live case E) |
+| N5 | the writer accepted `unit:null`, `maintenance_reason:null` that the C++ reader refuses | `unit` is not a service key at all; explicit nulls are refused; closed sets, bool types and UTF-8 byte bounds mirrored. Both sides accept the same valid document |
+| starvation | the Core held the lease for its whole life, starving every other owner | the lease is taken **per tick's effects and released when they finish** (plus on any refusal). Live: while the Core ran 3 ticks, Python acquired the lock 24 times, and the Core still recovered its unit |
+
+### Limits reported, not hidden
+
+- The process-source agent busy signal is conservative and coarse: it cannot tell an
+  agent from an unrelated process whose command line matches. The production-grade
+  source is the runtime's own typed status; this is the honest fallback.
+- A bare `systemctl stop` remains indistinguishable from a clean exit; `maintenance`
+  is the explicit "do not bring it back" signal.
+- `tests/test_daemon.py` imports pytest, which this host lacks. It is NOT_RUN, not
+  PASS. This host also cannot run it to 180 s; no unbounded wait was used.

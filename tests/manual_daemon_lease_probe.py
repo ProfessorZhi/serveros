@@ -135,6 +135,20 @@ def main() -> int:
     finally:
         holder.release()
 
+    # E: the owner map is present but does NOT list the unit -> OWNER_UNKNOWN.
+    # An empty map is not "no map": once the map is the authority, an unlisted
+    # resource has no verified owner and must not be acted on.
+    daemon, resource = build(unit, workdir / "e", lease=lease)
+    empty = workdir / "e" / "owner-map.json"
+    empty.write_text('{"schema": "serveros/native-core-owner-map.v1", "units": {}}', encoding="utf-8")
+    before = _invocation(unit)
+    decision = run(daemon, resource)
+    report["E_unlisted_unit_empty_map"] = {
+        "performed": decision.get("performed"),
+        "blocked_by": decision.get("blocked_by"),
+        "action": decision.get("action"),
+        "invocation_before": before, "invocation_after": _invocation(unit)}
+
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 

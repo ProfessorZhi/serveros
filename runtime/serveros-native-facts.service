@@ -40,8 +40,10 @@
 #       A marker is only as current as its producer, and nothing in this
 #       template produces one. A process observation is a real fact about this
 #       host, and it errs toward BUSY, which is the safe direction for "do not
-#       interrupt an agent". Set @AGENT_BUSY_PATTERN@ to the runtime's own
-#       process name; leaving it unrendered starts nothing.
+#       interrupt an agent". The pattern comes from a FILE so it never appears in
+#       this process's own command line. Set @AGENT_BUSY_PATTERN_FILE@ to a file
+#       containing the runtime's process name; leaving it unrendered starts
+#       nothing.
 #
 #   --owner-map
 #       The same file the Core is given with --owner-map. Rendering it here is
@@ -63,7 +65,7 @@ ExecStart=@SERVEROS_PYTHON@ @SERVEROS_REPO@/runtime/native_core_facts.py \
   --interval 15 \
   --link @LINK_TARGET@ \
   --owner-map %t/serveros/native-core-owner-map.json \
-  --agent-process @AGENT_BUSY_PATTERN@ \
+  --agent-process-file @AGENT_BUSY_PATTERN_FILE@ \
   --service @SERVICE_1@ \
   --service @SERVICE_2@
 Restart=on-failure

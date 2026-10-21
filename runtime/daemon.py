@@ -968,9 +968,14 @@ class Daemon:
             base = Path(runtime_dir) / "serveros" if runtime_dir else self.state_dir
             resolved_lease = base / "native-core.lease"
         self._native_lease = native_core_facts_mod.SafeLease(resolved_lease)
+        #: Re-read on every reconcile, not cached at construction: a map that
+        #: was edited to move a unit to the other program must take effect on
+        #: the next tick, not at the next restart. A cached map is an ownership
+        #: decision that outlives the document that made it.
+        self._owner_map_path = owner_map_path
         self._owner_map = None
         if owner_map_path is not None:
-            self._owner_map = native_core_facts_mod.OwnerMap.load(owner_map_path)
+            self._owner_map = self._read_owner_map()
         self.last_tick: dict | None = None
         self.drift: list[dict] = []
         # The node runtime's own facts, for `node.status`. A control plane that
@@ -1158,6 +1163,12 @@ class Daemon:
 
     # -- reconcile ---------------------------------------------------------
 
+    def _read_owner_map(self):
+        """The owner map as of NOW, or a refusal. Never a stale copy."""
+        if self._owner_map_path is None:
+            return None
+        return native_core_facts_mod.OwnerMap.load(self._owner_map_path)
+
     @staticmethod
     def _resource_unit(resource) -> str | None:
         """The systemd unit a resource is about, if it names one.
@@ -1302,13 +1313,38 @@ class Daemon:
             # with its own budget, and neither program can see the other, so
             # the pen has to be shared rather than assumed.
             unit = self._resource_unit(resource)
-            if self._owner_map is not None and unit is not None:
-                owner = self._owner_map.owner_of(unit)
-                if owner is not None and owner != native_core_facts_mod.OWNER_SERVEROSD:
+            if self._owner_map_path is not None:
+                try:
+                    owners = self._read_owner_map()
+                except native_core_facts_mod.FactsRefused as exc:
                     entry.update({
                         "performed": False,
-                        "blocked_by": native_core_facts_mod.OWNER_NOT_MINE,
+                        "blocked_by": exc.code,
+                        "because": f"the shared owner map could not be read: {exc.detail}",
+                    })
+                    decisions.append(entry)
+                    continue
+                owner = owners.owner_of(unit) if unit else None
+                if unit is None:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": native_core_facts_mod.OWNER_UNKNOWN,
                         "because": (
+                            "this resource names no systemd unit, so it has no "
+                            "owner in the shared map. An unowned resource is not "
+                            "recoverable while the map is the authority."
+                        ),
+                    })
+                    decisions.append(entry)
+                    continue
+                if owner != native_core_facts_mod.OWNER_SERVEROSD:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": (native_core_facts_mod.OWNER_UNKNOWN if owner is None
+                                       else native_core_facts_mod.OWNER_NOT_MINE),
+                        "because": (
+                            f"{unit} has no entry in the shared owner map"
+                            if owner is None else
                             f"{unit} is owned by {owner!r} in the shared owner "
                             f"map, so this daemon may not act on it"
                         ),
@@ -5345,6 +5381,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enable-reconcile", action="store_true",
                         help="allow restarts of automatable resources. Off by default; "
                              "see the module docstring for the full gate.")
+    parser.add_argument("--native-lease",
+                        help="the single-writer lease shared with the Native Core "
+                             "(default $XDG_RUNTIME_DIR/serveros/native-core.lease)")
+    parser.add_argument("--owner-map",
+                        help="the shared unit->owner map the Core also reads; with it "
+                             "set, an unlisted unit is refused rather than acted on")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -5358,6 +5400,8 @@ def main(argv: list[str] | None = None) -> int:
         state_dir=Path(args.state_dir) if args.state_dir else default_state_dir(),
         socket_path=Path(args.socket) if args.socket else default_socket_path(),
         enable_reconcile=args.enable_reconcile,
+        native_lease_path=args.native_lease,
+        owner_map_path=args.owner_map,
         log=lambda message: sys.stderr.write(f"serverosd: {message}\n"),
     )
     if args.once:

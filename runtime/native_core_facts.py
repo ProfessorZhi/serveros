@@ -65,7 +65,10 @@ PATH_UNSAFE = "PATH_UNSAFE"
 MAX_FACT_TEXT = 200
 MAX_SERVICES = 64
 
-SERVICE_KEYS = frozenset({"id", "unit", "runtime", "maintenance", "maintenance_reason"})
+#: Exactly the keys `facts.cpp#parse_service` accepts. `unit` is NOT one of
+#: them: the C++ reader refuses an unknown service field, so emitting one
+#: would make this writer produce a document the reader rejects.
+SERVICE_KEYS = frozenset({"id", "runtime", "maintenance", "maintenance_reason"})
 RUNTIME_WORDS = frozenset({"serving", "needs-login", "unknown"})
 
 
@@ -118,34 +121,82 @@ def _reject_traversal(path: Path) -> None:
         raise FactsRefused(PATH_UNSAFE, f"{path} contains a traversal component")
 
 
-def secure_parent(path: Path) -> Path:
-    """The parent of `path`, refusing an escape or a foreign-owned directory.
+def _trusted_dir(info: os.stat_result) -> bool:
+    """The same rule `state_directory.cpp` applies.
 
-    A writer that follows a symlink writes wherever the symlink points, and the
-    facts file is what the Core trusts. So the parent must be a real directory,
-    owned by this user, and not writable by anyone else — otherwise another
-    principal could place a document this Core would act on.
+    A directory we own is fine. A writable one is fine only with the sticky bit
+    AND a trusted owner: sticky is what stops another principal replacing the
+    entry inside it. `/tmp` passes; a 0777 scratch directory does not.
     """
-    _reject_traversal(path)
-    parent = path.parent
-    try:
-        info = os.lstat(parent)
-    except FileNotFoundError:
-        parent.mkdir(parents=True, exist_ok=True)
-        info = os.lstat(parent)
-    if stat.S_ISLNK(info.st_mode):
-        raise FactsRefused(PATH_UNSAFE, f"{parent} is a symlink")
-    if not stat.S_ISDIR(info.st_mode):
-        raise FactsRefused(PATH_UNSAFE, f"{parent} is not a directory")
-    if info.st_uid != os.getuid():
-        raise FactsRefused(PATH_UNSAFE, f"{parent} is owned by uid {info.st_uid}")
+    trusted_owner = info.st_uid in (os.geteuid(), 0)
+    if not trusted_owner:
+        return False
     if info.st_mode & 0o022:
-        raise FactsRefused(PATH_UNSAFE, f"{parent} is group- or world-writable")
-    # The resolved parent must be the same directory we inspected: a symlinked
-    # ancestor deeper than the last component is caught here.
-    if os.path.realpath(parent) != str(parent.resolve()):
-        raise FactsRefused(PATH_UNSAFE, f"{parent} resolves elsewhere")
-    return parent
+        return bool(info.st_mode & stat.S_ISVTX)
+    return True
+
+
+def open_secure_dir(path: Path | str, *, create: bool = False) -> int:
+    """Walk `path` one component at a time with `O_NOFOLLOW`, return a held fd.
+
+    The check is per component, from the root down, on a descriptor that is
+    already open — so a symlink anywhere in the chain is refused at the moment
+    it is traversed, and a directory swapped in after the check cannot redirect
+    the write. `create` makes the FINAL component only after every ancestor has
+    been verified, via `mkdirat` on the verified parent.
+
+    A relative path is refused: resolving it is the caller's ambiguity, and a
+    path resolved twice is two different paths.
+    """
+    target = Path(path)
+    _reject_traversal(target)
+    if not target.is_absolute():
+        raise FactsRefused(PATH_UNSAFE, f"{target} is not absolute")
+    parts = [part for part in target.parts if part not in ("/", "")]
+    if not parts:
+        raise FactsRefused(PATH_UNSAFE, f"{target} names no directory")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    current = os.open("/", flags)
+    try:
+        for index, component in enumerate(parts):
+            last = index == len(parts) - 1
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                if not (last and create):
+                    raise FactsRefused(PATH_UNSAFE, f"{component} does not exist under {target}") from None
+                os.mkdir(component, 0o700, dir_fd=current)
+                child = os.open(component, flags, dir_fd=current)
+            except OSError as exc:
+                # ELOOP here is a symlink, caught by O_NOFOLLOW.
+                raise FactsRefused(PATH_UNSAFE, f"{component}: {exc.strerror}") from None
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(child)
+                raise FactsRefused(PATH_UNSAFE, f"{target} component {component} is not a directory")
+            if not _trusted_dir(info):
+                os.close(child)
+                raise FactsRefused(PATH_UNSAFE, f"{target} component {component} is not a trusted directory")
+            os.close(current)
+            current = child
+        handle = current
+        current = -1
+        return handle
+    finally:
+        if current != -1:
+            os.close(current)
+
+
+def secure_parent(path: Path | str) -> int:
+    """The parent directory of `path` as a held fd, refusing an escape.
+
+    Kept as the name callers already use; it now returns a descriptor rather
+    than a path, because a checked path is not a checked target.
+    """
+    destination = Path(path)
+    _reject_traversal(destination)
+    return open_secure_dir(destination.parent, create=True)
 
 
 def _bounded(text: str) -> str:
@@ -206,11 +257,64 @@ def probe_link(spec: dict | None, *, connect: Callable[[tuple, float], object] |
     return {"known": True, "up": True, "reason": ""}
 
 
-def _default_process_pids(pattern: str) -> list[int]:
-    """Reuse the supervisor's existing host observation rather than a new one."""
-    from probes import Host  # the same reader the daemon's probes use
+def _runtime_module(name: str, filename: str):
+    """The canonical loader idiom `runtime/daemon.py` uses.
 
-    return Host().process_pids(pattern)
+    Imported by path rather than by name so this module works whether it is run
+    as a script, imported by the daemon, or loaded from a revision directory. A
+    plain `import probes` finds nothing: the runtime modules are not a package.
+    """
+    import importlib.util
+    import sys
+
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
+    if spec is None or spec.loader is None:
+        raise FactsRefused(SOURCE_UNAVAILABLE, f"cannot load {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ancestor_pids() -> set[int]:
+    """Every process that spawned this one, up to init.
+
+    `pgrep -f` matches command lines, so a wrapper shell, a test runner or a
+    `systemd-run` invocation that merely QUOTES the pattern matches itself. A
+    process that spawned this writer is not a user of the service it is
+    watching, and treating it as one is a permanent false BUSY.
+    """
+    seen: set[int] = set()
+    pid = os.getpid()
+    for _ in range(64):
+        try:
+            with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as handle:
+                parent = None
+                for line in handle:
+                    if line.startswith("PPid:"):
+                        parent = int(line.split()[1])
+                        break
+        except (OSError, ValueError, IndexError):
+            break
+        if parent is None or parent <= 1 or parent in seen or parent == pid:
+            break
+        seen.add(parent)
+        pid = parent
+    return seen
+
+
+def _default_process_pids(pattern: str) -> list[int]:
+    """The real host reader the daemon's probes already use (`probes.LiveHost`).
+
+    Ancestors are removed because they match by quoting the pattern, not by
+    being the thing the pattern describes.
+    """
+    probes = _runtime_module("serveros_runtime_probes", "probes.py")
+    found = probes.LiveHost().process_pids(pattern)
+    ancestors = _ancestor_pids()
+    return [pid for pid in found if pid not in ancestors]
 
 
 def read_agent(source: dict | None, *, process_pids: Callable[[str], list[int]] | None = None) -> dict:
@@ -412,12 +516,13 @@ def validate_document(document: dict) -> None:
         seen.add(sid)
         if entry.get("runtime") not in RUNTIME_WORDS:
             raise FactsRefused(DOCUMENT_INVALID, f"service {sid!r} runtime word is not closed")
-        if entry.get("unit") is not None and not isinstance(entry.get("unit"), str):
-            raise FactsRefused(DOCUMENT_INVALID, f"service {sid!r} unit must be a string")
         if "maintenance" in entry and not isinstance(entry["maintenance"], bool):
             raise FactsRefused(DOCUMENT_INVALID, f"service {sid!r} maintenance must be a bool")
-        reason = entry.get("maintenance_reason")
-        if reason is not None:
+        if "maintenance_reason" in entry:
+            # `null` is not "absent" to the C++ reader: it checks the type of
+            # every field that is present. An explicit null is therefore a
+            # document the far side refuses, so it is refused here first.
+            reason = entry["maintenance_reason"]
             if not isinstance(reason, str):
                 raise FactsRefused(DOCUMENT_INVALID, f"service {sid!r} reason must be a string")
             if len(reason.encode("utf-8")) > MAX_FACT_TEXT:
@@ -425,24 +530,45 @@ def validate_document(document: dict) -> None:
 
 
 def publish_facts(path: Path | str, document: dict) -> None:
-    """Validate, then publish atomically from the destination's own directory."""
+    """Validate, then publish atomically inside a verified directory fd.
+
+    Every operation is relative to the descriptor, so the directory that was
+    checked is the directory that is written to. A path re-resolved between the
+    check and the write is exactly the escape this refuses.
+    """
     validate_document(document)
     destination = Path(path)
-    parent = secure_parent(destination)
-    fd, temporary = tempfile.mkstemp(dir=str(parent), prefix=".facts-")
+    _reject_traversal(destination)
+    name = destination.name
+    if not name:
+        raise FactsRefused(PATH_UNSAFE, "facts path names no file")
+    parent_fd = secure_parent(destination)
+    temporary = f".facts-{os.getpid()}-{os.urandom(6).hex()}"
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(document, handle, ensure_ascii=False, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    except BaseException:
+        # Refuse to replace a symlink: `rename` would clobber the link's target
+        # path rather than the link, which is a write somewhere else.
         try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+            existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and stat.S_ISLNK(existing.st_mode):
+            raise FactsRefused(PATH_UNSAFE, f"{destination} is a symlink")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(document, handle, ensure_ascii=False, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(parent_fd)
 
 
 # Backwards-compatible name used by earlier callers/tests.
@@ -476,40 +602,72 @@ class SafeLease:
         if self._fd is not None:
             return
         _reject_traversal(self.path)
-        parent = secure_parent(self.path)
-        if os.path.islink(self.path):
-            raise FactsRefused(LEASE_UNSAFE, f"{self.path} is a symlink")
-        flags = os.O_RDWR | os.O_CREAT
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(str(self.path), flags, 0o600)
+        parent_fd = secure_parent(self.path)
         try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode):
-                raise FactsRefused(LEASE_UNSAFE, "lease is not a regular file")
-            if info.st_uid != os.getuid():
-                raise FactsRefused(LEASE_UNSAFE, f"lease is owned by uid {info.st_uid}")
-            if info.st_nlink != 1:
-                raise FactsRefused(LEASE_UNSAFE, f"lease has {info.st_nlink} hard links")
-            if info.st_mode & 0o022:
-                raise FactsRefused(LEASE_UNSAFE, "lease is group- or world-writable")
-            # Bind the descriptor to the path: if the path now resolves to a
-            # different inode, somebody replaced it between open and here.
+            flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
             try:
-                on_path = os.stat(str(self.path), follow_symlinks=False)
+                fd = os.open(self.path.name, flags, 0o600, dir_fd=parent_fd)
             except OSError as exc:
-                raise FactsRefused(LEASE_UNSAFE, f"lease path vanished: {exc}") from None
-            if (on_path.st_dev, on_path.st_ino) != (info.st_dev, info.st_ino):
-                raise FactsRefused(LEASE_UNSAFE, "lease path was replaced during open")
+                raise FactsRefused(LEASE_UNSAFE, f"lease could not be opened: {exc.strerror}") from None
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                if exc.errno in (errno.EACCES, errno.EAGAIN):
-                    raise FactsRefused(LEASE_BUSY, "another writer holds the native-core lease") from None
+                self._check_descriptor(fd, parent_fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as exc:
+                    if exc.errno in (errno.EACCES, errno.EAGAIN):
+                        raise FactsRefused(LEASE_BUSY, "another writer holds the native-core lease") from None
+                    raise
+            except BaseException:
+                os.close(fd)
                 raise
-        except BaseException:
-            os.close(fd)
-            raise
+        finally:
+            os.close(parent_fd)
         self._fd = fd
+
+    def _check_descriptor(self, fd: int, parent_fd: int) -> None:
+        """Everything that makes this descriptor a safe lease, checked anew.
+
+        Called at acquire AND again immediately before every effect. Between
+        those two moments the path can be renamed away and replaced, and a
+        replacement inode is a second pen: the first writer still holds a lock
+        on a file nobody else can find, and the second holds one on the file
+        everybody finds.
+        """
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise FactsRefused(LEASE_UNSAFE, "lease is not a regular file")
+        if info.st_uid != os.geteuid():
+            raise FactsRefused(LEASE_UNSAFE, f"lease is owned by uid {info.st_uid}")
+        if info.st_nlink != 1:
+            raise FactsRefused(LEASE_UNSAFE, f"lease has {info.st_nlink} hard links")
+        if info.st_mode & 0o022:
+            raise FactsRefused(LEASE_UNSAFE, "lease is group- or world-writable")
+        try:
+            on_path = os.stat(self.path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise FactsRefused(LEASE_UNSAFE, f"lease path vanished: {exc.strerror}") from None
+        if stat.S_ISLNK(on_path.st_mode):
+            raise FactsRefused(LEASE_UNSAFE, "lease path is a symlink")
+        if (on_path.st_dev, on_path.st_ino) != (info.st_dev, info.st_ino):
+            raise FactsRefused(
+                LEASE_UNSAFE, "the lease path no longer names the file this descriptor holds"
+            )
+
+    def revalidate(self) -> None:
+        """Re-check fd against the path, immediately before an effect.
+
+        A held lock proves a descriptor, not a path. If the path was replaced
+        after `acquire`, another writer can take the new inode while this one
+        still reports `held` — so the claim is re-established rather than
+        remembered.
+        """
+        if self._fd is None:
+            raise FactsRefused(LEASE_NOT_HELD, "no lease is held")
+        parent_fd = secure_parent(self.path)
+        try:
+            self._check_descriptor(self._fd, parent_fd)
+        finally:
+            os.close(parent_fd)
 
     def release(self) -> None:
         if self._fd is None:
@@ -566,21 +724,27 @@ class OwnerMap:
                 raise FactsRefused(OWNER_UNKNOWN, f"unit {unit!r} has unknown owner {owner!r}")
         document = {"schema": OWNER_MAP_SCHEMA, "units": dict(sorted(self._owners.items()))}
         destination = Path(path)
-        parent = secure_parent(destination)
-        fd, temporary = tempfile.mkstemp(dir=str(parent), prefix=".owner-map-")
+        _reject_traversal(destination)
+        parent_fd = secure_parent(destination)
+        temporary = f".owner-map-{os.getpid()}-{os.urandom(6).hex()}"
         try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(document, handle, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        except BaseException:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
             try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(document, handle, sort_keys=True)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.rename(temporary, destination.name,
+                          src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except BaseException:
+                try:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                except OSError:
+                    pass
+                raise
+        finally:
+            os.close(parent_fd)
 
     def owner_of(self, unit: str) -> str | None:
         return self._owners.get(unit)
@@ -633,6 +797,9 @@ class RecoveryActor:
         if not already:
             self.lease.acquire()
         try:
+            # The lock was taken for the descriptor, and the path may have been
+            # replaced since. Re-establish the claim immediately before acting.
+            self.lease.revalidate()
             return restore()
         finally:
             if not already:
@@ -668,6 +835,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-marker", default=None)
     parser.add_argument("--agent-process", default=None,
                         help="process-name pattern whose presence means an agent is busy")
+    parser.add_argument("--agent-process-file", default=None,
+                        help="a file holding that pattern; use this when the pattern "
+                             "itself would otherwise appear in this process's argv")
     parser.add_argument("--service", action="append", default=[])
     args = parser.parse_args(argv)
 
@@ -686,8 +856,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         link = {"kind": "tcp", "host": host, "port": int(port)}
 
-    if args.agent_process:
-        agent = {"kind": "process", "pattern": args.agent_process}
+    pattern = args.agent_process
+    if args.agent_process_file:
+        try:
+            pattern = Path(args.agent_process_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            print("--agent-process-file could not be read", file=sys.stderr)
+            return 2
+        if not pattern:
+            print("--agent-process-file is empty", file=sys.stderr)
+            return 2
+    if pattern:
+        agent = {"kind": "process", "pattern": pattern}
     elif args.agent_marker:
         agent = {"kind": "marker", "path": args.agent_marker}
     else:

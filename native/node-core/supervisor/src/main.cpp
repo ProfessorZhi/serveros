@@ -691,8 +691,10 @@ int main(int argc, char** argv) {
         // that was refused. A receipt that lists an action the Core did not take
         // is worse than no receipt: it is a false record of an effect.
         if (allow_execution && act && plan.ok && !plan.actions.empty()) {
-            // 1. THE LEASE. Taken once and held until this process exits. A
-            //    writer that cannot take it does not act at all: with two
+            // 1. THE LEASE. Taken for THIS tick's effects and released when
+            //    they finish, not held until the process exits: a lifetime hold
+            //    would starve any other owner's units for as long as this Core
+            //    ran. A writer that cannot take it does not act at all: with two
             //    writers, every judgement below is being made twice, by two
             //    processes that each believe they are the only one.
             const nodecore::supervisor::LeaseAttempt taken = writer_lease.acquire(
@@ -775,6 +777,19 @@ int main(int argc, char** argv) {
 
         if (allow_execution && act && plan.ok) {
             for (const nodecore::supervisor::Action& action : plan.actions) {
+                // RE-ESTABLISH THE CLAIM IMMEDIATELY BEFORE THE EFFECT. The
+                // lock was taken for a descriptor; if the file was renamed away
+                // and replaced since, another writer now holds the path this
+                // process believes it holds, and every judgement below would be
+                // made twice. A held descriptor is not a held path.
+                const nodecore::supervisor::LeaseAttempt still_ours = writer_lease.revalidate();
+                if (!still_ours.ok) {
+                    std::fprintf(stderr, "not acting on %s: %s\n", action.unit.c_str(),
+                                 still_ours.reason.c_str());
+                    plan.refusals.push_back({action.service_id, "NO_LEASE", still_ours.reason});
+                    writer_lease.release();
+                    break;
+                }
                 // PREWRITE BEFORE THE EFFECT. `execute_effect` records and
                 // atomically persists this attempt, and only then invokes the
                 // provider. A prewrite failure means no effect is issued.
@@ -868,6 +883,11 @@ int main(int argc, char** argv) {
                     action.service_id, action.unit, action.verb, result.ok, result.code,
                     result.reason, result.exit_code});
             }
+            // PER-EFFECT EXCLUSION, NOT A LIFETIME HOLD. Releasing here is what
+            // lets a second program — `serverosd` — take the pen for the units
+            // IT owns between this Core's ticks. Holding it until process exit
+            // would starve every other owner for as long as this one ran.
+            writer_lease.release();
         }
 
         snapshot.ticks += 1;

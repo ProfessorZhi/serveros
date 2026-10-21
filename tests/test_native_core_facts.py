@@ -399,5 +399,100 @@ class AgentSourceTest(unittest.TestCase):
         self.assertFalse(agent["busy"])
 
 
+
+class DeepPathEscapeTest(unittest.TestCase):
+    def test_a_symlink_deep_in_the_chain_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            outside = Path(td) / "outside"
+            outside.mkdir()
+            linked = Path(td) / "linked"
+            linked.symlink_to(outside)
+            # linked/inner/facts.json -- the escape is two components up, which
+            # the old `realpath(parent) == parent.resolve()` check could not see
+            # because both sides resolved identically.
+            target = linked / "inner" / "facts.json"
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.publish_facts(target, _doc())
+            self.assertEqual(caught.exception.code, facts.PATH_UNSAFE)
+            self.assertFalse((outside / "inner").exists(), "nothing may be created outside")
+
+    def test_no_directory_is_created_before_the_chain_is_verified(self):
+        with tempfile.TemporaryDirectory() as td:
+            outside = Path(td) / "outside"
+            outside.mkdir()
+            linked = Path(td) / "linked"
+            linked.symlink_to(outside)
+            with self.assertRaises(facts.FactsRefused):
+                facts.open_secure_dir(linked / "a" / "b", create=True)
+            self.assertFalse((outside / "a").exists())
+
+    def test_a_relative_path_is_refused(self):
+        with self.assertRaises(facts.FactsRefused) as caught:
+            facts.open_secure_dir(Path("relative/dir"), create=True)
+        self.assertEqual(caught.exception.code, facts.PATH_UNSAFE)
+
+    def test_the_real_temp_directory_is_still_usable(self):
+        # /tmp is sticky and owned by root; the policy allows it, and a rule
+        # that refused it would be enforcing hygiene by breaking the host.
+        with tempfile.TemporaryDirectory() as td:
+            fd = facts.open_secure_dir(Path(td), create=False)
+            os.close(fd)
+
+
+class LeaseReplacementTest(unittest.TestCase):
+    def test_revalidate_notices_the_path_was_replaced(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "lease"
+            lease = facts.SafeLease(path)
+            lease.acquire()
+            try:
+                # Rename the held file away and put a new one at the path: the
+                # old descriptor still holds its lock, on a file nobody looks at.
+                os.rename(path, Path(td) / "moved")
+                path.write_text("", encoding="utf-8")
+                os.chmod(path, 0o600)
+                with self.assertRaises(facts.FactsRefused) as caught:
+                    lease.revalidate()
+                self.assertEqual(caught.exception.code, facts.LEASE_UNSAFE)
+                # And the actor refuses the effect rather than running it.
+                actor = facts.RecoveryActor(lease=lease)
+                actor.declare([spec()])
+                with self.assertRaises(facts.FactsRefused):
+                    actor.recover("toy.service", lambda: self.fail("must not act"))
+            finally:
+                lease.release()
+
+
+class RealReaderTest(unittest.TestCase):
+    def test_the_default_process_reader_resolves_the_real_host_class(self):
+        # `from probes import Host` used to raise ImportError, so a real busy
+        # agent read as UNKNOWN. The canonical loader finds `probes.LiveHost`.
+        pids = facts._default_process_pids("srv0011-definitely-not-running")
+        self.assertIsInstance(pids, list)
+        # Not asserted empty: `pgrep -f` matches this very test's argv, which
+        # contains the pattern. The point here is that the reader RESOLVES and
+        # measures — the old `from probes import Host` raised before it could.
+
+
+class NullFieldTest(unittest.TestCase):
+    def test_a_null_agent_holder_is_refused(self):
+        doc = _doc()
+        doc["agent"]["holder"] = None
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+    def test_a_null_maintenance_reason_is_refused(self):
+        doc = _doc()
+        doc["services"][0]["maintenance_reason"] = None
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+    def test_a_unit_field_is_refused_because_cpp_has_no_such_key(self):
+        doc = _doc()
+        doc["services"][0]["unit"] = "toy.service"
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+
 if __name__ == "__main__":
     unittest.main()
