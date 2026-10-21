@@ -58,6 +58,8 @@ def _load(name: str, filename: str):
 
 coordination = _load("serveros_runtime_coordination", "coordination.py")
 store_mod = _load("serveros_runtime_agent_control_store", "agent_control_store.py")
+# #245 / S2. The dispatch-attempt kernel, for the daemon-surface tests below.
+attempts = _load("serveros_runtime_dispatch_attempts", "dispatch_attempts.py")
 daemon_mod = _load("serveros_runtime_daemon", "daemon.py")
 registry_mod = _load("serveros_runtime_registry", "registry.py")
 
@@ -338,7 +340,11 @@ def test_the_same_thread_admits_its_own_item_while_that_item_is_open():
         work_item="LIT-0205", item_state="ACTIVE", outcome=None)
     assert verdict == {"state": "ADMITTED", "session_role": "execution",
                        "bound_item_ref": "LIT-0205", "item_axis": "OPEN",
-                       "item_state": "ACTIVE", "work_item_named": "LIT-0205"}
+                       "item_state": "ACTIVE", "work_item_named": "LIT-0205",
+                       # #237 B1. Always reported, exactly like `item_axis`: a
+                       # thread that records no writer answers UNKNOWN, which is
+                       # a reading ("no write authority claimed"), not a refusal.
+                       "writer_axis": "UNKNOWN"}
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +426,8 @@ def test_every_word_this_kernel_returns_is_in_the_closed_vocabulary():
     declared = set(_reason_contract()["values"])
     produced = _words_handed_out(RUNTIME / "coordination.py", declared)
     assert produced == {"INVALID_CONTEXT", "THREAD_ITEM_MISMATCH",
-                        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK"}, (
+                        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK",
+                        "NOT_CURRENT_WRITER"}, (
         f"the scanner found {sorted(produced)} in runtime/coordination.py")
     assert produced <= declared
 
@@ -503,7 +510,8 @@ def test_a_word_cannot_enter_the_vocabulary_without_a_producer():
     assert set(contract["declared_here_only"]) == {
         "APPROVAL_CONTEXT_MISMATCH", "APPROVAL_EXPIRED",
         "APPROVAL_ALREADY_CONSUMED", "THREAD_ITEM_MISMATCH",
-        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK"}
+        "READ_ONLY_CLOSURE", "THREAD_CLOSED_FOR_NEW_WORK",
+        "NOT_CURRENT_WRITER"}
 
 
 def test_the_daemon_turns_a_store_refusal_into_a_word_the_caller_has():
@@ -735,6 +743,335 @@ def test_the_binding_list_reports_roles_and_counts_never_records(daemon):
                                   "execution": ["session-1"]}
     assert listing["closed"] == []
     assert "LIT-0101" not in json.dumps(listing["by_role"])
+
+
+def a_work_lease(root: Path, *, owner="agent:A", token="1", ttl_s=600):
+    """A live Work Engine lease row, where THIS daemon reads it (#237 B3).
+
+    `_item_roots` derives `<state_dir>/../serveros.db`, so the row goes there.
+    Written directly rather than through work-engine because this repository
+    must not import that one; the writer's own suite proves the producer, and
+    the reader here reads the same table and the same fixed-width stamp.
+    """
+    import datetime
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db = root / "serveros.db"
+    expires = datetime.datetime.fromtimestamp(
+        datetime.datetime.now(datetime.timezone.utc).timestamp() + ttl_s,
+        datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS leases (resource TEXT PRIMARY KEY, "
+        "owner TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL)")
+    conn.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?)",
+                 ("work-write:LIT-0101", owner, token, expires))
+    conn.commit()
+    conn.close()
+
+
+def test_the_daemon_produces_a_write_scope_claim_and_serves_it_back(daemon, tmp_path):
+    """#237 B1/B3. The claim is minted FROM the Work Engine lease.
+
+    Since QA Snapshot E the producer does not mint a token of its own: the claim
+    carries the lease's owner and token, so the binding and the send admission
+    name ONE authority instead of two that can disagree.
+    """
+    a_work_lease(tmp_path, owner="agent:A", token="1")
+    first = daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})["result"]
+    assert first["recorded"] is True
+    assert first["binding"]["schema"] == coordination.SCHEMA_WRITER
+    assert first["binding"]["writer"]["owner"] == "agent:A"
+    assert first["binding"]["writer"]["token"] == "1"
+
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-1"}})["result"]
+    assert read["current_writer"]["owner"] == "agent:A"
+    assert read["write_authority"]["lease"]["token"] == "1"
+
+
+def test_a_second_thread_on_an_owned_scope_does_not_take_it(daemon, tmp_path):
+    """A create is not a transfer (#237: the source must not lose it early).
+
+    The second execution thread on the same Item records NO claim — the scope is
+    already owned — so it is not the writer until the incumbent is revoked.
+    """
+    a_work_lease(tmp_path, owner="agent:A", token="1")
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    second = daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-2", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})["result"]
+    assert second["recorded"] is True
+    assert second["binding"]["schema"] == coordination.SCHEMA      # no claim
+    assert "writer" not in second["binding"]
+
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-2"}})["result"]
+    # The incumbent's claim is the LEASE's owner, not the session ref — that is
+    # the whole point of minting from the lease (QA Snapshot E).
+    assert read["current_writer"]["owner"] == "agent:A"
+
+
+def test_closing_the_incumbent_frees_the_scope(daemon):
+    """The handoff's transfer effect, at the store level.
+
+    `_revoke_source_write_authority` closes the source only once the target is
+    established; this asserts the effect that follow-on relies on — a closed
+    incumbent leaves the scope with NO current writer, so a thread that was
+    waiting on it may write.
+    """
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-2", "session_role": "execution",
+        "bound_item_ref": "LIT-0101"}})
+    daemon.handle({"method": "agent.binding.close",
+                   "params": {"session_ref": "session-1"}})
+    read = daemon.handle({"method": "agent.binding.resolve",
+                          "params": {"session_ref": "session-2"}})["result"]
+    assert read["current_writer"] is None
+
+
+def test_a_caller_supplied_writer_is_refused(daemon):
+    """QA Snapshot E E4. This RPC has no trusted actor, so it takes no writer.
+
+    `agent.binding.record` used to return a caller's `writer` dict verbatim, so
+    `writer={owner: agent:EVIL, token: 999}` became the scope's current writer
+    with nothing behind it. The owner of a write scope is the Work Engine lease;
+    a writer this RPC was told to record is a claim with no authority.
+    """
+    answer = daemon.handle({"method": "agent.binding.record", "params": {
+        "session_ref": "session-1", "session_role": "execution",
+        "bound_item_ref": "LIT-0101",
+        "writer": {"owner": "agent:EVIL", "epoch": 1, "token": "999"}}})["result"]
+    assert answer["recorded"] is False
+    assert answer["reason"] == "UNTRUSTED_ACTOR"
+
+
+def _load_actor():
+    """`context/actor.py` under the synthetic name the daemon loads it as."""
+    name = "serveros_context_actor"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, REPO / "context" / "actor.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def a_trusted_context(daemon, *, actor_ref="human:hwz"):
+    """A context ServerOS could really have minted, in THIS daemon's store.
+
+    Built through `actor.build` rather than hand-written, because the daemon
+    validates the record it is handed: a literal would be this test's idea of a
+    trusted context rather than the one the daemon accepts.
+    """
+    actor = _load_actor()
+    now = daemon_mod._iso(daemon._now())
+    record = actor.build({
+        "human_control_provider": "provider:botmux-human-control",
+        "transport": "feishu",
+        "transport_identity": "botmux-verified-enterprise-user",
+        "conversation_ref": "oc_coord_test",
+        "message_ref": "om_coord_test",
+        "observed_at": now,
+        "provider_status": "VERIFIED",
+        "provenance": "FACT",
+        "actor_ref": actor_ref,
+        "provider_pid": 4242,
+    }, now=now)
+    daemon.control_store().put_context(record)
+    return record
+
+
+def _record(daemon, context_ref, attempt):
+    """One `agent.dispatch.record` call, with the trusted context it now needs."""
+    return daemon.handle({"method": "agent.dispatch.record", "params": {
+        "context_ref": context_ref, "attempt": attempt}})["result"]
+
+
+def _attempt(key, digest, phase, **over):
+    rec = attempts.attempt_record(key=key, action="agent.session.send",
+                                  device_ref="device:x", verb="session.send",
+                                  intent_digest=digest, phase=phase)
+    rec.update(over)
+    return rec
+
+
+def test_the_daemon_records_and_resolves_a_dispatch_attempt(daemon):
+    """#245 / QA P0-2. The durable attempt, on the REAL daemon surface."""
+    ctx = a_trusted_context(daemon)
+    digest = attempts.intent_digest(action="agent.session.send",
+                                    device_ref="device:x", verb="session.send",
+                                    params={"instruction": "more"})
+    written = _record(daemon, ctx["context_ref"],
+                      _attempt("k-1", digest, attempts.CALL_NOT_SENT))
+    assert written["recorded"] is True
+    assert written["attempt"]["phase"] == attempts.CALL_NOT_SENT
+    # The principal is the CONTEXT's actor, never a value from the record.
+    assert written["attempt"]["principal"] == "human:hwz"
+
+    read = daemon.handle({"method": "agent.dispatch.resolve",
+                          "params": {"key": "k-1"}})["result"]
+    assert read["found"] is True
+    assert read["attempt"]["intent_digest"] == digest
+
+    missing = daemon.handle({"method": "agent.dispatch.resolve",
+                             "params": {"key": "nope"}})["result"]
+    assert missing["found"] is False and missing["attempt"] is None
+
+
+def test_the_daemon_refuses_a_dispatch_phase_nobody_declared(daemon):
+    ctx = a_trusted_context(daemon)
+    answer = _record(daemon, ctx["context_ref"], {
+        "key": "k", "action": "a", "device_ref": "d", "verb": "v",
+        "intent_digest": "x", "phase": "MAYBE"})
+    assert answer["recorded"] is False
+    assert answer["reason"] == "INVALID_CONTEXT"
+
+
+def test_the_daemon_refuses_a_second_intent_under_one_key(daemon):
+    """#237 T5 at the daemon write point, not only at the router."""
+    ctx = a_trusted_context(daemon)
+    d1 = attempts.intent_digest(action="a", device_ref="d", verb="v", params={"x": 1})
+    d2 = attempts.intent_digest(action="a", device_ref="d", verb="v", params={"x": 2})
+    first = _record(daemon, ctx["context_ref"],
+                    _attempt("k", d1, attempts.CALL_NOT_SENT))
+    assert first["recorded"] is True
+    second = _record(daemon, ctx["context_ref"],
+                     _attempt("k", d2, attempts.CALL_NOT_SENT))
+    assert second["recorded"] is False
+    assert "conflict" in second["detail"]
+
+
+# -- QA P0-2: no untrusted identity, no self-asserted principal, no free settle
+
+
+def test_a_dispatch_record_without_a_trusted_context_is_refused(daemon):
+    answer = daemon.handle({"method": "agent.dispatch.record", "params": {
+        "attempt": _attempt("k", "digest", attempts.CALL_NOT_SENT)}})["result"]
+    assert answer["recorded"] is False
+    assert answer["reason"] == "UNTRUSTED_ACTOR"
+
+
+def test_a_dispatch_record_with_an_unknown_context_is_refused(daemon):
+    answer = _record(daemon, "ctx:invented:deadbeef",
+                     _attempt("k", "digest", attempts.CALL_NOT_SENT))
+    assert answer["recorded"] is False
+    assert answer["reason"] == "UNTRUSTED_ACTOR"
+
+
+def test_a_self_asserted_principal_is_refused(daemon):
+    """The principal is never taken from the payload (QA P0-2)."""
+    ctx = a_trusted_context(daemon, actor_ref="human:hwz")
+    answer = _record(daemon, ctx["context_ref"],
+                     _attempt("k", "digest", attempts.CALL_NOT_SENT,
+                              principal="human:somebody-else"))
+    assert answer["recorded"] is False
+    assert answer["reason"] == "UNTRUSTED_ACTOR"
+
+
+def test_a_settle_without_the_providers_answer_is_refused(daemon):
+    """A terminal phase must carry the evidence the provider gave (QA P0-2)."""
+    ctx = a_trusted_context(daemon)
+    _record(daemon, ctx["context_ref"],
+            _attempt("k", "digest", attempts.CALL_NOT_SENT))
+    answer = _record(daemon, ctx["context_ref"],
+                     _attempt("k", "digest", attempts.SETTLED))
+    assert answer["recorded"] is False
+    assert answer["reason"] == "INVALID_CONTEXT"
+
+
+def test_a_settle_that_was_never_dispatched_is_refused(daemon):
+    """No jump from nothing to SETTLED: a dispatch-side settle moves an attempt."""
+    ctx = a_trusted_context(daemon)
+    answer = _record(daemon, ctx["context_ref"],
+                     _attempt("never", "digest", attempts.SETTLED,
+                              result={"ok": True}))
+    assert answer["recorded"] is False
+    assert answer["reason"] == "INVALID_CONTEXT"
+
+
+def test_a_supersede_cannot_be_written_by_the_dispatch_side(daemon):
+    ctx = a_trusted_context(daemon)
+    answer = _record(daemon, ctx["context_ref"],
+                     _attempt("k", "digest", attempts.SUPERSEDED))
+    assert answer["recorded"] is False
+    assert answer["reason"] == "INVALID_CONTEXT"
+
+
+def test_a_settle_after_a_proven_dispatch_is_recorded(daemon):
+    """The positive control: the same settle, with evidence and a prior attempt."""
+    ctx = a_trusted_context(daemon)
+    _record(daemon, ctx["context_ref"],
+            _attempt("k", "digest", attempts.CALL_NOT_SENT))
+    answer = _record(daemon, ctx["context_ref"],
+                     _attempt("k", "digest", attempts.SETTLED, result={"ok": True}))
+    assert answer["recorded"] is True
+    assert answer["attempt"]["phase"] == attempts.SETTLED
+    assert answer["attempt"]["principal"] == "human:hwz"
+
+
+def _digest_for(principal, *, session_ref="session:one",
+                runtime="agent-runtime:claude-code"):
+    return attempts.intent_digest(
+        action="agent.session.send", device_ref="device:x", verb="session.send",
+        params={"instruction": "more"}, session_ref=session_ref,
+        agent_runtime=runtime, principal=principal)
+
+
+def test_another_trusted_actor_cannot_settle_someone_elses_attempt(daemon):
+    """QA D3. Knowing the digest is not owning the attempt.
+
+    Actor B presents its OWN valid context and a copy of A's intent digest. The
+    daemon must refuse: an attempt belongs to the actor that dispatched it, and
+    the stored principal and result must not be overwritten by anybody else.
+    """
+    a = a_trusted_context(daemon, actor_ref="human:A")
+    b = a_trusted_context(daemon, actor_ref="human:B")
+    digest = _digest_for("human:A")
+    first = _record(daemon, a["context_ref"],
+                    _attempt("k1", digest, attempts.CALL_NOT_SENT))
+    assert first["recorded"] is True
+    assert first["attempt"]["principal"] == "human:A"
+
+    forged = _record(daemon, b["context_ref"],
+                     _attempt("k1", digest, attempts.SETTLED,
+                              result={"ok": True, "provider_result": "fabricated"}))
+    assert forged["recorded"] is False
+    assert forged["reason"] == "UNTRUSTED_ACTOR"
+
+    stored = daemon.control_store().get_dispatch_attempt("k1")
+    assert stored["phase"] == attempts.CALL_NOT_SENT
+    assert stored["principal"] == "human:A"
+    assert "result" not in stored
+
+
+def test_a_terminal_settle_cannot_be_reopened(daemon):
+    """QA D4. SETTLED -> CALL_NOT_SENT would make the next retry PROCEED."""
+    ctx = a_trusted_context(daemon, actor_ref="human:A")
+    digest = _digest_for("human:A")
+    _record(daemon, ctx["context_ref"],
+            _attempt("k2", digest, attempts.CALL_NOT_SENT))
+    assert _record(daemon, ctx["context_ref"],
+                   _attempt("k2", digest, attempts.SETTLED,
+                            result={"ok": True}))["recorded"] is True
+
+    reopened = _record(daemon, ctx["context_ref"],
+                       _attempt("k2", digest, attempts.CALL_NOT_SENT))
+    assert reopened["recorded"] is False
+    assert reopened["reason"] == "INVALID_CONTEXT"
+
+    stored = daemon.control_store().get_dispatch_attempt("k2")
+    assert stored["phase"] == attempts.SETTLED
+    assert attempts.reconcile(stored, digest=digest)["verdict"] == attempts.REPLAY
 
 
 def test_the_store_refuses_a_binding_keyed_by_anything_but_a_session(store):

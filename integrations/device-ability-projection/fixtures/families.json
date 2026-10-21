@@ -1,0 +1,91 @@
+{
+  "_source": "ProfessorZhi/ability-management product-tree.yaml",
+  "_source_revision": "4a46f2b178e5f93de12b7a27c9d0df00e45683ea",
+  "_note": "Product vocabulary only: the 21 L2 names. It carries no artifact identity, revision, fingerprint or installation and is not a registry.",
+  "families": [
+    {
+      "id": "G1",
+      "name": "Ability Governance"
+    },
+    {
+      "id": "A1",
+      "name": "Session Continuity & Handoff"
+    },
+    {
+      "id": "A2",
+      "name": "Memory Retrieval & Correction"
+    },
+    {
+      "id": "A3",
+      "name": "Workspace / Git / PR"
+    },
+    {
+      "id": "A4",
+      "name": "Runtime & Resource Management"
+    },
+    {
+      "id": "A5",
+      "name": "Fleet / Device Handoff"
+    },
+    {
+      "id": "A6",
+      "name": "Delegation & Parallel Execution"
+    },
+    {
+      "id": "A7",
+      "name": "Automated Testing & Acceptance"
+    },
+    {
+      "id": "A8",
+      "name": "Build & Release"
+    },
+    {
+      "id": "A9",
+      "name": "Production Observation"
+    },
+    {
+      "id": "A10",
+      "name": "Production Change"
+    },
+    {
+      "id": "B1",
+      "name": "Source Intake & Follow"
+    },
+    {
+      "id": "B2",
+      "name": "Structured Understanding"
+    },
+    {
+      "id": "B3",
+      "name": "Requirements"
+    },
+    {
+      "id": "B4",
+      "name": "Work Management & Admission"
+    },
+    {
+      "id": "B5",
+      "name": "Research & Evidence"
+    },
+    {
+      "id": "B6",
+      "name": "Solution Design"
+    },
+    {
+      "id": "B7",
+      "name": "Implementation Delivery"
+    },
+    {
+      "id": "B8",
+      "name": "Reporting"
+    },
+    {
+      "id": "B9",
+      "name": "Document / Knowledge Stewardship"
+    },
+    {
+      "id": "B10",
+      "name": "Human Control & Notification"
+    }
+  ]
+}

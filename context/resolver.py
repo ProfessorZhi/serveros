@@ -21,11 +21,14 @@ a test environment, a Run directory or ServerOS machine state.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import math
 import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -35,6 +38,14 @@ except ImportError:  # pragma: no cover - environment guarantee
     raise SystemExit(2)
 
 SCHEMA = "serveros/context-capsule.v1"
+
+# The one lease timestamp format. The exclusive Work write lease is written by
+# `work-engine/workengine/store.py` and read here, so this string is a
+# cross-repository contract: fixed width, second precision, Z. A `datetime`
+# `isoformat()` (which drops the microsecond field when it is zero) would sort
+# `...:00Z` and `...:00.123456Z` incorrectly at the same second under a string
+# comparison, and the filter below IS a string comparison.
+_LEASE_STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
 # Deliverable kinds that are publications, and therefore route to feishu-report.
 PUBLICATION_DELIVERABLES = {
@@ -335,8 +346,118 @@ def active_items(roots: Roots, exclude: str) -> list[str]:
     )
 
 
-def held_leases(roots: Roots) -> list[str]:
-    return sorted(row["resource"] for row in _query_state(roots, "SELECT resource FROM leases"))
+# RC-v2 merge resolution (#275 x #295/#304): #275's reader is canonical.
+# It keeps the same T6 property (expired rows excluded, rows retained as crash
+# evidence) and adds the injectable instant plus the canonical
+# work_write_resource helpers. #295's SQL-side duplicate held_leases was
+# dropped; tests/test_resolver.py still checks expired-row exclusion against
+# this reader. Neither side's safety property is lost.
+def held_leases(roots: Roots, *, now=None) -> list[str]:
+    """Resources with a LIVE exclusive Work lease, ascending.
+
+    An EXPIRED row is not a held lease: it is a crashed or finished holder whose
+    claim stopped being backed by anything, and reporting it as held is
+    reporting a lock nobody holds. This reader used to be
+    `SELECT resource FROM leases` with no `expires_at` filter, so an expired
+    lease was returned and counted into `protected` — issue #237 B3/T6.
+
+    The row is deliberately NOT deleted; the READING excludes it. Dropping the
+    row would erase the only evidence that a holder ever existed, which is the
+    crash case the record is meant to answer.
+
+    Returns the table's RAW `resource` strings, and under Work Engine #14 those
+    are `work-write:<item_ref>` (see `work_write_resource`). It is the generic
+    "what is claimed" reading for the capsule's `protected` list; a caller that
+    needs the Item or the holder uses `item_from_work_write_resource` or
+    `live_lease`, never a second lookup of its own.
+
+    `now` is epoch seconds and defaults to the wall clock. The comparison is a
+    plain string comparison on `expires_at`, which is why that column is pinned
+    to fixed-width `YYYY-MM-DDTHH:MM:SSZ` in `work-engine/workengine/store.py` —
+    the writer of this table is in another repository, so the format is a
+    cross-repo contract and not a local choice.
+    """
+    if now is None:
+        now = time.time()
+    expires_after = datetime.datetime.fromtimestamp(
+        math.ceil(float(now)), datetime.timezone.utc).strftime(_LEASE_STAMP)
+    return sorted(
+        row["resource"]
+        for row in _query_state(
+            roots,
+            "SELECT resource FROM leases WHERE expires_at > ?",
+            (expires_after,)))
+
+
+#: THE canonical Work write resource. Work Engine #14's
+#: `OwnerVerifiedLease._resource(item_ref)` derives exactly `work-write:<item>`
+#: and stores THAT in `leases.resource`; this is the same function, written on
+#: the reading side. There is no second spelling and no fallback: a scope is
+#: `work-write:<item>` or it is not this scope.
+WORK_WRITE_PREFIX = "work-write:"
+
+
+def work_write_resource(item_ref) -> str:
+    """The one resource name a Work write scope has. Raises on an empty Item.
+
+    Declared here rather than spelled at each call site so that the writer's
+    derivation and the reader's lookup cannot drift — which is exactly what they
+    had done before this function existed (`work-write:SRV-0001` vs `SRV-0001`).
+    """
+    item = str(item_ref or "").strip()
+    if not item:
+        raise ValueError(
+            "a Work write lease names an Item; '' names none. A resource with no "
+            "Item would be a lock on nothing")
+    return f"{WORK_WRITE_PREFIX}{item}"
+
+
+def item_from_work_write_resource(resource) -> str | None:
+    """The Item a lease resource names, or None for a foreign namespace.
+
+    None is a reading, not a refusal: `held_leases` also sees rows that are not
+    Work write scopes, and a caller that needs an Item has to be able to tell.
+    """
+    text = str(resource or "")
+    if not text.startswith(WORK_WRITE_PREFIX):
+        return None
+    item = text[len(WORK_WRITE_PREFIX):].strip()
+    return item or None
+
+
+def live_lease(roots: Roots, item_ref: str, *, now=None) -> dict | None:
+    """The LIVE Work Engine lease for one ITEM, or None.
+
+    The lookup is by the canonical `work-write:<item>` resource — the name Work
+    Engine #14's owner-verified producer writes. A lease stored under the naked
+    Item is NOT read: a silent fallback would be a second spelling of one scope,
+    and the whole point of this reader is that the two sides agree on one.
+
+    Same table and same fixed-width stamp as `held_leases`; the difference is
+    that this returns the owner and the token, because the send admission must
+    COMPARE them rather than merely count the resource (#237 B3 / QA E5).
+
+    The row is written by the Work Engine lease authority — the one authority for
+    exclusive Work write ownership — so this is a READ of that authority, not a
+    second one. An expired row is not a lease: it is a crashed or finished
+    holder, and a scope whose lease has lapsed has no current writer.
+    """
+    item = str(item_ref or "").strip()
+    if not item:
+        return None
+    if now is None:
+        now = time.time()
+    expires_after = datetime.datetime.fromtimestamp(
+        math.ceil(float(now)), datetime.timezone.utc).strftime(_LEASE_STAMP)
+    rows = _query_state(
+        roots,
+        "SELECT resource, owner, token, expires_at FROM leases "
+        "WHERE resource=? AND expires_at > ?",
+        (f"{WORK_WRITE_PREFIX}{item}", expires_after))
+    for row in rows:
+        return {"resource": row["resource"], "owner": row["owner"],
+                "token": row["token"], "expires_at": row["expires_at"]}
+    return None
 
 
 def _development(roots: Roots, project_cfg: dict, item_id: str) -> dict:

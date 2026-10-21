@@ -1,0 +1,65 @@
+{
+  "_comment": "MOCK fixture for the epoch fence (contract/generation-fence.v1.md). It states the CASES and their EXPECTED outcomes so a future C++ test can assert them. NOTHING here has been run against the binary; this round changed source and fixtures only.",
+  "_schema_note": "not a manifest — it is a list of {applied_generation, manifest_generation, expect} rows a test drives build_plan with",
+
+  "cases": [
+    {
+      "name": "no generation has been applied yet",
+      "applied_generation": -1,
+      "manifest_generation": 0,
+      "expect": { "ok": true, "refusal_codes": [], "actions_may_be_nonempty": true },
+      "why": "-1 is «nothing applied», so the very first manifest is never stale"
+    },
+    {
+      "name": "the same generation re-planned",
+      "applied_generation": 7,
+      "manifest_generation": 7,
+      "expect": { "ok": true, "refusal_codes": [], "actions_may_be_nonempty": true },
+      "why": "equal is NOT stale: a Core that restarted and re-reads the manifest it already applied must still be able to plan it"
+    },
+    {
+      "name": "a newer generation",
+      "applied_generation": 7,
+      "manifest_generation": 8,
+      "expect": { "ok": true, "refusal_codes": [], "actions_may_be_nonempty": true },
+      "why": "the ordinary forward step"
+    },
+    {
+      "name": "a manifest restored from a backup",
+      "applied_generation": 7,
+      "manifest_generation": 6,
+      "expect": {
+        "ok": true,
+        "refusal_codes": ["STALE_GENERATION"],
+        "actions": [],
+        "refusal_scope": ""
+      },
+      "why": "THE BLOCKER THIS FIXES. Before the fence this row planned and acted exactly as if it were current. ok stays true because this is a plan that declines, not the absence of a plan; the refusal is about the DOCUMENT, so its scope is empty; and there must be ZERO actions."
+    },
+    {
+      "name": "a manifest far in the past",
+      "applied_generation": 41,
+      "manifest_generation": 0,
+      "expect": {
+        "ok": true,
+        "refusal_codes": ["STALE_GENERATION"],
+        "actions": [],
+        "refusal_scope": ""
+      },
+      "why": "a stale checkout of the very first manifest"
+    }
+  ],
+
+  "invariants_a_test_must_hold": [
+    "a STALE_GENERATION plan carries ZERO actions — not «the unchanged ones», not «the ones that differ»",
+    "the refusal's `scope` is empty: it is about the document, not about a service",
+    "`plan.ok` is true, so a caller can tell a reviewed refusal from a malformed plan",
+    "the fence is checked BEFORE ordering and before any per-service rule, so a stale document cannot produce a cycle refusal or an owner refusal instead — the reader is told the one thing that matters"
+  ],
+
+  "not_yet_true": [
+    "PlanInput.applied_generation is not persisted by the resident loop, so the fence is INERT in production today",
+    "the fence has not been compiled, and these cases have not been run",
+    "the persistence must be written only AFTER a generation is carried out, or a crash between plan and action advances the fence past work that never happened"
+  ]
+}

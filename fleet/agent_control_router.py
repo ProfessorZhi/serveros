@@ -82,6 +82,11 @@ actor = _load("_serveros_context_actor", _ROOT / "context" / "actor.py")
 # this boundary, and two module instances would be two exception classes with
 # one name — a `except` clause that silently stops matching.
 coordination = _load("serveros_runtime_coordination", _RUNTIME / "coordination.py")
+# #245 / S2. The dispatch-attempt kernel: intent identity, phases and the
+# reconcile decision. Loaded under the same synthetic name everywhere, so the
+# `AttemptRefused` class caught here is the one the store raises.
+dispatch_attempts = _load("serveros_runtime_dispatch_attempts",
+                          _RUNTIME / "dispatch_attempts.py")
 
 SCHEMA = "serveros/agent-control-router.v1"
 CONTRACT = _HERE / "agent-control-contract.yaml"
@@ -533,7 +538,10 @@ class LocalLoopbackTransport(AgentControlTransport):
         One read, not two. The binding and the bound Item's state come back
         from a single call, because a caller that fetched them separately would
         be joining two records taken at two moments and the refusal it makes
-        would be about neither of them.
+        would be about neither of them. The current writer for the thread's
+        write scope travels in the SAME read (#237 B1): the claim on the binding
+        and the authoritative current writer must be joined at one moment, or
+        the gate decides on two records that were never both true.
         """
         read = self.bindings.get(request.session_ref) or {}
         try:
@@ -541,7 +549,21 @@ class LocalLoopbackTransport(AgentControlTransport):
                 binding_record=read.get("binding"),
                 work_item=request.work_item,
                 item_state=(read.get("item") or {}).get("state"),
-                outcome=(read.get("item") or {}).get("outcome"))
+                outcome=(read.get("item") or {}).get("outcome"),
+                # A handle that cannot supply a current writer leaves this None,
+                # and `admit_work` then refuses any thread that CLAIMS write
+                # authority rather than admitting it unchecked: "no verifiable
+                # source" is a refusal, not a pass. A thread that claims nothing
+                # is unaffected, which is what keeps every pre-existing thread
+                # working.
+                current_writer=read.get("current_writer"),
+                # The WORK ENGINE lease, when the handle can supply it. Passed
+                # through rather than re-derived: the router does not hold the
+                # lease store, and a second derivation of "who owns this scope"
+                # is the second answer #237 is about. When it is supplied it is
+                # the ONLY authority the kernel checks the claim against.
+                authority=read.get("write_authority"),
+                now=_writer_now())
         except coordination.ThreadRefused as exc:
             # Translated rather than propagated, and translated here rather
             # than caught in `route()`: `TransportFailure` validates the reason
@@ -851,6 +873,20 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _writer_now() -> str:
+    """The stamp a writer TTL is compared against (#237 T3).
+
+    NOT `_now()`. That one is an `isoformat()`, which drops the microsecond
+    field when it is zero, so `...:00Z` and `...:00.123456Z` sort wrongly at the
+    same second under a string comparison — and the writer's `expires_at` IS
+    compared as a string, in `runtime/coordination.py#writer_axis`. Fixed width,
+    second precision, Z: the same contract the exclusive Work lease pins.
+    """
+    import datetime
+    return datetime.datetime.now(
+        datetime.timezone.utc).strftime(coordination.WRITER_STAMP)
+
+
 # ---------------------------------------------------------------------------
 # The router
 # ---------------------------------------------------------------------------
@@ -871,7 +907,8 @@ class FleetAgentControlRouter:
 
     def __init__(self, *, local_device_ref: str,
                  transports: list[AgentControlTransport] | None = None,
-                 registry=None, clock=None, context_store: dict | None = None) -> None:
+                 registry=None, clock=None, context_store: dict | None = None,
+                 attempts=None) -> None:
         if not str(local_device_ref).startswith("device:"):
             raise TargetError(
                 f"{local_device_ref!r} is not a device ref. This router is the "
@@ -899,6 +936,14 @@ class FleetAgentControlRouter:
         # than left for a reader to assume the stronger thing.
         self._seen_keys: dict[str, dict] = {}
         self._max_seen = 512
+        # #245 / S2. The DURABLE half, when one is given: an object with
+        # `get_dispatch_attempt(key)` / `put_dispatch_attempt(record)` — the
+        # existing Agent Control store satisfies both. It is optional so that a
+        # router built without a store keeps the in-process guard rather than
+        # silently gaining a durable claim it cannot honour; and when it IS
+        # given, the guard reads the record that survives a restart, so a retry
+        # after a lost response is refused instead of dispatched a second time.
+        self._attempts = attempts
 
     # -- evidence ----------------------------------------------------------
 
@@ -995,6 +1040,12 @@ class FleetAgentControlRouter:
                 f"evidence; proceeding without one would record this act with no "
                 f"actor and would tell a forger its ref had been accepted")
 
+        # The actor behind the presented context, resolved by ServerOS from the
+        # minted record. It is part of the intent identity (#237 T5) and it is
+        # what the attempt record carries (#245 P0-2) — never a string from the
+        # payload, and `None` when the request presented no context.
+        principal = (context.get("context") or {}).get("actor_ref")
+
         node = self.transport_for(request.device_ref)
         observed = (node.resolve_inputs(request.device_ref, request.runtime_id)
                     if node is not None else {})
@@ -1042,20 +1093,33 @@ class FleetAgentControlRouter:
                 f"no route carries this request to {request.device_ref}",
                 record=record)
 
-        replayed = self._replay(request)
+        replayed = self._replay(request, principal=principal)
         if replayed is not None:
             return replayed
+
+        # #245. The attempt is persisted BEFORE the mutation leaves this
+        # process, and that order is the whole point: a record written here can
+        # say "we had decided to send and had not yet" if the process dies next,
+        # which a record written AFTER the send cannot — by then it has already
+        # happened and the two crash windows are indistinguishable.
+        self._begin_attempt(request, principal=principal)
 
         try:
             result = node.send(request, resolved=record)
         except TransportFailure as exc:
-            # The transport's own vocabulary, verbatim. Nothing here converts a
-            # delivery failure into a statement about the session on the far
-            # side, because the transport learned nothing about it.
+            # #245. Leave the attempt in the phase its failure actually
+            # supports: nothing-sent stays CALL_NOT_SENT; anything ambiguous
+            # becomes EFFECT_UNKNOWN, so a retry does not launch a second paid
+            # turn. Then refuse in the transport's own vocabulary, verbatim —
+            # nothing here converts a delivery failure into a statement about
+            # the session on the far side, because the transport learned nothing
+            # about it.
+            self._mark_attempt_after_failure(request, exc.reason,
+                                             principal=principal)
             return self._refuse(request, exc.reason, exc.detail, record=record,
                                 retryable=exc.retryable)
 
-        self._remember(request, result)
+        self._remember(request, result, principal=principal)
         return AgentControlResponse(
             ok=True, action=request.action, verb=verb,
             device_ref=request.device_ref, correlation_id=request.correlation_id,
@@ -1112,27 +1176,132 @@ class FleetAgentControlRouter:
 
     # -- idempotency -------------------------------------------------------
 
-    def _replay(self, request: AgentControlRequest) -> AgentControlResponse | None:
-        """A retry of the same intent, answered from the first attempt.
+    def _intent_digest(self, request: AgentControlRequest, *, principal=None) -> str:
+        """The identity of this request's INTENT — the TARGET, not just the key.
 
-        Scoped to one router instance and to mutations. A read replayed from
-        memory would answer with a stale observation, which is worse than
-        answering slowly; a mutation replayed from memory is the one case where
-        the caller's intent is that the second attempt have no second effect.
+        #237 T5 / independent-QA P0-1. The guard compared the action, the device
+        and the payload and omitted the session, the runtime and the principal —
+        so two sends to different sessions under one key digested identically and
+        the second was answered as a replay of the first. The digest is what
+        makes that a CONFLICT.
+        """
+        return dispatch_attempts.intent_digest(
+            action=request.action, device_ref=request.device_ref,
+            verb=request.verb, params=request.params,
+            workspace=request.workspace, work_item=request.work_item,
+            session_ref=request.session_ref,
+            agent_runtime=request.agent_runtime, principal=principal)
+
+    def _attempt_record(self, request, phase, *, principal=None, result=None) -> dict:
+        """One durable attempt record for this request, at this phase.
+
+        It carries the RESOLVED principal and the target. The daemon re-derives
+        the principal from the trusted context and refuses a record that claims a
+        different one, so a principal from the payload is never trusted
+        (#245 P0-2).
+        """
+        return dispatch_attempts.attempt_record(
+            key=request.idempotency_key, action=request.action,
+            device_ref=request.device_ref, verb=request.verb,
+            intent_digest=self._intent_digest(request, principal=principal),
+            phase=phase, work_item=request.work_item, principal=principal,
+            runtime=request.agent_runtime, session_ref=request.session_ref,
+            result=result, at=_now())
+
+    def _durable_attempt(self, request) -> bool:
+        """Whether this request has a durable attempt to write. Mutations only."""
+        return bool(self._attempts is not None and request.idempotency_key
+                    and _mutating(request.verb))
+
+    def _begin_attempt(self, request, *, principal=None) -> None:
+        """Persist `CALL_NOT_SENT` BEFORE the mutation leaves this process. #245.
+
+        The order is the entire value. A record written BEFORE `node.send` can
+        say "we had decided to send and had not yet" when the process dies next;
+        a record written after the send cannot, because by then the effect has
+        happened and "crashed before" and "crashed after" are the same bytes
+        with opposite repairs.
+
+        The attempt is recorded against the request's own trusted `context_ref`;
+        the daemon resolves the actor from it and refuses a record whose claimed
+        principal is anybody else. A store that refuses this write is NOT
+        swallowed — it raises, as the binding write at `_record` does — because
+        dispatching without the record is exactly the blind retry this exists to
+        prevent.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(
+            self._attempt_record(request, dispatch_attempts.CALL_NOT_SENT,
+                                 principal=principal),
+            context_ref=request.context_ref)
+
+    def _mark_attempt_after_failure(self, request, reason, *, principal=None) -> None:
+        """Leave the attempt in the phase the failure actually supports.
+
+        Nothing-sent stays `CALL_NOT_SENT` (a retry is safe); anything ambiguous
+        becomes `EFFECT_UNKNOWN`, so a retry refuses instead of launching a
+        second paid turn.
+        """
+        if not self._durable_attempt(request):
+            return
+        self._attempts.put_dispatch_attempt(
+            self._attempt_record(
+                request, dispatch_attempts.phase_after_transport_failure(reason),
+                principal=principal),
+            context_ref=request.context_ref)
+
+    def _replay(self, request: AgentControlRequest, *,
+                principal=None) -> AgentControlResponse | None:
+        """A retry of the same intent, answered from the record of the first.
+
+        Two records, one decision. When a durable store was given (`attempts`),
+        the record it holds — which survives a restart — decides, and a recorded
+        UNKNOWN outcome refuses the retry instead of dispatching it again (#237
+        T4/T9). Without one, the in-process dict decides, and the limitation is
+        the one the contract already declares.
+
+        A read is never replayed: answering one from memory would answer with an
+        observation that has aged, which is worse than answering slowly.
         """
         if not request.idempotency_key or not _mutating(request.verb):
             return None
+        digest = self._intent_digest(request, principal=principal)
+
+        if self._attempts is not None:
+            recorded = self._attempts.get_dispatch_attempt(request.idempotency_key)
+            verdict = dispatch_attempts.reconcile(recorded, digest=digest)
+            if verdict["verdict"] == dispatch_attempts.PROCEED:
+                return None
+            if verdict["verdict"] == dispatch_attempts.REPLAY:
+                return AgentControlResponse(
+                    ok=True, action=request.action, verb=request.verb,
+                    device_ref=request.device_ref,
+                    correlation_id=request.correlation_id,
+                    result=dict(recorded.get("result") or {},
+                                idempotent_replay=True),
+                    dispatched=False)
+            # CONFLICT / IN_FLIGHT / REFUSE_UNKNOWN / REFUSE_SUPERSEDED all
+            # refuse, each saying why in the kernel's own sentence. A caller
+            # told only "no" could not tell a settled replay from an unknown
+            # outcome, and the repair differs.
+            raise Rejected(
+                f"idempotency key {request.idempotency_key!r}: "
+                f"{verdict['because']}")
+
         seen = self._seen_keys.get(request.idempotency_key)
         if seen is None:
             return None
-        if seen["action"] != request.action or seen["device_ref"] != request.device_ref:
+        if (seen["action"] != request.action
+                or seen["device_ref"] != request.device_ref
+                or seen.get("intent_digest") != digest):
             # The same key on a different intent is a caller bug, and silently
             # answering it with the other call's result would report an effect
             # that never happened for this request.
             raise Rejected(
                 f"idempotency key {request.idempotency_key!r} was already used for "
-                f"{seen['action']} on {seen['device_ref']}; a key identifies one "
-                f"intent, not one caller")
+                f"{seen['action']} on {seen['device_ref']} with a different "
+                f"payload; a key identifies one intent, not one caller")
         return AgentControlResponse(
             ok=True, action=request.action, verb=request.verb,
             device_ref=request.device_ref, correlation_id=request.correlation_id,
@@ -1141,12 +1310,27 @@ class FleetAgentControlRouter:
             provenance=tuple(seen.get("provenance") or ()),
             dispatched=False)
 
-    def _remember(self, request: AgentControlRequest, result: dict) -> None:
+    def _remember(self, request: AgentControlRequest, result: dict, *,
+                  principal=None) -> None:
         if not request.idempotency_key or not _mutating(request.verb):
             return
+        digest = self._intent_digest(request, principal=principal)
+        if self._attempts is not None:
+            # The outcome. `_begin_attempt` already wrote CALL_NOT_SENT before
+            # the send, so this MOVES the same attempt to SETTLED — same key,
+            # same digest, a different phase, which is what a phase is for. The
+            # daemon accepts a SETTLED only with the provider's answer attached
+            # and only over an existing attempt, so a forged settle is refused
+            # there (#245 P0-2). A store that refuses the write is NOT swallowed:
+            # the caller would otherwise believe a retry will be recognised when
+            # nothing recorded it.
+            self._attempts.put_dispatch_attempt(
+                self._attempt_record(request, dispatch_attempts.SETTLED,
+                                      principal=principal, result=result),
+                context_ref=request.context_ref)
         self._seen_keys[request.idempotency_key] = {
             "action": request.action, "device_ref": request.device_ref,
-            "result": result,
+            "intent_digest": digest, "result": result,
         }
         if len(self._seen_keys) > self._max_seen:
             for key in list(self._seen_keys)[: len(self._seen_keys) - self._max_seen]:
@@ -1183,7 +1367,8 @@ def _resolution_summary(record: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 HANDOFF_STEPS = ("checkpoint", "resolve_target", "target_available",
-                 "target_ready", "context_handed_off", "source_released")
+                 "target_ready", "context_handed_off",
+                 "write_authority_transferred", "source_released")
 
 
 @dataclass(frozen=True)
@@ -1264,10 +1449,79 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                     "malformed rather than refused"},
             checkpoint=checkpoint)
 
-    created = router.route(create_request or _resume_request(request))
+    target_request = create_request or _resume_request(request)
+    # A resume target that is already bound must be minted the writer claim
+    # BEFORE the route: admission fences a no-claim thread on an owned scope,
+    # so the target would be refused before the handoff ever reached the
+    # transfer. A create target is bound by the route and claimed below.
+    pre_claim = _claim_handoff_target(
+        router, request, target_ref=getattr(target_request, "session_ref", None),
+        target_device=target_request.device_ref)
+    if pre_claim is not None and not pre_claim.get("claimed"):
+        return HandoffOutcome(
+            False, str(pre_claim.get("reason") or "NOT_CURRENT_WRITER"),
+            tuple(completed), "target_ready", True,
+            {"claim": pre_claim,
+             "target_session_ref": getattr(target_request, "session_ref", None),
+             "why": ("the target binding exists but its writer claim could not "
+                     "be minted from the live Work lease; the source keeps its "
+                     "write authority and the handoff is not a transfer")},
+            checkpoint=checkpoint)
+    pre_claimed = bool(pre_claim and pre_claim.get("claimed"))
+    try:
+        created = router.route(target_request)
+    except Exception as exc:  # noqa: BLE001 - a provider exception is an answer
+        reason = getattr(exc, "reason", None)
+        detail = getattr(exc, "detail", str(exc))
+        if pre_claimed:
+            # The persisted preclaim is already the current writer. An escaping
+            # provider/transport exception does not undo it, and it must not
+            # escape the procedure: the scope is stalled and the caller needs
+            # the typed word for that.
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "target_ready", False,
+                {"error": f"{type(exc).__name__}: {exc}",
+                 "provider_reason": reason,
+                 "claim": pre_claim, "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "target route; the provider/transport raised instead "
+                         "of answering, so the target holds the claim without "
+                         "an established session and the source is not the "
+                         "current writer. This is not a transfer; repair is an "
+                         "owner action")},
+                checkpoint=checkpoint)
+        # No claim was minted: the source is untouched. The exception is still
+        # a typed target failure, not an escape out of the handoff.
+        typed_reason = (str(reason) if reason in reason_vocabulary()
+                        else "PROVIDER_ERROR")
+        return HandoffOutcome(
+            False, typed_reason, tuple(completed), "target_ready", True,
+            {"error": f"{type(exc).__name__}: {detail}",
+             "provider_reason": reason,
+             "why": ("the target route raised instead of answering; no writer "
+                     "claim was minted and the source is untouched")},
+            checkpoint=checkpoint)
     if not created.ok:
-        # Nothing was stopped. The source session is exactly as it was, and the
-        # reason is the target's own — not a handoff-specific rewording of it.
+        if pre_claimed:
+            # The target already holds the current-writer claim. The provider
+            # refusing now does not undo that: the source is no longer the
+            # current writer, and the target has no established session. This
+            # is a stalled scope, not "source preserved".
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                _stop_step(created), False,
+                {"target": created.show(), "claim": pre_claim,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "target route; the provider refused, so the target "
+                         "holds the claim without an established session and "
+                         "the source is no longer the current writer. This is "
+                         "not a transfer and the source's write authority is "
+                         "not preserved; the scope is stalled until repaired")},
+                checkpoint=checkpoint)
+        # Nothing was stopped and no claim was minted. The source session is
+        # exactly as it was, and the reason is the target's own.
         return HandoffOutcome(False, created.reason, tuple(completed),
                               _stop_step(created), True,
                               {"target": created.show()},
@@ -1287,6 +1541,18 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
     # has no business establishing on the provider's behalf.
     handed = created.result or {}
     if not handed.get("session_ref"):
+        if pre_claimed:
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "context_handed_off", False,
+                {"target": created.show(), "claim": pre_claim,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was minted before the "
+                         "route, but the target named no session. The target "
+                         "holds the claim without an established session and "
+                         "the source is not the current writer; this is not a "
+                         "transfer and the scope is stalled")},
+                checkpoint=checkpoint)
         return HandoffOutcome(
             False, "INVALID_CONTEXT", tuple(completed), "context_handed_off", True,
             {"target": created.show(),
@@ -1297,10 +1563,112 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
             checkpoint=checkpoint)
     completed.append("context_handed_off")
 
+    # A create target was bound by the route just now; claim it before the
+    # source is closed. A resume target was claimed before the route.
+    claim = pre_claim
+    claim_written = pre_claimed
+    if claim is None or not claim.get("claimed"):
+        claim = _claim_handoff_target(
+            router, request, target_ref=handed.get("session_ref"),
+            target_device=target_request.device_ref)
+        claim_written = claim_written or bool(
+            isinstance(claim, dict)
+            and isinstance(claim.get("binding"), dict)
+            and claim["binding"].get("writer"))
+        if claim is not None and not claim.get("claimed"):
+            if claim_written:
+                return HandoffOutcome(
+                    False, "BLOCKED_ATOMICITY", tuple(completed),
+                    "context_handed_off", False,
+                    {"target": handed, "claim": claim, "scope_stalled": True,
+                     "why": ("the target's writer claim was written but the "
+                             "handoff could not confirm it as the current "
+                             "writer; the source is not preserved as a writer "
+                             "and the scope is stalled")},
+                    checkpoint=checkpoint)
+            return HandoffOutcome(
+                False, str(claim.get("reason") or "NOT_CURRENT_WRITER"),
+                tuple(completed), "context_handed_off", True,
+                {"target": handed, "claim": claim,
+                 "why": ("the target answered with a session, but its writer "
+                         "claim could not be minted from the live Work lease; "
+                         "the source keeps its write authority and the handoff "
+                         "is not a transfer")},
+                checkpoint=checkpoint)
+
+    # #237 B1 / architecture doc §5. The source's future WRITE authority is
+    # revoked here — independently of `release_source` below — but ONLY once the
+    # TARGET is ESTABLISHED, which `context_handed_off` by itself does NOT prove.
+    #
+    # `context_handed_off` says the target ANSWERED with a session. It does NOT
+    # say the target has been recorded as the writer of this Item, and revoking
+    # the source on a session alone leaves a window with NO authorized writer —
+    # the one failure a handoff cannot recover from. `_revoke...` therefore
+    # checks the target's OWN binding first and refuses to revoke until the
+    # target is established; the source then keeps its authority, which is the
+    # recoverable direction.
+    #
+    # Closing the source's BINDING — not the session — is what makes the existing
+    # word `THREAD_CLOSED_FOR_NEW_WORK` answerable for the stale source: it means
+    # exactly "the thread was closed while its provider session is still alive
+    # and accepting turns". The source stays READABLE (`inspect`, `result`,
+    # `interrupt`, `stop` are not gated). The binding is write-once on
+    # `session_ref`, so the source can never be silently retargeted.
+    revocation = _revoke_source_write_authority(
+        router, request, target_ref=handed.get("session_ref"),
+        target_device=target_request.device_ref)
+    successor = revocation.get("successor") or {}
+    current = revocation.get("current_writer")
+    transferred = (bool(revocation.get("revoked"))
+                   and isinstance(successor, dict)
+                   and str(successor.get("session_ref"))
+                   == str(handed.get("session_ref"))
+                   and isinstance(current, dict)
+                   and isinstance(successor.get("writer"), dict)
+                   and all(str(successor["writer"].get(field))
+                           == str(current.get(field))
+                           for field in ("owner", "epoch", "token")))
+    if not transferred:
+        # The target answered with a session, but write authority did not move.
+        # If the target's claim was already minted, the source is NOT the
+        # current writer even though its binding may still be OPEN. Saying
+        # "source preserved" there would be false; say the scope is stalled.
+        closed = revocation.get("closed")
+        source_closed = (isinstance(closed, dict)
+                         and str(closed.get("state") or "").upper() == "CLOSED")
+        target_claimed = pre_claimed or bool(
+            isinstance(successor, dict)
+            and isinstance(successor.get("writer"), dict))
+        if target_claimed and not source_closed:
+            return HandoffOutcome(
+                False, "BLOCKED_ATOMICITY", tuple(completed),
+                "context_handed_off", False,
+                {"target": handed, "revocation": revocation,
+                 "scope_stalled": True,
+                 "why": ("the target's writer claim was already current, but "
+                         "the source close did not complete. The source is not "
+                         "the current writer; the scope is stalled and must be "
+                         "repaired. This is not a successful transfer")},
+                checkpoint=checkpoint)
+        source_preserved = not source_closed
+        return HandoffOutcome(
+            False,
+            str(revocation.get("transport") or "NOT_CURRENT_WRITER"),
+            tuple(completed), "context_handed_off", source_preserved,
+            {"target": handed,
+             "revocation": revocation,
+             "scope_stalled": False,
+             "why": ("the target answered with a session, but write authority "
+                     "did not move to it. The source keeps its write authority "
+                     "unless the close already happened, and a target without "
+                     "the current writer claim is not an established writer")},
+            checkpoint=checkpoint)
+
+    completed.append("write_authority_transferred")
     release = (request.params or {}).get("release_source")
     if not release:
         return HandoffOutcome(True, None, tuple(completed), None, True,
-                              {"target": handed,
+                              {"target": handed, "revocation": revocation,
                                "why": "the source was not stopped: release_source "
                                       "was not requested, and a handoff that stops "
                                       "the source by default is a handoff that "
@@ -1318,7 +1686,8 @@ def handoff(*, router: FleetAgentControlRouter, request: AgentControlRequest,
                               checkpoint=checkpoint)
     completed.append("source_released")
     return HandoffOutcome(True, None, tuple(completed), None, False,
-                          {"target": handed, "stop": stopped.result},
+                          {"target": handed, "stop": stopped.result,
+                           "revocation": revocation},
                           checkpoint=checkpoint)
 
 
@@ -1378,6 +1747,239 @@ def _stop_step(answer: AgentControlResponse) -> str:
         return "target_available"
     # The target was reached, and what came back is the target's own answer.
     return "target_ready"
+
+
+def _claim_handoff_target(router, request: AgentControlRequest, *, target_ref,
+                          target_device):
+    """Mint the target's writer claim before it is admitted (#310 F2).
+
+    A target that is already bound to the source's Item must become the current
+    writer BEFORE its resume/send is admitted: admission fences a no-claim
+    thread on an owned scope. The claim is minted by the trusted daemon from the
+    LIVE Work lease; this function never supplies an owner, token or epoch.
+
+    Returns None when there is nothing to pre-claim (an unbound target is bound
+    by the route itself, or the bindings handle cannot claim), a dict with
+    `claimed: True` on success, or `claimed: False` with a reason. A failed claim
+    is a fail-closed handoff, never a success.
+    """
+    if not target_ref:
+        return None
+    source_transport = router.transport_for(request.device_ref)
+    source_bindings = getattr(source_transport, "bindings", None)
+    target_transport = router.transport_for(target_device) if target_device else None
+    target_bindings = (getattr(target_transport, "bindings", None)
+                       if target_transport is not None else None)
+    if source_bindings is None or target_bindings is None:
+        return None
+    if not hasattr(target_bindings, "claim") or not hasattr(source_bindings, "get"):
+        return None
+    try:
+        target_read = target_bindings.get(target_ref) or {}
+        target = target_read.get("binding")
+        if not target:
+            return None
+        if target.get("writer"):
+            # An existing claim is a pre-claim only when it IS the current
+            # writer. A stale claim from an earlier attempt does not make the
+            # target current, and treating it as one would report the source
+            # stalled when it is still the owner.
+            current = target_read.get("current_writer")
+            writer = target.get("writer")
+            if (isinstance(writer, dict) and isinstance(current, dict)
+                    and all(str(writer.get(field)) == str(current.get(field))
+                            for field in ("owner", "epoch", "token"))):
+                return {"claimed": True, "binding": target, "already": True}
+            return {"claimed": False, "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the target records a writer that is not the "
+                               "current writer; the handoff cannot treat a "
+                               "stale claim as the transfer")}
+        source = (source_bindings.get(request.session_ref) or {}).get("binding")
+        if not source or not source.get("bound_item_ref"):
+            return None
+        item = str(source.get("bound_item_ref"))
+        if str(target.get("bound_item_ref") or "") != item:
+            return None
+        # Only claim in the SOURCE store: a cross-store claim would move the
+        # target's writer while the source's store still shows the source as
+        # current, and the close would have to fail closed anyway.
+        same = (source_bindings.get(target_ref) or {}).get("binding")
+        if not same or str(same.get("bound_item_ref") or "") != item:
+            return None
+        binding = target_bindings.claim(target_ref, from_ref=request.session_ref,
+                                        context_ref=request.context_ref)
+        if isinstance(binding, dict) and "binding" in binding:
+            binding = binding["binding"]
+        if not isinstance(binding, dict) or not isinstance(
+                binding.get("writer"), dict):
+            return {"claimed": False, "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the claim route returned no writer claim; the "
+                               "target is not an established writer")}
+        return {"claimed": True, "binding": binding}
+    except Exception as exc:  # noqa: BLE001 - a failed claim is an answer
+        return {"claimed": False,
+                "reason": getattr(exc, "reason", "NOT_CURRENT_WRITER"),
+                "detail": getattr(exc, "detail", str(exc))}
+
+
+def _revoke_source_write_authority(router, request: AgentControlRequest, *,
+                                   target_ref, target_device):
+    """Close the SOURCE thread's binding, once the TARGET is ESTABLISHED.
+
+    §9 / #237 B1. Called once `context_handed_off` has been reached. The ORDER
+    is the safety property, and it is not the order the design's steps were
+    written in:
+
+      * `context_handed_off` proves the target ANSWERED with a session;
+      * it does NOT prove the target has been RECORDED as the writer of this
+        Item — a session with no binding is not an established writer;
+      * revoking the source on a session alone leaves a window with NO
+        authorized writer, and a handoff cannot recover from that state.
+
+    So the target's OWN binding is read first, and the source is closed only
+    when that binding exists and is bound to the SAME Item. Every other outcome
+    leaves the source's write authority intact, which is the recoverable
+    direction to be wrong in: two writers is visible and correctable, zero
+    writers is a stall.
+
+    Reached through each device's OWN transport, so the bindings read and closed
+    are the ones each side's admission will later read — never a second store.
+
+    A close is a TRANSFER only when the source store holds the target binding
+    (so the close and the target's writer claim can be one mutation) and the
+    daemon returns a CLOSED source whose current writer is the target. Every
+    other outcome is a non-transfer with readable evidence; the handoff turns
+    that into a fail-closed answer, never a success. The source keeps its
+    authority whenever the transfer cannot be completed, because "two writers"
+    is recoverable and "zero writers" is not.
+
+    Returns {"revoked": <record|None>, "current_writer": <record|None>,
+             "successor": <record|None>, "closed": <record|None>,
+             "because": <str>}.
+    """
+    source_transport = router.transport_for(request.device_ref)
+    source_bindings = getattr(source_transport, "bindings", None)
+    if source_bindings is None or not hasattr(source_bindings, "close"):
+        return {"revoked": None,
+                "because": ("the source device has no bindings handle with "
+                            "close(); write authority cannot be revoked, so the "
+                            "handoff is not a transfer")}
+    try:
+        source_read = source_bindings.get(request.session_ref) or {}
+        source = source_read.get("binding")
+        if not source:
+            return {"revoked": None,
+                    "because": "the source thread has no recorded binding to revoke"}
+        if str(source.get("state") or "").upper() == "CLOSED":
+            current = source_read.get("current_writer")
+            if (target_ref and isinstance(current, dict)
+                    and str(current.get("owner")) == str(target_ref)):
+                return {"revoked": source, "current_writer": current,
+                        "because": ("the source thread was already closed and "
+                                    "the target is the current writer")}
+            return {"revoked": None, "closed": source,
+                    "because": ("the source thread is already closed but the "
+                                "target is not the current writer; no write "
+                                "authority was transferred")}
+        item = str(source.get("bound_item_ref") or "")
+        if not item:
+            return {"revoked": None,
+                    "because": ("the source thread has no bound Item, so there "
+                                "is no write scope to transfer")}
+        source_writer = source.get("writer")
+        if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+            return {"revoked": None,
+                    "because": ("the source records no writer claim, so there is "
+                                "no write authority to revoke or transfer")}
+
+        target_transport = (router.transport_for(target_device)
+                            if target_device else None)
+        target_bindings = (getattr(target_transport, "bindings", None)
+                           if target_transport is not None else None)
+        target = None
+        if (target_ref and target_bindings is not None
+                and hasattr(target_bindings, "get")):
+            target = (target_bindings.get(target_ref) or {}).get("binding")
+        if not target or str(target.get("bound_item_ref") or "") != item:
+            return {"revoked": None,
+                    "because": (f"the target is not established as the writer of "
+                                f"{item!r}: it answered with a session, but no "
+                                f"binding records it as this Item's writer. The "
+                                f"source keeps its write authority")}
+        target_writer = target.get("writer")
+        if target_writer:
+            # The handoff's claim route may already have minted the target.
+            # That is acceptable only when the claim IS the current writer;
+            # an unrelated existing claim is not a successor.
+            target_read = (target_bindings.get(target_ref) or {})
+            current = target_read.get("current_writer")
+            if (not isinstance(target_writer, dict)
+                    or not isinstance(current, dict)
+                    or any(str(target_writer.get(field))
+                           != str(current.get(field))
+                           for field in ("owner", "epoch", "token"))):
+                return {"revoked": None,
+                        "because": ("the target already records a writer that is "
+                                    "not the current writer; a transfer cannot "
+                                    "overwrite it")}
+
+        # The source store must hold the target binding too. A cross-store
+        # transfer cannot be atomic, and closing the source without minting the
+        # target would leave ZERO authorized writers. In that case the source
+        # keeps its authority and the handoff fails closed.
+        source_target = None
+        if hasattr(source_bindings, "get"):
+            source_target = (source_bindings.get(target_ref) or {}).get("binding")
+        if (not source_target
+                or str(source_target.get("bound_item_ref") or "") != item):
+            return {"revoked": None,
+                    "because": ("the target binding is not in the source store; "
+                                "a cross-store write-authority transfer is not "
+                                "supported, and closing the source without minting "
+                                "the target would leave no authorized writer")}
+
+        closed = source_bindings.close(
+            request.session_ref, at=_now(),
+            reason="handoff moved write authority to the established target session",
+            successor_ref=target_ref, context_ref=request.context_ref)
+        state = str((closed or {}).get("state") or "").upper()
+        current = (closed or {}).get("current_writer")
+        successor = (closed or {}).get("successor")
+        if state != "CLOSED":
+            return {"revoked": None, "closed": closed,
+                    "because": (f"the close returned state {state or 'UNKNOWN'!r}, "
+                                f"not CLOSED; write authority was not revoked")}
+        if not isinstance(successor, dict):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "because": ("the close did not return the successor binding; "
+                                "the target's writer claim cannot be verified")}
+        if str(successor.get("session_ref")) != str(target_ref):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "successor": successor,
+                    "because": (f"the close returned successor "
+                                f"{successor.get('session_ref')!r}, not the target "
+                                f"{target_ref!r}")}
+        writer = successor.get("writer")
+        if (not isinstance(writer, dict) or not isinstance(current, dict)
+                or any(str(writer.get(field)) != str(current.get(field))
+                       for field in ("owner", "epoch", "token"))):
+            return {"revoked": None, "closed": closed, "current_writer": current,
+                    "successor": successor,
+                    "because": ("the successor's writer claim is not the current "
+                                "writer; write authority did not transfer")}
+        return {"revoked": closed, "current_writer": current,
+                "successor": successor,
+                "because": ("the source was closed and the target's claim is the "
+                            "current writer")}
+    except Exception as exc:  # noqa: BLE001 - a failed transfer is an answer
+        # A transport failure, a close refusal, or a malformed answer is a
+        # NON-transfer with readable evidence. Never an exception out of the
+        # handoff and never a success.
+        reason = getattr(exc, "reason", None)
+        detail = getattr(exc, "detail", str(exc))
+        return {"revoked": None, "transport": reason,
+                "because": (f"{reason}: {detail}" if reason else
+                            f"{type(exc).__name__}: {exc}")}
 
 
 def _resume_request(request: AgentControlRequest) -> AgentControlRequest:

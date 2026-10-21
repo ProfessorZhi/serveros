@@ -1,0 +1,11 @@
+{
+  "authorization": "UNSIGNED",
+  "cases": [
+    "one"
+  ],
+  "command": "pytest",
+  "dirty": false,
+  "exit_code": 0,
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "verdict": "PASS"
+}

@@ -1,0 +1,30 @@
+{
+  "_note": "Three device CLASSES, not three claims of reachability. `state` is the only field that says whether this round produced an observation: OBSERVED means a scan snapshot exists; NOT_OBSERVED means the authority knows the device id but no snapshot was supplied; UNRESOLVED means the authority declares no device id at all. A row with UNKNOWN must never be read as false.",
+  "devices": [
+    {
+      "id": "tokyo-linux",
+      "label": "Tokyo (Linux)",
+      "device_ref": "device:tokyo-shared-dev-01",
+      "device_ids": ["tokyo-shared-dev-01"],
+      "state": "OBSERVED",
+      "reason": null,
+      "observation_file": "observations/tokyo-20261020.json"
+    },
+    {
+      "id": "windows-dell-work",
+      "label": "Windows (Dell-Company-PC)",
+      "device_ref": null,
+      "device_ids": ["dell-work"],
+      "state": "NOT_OBSERVED",
+      "reason": "The authority manifest declares device `dell-work` (os: windows) and records installations for it, but no observation snapshot for this device class was supplied in this round. Authority installation records are not an observation; mark the observation axes UNKNOWN rather than inferring them."
+    },
+    {
+      "id": "dell-a6000-linux",
+      "label": "Dell A6000 (Linux)",
+      "device_ref": null,
+      "device_ids": [],
+      "state": "UNRESOLVED",
+      "reason": "The authority manifest declares no device id for a Dell A6000 Linux node. Mapping it to `dell-work` would conflate a Windows device with a Linux one; the identity is UNKNOWN, so every device-dependent word is UNKNOWN rather than false."
+    }
+  ]
+}

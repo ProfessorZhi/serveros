@@ -1,0 +1,4 @@
+# Build output is generated-only: it is reproducible from the pinned sources by
+# `build_zip.py`, and committing it would put a second, silently-drifting copy
+# of the payload next to the one it was built from.
+dist/

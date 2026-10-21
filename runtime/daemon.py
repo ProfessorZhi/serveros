@@ -460,6 +460,11 @@ view_mod = _load("serveros_runtime_view", "view.py")
 # decision a security boundary rests on be tested without a filesystem.
 agent_control_store_mod = _load("serveros_runtime_agent_control_store",
                                 "agent_control_store.py")
+# The owner-issued uid -> actor -> scope binding. A CONTRACT and pure check,
+# not a registry: production binds no resolver and every issue/verify refuses
+# BLOCKED_OWNER_POLICY. Loaded under the same name the store uses, so the
+# `OwnerPolicy` class is one object.
+owner_policy_mod = _load("serveros_runtime_owner_policy", "owner_policy.py")
 # §21. The alert state machine. Loaded here for the same reason the control
 # store is: the daemon is what runs the tick, and the tick is what keeps the
 # register current. It is NOT loaded so the daemon can send anything — the
@@ -489,6 +494,10 @@ approval_mod = _load("serveros_runtime_approval", "approval.py")
 # the daemon contributes the two things only it has — the durable binding store
 # and a way to reach the Item authority.
 coordination_mod = _load("serveros_runtime_coordination", "coordination.py")
+# #245 / S2. The dispatch-attempt kernel, under the same synthetic name every
+# other loader uses, so the `AttemptRefused` caught here is the one raised there.
+dispatch_attempts_mod = _load("serveros_runtime_dispatch_attempts",
+                              "dispatch_attempts.py")
 # §M. Which session a conversation is addressing. Pure rules and the level
 # projection; the daemon contributes the durable selection store. Loaded here
 # rather than restated because the console's `selection_record` is what refuses
@@ -877,7 +886,10 @@ class Daemon:
 
     def __init__(self, registry, *, state_dir: Path, socket_path: Path | None = None,
                  host=None, inventory=None, enable_reconcile: bool = False,
-                 runner=None, now=None, sleep=None, log=None) -> None:
+                 runner=None, now=None, sleep=None, log=None,
+                 dispatch_observation_source=None,
+                 dispatch_grant_verifier=None,
+                 owner_policy_resolver=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
@@ -900,6 +912,35 @@ class Daemon:
         # a sleep that advance each other; the daemon passes neither.
         self._sleep = sleep or time.sleep
         self._log = log or (lambda message: None)
+
+        # #245 / S2. The two authorities a reconciliation needs are DAEMON-
+        # HELD, not request fields:
+        #
+        #   * the observation source is the provider read that can be asked by
+        #     the client turn id this node still holds after the response was
+        #     lost (`CLIENT_TURN_ID`); an adapter that can only be asked by the
+        #     id that arrived in the lost response is not usable;
+        #   * the grant verifier is the read that says the recorded grant is
+        #     still current (the future #272 `agent.lease.authority.verify`
+        #     adapter, once its parent is owner-approved).
+        #
+        # Production passes neither. `agent.dispatch.reconcile` then refuses
+        # `BLOCKED_PROVIDER_SOURCE` / `BLOCKED_GRANT_UNKNOWN`; it never falls
+        # back to a caller-supplied source, capability or owner, and it never
+        # marks an effect settled. A request cannot register or replace either
+        # object.
+        self._dispatch_observation_source = dispatch_observation_source
+        self._dispatch_grant_verifier = dispatch_grant_verifier
+        # #237 B3. The OWNER'S uid -> actor -> scope binding. This is the
+        # remaining fact serveros cannot derive: a kernel uid and a
+        # provider-signed human delegation do not, by themselves, say the owner
+        # authorized that uid to act as that actor for that project/Item/action.
+        # Production binds no resolver. Both `agent.grant.issue` and
+        # `agent.lease.authority.verify` then refuse `BLOCKED_OWNER_POLICY`;
+        # nothing here infers a policy from a uid or a context, and no grant is
+        # minted for an unknown user. A resolver is a READ of an owner-issued
+        # fact, never a second grant store.
+        self._owner_policy_resolver = owner_policy_resolver
 
         self.budget = Budget(self.state_dir / "health/reconcile-state.json", now=self._now)
         # Passed `runner`, not `host`: the actuator must not be reachable
@@ -1431,6 +1472,10 @@ class Daemon:
             "agent.context.inspect": self._r_agent_context_inspect,
             "agent.context.resolve": self._r_agent_context_resolve,
             "agent.grant.issue": self._r_agent_grant_issue,
+            # The trusted-parent verification READ that Work Engine #14's
+            # `OwnerVerifiedLease` needs. Read-only: it mints nothing, acquires
+            # nothing and mutates no lease. It is NOT a lease verb.
+            "agent.lease.authority.verify": self._r_agent_lease_authority_verify,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -1441,7 +1486,23 @@ class Daemon:
             "agent.binding.resolve": self._r_agent_binding_resolve,
             "agent.binding.list": self._r_agent_binding_list,
             "agent.binding.record": self._r_agent_binding_record,
+            "agent.binding.claim": self._r_agent_binding_claim,
             "agent.binding.close": self._r_agent_binding_close,
+            # #245 / S2. The durable dispatch attempt. `agent.dispatch.resolve`
+            # is the read the router's replay guard matches a retry against;
+            # `agent.dispatch.record` is the write — CALL_NOT_SENT before the
+            # send, SETTLED/EFFECT_UNKNOWN after — and it is the record that
+            # makes a crash BETWEEN those two distinguishable from one after.
+            "agent.dispatch.resolve": self._r_agent_dispatch_resolve,
+            "agent.dispatch.record": self._r_agent_dispatch_record,
+            # #245 / S2. The RECONCILIATION read/driver entry. It asks the
+            # daemon-held observation source what happened to an EFFECT_UNKNOWN
+            # attempt and records the answer in the SAME dispatch-attempt
+            # ledger. It is not a send path and cannot mark success: with no
+            # trusted source (the production state) it refuses
+            # BLOCKED_PROVIDER_SOURCE and leaves the attempt exactly where it
+            # was.
+            "agent.dispatch.reconcile": self._r_agent_dispatch_reconcile,
             # §M. Which session a conversation is addressing. Two methods and
             # not four: a selection has no close, because selecting another
             # session is what supersedes one, and a conversation that has
@@ -1570,6 +1631,8 @@ class Daemon:
                 "agent.context.attach", "agent.context.inspect",
                 "agent.context.resolve",
                 "agent.grant.issue",
+                # The trusted-parent grant verification READ (not a lease verb).
+                "agent.lease.authority.verify",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status",
                 # §17. `agent.binding.resolve` and `agent.binding.list` are
@@ -1579,7 +1642,15 @@ class Daemon:
                 # Agent runtime is not a source of a statement about its own
                 # purpose.
                 "agent.binding.resolve", "agent.binding.list",
-                "agent.binding.record", "agent.binding.close",
+                "agent.binding.record", "agent.binding.claim",
+                "agent.binding.close",
+                # #245 / S2. The durable dispatch attempt: `resolve` reads the
+                # record a retry is matched against, `record` writes it. On this
+                # socket (not the node MCP) for the same reason the bindings are:
+                # the record is the daemon's store, and the router that dispatches
+                # reaches it through here.
+                "agent.dispatch.resolve", "agent.dispatch.record",
+                "agent.dispatch.reconcile",
                 # §M. Both, and reachable from a conversation by way of the
                 # CLI. This is the one console operation no provider serves:
                 # no provider has an opinion about which session a person is
@@ -2922,11 +2993,182 @@ class Daemon:
         }
 
     def _r_agent_grant_issue(self, params) -> dict:
-        """Only a trusted provider's signed, exact human-approved scope can issue."""
+        """Only a trusted provider's signed, exact human-approved scope can issue.
+
+        This is the TRUSTED ISSUANCE BOUNDARY for the OS principal: the grant is
+        bound to `uid:<n>` derived from the kernel peer of THIS call
+        (`SO_PEERCRED`), which is the one identity in the exchange the caller
+        cannot write. The signed payload is not consulted for it — the store
+        refuses a payload that names one. A call that arrived with no peer is
+        stored UNBOUND, and the verify read then refuses it; nothing here
+        fills the field in from a request argument or from `getuid()`, because
+        that would be this process's principal standing in for the caller's.
+        """
         if set(params) != {"evidence"}:
             raise actor_mod.Rejected("agent.grant.issue accepts signed evidence only")
-        record = self.control_store().issue_grant(params["evidence"], now=_iso(self._now()))
-        return {"grant": record, "basis": "provider-signed-delegation"}
+        if self._owner_policy_resolver is None:
+            return {"issued": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "detail": ("no owner-issued uid->actor->scope policy "
+                               "resolver is bound to this daemon; a "
+                               "provider-signed delegation alone does not "
+                               "authorize a kernel uid, and no grant is minted")}
+        try:
+            record = self.control_store().issue_grant(
+                params["evidence"], now=_iso(self._now()),
+                os_principal=agent_control_store_mod.os_principal_of(
+                    _CALLER_PEER.get()),
+                owner_policy_resolver=self._owner_policy_resolver)
+        except agent_control_store_mod.StoreError as exc:
+            # A typed refusal, not an error envelope: the idempotent readback
+            # and the owner-policy checks must be readable as `issued: false`
+            # with the refusal word (e.g. POLICY_DENIED), never as a success.
+            text = str(exc)
+            code, _, detail = text.partition(":")
+            return {"issued": False,
+                    "reason": (code.strip() or "INVALID_CONTEXT"),
+                    "detail": detail.strip() or text}
+        except actor_mod.Rejected as exc:
+            return {"issued": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": str(exc)}
+        return {"issued": True, "grant": record,
+                "basis": "provider-signed-delegation"}
+
+    def _r_agent_lease_authority_verify(self, params) -> dict:
+        """May this caller act as this grant's principal, right now? (#237 B3)
+
+        The trusted-parent READ Work Engine #14's `OwnerVerifiedLease` needs, and
+        ONLY a read: it mints no grant, acquires no lease and mutates nothing.
+        The context is resolved from what ServerOS minted — never from an
+        `actor` / `os_user` field on the request — and the OS principal is the
+        kernel's `SO_PEERCRED` peer on this socket, never a string.
+
+        Refusals are answers (`{"verified": False, "reason": ...}`). An
+        unanswerable question is a refusal, not a default.
+
+        This is a MUTATION-ELIGIBILITY read: a consumer may use a positive
+        answer to write a lease. The owner gate is point-in-time, so without a
+        real owner-issued atomic policy/epoch commit fence a successful owner
+        check is still `BLOCKED_OWNER_COMMIT_SEAM` (`verified: false`), with
+        only a read-only point-in-time audit. Legacy #272 reads with no owner
+        resolver keep their previous behavior.
+        """
+        ref = str(params.get("context_ref") or "").strip()
+        if not ref:
+            return {"verified": False, "reason": "UNTRUSTED_ACTOR",
+                    "because": ("no context_ref was presented. The actor behind a "
+                                "grant is resolved from a context ServerOS minted, "
+                                "and a caller's word is not one")}
+        store = self.control_store()
+        resolved = actor_mod.resolve(ref, store.contexts())
+        if not resolved["found"]:
+            return {"verified": False, "reason": "UNTRUSTED_ACTOR",
+                    "because": resolved["because"]}
+        now_iso = _iso(self._now())
+        peer = _CALLER_PEER.get()
+        result = agent_control_store_mod.verify_live_grant(
+            store.grants(),
+            grant_ref=params.get("grant_ref"),
+            context=resolved["context"],
+            peer=peer,
+            action=params.get("action"),
+            project=params.get("project"),
+            item_ref=params.get("item_ref"),
+            expected_epoch=params.get("expected_epoch"),
+            now=now_iso)
+        if not result.get("verified"):
+            # Preserve the #272 refusal word: the grant's own epoch, window,
+            # os_principal, revocation and scope are checked there first.
+            return result
+        # The owner's uid -> actor -> scope binding. A grant with no binding,
+        # or a daemon with no owner resolver, is BLOCKED_OWNER_POLICY: the
+        # owner-to-uid relation is UNKNOWN and authorizes nothing. A resolver
+        # is a read of the owner's fact; it never mints a grant.
+        grant = store.get_grant(str(params.get("grant_ref") or "").strip()) or {}
+        resolver = self._owner_policy_resolver
+        if resolver is None:
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": ("no owner-issued uid->actor->scope policy "
+                                "resolver is bound to this daemon; the grant "
+                                "cannot be tied to this kernel uid")}
+        policy_ref = str(grant.get("owner_policy_ref") or "").strip()
+        if not policy_ref:
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": ("the grant carries no owner-policy binding; "
+                                "an unbound uid->actor mapping is UNKNOWN and "
+                                "authorizes nothing")}
+        try:
+            policy = resolver.resolve(
+                policy_ref=policy_ref, grant=grant,
+                context=resolved["context"], peer=peer,
+                project=params.get("project"), item_ref=params.get("item_ref"),
+                action=params.get("action"), now=now_iso)
+        except Exception as exc:  # noqa: BLE001 - a resolver failure is a refusal
+            return {"verified": False, "reason": "BLOCKED_OWNER_POLICY",
+                    "because": (f"the owner-policy resolver did not answer "
+                                f"({type(exc).__name__})")}
+        refusal = owner_policy_mod.check_policy_binding(
+            grant=grant, context=resolved["context"], peer=peer,
+            project=params.get("project"), item_ref=params.get("item_ref"),
+            action=params.get("action"), now=now_iso, policy=policy)
+        if refusal is not None:
+            return refusal
+        # TOCTOU. The grant was read before `resolver.resolve`, and the
+        # resolver is a read of another authority: a concurrent
+        # `revoke_grant` during it would be invisible to the snapshot above.
+        # Re-read the SAME Agent Control ledger and re-run the #272 checks,
+        # then re-resolve the owner policy and require an equal snapshot.
+        # This closes the observed revoke-during-resolve race; it is still a
+        # point-in-time answer, not an atomic commit (see `atomicity` below),
+        # and the Work Engine commit boundary must re-verify.
+        second = agent_control_store_mod.verify_live_grant(
+            store.grants(), grant_ref=params.get("grant_ref"),
+            context=resolved["context"], peer=peer,
+            action=params.get("action"), project=params.get("project"),
+            item_ref=params.get("item_ref"),
+            expected_epoch=params.get("expected_epoch"), now=now_iso)
+        if not second.get("verified"):
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": ("the grant changed or was revoked between the "
+                                "first read and the owner-policy check; the "
+                                "earlier verdict is not a current snapshot"),
+                    "point_in_time": False}
+        try:
+            policy_again = resolver.resolve(
+                policy_ref=policy_ref, grant=store.get_grant(
+                    str(params.get("grant_ref") or "").strip()) or {},
+                context=resolved["context"], peer=peer,
+                project=params.get("project"), item_ref=params.get("item_ref"),
+                action=params.get("action"), now=now_iso)
+        except Exception as exc:  # noqa: BLE001 - a failed re-read is a refusal
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": (f"the owner policy re-read failed "
+                                f"({type(exc).__name__}); no positive verdict "
+                                f"is issued"),
+                    "point_in_time": False}
+        if policy_again != policy:
+            return {"verified": False, "reason": "BLOCKED_ATOMICITY",
+                    "because": ("the owner policy changed (epoch, revocation "
+                                "or window) during verification; the first "
+                                "snapshot is stale"),
+                    "point_in_time": False}
+        # The owner answer authorizes NOTHING by itself. It is a point-in-time
+        # read, and the only consumer that can turn it into a write
+        # (`OwnerVerifiedLease.acquire`) does so after this reply. Without an
+        # owner-issued atomic policy/epoch commit fence there is no way for
+        # this route to know the owner is still current at that write. A
+        # `verified: true` here would be consumed as a write grant, so the
+        # mutation-eligibility answer is a refusal; the point-in-time audit is
+        # informational only and carries no grant.
+        return {"verified": False,
+                "reason": "BLOCKED_OWNER_COMMIT_SEAM",
+                "because": ("no owner-issued atomic policy/epoch commit fence "
+                            "exists for the lease write. The owner checks "
+                            "passed at this instant, but a revocation after "
+                            "this read is invisible to the mutating consumer, "
+                            "so a point-in-time read cannot authorize a "
+                            "lease"),
+                "point_in_time": True,
+                "owner_policy": owner_policy_mod.audit(policy_again)}
 
     def _r_agent_context_inspect(self, params) -> dict:
         """What ServerOS recorded for a presented ref, aged now.
@@ -3035,6 +3277,28 @@ class Daemon:
             item["observed_at"] = _iso(self._now())
         return {"found": True, "session_ref": ref, "binding": record,
                 "item": item,
+                # #237 B1. The CURRENT WRITER of this thread's write scope, the
+                # consumer half of the v2 writer-binding. Derived by the kernel's
+                # ONE derivation function from this store's OWN binding records —
+                # no second store, no copied authority. `None` means no thread
+                # claims the scope: a reading, not a failure. The gate refuses a
+                # thread that CLAIMS a superseded writer, and refuses a thread
+                # that claims nothing while the scope is owned by another; an
+                # unowned scope is left ungated so pre-existing threads keep
+                # working.
+                # The WORK ENGINE LEASE for this thread's Item, read from the
+                # `leases` table the writer (work-engine #13) writes. This is the
+                # authority the send admission checks the claim against (#237 B3
+                # / QA Snapshot E): an expired, revoked or absent lease is `None`
+                # and authorizes nothing. `current_writer` below is the
+                # binding-store derivation, kept for callers that read it, but it
+                # is not the authority — a claim is something a caller can write.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)},
+                "current_writer": (coordination_mod.current_writer(
+                    store.bindings(), bound) if bound else None),
                 "item_axis": coordination_mod.item_axis(
                     (item or {}).get("state"), outcome=(item or {}).get("outcome")),
                 "provenance": {
@@ -3056,25 +3320,234 @@ class Daemon:
         The record is built here rather than accepted. `put_binding` refuses a
         second, different record for a session, so a caller cannot use this to
         change which Item a thread is for; it can only create one.
+
+        #237 B1. This is also the PRODUCER of the write-scope claim: an
+        execution binding records which thread owns its Item's write scope, so
+        that the admission gate fires on the real path and not only in tests.
+        `_writer_claim` states the three rules it applies.
         """
         ref = _required(params, "session_ref")
+        store = self.control_store()
         try:
             record = coordination_mod.binding(
                 session_role=params.get("session_role"),
                 bound_item_ref=params.get("bound_item_ref"),
                 work_item=params.get("work_item"),
                 device_ref=params.get("device_ref"),
-                recorded_at=_iso(self._now()))
+                recorded_at=_iso(self._now()),
+                writer=self._writer_claim(store, ref, params))
         except coordination_mod.ThreadRefused as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": exc.reason, "detail": exc.detail}
         record["session_ref"] = ref
         try:
-            stored = self.control_store().put_binding(record)
+            stored = store.put_binding(record)
         except agent_control_store_mod.StoreError as exc:
             return {"recorded": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
-        return {"recorded": True, "session_ref": ref, "binding": stored}
+        bound = str((stored or {}).get("bound_item_ref") or "") or None
+        return {"recorded": True, "session_ref": ref, "binding": stored,
+                # QA Snapshot G. The caller learns at CREATE time whether this
+                # thread can send at all. The send admission reads the same
+                # authority, so a create that reports no lease is a thread that
+                # will refuse every write — said here rather than discovered on
+                # the first `session.send`. The acquisition itself is
+                # BLOCKED_PRODUCER_BOUNDARY: nothing in this product can call
+                # work-engine's `acquire_lease` yet.
+                "write_authority": {
+                    "source": "work-engine:leases",
+                    "lease": (resolver_mod.live_lease(self._item_roots(), bound)
+                              if bound else None)}}
+
+    def _writer_claim(self, store, ref, params):
+        """The write-scope claim to record with this binding, or None.
+
+        THE PRODUCER HALF of the v2 writer-binding (#237 B1), and since QA
+        Snapshot E it mints from the WORK ENGINE LEASE — the same `leases` row
+        `workengine/store.py#acquire_lease` writes — so the binding and the send
+        admission name ONE authority instead of two that can disagree.
+
+          * an EXPLICIT claim in `params["writer"]` is REFUSED. This RPC carries
+            no trusted actor, and a caller-chosen owner/token is exactly the
+            spoof E4 recorded: `agent.binding.record` accepted
+            `writer={owner: agent:EVIL, token: 999}` with nothing behind it.
+          * a RE-RECORD of the same session reuses the claim already stored, so
+            `put_binding`'s idempotency holds.
+          * a NEW session claims the scope ONLY when the Work Engine holds a live
+            lease for that Item and no thread claims it yet. No lease ⇒ no claim,
+            and admission will refuse the send — a scope nobody acquired
+            authorizes nobody.
+        """
+        if params.get("writer") is not None:
+            raise coordination_mod.ThreadRefused(
+                "UNTRUSTED_ACTOR",
+                "agent.binding.record does not accept a caller-supplied writer. "
+                "The write scope's owner is the Work Engine lease; a writer this "
+                "RPC was told to record would be a claim with no authority "
+                "behind it")
+        if str(params.get("session_role") or "") != "execution":
+            return None
+        item = str(params.get("bound_item_ref") or "").strip()
+        if not item:
+            return None
+        existing = store.get_binding(ref)
+        if existing is not None:
+            return dict(existing.get("writer") or {}) or None
+        bindings = store.bindings()
+        if coordination_mod.scope_has_writer(bindings, item):
+            return None
+        lease = resolver_mod.live_lease(self._item_roots(), item)
+        if lease is None:
+            return None
+        claim = coordination_mod.mint_writer(bindings, item, owner=lease["owner"])
+        # The token is the LEASE's fence, not a second counter's. A binding that
+        # minted its own token could never agree with the lease it is checked
+        # against.
+        claim["token"] = str(lease["token"])
+        return claim
+
+    def _trusted_actor_for_mutation(self, context_ref, store):
+        """The STRONG admission verdict for a protected binding mutation.
+
+        `validate` + `freshness == FRESH` is not enough: a fresh context with
+        `provider_status != VERIFIED` or `provenance != FACT` passes both, and
+        `actor.build` can mint exactly that. `authorizes` is the project's
+        admission answer — FRESH **and** provenance FACT **and** provider
+        VERIFIED — and it is the only verdict these mutation routes may use.
+        """
+        ref = str(context_ref or "").strip()
+        if not ref:
+            return None, ("UNTRUSTED_ACTOR",
+                          "a protected mutation needs a trusted context_ref")
+        resolved = actor_mod.resolve(ref, store.contexts())
+        if not resolved["found"]:
+            return None, ("UNTRUSTED_ACTOR", resolved["because"])
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return None, ("UNTRUSTED_ACTOR", str(exc))
+        verdict = actor_mod.authorizes(trusted, _iso(self._now()))
+        if not verdict.get("authorizes"):
+            return None, (
+                "UNTRUSTED_ACTOR",
+                (f"the presented context does not authorize a mutation: "
+                 f"{verdict.get('because')}"))
+        return trusted, None
+
+    def _r_agent_binding_claim(self, params) -> dict:
+        """Mint the handoff target's writer claim from the LIVE Work lease.
+
+        #237 T1 / #310 F2. A handoff target that is already bound must become
+        the current writer BEFORE its resume/send is admitted: admission fences
+        a no-claim thread on an owned scope. This route is the trusted half: the
+        caller presents a context_ref and the source ref; the daemon resolves
+        the actor, checks the source is the current writer and the target is an
+        open binding for the same Item, and mints the claim from the LIVE Work
+        Engine lease. The claim's owner/token are the lease's, not a second
+        counter's, and never a caller's string.
+
+        If the lease has not moved (same owner and token as the source claim),
+        there is no new authority to give the target: NOT_CURRENT_WRITER. If
+        there is no live lease at all, the same refusal. The source binding is
+        not closed here; the handoff closes it only after the target is current.
+        """
+        ref = _required(params, "session_ref")
+        from_ref = str(params.get("from_ref") or "").strip()
+        if not from_ref:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("a claim transfer names the source thread it takes "
+                               "over from; none was presented")}
+        store = self.control_store()
+        trusted, refusal = self._trusted_actor_for_mutation(
+            params.get("context_ref"), store)
+        if refusal is not None:
+            reason, detail = refusal
+            return {"claimed": False, "session_ref": ref,
+                    "reason": reason, "detail": detail}
+        actor = trusted["actor_ref"]
+
+        source = store.get_binding(from_ref)
+        target = store.get_binding(ref)
+        if source is None or target is None:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("both the source and the target must have recorded "
+                               "bindings; a session with none is not a writer")}
+        if (str(source.get("state") or "").upper() == "CLOSED"
+                or str(target.get("state") or "").upper() == "CLOSED"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": "a claim transfer needs two open bindings"}
+        item = str(source.get("bound_item_ref") or "")
+        if not item or str(target.get("bound_item_ref") or "") != item:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "THREAD_ITEM_MISMATCH",
+                    "detail": ("the target is not bound to the source's Item; "
+                               "write authority cannot cross an Item boundary")}
+        if target.get("writer"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT",
+                    "detail": ("the target already records a writer; a claim "
+                               "cannot overwrite an existing claim")}
+        source_writer = source.get("writer")
+        if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the source records no writer claim, so there is "
+                               "no write authority to take over")}
+        current = coordination_mod.current_writer(store.bindings(), item)
+        same_source = (isinstance(current, dict)
+                       and str(current.get("owner")) == str(source_writer.get("owner"))
+                       and str(current.get("epoch")) == str(source_writer.get("epoch"))
+                       and str(current.get("token")) == str(source_writer.get("token")))
+        if not same_source:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"the source is not the current writer of "
+                               f"{item!r}; a handoff claim must take over the "
+                               f"scope the source actually holds")}
+        lease = resolver_mod.live_lease(self._item_roots(), item)
+        if lease is None:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"no live Work lease is recorded for {item!r}; a "
+                               f"handoff cannot mint a writer claim without an "
+                               f"active grant")}
+        if str(lease.get("token")) == str(source_writer.get("token")):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": (f"the Work lease token for {item!r} did not move "
+                               f"(still {lease.get('token')!r}); a handoff cannot "
+                               f"mint a second claim at the same fence token. The "
+                               f"owner must transfer the lease first")}
+        writer = {"owner": str(lease["owner"]),
+                  "epoch": int(source_writer.get("epoch") or 1),
+                  "token": str(lease["token"])}
+        now_iso = _iso(self._now())
+        try:
+            updated = store.claim_writer(
+                ref, writer=writer, schema=coordination_mod.SCHEMA_WRITER,
+                at=now_iso)
+        except agent_control_store_mod.StoreError as exc:
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "INVALID_CONTEXT", "detail": str(exc)}
+        current_after = coordination_mod.current_writer(store.bindings(), item)
+        if (not isinstance(current_after, dict)
+                or str(current_after.get("owner")) != str(writer["owner"])
+                or str(current_after.get("epoch")) != str(writer["epoch"])
+                or str(current_after.get("token")) != str(writer["token"])):
+            return {"claimed": False, "session_ref": ref,
+                    "reason": "NOT_CURRENT_WRITER",
+                    "detail": ("the claim was written but the target is not the "
+                               "current writer; write authority did not move"),
+                    "binding": updated, "current_writer": current_after}
+        return {"claimed": True, "session_ref": ref, "from_ref": from_ref,
+                "binding": updated, "current_writer": current_after,
+                "writer": writer, "actor": actor,
+                "because": ("the target is now the current writer, minted from "
+                            "the live Work lease")}
 
     def _r_agent_binding_close(self, params) -> dict:
         """Close a thread for new work. Never a deletion, and never a rebind.
@@ -3084,15 +3557,491 @@ class Daemon:
         thread to be about a different Item is told to start one; there is no
         parameter here for a new `bound_item_ref`, and adding one would be the
         rebind that `put_binding` exists to refuse.
+
+        A handoff may also TRANSFER the closed thread's write scope to an
+        established successor (`successor_ref`). That is a protected write: it
+        requires a trusted, fresh `context_ref`, the source must be the current
+        writer, and the target must be an open binding for the SAME Item with no
+        claim of its own. The successor's writer is minted HERE, by the kernel's
+        one `mint_writer`, and never accepted from the caller. The close and the
+        successor's claim are written in one store mutation, so the scope is
+        never left with zero authorized writers.
         """
         ref = _required(params, "session_ref")
+        successor_ref = str(params.get("successor_ref") or "").strip()
+        store = self.control_store()
+        successor = None
+        actor = None
+        source_item = None
+        source_claim_expired = None
+        target_current = False
+
+        if successor_ref:
+            trusted, refusal = self._trusted_actor_for_mutation(
+                params.get("context_ref"), store)
+            if refusal is not None:
+                reason, detail = refusal
+                return {"closed": False, "session_ref": ref,
+                        "reason": reason, "detail": detail}
+            actor = trusted["actor_ref"]
+
+            source = store.get_binding(ref)
+            target = store.get_binding(successor_ref)
+            if source is None or target is None:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "INVALID_CONTEXT",
+                        "detail": ("both the source and the successor must have "
+                                   "recorded bindings; a session with none is not "
+                                   "a writer")}
+            if (str(source.get("state") or "").upper() == "CLOSED"
+                    or str(target.get("state") or "").upper() == "CLOSED"):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "INVALID_CONTEXT",
+                        "detail": ("a write-authority transfer needs two OPEN "
+                                   "bindings; a closed thread takes no new work")}
+            source_item = str(source.get("bound_item_ref") or "")
+            if (not source_item
+                    or str(target.get("bound_item_ref") or "") != source_item):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "THREAD_ITEM_MISMATCH",
+                        "detail": (f"the successor is not bound to the source's "
+                                   f"Item {source_item!r}; write authority cannot "
+                                   f"cross an Item boundary")}
+            source_writer = source.get("writer")
+            if not isinstance(source_writer, dict) or not source_writer.get("owner"):
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": ("the source records no writer claim, so there "
+                                   "is no write authority to transfer")}
+            current = coordination_mod.current_writer(store.bindings(), source_item)
+            target_writer = target.get("writer")
+            source_current = (isinstance(current, dict)
+                              and str(current.get("owner")) == str(source_writer.get("owner"))
+                              and str(current.get("epoch")) == str(source_writer.get("epoch"))
+                              and str(current.get("token")) == str(source_writer.get("token")))
+            target_current = (isinstance(target_writer, dict)
+                              and isinstance(current, dict)
+                              and str(current.get("owner")) == str(target_writer.get("owner"))
+                              and str(current.get("epoch")) == str(target_writer.get("epoch"))
+                              and str(current.get("token")) == str(target_writer.get("token")))
+            now_iso = _iso(self._now())
+            expires = source_writer.get("expires_at")
+            if not expires:
+                source_claim_expired = False
+            else:
+                # The claim's expiry and the daemon clock are compared as
+                # aware instants, not as ISO text: `12:00+08:00` is 04:00Z, and
+                # a string comparison would call it later than `06:00+00:00`.
+                now_instant = _instant(now_iso)
+                expires_instant = _instant(expires)
+                source_claim_expired = (
+                    None if now_instant is None or expires_instant is None
+                    else expires_instant <= now_instant)
+            successor = None
+            expected_writer = None
+            if target_current:
+                # The handoff's claim route already minted the target from the
+                # live Work lease. The close only closes the source; re-minting
+                # here would be a second claim from the same transfer. The
+                # target's claim must still be backed by the live lease.
+                lease = resolver_mod.live_lease(self._item_roots(), source_item)
+                if (lease is None
+                        or str(lease.get("owner")) != str(target_writer.get("owner"))
+                        or str(lease.get("token")) != str(target_writer.get("token"))):
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"the target's claim is not backed by the "
+                                       f"live Work lease for {source_item!r}; a "
+                                       f"handoff does not transfer a scope whose "
+                                       f"grant is not active")}
+                expected_writer = dict(target_writer)
+            elif source_current:
+                lease = resolver_mod.live_lease(self._item_roots(), source_item)
+                if lease is None:
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"no live Work lease is recorded for "
+                                       f"{source_item!r}; a handoff cannot mint a "
+                                       f"successor claim without an active grant")}
+                if str(lease.get("token")) == str(source_writer.get("token")):
+                    return {"closed": False, "session_ref": ref,
+                            "reason": "NOT_CURRENT_WRITER",
+                            "detail": (f"the Work lease token for {source_item!r} "
+                                       f"did not move (still "
+                                       f"{lease.get('token')!r}); a handoff cannot "
+                                       f"mint a successor claim at the same fence "
+                                       f"token. The owner must transfer the lease "
+                                       f"first")}
+                writer = {"owner": str(lease["owner"]),
+                          "epoch": int(source_writer.get("epoch") or 1),
+                          "token": str(lease["token"])}
+                successor = dict(target)
+                successor["schema"] = coordination_mod.SCHEMA_WRITER
+                successor["writer"] = writer
+                successor["writer_recorded_at"] = now_iso
+                expected_writer = dict(writer)
+            else:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": (f"neither the source nor the target is the "
+                                   f"current writer of {source_item!r}; a handoff "
+                                   f"cannot transfer a scope it does not hold")}
+
         try:
-            closed = self.control_store().close_binding(
-                ref, at=_iso(self._now()), reason=params.get("reason"))
+            closed = store.close_binding(
+                ref, at=_iso(self._now()), reason=params.get("reason"),
+                successor=successor, actor=actor)
         except agent_control_store_mod.StoreError as exc:
             return {"closed": False, "session_ref": ref,
                     "reason": "INVALID_CONTEXT", "detail": str(exc)}
-        return {"closed": True, "session_ref": ref, "binding": closed}
+
+        current_after = (coordination_mod.current_writer(
+            store.bindings(), source_item) if successor_ref else None)
+        if successor_ref:
+            transferred = (isinstance(current_after, dict)
+                           and isinstance(expected_writer, dict)
+                           and str(current_after.get("owner")) == str(expected_writer.get("owner"))
+                           and str(current_after.get("epoch")) == str(expected_writer.get("epoch"))
+                           and str(current_after.get("token")) == str(expected_writer.get("token")))
+            if not transferred:
+                return {"closed": False, "session_ref": ref,
+                        "reason": "NOT_CURRENT_WRITER",
+                        "detail": ("the source was closed but the successor is not "
+                                   "the current writer; write authority did not "
+                                   "transfer"),
+                        "binding": closed, "current_writer": current_after}
+        successor_record = (closed.get("successor")
+                            if isinstance(closed, dict) else None)
+        if successor_record is None and target_current:
+            successor_record = target
+        return {"closed": True, "session_ref": ref, "binding": closed,
+                "successor": successor_record,
+                "current_writer": current_after,
+                "source_claim_expired": source_claim_expired}
+
+    def _r_agent_dispatch_resolve(self, params) -> dict:
+        """The recorded dispatch attempt for a key, or None (#245).
+
+        The READ half of the durable attempt. A retry is matched against this
+        record, so it must be the one the write half put there — one store,
+        `agent_control_store.py#dispatch_attempts`, reached by both.
+
+        NOT found is an answer and not an error: it means nothing was ever
+        dispatched under this key, which is what a FIRST dispatch looks like.
+        """
+        key = _required(params, "key")
+        attempt = self.control_store().get_dispatch_attempt(key)
+        return {"found": attempt is not None, "key": key, "attempt": attempt}
+
+    def _r_agent_dispatch_record(self, params) -> dict:
+        """Record one dispatch attempt (#245). The one write path for it.
+
+        Validated HERE as well as at the router, for the reason
+        `_r_agent_binding_record` states about its own shape: this is a write
+        point, and a write point that trusts its caller is one that will
+        eventually be handed a shape assembled somewhere else. The record is
+        rebuilt by `dispatch_attempts.attempt_record`, so a phase nobody
+        declared is refused here rather than stored as a word.
+
+        IDENTITY IS RESOLVED, NEVER ASSERTED (independent-QA P0-2). The caller
+        presents a `context_ref`; this method resolves it against what ServerOS
+        actually minted, requires it to be FRESH, and takes the principal from
+        THAT record. A record that claims a different principal is refused rather
+        than quietly overwritten — a forged principal is worth saying out loud.
+        With no resolvable, fresh context the write is refused as
+        `UNTRUSTED_ACTOR`: an unattributed phase is exactly the self-asserted
+        `SETTLED` the QA found.
+
+        TRANSITIONS. Only `DISPATCH_SIDE_PHASES` may be written here —
+        `SUPERSEDED` is a policy decision, not a dispatch outcome. A `SETTLED`
+        must carry the provider's answer (a settle with nothing attached is not a
+        settle) and must MOVE an existing `CALL_NOT_SENT`/`EFFECT_UNKNOWN`
+        attempt; nothing is settled that was never dispatched.
+        """
+        context_ref = str(params.get("context_ref") or "").strip()
+        if not context_ref:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": ("a dispatch attempt is written against the trusted "
+                               "context_ref of the call that dispatched it; none "
+                               "was presented, so nobody can be attributed")}
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": resolved["because"]}
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": str(exc)}
+        freshness = actor_mod.freshness(trusted, _iso(self._now()))
+        if freshness.get("state") != "FRESH":
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the presented context is {freshness.get('state')!r}, "
+                               f"which authorizes nothing: {freshness.get('because')}")}
+        principal = trusted["actor_ref"]
+
+        incoming = params.get("attempt")
+        if not isinstance(incoming, dict):
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": ("a dispatch attempt is a record; there is nothing "
+                               "here to store")}
+        claimed = str(incoming.get("principal") or "").strip()
+        if claimed and claimed != principal:
+            return {"recorded": False, "reason": "UNTRUSTED_ACTOR",
+                    "detail": (f"the record claims principal {claimed!r} and the "
+                               f"trusted context is {principal!r}. A principal is "
+                               f"taken from the resolved context, never from the "
+                               f"payload")}
+        try:
+            record = dispatch_attempts_mod.attempt_record(
+                key=incoming.get("key"), action=incoming.get("action"),
+                device_ref=incoming.get("device_ref"), verb=incoming.get("verb"),
+                intent_digest=incoming.get("intent_digest"),
+                phase=incoming.get("phase"), work_item=incoming.get("work_item"),
+                # The resolved actor, not the payload's string.
+                principal=principal,
+                runtime=incoming.get("runtime"),
+                session_ref=incoming.get("session_ref"),
+                grant_ref=incoming.get("grant_ref"),
+                provider_locator=incoming.get("provider_locator"),
+                result=incoming.get("result"), at=incoming.get("recorded_at"))
+        except dispatch_attempts_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+
+        phase = record["phase"]
+        if phase not in dispatch_attempts_mod.DISPATCH_SIDE_PHASES:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": (f"{phase!r} is not a phase the dispatch side writes. "
+                               f"A supersede is a policy decision about a newer "
+                               f"attempt, not an outcome of this one")}
+        store = self.control_store()
+        if phase == dispatch_attempts_mod.SETTLED:
+            if incoming.get("result") is None:
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a SETTLED must carry the provider's answer. A "
+                                   "settle with nothing attached is not a settle; it "
+                                   "is a caller asserting success")}
+            existing = store.get_dispatch_attempt(record["key"])
+            if (existing is None or existing.get("phase") not in
+                    (dispatch_attempts_mod.CALL_NOT_SENT,
+                     dispatch_attempts_mod.EFFECT_UNKNOWN)):
+                return {"recorded": False, "reason": "INVALID_CONTEXT",
+                        "detail": ("a dispatch-side settle must move an existing "
+                                   "CALL_NOT_SENT or EFFECT_UNKNOWN attempt; "
+                                   "nothing was dispatched under this key")}
+        try:
+            # `actor` is what makes the store's identity check real: it compares
+            # the resolved principal with the one recorded when the attempt was
+            # first dispatched, so a different trusted actor cannot mutate it
+            # even with the digest (QA D3). The transition table is checked in
+            # the same mutation, so a terminal SETTLED cannot be reopened (D4).
+            stored = store.put_dispatch_attempt(record, actor=principal)
+        except agent_control_store_mod.AttemptRefused as exc:
+            return {"recorded": False, "reason": exc.reason_code,
+                    "detail": exc.detail}
+        except agent_control_store_mod.StoreError as exc:
+            return {"recorded": False, "reason": "INVALID_CONTEXT",
+                    "detail": str(exc)}
+        return {"recorded": True, "key": stored["key"], "attempt": stored}
+
+    @staticmethod
+    def _dispatch_answer(key: str, result: dict) -> dict:
+        """The Core caller's answer, with no success boolean and no send claim."""
+        return {
+            "key": str(result.get("key") or key),
+            "status": result.get("status"),
+            "phase": result.get("phase"),
+            "attempt": result.get("attempt"),
+            "observation": result.get("observation"),
+            "source_called": bool(result.get("source_called")),
+            "source_capability": result.get("source_capability"),
+            "because": result.get("because"),
+            "dispatching": False,
+        }
+
+    @staticmethod
+    def _dispatch_refusal(key: str, reason: str, attempt, detail: str) -> dict:
+        return {
+            "key": key,
+            "status": reason,
+            "phase": (attempt or {}).get("phase"),
+            "attempt": attempt,
+            "observation": None,
+            "source_called": False,
+            "source_capability": None,
+            "because": detail,
+            "dispatching": False,
+        }
+
+    def _r_agent_dispatch_reconcile(self, params) -> dict:
+        """Ask the owner what happened to an EFFECT_UNKNOWN attempt (#245 / S2).
+
+        READ, plus at most ONE write to the SAME `dispatch_attempts` ledger
+        `agent.dispatch.record` writes. It never dispatches, never retries and
+        never marks success: the Core caller can only turn an EFFECT_UNKNOWN
+        into SETTLED / CALL_NOT_SENT, or leave it exactly where it was.
+
+        AUTHORITY IS RESOLVED, NEVER ASSERTED. The request carries only a
+        `context_ref` and a `key`. The principal comes from the resolved, FRESH
+        context; the writer comes from the attempt's own session binding; the
+        observation source and the grant verifier are daemon-held objects. A
+        request that sends `principal`, `writer`, `source`, `capability`,
+        `observation`, `grant_ref`, `phase` or `result` is refused rather than
+        silently ignored, so a caller cannot believe it supplied an authority.
+
+        PROVIDER CAPABILITY IS THE PRODUCTION ANSWER. R1 #308 and the #299
+        capability table measure both current adapters as `RESPONSE_ID_ONLY`
+        after a lost send response: BotMux needs the `trigger_id` that arrived
+        in the lost response, and the Codex app-server read filters by the
+        `turn.id` that arrived in it. With no `CLIENT_TURN_ID` source bound,
+        this route refuses `BLOCKED_PROVIDER_SOURCE` and the attempt stays
+        EFFECT_UNKNOWN. That is a gate, not a missing feature.
+        """
+        for forbidden in ("principal", "writer", "current_writer", "source",
+                          "source_capability", "capability", "observation",
+                          "reconciler", "verifier", "grant", "grant_ref",
+                          "grant_verifier", "attempt", "phase", "result",
+                          "success"):
+            if forbidden in params:
+                return self._dispatch_refusal(
+                    str(params.get("key") or ""), "INVALID_CONTEXT", None,
+                    (f"{forbidden!r} is not an input to this call. The principal "
+                     f"is resolved from the trusted context, the writer from the "
+                     f"attempt's own binding, and the observation source and "
+                     f"grant verifier from the daemon's own registration"))
+
+        context_ref = str(params.get("context_ref") or "").strip()
+        if not context_ref:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                ("a reconciliation is attributed to a trusted context_ref; none "
+                 "was presented, so nobody can be shown to be the actor"))
+        resolved = actor_mod.resolve(context_ref, self.control_store().contexts())
+        if not resolved["found"]:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                resolved["because"])
+        trusted = resolved["context"]
+        try:
+            actor_mod.validate(trusted)
+        except actor_mod.Rejected as exc:
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None, str(exc))
+        freshness = actor_mod.freshness(trusted, _iso(self._now()))
+        if freshness.get("state") != "FRESH":
+            return self._dispatch_refusal(
+                str(params.get("key") or ""), "UNTRUSTED_ACTOR", None,
+                (f"the presented context is {freshness.get('state')!r}, which "
+                 f"authorizes nothing: {freshness.get('because')}"))
+        principal = trusted["actor_ref"]
+
+        key = str(params.get("key") or "").strip()
+        if not key:
+            return self._dispatch_refusal(
+                key, "INVALID_CONTEXT", None,
+                ("no key was presented; a reconciliation is about a recorded "
+                 "dispatch attempt"))
+        store = self.control_store()
+        attempt = store.get_dispatch_attempt(key)
+        if attempt is None:
+            return self._dispatch_refusal(
+                key, "NO_ATTEMPT", None,
+                ("no attempt is recorded under this key, so there is no unknown "
+                 "outcome to reconcile"))
+
+        recorded_principal = str(attempt.get("principal") or "").strip()
+        if recorded_principal != principal:
+            return self._dispatch_refusal(
+                key, "REFUSE_PRINCIPAL", attempt,
+                (f"this attempt was dispatched by {recorded_principal!r} and the "
+                 f"trusted context is {principal!r}. An observation from a "
+                 f"different principal is not evidence about this effect"))
+
+        # A terminal/in-flight attempt already has its answer. Do not read a
+        # grant or ask a source for it: a late reply must not overwrite it, and
+        # there is nothing here to authorize. This mirrors the driver's own
+        # phase gate and keeps the refusal from depending on a grant it does
+        # not need.
+        phase = str(attempt.get("phase") or "").strip().upper()
+        if phase != dispatch_attempts_mod.EFFECT_UNKNOWN:
+            return self._dispatch_refusal(
+                key, "NOT_UNKNOWN", attempt,
+                (f"this attempt is {phase or 'unphased'}, not EFFECT_UNKNOWN. "
+                 f"A late reply does not overwrite an attempt that already has "
+                 f"its own answer"))
+
+        grant_ref = str(attempt.get("grant_ref") or "").strip()
+        if grant_ref:
+            verifier = self._dispatch_grant_verifier
+            if verifier is None:
+                return self._dispatch_refusal(
+                    key, "BLOCKED_GRANT_UNKNOWN", attempt,
+                    (f"the attempt names grant {grant_ref!r} but no trusted grant "
+                     f"verifier is bound to this daemon, so its current epoch and "
+                     f"revocation cannot be proved"))
+            try:
+                # Copies: a verifier may read the record and the context, but
+                # it must not be able to mutate the in-memory store through
+                # them. The authoritative write is the store's, under its lock.
+                verdict = verifier(dict(attempt), context=dict(trusted),
+                                   now=_iso(self._now()))
+            except Exception as exc:
+                return self._dispatch_refusal(
+                    key, "BLOCKED_GRANT_UNKNOWN", attempt,
+                    (f"the grant verifier did not answer "
+                     f"({type(exc).__name__}); an unproved grant authorizes "
+                     f"nothing"))
+            if not isinstance(verdict, dict) or verdict.get("verified") is not True:
+                reason = (str(verdict.get("reason") or "BLOCKED_GRANT_UNKNOWN")
+                          if isinstance(verdict, dict) else "BLOCKED_GRANT_UNKNOWN")
+                because = (str(verdict.get("because") or "")
+                           if isinstance(verdict, dict) else "")
+                return self._dispatch_refusal(
+                    key, reason, attempt,
+                    because or (f"the grant verifier refused {grant_ref!r}"))
+
+        # The writer is the claim recorded on THIS attempt's session binding,
+        # never a request field. `current_writer` is the kernel's one
+        # derivation from the same binding store the admission gate reads.
+        writer = None
+        session_ref = str(attempt.get("session_ref") or "").strip()
+        if session_ref:
+            binding = store.get_binding(session_ref)
+            claimed = (binding or {}).get("writer")
+            writer = dict(claimed) if isinstance(claimed, dict) else None
+        work_item = str(attempt.get("work_item") or "").strip()
+        current_writer = (coordination_mod.current_writer(
+            store.bindings(), work_item) if work_item else None)
+
+        # The provider-specific part is the observation source OBJECT injected
+        # at construction; the Core owns the caller. `serverosd` does NOT
+        # resolve a path into an integration directory: the decision lives in
+        # `runtime/dispatch_attempts.py`, takes the source as an argument, and
+        # records through the same Agent Control ledger. The source is reached
+        # only after the trusted context, principal, phase and grant checks
+        # above, so a request still cannot supply an authority.
+        try:
+            result = dispatch_attempts_mod.reconcile_attempt(
+                store, key,
+                principal=principal,
+                observation_source=self._dispatch_observation_source,
+                writer=writer,
+                current_writer=current_writer,
+                now=_iso(self._now()),
+            )
+        except agent_control_store_mod.AttemptRefused as exc:
+            return self._dispatch_refusal(key, exc.reason_code, attempt, exc.detail)
+        except agent_control_store_mod.StoreError as exc:
+            return self._dispatch_refusal(
+                key, "INVALID_CONTEXT", attempt, str(exc))
+        except Exception as exc:
+            return self._dispatch_refusal(
+                key, "SOURCE_UNAVAILABLE", attempt,
+                (f"the reconciliation driver raised "
+                 f"({type(exc).__name__}); the attempt was not settled"))
+        return self._dispatch_answer(key, result)
 
     def _r_agent_binding_list(self, params) -> dict:
         """Every binding this node holds, by role. Never by actor, never by Item.
@@ -4248,6 +5197,23 @@ def _iso(epoch: float) -> str:
     import datetime
 
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+
+
+def _instant(value):
+    """A zoned instant, or None.
+
+    The same rule `context/actor.py::_parse` and #307 state: an unreadable or
+    NAIVE timestamp is not an instant. Comparing two ISO strings would make
+    `12:00+08:00` (04:00Z) sort after `04:00+00:00`, which is the lexicographic
+    trap this helper exists to remove from the handoff's expiry evidence.
+    """
+    import datetime
+    try:
+        parsed = datetime.datetime.fromisoformat(
+            str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _atomic_write(path: Path, payload: dict) -> None:

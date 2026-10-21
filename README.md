@@ -11,6 +11,9 @@ Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-envir
 The [earlier P0–P12 plan](docs/CC-EXECUTION-PLAN.md) remains a subsystem reference;
 none of these design documents is a deployment receipt.
 
+Fleet V1 — the ChatGPT-facing MCP + Skills control surface, and its V1/V2
+boundary: [delivery plan](docs/plans/fleet-v1-delivery-plan.md).
+
 **A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
 
 ## Development quickstart

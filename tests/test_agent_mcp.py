@@ -14,6 +14,7 @@ and the reason for declining them was the thing that landed.
 from __future__ import annotations
 
 import ast
+import datetime
 import io
 import importlib.util
 import json
@@ -59,6 +60,9 @@ DELL = "device:personal-dell"
 # the expected ORDER stays asserted: `device.list` returns registry order, and
 # a set would let a reordering pass unnoticed.
 TOKYO = "device:tokyo-shared-dev-01"
+# Enrolled 2026-10-12, and last in registry order. The Linux GPU worker, not
+# the Windows laptop `DELL` above: same maker, different machine.
+LLM_LAB = "device:llm-lab-dell"
 RUNTIME = "agent-runtime:codex"
 PROVIDER = "provider:test-agent-session"
 # §17. A create states what its thread is for, and this is the Item the fixture
@@ -68,13 +72,17 @@ PROVIDER = "provider:test-agent-session"
 ITEM = "LIT-0101"
 
 
-def minted_context(*, actor_id: str = "human:hwz") -> dict:
+def minted_context(*, actor_id: str = "human:hwz",
+                   now: str | None = None) -> dict:
     """A context ServerOS really minted, from a report a provider really could
     have produced. Built through `actor.build` rather than hand-written: a
     literal here would be this file's idea of a trusted context, and the
     resolver's idea is the one that decides whether a mutation is authorized.
+
+    `now` is supplied by the freshness-boundary tests so they can mint an aged
+    record without sleeping; the default is the real clock, as before.
     """
-    now = provider_instance.now_utc()
+    now = now or provider_instance.now_utc()
     report = {
         "human_control_provider": "provider:botmux-human-control",
         "transport": "feishu",
@@ -92,6 +100,51 @@ def minted_context(*, actor_id: str = "human:hwz") -> dict:
 
 CONTEXT = minted_context()
 CONTEXT_REF = CONTEXT["context_ref"]
+
+#: A default that means "the module's current context", resolved when the call
+#: is made. A literal `= CONTEXT_REF` in a signature is evaluated at import and
+#: would keep pointing at the first mint after `build()` re-mints.
+_CURRENT_CONTEXT = object()
+
+
+def _aged_context(seconds: int) -> dict:
+    """A context minted `seconds` ago, for the freshness boundary tests.
+
+    Minted at a past instant rather than by sleeping: `actor.build` takes the
+    clock as an argument, so the record's own window is reproducible and the
+    test does not spend the five minutes it is about.
+    """
+    past = (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=seconds)).isoformat()
+    return minted_context(now=past)
+
+
+def _use_context(context: dict) -> tuple[dict, str]:
+    """Install `context` as the module's current pair; return the previous one."""
+    global CONTEXT, CONTEXT_REF
+    previous = (CONTEXT, CONTEXT_REF)
+    CONTEXT, CONTEXT_REF = context, context["context_ref"]
+    return previous
+
+
+def _restore_context(previous: tuple[dict, str]) -> None:
+    global CONTEXT, CONTEXT_REF
+    CONTEXT, CONTEXT_REF = previous
+
+
+def _refresh_context() -> None:
+    """Mint a fresh context for the test about to run.
+
+    `CONTEXT` is minted once at import, and the contract computes freshness at
+    READ time (`stale_after_seconds: 300`). A suite that takes longer than that
+    would otherwise hand its own positive fixture to the gate as STALE, and the
+    gate would answer UNTRUSTED_ACTOR before the approval check the test is
+    about. Re-minting per `build()` keeps the positive fixture positive
+    without moving the threshold or touching the product's verdict.
+    """
+    global CONTEXT, CONTEXT_REF
+    CONTEXT = minted_context()
+    CONTEXT_REF = CONTEXT["context_ref"]
 
 
 class FakeDaemon:
@@ -211,6 +264,7 @@ def build(*, daemon=None, provider=None, providers=None, decision="ALLOW"):
     provider and the daemon. A fixture that replaced the router would be
     asserting this file's idea of §11 rather than the deployed one.
     """
+    _refresh_context()
     daemon = daemon or FakeDaemon(decision=decision)
     if providers is None:
         providers = [provider or FakeProvider()]
@@ -561,7 +615,8 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         self.provider = self.service.providers[PROVIDER]
         self.ref = semantics.session_ref(LOCAL, PROVIDER, "s1")
 
-    def arguments_for(self, name: str, context_ref: str | None = CONTEXT_REF) -> dict:
+    def arguments_for(self, name: str,
+                      context_ref: str | None = _CURRENT_CONTEXT) -> dict:
         """The smallest legal call of each control action, addressed to the
         fixture's session. `context_ref=None` leaves the key out entirely, which
         the schema refuses and `""` does not.
@@ -571,6 +626,8 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         before the provider is asked, and a fixture that omitted them would be a
         fixture of an illegal call.
         """
+        if context_ref is _CURRENT_CONTEXT:
+            context_ref = CONTEXT_REF
         if name == "agent.session.create":
             arguments = {"device": LOCAL, "runtime": RUNTIME, "agent_id": "a1",
                          "instruction": "go", "idempotency_key": "k1",
@@ -740,6 +797,54 @@ class TestEveryMutationIsAddressedAndGated(unittest.TestCase):
         self.assertEqual(answer["reason"], "APPROVAL_REQUIRED")
         self.assertEqual(self.provider.calls, [])
 
+    def test_build_remints_the_context_so_a_long_suite_stays_fresh(self):
+        """The fixture's context is minted at import and aged at read time.
+
+        `freshness` requires FRESH to authorize and `stale_after_seconds` is
+        300. A core batch that takes longer than that would turn this file's
+        own positive fixture into a STALE context; the gate then answers
+        UNTRUSTED_ACTOR before reaching the approval check this class is about.
+        Minting per `build()` keeps the positive path positive without moving
+        the threshold, and the stale-context test below proves the boundary
+        itself is still enforced.
+        """
+        previous = _use_context(_aged_context(301))
+        try:
+            client, service, _daemon = build()
+            is_error, answer = payload(call(
+                client, "agent.session.stop",
+                session_ref=semantics.session_ref(LOCAL, PROVIDER, "s1"),
+                runtime=RUNTIME, context_ref=CONTEXT_REF))
+            self.assertFalse(is_error, answer)
+            self.assertFalse(answer["ok"])
+            self.assertEqual(answer["reason"], "APPROVAL_REQUIRED")
+            self.assertEqual(service.providers[PROVIDER].calls, [])
+        finally:
+            _restore_context(previous)
+
+    def test_a_stale_or_expired_context_is_refused_before_the_approval_check(self):
+        """Re-minting the positive fixture must not make an old context pass.
+
+        The context is presented explicitly, so this test does not depend on
+        what `build()` mints. STALE and EXPIRED are both refusals by name, and
+        neither reaches the approval decision or the provider.
+        """
+        for seconds, because in ((301, "not recently enough"),
+                                 (901, "past the 900s window")):
+            with self.subTest(seconds=seconds):
+                stale = _aged_context(seconds)
+                daemon = FakeDaemon(contexts={stale["context_ref"]: stale})
+                client, service, _daemon = build(daemon=daemon)
+                is_error, answer = payload(call(
+                    client, "agent.session.stop",
+                    session_ref=semantics.session_ref(LOCAL, PROVIDER, "s1"),
+                    runtime=RUNTIME, context_ref=stale["context_ref"]))
+                self.assertFalse(is_error, answer)
+                self.assertFalse(answer["ok"])
+                self.assertEqual(answer["reason"], "UNTRUSTED_ACTOR")
+                self.assertIn(because, answer["detail"])
+                self.assertEqual(service.providers[PROVIDER].calls, [])
+
     def test_a_remote_device_answers_a_typed_unavailability(self):
         """§7/§13. Never a locally-served request, and never an empty list."""
         remote = semantics.session_ref(FJ, PROVIDER, "s1")
@@ -765,7 +870,7 @@ class TestTheReadPath(unittest.TestCase):
         self.assertFalse(is_error, answer)
         self.assertEqual(answer["level"], "L1")
         self.assertEqual([row["device_ref"] for row in answer["devices"]],
-                         [LOCAL, FJ, DELL, TOKYO])
+                         [LOCAL, FJ, DELL, TOKYO, LLM_LAB])
 
     def test_two_levels_do_not_return_the_same_fields(self):
         """§12 asks for this by name, so it is asserted rather than described."""
@@ -837,6 +942,152 @@ class TestTheReadPath(unittest.TestCase):
     def test_a_read_does_not_ask_for_admission(self):
         call(self.client, "agent.provider.list", device=LOCAL)
         self.assertNotIn("agent.action.admit", self.daemon.methods())
+
+
+# ---------------------------------------------------------------------------
+# What the daemon may reach, read from what it executes.
+# ---------------------------------------------------------------------------
+
+# The daemon must not depend on the BotMux provider (it reaches providers only
+# through the router), and it must not open a network path of its own. These
+# are the same four tokens the original text search used; what changed is where
+# they may appear.
+_FORBIDDEN_EXECUTABLE_TOKENS = ("botmux", "urllib", "http://", "https://")
+
+
+def _documentation_nodes(tree: ast.AST) -> set[int]:
+    """Ids of string expression statements: docstrings and other bare literals.
+
+    Python attaches a docstring to the first statement of a module, class or
+    function body; any other bare string statement is evaluated and discarded.
+    Neither can import, call or fetch anything, so neither is part of the
+    executable structure this boundary is about. Comments never enter the AST
+    at all, so they need no handling here.
+    """
+    documentation = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for statement in body:
+            if not isinstance(statement, ast.Expr):
+                continue
+            value = statement.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, (str, bytes)):
+                documentation.add(id(value))
+            elif (isinstance(value, ast.JoinedStr)
+                  and not any(isinstance(part, ast.FormattedValue)
+                              for part in value.values)):
+                # An f-string with no interpolation is a literal; one with a
+                # placeholder evaluates its expression and is not documentation.
+                # Mark the literal pieces too, or the scan below would still
+                # visit them through the parent node.
+                documentation.update(id(part) for part in ast.walk(value))
+    return documentation
+
+
+def _annotation_nodes(tree: ast.AST) -> set[int]:
+    """Ids of annotation subtrees, which name types without executing them.
+
+    A forward reference is a string in the AST, and `from __future__ import
+    annotations` makes every annotation one. Naming a provider in a type is not
+    importing it or calling it, so it belongs with the docstrings rather than
+    with the executable surface.
+    """
+    annotations = set()
+    for node in ast.walk(tree):
+        for attribute in ("annotation", "returns"):
+            value = getattr(node, attribute, None)
+            if isinstance(value, ast.AST):
+                annotations.update(id(child) for child in ast.walk(value))
+    return annotations
+
+
+def _literal_text(node: ast.AST) -> str | None:
+    """The constant text of a literal, or None when it is not one.
+
+    Adjacent constants are folded by the parser, but `"https://" + host` and
+    f-strings are not, and a check that only sees the pieces would miss a URL
+    split across them. Bytes are decoded because an endpoint does not have to
+    be written as `str` to be executable.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        if isinstance(node.value, bytes):
+            return node.value.decode("utf-8", "replace")
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            _literal_text(part) or "" for part in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _literal_text(node.left), _literal_text(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _call_name(func: ast.AST) -> str:
+    """The dotted name of a call target, empty when it has no static name."""
+    parts = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _daemon_boundary_violations(source: str) -> list[str]:
+    """Reasons `source` may not be the daemon, read from its executable shape.
+
+    An import, a call, or a string that feeds code is a dependency; a sentence
+    saying what the daemon does not do is not. The returned messages are
+    deliberately bounded — a failure must not echo a 4,000-line docstring back
+    into the test log.
+    """
+    tree = ast.parse(source)
+    documentation = _documentation_nodes(tree)
+    non_executable = documentation | _annotation_nodes(tree)
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if any(token in alias.name.lower()
+                       for token in ("botmux", "urllib")):
+                    violations.append(
+                        f"line {node.lineno}: imports {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            imported = " ".join(
+                [node.module or ""] + [alias.name for alias in node.names])
+            if any(token in imported.lower()
+                   for token in ("botmux", "urllib")):
+                violations.append(
+                    f"line {node.lineno}: imports from {imported}")
+        elif isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if any(token in name.lower() for token in ("botmux", "urllib")):
+                violations.append(f"line {node.lineno}: calls {name}")
+
+    seen: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if id(node) in non_executable:
+            continue
+        text = _literal_text(node)
+        if text is None:
+            continue
+        lowered = text.lower()
+        for token in _FORBIDDEN_EXECUTABLE_TOKENS:
+            if token not in lowered:
+                continue
+            marker = (token, node.lineno)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            violations.append(
+                f"line {node.lineno}: executable string contains "
+                f"{token!r}: {text[:60]!r}")
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -919,11 +1170,91 @@ class TestTheSurfaceCannotBecomeAShell(unittest.TestCase):
         })
 
     def test_daemon_never_imports_or_calls_botmux_provider(self):
-        source = (REPO / "runtime/daemon.py").read_text().lower()
-        self.assertNotIn("botmux", source)
-        self.assertNotIn("urllib", source)
-        self.assertNotIn("http://", source)
-        self.assertNotIn("https://", source)
+        """The daemon's vocabulary is not the boundary; what it executes is.
+
+        This used to search the whole lowercased file for the token, so a
+        sentence explaining BotMux's `RESPONSE_ID_ONLY` capability failed the
+        same check a real import would fail. Prose about a provider and a
+        dependency on one are different claims, and only the second is the
+        safety boundary. Comments never reach the AST; documentation strings
+        are expression statements with no effect; imports, calls and strings
+        that feed code are the executable structure, and those are what this
+        checks.
+        """
+        source = (REPO / "runtime/daemon.py").read_text()
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_docstring_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            '"""BotMux is RESPONSE_ID_ONLY; this module explains that."""\n'
+            "\n"
+            "\n"
+            "def dispatch_state() -> str:\n"
+            '    """BotMux needs a trigger_id that a lost response never gave."""\n'
+            "    return 'idle'\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_comment_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            "# BotMux is deliberately not imported here.\n"
+            "import json\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_an_annotation_that_mentions_botmux_is_not_a_boundary_violation(self):
+        source = (
+            "from __future__ import annotations\n"
+            "\n"
+            "def dispatch_state() -> \"BotMuxDispatchState\":\n"
+            "    return None\n"
+            "\n"
+            "cache: \"https://botmux.example/v1\" = \"idle\"\n"
+        )
+        self.assertEqual(_daemon_boundary_violations(source), [])
+
+    def test_a_real_botmux_import_is_a_boundary_violation(self):
+        for source in (
+            "import serveros_botmux_provider\n",
+            "from serveros_botmux_provider import dispatch\n",
+            "from . import serveros_botmux_provider\n",
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_a_real_botmux_call_is_a_boundary_violation(self):
+        for source in (
+            "def f():\n    return serveros_botmux_provider.dispatch()\n",
+            "def f():\n    return dispatch_botmux()\n",
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_a_botmux_provider_url_in_executable_code_is_a_violation(self):
+        for source in (
+            'BASE = "https://botmux.example/v1"\n',
+            'BASE = f"https://botmux.example/{version}"\n',
+            'BASE = "https://" + "botmux.example/v1"\n',
+        ):
+            with self.subTest(source=source):
+                violations = _daemon_boundary_violations(source)
+                self.assertTrue(
+                    any("botmux" in violation.lower() for violation in violations),
+                    violations)
+
+    def test_executable_network_access_is_a_boundary_violation(self):
+        for source in (
+            "import urllib.request\n",
+            'ENDPOINT = "http://127.0.0.1:9000/health"\n',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(_daemon_boundary_violations(source))
 
     def test_a_parameter_the_router_does_not_declare_cannot_be_passed(self):
         client, service, _daemon = build()

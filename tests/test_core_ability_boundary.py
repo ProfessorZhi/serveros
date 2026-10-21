@@ -337,6 +337,33 @@ class CoreDoesNotDependOnTheFabric(unittest.TestCase):
             "reason and a `disposition`, and only if the core reaches it after",
             "that core has already started."]))
 
+    def test_the_core_does_not_load_the_effect_reconciliation_integration(self):
+        """#245 / S2: the provider observation adapter is INJECTED, not loaded.
+
+        #312 wired `agent.dispatch.reconcile` by path-loading
+        `integrations/v1-effect-reconciliation/effect_reconciliation.py` from
+        `runtime/daemon.py`. That made the runtime Core depend on an outer
+        integration directory, which is the edge the whitelist test above
+        reports but does not name. This assertion names it, so the regression
+        cannot be cleared by widening `CORE_DIRS` or by adding the file to
+        `KNOWN_CORE_CROSSINGS` without a reader seeing the exact path.
+
+        The legitimate seam is the daemon-held observation source
+        (`dispatch_observation_source`), which is an object injected after the
+        trusted context, principal, phase and grant checks — not a module path
+        the Core resolves at runtime.
+        """
+        refs = sorted(str(path) for path in module_refs(CORE_ENTRY)
+                      if path.parts and path.parts[0] == "integrations")
+        self.assertEqual(refs, [],
+                         "the daemon resolves a path into integrations/: "
+                         f"{refs}")
+        reached = sorted(str(module) for module in closure(CORE_ENTRY)
+                         if module.parts and module.parts[0] == "integrations")
+        self.assertEqual(reached, [],
+                         "the daemon's loader closure reaches integrations/: "
+                         f"{reached}")
+
     def test_the_scanner_sees_a_division_chain(self):
         """The positive control, and the reason this file is worth having.
 

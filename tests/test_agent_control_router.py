@@ -39,6 +39,12 @@ provider_instance = _load("serveros_abilities_provider_instance",
                           ROOT / "abilities" / "provider_instance.py")
 actor = _load("_serveros_context_actor", ROOT / "context" / "actor.py")
 approval = _load("serveros_runtime_approval", ROOT / "runtime" / "approval.py")
+# #245 / S2. The durable attempt store and the kernel the router's replay guard
+# now reads, so a retry after a restart is refused from the RECORD.
+store_mod = _load("serveros_runtime_agent_control_store",
+                  ROOT / "runtime" / "agent_control_store.py")
+attempts_mod = _load("serveros_runtime_dispatch_attempts",
+                     ROOT / "runtime" / "dispatch_attempts.py")
 
 
 # A context ServerOS really minted, from a report a HumanControlProvider really
@@ -236,7 +242,7 @@ def _read_with_timeout(proc, seconds: float = 1.0) -> str:
 
 
 def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE,
-           bindings=None):
+           bindings=None, attempts=None):
     # §17. `assume-bound` because these are tests about ROUTING, not about the
     # thread boundary — `tests/test_coordination.py` is where the boundary is
     # tested, and it uses the refusing mode. The mode is named here rather than
@@ -247,7 +253,8 @@ def router(service, node=None, *, local=LOCAL, context_store=CONTEXT_STORE,
     if node is not None:
         nodes.append(node)
     return router_mod.FleetAgentControlRouter(
-        local_device_ref=local, transports=nodes, context_store=context_store)
+        local_device_ref=local, transports=nodes, context_store=context_store,
+        attempts=attempts)
 
 
 def deployed_router(service, **kwargs):
@@ -999,12 +1006,243 @@ class TestIdempotency(unittest.TestCase):
         self.assertIn("take no key", source)
         self.assertIn("this guard cannot see it", source)
 
+    def test_the_same_key_with_a_different_payload_is_a_conflict(self):
+        """#237 T5. Same key, same action, same device — a DIFFERENT payload.
+
+        The guard compared `action` and `device_ref` and never the payload, so a
+        retry that changed the instruction was answered with the first call's
+        result: a second intent reported as a replay of the first, and the
+        second instruction was dropped with no error.
+        """
+        r = router(RecordingService())
+        r.route(router_mod.request_from_payload(payload(
+            MUTATING, LOCAL, context_ref=CONTEXT_REF,
+            params={"instruction": "more", "turn_idempotency_key": "t-pay"})))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(payload(
+                MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                params={"instruction": "a DIFFERENT thing",
+                        "turn_idempotency_key": "t-pay"})))
+        self.assertIn("different", str(caught.exception))
+
+    def test_a_durable_attempt_refuses_a_retry_across_a_restart(self):
+        """#245. An outcome the record does not know is not retried blind.
+
+        A FRESH router over the SAME store — a restart — and the recorded attempt
+        is what refuses the second dispatch, not a dict that died with the first
+        router. The provider is never reached.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = store_mod.AgentControlStore(Path(td) / "control.json")
+            request = router_mod.request_from_payload(payload(
+                MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                params={"instruction": "more", "turn_idempotency_key": "t-dur"}))
+            store.put_dispatch_attempt(attempts_mod.attempt_record(
+                key=request.idempotency_key, action=request.action,
+                device_ref=request.device_ref, verb=request.verb,
+                intent_digest=attempts_mod.intent_digest(
+                    action=request.action, device_ref=request.device_ref,
+                    verb=request.verb, params=request.params,
+                    workspace=request.workspace, work_item=request.work_item,
+                    # The target and the principal are part of the intent now
+                    # (#237 T5 / QA P0-1); a digest that omitted them would be a
+                    # different intent and this attempt would not match it.
+                    session_ref=request.session_ref,
+                    agent_runtime=request.agent_runtime,
+                    principal="human:hwz"),
+                phase=attempts_mod.EFFECT_UNKNOWN))
+
+            svc = RecordingService()
+            restarted = router(svc, attempts=store)
+            with self.assertRaises(target.Rejected) as caught:
+                restarted.route(router_mod.request_from_payload(payload(
+                    MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                    params={"instruction": "more",
+                            "turn_idempotency_key": "t-dur"})))
+            self.assertIn("not known", str(caught.exception))
+            self.assertEqual(svc.names(), [],
+                            "the retry reached the provider despite an unknown "
+                            "recorded outcome")
+
+
+class TestIntentTargetIsPartOfTheKey(unittest.TestCase):
+    """#237 T5 / independent-QA P0-1. Same key, different TARGET -> CONFLICT.
+
+    The guard compared action + device + payload and omitted the session, the
+    runtime and the principal, so two sends to different sessions under one key
+    were answered as a replay of the first — the second target never ran.
+    """
+
+    def test_the_same_key_on_a_different_session_target_is_a_conflict(self):
+        r = router(RecordingService())
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more",
+                                "turn_idempotency_key": "t-target"})
+        second = dict(first, session_ref="session:b")
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
+
+    def test_the_same_key_on_a_different_runtime_is_a_conflict(self):
+        r = router(RecordingService())
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more", "turn_idempotency_key": "t-rt"})
+        second = payload(MUTATING, LOCAL, runtime="agent-runtime:claude-code",
+                         context_ref=CONTEXT_REF, session_ref="session:a",
+                         params={"instruction": "more", "turn_idempotency_key": "t-rt"})
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
+
+    def test_the_same_key_from_a_different_principal_is_a_conflict(self):
+        other = minted_context(actor_id="human:someone-else")
+        store = dict(CONTEXT_STORE)
+        store[other["context_ref"]] = other
+        r = router(RecordingService(), context_store=store)
+        first = payload(MUTATING, LOCAL, context_ref=CONTEXT_REF,
+                        session_ref="session:a",
+                        params={"instruction": "more", "turn_idempotency_key": "t-princ"})
+        second = dict(first, context_ref=other["context_ref"])
+        r.route(router_mod.request_from_payload(first))
+        with self.assertRaises(target.Rejected) as caught:
+            r.route(router_mod.request_from_payload(second))
+        self.assertIn("different", str(caught.exception))
+
+
+class _CrashLoopback(router_mod.LocalLoopbackTransport):
+    """A loopback whose send never returns a definite answer.
+
+    It snapshots what the DURABLE store said about the attempt at the moment it
+    was asked to send — which is how the test proves CALL_NOT_SENT was written
+    BEFORE the provider was reached, rather than after.
+    """
+
+    def __init__(self, *, store, fail_with="TIMEOUT", fail_times=1, **kwargs):
+        super().__init__(**kwargs)
+        self._store = store
+        self._fail_with = fail_with
+        self._fail_times = fail_times
+        self.phase_at_send = None
+        self.send_calls = 0
+
+    def send(self, request, *, resolved=None):
+        self.send_calls += 1
+        recorded = self._store.get_dispatch_attempt(request.idempotency_key)
+        self.phase_at_send = (recorded or {}).get("phase")
+        if self._fail_with and self.send_calls <= self._fail_times:
+            raise router_mod.TransportFailure(self._fail_with, "simulated")
+        return {"session_ref": request.session_ref, "action": "send"}
+
+
+class TestDurableDispatchAttempt(unittest.TestCase):
+    """#245 / S2. The attempt on disk BEFORE the provider, and a retry refused.
+
+    The two holes this closes are the ones the in-process guard cannot: an
+    attempt recorded before the send (which is the only thing that distinguishes
+    "crashed before sending" from "crashed after"), and an unknown outcome that
+    refuses a retry instead of launching a second paid turn.
+    """
+
+    def _send(self, router, key="t-245", instruction="more"):
+        return router.route(router_mod.request_from_payload(payload(
+            MUTATING, LOCAL, context_ref=CONTEXT_REF,
+            params={"instruction": instruction, "turn_idempotency_key": key})))
+
+    def _router_over(self, store, *, fail_with="TIMEOUT"):
+        loop = _CrashLoopback(
+            store=store, fail_with=fail_with, device_ref=LOCAL,
+            service=RecordingService(),
+            bindings=threads.MemoryBindings(unknown=threads.ASSUME_BOUND))
+        return router_mod.FleetAgentControlRouter(
+            local_device_ref=LOCAL, transports=[loop],
+            context_store=CONTEXT_STORE, attempts=store), loop
+
+    def _store(self, td):
+        return store_mod.AgentControlStore(Path(td) / "control.json")
+
+    def test_call_not_sent_is_on_disk_before_the_provider_is_asked(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            r, loop = self._router_over(store)
+            response = self._send(r)
+            self.assertFalse(response.ok)
+            self.assertEqual(response.reason, "TIMEOUT")
+            self.assertEqual(loop.phase_at_send, attempts_mod.CALL_NOT_SENT,
+                             "the provider was asked before the attempt existed "
+                             "on disk — the crash windows are indistinguishable")
+
+    def test_an_ambiguous_failure_leaves_effect_unknown(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            r, _ = self._router_over(store)
+            self._send(r)
+            recorded = store.get_dispatch_attempt("t-245")
+            self.assertEqual(recorded["phase"], attempts_mod.EFFECT_UNKNOWN)
+
+    def test_a_retry_after_a_crash_does_not_reach_the_provider_again(self):
+        """The point of the whole module: no second paid turn."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            r1, loop1 = self._router_over(store)
+            self._send(r1)
+            self.assertEqual(loop1.send_calls, 1)
+
+            # A restart: a FRESH router and transport over the SAME store.
+            r2, loop2 = self._router_over(store)
+            with self.assertRaises(target.Rejected) as caught:
+                self._send(r2)
+            self.assertIn("not known", str(caught.exception))
+            self.assertEqual(loop2.send_calls, 0,
+                             "the retry launched a second paid turn")
+
+    def test_an_unreachable_device_may_be_retried(self):
+        # The other side of the same rule: a failure that PROVES nothing was
+        # sent leaves CALL_NOT_SENT, so a retry proceeds and is not refused.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            r, _ = self._router_over(store, fail_with="DEVICE_UNREACHABLE")
+            self._send(r)
+            recorded = store.get_dispatch_attempt("t-245")
+            self.assertEqual(recorded["phase"], attempts_mod.CALL_NOT_SENT)
+            self.assertTrue(self._send(r).ok,
+                            "a request that never left the control plane was "
+                            "refused its retry")
+
 
 # ---------------------------------------------------------------------------
 # §9: handoff. The order is the safety property.
 # ---------------------------------------------------------------------------
 
 class TestHandoff(unittest.TestCase):
+    SOURCE = "session:a:b:c"
+    TARGET = "session:dst:2"
+
+    def _bindings(self):
+        # The handoff is a write-authority transfer: the source must actually
+        # hold a writer claim, and the target must be an established binding
+        # for the SAME Item. The old default assume-bound double minted neither,
+        # which is why #310 F1/F2 could pass here and fail on the daemon.
+        bindings = threads.MemoryBindings(unknown=threads.ASSUME_BOUND)
+        bindings.bind(self.SOURCE, bound_item_ref=ITEM,
+                      writer={"owner": "agent:A", "epoch": 1, "token": "1"})
+        bindings.bind(self.TARGET, bound_item_ref=ITEM)
+        return bindings
+
+    def _router(self, service, *, context_store=CONTEXT_STORE):
+        return router(service, bindings=self._bindings(),
+                      context_store=context_store)
+
+    def _resume_target(self, *, context_ref: str = CONTEXT_REF):
+        return resume_to(session_ref=self.TARGET, context_ref=context_ref)
 
     def _source(self):
         return RecordingService()
@@ -1042,14 +1280,14 @@ class TestHandoff(unittest.TestCase):
         # The target here is the local device, so the "target came up" path is
         # genuinely exercised rather than stubbed past.
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertNotIn("stop", source.names())
         self.assertTrue(outcome.source_preserved)
@@ -1078,16 +1316,16 @@ class TestHandoff(unittest.TestCase):
         # that treated its own authority as sufficient to stop a session would
         # be the §22 gate bypassed by a compound action.
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "APPROVAL_REQUIRED")
         self.assertEqual(outcome.stopped_at, "source_released")
@@ -1107,16 +1345,16 @@ class TestHandoff(unittest.TestCase):
             "session.stop": {"state": "UNSUPPORTED",
                              "reason": "thread/archive is not a stop"},
         })
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT,
                         "release_source": True,
                         "target_action": "agent.session.result"})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
         self.assertTrue(outcome.source_preserved)
@@ -1126,14 +1364,14 @@ class TestHandoff(unittest.TestCase):
 
     def test_a_handoff_records_the_checkpoint_it_is_anchored_to(self):
         source = self._source()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
             create_request=router_mod.request_from_payload(payload(
-                "agent.session.result", LOCAL, session_ref="session:a:b:c")))
+                "agent.session.result", LOCAL, session_ref=self.TARGET)))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertEqual(outcome.checkpoint, CHECKPOINT)
         self.assertEqual(outcome.show()["checkpoint"], CHECKPOINT)
@@ -1188,18 +1426,22 @@ class TestHandoff(unittest.TestCase):
         # order of these six steps exists to prevent, arriving through the one
         # door the order does not cover.
         source = AnonymousService()
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True})),
-            create_request=resume_to())
+            create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "INVALID_CONTEXT")
+        # The target's writer claim was minted before the route, and the route
+        # named no session. The source is not the current writer any more; that
+        # is a stalled scope, not "source preserved".
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "context_handed_off")
         self.assertNotIn("context_handed_off", outcome.completed)
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
         self.assertEqual(outcome.checkpoint, CHECKPOINT)
         self.assertNotIn("stop", source.names(),
                          "the source was stopped on an answer that named no session")
@@ -1214,19 +1456,21 @@ class TestHandoff(unittest.TestCase):
         source = self._source()
         context = minted_context()
         now = provider_instance.now_utc()
-        r = router(source, context_store={context["context_ref"]: context})
+        r = self._router(source,
+                         context_store={context["context_ref"]: context})
         stop_approval = approval.issue(
             action="session.stop",
-            target={"device_ref": LOCAL, "session_ref": "session:a:b:c",
+            target={"device_ref": LOCAL, "session_ref": self.SOURCE,
                     "agent_runtime": RUNTIME, "provider": KIND_PROVIDER},
             params={}, context=context, now=now)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True},
                 approvals=[stop_approval])),
-            create_request=resume_to(context_ref=context["context_ref"]))
+            create_request=self._resume_target(
+                context_ref=context["context_ref"]))
         self.assertTrue(outcome.ok, outcome.reason)
         self.assertEqual(outcome.completed[-1], "source_released")
         self.assertFalse(outcome.source_preserved)
@@ -1241,7 +1485,8 @@ class TestHandoff(unittest.TestCase):
         source = self._source()
         context = minted_context()
         now = provider_instance.now_utc()
-        r = router(source, context_store={context["context_ref"]: context})
+        r = self._router(source,
+                         context_store={context["context_ref"]: context})
         elsewhere = approval.issue(
             action="session.stop",
             target={"device_ref": LOCAL, "session_ref": "session:another:1",
@@ -1250,10 +1495,11 @@ class TestHandoff(unittest.TestCase):
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=context["context_ref"],
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT, "release_source": True},
                 approvals=[elsewhere])),
-            create_request=resume_to(context_ref=context["context_ref"]))
+            create_request=self._resume_target(
+                context_ref=context["context_ref"]))
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.reason, "APPROVAL_BINDING_MISMATCH")
         self.assertEqual(outcome.stopped_at, "source_released")
@@ -1295,17 +1541,21 @@ class TestHandoff(unittest.TestCase):
             "session.resume": {"state": "UNSUPPORTED",
                                "reason": "this provider does not resume"},
         })
-        r = router(source)
+        r = self._router(source)
         outcome = r.handoff(
             router_mod.request_from_payload(payload(
                 "agent.session.handoff", LOCAL, context_ref=CONTEXT_REF,
-                session_ref="session:a:b:c",
+                session_ref=self.SOURCE,
                 params={"checkpoint": CHECKPOINT})),
-            create_request=resume_to())
+            create_request=self._resume_target())
         self.assertFalse(outcome.ok)
-        self.assertEqual(outcome.reason, "ACTION_UNSUPPORTED")
+        # The support refusal happens AFTER the handoff minted the target's
+        # writer claim; the source is no longer the current writer. The target
+        # never got a session, so the scope is stalled, not preserved.
+        self.assertEqual(outcome.reason, "BLOCKED_ATOMICITY")
         self.assertEqual(outcome.stopped_at, "target_ready")
-        self.assertTrue(outcome.source_preserved)
+        self.assertFalse(outcome.source_preserved)
+        self.assertIs(outcome.detail.get("scope_stalled"), True)
 
     def test_a_target_that_probed_well_and_could_not_be_delivered_is_not_available(self):
         # A route WAS named and nothing answered at the other end of it — the

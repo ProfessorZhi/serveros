@@ -128,8 +128,15 @@ actions:
 #                    `bound_item_ref` is required for `execution` and forbidden
 #                    for `coordinator`. Validated before the provider is asked,
 #                    so a create that cannot be bound never starts a session.
-#   session.send     ADMITS. The thread's binding and its Item's state are read
-#                    and `admit_work` decides.
+#                    It also RECORDS the write-scope claim: the first execution
+#                    thread on an Item owns it, a later one arriving at an
+#                    owned scope records none (#237 B1, see `write_scope`).
+#   session.send     ADMITS. The thread's binding, its Item's state AND the
+#                    current writer for the Item's write scope (#237 B1) are
+#                    read in one call, and `admit_work` decides. A thread that
+#                    RECORDS a writer and is not the current one is refused with
+#                    NOT_CURRENT_WRITER; a thread that records none claims no
+#                    write authority and is not gated.
 #   session.resume   ADMITS. A resume starts a turn in the thread, so it is
 #                    gated with `send`. The gate reads the THREAD's state, not
 #                    the provider session's: a thread is closed by a person, and
@@ -234,16 +241,309 @@ idempotency:
     effect that never happened for this request.
 
 # ---------------------------------------------------------------------------
+# #237 B1 — the write scope: who may write an Item, and how that is decided.
+# ---------------------------------------------------------------------------
+write_scope:
+  authority: >-
+    The WORK ENGINE lease, and nothing else. The exclusive write authority for an
+    Item is the LIVE row in the `leases` table that
+    `workengine/store.py#acquire_lease` writes; `context/resolver.py#live_lease`
+    reads it from the same `serveros.db`, with the same fixed-width
+    `%Y-%m-%dT%H:%M:%SZ` stamp, and `admit_work` checks a thread's claim against
+    its owner and token. The Agent Control binding's `writer` claim is a
+    REFERENCE to that lease, not a second authority: it is minted from the lease,
+    and a claim that disagrees with it is a stale or spoofed writer.
+  lease_resource_namespace: >-
+    ONE spelling: `work-write:<item_ref>`. Work Engine #14's
+    `OwnerVerifiedLease._resource(item_ref)` derives exactly that and stores it
+    in `leases.resource`; `context/resolver.py#work_write_resource` is the same
+    derivation on the reading side, and `live_lease(items, …)` looks up that name
+    and nothing else. A row stored under the naked Item (`SRV-0001`) is NOT read:
+    a silent fallback would be a second spelling of one scope, which is the
+    double-authority failure this whole section exists to prevent. `held_leases`
+    remains the generic reader and returns the table's raw resources, so under
+    #14 those are `work-write:<item>`; `item_from_work_write_resource` is how a
+    caller gets the Item back.
+  verified_producer_bridge_blocked: >-
+    BLOCKED_TRUST_SOURCE (Work Engine #14's `LeaseAuthority.verify`). serveros
+    HAS the pieces that look like a trusted parent — a `context_ref` resolved by
+    the daemon from its own store, a kernel `SO_PEERCRED` peer carried on every
+    request, and a live grant whose `revoked` / `expires_at` / `projects` /
+    `items` / `actions` are written by the store and never by this module. Two
+    required fields are MISSING, so no bridge is built and no verifier is
+    fabricated: (1) a serveros grant carries NO `epoch`, while `LeaseGrant.epoch`
+    must be sourced; (2) the grant action vocabulary does NOT contain
+    `lease.acquire` / `lease.renew` / `lease.release` / `work.commit`, so no
+    grant today can authorize a lease verb. There is also no out-of-process
+    verifier component, and none is in this file's ownership. An in-process
+    Python caller can instantiate its own verifier; that is NOT authentication
+    and must not be offered as a public lease verb.
+  why_not_the_binding: >-
+    A binding claim is something a caller can write. Before this correction
+    `agent.binding.record` accepted `writer={owner: agent:EVIL, token: 999}` with
+    no actor behind it, `agent.binding.resolve` reported it as the current
+    writer, and the send admission returned ADMITTED while the Work Engine held
+    A/1 and refused a second writer (independent QA Snapshot E, E4/E5). A gate on
+    a claim is a gate on nothing.
+  producer: >-
+    `serverosd`'s `agent.binding.record` MINTS the claim FROM the live lease:
+    owner and token are the lease's, and a scope with no live lease gets no
+    claim. A caller-supplied `writer` is REFUSED (`UNTRUSTED_ACTOR`) — this RPC
+    carries no trusted actor, and a writer it was told to record would be a claim
+    with no authority behind it. A re-record reuses the stored claim; a later
+    thread on an already-owned scope records none.
+  consumer: >-
+    `agent.binding.resolve` returns `write_authority` — `{source:
+    work-engine:leases, lease: {owner, token, expires_at} | null}` — beside the
+    binding and the Item state, in ONE read. `DaemonBindings.get` carries it to
+    the router and `admit_work` uses it as the ONLY writer authority:
+    no live lease (absent, expired, or revoked-and-deleted) refuses the send;
+    a claim that disagrees with the lease refuses; a thread claiming nothing on a
+    leased scope refuses.
+  transfer: >-
+    A handoff moves authority by REVOKING the incumbent (closing its binding),
+    and the successor must hold the lease. A create is not a transfer.
+  no_lease_is_no_writer: >-
+    This REPLACES the earlier "an unowned scope gates nobody" rule. A scope with
+    no live Work lease has no current writer, and a send is REFUSED. That is
+    fail-closed on purpose: a thread that predates the lease cannot be shown to
+    hold the write scope. It is a behaviour change, stated here rather than left
+    to be discovered.
+  producer_boundary_blocked: >-
+    BLOCKED_PRODUCER_BOUNDARY. An authenticated `session.create` must acquire the
+    exclusive Work lease before its thread can send, and this product CANNOT do
+    that today. work-engine #13 exposes `acquire_lease` / `renew_lease` /
+    `release_lease` / `check_writer` only as methods on
+    `workengine.store.ServerOSStore` — no CLI subcommand and no MCP tool — and
+    serveros has no import or subprocess boundary to that repository (`runtime/cli.py`
+    records that `workengine` is not on PATH). Writing the `leases` row from
+    serveros would be a SECOND writer and a caller-asserted owner, which is the
+    one thing this contract forbids. Verified against live heads serveros
+    `a6bed15` and work-engine `40b0622` on 2026-10-18.
+  required_operation: >-
+    What unblocks the create path — the exact API/owner, not an invented one:
+    an authorized `acquire_lease(resource=<Item ref>, owner=<mapped principal>,
+    ttl_s=<bounded>)`, with `renew_lease` / `release_lease` / `check_writer` for
+    the lifecycle, reachable from the serveros daemon under the SAME OS
+    principal. work-engine must authorize the call against ITS OWN record of the
+    Item's owner/grant — never against a string the serveros caller supplies. A
+    CLI subcommand or an MCP tool on work-engine would satisfy this; an in-process
+    import would make every serveros deployment depend on the work-engine package
+    and is NOT proposed here.
+  principal_to_owner: >-
+    The owner a create would request: the `actor_ref` resolved from the trusted
+    `context_ref` (never a payload string), qualified by the Work Item identity
+    and the current Work epoch — not the session ref, not a device name, not a
+    project label. This mapping is DECLARED here and NOT IMPLEMENTED, because
+    there is no boundary to apply it.
+  create_reports_authority: >-
+    The fail-closed half that IS implemented: `agent.binding.record` reports
+    `write_authority` — the same `{source: work-engine:leases, lease: <live row |
+    null>}` shape as `agent.binding.resolve` — in its answer. A caller therefore
+    learns at CREATE time that a thread cannot send, instead of discovering it on
+    the first `session.send`. It does not acquire anything and does not make the
+    create→send path usable on its own.
+  not_claimed: >-
+    This fences the CONTROL-PLANE admission and the binding record. It does NOT
+    claim to stop a shell side-effect inside a provider that offers no native
+    fence; that is B2/B5, and it needs effect reconciliation.
+
+# ---------------------------------------------------------------------------
+# Grant authority: a durable monotonic epoch, and the trusted-parent READ.
+#
+# Work Engine #14's `OwnerVerifiedLease` requires a `LeaseAuthority.verify` that
+# resolves context_ref out of band, re-reads the grant at `now`, and binds the
+# actor to an OS principal. This block is the serveros half of that.
+# ---------------------------------------------------------------------------
+grant_authority:
+  epoch:
+    what: >-
+      An integer GENERATION minted by the store, from a durable monotonic counter
+      in the control document (`grant_epoch`). It is written by `issue_grant` and
+      `put_grant`, and a caller may never supply one: an epoch a caller could
+      choose is one a caller could keep after it was superseded. Monotonic across
+      restarts, and never derived from a grant COUNT, so revoking a grant does
+      not let a later one reuse its number.
+    backfill: >-
+      A grant written before this field existed has NO epoch and reads as UNKNOWN.
+      It is NOT backfilled: an epoch minted after the fact would be authority
+      nobody granted. Such a grant must be re-issued to become usable.
+    revocation_aware: >-
+      Revocation does not change the epoch; it ends the grant. A revoked grant is
+      refused regardless of its epoch, and the epoch stays on the record as the
+      evidence of which generation ended.
+  verify_read:
+    method: agent.lease.authority.verify
+    binding: >-
+      READ-ONLY, and deliberately NOT a lease verb: it mints no grant, acquires
+      no lease and mutates nothing. Registering a lease verb still waits for a
+      trusted producer.
+    inputs: >-
+      `context_ref`, `grant_ref`, `action`, `project`, `item_ref`, and an optional
+      `expected_epoch`.
+    identity: >-
+      The context is resolved from what ServerOS minted (`agent.context.resolve`
+      in-process, never an `actor`/`os_user` field); the OS principal is the
+      kernel's `SO_PEERCRED` peer on the socket, never a string the caller sends.
+      An absent or unreadable peer is a refusal, not a guess.
+    os_principal_binding: >-
+      The grant is BOUND to `uid:<n>` at the trusted ISSUANCE boundary
+      (`agent.grant.issue`), from the kernel peer of that call, and the verify
+      COMPARES it with the peer of THIS call. A bearer `context_ref` is not OS
+      principal authorization: before this comparison the same context and grant
+      verified for two different uids. The field is owner-written in the same
+      sense as `epoch` — `put_grant` refuses a record that names one, and
+      `issue_grant` refuses a signed payload that does. It is never taken from an
+      argument, a request field, or `getuid()`.
+    os_principal_backfill: >-
+      A grant issued with no peer carries NO `os_principal` and authorizes
+      nothing; the read refuses it. It is NOT backfilled at read time — an
+      identity minted after the fact is one nobody attested. Such a grant must be
+      re-issued through a call that has a peer.
+    result: >-
+      On success the `grant` value is EXACTLY one Work Engine #14 `LeaseGrant`:
+      `principal`, `grant_ref`, `project`, `items` (tuple), `actions` (tuple),
+      `valid_from` (float epoch seconds), `expires_at` (float epoch seconds),
+      `revoked`, `epoch` (int), `os_principal`. The requested project / Item /
+      action passed membership checks against the STORED scope, so the returned
+      tuple is the intersection of the request and the grant — never the
+      caller's field echoed back, and never the grant's whole scope widened.
+      ISO -> epoch conversion is this read's job because the store keeps
+      ISO-8601 and the consumer's dataclass keeps floats; `float(<ISO>)` is the
+      TypeError independent QA measured.
+    refusals: >-
+      no/unresolvable context or an absent/unreadable peer -> UNTRUSTED_ACTOR; a
+      context that does not authorize a mutation, a grant delegated by a
+      DIFFERENT context, a grant with no `os_principal` binding, or a grant bound
+      to a different uid -> UNTRUSTED_ACTOR; a revoked/expired/not-yet-valid
+      grant -> POLICY_DENIED; a missing or unreadable window stamp, a missing
+      epoch, or an `expected_epoch` mismatch -> INVALID_CONTEXT; an action /
+      project / Item outside the grant -> POLICY_DENIED. Every uncertainty is a
+      refusal.
+  remaining_dependency: >-
+    The Work Engine SIDE of the bridge — an out-of-process `LeaseAuthority` that
+    calls this read and returns the verified `LeaseGrant` — is not in this
+    repository and was not written here. `acquire_lease` itself remains
+    BLOCKED_PRODUCER_BOUNDARY: this read proves WHO may hold a lease; it does
+    not acquire one. No caller-supplied LeaseGrant is accepted anywhere.
+  standing_delegation_unbound: >-
+    A grant recorded through `put_grant` (the `serverosctl work grant` path) is
+    UNBOUND: that write has no kernel peer to bind, and taking the CLI's own uid
+    would be this process's principal standing in for the caller's. Such a grant
+    is stored and reads as UNTRUSTED_ACTOR until it is re-issued through
+    `agent.grant.issue`. Whether the operator path should gain a peer-attested
+    binding is an ORIGINAL-OWNER decision, not one this read may make; it is
+    recorded here as a dependency rather than closed by a guess.
+
+# ---------------------------------------------------------------------------
+# #237 B2 — the durable-effect interface this contract does NOT yet implement.
+#
+# Stated as an interface and a blocker, NOT as done. `idempotency.durability`
+# above is honest that the router's replay is in-process; this block is what a
+# durable form would have to provide, so that the next PR has a contract to
+# implement against instead of a sentence to rediscover.
+# ---------------------------------------------------------------------------
+durable_effects:
+  implemented: partial
+  what_exists: >-
+    A durable attempt record keyed by the idempotency key, in the existing Agent
+    Control store (`runtime/agent_control_store.py#dispatch_attempts`), with the
+    five phases and the reconcile decision owned by
+    `runtime/dispatch_attempts.py`. The router's replay guard now (a) CONFLICTS
+    on the same key with a different payload — it compared `action` and
+    `device_ref` and never the payload before, so a changed instruction was
+    answered as a replay of the first call (#237 T5) — and (b) consults the
+    durable record when it is given one, so a recorded EFFECT_UNKNOWN refuses a
+    retry instead of dispatching it a second time (#237 T4/T9).
+  what_remains: >-
+    The SOURCE of the observation. The kernel and the store can now resolve an
+    EFFECT_UNKNOWN from an owner's observation, atomically and fail-closed, but
+    nothing in the deployed path yet ASKS the provider/owner for one — that read,
+    and the wiring that calls it after a timeout, is the remaining step. Until it
+    exists an unknown outcome is refused and STAYS refused.
+  reconciliation:
+    kind: observational
+    input: >-
+      An OWNER's observation, three-valued: APPLIED / NOT_APPLIED / anything else
+      (which decides nothing). It must be tied to THIS intent by the payload
+      digest or by the provider-native locator; an observation about another call
+      proves nothing.
+    authority: >-
+      The recorded principal AND the current writer of the write scope. A
+      different principal is REFUSE_PRINCIPAL; a superseded writer is
+      REFUSE_STALE_WRITER. The two are kept apart because one is an identity
+      failure and the other a fencing failure, and collapsing them would hide an
+      authorization problem inside a data-quality one.
+    effect: >-
+      APPLIED -> SETTLED (the attempt settles; no retry). NOT_APPLIED ->
+      CALL_NOT_SENT (the scope is free; a retry is safe). Anything else -> stays
+      EFFECT_UNKNOWN, which refuses a retry.
+    atomic: >-
+      Read, decide and write under ONE store mutation lock; a refused observation
+      writes nothing.
+    no_exactly_once_claim: >-
+      Where the provider cannot prove one of the two definite states, the answer
+      is EFFECT_UNKNOWN. This never claims exactly-once.
+  what_now_exists_too: >-
+    CALL_NOT_SENT is written at the dispatch site, BEFORE `node.send`, so
+    "crashed before sending" and "crashed after sending with the answer lost" are
+    distinguishable — a record written only after the effect cannot tell them
+    apart. A failed dispatch then leaves the attempt in the phase the failure
+    supports (`DEVICE_UNREACHABLE`/`NODE_RUNTIME_UNAVAILABLE` stay CALL_NOT_SENT
+    and may be retried; anything ambiguous becomes EFFECT_UNKNOWN and may not).
+    The deployed construction site passes the durable handle
+    (`mcp/agent_mcp.py` `DaemonAttempts` over the daemon's own store), so the
+    guard is no longer the in-process dict by default on that path.
+  blocker: >-
+    A lost response to a mutating dispatch is not fully reconciled today: restart
+    the router WITHOUT a durable store and the same intent is a second effect.
+    This is #237 B2/#245 and it is PARTLY closed by this revision, not closed.
+  required_interface:
+    attempt_identity: >-
+      A stable id per intended EFFECT, persisted before the dispatch and
+      surviving a restart — distinct from the provider's own key, which may not
+      exist (`CloudCLI` does not accept one).
+    effect_status: >-
+      For each attempt, one of: NOT_SENT, SENT, CONFIRMED, FAILED,
+      EFFECT_UNKNOWN. A timeout lands in EFFECT_UNKNOWN and STAYS there until a
+      provider/owner-backed lookup decides it — never promoted to CONFIRMED by
+      the passage of time.
+    reconcile: >-
+      On a retry of the same attempt_identity, return the recorded outcome, or
+      EFFECT_UNKNOWN — never a second dispatch. A retry of a DIFFERENT payload
+      under the SAME identity is a conflict, refused.
+    owner: >-
+      The record belongs to whoever owns the effect (provider/Agent Control),
+      not to a new store here. Inventing one would be the second record of what
+      the provider did that `idempotency.durability` already refuses.
+  not_claimed: >-
+    No effect is exactly-once. Where a provider cannot natively deduplicate, the
+    only honest answer is EFFECT_UNKNOWN plus reconciliation, and a control
+    plane that claimed stronger would be claiming a guarantee the executor
+    cannot give.
+
+# ---------------------------------------------------------------------------
 # Handoff order. The order is the safety property.
 # ---------------------------------------------------------------------------
 handoff:
   steps: [checkpoint, resolve_target, target_available, target_ready,
-          context_handed_off, source_released]
+          context_handed_off, write_authority_transferred,
+          source_released]
   rule: >-
     The source session is not stopped unless the target answered. §9 states this
     and the implementation states it as control flow rather than as a comment,
     because a rule a reader has to remember survives only until the first
     refactor.
+  failure_codes:
+    BLOCKED_ATOMICITY: >-
+      The target's writer claim was already minted (and current) but the target
+      route or the source close did not complete. The source is NOT preserved
+      as a writer and the scope is stalled; repair is an owner action. This is
+      not a successful transfer.
+    UNTRUSTED_ACTOR: >-
+      A protected binding mutation (claim or close-with-successor) presented a
+      context that is not FRESH + provenance FACT + provider VERIFIED. The
+      strong `authorizes` verdict, not structural validation alone, is required.
   why_this_order: >-
     The failure modes are not symmetric. A handoff that stops the source and
     then cannot start the target has lost the session. A handoff that starts the
@@ -290,6 +590,47 @@ handoff:
   release_default_because: >-
     A handoff that stops the source by default is a handoff that loses it
     whenever the target turns out to be unsuitable an hour later.
+
+  # #237 B1. The source session is not stopped by a default, but its WRITE
+  # AUTHORITY does move — and the two are separate operations.
+  authority_transfer:
+    when: >-
+      After `context_handed_off`, AND only once the target is ESTABLISHED as
+      this Item's writer, and INDEPENDENTLY of `release_source`.
+    what: >-
+      The source session's thread binding is closed. Closing the binding is what
+      transfers write authority: `session.send` and `session.resume` on the
+      source then refuse with THREAD_CLOSED_FOR_NEW_WORK, while `inspect`,
+      `result`, `interrupt` and `stop` stay available, so the closed thread
+      remains readable.
+    established_before_revoked: >-
+      `context_handed_off` proves the target ANSWERED with a session. It does NOT
+      prove the target has been RECORDED as the writer of this Item, and revoking
+      the source on a session alone leaves ZERO authorized writers — the one
+      failure a handoff cannot recover from. So the target's own binding is read
+      first, and the source is closed only when that binding exists and is bound
+      to the SAME Item. Every other outcome leaves the source's write authority
+      intact: two writers is visible and correctable, zero writers is a stall.
+    not_yet_wired: >-
+      Recording the target's writer tuple (owner/epoch/token) at transfer — so
+      that the successor is the scope's CURRENT writer and not merely bound to the
+      Item — is the continuation/Agent-Control join, and it is NOT in this
+      revision. Until it is, the transfer's guarantee is "the target is bound to
+      this Item", not "the target holds the current epoch/token".
+    why_not_a_process_stop: >-
+      Stopping the source is a separate operation, still governed by
+      `release_default` and the §22 approval gate. "Failure to stop A is not
+      failure to revoke A's future writing authority": authority moves with the
+      handoff, the process does not have to.
+    not_retargetable: >-
+      The binding is write-once on `session_ref`, so a revoked source can never
+      be silently reopened or repointed at another Item. A successor needs a new
+      session; the old binding stays as the record of what its turns were about.
+    scope: >-
+      This fences a stale source at the CONTROL-PLANE admission. It does not
+      claim to stop a shell side-effect inside a provider that offers no native
+      fence; that is B2/B5 territory, and it needs effect reconciliation rather
+      than a control-plane word.
 
 # ---------------------------------------------------------------------------
 # Failure semantics. Three different failures, three different words.

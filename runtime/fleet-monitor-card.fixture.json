@@ -1,0 +1,243 @@
+{
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "content": "⚠️ 样例数据 · 非实时，不代表生产读数",
+        "tag": "markdown"
+      },
+      {
+        "content": "**服务** 共 7 · 正常 4 · 需关注 1 · 需处理 0 · 已过期 1 · 无法确认 1\n**设备** 共 3 · 可达 3 · 不可达 0",
+        "tag": "markdown"
+      },
+      {
+        "content": "**⚠️ 需要关注（3）**\n- FJPCOS 工作站 · 磁盘 C:：92%（可用 38 GiB）\n- FJPCOS 工作站 · 账户 fj：CPU 3.1/4.0 核 · 内存 14.6/16.0 GiB\n- 服务 vllm-qwen-7b：首次 token 延迟升高",
+        "tag": "markdown"
+      },
+      {
+        "tag": "hr"
+      },
+      {
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "element_id": "dc2ac83f1-b0f517ac",
+        "elements": [
+          {
+            "content": "**CPU** 32% · **内存** 58% · **vince 资源份额** 3.2 核 / 12 GiB · **磁盘\n/** 41% · **磁盘 /data** 27% · **公网出向** 4.1Mbps",
+            "tag": "markdown"
+          },
+          {
+            "content": "CPU 32%（整机 16 逻辑核）\n内存 58%（整机 125 GiB）\nvince 资源份额 3.2 核 / 12 GiB（cgroup 归因）\n磁盘 / 41%（可用 118 GiB）\n磁盘 /data 27%（可用 3.0 TiB）\n磁盘忙碌度 **已过期** — 最后读数 6%（2026-10-13T05:00:00Z）\n公网出向 4.1Mbps\n公网出口配额 100Mbps（用户已确认）\n趋势 CPU ▁▃▆▅█ （21→32）\n趋势 内存 ▁▄▆▇█ （51→58）",
+            "tag": "markdown"
+          },
+          {
+            "border": {
+              "color": "grey",
+              "corner_radius": "5px"
+            },
+            "element_id": "ac2ac83f1-b0f517ac",
+            "elements": [
+              {
+                "content": "**账户 vince** · CPU 3.2/8.0 核 · 内存 12.0/32.0 GiB\n警戒线 CPU 6.0 核、内存 28.0 GiB（软线）\n_共 1 个账户 · 额度/警戒线为建议软线，非 cgroup 硬限制；本卡不限制、不结束任何进程_",
+                "tag": "markdown"
+              }
+            ],
+            "expanded": false,
+            "header": {
+              "icon": {
+                "size": "16px 16px",
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined"
+              },
+              "icon_expanded_angle": -180,
+              "icon_position": "follow_text",
+              "title": {
+                "content": "**账户用量（1）**",
+                "tag": "markdown"
+              },
+              "vertical_align": "center"
+            },
+            "padding": "8px 8px 8px 8px",
+            "tag": "collapsible_panel",
+            "vertical_spacing": "8px"
+          }
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined"
+          },
+          "icon_expanded_angle": -180,
+          "icon_position": "follow_text",
+          "title": {
+            "content": "**东京共享开发机 · 可达 · 无法确认 1**",
+            "tag": "markdown"
+          },
+          "vertical_align": "center"
+        },
+        "padding": "8px 8px 8px 8px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "8px"
+      },
+      {
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "element_id": "dd7f7889f-03e0f70f",
+        "elements": [
+          {
+            "content": "**CPU** 47% · **内存** 63% · **磁盘 C:** 92% · **磁盘 D:** 55% · **活动\nAgent 数** 2 · **网络总流量（口径未区分）** 23.5Mbps",
+            "tag": "markdown"
+          },
+          {
+            "content": "CPU 47%（整机）\n内存 63%（整机 32 GiB）\n磁盘 C: 92%（可用 38 GiB）\n磁盘 D: 55%（可用 1.6 TiB）\n活动 Agent 数 2（会话表实测）\n网络总流量（口径未区分） 23.5Mbps\n趋势 CPU ▁▄█▇▆ （30→47）\n趋势 内存 ▁▃▅▆█ （58→63）",
+            "tag": "markdown"
+          },
+          {
+            "border": {
+              "color": "grey",
+              "corner_radius": "5px"
+            },
+            "element_id": "ad7f7889f-03e0f70f",
+            "elements": [
+              {
+                "content": "**账户 fj** · CPU 3.1/4.0 核 · 内存 14.6/16.0 GiB\n警戒线 CPU 3.0 核、内存 14.0 GiB（软线）\n_共 1 个账户 · 额度/警戒线为建议软线，非 cgroup 硬限制；本卡不限制、不结束任何进程_",
+                "tag": "markdown"
+              }
+            ],
+            "expanded": false,
+            "header": {
+              "icon": {
+                "size": "16px 16px",
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined"
+              },
+              "icon_expanded_angle": -180,
+              "icon_position": "follow_text",
+              "title": {
+                "content": "**账户用量（1）**",
+                "tag": "markdown"
+              },
+              "vertical_align": "center"
+            },
+            "padding": "8px 8px 8px 8px",
+            "tag": "collapsible_panel",
+            "vertical_spacing": "8px"
+          }
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined"
+          },
+          "icon_expanded_angle": -180,
+          "icon_position": "follow_text",
+          "title": {
+            "content": "**🚨 FJPCOS 工作站 · 可达**",
+            "tag": "markdown"
+          },
+          "vertical_align": "center"
+        },
+        "padding": "8px 8px 8px 8px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "8px"
+      },
+      {
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "element_id": "da2ba0419-9f4b859b",
+        "elements": [
+          {
+            "content": "**CPU** 18% · **内存** 44% · **GPU 利用率** 71% · **GPU VRAM** 38GiB\n/ 48 GiB · **GPU 温度** 68°C · **模型盘** 61%",
+            "tag": "markdown"
+          },
+          {
+            "content": "CPU 18%（整机 32 逻辑核）\n内存 44%（整机 128 GiB）\nGPU 利用率 71%（A6000）\nGPU VRAM 38GiB / 48 GiB（A6000）\nGPU 温度 68°C（阈值 83°C）\n模型盘 61%（可用 780 GiB）\n当前推理服务 vllm·qwen-7b（端口 8000 健康）\n趋势 CPU ▁▃█▅▆ （12→18）\n趋势 内存 ▁▂▄▆█ （40→44）\n趋势 GPU VRAM ▁▃▅▆█ （20→38）",
+            "tag": "markdown"
+          },
+          {
+            "border": {
+              "color": "grey",
+              "corner_radius": "5px"
+            },
+            "element_id": "aa2ba0419-9f4b859b",
+            "elements": [
+              {
+                "content": "**账户 vince** · CPU 1.4/8.0 核 · 内存 6.2/32.0 GiB\n警戒线 CPU 6.0 核、内存 28.0 GiB（软线）\n_共 1 个账户 · 额度/警戒线为建议软线，非 cgroup 硬限制；本卡不限制、不结束任何进程_",
+                "tag": "markdown"
+              }
+            ],
+            "expanded": false,
+            "header": {
+              "icon": {
+                "size": "16px 16px",
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined"
+              },
+              "icon_expanded_angle": -180,
+              "icon_position": "follow_text",
+              "title": {
+                "content": "**账户用量（1）**",
+                "tag": "markdown"
+              },
+              "vertical_align": "center"
+            },
+            "padding": "8px 8px 8px 8px",
+            "tag": "collapsible_panel",
+            "vertical_spacing": "8px"
+          }
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined"
+          },
+          "icon_expanded_angle": -180,
+          "icon_position": "follow_text",
+          "title": {
+            "content": "**A6000 推理机 · 可达**",
+            "tag": "markdown"
+          },
+          "vertical_align": "center"
+        },
+        "padding": "8px 8px 8px 8px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "8px"
+      },
+      {
+        "tag": "hr"
+      },
+      {
+        "content": "只读 · 本卡不会停止、重启或清理任何东西 · 每 10 分钟原位更新",
+        "tag": "markdown"
+      }
+    ]
+  },
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "subtitle": {
+      "content": "2026-10-13T06:00:00Z 更新",
+      "tag": "plain_text"
+    },
+    "template": "red",
+    "title": {
+      "content": "Fleet 监控 · [SAMPLE]",
+      "tag": "plain_text"
+    }
+  },
+  "schema": "2.0"
+}

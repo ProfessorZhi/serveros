@@ -1,0 +1,83 @@
+name: Fleet Next isolated canary contracts
+on:
+  pull_request:
+    paths:
+      - 'fleet_mcp/deploy/next_*'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
+      - 'tests/test_fleet_next_install.py'
+      - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'fleet_mcp/runtime_create_policy.py'
+      - 'fleet_mcp/config.py'
+      - 'fleet_mcp/fleet.py'
+      - 'docs/fleet-next-runtime-model-defaults.md'
+      - '.github/workflows/fleet-next-isolated-contracts.yml'
+  push:
+    branches:
+      - 'feat/fleet-next-isolated-rollout-20261015'
+    paths:
+      - 'fleet_mcp/deploy/next_*'
+      - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
+      - 'tests/test_fleet_next_install.py'
+      - 'tests/test_fleet_next_dual_stack_preflight.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'fleet_mcp/runtime_create_policy.py'
+      - 'fleet_mcp/config.py'
+      - 'fleet_mcp/fleet.py'
+      - 'docs/fleet-next-runtime-model-defaults.md'
+      - '.github/workflows/fleet-next-isolated-contracts.yml'
+permissions:
+  contents: read
+jobs:
+  runner-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Confirm the hosted runner can start
+        run: |
+          python3 --version
+          printf 'runner started; no repository secrets or runtime operations used\n'
+  offline-unit-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the exact PR contents
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Prepare test log
+        run: mkdir -p test-output
+      - name: Install bounded Python test dependency
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+      - name: Check Python syntax
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            python3 -m py_compile fleet_mcp/deploy/next_dual_stack_preflight.py
+            python3 -m py_compile fleet_mcp/deploy/next_install.py
+            python3 -m py_compile tests/test_fleet_next_install.py
+            python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
+            python3 -m py_compile fleet_mcp/runtime_create_policy.py
+            python3 -m py_compile fleet_mcp/config.py
+            python3 -m py_compile fleet_mcp/fleet.py
+            python3 -m py_compile tests/test_fleet_runtime_create_policy.py
+          } 2>&1 | tee test-output/compile.log
+      - name: Run dual-stack isolation tests offline
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_runtime_create_policy.py' -v
+            python3 -m unittest discover -s tests -p 'test_fleet_create_session_runtime.py' -v
+          } 2>&1 | tee test-output/tests.log
+      - name: Preserve bounded offline test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-next-test-output
+          path: test-output/*.log
+          retention-days: 2
+          if-no-files-found: warn

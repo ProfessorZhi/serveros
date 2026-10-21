@@ -1,0 +1,8 @@
+{
+  "apps": {
+    "serveros-fleet": {
+      "id": "plugin_asdk_app_FIXTURE_PLACEHOLDER",
+      "mcp": "https://example.invalid/mcp"
+    }
+  }
+}

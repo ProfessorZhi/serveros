@@ -148,6 +148,61 @@ devices:
     legacy_ids: []
     enrollment: enrolled
 
+  # ---------------------------------------------------------------------------
+  # Enrolled 2026-10-12. Dell LLM Lab: a GPU compute box, and a machine that
+  # shares its maker with the Windows laptop already in this file.
+  #
+  # A new device, not a rename. This is `personal-dell`'s own rule applied
+  # again -- "two Windows laptops that look alike are still two machines" --
+  # and it does not weaken because the two now differ in platform: the display
+  # names resemble each other because the hardware does, and nothing about
+  # hardware is an identity. `legacy_ids` is empty because this machine has
+  # never been known here by another name, and an empty list is that answer
+  # rather than a placeholder waiting to be filled.
+  #
+  # What is deliberately NOT here, and it is the same list as everywhere else:
+  # the corporate asset name this machine is known by, its address, its SSH
+  # locator, its tokens. `device-contract.yaml` puts those in
+  # `forbidden_public_fields`, and this is the file every "who is in the fleet"
+  # question reads. The asset name is how a person finds the machine in a rack;
+  # it is not how the fleet identifies it, and a registry keyed by it would
+  # stop resolving the moment the rack was relabelled. Both of those belong in
+  # the local-only operator binding, which is where the ports are too.
+  #
+  # `roles: [gpu-compute-worker, development-worker]` says what this device is
+  # FOR. It is not `development-primary` and not `fleet-controller-primary`:
+  # Tokyo is where the fleet is developed and Beijing is where it is
+  # controlled, and a third device claiming either role is the collision this
+  # file refuses on sight. Roles are not ranks and nothing resolves by them.
+  #
+  # `agents` lists only `claude-code`, and `runtime_bindings` is the same fact
+  # in the spelling that is authoritative for it. Codex is not installed on
+  # this machine. The versions and install paths measured there stay out of
+  # this file on purpose: an authored entry may say that a runtime family
+  # belongs on a device and when that was decided, and a version written here
+  # would be an observation nobody is keeping current, sitting where a reader
+  # would take it for one.
+  #
+  # `ownership: company` is this machine's own answer and NOT copied from the
+  # Windows Dell above it, whose answer is `personal`. The hardware is the
+  # operator's own; what this field records is who the device belongs to as a
+  # fleet fact, and for this machine that is the company.
+  # ---------------------------------------------------------------------------
+  - device_ref: device:llm-lab-dell
+    device_id: llm-lab-dell
+    display_name: Dell-LLM-Lab
+    platform: linux
+    os_family: linux-ubuntu-26.04
+    ownership: company
+    roles: [gpu-compute-worker, development-worker]
+    environment_profile: linux-gpu-compute
+    agents: [claude-code]
+    runtime_bindings:
+      - runtime_ref: agent-runtime:claude-code
+        declared_at: 2026-10-12
+    legacy_ids: []
+    enrollment: enrolled
+
 
 rules:
   - "device_id is stable. Renaming a device is an alias addition, not a

@@ -1,0 +1,7 @@
+{
+  "name": "serveros-fleet",
+  "version": "0.1.1",
+  "interface": {
+    "displayName": "ServerOS Fleet"
+  }
+}

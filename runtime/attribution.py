@@ -75,10 +75,26 @@ _HERE = Path(__file__).resolve().parent
 CONTRACT = _HERE / "attribution-contract.yaml"
 
 # Kernel clock tick. `utime`/`stime` in /proc/<pid>/stat are in these units.
-try:
-    CLK_TCK = os.sysconf("SC_CLK_TCK")
-except (ValueError, OSError):  # pragma: no cover - not reachable on Linux
-    CLK_TCK = 100
+#
+# Windows has no `os.sysconf` AT ALL, so the probe is a `getattr` rather than
+# a bare call: the missing name is an AttributeError, and an uncaught one here
+# fails the IMPORT. Every reader that loads this module — `serverosctl --help`
+# among them — would then fail before it asked a single question. A platform
+# without the call is UNKNOWN (`None`), never a default 100 Hz: inventing a
+# tick would turn "could not measure" into a plausible CPU percentage.
+def _sysconf(name: str) -> int | None:
+    """One sysconf value, or None where the platform has no `sysconf`."""
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None
+    try:
+        value = sysconf(name)
+    except (ValueError, OSError):
+        return None
+    return value if value > 0 else None
+
+
+CLK_TCK = _sysconf("SC_CLK_TCK")
 
 _DEFAULT_TIMEOUT = 8.0
 
@@ -736,7 +752,8 @@ def parse_cmdline(raw: str) -> dict:
     return {"argv": argv, "executable": argv[0] if argv else None}
 
 
-def lifetime_cpu_percent(utime: int, stime: int, starttime: int, uptime: float) -> float:
+def lifetime_cpu_percent(utime: int, stime: int, starttime: int,
+                         uptime: float) -> float | None:
     """Average CPU over the process's whole life, as a percentage of one core.
 
     Deliberately NOT an instantaneous sample.
@@ -749,11 +766,18 @@ def lifetime_cpu_percent(utime: int, stime: int, starttime: int, uptime: float) 
     kernel already recorded.
 
     Returns percent-of-one-core, so 407.0 means four cores' worth.
+
+    None when the platform does not report a clock tick. The caller then has
+    an UNKNOWN, which is the honest answer; a default tick would fabricate a
+    CPU percentage from counters it cannot convert.
     """
-    elapsed = uptime - (starttime / CLK_TCK)
+    tick = CLK_TCK
+    if tick is None:
+        return None
+    elapsed = uptime - (starttime / tick)
     if elapsed <= 0:
         return 0.0
-    return round(((utime + stime) / CLK_TCK) / elapsed * 100.0, 1)
+    return round(((utime + stime) / tick) / elapsed * 100.0, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +983,12 @@ class LiveHost:
             raise AttributionError("cannot read /proc/uptime") from exc
 
     def page_size(self) -> int:
-        return os.sysconf("SC_PAGE_SIZE")
+        size = _sysconf("SC_PAGE_SIZE")
+        if size is None:
+            raise AttributionError(
+                "SC_PAGE_SIZE is unavailable on this platform, so RSS cannot "
+                "be measured")
+        return size
 
     def uid_name(self, uid: int) -> str:
         try:
@@ -1001,6 +1030,11 @@ def process_table(host, *, container_index: dict[str, str] | None = None) -> dic
     Processes that vanish mid-walk are skipped rather than reported: a PID
     that exited between `listdir` and the read is not an unreadable process.
     """
+    tick = CLK_TCK
+    if tick is None:
+        raise AttributionError(
+            "SC_CLK_TCK is unavailable on this platform, so process ages and "
+            "CPU percentages cannot be measured")
     uptime = host.uptime()
     page = host.page_size()
     table: dict[int, ProcessFacts] = {}
@@ -1062,7 +1096,7 @@ def process_table(host, *, container_index: dict[str, str] | None = None) -> dic
             # already made. Every consumer downstream then works on the table
             # alone — which is what lets `aggregate` and the group tests be
             # pure functions with no host at all.
-            age_seconds=round(uptime - (stat["starttime"] / CLK_TCK), 1),
+            age_seconds=round(uptime - (stat["starttime"] / tick), 1),
         )
     return table
 
@@ -1426,8 +1460,11 @@ def attribute_process(pid: int, host, *, table=None, net_tcp=None,
 
 
 def _age_seconds(starttime: int, host) -> float | None:
+    tick = CLK_TCK
+    if tick is None:
+        return None
     try:
-        return round(host.uptime() - (starttime / CLK_TCK), 1)
+        return round(host.uptime() - (starttime / tick), 1)
     except AttributionError:
         return None
 

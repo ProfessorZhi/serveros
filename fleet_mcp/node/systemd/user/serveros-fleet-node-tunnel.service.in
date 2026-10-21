@@ -1,0 +1,44 @@
+# Template. install.sh --systemd renders this into
+# $XDG_CONFIG_HOME/systemd/user/serveros-fleet-node-tunnel.service and stops
+# there: it does not enable, start or reload anything.
+#
+# The rendered file names an SSH identity by path and a known_hosts by path.
+# Neither is a secret: a private key is a file, and this unit names where it
+# lives without containing it. The unit deliberately does NOT name any key
+# material, token or passphrase, and start-tunnel.sh would refuse to read one
+# from an environment variable anyway.
+#
+# This unit and the connector unit are independent on purpose. The tunnel
+# forwards a port; whether anything answers on it is the connector's business.
+# An After= between them would mean a connector that fails to start takes the
+# tunnel down with it, and a device whose tunnel is down is a device the Fleet
+# host cannot even learn the state of.
+
+[Unit]
+Description=ServerOS Fleet node reverse tunnel supervisor (outbound)
+Documentation=file:@REPO_ROOT@/fleet_mcp/node/README.linux.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The supervisor loops internally: it opens the tunnel, and when the tunnel
+# exits it reads the reason, decides whether to back off, and opens it again.
+# So this unit is a second layer over a process that already retries, and
+# Restart=always is here for the case where the supervisor itself dies.
+ExecStart=@REPO_ROOT@/fleet_mcp/node/start-tunnel.sh --ssh-host @SSH_HOST@ --remote-port @REMOTE_PORT@ --local-port @LOCAL_PORT@ --identity @IDENTITY@ --known-hosts @KNOWN_HOSTS@
+Restart=always
+RestartSec=15
+
+# SIGTERM is handled: the supervisor kills its own ssh child and removes the pid
+# file before exiting, so `systemctl --user stop` does not leave a tunnel
+# running that nothing has a record of. The timeout is generous because the
+# supervisor is also allowed to be in the middle of a backoff sleep.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
