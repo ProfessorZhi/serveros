@@ -40,6 +40,7 @@
 #include "supervisor/action_gate.hpp"
 #include "supervisor/action_journal.hpp"
 #include "supervisor/admission.hpp"
+#include "supervisor/facts.hpp"
 #include "supervisor/state_directory.hpp"
 #include "supervisor/lease.hpp"
 #include "supervisor/manifest.hpp"
@@ -97,11 +98,15 @@ void print_usage(std::FILE* out) {
                  "                         different thing from this one.\n"
                  "  --max-ticks N          stop after N ticks. For tests; a unit must not\n"
                  "                         pass it.\n"
-                 "  --enable-actions       ACT. Refused with --serve in this stage, and it\n"
-                 "                         REQUIRES --lease, --link-state and --agent-state:\n"
-                 "                         acting without a single-writer guarantee, or without\n"
-                 "                         knowing whether the host is connected or the service\n"
-                 "                         is in use, is the failure those flags exist for.\n"
+                 "  --enable-actions       ACT. REQUIRES --lease, --link-state and\n"
+                 "                         --agent-state. With --serve it additionally REQUIRES\n"
+                 "                         --facts, because a resident loop cannot act on a fact\n"
+                 "                         stated once at startup.\n"
+                 "  --facts FILE           per-tick facts document (serveros/native-core-facts.v1),\n"
+                 "                         re-read on every tick of --serve --enable-actions.\n"
+                 "                         Absent, stale, malformed or unreadable leaves link and\n"
+                 "                         agent unknown, which refuses rather than assumes.\n"
+                 "  --facts-max-age-seconds N  how old the facts document may be (default 90).\n"
                  "  --lease FILE           single-writer lease. Taken with flock, never\n"
                  "                         waited for, and released when this process exits.\n"
                  "  --link-state up|down|unknown\n"
@@ -221,6 +226,12 @@ int main(int argc, char** argv) {
     // `known = false`, is NOT a refusal — see `ServiceRuntime` for why the one
     // optional fact is the one whose absence is safe.
     nodecore::supervisor::ServiceRuntime service_runtime;
+    //: The resident acting Core's facts document. In `--serve --enable-actions`
+    //: the facts above are NOT used: they state the instant the process started,
+    //: and a loop that reuses them is a loop that hard-codes LINK_UP/AGENT_IDLE
+    //: for as long as it runs. This file is re-read on every tick instead.
+    std::string facts_path;
+    long facts_max_age_seconds = 90;
     bool act = false;
     bool serve = false;
     bool no_status_socket = false;
@@ -334,6 +345,14 @@ int main(int argc, char** argv) {
             max_ticks = std::strtol(value.c_str(), nullptr, 10);
         } else if (flag == "--allow-unit") {
             allowed_units.push_back(value);
+        } else if (flag == "--facts") {
+            facts_path = value;
+        } else if (flag == "--facts-max-age-seconds") {
+            facts_max_age_seconds = std::strtol(value.c_str(), nullptr, 10);
+            if (facts_max_age_seconds < 1 || facts_max_age_seconds > 3600) {
+                std::fprintf(stderr, "--facts-max-age-seconds must be in [1, 3600]\n");
+                return 2;
+            }
         } else if (flag == "--trigger") {
             if (value == "boot") {
                 trigger = nodecore::supervisor::Trigger::Boot;
@@ -354,13 +373,28 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (serve && act) {
-        // Refused rather than silently downgraded: a caller that asked for a
-        // resident, acting Core must be told that this stage does not build one,
-        // not left believing it got it.
-        std::fprintf(stderr,
-                     "--serve and --enable-actions together are refused in this stage: the resident "
-                     "Core observes. A resident process that acts is a change of authority and "
-                     "needs its own review, not a flag\n");
+        // A resident process that acts is a change of authority, and the thing
+        // that made the one-shot version honest was that its facts were stated
+        // by the caller for THAT pass. A loop cannot inherit that: a `--link-state`
+        // given at startup is a claim about a single instant, and reusing it for
+        // the life of the process is how `LINK_UP` and `AGENT_IDLE` become
+        // hard-coded. So the resident acting form is admitted only with a facts
+        // document it re-reads every tick; the persisted budget and the
+        // single-writer lease are still required, and the existing ActionGate
+        // below enforces them unchanged.
+        if (facts_path.empty()) {
+            std::fprintf(stderr,
+                         "--serve and --enable-actions require --facts FILE: a resident Core that "
+                         "acts must re-read link and agent facts every tick. A fact given once at "
+                         "startup is a claim about that instant and nothing later\n");
+            return 2;
+        }
+    }
+    if (!facts_path.empty() && !(serve && act)) {
+        // Refused rather than ignored: a caller who passed --facts believes the
+        // loop is using it, and silently not doing so is the failure mode this
+        // whole path exists to avoid.
+        std::fprintf(stderr, "--facts only applies to --serve --enable-actions\n");
         return 2;
     }
     if (!serve && interval_seconds != 60) {
@@ -382,8 +416,30 @@ int main(int argc, char** argv) {
         nodecore::supervisor::ActionGateInput gate;
         gate.act = true;
         gate.have_lease = !lease_path.empty();
-        gate.link_known = link.known;
-        gate.agent_known = agent.known;
+        if (serve && !facts_path.empty()) {
+            // The facts document IS how the resident path knows these. Asking
+            // for the same fact again as a startup flag would reintroduce the
+            // one-shot claim this path exists to remove -- and would let a
+            // caller pass `up` once and never be asked again.
+            nodecore::supervisor::FactsOptions facts_options;
+            facts_options.max_age_seconds = facts_max_age_seconds;
+            std::string facts_text;
+            const bool readable = read_file(facts_path, facts_text);
+            const nodecore::supervisor::HostFacts opening =
+                nodecore::supervisor::load_host_facts(
+                    readable ? facts_text.c_str() : nullptr,
+                    static_cast<long>(std::time(nullptr)), facts_options);
+            gate.link_known = opening.link.known;
+            gate.agent_known = opening.agent.known;
+            if (!opening.usable) {
+                std::fprintf(stderr,
+                             "core facts unusable at startup (%s): %s\n",
+                             opening.code.c_str(), opening.reason.c_str());
+            }
+        } else {
+            gate.link_known = link.known;
+            gate.agent_known = agent.known;
+        }
         gate.state_path = state_path;
         const nodecore::supervisor::ActionGateVerdict verdict =
             nodecore::supervisor::check_action_gate(gate);
@@ -434,8 +490,9 @@ int main(int argc, char** argv) {
 
     nodecore::supervisor::Recovery recovery;
     //: Set inside the tick lambda when the state cannot be persisted. The
-    //: single-pass path turns it into exit 2; the resident path never writes
-    //: state because it is observe-only.
+    //: single-pass path turns it into exit 2. The resident path stops acting for
+    //: the rest of the run: a budget that could not be recorded cannot bound the
+    //: next attempt, so continuing would act without one.
     bool state_write_failed = false;
     //: Set when an action could not be issued from a durable attempt (lease or
     //: verb refusal). The single-pass path turns it into exit 2 as well.
@@ -530,6 +587,26 @@ int main(int argc, char** argv) {
 
     const auto observe_and_plan = [&](bool allow_execution) -> nodecore::supervisor::TickOutcome {
         const long tick_started = monotonic_seconds();
+        //: Resident acting re-reads its facts EVERY tick, here, before the plan
+        //: is built. `usable == false` (absent, unreadable, stale, malformed)
+        //: leaves link and agent unknown, and the admission gate refuses on
+        //: unknown -- so a stopped writer stops the loop from acting rather than
+        //: silently keeping the last good answer.
+        nodecore::supervisor::HostFacts tick_facts;
+        const bool have_tick_facts = serve && act && !facts_path.empty();
+        if (have_tick_facts) {
+            nodecore::supervisor::FactsOptions facts_options;
+            facts_options.max_age_seconds = facts_max_age_seconds;
+            std::string facts_text;
+            const bool readable = read_file(facts_path, facts_text);
+            tick_facts = nodecore::supervisor::load_host_facts(
+                readable ? facts_text.c_str() : nullptr,
+                static_cast<long>(std::time(nullptr)), facts_options);
+            if (!tick_facts.usable) {
+                std::fprintf(stderr, "core facts unusable (%s): %s\n",
+                             tick_facts.code.c_str(), tick_facts.reason.c_str());
+            }
+        }
         nodecore::supervisor::PlanInput input;
         input.manifest = &manifest;
         input.trigger = trigger;
@@ -588,9 +665,32 @@ int main(int argc, char** argv) {
                     gate.installed = nodecore::supervisor::unit_is_installed(found->second);
                     gate.masked = found->second.load_state == "masked";
                 }
-                gate.link = link;
-                gate.agent = agent;
+                //: In resident acting the tick's own reading wins, because it is
+                //: the only one that is true now. The one-shot flags are still
+                //: read so the one-shot path is unchanged.
+                gate.link = have_tick_facts ? tick_facts.link : link;
+                gate.agent = have_tick_facts ? tick_facts.agent : agent;
                 gate.runtime = service_runtime;
+                if (have_tick_facts) {
+                    if (const nodecore::supervisor::ServiceFact* fact =
+                            tick_facts.service(action.service_id)) {
+                        gate.runtime = fact->runtime;
+                        if (fact->maintenance) {
+                            // A person put this service into maintenance. Acting
+                            // is undoing their decision, so it is refused here
+                            // rather than discovered by spending the budget.
+                            std::fprintf(stderr, "not acting on %s: MAINTENANCE (%s)\n",
+                                         action.unit.c_str(),
+                                         fact->maintenance_reason.empty()
+                                             ? "declared by the facts document"
+                                             : fact->maintenance_reason.c_str());
+                            plan.refusals.push_back(
+                                {action.service_id, "MAINTENANCE",
+                                 "the owner's facts document declares this service in maintenance"});
+                            continue;
+                        }
+                    }
+                }
                 // The link gate is per-service: a service declared
                 // `offline_recoverable` is recovered locally and is not refused
                 // on a link that is not about it. Everything else keeps the
@@ -804,8 +904,11 @@ int main(int argc, char** argv) {
         options.tick_seconds = interval_seconds;
         options.max_ticks = max_ticks;
 
-        const nodecore::supervisor::TickFn tick = [&observe_and_plan] {
-            return observe_and_plan(false);  // resident is ALWAYS observe-only here
+        const nodecore::supervisor::TickFn tick = [&observe_and_plan, act] {
+            // Acting in the resident loop is admitted only when `--enable-actions`
+            // was given, which above also required `--state`, `--lease` and a
+            // per-tick `--facts` document. Observe-only remains the default.
+            return observe_and_plan(act);
         };
         const nodecore::supervisor::ServeReport report = nodecore::supervisor::run_serve(
             options, tick, hooks);
