@@ -291,6 +291,7 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         ::SetFileInformationByHandle(owned, FileDispositionInfo, &disposition, sizeof(disposition));
     };
     DWORD n = 0;
+    detail::state_input_bytes = static_cast<DWORD>(text.size());
     BY_HANDLE_FILE_INFORMATION created{};
     if (!owner_only(file, sid, false) ||
         !::WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &n, nullptr) ||
@@ -300,6 +301,7 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         discard_owned_temp(file);
         return false;
     }
+    detail::state_written_bytes = n;
     // Rename the exact file handle we created, never reopen it by pathname.
     // POSIX replacement keeps old readers on their old immutable inode.
     detail::Handle prior(::CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
@@ -324,15 +326,25 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         discard_owned_temp(file);
         return false;
     }
-    const DWORD name_bytes = static_cast<DWORD>(path.size() * sizeof(wchar_t));
+    detail::Handle destination_directory(::CreateFileW(
+        root.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | FILE_TRAVERSE,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!destination_directory.valid() || !owner_only(destination_directory, sid, true)) {
+        detail::state_fault("RENAME_DIRECTORY_UNTRUSTED");
+        discard_owned_temp(file);
+        return false;
+    }
+    const std::wstring basename(name);
+    const DWORD name_bytes = static_cast<DWORD>(basename.size() * sizeof(wchar_t));
     const DWORD info_bytes = static_cast<DWORD>(offsetof(FILE_RENAME_INFO, FileName)) + name_bytes;
     std::vector<std::max_align_t> storage((info_bytes + sizeof(std::max_align_t) - 1) /
                                           sizeof(std::max_align_t));
     auto *rename = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
     rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
-    rename->RootDirectory = nullptr;
+    rename->RootDirectory = destination_directory;
     rename->FileNameLength = name_bytes;
-    ::CopyMemory(rename->FileName, path.data(), name_bytes);
+    ::CopyMemory(rename->FileName, basename.data(), name_bytes);
     if (!::SetFileInformationByHandle(file, FileRenameInfoEx, rename, info_bytes)) {
         auto error = ::GetLastError();
         detail::state_fault(error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_FUNCTION ||
@@ -349,9 +361,38 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         return false;
     }
     BY_HANDLE_FILE_INFORMATION observed{};
-    if (::GetFileInformationByHandle(file, &observed))
-        detail::state_written_file_id =
-            (static_cast<std::uint64_t>(observed.nFileIndexHigh) << 32) | observed.nFileIndexLow;
+    if (!::GetFileInformationByHandle(file, &observed)) {
+        detail::state_fault("POST_RENAME_ID_UNKNOWN");
+        return false;
+    }
+    detail::state_written_file_id =
+        (static_cast<std::uint64_t>(observed.nFileIndexHigh) << 32) | observed.nFileIndexLow;
+    detail::state_writer_size = observed.nFileSizeLow;
+    detail::Handle verify(::CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                        nullptr));
+    BY_HANDLE_FILE_INFORMATION reopened{};
+    DWORD read = 0;
+    std::string confirmed(text.size(), '\0');
+    if (!verify.valid() || !owner_only(verify, sid, false) ||
+        !::GetFileInformationByHandle(verify, &reopened)) {
+        detail::state_fault("PUBLISH_READBACK_OPEN_UNKNOWN");
+        return false;
+    }
+    detail::state_verify_file_id =
+        (static_cast<std::uint64_t>(reopened.nFileIndexHigh) << 32) | reopened.nFileIndexLow;
+    detail::state_verify_size = reopened.nFileSizeLow;
+    bool exact = observed.dwVolumeSerialNumber == reopened.dwVolumeSerialNumber &&
+                 detail::state_written_file_id == detail::state_verify_file_id &&
+                 reopened.nFileSizeHigh == 0 && reopened.nFileSizeLow == text.size() &&
+                 ::ReadFile(verify, confirmed.data(), static_cast<DWORD>(confirmed.size()), &read,
+                            nullptr) &&
+                 read == confirmed.size() && confirmed == text;
+    if (!exact) {
+        detail::state_fault("PUBLISH_READBACK_MISMATCH_UNKNOWN");
+        return false;
+    }
     return true;
 }
 std::string sha256(const std::string &text) {

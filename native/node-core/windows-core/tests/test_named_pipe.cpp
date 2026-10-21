@@ -211,11 +211,25 @@ int main() {
                 if (!first)
                     std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
                                  detail::state_error);
+                std::fprintf(stderr,
+                             "PUBLISH1 input=%lu written=%lu writer_size=%lu verify_size=%lu "
+                             "ids=%llu,%llu\n",
+                             detail::state_input_bytes, detail::state_written_bytes,
+                             detail::state_writer_size, detail::state_verify_size,
+                             static_cast<unsigned long long>(detail::state_written_file_id),
+                             static_cast<unsigned long long>(detail::state_verify_file_id));
                 CHECK(first);
                 auto second = publish_windows_desired(manifest + "  ");
                 if (!second)
                     std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
                                  detail::state_error);
+                std::fprintf(stderr,
+                             "PUBLISH2 input=%lu written=%lu writer_size=%lu verify_size=%lu "
+                             "ids=%llu,%llu\n",
+                             detail::state_input_bytes, detail::state_written_bytes,
+                             detail::state_writer_size, detail::state_verify_size,
+                             static_cast<unsigned long long>(detail::state_written_file_id),
+                             static_cast<unsigned long long>(detail::state_verify_file_id));
                 CHECK(second);
                 if (reader != INVALID_HANDLE_VALUE) {
                     std::string old_contents(manifest.size(), '\0');
