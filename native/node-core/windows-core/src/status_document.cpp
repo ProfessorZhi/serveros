@@ -21,13 +21,11 @@ nodecore::Json identity_verdict(const std::string& claimed, const std::string& r
     return verdict;
 }
 
-//: The route this build does NOT have. A constant, not a computation: a later
-//: change that wants to claim a compiled DACL/token route has to edit this line
-//: and the test that pins it.
+// Compiled transport capability, not an assertion that a pipe is bound.
 nodecore::Json ipc_route() {
     nodecore::Json ipc = nodecore::Json::object();
-    ipc.set("status", nodecore::Json::string(kIpcStatusUnsupported));
-    ipc.set("reason", nodecore::Json::string(kIpcReasonUnverified));
+    ipc.set("status", nodecore::Json::string(windows_status_ipc_status()));
+    ipc.set("reason", nodecore::Json::string(windows_status_ipc_reason()));
     return ipc;
 }
 

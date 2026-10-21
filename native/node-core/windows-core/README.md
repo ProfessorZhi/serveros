@@ -1,54 +1,77 @@
-# The Windows native Core — the SCM side
+# Windows Core: local status and bounded recovery
 
-**Nothing here is a working Windows binary, and nothing here is a Windows
-reading.** This directory holds the part of the Windows adapter that is portable:
-a pure parser and a typed state machine for what the Service Control Manager says
-about a service, plus the closed vocabulary the Linux Core and the Windows Core
-share.
+This target contains actual `_WIN32` SCM/Task Scheduler and named-pipe adapters,
+plus portable protocol/recovery policy tests. Cross-compiling proves the Win32
+code compiles and links; Linux tests do not prove Windows behavior.
 
-| part | status |
-|---|---|
-| `scm_status.cpp` — the parser and the state machine | **BUILT AND TESTED on Linux**. Text in, struct out; none of it is platform-specific. |
-| `status_document.cpp` — the status envelope and its schema | **BUILT AND TESTED on Linux**. A value in, JSON out; `contract/windows-core-status.v1.schema.json` is closed and read by the test. |
-| the `_WIN32` half — the four SCM query calls in `win32_scm.cpp` | **HOSTED_WINDOWS_BUILD when its workflow passes.** `.github/workflows/serveros-native-windows-contract.yml` compiles this translation unit with MSVC on `windows-latest`, validates the constants against `<winsvc.h>`, and asserts the `_WIN32` branch is present. It never calls the runner's SCM, and the Linux build still does not compile this half. |
-| the named pipe, DACL and token check | **NOT IMPLEMENTED.** The status document reports the IPC route as `UNSUPPORTED`; a security descriptor that has never been compiled is not a guarantee. |
-| a live Windows reading | **NOT RUN.** A later, separately authorised step (issue #246). |
+## Components
 
-`HOSTED_WINDOWS_BUILD` is not a synonym for "working Windows Core": it says the
-`_WIN32` half compiles and its synthetic suites pass, nothing more. It is not
-`REAL_DEVICE`, not `CLIENT_E2E`, and not a reading of any user's machine. No
-Linux fixture in this tree may be presented as a measurement of a Windows host.
+- `windows-core-status serve [service ...]` reads at most 16 explicitly named
+  local SCM services before binding a current-user status pipe. It serves a fixed
+  snapshot for at most 30 seconds / 32 connections, with 2 second transactions.
+  Snapshot freshness is NOT_ASSERTED; refresh by launching a fresh producer.
+- `windows-core-status read PINNED_SID PINNED_PID PINNED_CREATION_TIME` uses the
+  trusted local launcher's process identity. The launcher must capture stdout
+  from its own child process and compare the receipt with its retained OS process
+  handle. Never discover/trust a server identity from an unauthenticated peer.
+- `status_pipe.cpp` uses an explicit protected owner-only DACL,
+  PIPE_REJECT_REMOTE_CLIENTS and FILE_FLAG_FIRST_PIPE_INSTANCE. Server checks
+  the impersonated client token SID; client checks the server PID, creation time
+  and process token SID before sending. SID text in payload never authenticates.
+  Frames are uint32 little-endian length plus at most 64 KiB. Exact `status.v1`
+  request and bounded `received.v1` receipt prevent unread-response truncation
+  without unbounded FlushFileBuffers. One absolute deadline spans request,
+  authentication, response and receipt. No mutation verb exists on this pipe.
+- `RecoveryEngine` takes an immutable trusted local allowlist: CloudCli,
+  Connector and Tunnel roles map to exact SCM names or Task Scheduler paths.
+  Empty/disabled grants act on nothing. Requests select roles, never shell
+  commands, paths, executable arguments, other accounts or remote hosts.
+- `Win32RecoveryBackend` obtains actual SERVICE_START/query rights; SCM account
+  SID must equal current process SID. Task Scheduler uses local COM Connect,
+  actual execute access check, registered current-user principal,
+  TASK_LOGON_INTERACTIVE_TOKEN, TASK_RUNLEVEL_LUA and TASK_INSTANCES_IGNORE_NEW. StartService/RunEx
+  is the only effect. No service stop, task stop, registration/configuration,
+  credential, elevation or shell operation is implemented.
+- Manual disabled, needs login, busy, unknown/unreadable state and failed grants
+  refuse. Running-but-functionally-failed units refuse automatic restart, to
+  preserve active work. A trusted owner must supply `FunctionalProbe`; there is
+  no built-in fake success or equation of SCM RUNNING with functional health.
+- `Win32RecoveryStore` resolves LocalAppData through the OS and creates protected
+  owner-only ServerOS/Core state. Existing roots/files must pass DACL/owner,
+  reparse and link checks. A permanent per-target lock spans read, preclaim,
+  action, functional retest and outcome. Attempts persist across restarts.
+  Complete flushed records replace the previous record atomically on the same
+  volume; a crash-left `.next` refuses further writes instead of overwriting it.
+  No caller chooses a state directory. A lock created without a committed record
+  is a conservative refusal on next process, not a budget reset.
+- Three attempts/hour, 60/300/900 second backoff and three-failure circuit match
+  the existing Core semantics. Future/rollback clocks and corrupt state refuse.
+  Native action errors with uncertain execution retain the durable pending claim;
+  `OUTCOME_UNKNOWN` is not retried automatically. There is no clear/reset API.
 
-## What it refuses, and why each is a refusal
+`ipc.status=AVAILABLE` means compiled transport support on Windows, not that a
+pipe is bound or a device identity is attested. Linux reports UNSUPPORTED.
+Principal/device claims remain UNKNOWN; authenticated OS IPC does not attest a
+Fleet device/account mapping.
 
-- **`O_NOFOLLOW` is refused as a Windows rule rather than translated.** A Windows
-  pipe has no symlink to follow and no mode bits; its protection is a DACL and
-  its peer identity comes from a client token. The Windows hazard is *instance
-  squatting*, which a POSIX rule copied over would not address.
-- **No verb.** `WindowsServiceQuery` has one method, `query`. There is no start,
-  stop, restart, `ChangeServiceConfig`, registry write or shell anywhere in this
-  directory — a type that cannot express a write cannot perform one.
-- **No remote host.** The contract has no field for one, so a caller cannot name
-  a machine. This is the Windows form of the rule `probe.hpp` already applies
-  when it refuses a non-loopback TCP target.
-- **`UNKNOWN` is never `STOPPED`.** A state word this version does not know, or
-  an answer with no `STATE` line, is `measured = false` with a reason.
-- **`MANUAL_STOP` is not `STOPPED`.** Both report `SERVICE_STOPPED`; only
-  `dwStartType = SERVICE_DISABLED` separates a service a person switched off from
-  one that happened to stop.
+## Build and validation
 
-## The vocabulary is shared with the Linux contract
+Configure this directory independently with CMake/C++20. Linux runs portable
+suites plus unsupported-platform checks. The hosted Windows workflow builds with
+MSVC and runs local pipe/ACL/token/timeout/squatting and durable-journal tests,
+using synthetic status and unique journal targets on the ephemeral runner. It
+never starts/stops a service or task. Cross-build with a Windows CMake toolchain
+compiles/links all actual SDK branches, but does not execute them.
 
-`windows_admission_for` returns the constants declared in
-`supervisor/admission.hpp` — `kAdmitMasked`, `kAdmitNeedsLogin`,
-`kAdmitNotInstalled`, `kAdmitInstallStateUnknown` — compared against those
-constants by the tests, so a rename on the Linux side fails on this side rather
-than silently giving a Fleet reader two spellings for one fact.
+Remaining owner integration: real local grant inventory and functional probes,
+trusted launch identity persistence, a host service wrapper/watch loop, and Fleet
+projection of this status. Actual Windows machine acceptance is NOT_RUN. This
+library and read-only binary do not install themselves or claim deployed
+self-healing. An interactive-token task whose user is logged out remains refused
+by native admission/run and must not trigger credential or logon changes.
 
-## Ownership
-
-This directory is the N2 lane's (issue #246). It shares exactly **one** file with
-the rest of the tree: a single `add_subdirectory(windows-core)` line in
-`native/node-core/CMakeLists.txt`. The Linux Core lane owns `supervisor/` and
-`core-lite/`, and a Windows adapter that edited either would be a lane collision
-rather than a feature.
+SDK references: [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew),
+[ImpersonateNamedPipeClient](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient),
+[GetNamedPipeServerProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid),
+[StartServiceW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicew),
+[IRegisteredTask::RunEx](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-iregisteredtask-runex).

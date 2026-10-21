@@ -1,28 +1,4 @@
-# The Windows native Core — platform source, built HERE only as far as it is
-# portable.
-#
-# WHAT THIS TARGET IS. A pure parser and a typed state machine for what the
-# Windows Service Control Manager says about a service, plus the contract for the
-# Core's own secured status shape. It compiles on Linux because none of it is
-# Windows-specific: the input is text, the output is a struct, and the process
-# that would produce that text is behind an interface.
-#
-# WHAT THIS TARGET IS NOT, AND MUST NOT BE PRESENTED AS. A working Windows
-# binary. The Linux build has no cross compiler (no x86_64-w64-mingw32-g++, no
-# clang-cl), so the `_WIN32` half — the named pipe, the DACL, the token check —
-# is not compiled there. The hosted Windows contract build (the workflow
-# `.github/workflows/serveros-native-windows-contract.yml`) DOES compile that
-# half with MSVC, but it never calls the runner's SCM; the live Windows reading
-# remains a separate, separately authorised step (issue #246).
-#
-# STANDALONE CONFIGURE. As a subdirectory of `native/node-core` this file borrows
-# `nodecore` and `nodecore_supervisor` from the Linux tree. Neither exists when
-# CMake is pointed at THIS directory, which is how the hosted Windows contract
-# build configures it: the Linux supervisor is not portable (systemd, /proc,
-# signalfd), and nothing here needs its compiled half — the shared vocabulary is
-# header-only and the only linked code is `nodecore::Json`. The standalone path
-# therefore defines the same target names from the portable pieces only. A
-# subdirectory build takes neither branch and keeps linking the real supervisor.
+# Standalone portable policy suites plus actual Win32 IPC/recovery adapters.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   cmake_minimum_required(VERSION 3.20)
   project(serveros_windows_core_contract LANGUAGES CXX VERSION 0.1.0)
@@ -45,11 +21,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 add_library(windows_core_scm STATIC
+  src/win32_store.cpp
+  src/win32_recovery.cpp
+  src/recovery.cpp
+  src/status_pipe.cpp
   src/scm_status.cpp
-  # The `_WIN32` half and its platform-neutral mapping. The file always compiles;
-  # the four API calls inside it are `#if defined(_WIN32)` and are NOT compiled
-  # here, because this host has no cross compiler. The fallback path — which IS
-  # compiled and tested — answers UNSUPPORTED_PLATFORM rather than an empty list.
+  # Native calls are _WIN32 gated; Linux tests exercise explicit refusals.
   src/win32_scm.cpp
   # The Task Scheduler vocabulary. Separate words, no SCM derivation.
   src/task_status.cpp
@@ -105,3 +82,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(test_windows_status_document PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME windows_core_status_document COMMAND test_windows_status_document)
+
+add_executable(test_windows_recovery tests/test_recovery.cpp)
+target_link_libraries(test_windows_recovery PRIVATE windows_core_scm)
+target_include_directories(test_windows_recovery PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+add_test(NAME windows_recovery_protocol COMMAND test_windows_recovery)
+
+if(WIN32)
+ target_link_libraries(windows_core_scm PUBLIC advapi32 taskschd ole32 oleaut32 uuid shell32)
+endif()
+
+add_executable(windows-core-status src/main.cpp)
+target_link_libraries(windows-core-status PRIVATE windows_core_scm)
+find_package(Threads REQUIRED)
+add_executable(test_windows_named_pipe tests/test_named_pipe.cpp)
+target_link_libraries(test_windows_named_pipe PRIVATE windows_core_scm Threads::Threads)
+target_include_directories(test_windows_named_pipe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+add_test(NAME windows_named_pipe_and_store COMMAND test_windows_named_pipe)
+set_tests_properties(windows_named_pipe_and_store PROPERTIES TIMEOUT 15)

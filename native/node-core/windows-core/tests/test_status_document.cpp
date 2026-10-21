@@ -303,8 +303,8 @@ void test_the_document_fits_a_closed_schema() {
     const Json* ipc = document.find("ipc");
     CHECK(ipc != nullptr && ipc->is_object());
     if (ipc != nullptr && ipc->is_object()) {
-        CHECK_EQ(text_of(*ipc, "status"), std::string(kIpcStatusUnsupported));
-        CHECK_EQ(text_of(*ipc, "reason"), std::string(kIpcReasonUnverified));
+        CHECK_EQ(text_of(*ipc, "status"), windows_status_ipc_status());
+        CHECK_EQ(text_of(*ipc, "reason"), windows_status_ipc_reason());
         // Exactly two keys: a later working route adds a field by editing the
         // schema and the test, not by quietly widening this object.
         CHECK_EQ(ipc->members.size(), std::size_t{2});
