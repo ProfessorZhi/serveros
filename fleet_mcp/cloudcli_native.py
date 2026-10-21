@@ -124,6 +124,30 @@ SESSION_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_SEND, GOV_CONTROL,
 #: The one class whose floor is stated over a PROJECT rather than a session.
 PROJECT_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_CREATE,)
 
+#: The READS whose disclosure the runtime also scopes to one session.
+#:
+#: A read is not session-addressed as a class: `session_read` names its session
+#: inside `arguments`, and `projects_list` addresses nothing at all. The approval
+#: register is the exception, and on the runtime's own terms rather than by
+#: symmetry: a device-wide list is every other principal's pending decisions, so
+#: `fleet.py` refuses an `approvals_list` that names no session and injects the
+#: session id into `arguments` before it enumerates. A schema that did not ask
+#: for `session_ref` therefore published a call its own runtime refuses — the
+#: same defect `session_reconfigure` and `approval_answer` were fixed for, with
+#: the sign flipped.
+SESSION_ADDRESSED_READS: frozenset[str] = frozenset({"approvals_list"})
+
+
+def is_session_addressed(native: "NativeTool") -> bool:
+    """Whether this tool's Fleet address is ONE session rather than a device.
+
+    One predicate, read by the schema builder for both the declared property and
+    the required key, so the two halves cannot disagree — which is exactly how a
+    tool came to require a key its own schema forbade.
+    """
+    return (native.governance in SESSION_ADDRESSED_GOVERNANCE
+            or native.name in SESSION_ADDRESSED_READS)
+
 
 @dataclass(frozen=True)
 class NativeTool:
@@ -493,8 +517,9 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     """The mirrored tool's inputSchema for one device.
 
     The native tool's OWN parameters, carried UNCHANGED under `arguments`, with
-    the Fleet outer fields ADDED: `device_ref` always, and `session_ref` /
-    `project` for the writes whose floor needs them. `required`, `properties`
+    the Fleet outer fields ADDED: `device_ref` always, `session_ref` for every
+    call whose floor is stated over one session (whether it writes or, like
+    `approvals_list`, only reads), and `project` for the writes that mint one. `required`, `properties`
     and a nullable type are the native tool's; the outer layer only adds keys and
     never rewrites a native one. When `device_schema` is `None` the outer layer
     still declares `arguments` as an open object, because there is no native
@@ -511,7 +536,7 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     outer: dict[str, Any] = {
         "device_ref": {"type": "string", "description": "Which device to call."},
     }
-    if native.governance in SESSION_ADDRESSED_GOVERNANCE:
+    if is_session_addressed(native):
         outer["session_ref"] = {
             "type": "string",
             "description": ("The session this verb is addressed to, as "
@@ -546,12 +571,12 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     # without — a caller that omits the payload is refused at the outer schema
     # rather than at the device.
     outer_required = ["device_ref"] + (["arguments"] if native_required else [])
-    # LOW-13: the Fleet address a write's floor is stated over is REQUIRED at
+    # LOW-13: the Fleet address a call's floor is stated over is REQUIRED at
     # runtime, so the schema says so — a schema-driven client learns it from the
     # schema rather than by trying. Read from the SAME predicate that declared
     # the property above, so `required` can never name a key `properties` does
     # not carry.
-    if native.governance in SESSION_ADDRESSED_GOVERNANCE:
+    if is_session_addressed(native):
         outer_required.append("session_ref")
     if native.governance in PROJECT_ADDRESSED_GOVERNANCE:
         outer_required.append("project")
