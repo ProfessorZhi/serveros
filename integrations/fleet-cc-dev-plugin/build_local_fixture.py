@@ -20,7 +20,7 @@ So the artefacts stay apart:
 | may be installed | no | no |
 
 What it shares with the development adapter is the one thing that must not
-fork: the five `SKILL.md` files are read from
+fork: the shared `SKILL.md` files are read from
 `integrations/fleet-v1-first-install/plugin/skills/` and written byte for byte.
 A test asserts that identity.
 
@@ -82,7 +82,7 @@ Rules:
   it to another user.
 - It is not a statement that the Fleet ingress works. It never opens a socket
   and never contacts a device.
-- The five Skills are the canonical bytes from
+- The shared Skills are the canonical bytes from
   `integrations/fleet-v1-first-install/plugin/skills/`; this builder does not
   re-type them.
 - Every server answer that could be mistaken for a real observation carries

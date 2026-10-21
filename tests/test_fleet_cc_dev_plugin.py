@@ -3,9 +3,9 @@
 Three properties matter, and two of them are absences.
 
 The first is that **the skills have one source**. The adapter is a second
-distribution of the same five Skills, not a second copy of them: the generated
+distribution of the same shared Skills, not a second copy of them: the generated
 `SKILL.md` files are byte-identical to the ones the ChatGPT package ships, and a
-test that only counted five directories would pass on a generator that had
+test that only counted directories would pass on a generator that had
 re-typed them.
 
 The second absence is the **brand asset**. The two approved PNGs are a release

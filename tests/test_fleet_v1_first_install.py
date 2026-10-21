@@ -191,7 +191,8 @@ class BuildIt(unittest.TestCase):
         record = self.f.build()
         self.assertEqual(record["distribution"], "FIRST_INSTALL_RELEASE")
         self.assertEqual(record["mcp_url"], OBSERVED_URL)
-        self.assertEqual(len(record["skills"]), 5)
+        self.assertEqual(len(record["skills"]),
+                         len(builder.check_skills(HERE / "plugin")))
 
     def test_the_first_release_carries_mcp(self) -> None:
         """The property the whole builder exists for."""
@@ -758,7 +759,8 @@ class ThePresentationFieldsLiveWhereTheClientReadsThem(unittest.TestCase):
 
     def test_the_custom_namespace_is_still_allowed_for_provenance(self) -> None:
         record = self.f.build()
-        self.assertEqual(record["skills"].__len__(), 5)
+        self.assertEqual(record["skills"].__len__(),
+                         len(builder.check_skills(HERE / "plugin")))
 
     def test_passing_this_does_not_claim_a_render(self) -> None:
         """The check is about the manifest; rendering is a client behaviour."""

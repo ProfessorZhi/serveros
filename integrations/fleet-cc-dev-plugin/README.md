@@ -27,7 +27,7 @@ The **Skills are not duplicated**: the generator reads
 `integrations/fleet-v1-first-install/plugin/skills/` and writes those bytes into
 the plugin. The scope vocabulary comes from the same builder's `FLEET_SCOPES`, so
 there is one list rather than two that drift. `tests/test_fleet_cc_dev_plugin.py`
-pins the byte-identity, because a test that only counted five directories would
+pins the byte-identity, because a test that only counted directories would
 pass on a generator that had re-typed them.
 
 The absence of the approved PNGs blocks the **release build** and nothing else.
@@ -44,8 +44,12 @@ Claude Code **2.1.272**, `--plugin-dir`, from a clean working directory.
 | binding | `.mcp.json` — `{"type": "http", "url": …, "oauth": {"scopes": "…"}}` |
 
 `claude plugin validate` → **Validation passed** (also under `--strict`, with no
-warnings). `claude --plugin-dir … plugin details serveros-fleet-dev` → 5 Skills
-enumerated by name, **1 MCP server** registered.
+warnings). `claude --plugin-dir … plugin details serveros-fleet-dev` → the shared
+Skills enumerated by name, **1 MCP server** registered. Re-executed on
+2026-10-21 for the eight-Skill source: **8 Skills / 1 MCP server**, exit 0. The
+receipt is under Run `RUN-0042` at
+`operator-skills-20261021/package/cc-dev-plugin`, with
+`logs/claude-validate.log` and `logs/claude-plugin-details.log`.
 
 ### What that evidence is, and what it is not
 
@@ -82,7 +86,7 @@ Each is a separate fact, and none is discharged by another.
 
 | receipt | state | what it rests on |
 |---|---|---|
-| `LOCAL_CC_PLUGIN_LOADED` | **VERIFIED** | validate passed; `plugin details` listed 5 Skills and 1 MCP server |
+| `LOCAL_CC_PLUGIN_LOADED` | **VERIFIED on 2026-10-21 for the eight-Skill source** | `validate --strict` exit 0; `plugin details` listed **8 Skills and 1 MCP server** (Run `RUN-0042`). This is package load, not a tool list |
 | `NEXT_TOOLS_DISCOVERED` | **NOT ACHIEVED — `BLOCKED_BY_OWNER_OAUTH`** | unauthenticated `initialize` and `tools/list` both returned HTTP **401 `invalid_token`** with `www-authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`. No token was obtained and no consent was completed, so there is **no tool list** — this is a refusal, not a discovery |
 | `SKILL_BEHAVIOR_VERIFIED` | **PARTIAL — one item withdrawn as `FAILED_REQUIREMENT`** | a restricted model call answered from the Skills, but its self-healing answer was wrong: it called self-healing V2, and **V1 has bounded self-healing of approved services**. The Skills were corrected on this branch; the corrected text has **not** been re-run against a model, so that item is pending re-test |
 | `DEVICE_ACTIONS_TESTED` | **NOT_RUN** | no create/send/control attempted, and none was possible: no credential, `fleet:read` pinned, and `Task`/`Bash`/`Write`/`Edit` denied to the probe |
@@ -112,7 +116,7 @@ no one of them can be quoted for another:
 
 | claim | what is actually driven | what it cannot say |
 |---|---|---|
-| **package load** | the generated directory, structurally: a manifest, a typed binding, five Skills byte-identical to the one shared source | that any tool exists — the directory carries no tool *declaration* (`inputSchema` appears in no generated file), and the manifest and binding name no tool at all |
+| **package load** | the generated directory, structurally: a manifest, a typed binding, the shared Skills byte-identical to the one shared source | that any tool exists — the directory carries no tool *declaration* (`inputSchema` appears in no generated file), and the manifest and binding name no tool at all |
 | **an authenticated `tools/list`** | the real `HttpSurface` on loopback: 401 `invalid_token` with the `resource_metadata` challenge when unauthenticated, and 33 distinct names when the owner token is presented | that the credential may *do* them — 13 of the 33 are writes, and the advertised six scopes are not the two granted by default |
 | **an ability resolution** | the real `abilities/resolver.py`, which intersects eight inputs and knows nothing of `fleet_mcp` | anything about authority — no status is a grant, the record carries no `authorized`/`granted` field, and `UNKNOWN` is an answer rather than a pass |
 | **a session lifecycle** | the real `FleetService` over a fake device: an accepted send carries a run id and **no** run state; the state arrives from a separate `get_run` | that the run finished — and a read-only credential is refused `SCOPE_DENIED` before the device is reached at all |
@@ -181,9 +185,9 @@ python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
 `run_cc_client_e2e.py` writes `RECEIPT.json` / `RECEIPT.md` and keeps five
 claims apart:
 
-| receipt | measured on 2026-10-20, Claude Code 2.1.272 | what it is not |
+| receipt | measured on 2026-10-20 / re-run 2026-10-21, Claude Code 2.1.272 | what it is not |
 |---|---|---|
-| `PLUGIN_LOAD_OK` | `validate --strict` exit 0; `plugin details` listed **5 Skills / 1 MCP server** | not a tool list |
+| `PLUGIN_LOAD_OK` | `validate --strict` exit 0; `plugin details` listed **8 Skills / 1 MCP server** on 2026-10-21 (Run `RUN-0042`) | not a tool list |
 | `MCP_INITIALIZE_OK` | the real client sent `initialize` and `notifications/initialized`; the server answered `serveros-fleet-mcp` | not authentication |
 | `TOOLS_LIST_OK` | `tools/list` returned **33** names over the fixture's stdio | not the live Next surface, and not entitlement |
 | `AUTH_SCOPE` | a `fleet:read` principal discovered all 33; `fleet_send_to_session` was refused `SCOPE_DENIED`; the fake provider saw **0** sends | not a real token's grants |

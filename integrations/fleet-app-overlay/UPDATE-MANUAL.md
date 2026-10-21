@@ -35,6 +35,61 @@ Fleet 插件有两条互斥的分发路径，规则**相反**。混淆它们会�
 
 ---
 
+## 0.1 Skill/版本更新与头像/展示更新是两条边界
+
+这一节只处理 **App-backed 插件的 Skill / 版本 / payload 更新**。它不处理头像、
+`displayName` 或其它 presentation 字段；那些属于 **App/Creator owner**，本仓库
+的 overlay ZIP 不能证明自己可以改它们。在 Creator 侧真人读回之前，头像与展示
+更新一律是 **UNVERIFIED**。不要用“重新打个 ZIP”去绕过这个边界，也不要把
+`displayName` 当成 overlay 可以顺带修的字段。
+
+同 ID 更新必须有可执行的本地检查，而不是只看人眼：
+
+```sh
+# 1) 构建新 overlay；identity 字段由 baseline 钉住
+python3 integrations/fleet-app-overlay/build_overlay.py \
+    --source <source-tree> \
+    --baseline integrations/fleet-app-overlay/baseline.json \
+    --out <dist>
+
+# 2) 同 plugin_id、版本前进、旧 Skill 保留、archive hash 一致
+python3 integrations/fleet-app-overlay/package_update_check.py plan \
+    --previous <previous.release.json> \
+    --next <next.release.json> \
+    --out <plan.json>
+
+# 3) 真人/Creator readback 与 plan 对齐；这是 claim，不是本机观察
+python3 integrations/fleet-app-overlay/package_update_check.py readback \
+    --plan <plan.json> --observed <readback.json> --out <readback-result.json>
+
+# 4) 只确认 previous archive 是合法回滚目标，不执行回滚
+python3 integrations/fleet-app-overlay/package_update_check.py rollback \
+    --previous <previous.release.json> \
+    --current <next.release.json> \
+    --out <rollback.json>
+```
+
+没有 Creator 调用时，`verify_readback` 接受
+`OPERATOR_SUPPLIED_RECEIPT` 或 `SYNTHETIC_LOCAL_REHEARSAL`，并始终写
+`production_verified: false`；标成 `LIVE` 的 receipt 会被拒绝，因为本工具没有
+观察它。回滚检查只产出一个 target，不创建 release、不删除当前 release、不
+调用 Creator。
+
+本地演练（两个合成版本，无网络、无安装）：
+
+```sh
+python3 integrations/fleet-app-overlay/package_update_check.py rehearse \
+    --source tests/data/fleet-overlay-fixture \
+    --baseline integrations/fleet-app-overlay/baseline.json \
+    --out <rehearsal-dir>
+```
+
+它只证明本地 identity/版本/readback/rollback 规则成立；它不是一次真实 Creator
+更新，也不证明私有 Creator 接受同 ID 更新或回滚。真实更新、回读和回滚仍由
+真人在 Creator 里执行，并按 §5 记录结果。
+
+---
+
 ## 1. 什么都不用动的情况
 
 **后端变化不需要新 ZIP。** 新增设备、新增 runtime、换处理器、扩容实例，全在服务端完成；ChatGPT 侧固定 **Plugin ID / App ID / MCP HTTPS 地址**。
