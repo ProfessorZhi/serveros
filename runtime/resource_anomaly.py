@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""§18 · Resource anomalies — the sixteen codes this layer grades.
+"""§18 · Resource anomalies — the seventeen codes this layer grades.
 
 Where this sits
 ---------------
@@ -16,10 +16,14 @@ from there. It is a second producer over the same model, not a second model.
 Every code, and what would have to be measured to emit it
 --------------------------------------------------------
 §18 names fifteen codes and requires the system to be able to REPRESENT them.
-This module grades those fifteen plus one more, `MEMORY_PRESSURE_ACTIVE`, which
-§18 does not name and which exists because the fifteen it does name cannot
-express the difference between a full machine and a stalled one — see the note
-above `_memory_signals`. Representing is not the same as emitting, and this
+This module grades those fifteen plus two more. `MEMORY_PRESSURE_ACTIVE` is the
+first, which §18 does not name and which exists because the fifteen it does
+name cannot express the difference between a full machine and a stalled one —
+see the note above `_memory_signals`. `USER_MEMORY_PRESSURE` is the second:
+§18's memory codes are all about the MACHINE, and on a host shared by sixteen
+accounts "the machine is at 58%" and "one account is holding 58% of it" are
+different findings with different readers — see `_user_memory_signals`.
+Representing is not the same as emitting, and this
 module keeps the two apart in the payload: `codes_emitted` and
 `codes_not_evaluated`. A code whose input was not supplied, or was supplied as
 `UNAVAILABLE`, appears in the second list with the missing input named —
@@ -33,6 +37,8 @@ exact failure §27 forbids one layer down.
                                    the memory PSI and the paging rate beside it
     MEMORY_PRESSURE_ACTIVE         memory PSI: how much work stalled. The
                                    PRESSURE half of the two above
+    USER_MEMORY_PRESSURE           one ACCOUNT's resident share of the host:
+                                   `inventory.users_memory()`'s per-uid rows
     DOCKER_STORAGE_HIGH            the Docker data root's own filesystem, or
                                    `docker system df`'s total store size
     RUNTIME_UNOWNED                `hygiene.py`'s UNKNOWN_OWNER rows
@@ -90,7 +96,7 @@ UNKNOWN = anomaly.UNKNOWN
 
 CONTRACT = _HERE / "attribution-contract.yaml"
 
-# The sixteen, §18's fifteen in §18's order followed by the one this layer
+# The seventeen, §18's fifteen in §18's order followed by the two this layer
 # added. A test asserts the contract's `resource_anomalies:` block names exactly
 # this set: a code that exists in code and not in the contract is a severity
 # nobody reviews, and a code in the contract and not in code is the
@@ -102,6 +108,7 @@ CODES = (
     "MEMORY_PRESSURE",
     "SWAP_PRESSURE",
     "MEMORY_PRESSURE_ACTIVE",
+    "USER_MEMORY_PRESSURE",
     "DOCKER_STORAGE_HIGH",
     "RUNTIME_UNOWNED",
     "RUNTIME_ORPHANED",
@@ -132,6 +139,15 @@ SEVERITY = {
     # consequence this system is permitted to take; a second axis saying the
     # same thing louder is how the two start to disagree.
     "MEMORY_PRESSURE_ACTIVE": "medium",
+    # The FLOOR of a two-tier code, and the one code here whose severity is
+    # decided per signal rather than by this table. `_user_memory_signals`
+    # emits it at `medium` while one account is over the soft threshold and at
+    # `high` once it is over the critical one — see its docstring for why this
+    # is one code with two tiers rather than the two codes the disk pair uses.
+    # The alert layer reads `signal["severity"]`, so the escalation to `high`
+    # arrives on the SAME identity and reads as one alert getting worse instead
+    # of a second alert appearing beside it.
+    "USER_MEMORY_PRESSURE": "medium",
     "DOCKER_STORAGE_HIGH": "medium",
     # Low, and deliberately: on a shared host most containers are unowned and
     # that is a statement about declarations, not about the containers. A
@@ -160,6 +176,18 @@ THRESHOLD_KEYS = (
     "inode_percent_high",
     "memory_percent_high",
     "swap_percent_high",
+    # The per-account pair and the distance back. Two tiers and one margin:
+    # `margin_key()` derives `user_memory_percent_recovery_margin` from either
+    # `user_memory_percent_high` or `user_memory_percent_critical`, because the
+    # two are the same quantity read at two places on one axis and they come
+    # back down the same distance. `user_memory_per_uid` is not a number and is
+    # listed anyway: it is read by this module's branch and a reader checking
+    # which policy inputs the resource layer consumes should not have to find
+    # it by reading the body.
+    "user_memory_percent_high",
+    "user_memory_percent_critical",
+    "user_memory_percent_recovery_margin",
+    "user_memory_per_uid",
     # The pair that says whether the swap watermark above is pressure now or a
     # high-water mark from some earlier moment. Listed here so a caller that
     # supplies its own `thresholds` gets them filled in and the card can print
@@ -241,15 +269,24 @@ class _Gathered:
 
 
 def _signal(code: str, subject: str, measured: dict, *, window: str,
-            why: str, source: str, observed_at, freshness=None) -> dict:
+            why: str, source: str, observed_at, freshness=None,
+            severity=None) -> dict:
     """One §18 anomaly, under §26's provenance rules.
 
     A thin wrapper over `anomaly.signal`, and it exists rather than being
     inlined so that the two fields §26 adds — `source` and `freshness` — cannot
     be forgotten on one branch of this module and remembered on another.
+
+    `severity` overrides the table, and exactly one branch passes it. The
+    table answers "how bad is this CODE", and for every code but one that is a
+    constant. `USER_MEMORY_PRESSURE` is graded on an axis with two tiers a
+    person is meant to feel differently about, and its two tiers are the same
+    finding about the same subject — so the alternative to overriding here is
+    a second code, a second identity, and a second alert for what is one
+    account getting worse. See `_user_memory_signals`.
     """
     row = anomaly.signal(code, subject, measured, window=window, why=why)
-    row["severity"] = SEVERITY[code]
+    row["severity"] = severity or SEVERITY[code]
     row["source"] = source
     row["observed_at"] = observed_at
     row["freshness"] = freshness or graph.freshness_of(observed_at, now=observed_at,
@@ -626,6 +663,193 @@ def _memory_signals(host: dict, thresholds: dict, *, observed_at,
     if total is None or (swap_total is not None and swap_used is None):
         gaps["SWAP_PRESSURE"] = "the host memory summary carried no usable totals"
     return signals, levels, gaps
+
+
+def _user_memory_signals(document: dict, thresholds: dict, *, observed_at,
+                         subjects: set[str] | None = None
+                         ) -> tuple[list, list, dict, list]:
+    """USER_MEMORY_PRESSURE — one account's share of the machine's memory.
+
+    ONE CODE AND TWO TIERS, where the disk pair next door is two codes. The
+    choice is the whole of this branch, so it is stated rather than implied:
+
+    `DISK_WARNING` and `DISK_CRITICAL` are two codes because a filesystem is
+    two different findings at two tiers — "plan for this" and "put nothing else
+    here" — and they carry different `permitted_consequence`s. This carries
+    one: nothing. §25 forbids acting on a running process by name, and this
+    code cannot express an action at all. What the two tiers change here is
+    only how fast a person should look, which is `severity` and is already an
+    axis.
+
+    So a second code would buy nothing and cost the thing the brief asks for by
+    name: `alerting.identity` is `code + device + subject_ref`, so two codes
+    are two identities, two register rows and two alerts for one account
+    crossing one line. The escalation from `medium` to `high` instead happens
+    on the SAME identity, which is what makes a reader see one account getting
+    worse rather than two accounts appearing.
+
+    The subject is `uid:<number>`, the kernel's own number, and never a login
+    name. A name is a string somebody can change; a uid is not, and an alert
+    register that outlives the string would re-attribute an episode to
+    whichever account inherited the name. The name travels in `measured` for a
+    person to read and is never part of an identity — `alerting.identity` is
+    given `device_ref` as its other half, so the same uid on two machines is
+    two alerts and not one, which is the whole of the cross-device requirement.
+
+    THE TWO TIERS ARE DIFFERENT CLAIMS, measured differently on purpose:
+
+      * critical is IMMEDIATE — one reading above the threshold is the claim.
+        An account holding half the machine does not need to hold it twice.
+      * the soft tier is SUSTAINED — both readings above it. A single sample
+        cannot tell a process that is filling memory from one that was always
+        that size, and a soft tier that fired on one sample would fire on every
+        build and every test run that briefly touched a large figure.
+    """
+    signals: list[dict] = []
+    levels: list[dict] = []
+    gaps: dict[str, str] = {}
+    notes: list[str] = []
+    soft = float(thresholds["user_memory_percent_high"])
+    hard = float(thresholds["user_memory_percent_critical"])
+    # Keyed by the uid as a STRING, which is how YAML writes an integer key
+    # back out on some loaders and how a human writes it in the contract. Both
+    # spellings are accepted below rather than one being silently right.
+    overrides = thresholds.get("user_memory_per_uid") or {}
+    users = document.get("users")
+    if not isinstance(users, list):
+        gaps["USER_MEMORY_PRESSURE"] = (
+            "the per-account memory inventory carried no account rows, so no "
+            "account's share could be graded")
+        return signals, levels, gaps, notes
+
+    unmeasured: list[str] = []
+    # Grouped by uid FIRST, because the account is the subject and a document
+    # that carried two rows for one uid is one account and not two. The
+    # producer emits one row per uid; a document with a second is either a
+    # caller assembling one by hand or a producer that grew a second face, and
+    # in both cases the safe reading is the same: an account that produced a
+    # row whose share could not be expressed is an account that could not be
+    # expressed, whichever other row it also produced. Grading the readable
+    # row would report a measured share for an account the pass demonstrably
+    # could not fully measure.
+    by_uid: dict = {}
+    for row in users:
+        if not isinstance(row, dict):
+            continue
+        by_uid.setdefault(row.get("uid"), []).append(row)
+    for uid, rows in by_uid.items():
+        subject = f"uid:{uid}"
+        # Enumerated unconditionally, and before the reading is looked at:
+        # this set answers "was the subject there to be measured", and an
+        # account whose figure could not be expressed is emphatically still
+        # there. Registering it only when a number arrived would close the
+        # alert of an account that had just become unreadable — the mass
+        # recovery `alerting._graded_measurement`'s `subjects` exists to stop.
+        if subjects is not None:
+            subjects.add(subject)
+        if any(r.get("host_percent") is None for r in rows):
+            unmeasured.append(subject)
+            continue
+        row = rows[-1]
+        percent = row.get("host_percent")
+        override = overrides.get(str(uid)) or overrides.get(uid) or {}
+        warn_at = float(override.get("percent_high", soft))
+        crit_at = float(override.get("percent_critical", hard))
+        readings = [r for r in (row.get("readings") or []) if r is not None]
+        over_soft = [r for r in readings if r >= warn_at]
+        # The level is graded at the SOFT threshold whichever tier fired, and
+        # that is what makes the alert close in one place: `margin_key()` turns
+        # `user_memory_percent_high` into the single declared margin, so an
+        # account that was at 55% closes when it comes back below 25% — the
+        # same distance a soft-tier alert closes by. A critical alert with its
+        # own higher floor would be a second place for the two to disagree
+        # about when this account stopped holding the machine.
+        levels.append(_level("USER_MEMORY_PRESSURE", subject, percent, warn_at))
+        tier = None
+        if percent >= crit_at:
+            tier = "critical"
+        elif len(readings) >= 2 and len(over_soft) == len(readings):
+            tier = "sustained"
+        if tier is None:
+            continue
+        measured = {
+            "host_percent": percent,
+            "threshold_percent": warn_at,
+            "critical_threshold_percent": crit_at,
+            "readings_percent": row.get("readings"),
+            "sustained_readings": len(over_soft),
+            "of_readings": len(readings),
+            "tier": tier,
+            "rss_estimate_bytes": row.get("rss_estimate_bytes"),
+            "host_mem_total_bytes": document.get("host_mem_total_bytes"),
+            # The anonymous figure is the one that is about THIS account, and
+            # it is None unless every one of its processes could be read. It
+            # travels beside `anonymous_state` rather than instead of it: a
+            # reader given the estimate alone has no way to know how much of
+            # the double-counting it still contains.
+            "anonymous_bytes": row.get("anonymous_bytes"),
+            "anonymous_state": row.get("anonymous_state"),
+            "anonymous_measured_bytes": row.get("anonymous_measured_bytes"),
+            "anonymous_pids_read": row.get("anonymous_pids_read"),
+            "anonymous_pids_total": row.get("anonymous_pids_total"),
+            "process_count": row.get("process_count"),
+            "account": row.get("user_name"),
+            # Technical detail, and the last field for that reason: `pid` and
+            # `comm`, never a command line, an environment or a working
+            # directory. A reader who wants the process can look it up; a card
+            # that carried the argv of every large process would publish
+            # whatever those processes were told.
+            "top": row.get("top"),
+        }
+        why = (
+            f"one account is holding {percent}% of this machine's memory "
+            f"({_gib(row.get('rss_estimate_bytes'))} resident, summed over "
+            f"{row.get('process_count')} process(es), of which the largest are "
+            f"named in `top`), against a declared critical threshold of "
+            f"{crit_at}%" if tier == "critical" else
+            f"one account has held {percent}% of this machine's memory across "
+            f"both samples of the window, against a declared soft threshold of "
+            f"{warn_at}%. This is a sustained share and not a spike: the two "
+            f"readings are in `measured`, and the figure is a sum of per-process "
+            f"RSS, so a page shared between two of the account's processes is "
+            f"counted twice"
+        )
+        if tier == "critical":
+            why += (
+                ". §25 forbids acting on it: the permitted response is to tell "
+                "somebody, and there is no verb in this module that stops, "
+                "restarts, kills or reniced a process"
+            )
+        signals.append(_signal(
+            "USER_MEMORY_PRESSURE", subject, measured,
+            window=("point in time" if tier == "critical"
+                    else f"two samples {document.get('sample_seconds')}s apart"),
+            source="user-memory", observed_at=observed_at,
+            severity="high" if tier == "critical" else "medium",
+            why=why,
+        ))
+    if unmeasured:
+        notes.append(
+            f"{len(unmeasured)} account(s) were enumerated and their share of "
+            f"host memory could not be expressed "
+            f"({', '.join(unmeasured[:5])}"
+            + (", and others" if len(unmeasured) > 5 else "")
+            + "). An absent percentage is not a low one, and the alerts for "
+              "these subjects are held rather than closed")
+    if not users:
+        notes.append("no account was enumerated at all")
+    return signals, levels, gaps, notes
+
+
+def _gib(value) -> str:
+    """Bytes as GiB, for a sentence a person reads. Not a comparison.
+
+    `inventory._gib` is the same formatting one module over, and it is private
+    there; this is a two-line formatter and not a second source of a number.
+    """
+    if not isinstance(value, (int, float)):
+        return "an unmeasured amount"
+    return f"{value / 1024 ** 3:.1f} GiB"
 
 
 def _docker_signals(docker: dict, thresholds: dict, *, observed_at,
@@ -1047,6 +1271,7 @@ _INPUTS = {
     "SWAP_PRESSURE": ("host_summary()['memory']['swap'] and "
                       "host_summary()['pressure']['memory']"),
     "MEMORY_PRESSURE_ACTIVE": "host_summary()['pressure']['memory']",
+    "USER_MEMORY_PRESSURE": "users_memory() per-account rows",
     "DOCKER_STORAGE_HIGH": "docker_space() plus the data root's filesystem size",
     "RUNTIME_UNOWNED": "hygiene report container classifications",
     "RUNTIME_ORPHANED": "hygiene report container classifications",
@@ -1066,6 +1291,11 @@ _THRESHOLDS = {
     "MEMORY_PRESSURE": "memory_percent_high",
     "SWAP_PRESSURE": "swap_percent_high",
     "MEMORY_PRESSURE_ACTIVE": "psi_memory_some_avg60_percent_high",
+    # The SOFT tier, and deliberately: `margin_key()` derives the one
+    # `user_memory_percent_recovery_margin` from it, and `_level` grades at it
+    # whichever tier fired. See `_user_memory_signals` for why the critical
+    # tier is a severity rather than a second floor here.
+    "USER_MEMORY_PRESSURE": "user_memory_percent_high",
     "DOCKER_STORAGE_HIGH": "docker_storage_percent_high",
     "RUNTIME_UNOWNED": None,
     "RUNTIME_ORPHANED": None,
@@ -1085,7 +1315,7 @@ def _threshold_for(code: str):
 
 
 def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
-           tunnel=None, thresholds: dict | None = None,
+           tunnel=None, user_memory=None, thresholds: dict | None = None,
            observed_at=None, now=None) -> dict:
     """§18. Every code this module can grade, graded, plus the ones it cannot.
 
@@ -1169,6 +1399,23 @@ def detect(*, host=None, disk=None, docker=None, hygiene=None, desired=None,
     else:
         for code in ("MEMORY_PRESSURE", "SWAP_PRESSURE", "MEMORY_PRESSURE_ACTIVE"):
             gaps.setdefault(code, gathered.missing["host"])
+
+    if gathered.take("user_memory", user_memory,
+                     why="the per-account memory inventory"):
+        found, found_levels, user_gaps, user_notes = _user_memory_signals(
+            user_memory, thresholds, observed_at=observed_at, subjects=subjects)
+        signals += found
+        levels += found_levels
+        gaps.update(user_gaps)
+        notes.extend(user_notes)
+    else:
+        # ONE reason for the whole code, and not one per account: when the
+        # inventory did not arrive there are no accounts to be wrong about
+        # individually, and inventing subjects here would be worse than the
+        # gap -- a subject that appears only to be reported missing reads to
+        # `alerting` as an account that came back, which is the opposite of
+        # what happened.
+        gaps.setdefault("USER_MEMORY_PRESSURE", gathered.missing["user_memory"])
 
     if docker:
         found, found_levels, docker_gaps = _docker_signals(docker, thresholds,

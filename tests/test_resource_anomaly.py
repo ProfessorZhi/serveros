@@ -57,7 +57,7 @@ def contract_codes() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# A synthetic observation that fires all sixteen
+# A synthetic observation that fires all seventeen
 # ---------------------------------------------------------------------------
 
 OBSERVED_AT = "2026-09-14T12:00:00+08:00"
@@ -126,6 +126,29 @@ def full_observation() -> dict:
                              "ownership_confidence": "UNKNOWN",
                              "health": {"state": "FAILED"},
                              "actual_state": "DOWN"}]},
+        # The per-ACCOUNT axis, and the reason it is not a second reading of
+        # the host's own memory above. `MEMORY_PRESSURE` is graded on the
+        # machine's `used_bytes` against its total and stays silent on a host
+        # that is merely occupied; one account at 60% of it is a different
+        # finding with a different reader, so an observation that has to fire
+        # every declared code must carry an account with a share of its own.
+        user_memory={
+            "state": "PRESENT", "samples": 2, "sample_seconds": 1.0,
+            "host_mem_total_bytes": 100,
+            "host_mem_available_bytes": 5,
+            "process_count": 3,
+            "degraded": [],
+            "users": [
+                {"uid": 1002, "user_name": "vince", "process_count": 1,
+                 "rss_estimate_bytes": 60, "host_mem_total_bytes": 100,
+                 "host_percent": 60.0, "readings": [59.0, 60.0],
+                 "anonymous_state": "PRESENT", "anonymous_bytes": 58,
+                 "anonymous_measured_bytes": 58,
+                 "anonymous_pids_read": 1, "anonymous_pids_total": 1,
+                 "top": [{"pid": "288992", "comm": "python",
+                          "rss_bytes": 60}]},
+            ],
+        },
     )
 
 
@@ -133,7 +156,7 @@ def full_observation() -> dict:
 # 1 · the vocabulary agrees with itself
 # ---------------------------------------------------------------------------
 
-def test_the_contract_declares_exactly_the_sixteen_codes():
+def test_the_contract_declares_exactly_the_seventeen_codes():
     assert list(contract_codes()) == list(ra.CODES)
 
 

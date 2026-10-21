@@ -36,6 +36,11 @@ import sys
 import time
 from pathlib import Path
 
+try:  # POSIX only, and this module already reads /proc and calls os.sysconf.
+    import pwd
+except ImportError:  # pragma: no cover - a non-POSIX import is not a case here
+    pwd = None
+
 _HERE = Path(__file__).resolve().parent
 
 
@@ -830,6 +835,311 @@ class Inventory:
                            "an estimate of resident memory, not kernel per-uid "
                            "accounting"),
         }
+
+    # -- every account's share, from one bounded scan -----------------------
+    #
+    # `user_summary` above answers "how much of this machine am I using", for
+    # ONE account, and the account is never an argument: it is `os.getuid()`.
+    # That is the right question for a card about the reader and the wrong one
+    # for the machine the reader shares. On 2026-10-14 this host had one
+    # account's `python -m pytest` process holding 145 GiB of 247 GiB for
+    # nineteen hours while every per-account view of this node was, correctly,
+    # about somebody else.
+    #
+    # So this is a SEPARATE method rather than a flag on that one. The two do
+    # not share a cost model -- `user_summary` reads its account twice to get a
+    # CPU delta out of jiffies, and paying that twice-sample window for an
+    # answer about sixteen accounts nobody asked about is how a card's render
+    # becomes something a tick cannot afford.
+    #
+    # WHAT THIS IS, AND WHAT IT IS NOT
+    #
+    # `rss_estimate_bytes` is the sum of `ps`'s per-process RSS. A shared page
+    # is resident in every process that maps it, so this figure counts it once
+    # per mapper: it is an ESTIMATE of what the account is holding, it is an
+    # OVER-estimate, and it is never the kernel's per-uid accounting. The field
+    # name and `provenance` both say so, because the failure mode of a number
+    # like this is not being wrong -- it is being read as exact.
+    #
+    # `anonymous_bytes` is the answer to that, where the kernel will give it:
+    # `RssAnon` from `/proc/<pid>/status` is the part of a process's resident
+    # set that is NOT file-backed, and it is the closest thing to "only this
+    # process is holding it" that is readable across accounts. It is read from
+    # `status` and never from `smaps_rollup`: `status` is a fixed handful of
+    # lines, while `smaps_rollup` walks every mapping the process has, costs
+    # O(mappings) per pid, and is exactly the read that is refused when the
+    # process belongs to somebody else. A measurement that is expensive AND
+    # usually unavailable is not a source; it is a slow way to write UNKNOWN.
+    #
+    # Three-state, and the three are not interchangeable. `PRESENT` means every
+    # pid the account had was read. `PARTIAL` means some were. `UNKNOWN` means
+    # none were, which is the ordinary answer under `hidepid` for another
+    # account's processes. `anonymous_bytes` is None unless the state is
+    # PRESENT -- a partial sum published under a name that reads as a total is
+    # the same defect as a zero standing in for "not measured". The part that
+    # WAS read travels separately, in `anonymous_measured_bytes`.
+    #
+    # Nothing here reads a process's argument vector, its `env` block, its
+    # working directory, or any other per-pid file that can carry somebody's
+    # arguments, paths or secrets. `comm` is the kernel's own 15-character name
+    # for the binary and is the most a reader gets; `processes_top()` is the
+    # surface that reports more, and it is the one that says who may look at it.
+
+    # The same window `user_summary` takes, for the same reason and one more.
+    # The soft tier of the alert is "sustained", and sustained is a claim about
+    # more than one instant: a single sample cannot tell a process that is
+    # filling memory from one that was always that size. Two samples one
+    # window apart can, for the cost of one bounded read.
+    USER_MEMORY_SAMPLE_SECONDS = 1.0
+
+    # How many of an account's processes are named in `top`. Three, because
+    # the card line names the largest contributor and a reader who wants the
+    # rest is asking `processes_top()` -- a different question, already asked
+    # and already answering it.
+    USER_MEMORY_TOP = 3
+
+    # How many `/proc/<pid>/status` reads one enumeration may spend.
+    #
+    # Bounded because it is the one read here that is per-pid rather than
+    # one-per-machine, and an unbounded per-pid read on a host with 5,000
+    # processes is how a 60-second tick stops being 60 seconds. Largest-RSS
+    # first, so the sessions a bound cuts are the ones holding the least --
+    # and `anonymous_state` reports that they were cut rather than hiding it.
+    USER_MEMORY_ANON_READ_CAP = 256
+
+    def users_memory(self, interval: float | None = None) -> dict:
+        """Every account's resident memory, from one bounded scan per sample.
+
+        Read-only, budgeted, and never a guess: a scan that could not run
+        returns UNAVAILABLE with a reason, and a scan that came back empty
+        says so rather than reporting every account at zero. The second is not
+        pedantry -- `ps` succeeding with nothing in it is what a `hidepid=2`
+        mount produces for a process that may see only itself, and reading
+        that as "no account is using memory" would recover every alert this
+        feature exists to raise, on the exact host whose visibility is worst.
+        """
+        window = self.USER_MEMORY_SAMPLE_SECONDS if interval is None else interval
+        host_memory = self._memory() or {}
+        total = host_memory.get("total_bytes")
+        first = self._uid_memory_sample()
+        if first is None:
+            return _unavailable("could not list this machine's processes")
+        if not first["process_count"]:
+            return _unavailable(
+                "the process listing came back empty, so no account's memory "
+                "was measured. An empty listing is what `hidepid` produces for "
+                "an account that may see only itself, and it is not a machine "
+                "on which every account is holding nothing")
+        self.host.sleep(window)
+        second = self._uid_memory_sample()
+        if second is None:
+            return _unavailable(
+                "this machine's processes stopped being readable mid-sample")
+
+        anonymous, anonymous_note = self._uid_anonymous(second)
+        users = []
+        for uid in sorted(set(first["users"]) | set(second["users"])):
+            users.append(self._uid_row(uid, first, second, total, anonymous))
+        degraded = []
+        if total is None:
+            degraded.append("host_mem_total_unknown")
+        if anonymous_note:
+            degraded.append(anonymous_note)
+        return {
+            "state": "PRESENT",
+            "sample_seconds": window,
+            "samples": 2,
+            "host_mem_total_bytes": total,
+            "host_mem_available_bytes": host_memory.get("available_bytes"),
+            "process_count": second["process_count"],
+            "users": users,
+            "degraded": degraded,
+            "provenance": (
+                "`rss_estimate_bytes` is the sum of per-process RSS over the "
+                "account's processes: a page shared by two of them is counted "
+                "twice, so it over-estimates and is not the kernel's per-uid "
+                "accounting. `anonymous_bytes` is RssAnon read from "
+                "/proc/<pid>/status, and is None unless every one of the "
+                "account's processes could be read (see `anonymous_state`); "
+                "`smaps_rollup` is deliberately not read, because it is "
+                "O(mappings) per pid and is refused across accounts exactly "
+                "where it would matter. Only pid, `comm` and RSS are reported: "
+                "no argument vector, no `env` block and no working directory "
+                "is read"),
+        }
+
+    def _uid_memory_sample(self) -> dict | None:
+        """One machine-wide process listing, aggregated by uid.
+
+        `ps -eo uid=,pid=,rss=,comm=` rather than a walk over `/proc`. The walk
+        is the obvious implementation and it is the wrong one here: it is one
+        readdir plus one open per pid, it re-encodes the uid-to-process join
+        that `ps` already does, and it is the shape whose per-pid cost is
+        invisible until the host has five thousand processes. One call, one
+        budget, one parse.
+
+        The uid column is the KERNEL's uid. A login name is a string that can
+        be changed while the number cannot, and a subject built from a name is
+        how one account's alert becomes another account's after a rename.
+        """
+        code, out, _ = self.host.read(
+            ["ps", "-eo", "uid=,pid=,rss=,comm="], BUDGET["fast"])
+        if code != 0:
+            return None
+        users: dict[int, dict] = {}
+        count = 0
+        for line in out.splitlines():
+            # maxsplit=3 and not a full split: `comm` is the kernel's own
+            # command name and is NOT escaped -- a binary called `my prog`
+            # arrives with the space in it, and a full split would put the
+            # tail of the name in a fourth field that a caller then has to
+            # reconstruct. Three fields are numbers, the fourth is a name.
+            fields = line.split(None, 3)
+            if len(fields) < 3:
+                continue
+            try:
+                uid = int(fields[0])
+                pid = fields[1]
+                rss_bytes = int(fields[2]) * 1024
+            except ValueError:
+                continue
+            row = users.setdefault(
+                uid, {"rss_bytes": 0, "process_count": 0, "pids": []})
+            row["rss_bytes"] += rss_bytes
+            row["process_count"] += 1
+            row["pids"].append({"pid": pid, "rss_bytes": rss_bytes,
+                                "comm": fields[3].strip() if len(fields) > 3 else ""})
+            count += 1
+        return {"users": users, "process_count": count}
+
+    def _proc_rss_anon(self, pid: str) -> int | None:
+        """One pid's `RssAnon`, or None when it cannot be established.
+
+        None covers two different facts -- the file was refused, and the kernel
+        is old enough that `RssAnon` predates it -- and they are deliberately
+        one answer here, because both mean the same thing to the caller: there
+        is no anonymous figure for this pid. The caller keeps them apart from
+        the ZERO a missing field would otherwise become, which is the only
+        distinction this function exists to preserve.
+        """
+        text = self.host.read_text(f"/proc/{pid}/status")
+        if text is None:
+            return None
+        for line in text.splitlines():
+            if not line.startswith("RssAnon:"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                return None
+            try:
+                return int(parts[1]) * 1024
+            except ValueError:
+                return None
+        return None
+
+    def _uid_anonymous(self, second: dict) -> tuple[dict, str | None]:
+        """`{uid: {bytes, read, total}}` of RssAnon findings, and one reason.
+
+        Ranked largest-RSS first across the WHOLE machine rather than per uid,
+        so the cap spends itself on the processes that could plausibly matter
+        and not on whichever account sorts first. `total` is the account's
+        process count in the sample being graded, which is what makes a capped
+        account come back `PARTIAL` instead of looking completely read: the
+        denominator is the claim, and shrinking it to the number of reads that
+        happened is how a partial sum becomes a total.
+        """
+        users = second["users"]
+        ranked = [(proc["rss_bytes"], proc["pid"], uid)
+                  for uid, entry in users.items() for proc in entry["pids"]]
+        ranked.sort(reverse=True)
+        read = {uid: {"bytes": 0, "read": 0, "total": entry["process_count"]}
+                for uid, entry in users.items()}
+        for _rss, pid, uid in ranked[: self.USER_MEMORY_ANON_READ_CAP]:
+            value = self._proc_rss_anon(pid)
+            if value is None:
+                continue
+            read[uid]["bytes"] += value
+            read[uid]["read"] += 1
+        if len(ranked) > self.USER_MEMORY_ANON_READ_CAP:
+            return read, (f"anonymous_read_cap_reached: read "
+                          f"{self.USER_MEMORY_ANON_READ_CAP} of {len(ranked)} "
+                          f"processes, largest first")
+        return read, None
+
+    def _user_name(self, uid: int) -> str | None:
+        """The login name for a uid, or None. Display only, never identity.
+
+        A local `passwd` lookup and not a `ps` column, because `ps -o user=`
+        would hand back the same string by the same route and would make the
+        name look like something that was measured about the process rather
+        than something looked up about the account.
+        """
+        if pwd is None:
+            return None
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except (KeyError, OSError, OverflowError):
+            # No passwd entry, or a uid outside the range the libc call takes.
+            # Both mean the same thing to a card: there is no name to print.
+            return None
+
+    def _uid_row(self, uid: int, first: dict, second: dict, total,
+                 anonymous: dict) -> dict:
+        """One account's row: what it holds now, and what it held a window ago.
+
+        Both readings travel rather than one delta, and the reason is the
+        alert's soft tier: "sustained" is a claim about two instants, and a
+        producer that reported only the latest would leave the detector unable
+        to tell a process that is filling memory from one that has always been
+        that size. The two are not averaged and not compared here -- whether a
+        pair of readings is a sustained level is a POLICY, and policy lives in
+        the contract.
+        """
+        latest = second["users"].get(uid) or {"rss_bytes": 0, "process_count": 0,
+                                              "pids": []}
+        earlier = first["users"].get(uid)
+        rss = latest["rss_bytes"]
+        readings = [
+            (round(100.0 * earlier["rss_bytes"] / total, 1)
+             if (earlier and total) else None),
+            (round(100.0 * rss / total, 1) if total else None),
+        ]
+        anon = anonymous.get(uid) or {"bytes": 0, "read": 0, "total": 0}
+        if anon["total"] and anon["read"] >= anon["total"]:
+            state = "PRESENT"
+        elif anon["read"]:
+            state = "PARTIAL"
+        else:
+            state = "UNKNOWN"
+        row = {
+            "uid": uid,
+            # For a person to READ, and never for an identity. `alerting`'s
+            # subject is `uid:<number>` for the reason `_uid_memory_sample`
+            # gives; this field exists because a card that says "1002 is using
+            # 58% of this machine" makes a reader look up a number, and the
+            # name is a local lookup that cannot change what the alert is
+            # about. `None` when the uid has no passwd entry, which is a real
+            # state (a container uid, a deleted account) and not an error.
+            "user_name": self._user_name(uid),
+            "process_count": latest["process_count"],
+            "rss_estimate_bytes": rss,
+            "host_mem_total_bytes": total,
+            "host_percent": readings[1],
+            "readings": readings,
+            "anonymous_state": state,
+            # None unless every process was read. A partial sum under this
+            # name would read as the account's whole anonymous footprint.
+            "anonymous_bytes": anon["bytes"] if state == "PRESENT" else None,
+            "anonymous_measured_bytes": anon["bytes"],
+            "anonymous_pids_read": anon["read"],
+            "anonymous_pids_total": anon["total"],
+            "top": [
+                {"pid": p["pid"], "comm": p["comm"], "rss_bytes": p["rss_bytes"]}
+                for p in sorted(latest["pids"],
+                                key=lambda p: p["rss_bytes"], reverse=True)
+            ][: self.USER_MEMORY_TOP],
+        }
+        return row
 
     def user_quota(self) -> dict:
         """This account's filesystem quota, from the filesystem's authority.

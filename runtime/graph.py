@@ -627,6 +627,16 @@ FRESH_WITHIN_SECONDS = {
     # short enough that a filling disk is not reported as yesterday's news.
     "host-filesystem": 300,
     "host-memory": 300,
+    # The per-account memory inventory, and it is its own source rather than a
+    # second reading of `host-memory` above. The two are taken from the same
+    # machine but they are not the same evidence: the window above answers "is
+    # this host out of memory" from one `/proc/meminfo`, and this one answers
+    # "which account is holding it" from a process listing read twice a second
+    # apart. Same window, because they move on the same scale and are read on
+    # the same tick — and declared separately, because a source with no entry
+    # here produces UNKNOWN freshness, and quietly borrowing the entry above
+    # would be the only way that omission could ever be discovered.
+    "user-memory": 300,
     # The Docker store's own accounting is a ~22s read on this host, so a call
     # that paid for it is allowed to be an hour old before it is called stale.
     # A window shorter than the cost of the measurement would make every

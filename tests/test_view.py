@@ -1011,11 +1011,21 @@ class FakeAnomalyInventory:
     `docker_space` is the one read here that costs ~22s on the live host, so
     whether it was called is a fact worth asserting rather than a detail: an
     opt-in that is not actually opt-in is a tick that misses its deadline.
+
+    It answers the PER-ACCOUNT read too, and it answers with a document rather
+    than by not having the method. A double that simply lacked `users_memory`
+    would make the view raise `AttributeError` and the failure would read as a
+    broken test rather than as the true statement it is: this layer reaches a
+    seventh producer, and a caller-supplied `inventory` is expected to be one
+    that can answer for the whole machine. The account below holds a rounding
+    error of the total, so nothing crosses a threshold and the codes that DO
+    come back unevaluated stay the ones each test is about.
     """
 
     name = "fake-anomaly-inventory"
 
-    def __init__(self, *, host=None, disk=None, sizes=None, logs=None, space=None):
+    def __init__(self, *, host=None, disk=None, sizes=None, logs=None, space=None,
+                 users_memory=None):
         self._host = host or {"memory": {"total_bytes": 100, "used_bytes": 10,
                                         "available_bytes": 90,
                                         "swap": {"total_bytes": 100,
@@ -1027,6 +1037,22 @@ class FakeAnomalyInventory:
                                                     "containers": []}
         self._space = space if space is not None else {"state": "PRESENT",
                                                        "sections": {}}
+        self._users_memory = users_memory if users_memory is not None else {
+            "state": "PRESENT", "samples": 2, "sample_seconds": 1.0,
+            "host_mem_total_bytes": 102400,
+            "host_mem_available_bytes": 90,
+            "process_count": 1,
+            "degraded": [],
+            "users": [
+                {"uid": 0, "user_name": "root", "process_count": 1,
+                 "rss_estimate_bytes": 10, "host_mem_total_bytes": 102400,
+                 "host_percent": 0.0, "readings": [0.0, 0.0],
+                 "anonymous_state": "UNKNOWN", "anonymous_bytes": None,
+                 "anonymous_measured_bytes": 0,
+                 "anonymous_pids_read": 0, "anonymous_pids_total": 1,
+                 "top": []},
+            ],
+        }
         self.asked: list[str] = []
 
     def host_summary(self):
@@ -1049,10 +1075,14 @@ class FakeAnomalyInventory:
         self.asked.append("docker_space")
         return self._space
 
+    def users_memory(self):
+        self.asked.append("users_memory")
+        return self._users_memory
+
 
 def test_the_anomaly_view_gathers_from_the_producers_and_names_which(
         monkeypatch):
-    """§18/§19. Six inputs, and the report says which of them this call reached.
+    """§18/§19. Seven inputs, and the report says which of them this call reached.
 
     `detect` cannot tell a document the caller supplied from one this layer
     measured, and a reader checking whether an answer rests on a fresh
@@ -1066,7 +1096,11 @@ def test_the_anomaly_view_gathers_from_the_producers_and_names_which(
         inventory=inv, registry_doc=view.NO_REGISTRY,
         tunnel={"declared": [], "declared_count": 0})
     assert payload["gathering"]["inputs_reached"] == ["host", "disk", "docker",
-                                                      "tunnel"]
+                                                      "tunnel", "user_memory"]
+    # The account read is reached by this layer and not by the caller, which is
+    # the whole of §28 here: `users_memory` costs a sample window, so the one
+    # place that pays it is the one place that may re-derive it.
+    assert "users_memory" in inv.asked
     assert payload["gathering"]["inputs_supplied_by_the_caller"] == ["tunnel"]
     # No registry, so the two that need one are named with their reason instead
     # of being gathered against a registry nobody authored.
