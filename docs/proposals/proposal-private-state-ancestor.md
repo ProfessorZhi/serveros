@@ -10,7 +10,8 @@ ancestors must retain their current refusal and sticky-owner exception.
 ## Goals
 Permit current-user-owned writable intermediate directories only below an
 already-opened, fstat-verified current-euid directory with zero group/other bits.
-Keep immediate parent ownership/nonshared checks. Revalidate the pinned chain's
+Keep immediate parent ownership/nonshared checks. Only paths that actually use
+the new private-writable exception retain and revalidate the pinned chain's
 permissions, identity and effective uid before/after budget read/write.
 
 ## Non-Goals
@@ -30,13 +31,18 @@ remain current-euid-owned; the containing 0775/0777 directory can then be truste
 Before that boundary the existing trusted_ancestor/sticky rule is unchanged.
 The immediate parent always remains current-euid-owned and non-group/world-write.
 
-Before and after I/O, re-fstat every held FD, verify baseline owner/current euid,
+For a path that actually uses this exception, before and after I/O re-fstat every
+held FD, verify baseline owner/gid/mode/current euid,
 recompute trust, require the original boundary remain private, and compare every
 nofollow parent-relative entry against its held child's dev+ino. Refuse changed
 owners, symlinks, path replacement, widened boundary permissions or a shared
 immediate parent. Reading continues to validate the state file. Writing rechecks
 existing target and ancestry before temp creation, before rename and after durable
 publish; on lost trust it refuses, leaves uncertain state and never issues effect.
+Paths that never use the exception preserve the existing FD-authority contract:
+a later namespace replacement does not redirect a read; write reaches its original
+held inode and its existing post-write path check refuses an effect. Their full
+chain is not retained, and the journal tests keep these deliberate semantics.
 The caller's existing unknown/pending policy stays authoritative. File operations
 remain relative to the immediate-parent FD; a path string never establishes trust.
 

@@ -21,8 +21,12 @@ Dependencies: existing native Linux push test/fleet-v1-complete-* workflow.
 ## Phase 2: GREEN FD-derived trust
 Objectives: bounded owning ancestry, fresh private boundary, strict local parent
 and I/O revalidation. Stages: implement private ancestry storage, current-euid
-capture and unchanged sticky/public-prefix policy; validate owner/identity/privacy
-before/after read and before temp, pre-rename and after fsync. Unknown trust refuses
+capture and unchanged sticky/public-prefix policy; retain/revalidate the chain
+only when a writable ancestor actually needed the private-prefix exception.
+Preserve the old FD-authority read/write behavior otherwise. Validate captured
+owner/gid/mode/identity/privacy
+before/after read and before temp, pre-rename and after fsync for exception paths.
+Unknown trust refuses
 without effect; no widening of immediate-parent/regular-file/owner rules.
 Acceptance: new actual FS regressions and all native CTest suites pass on exact
 hosted Linux head; normal and moved StateDirectory maintain FD ownership. Local

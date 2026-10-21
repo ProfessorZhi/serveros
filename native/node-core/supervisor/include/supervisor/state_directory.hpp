@@ -20,6 +20,13 @@
 // the `openat` fd's `st_dev`/`st_ino`; a mismatch is refused rather than
 // applying the policy to one inode and opening another.
 //
+// A writable intermediate directory may also be admitted below an opened,
+// current-euid-owned private boundary (zero group/other permission bits), with
+// current-euid ownership throughout that private tail. Only paths which actually
+// need this exception retain the complete FD ancestry and captured permissions;
+// before/after I/O they refuse any owner/gid/mode, principal or namespace change.
+// Other paths retain the existing original-inode read/write semantics below.
+//
 // The write uses openat(dirfd, ...) for the temp file, renameat(dirfd, ...) for
 // the replace, and fsync(dirfd). No path string is the write authority. A
 // post-write stability check compares the path's inode to the opened fd and
@@ -27,6 +34,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace nodecore::supervisor {
@@ -51,6 +59,7 @@ inline constexpr const char* kStateParentGroupWritable = "STATE_PARENT_GROUP_WRI
 inline constexpr const char* kStateAncestorSymlink = "STATE_ANCESTOR_SYMLINK";
 inline constexpr const char* kStateAncestorNotADirectory = "STATE_ANCESTOR_NOT_A_DIRECTORY";
 inline constexpr const char* kStateAncestorMissing = "STATE_ANCESTOR_MISSING";
+inline constexpr const char* kStateAncestorWrongOwner = "STATE_ANCESTOR_WRONG_OWNER";
 //: A group-writable ancestor WITHOUT the sticky bit: any member of the group
 //: can rename the entry that leads to the state root.
 inline constexpr const char* kStateAncestorGroupWritable = "STATE_ANCESTOR_GROUP_WRITABLE";
@@ -79,7 +88,7 @@ struct StatePathVerdict {
 //: then addressed by `basename` relative to that fd, never by the full path.
 class StateDirectory {
 public:
-    StateDirectory() = default;
+    StateDirectory();
     ~StateDirectory();
     StateDirectory(StateDirectory&& other) noexcept;
     StateDirectory& operator=(StateDirectory&& other) noexcept;
@@ -119,11 +128,13 @@ public:
     bool write_atomically(const std::string& text, std::string& error) const;
 
 private:
+    struct Ancestry;
     void close();
 
     int dirfd_ = -1;
     std::string basename_;
     std::string parent_path_;
+    std::unique_ptr<Ancestry> ancestry_;
 };
 
 //: Whether `path` is a state file this account can durably own, implemented

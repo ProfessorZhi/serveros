@@ -307,6 +307,23 @@ void test_private_ancestors_are_fd_verified_and_revalidated() {
     CHECK(::chmod(middle.c_str(), 0775) == 0);
     CHECK(::mkdir(parent.c_str(), 0700) == 0);
 
+    // Group search access is already enough to defeat a private boundary.
+    CHECK(::chmod(hidden.c_str(), 0710) == 0);
+    CHECK_EQ(check_state_path(budget).code, std::string(kStateAncestorGroupWritable));
+    CHECK(::chmod(hidden.c_str(), 0700) == 0);
+    bool weakened_during_open = false;
+    StateDirectory opening;
+    StatePathVerdict opening_verdict;
+    CHECK(!opening.open(budget, opening_verdict, [&](const std::string& component) {
+        if (component == "serveros") {
+            weakened_during_open = true;
+            CHECK(::chmod(hidden.c_str(), 0755) == 0);
+        }
+    }));
+    CHECK(weakened_during_open);
+    CHECK(!opening.valid());
+    CHECK(::chmod(hidden.c_str(), 0700) == 0);
+
     StateDirectory directory;
     StatePathVerdict verdict;
     const bool admitted = directory.open(budget, verdict);

@@ -117,6 +117,27 @@ bool trusted_ancestor(const struct stat& directory, const struct stat& entry, ui
     return directory_owner_trusted && entry_owner_trusted;
 }
 
+bool private_directory(const struct stat& directory, uid_t euid) {
+    return S_ISDIR(directory.st_mode) && directory.st_uid == euid &&
+           (directory.st_mode & (S_IRWXG | S_IRWXO)) == 0;
+}
+
+bool target_still_owned(int parent, const std::string& basename, std::string& error) {
+    struct stat info {};
+    if (::fstatat(parent, basename.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+            return true;
+        error = "the state target could not be inspected: " + errno_text(errno);
+        return false;
+    }
+    if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
+        (info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        error = "the state target is no longer an owned, nonshared regular file";
+        return false;
+    }
+    return true;
+}
+
 StatePathVerdict path_refuse(const char* code, std::string reason) {
     StatePathVerdict verdict;
     verdict.ok = false;
@@ -135,12 +156,101 @@ StatePathVerdict path_ok(std::string reason) {
 
 }  // namespace
 
+// Only an actual private/writable exception retains this chain after open.
+// FDs, not names or the exception flag, establish and revalidate its enclosure.
+struct StateDirectory::Ancestry {
+    struct Node {
+        Fd fd;
+        std::string name;
+        struct stat observed;
+        Node(Fd handle, std::string component, const struct stat& info)
+            : fd(std::move(handle)), name(std::move(component)), observed(info) {}
+    };
+    uid_t principal = ::geteuid();
+    std::vector<Node> nodes;
+    std::size_t private_index = static_cast<std::size_t>(-1);
+    bool exception_used = false;
+
+    bool remember(int fd, const std::string& name, const struct stat& info) {
+        Fd held(::fcntl(fd, F_DUPFD_CLOEXEC, 0));
+        if (held.get() < 0)
+            return false;
+        nodes.emplace_back(std::move(held), name, info);
+        if (private_index == static_cast<std::size_t>(-1) && private_directory(info, principal))
+            private_index = nodes.size() - 1;
+        return true;
+    }
+
+    bool private_tail_owned() const {
+        if (private_index >= nodes.size())
+            return false;
+        for (std::size_t i = private_index; i < nodes.size(); ++i)
+            if (nodes[i].observed.st_uid != principal)
+                return false;
+        return true;
+    }
+
+    bool validate(int parent, std::string& error) const {
+        if (::geteuid() != principal || nodes.empty()) {
+            error = "the private state principal changed or its ancestry is absent";
+            return false;
+        }
+        bool enclosed = false;
+        struct stat previous {};
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const Node& node = nodes[i];
+            struct stat now {}, entry {};
+            if (::fstat(node.fd.get(), &now) != 0 || !S_ISDIR(now.st_mode) ||
+                now.st_uid != node.observed.st_uid || now.st_gid != node.observed.st_gid ||
+                now.st_mode != node.observed.st_mode) {
+                error = "the captured private state ancestry owner or permissions changed";
+                return false;
+            }
+            const int inspected =
+                i == 0 ? ::lstat("/", &entry)
+                       : ::fstatat(nodes[i - 1].fd.get(), node.name.c_str(), &entry,
+                                   AT_SYMLINK_NOFOLLOW);
+            if (inspected != 0 || !S_ISDIR(entry.st_mode) || entry.st_dev != now.st_dev ||
+                entry.st_ino != now.st_ino) {
+                error = "the private state path no longer names its captured original inode";
+                return false;
+            }
+            if (enclosed && now.st_uid != principal) {
+                error = "the private state tail contains a foreign owner";
+                return false;
+            }
+            if (i != 0 && !trusted_ancestor(previous, now, principal) &&
+                !(enclosed && previous.st_uid == principal && now.st_uid == principal)) {
+                error = "the state ancestry no longer has a trusted private enclosure";
+                return false;
+            }
+            if (i == private_index && !private_directory(now, principal)) {
+                error = "the captured private state boundary is no longer private";
+                return false;
+            }
+            enclosed = enclosed || private_directory(now, principal);
+            previous = now;
+        }
+        struct stat actual {};
+        if (!enclosed || ::fstat(parent, &actual) != 0 || actual.st_dev != previous.st_dev ||
+            actual.st_ino != previous.st_ino || actual.st_uid != principal ||
+            (actual.st_mode & (S_IWGRP | S_IWOTH)) != 0 ||
+            ::faccessat(parent, ".", W_OK | X_OK, AT_EACCESS) != 0) {
+            error = "the private state immediate parent is no longer owned and nonshared";
+            return false;
+        }
+        return true;
+    }
+};
+
+StateDirectory::StateDirectory() = default;
 StateDirectory::~StateDirectory() { close(); }
 
 StateDirectory::StateDirectory(StateDirectory&& other) noexcept
     : dirfd_(other.dirfd_),
       basename_(std::move(other.basename_)),
-      parent_path_(std::move(other.parent_path_)) {
+      parent_path_(std::move(other.parent_path_)),
+      ancestry_(std::move(other.ancestry_)) {
     other.dirfd_ = -1;
 }
 
@@ -150,12 +260,14 @@ StateDirectory& StateDirectory::operator=(StateDirectory&& other) noexcept {
         dirfd_ = other.dirfd_;
         basename_ = std::move(other.basename_);
         parent_path_ = std::move(other.parent_path_);
+        ancestry_ = std::move(other.ancestry_);
         other.dirfd_ = -1;
     }
     return *this;
 }
 
 void StateDirectory::close() {
+    ancestry_.reset();
     if (dirfd_ >= 0) {
         ::close(dirfd_);
         dirfd_ = -1;
@@ -204,6 +316,12 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
     const std::size_t slash = path.find_last_of('/');
     const std::string parent_path = slash == 0 ? std::string("/") : path.substr(0, slash);
     const std::vector<std::string> parent_parts = split_components(parent_path);
+    if (parent_parts.size() > 128) {
+        verdict = path_refuse(kStatePathUnusable,
+                              "the state ancestry exceeds its 128-directory budget");
+        return false;
+    }
+    auto ancestry = std::make_unique<Ancestry>();
 
     Fd current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (current.get() < 0) {
@@ -215,6 +333,11 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
     if (::fstat(current.get(), &dir_info) != 0 || !S_ISDIR(dir_info.st_mode)) {
         verdict = path_refuse(kStatePathUnusable,
                               "the root directory could not be inspected: " + errno_text(errno));
+        return false;
+    }
+    if (!ancestry->remember(current.get(), "", dir_info)) {
+        verdict = path_refuse(kStatePathUnusable,
+                              "the root ancestry descriptor could not be retained");
         return false;
     }
 
@@ -300,13 +423,30 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
                     "inode and open another");
             return false;
         }
-        if (!trusted_ancestor(dir_info, opened, ::geteuid())) {
-            const bool world = (dir_info.st_mode & S_IWOTH) != 0;
-            verdict = path_refuse(
-                world ? kStateAncestorWorldWritable : kStateAncestorGroupWritable,
-                "the ancestor directory containing \"" + component +
-                    "\" is writable by group or other without a safe sticky-and-owner "
-                    "combination");
+        if (!trusted_ancestor(dir_info, opened, ancestry->principal)) {
+            const bool privately_enclosed = ancestry->private_tail_owned() &&
+                                            dir_info.st_uid == ancestry->principal &&
+                                            opened.st_uid == ancestry->principal;
+            if (privately_enclosed) {
+                ancestry->exception_used = true;
+            } else {
+                const bool world = (dir_info.st_mode & S_IWOTH) != 0;
+                verdict = path_refuse(
+                    world ? kStateAncestorWorldWritable : kStateAncestorGroupWritable,
+                    "the ancestor directory containing \"" + component +
+                        "\" is writable by group or other without a safe sticky-and-owner "
+                        "combination");
+                return false;
+            }
+        }
+        if (ancestry->exception_used && opened.st_uid != ancestry->principal) {
+            verdict = path_refuse(kStateAncestorWrongOwner,
+                                  "a private state ancestor is owned by another account");
+            return false;
+        }
+        if (!ancestry->remember(next.get(), component, opened)) {
+            verdict = path_refuse(kStatePathUnusable,
+                                  "a state ancestry descriptor could not be retained");
             return false;
         }
         if (last) {
@@ -435,6 +575,15 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
     dirfd_ = current.release();
     basename_ = basename;
     parent_path_ = parent_path;
+    if (ancestry->exception_used) {
+        ancestry_ = std::move(ancestry);
+        std::string error;
+        if (!ancestry_->validate(dirfd_, error) || !target_still_owned(dirfd_, basename_, error)) {
+            verdict = path_refuse(kStatePathUnusable, std::move(error));
+            close();
+            return false;
+        }
+    }
     verdict = path_ok("the state directory is an opened, owned, non-shared inode");
     return true;
 }
@@ -446,10 +595,12 @@ bool StateDirectory::read(std::string& text, bool& present, std::string& error) 
         error = "no trusted state directory is open";
         return false;
     }
+    if (ancestry_ && !ancestry_->validate(dirfd_, error))
+        return false;
     Fd file(::openat(dirfd_, basename_.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
     if (file.get() < 0) {
         if (errno == ENOENT) {
-            return true;  // first run
+            return !ancestry_ || ancestry_->validate(dirfd_, error);  // first run
         }
         error = "the state file could not be opened: " + errno_text(errno);
         return false;
@@ -496,6 +647,10 @@ bool StateDirectory::read(std::string& text, bool& present, std::string& error) 
         }
         text.append(buffer, static_cast<std::size_t>(count));
     }
+    if (ancestry_ && !ancestry_->validate(dirfd_, error)) {
+        text.clear();
+        return false;
+    }
     present = true;
     return true;
 }
@@ -505,9 +660,25 @@ bool StateDirectory::write_atomically(const std::string& text, std::string& erro
         error = "no trusted state directory is open";
         return false;
     }
+    if (ancestry_ && (!ancestry_->validate(dirfd_, error) ||
+                      !target_still_owned(dirfd_, basename_, error)))
+        return false;
 
     std::string temp;
     Fd file;
+    const auto discard_temp = [&] {
+        if (ancestry_) {
+            std::string ignored;
+            struct stat held {}, named {};
+            if (!ancestry_->validate(dirfd_, ignored) || file.get() < 0 ||
+                ::fstat(file.get(), &held) != 0 ||
+                ::fstatat(dirfd_, temp.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0 ||
+                !S_ISREG(named.st_mode) || held.st_dev != named.st_dev ||
+                held.st_ino != named.st_ino || named.st_uid != ::geteuid())
+                return;
+        }
+        ::unlinkat(dirfd_, temp.c_str(), 0);
+    };
     for (int attempt = 0; attempt < 16; ++attempt) {
         temp = ".serveros-state.tmp." + std::to_string(static_cast<long>(::getpid())) + "." +
                std::to_string(next_nonce());
@@ -528,29 +699,37 @@ bool StateDirectory::write_atomically(const std::string& text, std::string& erro
     }
 
     if (!write_all(file.get(), text, error)) {
-        ::unlinkat(dirfd_, temp.c_str(), 0);
+        discard_temp();
         return false;
     }
     if (::fsync(file.get()) != 0) {
         error = "the state temp file could not be fsynced: " + errno_text(errno);
-        ::unlinkat(dirfd_, temp.c_str(), 0);
+        discard_temp();
+        return false;
+    }
+    if (ancestry_ && (!ancestry_->validate(dirfd_, error) ||
+                      !target_still_owned(dirfd_, basename_, error))) {
+        // Trust was revoked: retain the unique temp instead of deleting through
+        // a namespace that may now be writable by another account.
         return false;
     }
     const int raw = file.release();
     if (::close(raw) != 0) {
         error = "the state temp file could not be closed: " + errno_text(errno);
-        ::unlinkat(dirfd_, temp.c_str(), 0);
+        discard_temp();
         return false;
     }
     if (::renameat(dirfd_, temp.c_str(), dirfd_, basename_.c_str()) != 0) {
         error = "the state file could not be replaced atomically: " + errno_text(errno);
-        ::unlinkat(dirfd_, temp.c_str(), 0);
+        discard_temp();
         return false;
     }
     if (::fsync(dirfd_) != 0) {
         error = "the state directory could not be fsynced: " + errno_text(errno);
         return false;
     }
+    if (ancestry_ && !ancestry_->validate(dirfd_, error))
+        return false;
 
     // The WRITE above is bound to the opened inode. This check detects a path
     // that was moved/replaced after the open so the caller can fail closed; it
