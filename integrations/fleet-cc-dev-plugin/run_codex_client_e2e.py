@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive a real Codex CLI against the local stdio Fleet fixture — no model.
+"""Drive a real Codex CLI against the fixture or the real owned stdio runtime — no model.
 
 Codex 0.160.0 is started with an isolated `CODEX_HOME`, a local marketplace and
 plugin, then the app-server protocol performs initialize, thread/start,
@@ -7,7 +7,11 @@ mcpServerStatus/list and one read-only mcpServer/tool/call. This is a real CLI
 load and protocol handshake, not a model call.
 
 The receipt keeps separate facts: plugin install, MCP connection, tools/list,
-tool call, shared-Skill bytes, fixture-vs-real boundary and model-turn count.
+tool call, shared-Skill bytes, fixture-versus-real-owned boundary and
+model-turn count. With `--owned-entry/--owned-config`, the MCP entry is the real
+`bin/serveros-fleet-owned --stdio --config PATH`, and a read-only probe records
+the actual 34-tool surface, project-create schema, six scopes, durability and
+session readback.
 The plugin id reported by Codex is its local marketplace selector; it is not an
 App/Creator backend id.
 """
@@ -27,6 +31,8 @@ ROOT = HERE.parent
 REPO = ROOT.parent
 
 import importlib.util
+sys.path.insert(0, str(HERE))
+import fleet_owned_probe  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "fleet_codex_fixture_runner", HERE / "build_codex_local_fixture.py")
@@ -94,6 +100,12 @@ def _run(cmd: list[str], *, env: dict, cwd: Path, timeout: float) -> subprocess.
                           timeout=timeout)
 
 
+def _git_head() -> str:
+    proc = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, timeout=30)
+    return proc.stdout.strip() if proc.returncode == 0 else "UNKNOWN"
+
+
 def _skills_equal(installed_root: Path) -> tuple[bool, list[str]]:
     shared = {p.parent.name: p for p in SHARED.glob("*/SKILL.md")}
     installed = {p.parent.name: p for p in installed_root.rglob("skills/*/SKILL.md")}
@@ -109,6 +121,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--owned-entry")
+    parser.add_argument("--owned-config")
+    parser.add_argument("--owned-state-dir",
+                        default="/data/home/vince/state/serveros")
+    parser.add_argument("--owned-cwd")
     args = parser.parse_args(argv)
 
     out = Path(args.out).resolve()
@@ -119,7 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True)
     tmp = out / "tmp"
     tmp.mkdir()
-    fixture = _fixture.generate(out=out / "fixture")
+    owned = bool(args.owned_entry)
+    if owned:
+        fixture = _fixture.generate_owned(
+            out=out / "fixture", entry=Path(args.owned_entry),
+            config=Path(args.owned_config), state_dir=Path(args.owned_state_dir),
+            cwd=Path(args.owned_cwd) if args.owned_cwd else REPO)
+    else:
+        fixture = _fixture.generate(out=out / "fixture")
     home = out / "codex-home"
     home.mkdir()
     env = dict(os.environ)
@@ -130,14 +154,18 @@ def main(argv: list[str] | None = None) -> int:
     claims: dict[str, object] = {
         "schema": "serveros/fleet-codex-client-e2e.v1",
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "evidence_level": "LOCAL_FIXTURE",
+        "git_head": _git_head(),
+        "evidence_level": "LOCAL_REAL_OWNED" if owned else "LOCAL_FIXTURE",
         "real_codex_cli": True,
-        "real_device": False,
+        "real_device_readback": owned,
+        "real_device_actions": False,
         "global_config_modified": False,
         "credential_read": False,
         "model_turns_requested": 0,
         "model_calls": 0,
-        "fixture_plugin": FIXTURE_NAME,
+        "fixture_plugin": fixture["fixture_name"],
+        "real_owned_entry": owned,
+        "fixture_device": not owned,
     }
     failures: list[str] = []
     try:
@@ -156,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         claims["PLUGIN_INSTALL_OK"] = (
             add_market.returncode == 0
             and _run([args.codex, "plugin", "add",
-                      f"{FIXTURE_NAME}@{MARKET_NAME}"], env=env, cwd=REPO,
+                      f"{fixture['fixture_name']}@{fixture['marketplace_name']}"], env=env, cwd=REPO,
                      timeout=args.timeout).returncode == 0)
         if not claims["PLUGIN_INSTALL_OK"]:
             failures.append("PLUGIN_INSTALL_OK")
@@ -165,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         (out / "logs" / "plugin-list.log").write_text(
             plugin_list.stdout + plugin_list.stderr, encoding="utf-8")
         claims["PLUGIN_LISTED"] = (plugin_list.returncode == 0
-                                   and FIXTURE_NAME in plugin_list.stdout)
+                                   and fixture["fixture_name"] in plugin_list.stdout)
 
         skills_ok, skills_bad = _skills_equal(home)
         claims["SKILLS_BYTES"] = skills_ok
@@ -227,6 +255,28 @@ def main(argv: list[str] | None = None) -> int:
         claims["bubblewrap_warning_observed"] = "bubblewrap" in stderr.lower()
         claims["model_provider_401_observed"] = "401 Unauthorized" in stderr
         (out / "logs" / "app-server-stderr.txt").write_text(stderr, encoding="utf-8")
+
+        if owned:
+            readback = fleet_owned_probe.probe(
+                entry=Path(args.owned_entry), config=Path(args.owned_config),
+                state_dir=Path(args.owned_state_dir),
+                cwd=Path(args.owned_cwd) if args.owned_cwd else REPO,
+                timeout=args.timeout)
+            (out / "logs" / "owned-readback.json").write_text(
+                json.dumps(readback, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            claims["owned_readback"] = readback
+            claims["tool_count_actual"] = readback["tool_count_actual"]
+            claims["project_create_capability_actual"] = readback["project_create_present"]
+            claims["OWNED_READBACK_OK"] = bool(
+                readback["tool_count_actual"] >= 34
+                and readback["project_create_present"]
+                and readback["six_scopes"]
+                and readback["durability"] == "AGENT_CONTROL_STORE"
+                and {"claude", "codex"} <= set(readback["owner_access_families"])
+                and readback["session_read"] is not None)
+            if not claims["OWNED_READBACK_OK"]:
+                failures.append("OWNED_READBACK_OK")
     except Exception as exc:  # receipt first, then nonzero exit
         claims["error"] = f"{type(exc).__name__}: {exc}"
         failures.append("EXCEPTION")
@@ -238,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         "TOOLS_LIST_OK": claims.get("TOOLS_LIST_OK", False),
         "TOOL_CALL_OK": claims.get("TOOL_CALL_OK", False),
         "SKILLS_BYTES": claims.get("SKILLS_BYTES", False),
+        **({"OWNED_READBACK_OK": claims.get("OWNED_READBACK_OK", False)}
+           if owned else {}),
     }
     claims["failures"] = failures
     (out / "RECEIPT.json").write_text(
@@ -253,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         f"- Tool call: `{claims.get('TOOL_CALL_OK')}`\n"
         f"- Skills byte-identical: `{claims.get('SKILLS_BYTES')}`\n"
         f"- Model turns requested: `0`\n"
+        f"- Real owned runtime: `{owned}`\n"
         f"- Global config modified: `false`\n"
         f"- Failures: `{failures}`\n",
         encoding="utf-8")

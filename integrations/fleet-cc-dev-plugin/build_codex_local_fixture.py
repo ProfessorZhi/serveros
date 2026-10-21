@@ -42,6 +42,8 @@ MARKET_NAME = "serveros-fleet-codex-fixture-market"
 DISPLAY_NAME = "ServerOS Fleet (Codex local fixture)"
 FIXTURE_VERSION = "0.0.1"
 MARKER = "TEST_FIXTURE_ONLY.md"
+OWNED_NAME = "serveros-fleet-codex-owned"
+OWNED_MARKET = "serveros-fleet-codex-owned-market"
 
 
 def generate(*, out: Path, skills_source: Path = SHARED) -> dict:
@@ -150,6 +152,104 @@ def generate(*, out: Path, skills_source: Path = SHARED) -> dict:
         "installs": [],
         "global_config_written": False,
         "real_device": False,
+    }
+
+
+def generate_owned(*, out: Path, entry: Path, config: Path, state_dir: Path,
+                   cwd: Path, skills_source: Path = SHARED) -> dict:
+    """Build a Codex plugin that binds the real owned stdio runtime.
+
+    This is not a fixture provider: the MCP command is the real
+    `bin/serveros-fleet-owned --stdio --config PATH`, and its environment points
+    at the existing ServerOS state root. It writes no global config and reads
+    no credential.
+    """
+    out = Path(out).resolve()
+    if out.exists():
+        raise Refused(SOURCE_REFUSED,
+                      f"{out} already exists; the owned fixture is generated once")
+    entry_s, config_s = _cc.check_owned_entry(str(entry), str(config))
+    state_dir = Path(state_dir).resolve()
+    if not state_dir.is_dir():
+        raise Refused(SOURCE_REFUSED, f"state dir is not a directory: {state_dir}")
+    source = Path(skills_source).resolve()
+    _cc.check_paths(source, out)
+    skills = _cc.read_skills(source)
+    for name, body in skills:
+        _cc.check_skill_front_matter(name, body)
+    plugin = out / "plugin"
+    (plugin / ".codex-plugin").mkdir(parents=True)
+    (plugin / "skills").mkdir()
+    manifest = {
+        "name": OWNED_NAME,
+        "version": FIXTURE_VERSION,
+        "description": "REAL OWNED STDIO — local ServerOS Fleet runtime, no fixture provider.",
+        "author": {"name": "ProfessorZhi"},
+        "license": "MIT",
+        "skills": "./skills/",
+        "mcpServers": "./.codex-mcp.json",
+        "interface": {
+            "displayName": "ServerOS Fleet (Codex owned stdio)",
+            "shortDescription": "Real local owner runtime for Codex.",
+            "longDescription": "Binds the existing ServerOS Fleet owned stdio runtime.",
+            "developerName": "ProfessorZhi",
+            "category": "Productivity",
+        },
+    }
+    (plugin / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    binding = {"mcpServers": {SERVER_NAME: {
+        "command": entry_s,
+        "args": ["--stdio", "--config", config_s],
+        "cwd": str(Path(cwd).resolve()),
+        "env": {"SERVEROS_STATE_DIR": str(state_dir),
+                "PYTHONDONTWRITEBYTECODE": "1"},
+    }}}
+    (plugin / ".codex-mcp.json").write_text(
+        json.dumps(binding, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    for name, body in skills:
+        dest = plugin / "skills" / name / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(body, encoding="utf-8")
+    market_dir = out / ".agents" / "plugins"
+    market_dir.mkdir(parents=True)
+    marketplace = {
+        "name": OWNED_MARKET,
+        "description": "Local marketplace for the real ServerOS Fleet Codex adapter.",
+        "interface": {"displayName": "ServerOS Fleet Codex Owned"},
+        "plugins": [{
+            "name": OWNED_NAME,
+            "source": {"source": "local", "path": "./plugin"},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
+            "category": "Productivity",
+        }],
+    }
+    (market_dir / "marketplace.json").write_text(
+        json.dumps(marketplace, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    members = sorted(p.relative_to(plugin).as_posix()
+                     for p in plugin.rglob("*") if p.is_file())
+    return {
+        "schema": "serveros/fleet-codex-owned-fixture.v1",
+        "mode": "OWNED_STDIO",
+        "distribution": "LOCAL_REAL_OWNED_RUNTIME",
+        "installable": False,
+        "real_owned_entry": True,
+        "fixture_device": False,
+        "fixture_name": OWNED_NAME,
+        "marketplace_name": OWNED_MARKET,
+        "server_name": SERVER_NAME,
+        "entry": entry_s,
+        "config": config_s,
+        "state_dir": str(state_dir),
+        "plugin": str(plugin),
+        "marketplace": str(out),
+        "marketplace_manifest": str(market_dir / "marketplace.json"),
+        "skills": [name for name, _ in skills],
+        "members": members,
+        "member_sha256": {m: hashlib.sha256((plugin / m).read_bytes()).hexdigest()
+                          for m in members},
+        "writes": [], "uploads": [], "installs": [],
+        "global_config_written": False,
     }
 
 

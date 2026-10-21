@@ -172,6 +172,26 @@ class TheCodexLocalFixture(unittest.TestCase):
                 (self.out / "plugin" / "skills" / name / "SKILL.md").read_bytes(),
                 (SHARED / name / "SKILL.md").read_bytes())
 
+    def test_owned_mode_binds_the_real_entry_with_state_env(self) -> None:
+        entry = self.tmp / "serveros-fleet-owned"
+        entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entry.chmod(0o755)
+        config = self.tmp / "owner.yaml"
+        config.write_text("owner_approved: true\n", encoding="utf-8")
+        state = self.tmp / "state"
+        state.mkdir()
+        out = self.tmp / "owned"
+        record = codex_fixture.generate_owned(
+            out=out, entry=entry, config=config, state_dir=state,
+            cwd=self.tmp)
+        binding = json.loads((out / "plugin" / ".codex-mcp.json").read_text())
+        server = binding["mcpServers"][codex_fixture.SERVER_NAME]
+        self.assertEqual(server["command"], str(entry))
+        self.assertEqual(server["args"], ["--stdio", "--config", str(config)])
+        self.assertEqual(server["env"]["SERVEROS_STATE_DIR"], str(state))
+        self.assertTrue(record["real_owned_entry"])
+        self.assertFalse(record["fixture_device"])
+
     def test_the_fixture_does_not_touch_a_global_codex_home(self) -> None:
         codex_fixture.generate(out=self.out)
         # The generated tree is entirely below --out; no `.codex` directory is

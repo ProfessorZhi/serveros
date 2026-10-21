@@ -325,6 +325,34 @@ the real Codex app-server, performs initialize / thread-start /
 count and whether a project-create capability is present. The plugin id in that
 receipt is a local marketplace selector, not an App/Creator backend id.
 
+## Real owned runtime runner
+
+Both runners can drive the real `bin/serveros-fleet-owned --stdio --config PATH`
+runtime instead of the fixture. The config is the owner-setup candidate for the
+exact local-owner/Tokyo namespace; the state root is the existing ServerOS
+AgentControlStore. No fixture provider, empty store or global Codex/Claude
+config is used.
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
+    --out <fresh-evidence-dir> \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/fleet-mcp.owner.yaml \
+    --owned-state-dir /absolute/path/state/serveros
+
+python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
+    --out <fresh-evidence-dir> \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/fleet-mcp.owner.yaml \
+    --owned-state-dir /absolute/path/state/serveros \
+    --owned-cwd /absolute/path/complete-tree
+```
+
+The receipts distinguish `LOCAL_REAL_OWNED` from the fixture path, read the
+actual tool count and project-create schema from `tools/list`, and report the
+six scopes, durability, owner-access families and read-only session readback.
+They do not send/create or request a model turn.
+
 ## Local trusted owner stdio mode
 
 Both builders also accept an opt-in local runtime entry, avoiding a remote OAuth
