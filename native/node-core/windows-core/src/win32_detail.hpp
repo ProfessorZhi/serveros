@@ -16,6 +16,7 @@
 namespace nodecore::windows_core::detail {
 inline thread_local const char *state_stage = "NONE";
 inline thread_local DWORD state_error = 0;
+inline thread_local std::uint64_t state_written_file_id = 0, state_read_file_id = 0;
 inline void state_fault(const char *stage) {
     state_stage = stage;
     state_error = ::GetLastError();

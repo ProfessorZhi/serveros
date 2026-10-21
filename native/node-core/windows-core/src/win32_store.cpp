@@ -261,8 +261,13 @@ bool read_document(const std::wstring &root, const wchar_t *name, const std::str
         return false;
     out.assign(static_cast<std::size_t>(size.QuadPart), '\0');
     DWORD n = 0;
-    return ::ReadFile(file, out.data(), static_cast<DWORD>(out.size()), &n, nullptr) &&
-           n == out.size();
+    bool ok = ::ReadFile(file, out.data(), static_cast<DWORD>(out.size()), &n, nullptr) &&
+              n == out.size();
+    BY_HANDLE_FILE_INFORMATION observed{};
+    if (ok && ::GetFileInformationByHandle(file, &observed))
+        detail::state_read_file_id =
+            (static_cast<std::uint64_t>(observed.nFileIndexHigh) << 32) | observed.nFileIndexLow;
+    return ok;
 }
 bool write_document(const std::wstring &root, const wchar_t *name, const std::string &sid,
                     const std::string &text) {
@@ -343,6 +348,10 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         detail::state_fault("POST_RENAME_FLUSH_UNKNOWN");
         return false;
     }
+    BY_HANDLE_FILE_INFORMATION observed{};
+    if (::GetFileInformationByHandle(file, &observed))
+        detail::state_written_file_id =
+            (static_cast<std::uint64_t>(observed.nFileIndexHigh) << 32) | observed.nFileIndexLow;
     return true;
 }
 std::string sha256(const std::string &text) {

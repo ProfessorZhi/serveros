@@ -202,7 +202,12 @@ int main() {
                     ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
                                   nullptr, OPEN_EXISTING, 0, nullptr);
                 CHECK(reader != INVALID_HANDLE_VALUE);
+                BY_HANDLE_FILE_INFORMATION old_info{};
+                ::GetFileInformationByHandle(reader, &old_info);
+                auto old_id = (static_cast<std::uint64_t>(old_info.nFileIndexHigh) << 32) |
+                              old_info.nFileIndexLow;
                 auto first = publish_windows_desired(manifest + " ");
+                auto first_id = detail::state_written_file_id;
                 if (!first)
                     std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
                                  detail::state_error);
@@ -223,6 +228,24 @@ int main() {
                     ::CloseHandle(reader);
                 }
                 CHECK(watch->read_desired(loaded));
+                if (loaded != manifest + "  ") {
+                    std::size_t spaces = 0;
+                    for (auto it = loaded.rbegin(); it != loaded.rend() && *it == ' '; ++it)
+                        spaces++;
+                    std::size_t mismatch = 0;
+                    auto expected = manifest + "  ";
+                    while (mismatch < loaded.size() && mismatch < expected.size() &&
+                           loaded[mismatch] == expected[mismatch])
+                        mismatch++;
+                    std::fprintf(stderr,
+                                 "READBACK actual_len=%zu expected_len=%zu tail_spaces=%zu "
+                                 "first_diff=%zu ids=%llu,%llu,%llu,%llu\n",
+                                 loaded.size(), expected.size(), spaces, mismatch,
+                                 static_cast<unsigned long long>(old_id),
+                                 static_cast<unsigned long long>(first_id),
+                                 static_cast<unsigned long long>(detail::state_written_file_id),
+                                 static_cast<unsigned long long>(detail::state_read_file_id));
+                }
                 CHECK_EQ(loaded, manifest + "  ");
                 // POSIX replacement also supports existing ordinary readers.
                 // The reader keeps old bytes; new opens see the replacement.

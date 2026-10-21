@@ -5,6 +5,6 @@
   "source_revision": "@SERVEROS_WINDOWS_SOURCE_REVISION@",
   "static_runtime": "@SERVEROS_WINDOWS_STATIC_RUNTIME@",
   "executables": ["bin/windows-core-watch.exe", "bin/windows-core-status.exe"],
-  "minimum_os": "Windows 10 1607 / Windows Server 2016 x64",
+  "minimum_os": "Windows 10 1709 / Windows Server 2019 x64",
   "configuration_included": false
 }

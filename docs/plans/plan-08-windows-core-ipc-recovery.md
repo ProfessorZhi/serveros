@@ -55,7 +55,7 @@ that distribution; deployed user-device OS-manager switching remains NOT_RUN.
 Actual held-reader diagnostics pinned MoveFileEx failure to ERROR_ACCESS_DENIED.
 The publisher now uses FileRenameInfoEx POSIX replacement on its original
 CREATE_NEW writer handle, with pre/post flush, checked target owner and no source
-reopen. Minimum OS is Windows 10 1607 / Server 2016 and appears in the package
+reopen. Minimum OS is Windows 10 1709 / Server 2019 and appears in the package
 manifest; unsupported APIs refuse and discard only the current temp. Hosted
 read-held tests keep both READ|DELETE and ordinary no-delete-sharing reader
 positive cases, verify old reader bytes/new opens, and exercise read-only target
