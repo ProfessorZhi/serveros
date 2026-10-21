@@ -1,4 +1,4 @@
-"""A' single-writer capability API: API_ONLY_GREEN vs raw-DB bypass.
+"""A' single-writer capability API: API_ONLY_CORRECTNESS vs raw-DB bypass.
 
 The writer object is the only API-only entry for synthetic issue/revoke/rebind/
 acquire/use-check/effect-marker. The same-file raw SQL adversary is expected
@@ -11,6 +11,7 @@ NOT_RUN: OS isolation, real owner key, production finalize/effect.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import multiprocessing
 import os
@@ -58,12 +59,20 @@ EXPIRES_AT = "2999-01-01T00:00:00Z"
 ISSUED_AT = "2026-01-01T00:00:00Z"
 
 
+def _iso(epoch):
+    return datetime.datetime.fromtimestamp(
+        epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class FixedClock:
     def __init__(self, now: float = NOW):
         self.now = float(now)
 
     def __call__(self) -> float:
         return self.now
+
+    def set(self, now: float) -> None:
+        self.now = float(now)
 
 
 def _writer(tmp_path, *, clock=None, initialize=True):
@@ -95,7 +104,7 @@ def _effect_count(w):
 
 
 # ---------------------------------------------------------------------------
-# A / API_ONLY_GREEN
+# A / API_ONLY_CORRECTNESS
 # ---------------------------------------------------------------------------
 
 def test_api_only_issue_acquire_use_check_and_effect_marker(tmp_path):
@@ -275,6 +284,234 @@ def test_effect_marker_rolls_back_on_process_crash(tmp_path):
     assert _effect_count(reopened) == 0
 
 
+
+def test_cross_token_and_cross_capability_are_refused(tmp_path):
+    clock = FixedClock(NOW)
+    w = _writer(tmp_path, clock=clock)
+    first = w.acquire(_request("req:1"))
+    clock.now = NOW + 31
+    second = w.acquire(_request("req:2"))
+    assert second["token"] == first["token"] + 1
+    for call in (
+            lambda: w.check_use("req:1", second["token"],
+                                first["capability"]),
+            lambda: w.commit_effect("req:1", second["token"],
+                                    first["capability"],
+                                    effect_ref="effect:cross",
+                                    payload_digest="d"),
+    ):
+        with pytest.raises(swe.PrototypeRefusal) as caught:
+            call()
+        assert caught.value.code == "STALE_TOKEN", str(caught.value)
+    assert _effect_count(w) == 0
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.check_use("req:1", first["token"], second["capability"])
+    assert caught.value.code == "BLOCKED_CAPABILITY"
+
+
+def test_cross_resource_capability_is_refused(tmp_path):
+    w = swe.SingleWriteEntry(
+        str(tmp_path / "db"), clock=FixedClock(NOW), synthetic_peer_uid=UID,
+        actor_ref=ACTOR, capability_key=b"test-capability-key")
+    w.issue(policy_ref=POLICY_REF, grant_ref=GRANT_REF,
+            context_ref=CONTEXT_REF, projects=[PROJECT],
+            items=[ITEM, "SRV-0002"], actions=[ACTION],
+            valid_from=VALID_FROM, expires_at=EXPIRES_AT,
+            issued_at=ISSUED_AT)
+    first = w.acquire(_request("req:1"))
+    w.issue_grant(grant_ref=GRANT2_REF, policy_ref=POLICY_REF,
+                  projects=[PROJECT], items=["SRV-0002"], actions=[ACTION],
+                  valid_from=VALID_FROM, expires_at=EXPIRES_AT)
+    w._writer.seed_context(context_ref="ctx:other", actor_ref=ACTOR,
+                           grant_ref=GRANT2_REF)
+    second = w.acquire(_request("req:2", context_ref="ctx:other",
+                                item_ref="SRV-0002"))
+    assert second["resource"] == "work-write:SRV-0002"
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.check_use(first["request_id"], second["token"],
+                    second["capability"])
+    assert caught.value.code == "BLOCKED_CAPABILITY", str(caught.value)
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(first["request_id"], second["token"],
+                        second["capability"], effect_ref="effect:resource",
+                        payload_digest="d")
+    assert caught.value.code == "BLOCKED_CAPABILITY"
+    assert _effect_count(w) == 0
+
+
+def test_commit_effect_ttl_crossing_after_hold_rolls_back(tmp_path):
+    clock = FixedClock(NOW)
+    w = _writer(tmp_path, clock=clock)
+    receipt = w.acquire(_request())
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(receipt["request_id"], receipt["token"],
+                        receipt["capability"], effect_ref="effect:ttl",
+                        payload_digest="d",
+                        hold=lambda: clock.set(NOW + 31))
+    assert caught.value.code == "LEASE_EXPIRED", str(caught.value)
+    assert w.effect("effect:ttl") is None
+    assert _effect_count(w) == 0
+    assert w.commit(receipt["request_id"])["token"] == receipt["token"]
+
+
+def test_commit_effect_policy_window_crossing_after_hold_rolls_back(tmp_path):
+    clock = FixedClock(NOW)
+    w = swe.SingleWriteEntry(
+        str(tmp_path / "db"), clock=clock, synthetic_peer_uid=UID,
+        actor_ref=ACTOR, capability_key=b"test-capability-key")
+    w.issue(policy_ref=POLICY_REF, grant_ref=GRANT_REF,
+            context_ref=CONTEXT_REF, projects=[PROJECT], items=[ITEM],
+            actions=[ACTION], valid_from=VALID_FROM,
+            expires_at=_iso(NOW + 10), issued_at=ISSUED_AT)
+    receipt = w.acquire(_request())
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(receipt["request_id"], receipt["token"],
+                        receipt["capability"], effect_ref="effect:policy",
+                        payload_digest="d",
+                        hold=lambda: clock.set(NOW + 11))
+    assert caught.value.code == "POLICY_EXPIRED_AT_COMMIT", str(caught.value)
+    assert w.effect("effect:policy") is None
+    assert _effect_count(w) == 0
+
+
+def test_commit_effect_grant_window_crossing_after_hold_rolls_back(tmp_path):
+    clock = FixedClock(NOW)
+    w = swe.SingleWriteEntry(
+        str(tmp_path / "db"), clock=clock, synthetic_peer_uid=UID,
+        actor_ref=ACTOR, capability_key=b"test-capability-key")
+    w.issue(policy_ref=POLICY_REF, grant_ref=GRANT_REF,
+            context_ref=CONTEXT_REF, projects=[PROJECT], items=[ITEM],
+            actions=[ACTION], valid_from=VALID_FROM,
+            expires_at=_iso(NOW + 1000), issued_at=ISSUED_AT)
+    # The writer issue helper uses the same expiry for policy/grant; rewrite
+    # the grant window in the temp DB to make only the grant expire.
+    conn = sqlite3.connect(w._writer.db_path, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE proto_grant SET expires_at=? WHERE grant_ref=?",
+                     (_iso(NOW + 10), GRANT_REF))
+        conn.commit()
+    finally:
+        conn.close()
+    # The raw grant update changed content without an epoch; the commit digest
+    # is taken after this mutation so the digest is consistent for this test.
+    receipt = w.acquire(_request())
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(receipt["request_id"], receipt["token"],
+                        receipt["capability"], effect_ref="effect:grant",
+                        payload_digest="d",
+                        hold=lambda: clock.set(NOW + 11))
+    assert caught.value.code == "GRANT_EXPIRED_AT_COMMIT", str(caught.value)
+    assert w.effect("effect:grant") is None
+    assert _effect_count(w) == 0
+
+
+def test_effect_first_then_revoke_keeps_marker_and_blocks_new_effect(tmp_path):
+    w = _writer(tmp_path)
+    receipt = w.acquire(_request())
+    marker = w.commit_effect(receipt["request_id"], receipt["token"],
+                             receipt["capability"], effect_ref="effect:first",
+                             payload_digest="d")
+    assert marker["effect_marker"] is True
+    w.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+    assert w.effect("effect:first") is not None
+    assert w._writer.policy(POLICY_REF)["revoked"] == 1
+    with pytest.raises(swe.PrototypeRefusal) as caught:
+        w.commit_effect(receipt["request_id"], receipt["token"],
+                        receipt["capability"], effect_ref="effect:second",
+                        payload_digest="d")
+    assert caught.value.code == "POLICY_DENIED"
+    assert _effect_count(w) == 1
+
+
+def _worker_effect_hold(db_dir, request_id, token, capability, written,
+                        release, queue):
+    w = swe.SingleWriteEntry(
+        db_dir, initialize=False, clock=FixedClock(NOW),
+        synthetic_peer_uid=UID, actor_ref=ACTOR,
+        capability_key=b"test-capability-key")
+
+    def hold():
+        written.set()
+        assert release.wait(15)
+
+    try:
+        receipt = w.commit_effect(request_id, token, capability,
+                                  effect_ref="effect:concurrent",
+                                  payload_digest="d", hold=hold)
+        queue.put(("ok", receipt["effect_ref"]))
+    except BaseException as exc:
+        queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
+
+
+def _worker_revoke_probe(db_dir, attempted, blocked, release, queue):
+    w = swe.SingleWriteEntry(
+        db_dir, initialize=False, clock=FixedClock(NOW),
+        synthetic_peer_uid=UID, actor_ref=ACTOR,
+        capability_key=b"test-capability-key")
+    conn = sqlite3.connect(w._writer.db_path, timeout=0,
+                           isolation_level=None)
+    conn.execute("PRAGMA busy_timeout = 0")
+    attempted.set()
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                queue.put(("probe_error", str(exc)))
+                return
+            blocked.set()
+        else:
+            conn.rollback()
+            queue.put(("probe_not_blocked", None))
+            return
+    finally:
+        conn.close()
+    assert release.wait(15)
+    try:
+        result = w.revoke_policy(POLICY_REF, expected_policy_epoch=1)
+        queue.put(("ok", result["policy_epoch"]))
+    except BaseException as exc:
+        queue.put(("refused", getattr(exc, "code", type(exc).__name__)))
+
+
+@FORK_ONLY
+def test_concurrent_revoke_is_blocked_by_the_effect_transaction(tmp_path):
+    w = _writer(tmp_path)
+    receipt = w.acquire(_request())
+    ctx = multiprocessing.get_context("fork")
+    written = ctx.Event()
+    release = ctx.Event()
+    attempted = ctx.Event()
+    blocked = ctx.Event()
+    effect_queue = ctx.Queue()
+    revoke_queue = ctx.Queue()
+    effecter = ctx.Process(
+        target=_worker_effect_hold,
+        args=(str(w._writer.state_dir), receipt["request_id"],
+              receipt["token"], receipt["capability"], written, release,
+              effect_queue))
+    revoker = ctx.Process(
+        target=_worker_revoke_probe,
+        args=(str(w._writer.state_dir), attempted, blocked, release,
+              revoke_queue))
+    effecter.start()
+    assert written.wait(15)
+    revoker.start()
+    assert attempted.wait(5)
+    assert blocked.wait(5), "revoker BEGIN IMMEDIATE was not blocked"
+    release.set()
+    for process in (effecter, revoker):
+        process.join(20)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+    assert effect_queue.get(timeout=10)[0] == "ok"
+    assert revoke_queue.get(timeout=10) == ("ok", 2)
+    assert w.effect("effect:concurrent") is not None
+    assert w.commit(receipt["request_id"])["policy_epoch"] == 1
+    assert w._writer.policy(POLICY_REF)["policy_epoch"] == 2
+    assert _effect_count(w) == 1
+
 # ---------------------------------------------------------------------------
 # B / RAW_DB_WRITE_BYPASS_EXPECTED
 # ---------------------------------------------------------------------------
@@ -333,7 +570,7 @@ def test_legacy_store_still_bypasses_the_writer_api(tmp_path):
 def test_os_isolation_is_not_claimed():
     report = swe.classification()
     assert report["C"]["name"] == swe.OS_ISOLATION_NOT_RUN
-    assert report["A"]["name"] == swe.API_ONLY_GREEN
+    assert report["A"]["name"] == swe.API_ONLY_CORRECTNESS
     assert report["effect_commit"] == swe.EFFECT_COMMIT_NOT_PROVEN
     assert report["production"] == "NOT_V1_SIGNED"
 

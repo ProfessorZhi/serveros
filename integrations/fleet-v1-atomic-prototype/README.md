@@ -2,7 +2,7 @@
 
 **PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.**
 
-Rounds 2–5 hardness notes are below; the production default is still blocked.
+Rounds 2–6 hardness notes are below; the production default is still blocked.
 
 | Flag | Value |
 |---|---|
@@ -161,7 +161,7 @@ it is not a real owner-signed content proof.
 `single_write_entry.py` is a **restricted mutator contract** experiment, not
 OS isolation:
 
-- **A / `API_ONLY_GREEN`** — one `SingleWriteEntry` object exposes synthetic
+- **A / `API_ONLY_CORRECTNESS`** — one `SingleWriteEntry` object exposes synthetic
   owner-side `issue`/`issue_grant`/`revoke_policy`/`rebind_context` and
   caller-side `acquire`/`check_use`/`commit_effect`. Caller methods accept no
   uid/actor/clock/policy/epoch; extra keywords are rejected. `acquire` returns
@@ -183,6 +183,40 @@ OS isolation:
 `classification()` returns the exact A/B/C record. The honest conclusion is
 `PROTOTYPE_ONLY / NOT_V1_SIGNED`; the same-file raw writer remains the
 unresolved production boundary.
+
+## Round-6 exact commit/token binding and post-hold re-check
+
+QA2's counterexample: `check_use(req1, token2, cap1)` and
+`commit_effect(req1, token2, cap1)` could succeed when `token2` was a
+successor lease on the same resource; the capability bound the req1 commit but
+the fencer re-queried a commit by the caller token. The effect marker then
+mixed `request_id=req1` with `token=2` and the successor's epochs.
+
+The writer now:
+
+* requires `commit.token == caller token` and the capability bound to the same
+  request/resource before the fencer;
+* passes the exact commit row (request_id/resource/owner/token) into
+  `_check_writer_fenced`, which verifies those fields and the commit's own
+  expiry instead of re-querying by the caller token;
+* after the TEST-ONLY hold, reads the injected clock again in the same
+  `BEGIN IMMEDIATE` and re-runs the exact commit fence; a TTL or policy/grant
+  window crossing rolls the `proto_effect` marker back;
+* keeps the writer transaction's write lock across the check + marker, so a
+  concurrent revoke is blocked (proved by an independent `BEGIN IMMEDIATE`
+  probe with `busy_timeout=0`).
+
+RED at #380: cross-token check/effect accepted, and hold-crossed TTL/window
+markers persisted. GREEN: `STALE_TOKEN`, `LEASE_EXPIRED`,
+`POLICY_EXPIRED_AT_COMMIT`, `GRANT_EXPIRED_AT_COMMIT`, and no marker.
+
+**Same-process caveat:** `SingleWriteEntry` is an in-process object. Its
+holder can call the synthetic owner methods, reach `_writer`/`db_path`, and
+read the capability key. The HMAC capability binds the commit row and catches
+request/token/capability mixing, but it is not OS isolation and not a real
+owner key. The A category is therefore `API_ONLY_CORRECTNESS`; B/C remain
+`RAW_DB_WRITE_BYPASS_EXPECTED`/`BLOCKED_DB_WRITER_ISOLATION` and
+`OS_ISOLATION_NOT_RUN`; effect is still `EFFECT_COMMIT_NOT_PROVEN`.
 
 ## Why a pure experimental module is not enough
 
@@ -245,6 +279,7 @@ Engine as-is.
 | E replay | same request id + same facts → `PROTOTYPE_HISTORICAL_REPLAY`, `authorized: false`, `historical: true`, same token, no new commit/token; different facts or epoch pins → `IDEMPOTENCY_CONFLICT`; stale epoch → `STALE_*_EPOCH` |
 | F finalize/effect | **NOT_PROVEN**; `finalize_run_verified` has its own transaction; `PRODUCTION_WIRING_REQUIRED` |
 | Hardening | commit-phase TTL/policy/grant re-check with `FixedClock` jumps; independent-connection `BEGIN IMMEDIATE` blocked proof; legacy acquire/check_writer bypass negative tests; fenced writer check including post-acquire policy/grant expiry, grant-epoch bump, context generation/ABA, same-epoch content digests, and immutable commit (62 tests) |
+| Round-6 exact commit/token binding | cross-token/cross-capability refused, post-hold TTL/policy/grant re-check rolls the marker back, cross-resource capability, effect-first/concurrent-revoke barrier (7 tests) |
 | Round-5 single writer | `single_write_entry.py` API-only issue/acquire/use-check/effect marker, capability tamper/revoke/ABA/stale/TTL/replay, raw-DB bypass EXPECTED, legacy-store bypass, OS isolation NOT_RUN (13 tests) |
 
 ## Run

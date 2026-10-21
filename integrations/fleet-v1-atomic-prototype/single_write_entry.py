@@ -5,7 +5,7 @@ STATUS: PROTOTYPE_ONLY / NOT_V1_SIGNED / V1_NOT_RELEASE.
 This is an experiment in a **single restricted mutator contract**, not OS
 isolation and not a production authorization.
 
-  A / API_ONLY_GREEN
+  A / API_ONLY_CORRECTNESS
       A caller holding only the `SingleWriteEntry` API can issue synthetic
       owner facts, acquire a fenced lease, obtain an in-process capability,
       run a use-check, and write an effect marker. All authority/lease/commit/
@@ -29,6 +29,14 @@ isolation and not a production authorization.
       `proto_effect` is a prototype marker, not Work Engine
       `finalize_run_verified` or a production effect. Real effect/finalize in
       the same transaction would require an owner-approved WorkEngine change.
+
+SAME-PROCESS CAVEAT
+-------------------
+This is still an in-process object. A holder can call the synthetic owner
+issue/revoke/rebind methods, reach `_writer`/`db_path`, and read the in-process
+capability key. The HMAC capability binds the commit row and catches a caller
+who mixes request/token/capability, but it does not establish OS isolation or
+a real owner key.
 
 Flags:
   NOT_V1_SIGNED              no production authorization
@@ -68,7 +76,7 @@ PROTOTYPE_USE_CHECK_OK = "PROTOTYPE_USE_CHECK_OK"
 PROTOTYPE_EFFECT_MARKER_COMMITTED = "PROTOTYPE_EFFECT_MARKER_COMMITTED"
 BLOCKED_CAPABILITY = "BLOCKED_CAPABILITY"
 BLOCKED_DB_WRITER_ISOLATION = "BLOCKED_DB_WRITER_ISOLATION"
-API_ONLY_GREEN = "API_ONLY_GREEN"
+API_ONLY_CORRECTNESS = "API_ONLY_CORRECTNESS"
 RAW_DB_WRITE_BYPASS_EXPECTED = "RAW_DB_WRITE_BYPASS_EXPECTED"
 OS_ISOLATION_NOT_RUN = "OS_ISOLATION_NOT_RUN"
 EFFECT_COMMIT_NOT_PROVEN = "EFFECT_COMMIT_NOT_PROVEN"
@@ -83,7 +91,7 @@ _CAP_FIELDS = (
 def classification() -> dict:
     """The honest A/B/C classification this experiment reports."""
     return {
-        "A": {"name": API_ONLY_GREEN,
+        "A": {"name": API_ONLY_CORRECTNESS,
               "scope": "capability-mediated API; temp SQLite; synthetic owner"},
         "B": {"name": RAW_DB_WRITE_BYPASS_EXPECTED,
               "scope": "same-file raw SQL writer bypasses the API",
@@ -264,7 +272,11 @@ class SingleWriteEntry:
         return receipt
 
     def check_use(self, request_id, token, capability) -> dict:
-        """Use-check in one transaction; no effect marker is written."""
+        """Use-check in one transaction; no effect marker is written.
+
+        The caller token must equal the committed token for this request_id;
+        the fencer receives that same commit row (never a re-query by token).
+        """
         if not isinstance(capability, str) or not capability:
             raise PrototypeRefusal(BLOCKED_CAPABILITY, "no capability presented")
         try:
@@ -278,6 +290,10 @@ class SingleWriteEntry:
             if commit is None:
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY", "no fenced commit for this request")
+            if int(commit["token"]) != int(token):
+                raise PrototypeRefusal(
+                    "STALE_TOKEN",
+                    "the caller token is not this request's committed token")
             if not hmac.compare_digest(
                     self._capability(commit), str(capability)):
                 raise PrototypeRefusal(
@@ -285,8 +301,10 @@ class SingleWriteEntry:
                     "the capability does not bind this committed authority")
             checked = self._writer._check_writer_fenced(
                 conn, str(commit["resource"]), owner=str(commit["owner"]),
-                token=token, now_e=now_e)
+                token=token, now_e=now_e, commit=commit,
+                expected_request_id=str(request_id))
         return {**checked,
+                "request_id": str(request_id),
                 "prototype_status": PROTOTYPE_USE_CHECK_OK,
                 "capability_verified": True,
                 "production_effect": False,
@@ -296,8 +314,11 @@ class SingleWriteEntry:
                       payload_digest, hold=None) -> dict:
         """Check the fence and write a prototype effect marker in ONE transaction.
 
-        `hold` is a TEST-ONLY hook called after the marker insert and before
-        COMMIT; a crash there must leave no marker.
+        The exact committed request_id/resource/owner/token are bound before
+        the fence. After the TEST-ONLY hold, the injected clock is read again
+        in the SAME transaction and the exact commit fence is re-run; a TTL or
+        policy/grant expiry rolls the marker back. A concurrent revoke cannot
+        slip in because this transaction holds the SQLite write lock.
         """
         if not isinstance(capability, str) or not capability:
             raise PrototypeRefusal(BLOCKED_CAPABILITY, "no capability presented")
@@ -314,6 +335,10 @@ class SingleWriteEntry:
             if commit is None:
                 raise PrototypeRefusal(
                     "BLOCKED_OWNER_POLICY", "no fenced commit for this request")
+            if int(commit["token"]) != int(token):
+                raise PrototypeRefusal(
+                    "STALE_TOKEN",
+                    "the caller token is not this request's committed token")
             if not hmac.compare_digest(
                     self._capability(commit), str(capability)):
                 raise PrototypeRefusal(
@@ -321,7 +346,8 @@ class SingleWriteEntry:
                     "the capability does not bind this committed authority")
             checked = self._writer._check_writer_fenced(
                 conn, str(commit["resource"]), owner=str(commit["owner"]),
-                token=token, now_e=now_e)
+                token=token, now_e=now_e, commit=commit,
+                expected_request_id=str(request_id))
             existing = conn.execute(
                 "SELECT * FROM proto_effect WHERE effect_ref=?",
                 (effect_ref,)).fetchone()
@@ -353,6 +379,16 @@ class SingleWriteEntry:
                  int(checked["authority_epoch"])))
             if hold is not None:
                 hold()
+            # COMMIT-PHASE RE-CHECK. Read the trusted clock again in the SAME
+            # BEGIN IMMEDIATE after the marker insert/hold and re-run the exact
+            # commit fence (lease/commit expiry, context/policy/grant windows).
+            # A crossing rolls the proto_effect marker back; a concurrent
+            # revoke cannot slip in because this transaction holds the write lock.
+            final_now = atomic._lease_now(self._writer._clock())
+            final_checked = self._writer._check_writer_fenced(
+                conn, str(commit["resource"]), owner=str(commit["owner"]),
+                token=token, now_e=final_now, commit=commit,
+                expected_request_id=str(request_id))
             return {
                 "prototype_status": PROTOTYPE_EFFECT_MARKER_COMMITTED,
                 "simulated_owner": True,
@@ -368,10 +404,10 @@ class SingleWriteEntry:
                 "token": int(token),
                 "payload_digest": payload_digest,
                 "committed_at": committed_at,
-                "context_epoch": int(checked["context_epoch"]),
-                "grant_epoch": int(checked["grant_epoch"]),
-                "policy_epoch": int(checked["policy_epoch"]),
-                "authority_epoch": int(checked["authority_epoch"]),
+                "context_epoch": int(final_checked["context_epoch"]),
+                "grant_epoch": int(final_checked["grant_epoch"]),
+                "policy_epoch": int(final_checked["policy_epoch"]),
+                "authority_epoch": int(final_checked["authority_epoch"]),
                 "replayed": False,
             }
 

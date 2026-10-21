@@ -833,8 +833,15 @@ class AtomicFencePrototype:
                 conn, resource, owner=owner, token=token, now_e=now_e)
 
     def _check_writer_fenced(self, conn, resource, *, owner, token,
-                             now_e) -> dict:
-        """In-transaction half: the caller owns BEGIN IMMEDIATE and the effect write."""
+                             now_e, commit=None,
+                             expected_request_id=None) -> dict:
+        """In-transaction half: the caller owns BEGIN IMMEDIATE and the effect write.
+
+        When `commit` is supplied (the SingleWriteEntry path), the check binds
+        that exact committed row to the caller's request_id/resource/owner/token
+        and checks the commit's own expiry; it never re-queries a different
+        commit by the caller's token.
+        """
         row = conn.execute(
             "SELECT resource,owner,token,expires_at FROM leases WHERE resource=?",
             (str(resource),)).fetchone()
@@ -845,14 +852,34 @@ class AtomicFencePrototype:
                 "STALE_TOKEN", "the caller is not the current holder")
         if _lease_epoch(row["expires_at"]) <= now_e:
             raise PrototypeRefusal("LEASE_EXPIRED", "the lease expired")
-        commit = conn.execute(
-            "SELECT * FROM proto_commit WHERE resource=? AND token=? "
-            "ORDER BY rowid DESC LIMIT 1",
-            (str(resource), token)).fetchone()
         if commit is None:
-            raise PrototypeRefusal(
-                "BLOCKED_OWNER_POLICY",
-                "the lease has no fenced commit row")
+            commit = conn.execute(
+                "SELECT * FROM proto_commit WHERE resource=? AND token=? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (str(resource), token)).fetchone()
+            if commit is None:
+                raise PrototypeRefusal(
+                    "BLOCKED_OWNER_POLICY",
+                    "the lease has no fenced commit row")
+        else:
+            if (expected_request_id is not None
+                    and str(commit["request_id"]) != str(expected_request_id)):
+                raise PrototypeRefusal(
+                    "STALE_TOKEN",
+                    "the committed request_id does not match the caller")
+            if (str(commit["resource"]) != str(resource)
+                    or int(commit["token"]) != token):
+                raise PrototypeRefusal(
+                    "STALE_TOKEN",
+                    "the committed resource/token does not match the caller")
+            if str(commit["owner"]) != str(owner):
+                raise PrototypeRefusal(
+                    "STALE_TOKEN",
+                    "the committed owner does not match the caller")
+            if _lease_epoch(commit["expires_at"]) <= now_e:
+                raise PrototypeRefusal(
+                    "LEASE_EXPIRED",
+                    "the committed lease expired before the check")
         keys = set(commit.keys())
         if ("context_ref" not in keys or "context_actor" not in keys
                 or "context_epoch" not in keys):
