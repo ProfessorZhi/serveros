@@ -67,12 +67,12 @@ authority:
 - `bypassPermissions`, if configured by the owner, belongs to that runtime,
   account and project. It is never "the fleet runs with bypass", never a
   requestable widening, and never OS root/sudo;
-- an **existing-project** session is gated by the device's project list and
-  the surface's static `create_allow`; a **new project** inside the owner's
-  configured `owner_access.project_roots` root is authorized by that root, not
-  by a per-project `create_allow` entry for a name that does not exist yet.
-  Requiring a static allow row first would re-introduce per-project approval
-  for an owner-max action;
+- an owner-max session uses the selected runtime's registered project membership
+  and explicit owner grant before legacy `allow_create`/`create_allow`; this
+  includes existing projects and projects just created and registered under an
+  owner-approved root, without another static edit. The static project list
+  remains the legacy/non-owner alternative. A new project is authorized by the
+  owner's `owner_access.project_roots`, not a name that does not exist yet;
 - a human decision is still required when the target is outside the configured
   profile, the capability is absent, identity is ambiguous or contradictory,
   or an irreversible action would exceed the grant.
@@ -207,3 +207,39 @@ the live Creator/OAuth path and the root/CloudCLI project workflow.
 - Live Creator packaging, OAuth and production updates remain UNVERIFIED.
 - Real model behaviour after the Skill rewrite is not measured; only source
   and package/handshake checks are in scope.
+
+## Residual correction design (169e50b independent review)
+
+The source-only correction lane stays on its frozen169e50b base and never touches
+the CC device agent's active worktree. No model/client/device request is needed.
+Owner-max existing and newly registered projects use actual selected-runtime
+membership/owner grant before static create_allow; static allow remains the legacy
+non-owner path. This is judged against the actual Core30f6fd7 owner-grant branch,
+not inferred from a word-matching Skill assertion.
+
+CC output acquisition uses an atomic fresh mkdir followed by a retained nofollow
+directory FD/identity. Only that owned inode can receive exclusive nofollow receipt
+files; losing acquisition or path identity cannot write another actor's receipt.
+Existing roots/receipts are preserved. POSIX ownership capabilities fail closed if
+unavailable rather than claiming a safe write.
+
+Both client wire modes are observed by the transparent interposer. A connection
+identifier plus typed request id binds successful initialize result, initialized
+notification, tools/list request and successful list response; error/unknown/wrong
+connection cannot borrow another response or the independent probe.
+
+LineFramer uses bounded frames and queued bytes; terminal overflow is explicit
+without evicting queued frames. Codex also limits retained notifications by count
+and serialized bytes. Interposer parsing, in-flight correlation and metadata have
+per-connection budgets; a resource refusal records metadata-only observation
+failure and exits nonzero, never silently deleting a protocol frame. Valid bytes
+are forwarded in both directions using write-all including interrupted/short
+writes. Observation failure propagates to receipt FAIL.
+
+Residual design review round1: critical output precheck is not acquisition; use
+exclusive acquisition and FD-bound receipts, never catch-write into unowned out.
+Warning initialize method presence is not ACK; require correlated result and
+handshake ordering. Round2: queue line caps do not bound short frames or retained
+notifications; cap both bytes/count and observer pending/log data. Existing burst
+handling, source alias refusal, package identity and no-model distinction remain.
+No unresolved critical/warning in the scoped design.

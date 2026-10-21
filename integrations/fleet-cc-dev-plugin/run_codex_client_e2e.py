@@ -32,7 +32,7 @@ REPO = ROOT.parent
 import importlib.util
 sys.path.insert(0, str(HERE))
 import fleet_owned_probe  # noqa: E402
-from stdio_framing import LineFramer  # noqa: E402
+from stdio_framing import FramingError, LineFramer, write_all_fd  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "fleet_codex_fixture_runner", HERE / "build_codex_local_fixture.py")
@@ -67,6 +67,9 @@ class CodexServer:
                  tmpdir: Path | None = None):
         self.timeout = timeout
         self.notifications: list[dict] = []
+        self.notification_bytes = 0
+        self.max_notifications = 1024
+        self.max_notification_bytes = 4 * 1024 * 1024
         self.tmpdir = Path(tmpdir) if tmpdir is not None else Path(cwd) / "tmp"
         env = _client_env(home, self.tmpdir)
         self.proc = subprocess.Popen(
@@ -80,8 +83,8 @@ class CodexServer:
 
     def send(self, message: dict) -> None:
         assert self.proc.stdin is not None
-        self.proc.stdin.write(
-            (json.dumps(message) + "\n").encode("utf-8"))
+        write_all_fd(self.proc.stdin.fileno(),
+                     (json.dumps(message) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
 
     def request(self, request_id: int, method: str, params: dict) -> dict:
@@ -103,9 +106,15 @@ class CodexServer:
                 message = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
-            if message.get("id") == request_id:
+            if not isinstance(message, dict):
+                raise FramingError("app-server frame is not a JSON object")
+            if type(message.get("id")) is type(request_id) and message.get("id") == request_id:
                 return message
+            if (len(self.notifications) >= self.max_notifications or
+                    self.notification_bytes + len(line) > self.max_notification_bytes):
+                raise FramingError("notification retention exceeds its count/bytes budget")
             self.notifications.append(message)
+            self.notification_bytes += len(line)
 
     def close(self) -> str:
         self.proc.terminate()

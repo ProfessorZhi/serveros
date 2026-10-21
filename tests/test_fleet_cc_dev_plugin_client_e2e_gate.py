@@ -58,7 +58,7 @@ _spec.loader.exec_module(cc)
 PINNED_SKILLS = {
     "fleet-async-dispatch": "ad0e4d3e3a3e6073b6ca57c324ce80d07fe3863ba791c2ec4f3f765394b17a4b",
     "fleet-commander-orchestration": "216aa82564e7c0becc39705b6772240bb661965fe9f9ad399e3ca6dcaf47c88c",
-    "fleet-create-with-grants": "9555a87167c46d0ce04188d5976b0be2fce21ee0c9b5d73d6335a7ac3140d40f",
+    "fleet-create-with-grants": "67a89e3910173d5887a5253309ae54ffd83f0aa2d18cf2e017698ff57ee70b9f",
     "fleet-device-and-session-discovery": "5c7131e2325d3742b7c6b14bf258e5dd468148f12490de5c825956e880c116d3",
     "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
     "fleet-plugin-update": "f10d852c0bc286eb8b7343a8a9a6839d54e14a384efd00e226b2d894767d8205",

@@ -1,14 +1,7 @@
-"""Bounded byte framing for a child process speaking newline-delimited JSON.
+"""Bounded newline byte framing, including total queued frames and bytes.
 
-`select()` on a text pipe plus `readline()` is two buffers: `select()` watches
-the file descriptor, while `TextIOWrapper` may already hold the next line. A
-child that writes a notification and its reply in one burst therefore leaves
-`select()` reporting "not ready" for a line that is already buffered, and the
-reader times out on a response it has actually received.
-
-This reader owns exactly one buffer, reads raw bytes with `os.read`, and hands
-whole lines to a queue. Both the size of a line and the total look-ahead are
-bounded, so a corrupt or hostile child cannot grow the buffer without limit.
+A terminal overflow rejects the stream explicitly. Already queued frames are not
+silently evicted to make room for an error or a later response.
 """
 from __future__ import annotations
 
@@ -18,65 +11,108 @@ import threading
 import time
 
 DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_QUEUE_FRAMES = 128
+DEFAULT_MAX_QUEUE_BYTES = 32 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
-_EOF = object()
 
 
 class FramingError(RuntimeError):
-    """The peer sent more than the bounded line/buffer limit."""
+    """The peer exceeded a framing/resource budget or a write failed."""
+
+
+def write_all_fd(fd: int, data: bytes) -> None:
+    """Forward exact bytes, including interrupted and permitted short writes."""
+    view = memoryview(data)
+    while view:
+        try:
+            count = os.write(fd, view)
+        except InterruptedError:
+            continue
+        if count <= 0:
+            raise FramingError("stdio write made no progress")
+        view = view[count:]
 
 
 class LineFramer:
-    """Read newline-delimited byte frames from `stream` without losing bursts."""
-
-    def __init__(self, stream, *, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES):
+    def __init__(self, stream, *, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
+                 max_queue_frames: int = DEFAULT_MAX_QUEUE_FRAMES,
+                 max_queue_bytes: int = DEFAULT_MAX_QUEUE_BYTES):
         self._fd = stream.fileno()
         self._max = int(max_line_bytes)
-        self._queue: queue.Queue = queue.Queue()
+        self._max_bytes = int(max_queue_bytes)
+        if min(self._max, int(max_queue_frames), self._max_bytes) <= 0:
+            raise ValueError("framing budgets must be positive")
+        self._queue: queue.Queue = queue.Queue(maxsize=int(max_queue_frames))
+        self._queued_bytes = 0
+        self._condition = threading.Condition()
+        self._failure: FramingError | None = None
+        self._eof = False
         self._thread = threading.Thread(target=self._pump, daemon=True)
         self._thread.start()
+
+    def _finish(self, error: str | None = None) -> None:
+        with self._condition:
+            if error is not None:
+                self._failure = FramingError(error)
+            self._eof = True
+            self._condition.notify_all()
+
+    def _enqueue(self, line: bytes) -> bool:
+        with self._condition:
+            if self._queue.full() or self._queued_bytes + len(line) > self._max_bytes:
+                self._failure = FramingError("frame queue exceeds its frames/bytes budget")
+                self._eof = True
+                self._condition.notify_all()
+                return False
+            self._queue.put_nowait(line)
+            self._queued_bytes += len(line)
+            self._condition.notify_all()
+            return True
 
     def _pump(self) -> None:
         buffer = bytearray()
         while True:
             try:
                 chunk = os.read(self._fd, _READ_CHUNK)
-            except OSError as exc:  # closed while reading is EOF, not a crash
-                self._queue.put(FramingError(f"read failed: {exc}"))
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                self._finish(f"read failed: {exc}")
                 return
             if not chunk:
-                self._queue.put(_EOF)
+                self._finish("unterminated frame at EOF" if buffer else None)
                 return
             buffer.extend(chunk)
             while True:
                 index = buffer.find(b"\n")
                 if index < 0:
                     break
-                line = bytes(buffer[:index])
-                del buffer[: index + 1]
-                if len(line) > self._max:
-                    self._queue.put(FramingError(
-                        f"frame exceeds {self._max} bytes"))
+                if index > self._max:
+                    self._finish(f"frame exceeds {self._max} bytes")
                     return
-                self._queue.put(line)
+                line = bytes(buffer[:index])
+                del buffer[:index + 1]
+                if not self._enqueue(line):
+                    return
             if len(buffer) > self._max:
-                self._queue.put(FramingError(
-                    f"unterminated frame exceeds {self._max} bytes"))
+                self._finish(f"unterminated frame exceeds {self._max} bytes")
                 return
 
     def next_line(self, timeout: float) -> bytes:
-        """Return one frame, raising `TimeoutError`, `EOFError` or `FramingError`."""
         deadline = time.monotonic() + max(0.0, float(timeout))
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("no frame within the timeout")
-            try:
-                item = self._queue.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise TimeoutError("no frame within the timeout") from exc
-            if item is _EOF:
-                raise EOFError("peer closed stdout")
-            if isinstance(item, FramingError):
-                raise item
-            return item
+        with self._condition:
+            while True:
+                if self._failure is not None:
+                    raise self._failure
+                try:
+                    line = self._queue.get_nowait()
+                except queue.Empty:
+                    if self._eof:
+                        raise EOFError("peer closed stdout")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("no frame within the timeout")
+                    self._condition.wait(remaining)
+                else:
+                    self._queued_bytes -= len(line)
+                    return line

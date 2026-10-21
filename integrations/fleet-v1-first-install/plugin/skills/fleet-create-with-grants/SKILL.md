@@ -17,17 +17,22 @@ Before the first use, resolve the managed profile:
 | Question | Where the answer lives |
 |---|---|
 | Which **credential** is calling, and does it carry `fleet:create`? | the scope on the presented token — never a parameter you supply |
-| Is **creation** open on that device at all? | the machine's own binding (`allow_create`) |
-| Which **project** may an existing-project session use? | the machine's project list *and* the surface's `create_allow`, both |
+| Is **creation** open on that device/runtime? | owner-max: its enabled owner runtime and actual owner grant; legacy: the machine's `allow_create` binding |
+| Which **project** may a session use? | owner-max: the selected runtime's registered project membership and owner grant; legacy/non-owner: the machine's project list plus static `create_allow` |
 | Which **root** may a **new** project be created under? | the owner-configured `owner_access.project_roots` binding — the root is the grant |
 | Which **runtime / owner** does it run as? | the owner-approved runtime entry for that account |
 
-The last two rows are different gates. `create_allow` is the static per-project
-list for opening a session in a project that already exists. A new project is
-authorized by the owner-configured project **root**, not by a pre-existing
-entry for a name that does not exist yet: do not require a per-project
-`create_allow` row before creating a project inside the owner's root, and do
-not read its absence as a refusal.
+Owner-max checks the actual selected-runtime project membership and owner grant
+before the legacy static allowlist. This applies to an existing registered
+project and to a project just created and registered through the owner's root:
+opening its session requires no additional static `create_allow` edit. Read the
+Core's actual grant/refusal; do not stop solely because a static row is absent.
+
+A new project is authorized by the owner-configured project **root**, not by a
+pre-existing static row for a name that does not exist yet. Use the returned
+registered project reference to create its session in that same owner/runtime.
+The static `create_allow` project list remains the alternative gate for the
+legacy/non-owner path; it is not an extra gate on an owner-max project grant.
 
 After the owner has configured that profile, do not re-ask for routine create
 inside it. A refusal that names a project is not an invitation to retry with a
