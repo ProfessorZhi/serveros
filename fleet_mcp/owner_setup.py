@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -37,8 +38,9 @@ def _mapping(loader, node, deep=False):
 
 
 _UniqueYaml.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
-_SECRET_KEYS = {"token", "secret", "password", "credential", "api_key", "access_token",
-                "refresh_token", "client_secret", "private_key", "authorization", "cookie"}
+_SECRET_KEYS = {"token", "secret", "password", "passwd", "passphrase", "credential",
+                "apikey", "accesskey", "secretkey", "accesstoken", "refreshtoken",
+                "clientsecret", "privatekey", "authorization", "cookie"}
 
 
 def _plain(value, depth=0, labels=False):
@@ -50,11 +52,12 @@ def _plain(value, depth=0, labels=False):
         for key, child in value.items():
             if not isinstance(key, str):
                 raise ValueError("configuration keys must be strings")
-            if not labels and key.lower().replace("-", "_") in _SECRET_KEYS:
+            if not labels and re.sub(r"[^a-z0-9]", "", key.lower()) in _SECRET_KEYS:
                 raise ValueError("configuration must name credential anchors, never credential values")
             if key == "endpoint" and isinstance(child, str):
                 parsed = urlsplit(child)
-                if parsed.username is not None or parsed.password is not None:
+                if (parsed.username is not None or parsed.password is not None
+                        or parsed.query or parsed.fragment):
                     raise ValueError("endpoint credentials must remain in their existing anchors")
             result[key] = _plain(child, depth + 1, labels=key in {
                 "project_roots", "owner_max", "operator_grants", "profiles", "providers", "create_allow"})
@@ -159,8 +162,7 @@ def prepare(fleet_source, request, output, *, node_sources=None):
     for principal, namespaces in owners.items():
         merged_owners[principal] = tuple(dict.fromkeys((*merged_owners.get(principal, ()), *namespaces)))
     candidate = replace(current, providers=providers,
-                        policy=replace(current.policy, owner_max=merged_owners),
-                        auth=replace(current.auth, grantable_scopes=tuple(ALLOWED_SCOPES)))
+                        policy=replace(current.policy, owner_max=merged_owners))
     used = set()
     for namespaces in owners.values():
         for namespace in namespaces:
@@ -170,7 +172,6 @@ def prepare(fleet_source, request, output, *, node_sources=None):
     if set(profiles) - used:
         raise ValueError("each owner profile must be selected by a named owner")
     raw.setdefault("policy", {})["owner_max"] = {p: list(v) for p, v in merged_owners.items()}
-    raw.setdefault("auth", {})["grantable_scopes"] = list(ALLOWED_SCOPES)
     node_documents = {}
     for key, source in (node_sources or {}).items():
         if key not in profiles:
@@ -191,7 +192,9 @@ def prepare(fleet_source, request, output, *, node_sources=None):
             "node_configs": {}, "source_sha256": hashlib.sha256(before).hexdigest(),
             "candidate_sha256": hashlib.sha256(fleet_bytes).hexdigest(),
             "expected": {"tools": len(SERVED_TOOLS), "surface_revision": TOOL_SURFACE_REVISION,
-                         "durability": "AGENT_CONTROL_STORE", "scopes": list(ALLOWED_SCOPES)},
+                         "durability": "AGENT_CONTROL_STORE",
+                         "required_owner_scopes": list(ALLOWED_SCOPES),
+                         "issuer_grantable_scopes": list(current.auth.grantable_scopes)},
             "entry": "bin/serveros-fleet-owned",
             "missing_node_configs": sorted(key for key in profiles if providers[key].kind == "fleet-node"
                                             and key not in node_documents),
