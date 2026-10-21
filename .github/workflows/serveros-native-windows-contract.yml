@@ -1,6 +1,6 @@
-# Hosted Windows build and local named-pipe/journal tests. No SCM/task action,
-# installation, credential access, remote endpoint, or user's device is used.
-# Green means HOSTED_WINDOWS_BUILD/LOCAL_IPC, never REAL_DEVICE/CLIENT_E2E.
+# Hosted Windows build, local IPC and one opt-in current-CI-user ScheduledTask
+# effect fixture. No production/system service, credentials or user's device.
+# Green means HOSTED_WINDOWS only, never REAL_DEVICE/CLIENT_E2E.
 name: serveros-native-windows-contract
 
 on:
@@ -129,3 +129,40 @@ jobs:
             build-windows/serveros-windows-core-*-win64.zip
             build-windows/serveros-windows-core-*-win64.zip.sha256
           if-no-files-found: error
+
+  windows-native-effect:
+    name: Actual current-user ScheduledTask recovery effect
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Build the isolated native effect fixture
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "source identity failed" }
+          cmake -S native/node-core/windows-core -B build-native-effect -A x64 -DSERVEROS_WINDOWS_NATIVE_EFFECT_TEST=ON -DSERVEROS_WINDOWS_STATIC_RUNTIME=ON
+          if ($LASTEXITCODE -ne 0) { throw "native effect configure failed" }
+          cmake --build build-native-effect --config Release --target test_windows_native_task_effect --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw "native effect build failed" }
+
+      - name: Exercise real typed RunEx and functional readiness
+        shell: pwsh
+        run: |
+          ctest --test-dir build-native-effect -C Release -R '^windows_native_task_effect$' --output-on-failure -V
+          if ($LASTEXITCODE -ne 0) { throw "actual recovery effect failed or OS permission refused; see retained evidence" }
+
+      - name: Preserve native effect evidence including refusals
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-native-recovery-effect
+          path: |
+            build-native-effect/windows-native-task-evidence.json
+            build-native-effect/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

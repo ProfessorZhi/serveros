@@ -70,3 +70,20 @@ not claimed as delivered. Source identity stays the original writer handle,
 ancestors remain pinned, and no arbitrary caller destination is accepted.
 
 Final sharing boundary: keep the real READ|DELETE exact-ID/bytes positive case. A reader denying delete-sharing is an explicit bounded refusal; release followed by repeated configure succeeds. Retry only sharing/lock conflicts, at most 26 calls within 250 ms, and never retry unknown/unsupported errors. Exact target bytes are checked before ACK; read-only intent remains a refusal.
+
+### 5. Separate hosted native effect acceptance
+The frozen f4f425c source/package gate passes independently; its six suites do
+not prove actual SCM/TaskScheduler execution. Add an opt-in hosted-only fixture
+that registers a create-only, current-CI-user-owned unique ScheduledTask with an
+interactive token, LUA and ignore-new. Invoke the actual typed RecoveryEngine,
+native backend and durable store; require stopped/not-ready to RunEx to live
+process-identity-pinned functional readiness, busy refusal without another PID or
+LastRunTime, manual and disabled refusal, final stopped state and checked deletion
+of only this freshly-created task/folder. Retain exact source, object-owner
+readback, native grants, outcomes and actual HRESULTs in RUN-0054's unique
+native-toy-20261022 subdirectory. Build this fixture under actual Win32 before
+running it in a separate hosted job. No production service installation, user
+Windows executor, credentials, permission change or elevated task is allowed.
+OS denial must fail honestly and preserve evidence. User Windows LIVE remains
+NOT_RUN even if hosted effect passes. This supplemental acceptance does not
+change Core authority, default-enabled targets or existing six-suite semantics.
