@@ -619,11 +619,6 @@ int main(int argc, char** argv) {
 
     nodecore::supervisor::Plan last_plan;
     std::vector<nodecore::supervisor::ExecutionResult> executed;
-    //: Holds the single-writer lease for as long as this process runs. Declared
-    //: OUTSIDE the tick lambda on purpose: a lease taken inside the pass would
-    //: be released when the pass ended, which is the moment before the verbs it
-    //: was supposed to be guarding.
-    nodecore::supervisor::WriterLease writer_lease;
 
     //: The one place this program opens a socket: a service-level readiness
     //: probe. Declared once so every reprobe in this run uses the same one.
@@ -643,6 +638,9 @@ int main(int argc, char** argv) {
     };
 
     const auto observe_and_plan = [&](bool allow_execution) -> nodecore::supervisor::TickOutcome {
+        // Effects execute inside this pass. Scope the lease here so every exit,
+        // including a thrown observation/provider error, releases the writer.
+        nodecore::supervisor::WriterLease writer_lease;
         const long tick_started = monotonic_seconds();
         //: Resident acting re-reads its facts EVERY tick, here, before the plan
         //: is built. `usable == false` (absent, unreadable, stale, malformed)

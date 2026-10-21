@@ -494,5 +494,59 @@ class NullFieldTest(unittest.TestCase):
             facts.validate_document(doc)
 
 
+
+class PrivateDirectoryBindingTest(unittest.TestCase):
+    def test_private_ancestor_protects_shared_state_and_retains_lease_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            private = Path(td) / "private"
+            private.mkdir(mode=0o700)
+            shared = private / "shared"
+            shared.mkdir(mode=0o775)
+            shared.chmod(0o775)
+            destination = shared / "current"
+            destination.mkdir(mode=0o700)
+            facts.publish_facts(destination / "facts.json", _doc())
+            owners = facts.OwnerMap.from_services([spec()])
+            owners.write(destination / "owners.json")
+            self.assertEqual(facts.OwnerMap.load(destination / "owners.json").owner_of("toy.service"), facts.OWNER_SERVEROSD)
+            lease = facts.SafeLease(destination / "lease")
+            lease.acquire()
+            try:
+                lease.revalidate()
+                private.chmod(0o755)
+                with self.assertRaises(facts.FactsRefused):
+                    lease.revalidate()
+            finally:
+                private.chmod(0o700)
+                lease.release()
+
+    def test_held_lease_refuses_ancestor_alias_to_same_inode(self):
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td) / "parent"
+            parent.mkdir(mode=0o700)
+            lease = facts.SafeLease(parent / "lease")
+            lease.acquire()
+            moved = Path(td) / "moved"
+            try:
+                parent.rename(moved)
+                parent.symlink_to(moved, target_is_directory=True)
+                with self.assertRaises(facts.FactsRefused):
+                    lease.revalidate()
+            finally:
+                lease.release()
+
+    def test_owner_map_read_refuses_alias_and_invalid_json_with_typed_refusal(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "owners.json"
+            facts.OwnerMap.from_services([spec()]).write(path)
+            alias = Path(td) / "alias.json"
+            alias.symlink_to(path)
+            with self.assertRaises(facts.FactsRefused):
+                facts.OwnerMap.load(alias)
+            path.write_text("{bad", encoding="utf-8")
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.OwnerMap.load(path)
+            self.assertEqual(caught.exception.code, facts.OWNER_UNKNOWN)
+
 if __name__ == "__main__":
     unittest.main()

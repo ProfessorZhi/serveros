@@ -94,3 +94,35 @@ supervisor suites pass.
   is the explicit "do not bring it back" signal.
 - `tests/test_daemon.py` imports pytest, which this host lacks. It is NOT_RUN, not
   PASS. This host also cannot run it to 180 s; no unbounded wait was used.
+
+
+## Root final effect-boundary correction
+
+The bc1ad5c review retained two real gaps: an ancestor alias still permitted a
+C++ lease write, and Daemon.reconcile acquired the Python lease without calling
+its new revalidation at the actual actuator boundary. Root reproduced both
+failures before implementation in commit65e6158; the recording runner proved
+the missing guard without calling Docker/systemctl. The native RED probe only
+wrote its own artifact fixture.
+
+WriterLease now reuses the existing StateDirectory no-follow FD walk and its
+private-boundary rules. An explicit lease-only option retains every namespace
+FD and captured ownership/mode, without changing ordinary state reader
+semantics. Lease opens, metadata writes, diagnostic reads and every effect
+check are bound to that same chain. Move operations retain the complete proof.
+The Core lease is scoped inside the tick so exceptions also release it.
+
+Python's publisher and lease retain a bounded FD chain and revalidate it,
+including owner/mode/identity and an actual current-user private barrier before
+allowing shared state descendants. A read-only open of the measured
+state0700/serveros0775/runtime0775 chain proves compatibility without reading
+state entries/files or writing state. Owner-map reads use bounded owned-file
+I/O and typed failures; atomic publication uses the same directory authority.
+Daemon.reconcile revalidates after acquisition immediately before its actuator,
+refuses without spending recovery budget, and releases through finally.
+
+Tokyo's full native build is compilation-only: historical native tests use
+/tmp and run on the hosted runner. The complete native and both daemon/facts
+files must pass there on the exact candidate, including positive private
+paths; rejecting every artifact path is not a positive lease proof. Existing
+historical Run finalization evidence remains untouched.

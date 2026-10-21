@@ -29,6 +29,7 @@
 #pragma once
 
 #include <string>
+#include "supervisor/state_directory.hpp"
 
 namespace nodecore::supervisor {
 
@@ -85,7 +86,7 @@ public:
 
 private:
     int descriptor_ = -1;
-    std::string path_;
+    StateDirectory directory_;
 };
 
 //: What another writer would learn about the current holder, without taking the

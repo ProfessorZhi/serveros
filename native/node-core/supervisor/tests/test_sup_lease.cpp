@@ -686,6 +686,7 @@ int main() {
         CHECK(source.acquire(path, "core-a").ok);
         WriterLease moved(std::move(source));
         CHECK(moved.held());
+        CHECK(moved.revalidate().ok);
         CHECK(!source.held());
         // Still exclusive after the move.
         WriterLease other;

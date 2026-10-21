@@ -121,82 +121,128 @@ def _reject_traversal(path: Path) -> None:
         raise FactsRefused(PATH_UNSAFE, f"{path} contains a traversal component")
 
 
-def _trusted_dir(info: os.stat_result) -> bool:
-    """The same rule `state_directory.cpp` applies.
+class _DirectoryBinding:
+    """An owned no-follow FD chain, including any private writable tail."""
+    def __init__(self, frames: list[tuple[int, str, os.stat_result]]) -> None:
+        self.frames = frames
+        self.principal = os.geteuid()
 
-    A directory we own is fine. A writable one is fine only with the sticky bit
-    AND a trusted owner: sticky is what stops another principal replacing the
-    entry inside it. `/tmp` passes; a 0777 scratch directory does not.
-    """
-    trusted_owner = info.st_uid in (os.geteuid(), 0)
-    if not trusted_owner:
-        return False
-    if info.st_mode & 0o022:
-        return bool(info.st_mode & stat.S_ISVTX)
-    return True
+    @property
+    def fd(self) -> int:
+        return self.frames[-1][0]
+
+    def validate(self) -> None:
+        if os.geteuid() != self.principal or not self.frames:
+            raise FactsRefused(PATH_UNSAFE, "directory principal or binding changed")
+        previous = None
+        for fd, name, captured in self.frames:
+            current = os.fstat(fd)
+            identity = lambda x: (x.st_dev, x.st_ino, x.st_uid, x.st_gid, x.st_mode)
+            if identity(current) != identity(captured):
+                raise FactsRefused(PATH_UNSAFE, "directory identity or permissions changed")
+            if previous is not None:
+                try:
+                    entry = os.stat(name, dir_fd=previous, follow_symlinks=False)
+                except OSError:
+                    raise FactsRefused(PATH_UNSAFE, "directory namespace disappeared") from None
+                if identity(entry) != identity(captured):
+                    raise FactsRefused(PATH_UNSAFE, "directory namespace was replaced")
+            previous = fd
+
+    def close(self) -> None:
+        frames, self.frames = self.frames, []
+        for fd, _, _ in reversed(frames):
+            os.close(fd)
+
+    def detach_parent(self) -> int:
+        fd = self.fd
+        frames, self.frames = self.frames[:-1], []
+        for ancestor, _, _ in reversed(frames):
+            os.close(ancestor)
+        return fd
 
 
-def open_secure_dir(path: Path | str, *, create: bool = False) -> int:
-    """Walk `path` one component at a time with `O_NOFOLLOW`, return a held fd.
-
-    The check is per component, from the root down, on a descriptor that is
-    already open — so a symlink anywhere in the chain is refused at the moment
-    it is traversed, and a directory swapped in after the check cannot redirect
-    the write. `create` makes the FINAL component only after every ancestor has
-    been verified, via `mkdirat` on the verified parent.
-
-    A relative path is refused: resolving it is the caller's ambiguity, and a
-    path resolved twice is two different paths.
-    """
+def _open_directory_binding(path: Path | str, *, create: bool = False) -> _DirectoryBinding:
     target = Path(path)
     _reject_traversal(target)
     if not target.is_absolute():
         raise FactsRefused(PATH_UNSAFE, f"{target} is not absolute")
     parts = [part for part in target.parts if part not in ("/", "")]
-    if not parts:
-        raise FactsRefused(PATH_UNSAFE, f"{target} names no directory")
-
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
-    current = os.open("/", flags)
+    if not parts or len(parts) > 128:
+        raise FactsRefused(PATH_UNSAFE, "directory path is empty or exceeds its 128-component budget")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    root = os.open("/", flags)
+    frames = [(root, "", os.fstat(root))]
+    private_tail = False
+    principal = os.geteuid()
     try:
         for index, component in enumerate(parts):
-            last = index == len(parts) - 1
+            parent, _, parent_info = frames[-1]
+            if parent_info.st_uid not in (principal, 0):
+                raise FactsRefused(PATH_UNSAFE, "directory ancestor has another owner")
+            if parent_info.st_uid == principal and not (parent_info.st_mode & 0o077):
+                private_tail = True
+            if parent_info.st_uid != principal:
+                private_tail = False
+            # A group-writable component is protected only behind the actual
+            # current-user private barrier, or by trusted sticky ownership.
+            if parent_info.st_mode & 0o022:
+                sticky = bool(parent_info.st_mode & stat.S_ISVTX)
+                if not (sticky or private_tail):
+                    raise FactsRefused(PATH_UNSAFE, "writable ancestor has no private enclosure")
             try:
-                child = os.open(component, flags, dir_fd=current)
+                entry = os.stat(component, dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
-                if not (last and create):
-                    raise FactsRefused(PATH_UNSAFE, f"{component} does not exist under {target}") from None
-                os.mkdir(component, 0o700, dir_fd=current)
-                child = os.open(component, flags, dir_fd=current)
+                if not (create and index == len(parts) - 1):
+                    raise FactsRefused(PATH_UNSAFE, "directory ancestor is missing") from None
+                os.mkdir(component, 0o700, dir_fd=parent)
+                entry = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(entry.st_mode) or entry.st_uid not in (principal, 0):
+                raise FactsRefused(PATH_UNSAFE, "directory component is an alias or has another owner")
+            if private_tail and entry.st_uid != principal:
+                raise FactsRefused(PATH_UNSAFE, "private enclosure changed owner")
+            try:
+                child = os.open(component, flags, dir_fd=parent)
             except OSError as exc:
-                # ELOOP here is a symlink, caught by O_NOFOLLOW.
-                raise FactsRefused(PATH_UNSAFE, f"{component}: {exc.strerror}") from None
-            info = os.fstat(child)
-            if not stat.S_ISDIR(info.st_mode):
+                raise FactsRefused(PATH_UNSAFE, "directory component could not be opened without following") from exc
+            opened = os.fstat(child)
+            if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_gid, opened.st_mode) != (
+                entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid, entry.st_mode
+            ):
                 os.close(child)
-                raise FactsRefused(PATH_UNSAFE, f"{target} component {component} is not a directory")
-            if not _trusted_dir(info):
-                os.close(child)
-                raise FactsRefused(PATH_UNSAFE, f"{target} component {component} is not a trusted directory")
-            os.close(current)
-            current = child
-        handle = current
-        current = -1
-        return handle
-    finally:
-        if current != -1:
-            os.close(current)
+                raise FactsRefused(PATH_UNSAFE, "directory changed during open")
+            frames.append((child, component, opened))
+        leaf = frames[-1][2]
+        if leaf.st_uid != principal:
+            raise FactsRefused(PATH_UNSAFE, "destination directory belongs to another owner")
+        if leaf.st_mode & 0o022 and not private_tail:
+            raise FactsRefused(PATH_UNSAFE, "destination directory is writable without a private enclosure")
+        binding = _DirectoryBinding(frames)
+        binding.validate()
+        return binding
+    except BaseException as exc:
+        for fd, _, _ in reversed(frames):
+            os.close(fd)
+        if isinstance(exc, OSError):
+            raise FactsRefused(PATH_UNSAFE, "directory could not be opened consistently") from exc
+        raise
+
+
+def open_secure_dir(path: Path | str, *, create: bool = False) -> int:
+    """Compatibility FD API; the caller owns the returned parent descriptor."""
+    return _open_directory_binding(path, create=create).detach_parent()
 
 
 def secure_parent(path: Path | str) -> int:
-    """The parent directory of `path` as a held fd, refusing an escape.
-
-    Kept as the name callers already use; it now returns a descriptor rather
-    than a path, because a checked path is not a checked target.
-    """
     destination = Path(path)
     _reject_traversal(destination)
     return open_secure_dir(destination.parent, create=True)
+
+
+def _parent_binding(path: Path | str) -> _DirectoryBinding:
+    destination = Path(path)
+    _reject_traversal(destination)
+    return _open_directory_binding(destination.parent, create=True)
 
 
 def _bounded(text: str) -> str:
@@ -529,46 +575,48 @@ def validate_document(document: dict) -> None:
                 raise FactsRefused(DOCUMENT_INVALID, f"service {sid!r} reason exceeds its byte bound")
 
 
-def publish_facts(path: Path | str, document: dict) -> None:
-    """Validate, then publish atomically inside a verified directory fd.
-
-    Every operation is relative to the descriptor, so the directory that was
-    checked is the directory that is written to. A path re-resolved between the
-    check and the write is exactly the escape this refuses.
-    """
-    validate_document(document)
-    destination = Path(path)
-    _reject_traversal(destination)
-    name = destination.name
-    if not name:
-        raise FactsRefused(PATH_UNSAFE, "facts path names no file")
-    parent_fd = secure_parent(destination)
-    temporary = f".facts-{os.getpid()}-{os.urandom(6).hex()}"
+def _existing_file(parent: _DirectoryBinding, name: str) -> None:
     try:
-        # Refuse to replace a symlink: `rename` would clobber the link's target
-        # path rather than the link, which is a write somewhere else.
-        try:
-            existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            existing = None
-        if existing is not None and stat.S_ISLNK(existing.st_mode):
-            raise FactsRefused(PATH_UNSAFE, f"{destination} is a symlink")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        entry = os.stat(name, dir_fd=parent.fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if (not stat.S_ISREG(entry.st_mode) or entry.st_uid != os.geteuid()
+            or entry.st_nlink != 1 or entry.st_mode & 0o022):
+        raise FactsRefused(PATH_UNSAFE, "destination is not an owned single-link private file")
+
+
+def _publish_document(destination: Path, document: dict) -> None:
+    parent = _parent_binding(destination)
+    temporary = f".native-{os.getpid()}-{os.urandom(6).hex()}"
+    try:
+        parent.validate()
+        _existing_file(parent, destination.name)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+        fd = os.open(temporary, flags, 0o600, dir_fd=parent.fd)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(document, handle, ensure_ascii=False, sort_keys=True)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            parent.validate()
+            _existing_file(parent, destination.name)
+            os.rename(temporary, destination.name, src_dir_fd=parent.fd, dst_dir_fd=parent.fd)
+            os.fsync(parent.fd)
+            parent.validate()
         except BaseException:
             try:
-                os.unlink(temporary, dir_fd=parent_fd)
+                os.unlink(temporary, dir_fd=parent.fd)
             except OSError:
                 pass
             raise
     finally:
-        os.close(parent_fd)
+        parent.close()
+
+
+def publish_facts(path: Path | str, document: dict) -> None:
+    """Validate and publish through the currently proven parent FD chain."""
+    validate_document(document)
+    _publish_document(Path(path), document)
 
 
 # Backwards-compatible name used by earlier callers/tests.
@@ -593,6 +641,7 @@ class SafeLease:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self._fd: int | None = None
+        self._directory: _DirectoryBinding | None = None
 
     @property
     def held(self) -> bool:
@@ -600,29 +649,32 @@ class SafeLease:
 
     def acquire(self) -> None:
         if self._fd is not None:
+            self.revalidate()
             return
-        _reject_traversal(self.path)
-        parent_fd = secure_parent(self.path)
+        parent = _parent_binding(self.path)
+        fd = None
         try:
-            flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
             try:
-                fd = os.open(self.path.name, flags, 0o600, dir_fd=parent_fd)
+                fd = os.open(self.path.name, flags, 0o600, dir_fd=parent.fd)
             except OSError as exc:
-                raise FactsRefused(LEASE_UNSAFE, f"lease could not be opened: {exc.strerror}") from None
+                raise FactsRefused(LEASE_UNSAFE, "lease could not be opened without following") from exc
+            self._check_descriptor(fd, parent.fd)
             try:
-                self._check_descriptor(fd, parent_fd)
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError as exc:
-                    if exc.errno in (errno.EACCES, errno.EAGAIN):
-                        raise FactsRefused(LEASE_BUSY, "another writer holds the native-core lease") from None
-                    raise
-            except BaseException:
-                os.close(fd)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    raise FactsRefused(LEASE_BUSY, "another writer holds the native-core lease") from None
                 raise
-        finally:
-            os.close(parent_fd)
+            parent.validate()
+            self._check_descriptor(fd, parent.fd)
+        except BaseException:
+            if fd is not None:
+                os.close(fd)
+            parent.close()
+            raise
         self._fd = fd
+        self._directory = parent
 
     def _check_descriptor(self, fd: int, parent_fd: int) -> None:
         """Everything that makes this descriptor a safe lease, checked anew.
@@ -663,11 +715,8 @@ class SafeLease:
         """
         if self._fd is None:
             raise FactsRefused(LEASE_NOT_HELD, "no lease is held")
-        parent_fd = secure_parent(self.path)
-        try:
-            self._check_descriptor(self._fd, parent_fd)
-        finally:
-            os.close(parent_fd)
+        self._directory.validate()
+        self._check_descriptor(self._fd, self._directory.fd)
 
     def release(self) -> None:
         if self._fd is None:
@@ -677,6 +726,8 @@ class SafeLease:
         finally:
             os.close(self._fd)
             self._fd = None
+            self._directory.close()
+            self._directory = None
 
     def __enter__(self) -> "SafeLease":
         self.acquire()
@@ -707,15 +758,60 @@ class OwnerMap:
 
     @classmethod
     def load(cls, path: Path | str) -> "OwnerMap":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        if data.get("schema") != OWNER_MAP_SCHEMA:
+        destination = Path(path)
+        parent = _open_directory_binding(destination.parent)
+        fd = None
+        try:
+            parent.validate()
+            _existing_file(parent, destination.name)
+            fd = os.open(destination.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                         dir_fd=parent.fd)
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid()
+                    or opened.st_nlink != 1 or opened.st_mode & 0o022 or opened.st_size > 1024 * 1024):
+                raise FactsRefused(OWNER_UNKNOWN, "owner map is not an owned bounded regular file")
+            data = bytearray()
+            while len(data) <= 1024 * 1024:
+                chunk = os.read(fd, min(65536, 1024 * 1024 + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise FactsRefused(OWNER_UNKNOWN, "owner map exceeds its byte budget")
+            parent.validate()
+            entry = os.stat(destination.name, dir_fd=parent.fd, follow_symlinks=False)
+            after = os.fstat(fd)
+            if ((entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino)
+                    or (after.st_uid, after.st_gid, after.st_mode, after.st_nlink,
+                        after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                       (opened.st_uid, opened.st_gid, opened.st_mode, opened.st_nlink,
+                        opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)):
+                raise FactsRefused(OWNER_UNKNOWN, "owner map changed while reading")
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate owner map field")
+                    result[key] = value
+                return result
+            document = json.loads(data, object_pairs_hook=unique)
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise FactsRefused(OWNER_UNKNOWN, "owner map could not be read consistently") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+            parent.close()
+        if not isinstance(document, dict) or set(document) != {"schema", "units"}:
+            raise FactsRefused(OWNER_UNKNOWN, "owner map fields do not match its schema")
+        if document.get("schema") != OWNER_MAP_SCHEMA:
             raise FactsRefused(OWNER_UNKNOWN, "owner map names another schema")
-        units = data.get("units")
-        if not isinstance(units, dict):
-            raise FactsRefused(OWNER_UNKNOWN, "owner map has no units")
+        units = document.get("units")
+        if not isinstance(units, dict) or len(units) > MAX_SERVICES:
+            raise FactsRefused(OWNER_UNKNOWN, "owner map has no bounded units object")
         for unit, owner in units.items():
-            if owner not in OWNERS:
-                raise FactsRefused(OWNER_UNKNOWN, f"owner map names unknown owner {owner!r}")
+            if (not isinstance(unit, str) or not unit or len(unit.encode("utf-8")) > MAX_FACT_TEXT
+                    or not isinstance(owner, str) or owner not in OWNERS):
+                raise FactsRefused(OWNER_UNKNOWN, "owner map has an invalid unit or owner")
         return cls(units)
 
     def write(self, path: Path | str) -> None:
@@ -723,28 +819,7 @@ class OwnerMap:
             if owner not in OWNERS:
                 raise FactsRefused(OWNER_UNKNOWN, f"unit {unit!r} has unknown owner {owner!r}")
         document = {"schema": OWNER_MAP_SCHEMA, "units": dict(sorted(self._owners.items()))}
-        destination = Path(path)
-        _reject_traversal(destination)
-        parent_fd = secure_parent(destination)
-        temporary = f".owner-map-{os.getpid()}-{os.urandom(6).hex()}"
-        try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(document, handle, sort_keys=True)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.rename(temporary, destination.name,
-                          src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            except BaseException:
-                try:
-                    os.unlink(temporary, dir_fd=parent_fd)
-                except OSError:
-                    pass
-                raise
-        finally:
-            os.close(parent_fd)
+        _publish_document(Path(path), document)
 
     def owner_of(self, unit: str) -> str | None:
         return self._owners.get(unit)

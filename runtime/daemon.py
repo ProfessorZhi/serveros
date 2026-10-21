@@ -1365,6 +1365,17 @@ class Daemon:
                     decisions.append(entry)
                     continue
             try:
+                if acquired:
+                    try:
+                        self._native_lease.revalidate()
+                    except native_core_facts_mod.FactsRefused as exc:
+                        entry.update({
+                            "performed": False,
+                            "blocked_by": exc.code,
+                            "because": exc.detail,
+                        })
+                        decisions.append(entry)
+                        continue
                 result = self.actuator.perform(operation, resource)
             finally:
                 if acquired:

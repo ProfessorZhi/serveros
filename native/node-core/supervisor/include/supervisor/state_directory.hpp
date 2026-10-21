@@ -25,7 +25,8 @@
 // current-euid ownership throughout that private tail. Only paths which actually
 // need this exception retain the complete FD ancestry and captured permissions;
 // before/after I/O they refuse any owner/gid/mode, principal or namespace change.
-// Other paths retain the existing original-inode read/write semantics below.
+// Other state readers retain the existing original-inode semantics below.
+// Leases explicitly retain the complete namespace proof even on ordinary paths.
 //
 // The write uses openat(dirfd, ...) for the temp file, renameat(dirfd, ...) for
 // the replace, and fsync(dirfd). No path string is the write authority. A
@@ -109,7 +110,13 @@ public:
     //: verdict. On success the fd is kept for `write_atomically`.
     bool open(const std::string& path, StatePathVerdict& verdict,
               const OpenObservationHook& after_lookup = {},
-              const std::function<void()>& after_file_lookup = {});
+              const std::function<void()>& after_file_lookup = {},
+              bool retain_namespace = false);
+
+    // Leases need the current namespace, even on otherwise ordinary paths:
+    // an alias to the same inode must not establish a second writer claim.
+    // Ordinary state readers retain their existing anchored-inode semantics.
+    bool namespace_current(std::string& error) const;
 
     bool valid() const { return dirfd_ >= 0; }
     int fd() const { return dirfd_; }
