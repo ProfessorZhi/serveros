@@ -1,0 +1,56 @@
+{
+  "_note": "The seam between PR#161's native measurement envelope and the Fleet monitor view model. Frozen here because the two producers live on two branches (PR#161 feat/native-node-core-cpp-20261013, PR#160 feat/serveros-fleet-card-v1-20261013) and neither may import, merge or edit the other. The rules below are not a second implementation of PR#160's bridge: they are the CONTRACT that bridge enforces, transcribed so this branch can prove the envelope it produces is one that bridge will accept, and so the two can be reconciled mechanically when the branches meet. See ../README.md for the reconciliation step and what remains blocked.",
+  "schema": "serveros/native-to-fleet-contract.v1",
+  "envelope_schema": "serveros/native-node-measurement.v1",
+  "device_entry_schema": "serveros/fleet-monitor-device.v1",
+  "implemented_by": "runtime/fleet_monitor_source.py:accept_native_measurement (PR#160 branch feat/serveros-fleet-card-v1-20261013 @ 106d0f73)",
+  "produced_by": "native/node-core/adapter/native_node_core.py:collect (PR#161, unchanged)",
+  "recorded_fixtures": {
+    "envelope": "../fixtures/pr160/native-node-measurement.fixture.json",
+    "device_entry": "../fixtures/pr160/fleet-monitor-device.fixture.json",
+    "recorded": "read-only, from PR#160's own blobs (git show 106d0f73:<path>); neither file was edited"
+  },
+
+  "envelope_rules": [
+    {"rule": "shape", "path": "$", "op": "is_object",
+     "reason": "an envelope is a parsed JSON object; anything else cannot be read at all"},
+    {"rule": "schema", "path": "schema", "op": "equals", "value": "serveros/native-node-measurement.v1",
+     "reason": "a document under another schema id is a different shape wearing the same word"},
+    {"rule": "scope", "path": "scope", "op": "equals", "value": "host-wide",
+     "reason": "a reading that describes something other than the whole machine must not be rendered as one that describes it"},
+    {"rule": "readings_available", "path": "readings_available", "op": "is_bool",
+     "reason": "whether a reading exists must be stated, not inferred"},
+    {"rule": "provenance.live", "path": "provenance.live", "op": "is_bool",
+     "reason": "whether these facts are a reading of a host or a fixture is not optional"},
+    {"rule": "attribution.scope", "path": "attribution.scope", "op": "equals", "value": "self",
+     "when": {"readings_available": true},
+     "reason": "the only account-scoped fact in this envelope is the collector's own cgroup, and reading it as a user's host-wide share is forbidden"}
+  ],
+
+  "device_entry_required": ["schema", "device_ref", "display_name", "platform", "reachability", "readings"],
+  "reading_requires": ["kind", "label", "state"],
+
+  "invariants": [
+    {"id": "unavailable_is_not_zero",
+     "statement": "a fact that could not be measured is {\"state\": \"UNAVAILABLE\", \"reason\": \"...\"}; it is never 0 and never null",
+     "asserted_by": "tests/test_native_node_core_shadow.py::test_a_failure_offers_no_numbers_and_keeps_its_reason"},
+    {"id": "free_bytes_is_not_available_bytes",
+     "statement": "the collector's free_bytes is statvfs f_bfree (every free block); available_bytes is f_bavail (what a non-root writer gets). runtime/inventory.py's role row free_bytes is df's Avail column, i.e. f_bavail, so the only correct join for room left is python free_bytes <-> native available_bytes",
+     "asserted_by": "tests/test_native_node_core_shadow.py::test_parity_never_joins_the_native_free_bytes_field"},
+    {"id": "python_inventory_stays_primary",
+     "statement": "the served values are the Python inventory's, unchanged; a native reading is attached beside them for comparison and never replaces a value it did not verify",
+     "asserted_by": "tests/test_native_node_core_shadow.py::test_a_native_reading_never_replaces_a_python_value"},
+    {"id": "boot_id_and_zero_window_refusals_are_carried",
+     "statement": "a reboot between samples, a zero-length window and a counter that went backwards are refused by the collector as UNAVAILABLE-with-a-reason; the seam carries the refusal and never reconstructs a number",
+     "asserted_by": "tests/test_native_node_core_shadow.py::test_a_zero_length_window_is_not_an_idle_machine"},
+    {"id": "no_window_is_unknown_not_fresh",
+     "statement": "freshness comes from runtime/graph.py's declared window and never from a default invented here",
+     "asserted_by": "tests/test_native_node_core_shadow.py::test_an_undeclared_window_is_unknown_not_fresh"}
+  ],
+
+  "reconciliation": {
+    "when": "the branch carrying runtime/fleet_monitor_source.py has landed",
+    "step": "call runtime/fleet_monitor_source.accept_native_measurement with the same recorded envelope and compare its device entry against the one this branch validates: the contract's envelope_rules must be a subset of the refusals the bridge raises, and any rule here the bridge does not enforce is a rule this branch invented and must drop",
+    "blocked": "this branch cannot run that comparison itself: the bridge is on another branch, and importing or merging it would be editing another Agent's working tree"
+  }
+}
