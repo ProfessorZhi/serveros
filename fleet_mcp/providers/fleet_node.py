@@ -270,7 +270,7 @@ class FleetNodeProvider(DeviceProvider):
 
     def create_project(self, *, root: str, name: str, project_path: str,
                        display_name: str | None = None):
-        body = {"root": root, "name": name}
+        body = {"root": root, "name": name, "expected_project_path": project_path}
         if display_name is not None:
             body["display_name"] = display_name
         return self._request("POST", "/v1/projects", body)

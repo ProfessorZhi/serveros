@@ -121,6 +121,9 @@ an explicit `create_project` operation. FleetNodeProvider uses a new closed,
 signed `POST /v1/projects` route; the Node independently selects its configured
 root and performs local symlink/reparse checks. Native passthrough does not
 acquire an arbitrary project-create exception.
+The signed request also carries expected_project_path as a precondition. Node
+recomputes its own configured target and refuses a mismatch BEFORE filesystem
+creation; the expected path never supplies authority or replaces Node's root.
 
 The result carries a real project ID/path, creation outcome and the selected
 runtime. Unsupported old providers report a capability gap before another

@@ -1248,13 +1248,18 @@ class Connector:
         profile = self.config.owner_access
         if profile is None:
             raise FleetRefusal("WRITE_NOT_GRANTED", "this Node has no owner project-creation profile")
-        if set(payload) - {"root", "name", "display_name"}:
+        if set(payload) - {"root", "name", "display_name", "expected_project_path"}:
             raise FleetRefusal(BAD_REQUEST, "project creation accepts only a named root and project name")
         label = payload.get("display_name")
         if label is not None and (not isinstance(label, str) or not label.strip()
                 or len(label) > 256 or any(ord(c) < 32 for c in label)):
             raise FleetRefusal(BAD_REQUEST, "invalid project display_name")
         try:
+            target = build_project_path(profile, payload.get("root"), payload.get("name"),
+                                        local_check=False)
+            if payload.get("expected_project_path") != target:
+                raise FleetRefusal("WRITE_NOT_GRANTED",
+                                   "Fleet and Node project roots differ; no project was created")
             target = build_project_path(profile, payload.get("root"), payload.get("name"),
                                         local_check=True)
         except OwnerAccessError as exc:

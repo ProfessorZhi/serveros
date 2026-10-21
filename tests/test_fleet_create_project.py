@@ -155,6 +155,11 @@ def test_signed_node_project_route_enforces_its_own_root(tmp_path):
         binding = ProviderBinding(TOKYO, "fleet-node",
             f"http://127.0.0.1:{server.server_port}", config.secret_anchor)
         provider = FleetNodeProvider(binding)
+        with pytest.raises(FleetRefusal):
+            provider.create_project(root="work", name="drift",
+                                    project_path=str(tmp_path / "unrequested-location"))
+        assert not (tmp_path / "drift").exists()
+        assert connector.provider.project_calls == []
         result = provider.create_project(root="work", name="wire", project_path=str(tmp_path / "wire"))
         assert result["freshDirectoryCreated"] is True
         assert (tmp_path / "wire").is_dir()
