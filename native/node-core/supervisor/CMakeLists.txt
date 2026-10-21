@@ -22,6 +22,9 @@ add_library(nodecore_supervisor STATIC
   src/admission.cpp
   src/action_gate.cpp
   src/action_journal.cpp
+  # The resident acting Core's per-tick facts. Reading them is separate from the
+  # gate that consumes them, so a test can age a document without a process.
+  src/facts.cpp
   src/state_directory.cpp
   src/probe.cpp
   src/lease.cpp

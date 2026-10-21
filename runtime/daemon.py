@@ -449,6 +449,7 @@ inventory_mod = _load("serveros_runtime_inventory", "inventory.py")
 hygiene_mod = _load("serveros_runtime_hygiene", "hygiene.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 agent_sessions_mod = _load("serveros_runtime_agent_sessions", "agent_sessions.py")
+native_core_facts_mod = _load("serveros_runtime_native_core_facts", "native_core_facts.py")
 # The shared answer layer (§3/§6/§10/§14). The daemon computes NOTHING of its
 # own for these: it forwards to the same functions `serverosctl` calls, so the
 # CLI answer and the socket answer can differ only in the moment they were
@@ -889,7 +890,8 @@ class Daemon:
                  runner=None, now=None, sleep=None, log=None,
                  dispatch_observation_source=None,
                  dispatch_grant_verifier=None,
-                 owner_policy_resolver=None) -> None:
+                 owner_policy_resolver=None,
+                 native_lease_path=None, owner_map_path=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
         self.socket_path = Path(socket_path) if socket_path else default_socket_path()
@@ -946,6 +948,34 @@ class Daemon:
         # Passed `runner`, not `host`: the actuator must not be reachable
         # through the object every probe holds. See SubprocessRunner.
         self.actuator = Actuator(runner=runner, dry_run=not enable_reconcile)
+        # The single-writer lease the resident Native Core also takes, and the
+        # owner map it also reads. This is the EFFECT seam: a restart is a
+        # mutation, and two programs each with their own budget restarting the
+        # same unit is the failure the lease exists for. It is deliberately not
+        # applied to observation.
+        #
+        # `enable_reconcile` without a lease path is a wiring error, not a
+        # licence: an acting daemon that cannot prove it is the only writer is
+        # refused at the effect. A dry run needs neither.
+        #: The lease is ALWAYS applied to an effect. A default path is used
+        #: rather than "no lease", because "no lease" is the split-lock failure
+        #: this exists to prevent. `$XDG_RUNTIME_DIR/serveros` is where the
+        #: Core's own status socket lives, so a Core started with the default
+        #: `--lease` and this daemon contend on one file by construction.
+        resolved_lease = native_lease_path
+        if resolved_lease is None:
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+            base = Path(runtime_dir) / "serveros" if runtime_dir else self.state_dir
+            resolved_lease = base / "native-core.lease"
+        self._native_lease = native_core_facts_mod.SafeLease(resolved_lease)
+        #: Re-read on every reconcile, not cached at construction: a map that
+        #: was edited to move a unit to the other program must take effect on
+        #: the next tick, not at the next restart. A cached map is an ownership
+        #: decision that outlives the document that made it.
+        self._owner_map_path = owner_map_path
+        self._owner_map = None
+        if owner_map_path is not None:
+            self._owner_map = self._read_owner_map()
         self.last_tick: dict | None = None
         self.drift: list[dict] = []
         # The node runtime's own facts, for `node.status`. A control plane that
@@ -1133,6 +1163,34 @@ class Daemon:
 
     # -- reconcile ---------------------------------------------------------
 
+    def _read_owner_map(self):
+        """The owner map as of NOW, or a refusal. Never a stale copy."""
+        if self._owner_map_path is None:
+            return None
+        return native_core_facts_mod.OwnerMap.load(self._owner_map_path)
+
+    @staticmethod
+    def _resource_unit(resource) -> str | None:
+        """The systemd unit a resource is about, if it names one.
+
+        The owner map is keyed by unit, because the Core's manifest is. A
+        resource with no systemd probe has no unit to share, so there is nothing
+        for the Core to contend with and nothing to key an owner on.
+        """
+        # The registry stores a probe's fields flat in the probe record (see
+        # `SystemdUnitState.run`, which reads `self.spec.get("unit")` where
+        # `spec` IS the probe dict). `Actuator.restart` reads the same shape.
+        for probe in resource.probes:
+            if probe.get("kind") != "systemd-unit-state":
+                continue
+            unit = probe.get("unit")
+            if not isinstance(unit, str) or not unit:
+                nested = probe.get("spec")
+                unit = nested.get("unit") if isinstance(nested, dict) else None
+            if isinstance(unit, str) and unit:
+                return unit
+        return None
+
     def reconcile(self, observations: dict) -> list[dict]:
         decisions = []
         for resource in self.registry.all():
@@ -1248,7 +1306,69 @@ class Daemon:
                 })
                 decisions.append(entry)
                 continue
-            result = self.actuator.perform(operation, resource)
+            # ---- THE EFFECT SEAM -------------------------------------------
+            # Everything above decided WHAT should happen; this is where it
+            # happens, and it is the only place in this daemon that changes
+            # the machine. The resident Native Core can restart the same unit
+            # with its own budget, and neither program can see the other, so
+            # the pen has to be shared rather than assumed.
+            unit = self._resource_unit(resource)
+            if self._owner_map_path is not None:
+                try:
+                    owners = self._read_owner_map()
+                except native_core_facts_mod.FactsRefused as exc:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": exc.code,
+                        "because": f"the shared owner map could not be read: {exc.detail}",
+                    })
+                    decisions.append(entry)
+                    continue
+                owner = owners.owner_of(unit) if unit else None
+                if unit is None:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": native_core_facts_mod.OWNER_UNKNOWN,
+                        "because": (
+                            "this resource names no systemd unit, so it has no "
+                            "owner in the shared map. An unowned resource is not "
+                            "recoverable while the map is the authority."
+                        ),
+                    })
+                    decisions.append(entry)
+                    continue
+                if owner != native_core_facts_mod.OWNER_SERVEROSD:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": (native_core_facts_mod.OWNER_UNKNOWN if owner is None
+                                       else native_core_facts_mod.OWNER_NOT_MINE),
+                        "because": (
+                            f"{unit} has no entry in the shared owner map"
+                            if owner is None else
+                            f"{unit} is owned by {owner!r} in the shared owner "
+                            f"map, so this daemon may not act on it"
+                        ),
+                    })
+                    decisions.append(entry)
+                    continue
+            acquired = False
+            if self._native_lease is not None:
+                try:
+                    self._native_lease.acquire()
+                    acquired = True
+                except native_core_facts_mod.FactsRefused as exc:
+                    entry.update({
+                        "performed": False,
+                        "blocked_by": exc.code,
+                        "because": exc.detail,
+                    })
+                    decisions.append(entry)
+                    continue
+            try:
+                result = self.actuator.perform(operation, resource)
+            finally:
+                if acquired:
+                    self._native_lease.release()
             self.budget.record(resource.id, operation.lower())
             entry["result"] = result
             entry["performed"] = bool(result.get("performed"))
@@ -5261,6 +5381,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enable-reconcile", action="store_true",
                         help="allow restarts of automatable resources. Off by default; "
                              "see the module docstring for the full gate.")
+    parser.add_argument("--native-lease",
+                        help="the single-writer lease shared with the Native Core "
+                             "(default $XDG_RUNTIME_DIR/serveros/native-core.lease)")
+    parser.add_argument("--owner-map",
+                        help="the shared unit->owner map the Core also reads; with it "
+                             "set, an unlisted unit is refused rather than acted on")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -5274,6 +5400,8 @@ def main(argv: list[str] | None = None) -> int:
         state_dir=Path(args.state_dir) if args.state_dir else default_state_dir(),
         socket_path=Path(args.socket) if args.socket else default_socket_path(),
         enable_reconcile=args.enable_reconcile,
+        native_lease_path=args.native_lease,
+        owner_map_path=args.owner_map,
         log=lambda message: sys.stderr.write(f"serverosd: {message}\n"),
     )
     if args.once:

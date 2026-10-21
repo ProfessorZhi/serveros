@@ -320,6 +320,73 @@ bool entry_count(int dir_fd, int& count) {
     return true;
 }
 
+
+// --- the file the lease is allowed to be -----------------------------------
+//
+// `flock` proves a descriptor, not a path. These four cases are the ways the
+// path stops meaning the descriptor: a symlink, a hard link, a world-writable
+// file, and a file replaced underneath a held lock.
+
+std::string scratch_file(const char* name) {
+    char templ[] = "/tmp/serveros-lease-safe-XXXXXX";
+    const char* made = ::mkdtemp(templ);
+    if (made == nullptr) {
+        return "";
+    }
+    return std::string(made) + "/" + name;
+}
+
+void test_a_symlinked_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    const std::string link = real + ".link";
+    if (::symlink(real.c_str(), link.c_str()) != 0) return;
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(link, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_hardlinked_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    if (::link(real.c_str(), (real + ".second").c_str()) != 0) return;
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(real, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_world_writable_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    ::chmod(real.c_str(), 0666);
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(real, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_replaced_lease_fails_revalidation() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    WriterLease lease;
+    const LeaseAttempt taken = lease.acquire(real, "test");
+    CHECK(taken.ok);
+    CHECK(lease.held());
+    // Rename the held file away and put a fresh one at the path: the descriptor
+    // still holds a lock, on an inode nobody else will ever open.
+    ::rename(real.c_str(), (real + ".moved").c_str());
+    const int replacement = ::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (replacement >= 0) ::close(replacement);
+    const LeaseAttempt again = lease.revalidate();
+    CHECK(!again.ok);
+    lease.release();
+}
+
 }  // namespace
 
 //: The scratch-root contract. These are the cases an independent review asked
@@ -524,6 +591,10 @@ void test_the_scratch_root_is_fd_anchored() {
 
 int main() {
     test_the_scratch_root_is_fd_anchored();
+    test_a_symlinked_lease_is_refused();
+    test_a_hardlinked_lease_is_refused();
+    test_a_world_writable_lease_is_refused();
+    test_a_replaced_lease_fails_revalidation();
 
     Scratch scratch;
     if (!open_default_scratch(scratch)) {

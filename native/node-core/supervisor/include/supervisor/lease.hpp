@@ -73,10 +73,19 @@ public:
     bool held() const { return descriptor_ >= 0; }
     int descriptor() const { return descriptor_; }
 
+    //: Re-establish that the held descriptor still IS the file at the path.
+    //:
+    //: A held lock proves a descriptor, not a path. If the lease file is renamed
+    //: away and replaced after `acquire`, a second writer can take the new inode
+    //: while this one still reports `held` — two pens, both believed. Called
+    //: immediately before every effect, never only once after acquiring.
+    LeaseAttempt revalidate();
+
     void release();
 
 private:
     int descriptor_ = -1;
+    std::string path_;
 };
 
 //: What another writer would learn about the current holder, without taking the
