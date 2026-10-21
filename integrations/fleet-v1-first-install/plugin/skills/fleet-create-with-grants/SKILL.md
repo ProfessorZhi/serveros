@@ -1,6 +1,6 @@
 ---
 name: fleet-create-with-grants
-description: Create a Fleet session only inside a grant you can name — owner, project, runtime and scope — and track it by its run id. Use when no existing session can carry the task, and never as a first move.
+description: Create a Fleet session only inside a grant you can name — owner, project, runtime and scope — and track it by its returned execution references, including a run id only when one is returned. Use when no existing session can carry the task, and never as a first move.
 ---
 
 # Creating a session is four separate permissions, not one
@@ -38,7 +38,7 @@ The four refusals are distinguishable on purpose:
 Do not retry a `WRITE_NOT_GRANTED` with different arguments. That is asking the
 same question again in the hope that the machine changed its mind.
 
-## Idempotency, and the run id
+## Idempotency: the same key is necessary, not a restart guarantee
 
 Pass an **idempotency key** whenever the create is a retry of an unknown
 outcome. The key is scoped to the device, the project and the runtime, so the
@@ -47,9 +47,27 @@ will mint a second session. On a replay the surface returns the **recorded**
 session with `idempotent_replay` set — read that flag, because that is the
 difference between "I made one" and "I made another one".
 
-Keep the returned **run id**. Everything about the outcome — whether it is
-still going, what it produced, whether it failed — is read back through the run
-and the session, never inferred from the fact that the create call returned.
+The key alone is not a cross-restart guarantee. Read
+`idempotency_durability` from the answer:
+
+- `PROCESS_LOCAL` — the guard lives only in that process and is lost on
+  restart;
+- `AGENT_CONTROL_STORE` — the existing owner store retains the record, so a
+  verified owner record or an explicit replay can be relied on;
+- `NOT_REQUESTED` — no key was supplied; a retry is a new delivery;
+- **absent** — an older service; treat the durability as `UNKNOWN`.
+
+Only rely on the same key when you can verify an existing owner record or an
+explicit replay. If `PROCESS_LOCAL` was used, a restart happened or may have
+happened, or the ACK is unknown, **do not send or create again to try your
+luck**. First read the original session/native history and the artefact, and
+follow the owner's reconciliation path. A `RUN_NOT_FOUND` or `never_issued`
+answer is not proof that the creation or task did not run; the native history
+or artefact may show that it completed.
+
+Keep every execution reference the answer returned: `session_ref`, `run_id` if
+present, and `queued_message_uuid` if present. A missing `run_id` is
+`NOT_RETURNED`, not a failure and not permission to resend.
 
 ## What creation does not give you
 
@@ -59,12 +77,12 @@ runtime's owner-approved entry allows. In particular `bypassPermissions` is
 something a caller may request, and a runtime that reports a different
 effective mode is a different runtime.
 
-## The model and the mode are read back, never chosen by you
+## The model and the mode are effective values, read back
 
-The default model for a device runtime is the one the **owner** put in that
-runtime's entry — on this fleet the admin runtime's default is
-`deepseek-v4-flash-vision-anthropic`. Treat that as a fact to *verify*, not a
-value you select:
+The effective model and permission mode are whatever the **owner / runtime /
+project** entry resolves to. There is no fleet-wide default to quote: a value
+observed on one runtime is not another runtime's value, and a model id you
+write from memory is not a selection.
 
 - the model is a property of the owner-approved entry. A model id in your
   request is a request that entry may refuse; it is not a selection.

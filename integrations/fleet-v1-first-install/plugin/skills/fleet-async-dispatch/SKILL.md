@@ -25,9 +25,12 @@ device_ref:        device:<id>
 runtime:           the provider/runtime that holds the session
 session_ref:       device:<id>|<provider>|<native id>   # when returned
 run_id:            the run id the ACK reports             # when returned
+queued_message_uuid: the queued message id               # when returned
 idempotency_key:   exactly the key sent, never regenerated
 accepted_at:       when the ACK was observed
-idempotency_durability: PROCESS_LOCAL | owner-backed
+idempotency_durability:
+                   PROCESS_LOCAL | AGENT_CONTROL_STORE | NOT_REQUESTED
+                   # absent from an older service means UNKNOWN
 last_known_state:  ACKED | RUN_UNSETTLED | EFFECT_UNKNOWN | SETTLED_*
 ```
 
@@ -44,7 +47,7 @@ are different facts.
 After the ACK is persisted:
 
 1. confirm the exact five coordinates — `device_ref`, `runtime`, `session_ref`,
-   `run_id`, `idempotency_key`;
+   `run_id`, `idempotency_key` — and any `queued_message_uuid`;
 2. note `idempotent_replay` if it is present;
 3. return to coordination.
 
@@ -69,27 +72,35 @@ fact; completion is another.
 
 A timeout, a lost response, a malformed ACK, a transport error or a missing
 receipt means the outcome is **UNKNOWN**, not failed. Record
-`EFFECT_UNKNOWN` and preserve the original `idempotency_key`.
+`EFFECT_UNKNOWN`, preserve the original `idempotency_key`, and keep
+`queued_message_uuid` if one was returned.
 
-A retry must reuse that exact key. `fleet_send_to_session` and
-`fleet_create_session` replay the recorded run/session for the same key and do
-not send a second time. A **fresh key** is a second delivery, even if the
-instruction text is identical. Never use a fresh key to "make sure" after a
-timeout.
+The same key is **necessary**, not a cross-restart guarantee. Read the
+`idempotency_durability` field:
 
-The replay guarantee is scoped to what the receipt says. Read
-`idempotency_durability`:
+- `PROCESS_LOCAL` — the guard lives only in that process and is lost on
+  restart;
+- `AGENT_CONTROL_STORE` — the existing owner store retains the record, so a
+  verified owner record or an explicit replay can be relied on;
+- `NOT_REQUESTED` — no key was supplied; a retry is a new delivery;
+- **absent** — an older service; treat the durability as `UNKNOWN`.
 
-- `PROCESS_LOCAL` — the guard lives in this process and is lost on restart;
-- owner-backed — the owner store retains it, but the provider still has no
-  independent idempotency contract.
+Only rely on the same key when you can verify an existing owner record or an
+explicit replay. If `PROCESS_LOCAL` was used, a restart happened or may have
+happened, or the ACK is unknown, **do not send or create again** to find out
+what happened. A **fresh key** is a second delivery, even when the instruction
+text is identical; the same key in a lost guard is not a safe retry either.
 
-Do not describe either as a provider-side exactly-once guarantee. If the
-durability is unknown, say so; an unresolved unknown is not permission to
-resend.
+Before any retry, read the original session/native history and the artefact,
+and use the owner's reconciliation path. A provider answer of `RUN_NOT_FOUND`
+or `never_issued` is **not proof that the task did not run**: the native
+history or artefact may show that it completed. Missing `run_id` is
+`NOT_RETURNED`, not a failure and not permission to resend.
 
-Only the owner's reconciliation path may resolve an unknown effect. If you do
-not have that path, report the unresolved state instead of dispatching again.
+Do not describe any of these values as a provider-side exactly-once guarantee.
+If the durability is `UNKNOWN`, say so; an unresolved unknown is not permission
+to resend. If you do not have an owner reconciliation path, report the
+unresolved state instead of dispatching again.
 
 ## Resume after a disconnect or a new session
 
@@ -109,7 +120,8 @@ is gone, say which coordinate is gone and ask for a decision.
 ## Skills are not persistent schedulers
 
 A Skill is instructions read by an agent while that agent is running. It does
-not survive its host, does not wake up later, and is not a persistent scheduler. A task that must continue after this session ends needs an actual
+not survive its host, does not wake up later, and is not a persistent
+scheduler. A task that must continue after this session ends needs an actual
 continuing Agent or a verified mechanism that owns the trigger and the
 observation. Writing "resume later" in a Skill does not create one.
 

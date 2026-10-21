@@ -142,13 +142,16 @@ Three things look like recovery and are on no allowlist:
 ## The Skills route; they do not keep a second registry
 
 These Skills decide **where** work belongs and **how to tell it happened**. They
-call the ingress; the ingress reaches the device; the agent on that device uses
-its own ability family, with its own registry and its own responsibilities.
+call the ingress; the ingress reaches the device; the agent on that device
+consumes the shared `ability-management` authority through its
+**installed / ready / granted projection**. The projection is per device; it is
+not a second ability registry, and it does not replace the shared catalogue.
 
 So do not re-implement a device's abilities here, do not keep a parallel list of
 its responsibilities, and do not treat this plugin as a second authority over
-what a device can do. A capability exists because the device says so in its own
-inventory — never because a name in these Skills sounds like it.
+what a device can do. A capability exists because the shared authority declares
+it and that device's projection says it is installed and ready for the relevant
+grant — never because a name in these Skills sounds like it.
 
 ## What this release is not
 

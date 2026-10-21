@@ -19,21 +19,20 @@ Acceptance: clean lane, existing Run reference, no edits to `fleet_mcp/`,
 
 TDD first. Add focused tests that fail before the new Skills exist:
 
-1. Every shared `SKILL.md` has front matter whose `name` equals its directory,
-   a non-empty description and a body.
-2. The commander Skill names Fleet-first routing, RDC only as a necessary
-   GUI/fallback, targeted queries before global status, dependency graph,
-   independent long-task dispatch and batched short tasks, and slow-node
-   isolation.
-3. The async Skill names the exact five coordinates, ACK-versus-completion,
-   prompt return, no polling, timeout/UNKNOWN no-resend, and resume from
-   existing execution references.
-4. The update Skill separates App-owned avatar/display changes from
-   Skill/version updates; no Skill claims persistent scheduling.
-5. Every `fleet_*` backtick name in every Skill resolves in
-   `fleet_mcp.tools.SERVED_BY_NAME`; Skills do not invent a tool.
-6. The portable first-install builder and the CC builder both carry the shared
-   bytes; the portable builder's skill list equals the source directory.
+1. Every shared `SKILL.md` has legal front matter whose `name` equals its
+   directory and a non-empty description; no nested `SKILL.md`.
+2. The portable first-install builder and the CC builder carry the shared
+   bytes; package members retain every shared Skill; the portable builder's
+   skill list equals the source directory.
+3. Every `fleet_*` backtick name in every Skill resolves in
+   `fleet_mcp.tools.SERVED_BY_NAME`.
+4. A small set of static consistency regressions, each with a positive and a
+   negative control, catches the known contradictions: positive wait-until-
+   settled, mandatory global probe, per-device ability registry, hard-coded
+   fleet model, and one-message/one-intent restriction.
+5. The async/update Skills state the durability enum, the same-key-is-necessary-
+   not-a-restart-guarantee rule, `RUN_NOT_FOUND` as non-proof, and the App-owned
+   presentation boundary. These are source-text checks, not model behaviour.
 
 Run the focused tests and capture the expected red result before adding the
 Skills.
@@ -47,9 +46,12 @@ Add three immediate-child directories under
 - `fleet-async-dispatch/SKILL.md`
 - `fleet-plugin-update/SKILL.md`
 
-Keep the existing five Skills intact. Update CC dev-plugin prose/test counts
-that would otherwise assert a stale count, without changing generated
-behaviour. Keep the source shallow and free of credentials.
+Preserve the existing five Skill names and package membership; do not remove a
+Skill. Correct their text where it contradicts the async/commander semantics:
+reuse waits/read-back, forced global discovery, single-intent batch restriction,
+per-device ability registry, and a hard-coded fleet model. Update CC dev-plugin
+prose/test counts that would otherwise assert a stale count, without changing
+generated behaviour. Keep the source shallow and free of credentials.
 
 Acceptance: focused Skill tests green; CC generation still byte-identical;
 first-install build still deterministic with the expanded skill set.
@@ -91,6 +93,8 @@ directory. Record exact commands, exits, revision, dirty state and artifacts.
 Do not run a full-repository suite unless the targeted union requires it.
 
 Acceptance: all targeted tests pass; any NOT_RUN/BLOCKED item is named with
-its missing input; the diff stays inside the lane; commit and push the narrow
-branch (or open a Draft PR) so independent QA can reference the exact SHA. No
-merge, deploy, publish or global install.
+its missing input; the test-count change is explained and no baseline test is
+removed or skipped; prior artifact revisions are preserved, not overwritten;
+the diff stays inside the lane; commit and push the narrow branch (or update
+the original Draft PR) so independent QA can reference the exact SHA. No merge,
+deploy, publish or global install.

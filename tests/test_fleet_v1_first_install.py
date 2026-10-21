@@ -191,8 +191,9 @@ class BuildIt(unittest.TestCase):
         record = self.f.build()
         self.assertEqual(record["distribution"], "FIRST_INSTALL_RELEASE")
         self.assertEqual(record["mcp_url"], OBSERVED_URL)
-        self.assertEqual(len(record["skills"]),
-                         len(builder.check_skills(HERE / "plugin")))
+        self.assertEqual(record["skills"], builder.check_skills(HERE / "plugin"))
+        for name in builder.check_skills(HERE / "plugin"):
+            self.assertIn(f"skills/{name}/SKILL.md", record["members"])
 
     def test_the_first_release_carries_mcp(self) -> None:
         """The property the whole builder exists for."""

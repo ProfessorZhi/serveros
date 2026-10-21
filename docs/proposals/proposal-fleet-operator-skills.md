@@ -77,8 +77,17 @@ Three Operator Skills are added:
 | `fleet-async-dispatch` | Define the ACK/checkpoint record, return promptly, inspect later, treat timeout/UNKNOWN as unresolved rather than failed, forbid fresh-key resend, and resume from execution references. |
 | `fleet-plugin-update` | Separate App-owned avatar/display changes from Skill/version updates; require same plugin id, version advance, Skills continuity, readback and a rollback target. |
 
-The existing five Skills remain the authority for discovery, reuse, creation,
-evidence and safety. New Skills link to them instead of restating their gates.
+The existing five Skills keep their names and package membership, and remain the
+authority for discovery, reuse, creation, evidence and safety. Their text is
+corrected where it contradicts the async/commander semantics: reuse preserves
+the ACK and inspects later rather than waiting for settlement; discovery uses a
+targeted read when the target is known and only diagnoses a failure; one
+message may carry a complete long delivery or a batch of independent short
+tasks; ability authority is the shared `ability-management` catalogue plus a
+per-device installed/ready/granted projection, not a per-device registry; and
+model/mode are effective values read back per owner/runtime/project, never a
+fleet default. New Skills link to the old ones instead of restating their
+gates.
 
 ### ACK and checkpoint contract
 
@@ -91,7 +100,10 @@ device_ref
 runtime
 session_ref          # when create returns one
 run_id               # when the provider returned a run
+queued_message_uuid  # when the provider returned one
 idempotency_key      # exactly the value sent, never regenerated on retry
+idempotency_durability # PROCESS_LOCAL | AGENT_CONTROL_STORE | NOT_REQUESTED;
+                       # absent means UNKNOWN on an older service
 verb                 # create | send
 intent_digest        # if the caller has one from the Fleet receipt
 accepted_at
@@ -101,9 +113,14 @@ last_known_state      # ACKED | RUN_UNSETTLED | EFFECT_UNKNOWN | SETTLED_*
 The commander returns after the ACK. Later inspection uses `fleet_get_run`
 and `fleet_read_session`; it does not spin, and a still-unsettled run is not a
 failure. A timeout, transport error, malformed ACK or missing receipt leaves
-the state `EFFECT_UNKNOWN` and preserves the original key. Only the owner's
-reconciliation path may resolve that state; a retry with a fresh key is a
-second delivery.
+the state `EFFECT_UNKNOWN` and preserves the original key. The same key is
+necessary, not a cross-restart guarantee: `PROCESS_LOCAL` is lost on restart,
+`AGENT_CONTROL_STORE` may replay from a verified owner record, and absent means
+`UNKNOWN`. Only the owner's reconciliation path may resolve an unknown effect;
+a retry with a fresh key is a
+second delivery. A `RUN_NOT_FOUND` or `never_issued` answer from a run read is
+not proof that the task did not run: the native history or artefact may show
+completion, so reconciliation reads those before any retry.
 
 ### Dependency graph
 

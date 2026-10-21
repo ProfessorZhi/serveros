@@ -2,7 +2,32 @@
 
 Reviewer scope: this branch's Operator Skills and packaging changes only.
 Baseline `597f7b8b5507ec10435b75fd4658b922bcf5c56a`. No control code
-(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited.
+(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited. Revision 2
+reviews the P1 fixes requested after Draft PR #384; the control candidate
+`1011eb56a930b4e29fa165e44bd55d7dd230003f` supplied the durability enum and
+`RUN_NOT_FOUND` / `never_issued` semantics, but was not merged into this lane.
+
+## Revision 2 — the P1 corrections
+
+- **Existing Skills no longer contradict the new ones.** Reuse now preserves the
+  ACK/references and inspects later instead of reading until settlement;
+  discovery starts from a targeted read when the target is known; reuse allows
+  complete long deliveries and batches of independent short tasks; discovery
+  and safety name the shared `ability-management` authority plus a per-device
+  installed/ready/granted projection; create has no hard-coded fleet model.
+- **UNKNOWN is not a retry permission.** The async/create Skills state the
+  actual `PROCESS_LOCAL / AGENT_CONTROL_STORE / NOT_REQUESTED` enum, treat an
+  absent field on an older service as `UNKNOWN`, require a verified owner
+  record or explicit replay before relying on the same key, and require
+  reading the original session/native history/artefact plus owner reconciliation
+  before any retry. `RUN_NOT_FOUND`/`never_issued` is explicitly not proof of
+  non-execution; `queued_message_uuid` is preserved when returned.
+- **Tests were reduced, not weakened.** The 20-test file is now 15 tests: five
+  redundant keyword/length assertions were removed and replaced by five
+  static conflict regressions, each with an old positive control and a current
+  negative control. Package byte identity, frontmatter, tool resolution and
+  member retention remain. Total targeted count moved 224/120 to 219/117; no
+  baseline test was removed or skipped.
 
 ## Design review
 
@@ -56,11 +81,11 @@ as a file for the other verbs. Re-run exit is 0.
 
 All commands were executed with `ulimit -v 2097152` (2 GiB), `ulimit -t 300`
 (300 CPU seconds), `timeout 300`, and `taskset -c 0` (one CPU). Evidence is in
-`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0042/operator-skills-20261021/`.
+`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0043/operator-skills-20261021-r2/`.
 
 | check | command | result |
 |---|---|---|
-| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **224 passed, 120 subtests, exit 0** |
+| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **219 passed, 117 subtests, exit 0** |
 | CC development adapter | `build_cc_plugin.py --out … --next-mcp-url https://fleet-next.example.ts.net/mcp` | exit 0; **8 Skills**, 1 MCP binding |
 | local CC fixture | `build_local_fixture.py --out … --json` | exit 0; 8 Skills; `TEST_FIXTURE_ONLY_NOT_A_RELEASE` |
 | Claude Code package load | `claude plugin validate … --strict`; `claude --plugin-dir … plugin details` | **exit 0**; **Skills (8) / MCP servers (1)**; local only |
@@ -86,11 +111,11 @@ All commands were executed with `ulimit -v 2097152` (2 GiB), `ulimit -t 300`
 
 ## Artifact-directory note
 
-The WorkEngine allocated `RUN-0042`, but
-`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0042/` already held
-files dated 2026-10-08 from an earlier use of that Run id. Those files were not
-read, modified or deleted. This lane's evidence is namespaced under
-`RUN-0042/operator-skills-20261021/`.
+The WorkEngine allocated `RUN-0042` and then `RUN-0043`; both artifact
+directories already held files dated 2026-10-08 from earlier uses of those Run
+ids. Those files were not read, modified or deleted. Revision 1 evidence remains
+under `RUN-0043/operator-skills-20261021-r2/`; revision 2 evidence is isolated under
+`RUN-0043/operator-skills-20261021-r2/`.
 
 ## Scope check
 
