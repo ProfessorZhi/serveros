@@ -1,0 +1,48 @@
+{
+  "api": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "api",
+    "status": {
+      "PASS": 12
+    },
+    "total": 12
+  },
+  "binding": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "binding",
+    "status": {
+      "P2": 2,
+      "PASS": 6
+    },
+    "total": 8
+  },
+  "osuid": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "osuid",
+    "status": {
+      "NOT_RUN": 2
+    },
+    "total": 2
+  },
+  "race": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "race",
+    "status": {
+      "PASS": 3
+    },
+    "total": 3
+  },
+  "raw": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "raw",
+    "status": {
+      "EXPECTED_FAIL": 5
+    },
+    "total": 5
+  }
+}

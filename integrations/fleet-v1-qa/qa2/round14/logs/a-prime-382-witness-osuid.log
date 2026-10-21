@@ -1,0 +1,3 @@
+{"actual": {"euid": 1002, "privilege_change": "forbidden", "uid": 1002}, "expected": "NOT_RUN: no privilege change", "kind": "NOT_RUN", "mode": "osuid", "name": "C1-different-os-uid", "note": "", "ok": true}
+{"actual": {"kernel_peer": "NOT_RUN", "synthetic_peer_uid": 4242}, "expected": "NOT_RUN: synthetic peer; no SO_PEERCRED", "kind": "NOT_RUN", "mode": "osuid", "name": "C2-real-peer-credential", "note": "", "ok": true}
+{"failed": 0, "failed_names": [], "mode": "osuid", "status": {"NOT_RUN": 2}, "total": 2}

@@ -1,0 +1,14 @@
+== gh pr 382 ==
+{"baseRefName":"feat/s1-commit-token-binding-20261021","baseRefOid":"043e08b916b2b511b56b30a419d21ad4450451c2","headRefName":"feat/s1-historical-replay-cap-20261021","headRefOid":"b7dedd116425d7e645a034e8559fa103562b88eb","isDraft":true,"mergeable":"MERGEABLE","number":382,"state":"OPEN","title":"fix(prototype): historical replay is audit-only and carries no capability","updatedAt":"2026-10-21T00:17:18Z","url":"https://github.com/ProfessorZhi/serveros/pull/382"}
+== remote refs ==
+b7dedd116425d7e645a034e8559fa103562b88eb	refs/heads/feat/s1-historical-replay-cap-20261021
+b7dedd116425d7e645a034e8559fa103562b88eb	refs/pull/382/head
+== diff files ==
+integrations/fleet-v1-atomic-prototype/README.md
+integrations/fleet-v1-atomic-prototype/single_write_entry.py
+tests/test_s1_atomic_prototype_single_write.py
+== stat ==
+ integrations/fleet-v1-atomic-prototype/README.md   |   25 ++++++++
+ .../single_write_entry.py                          |   28 +++++++--
+ tests/test_s1_atomic_prototype_single_write.py     |   64 ++++++++++++++++++++
+ 3 files changed, 111 insertions(+), 6 deletions(-)
