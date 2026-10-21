@@ -1,5 +1,7 @@
 # Agent Identity, Session Resources and Multi-Agent Delegation
 
+> **2026-10-22 Fleet V2 product-target companion:** [Fleet V2 Autonomous Organization / Owner Full-Control](FLEET-V2-AUTONOMOUS-ORGANIZATION.md) describes the new user-requested organization, native Runtime mix, device-repair team, self-update, and standing Owner-mode expectations. This file continues to define the existing identity/session/delegation invariants; the new product target neither grants live OS permission nor waives #237. [V2 phased acceptance](../plans/fleet-v2-delivery-and-acceptance.md).
+
 > **Status: reviewed V2 design direction · 2026-10-16. DESIGN ONLY, not CODE/INTEGRATION/LIVE.**
 >
 > This is the minimal-authority refinement of the design merged in [PR #234](https://github.com/ProfessorZhi/serveros/pull/234), informed by an independent source audit. It does **not** authorize a new service, database, account, daemon, plugin installation, or Agent execution.
