@@ -11,43 +11,53 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import subprocess
 import time
 from pathlib import Path
+
+from stdio_framing import LineFramer
 
 EXPECTED_SCOPES = {
     "fleet:read", "fleet:send", "fleet:control", "fleet:create",
     "fleet:approve", "fleet:navigate",
 }
 
+#: Provider-credential variables are not needed by a read-only owned runtime.
+#: Their values are never recorded; only the names that were removed are.
+CREDENTIAL_ENV_KEYS = (
+    "OPENAI_API_KEY", "CODEX_API_KEY",
+    "OPENAI_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN",
+)
+
 
 class ProbeError(RuntimeError):
     pass
 
 
-def _call(proc, request_id: int, method: str, params: dict, timeout: float) -> dict:
-    assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id,
-                                 "method": method, "params": params}) + "\n")
+def _call(proc, reader: LineFramer, request_id: int, method: str,
+          params: dict, timeout: float) -> dict:
+    assert proc.stdin is not None
+    proc.stdin.write((json.dumps({"jsonrpc": "2.0", "id": request_id,
+                                  "method": method, "params": params})
+                      + "\n").encode("utf-8"))
     proc.stdin.flush()
-    end = time.time() + timeout
-    while time.time() < end:
-        ready, _, _ = select.select([proc.stdout], [], [], 0.2)
-        if not ready:
-            continue
-        line = proc.stdout.readline()
-        if not line:
-            raise ProbeError("owned runtime closed stdout")
+    end = time.monotonic() + timeout
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            raise ProbeError(f"{method} timed out")
         try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
+            line = reader.next_line(remaining)
+        except (TimeoutError, EOFError) as exc:
+            raise ProbeError(f"{method}: {exc}") from exc
+        try:
+            message = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             continue
         if message.get("id") == request_id:
             if "error" in message:
                 raise ProbeError(f"{method}: {message['error']}")
             return message
-    raise ProbeError(f"{method} timed out")
 
 
 def _tool_text(response: dict) -> dict:
@@ -61,7 +71,8 @@ def _tool_text(response: dict) -> dict:
 
 
 def probe(*, entry: Path, config: Path, state_dir: Path,
-          cwd: Path, timeout: float = 60.0) -> dict:
+          cwd: Path, timeout: float = 60.0,
+          tmpdir: Path | None = None) -> dict:
     entry = Path(entry).resolve()
     config = Path(config).resolve()
     state_dir = Path(state_dir).resolve()
@@ -69,32 +80,37 @@ def probe(*, entry: Path, config: Path, state_dir: Path,
         raise ProbeError(f"owned entry is not executable: {entry}")
     if not config.is_file():
         raise ProbeError(f"owned config is not a file: {config}")
-    env = dict(os.environ)
+    credential_names = sorted(k for k in CREDENTIAL_ENV_KEYS if k in os.environ)
+    env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV_KEYS}
     env["SERVEROS_STATE_DIR"] = str(state_dir)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if tmpdir is not None:
+        env["TMPDIR"] = str(Path(tmpdir))
     proc = subprocess.Popen(
         [str(entry), "--stdio", "--config", str(config)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, bufsize=1,
+        stderr=subprocess.PIPE, text=False, bufsize=0,
         cwd=str(cwd), env=env)
+    reader = LineFramer(proc.stdout)
     try:
-        init = _call(proc, 1, "initialize", {
+        init = _call(proc, reader, 1, "initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "fleet-owned-probe", "version": "0"},
         }, timeout)
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0",
-                                     "method": "notifications/initialized"}) + "\n")
+        proc.stdin.write((json.dumps({"jsonrpc": "2.0",
+                                      "method": "notifications/initialized"})
+                          + "\n").encode("utf-8"))
         proc.stdin.flush()
-        listing = _call(proc, 2, "tools/list", {}, timeout)
+        listing = _call(proc, reader, 2, "tools/list", {}, timeout)
         tools = [row["name"] for row in listing["result"]["tools"]]
         project_tool = next(
             (row for row in listing["result"]["tools"]
              if row["name"] == "fleet_create_project"), None)
 
-        status = _tool_text(_call(proc, 3, "tools/call",
+        status = _tool_text(_call(proc, reader, 3, "tools/call",
                                   {"name": "fleet_status", "arguments": {}}, timeout))
-        sessions = _tool_text(_call(proc, 4, "tools/call",
+        sessions = _tool_text(_call(proc, reader, 4, "tools/call",
                                     {"name": "fleet_list_sessions",
                                      "arguments": {}}, timeout))
         tokyo_rows = [row for row in sessions.get("sessions", [])
@@ -103,11 +119,11 @@ def probe(*, entry: Path, config: Path, state_dir: Path,
         if tokyo_rows:
             ref = tokyo_rows[0]["session_ref"]
             session_read = _tool_text(_call(
-                proc, 5, "tools/call",
+                proc, reader, 5, "tools/call",
                 {"name": "fleet_get_session", "arguments": {"session_ref": ref}},
                 timeout))
         capability = _tool_text(_call(
-            proc, 6, "tools/call",
+            proc, reader, 6, "tools/call",
             {"name": "fleet_cloudcli_native_capability",
              "arguments": {"device_ref": status["surface"]["local_device_ref"]}},
             timeout))
@@ -150,6 +166,12 @@ def probe(*, entry: Path, config: Path, state_dir: Path,
             "read_only": True,
             "messages_sent": 0,
             "creates_attempted": 0,
+            "credential_env_names_removed": credential_names,
+            "credential_env_values_recorded": False,
+            "credential_file_read": False,
+            "login_copied": False,
+            "framing": "bounded-byte-lines",
+            "tmpdir": str(Path(tmpdir)) if tmpdir is not None else None,
         }
     finally:
         proc.terminate()

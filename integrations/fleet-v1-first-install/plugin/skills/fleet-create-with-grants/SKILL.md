@@ -18,8 +18,16 @@ Before the first use, resolve the managed profile:
 |---|---|
 | Which **credential** is calling, and does it carry `fleet:create`? | the scope on the presented token — never a parameter you supply |
 | Is **creation** open on that device at all? | the machine's own binding (`allow_create`) |
-| Which **project** may be created on? | the machine's project list *and* the surface's `create_allow`, both |
+| Which **project** may an existing-project session use? | the machine's project list *and* the surface's `create_allow`, both |
+| Which **root** may a **new** project be created under? | the owner-configured `owner_access.project_roots` binding — the root is the grant |
 | Which **runtime / owner** does it run as? | the owner-approved runtime entry for that account |
+
+The last two rows are different gates. `create_allow` is the static per-project
+list for opening a session in a project that already exists. A new project is
+authorized by the owner-configured project **root**, not by a pre-existing
+entry for a name that does not exist yet: do not require a per-project
+`create_allow` row before creating a project inside the owner's root, and do
+not read its absence as a refusal.
 
 After the owner has configured that profile, do not re-ask for routine create
 inside it. A refusal that names a project is not an invitation to retry with a
@@ -106,10 +114,11 @@ write from memory is not a selection.
   runtime**, not a misconfiguration to correct from here.
 
 A high native permission mode is the sharpest case. If the owner configured one,
-it belongs to that runtime, account and **named project** — and its entire
-safety argument is that narrowness. It is never "the fleet runs with bypass",
-never a caller-requestable widening, and never reportable without the project
-it is confined to and the read-back that confirmed it. CC and Codex each have
+it belongs to that runtime, account and the owner-configured project **root**
+(for a new project) or the **named project** (for an existing one) — and its
+entire safety argument is that narrowness. It is never "the fleet runs with
+bypass", never a caller-requestable widening, and never reportable without the
+root or project it is confined to and the read-back that confirmed it. CC and Codex each have
 their own effective model and highest native permission; read both back.
 
 ## All scopes is not unlimited authority over every account

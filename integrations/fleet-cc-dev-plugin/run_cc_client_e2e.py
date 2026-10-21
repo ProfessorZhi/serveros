@@ -9,10 +9,11 @@ false and an earlier revision of this lane reported one as another:
    component. This is a directory/registration fact. It enumerates no tool.
 2. **MCP_INITIALIZE_OK / TOOLS_LIST_OK** — `claude --plugin-dir … mcp list`
    actually starts the stdio server, sends `initialize`,
-   `notifications/initialized` and `tools/list`, and reads a 33-tool answer.
-   The server's wire log is the evidence; "Connected" alone is not.
+   `notifications/initialized` and `tools/list`, and reads the tool count the
+   server serves. The client's own wire is the evidence; "Connected" alone is
+   not, and the separate probe is not.
 3. **AUTH_SCOPE** — the principal holds exactly `fleet:read`.
-   `tools/list` still advertises all 33 tools (discovery is not entitlement),
+   `tools/list` still advertises every served tool (discovery is not entitlement),
    and a `fleet_send_to_session` call is refused `SCOPE_DENIED` before the fake
    provider is reached.
 4. **CLIENT_E2E** — only when `--model-readbacks` is passed: a real `claude -p`
@@ -107,7 +108,10 @@ def _tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_json_lines(path: Path) -> list[dict[str, Any]]:
+def _read_json_lines(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    path = Path(path)
     if not path.exists():
         return []
     rows = []
@@ -156,6 +160,7 @@ class Runner:
         self.cc_home = out / "cc-home"
         self.session_cwd = out / "session-cwd"
         self.logs = out / "logs"
+        self.tmp = out / "tmp"
         self.results: dict[str, Any] = {}
         self.claude = shutil.which("claude")
         self.claude_version: str | None = None
@@ -188,10 +193,19 @@ class Runner:
     # -- steps -------------------------------------------------------------
 
     def prepare(self) -> None:
-        self.out.mkdir(parents=True, exist_ok=True)
-        self.cc_home.mkdir(parents=True, exist_ok=True)
-        self.session_cwd.mkdir(parents=True, exist_ok=True)
-        self.logs.mkdir(parents=True, exist_ok=True)
+        # Fresh, exclusively owned evidence root. Never remove or blend into a
+        # directory that already exists; a rerun chooses a new RUN/namespace.
+        if self.out.exists() or any(
+                part.is_symlink() for part in [self.out, *self.out.parents]
+                if part.exists()):
+            raise RuntimeError(
+                f"refused: {self.out} already exists or an ancestor is a "
+                f"symlink; choose a fresh exclusive evidence directory")
+        self.out.mkdir(parents=True)
+        self.cc_home.mkdir()
+        self.session_cwd.mkdir()
+        self.logs.mkdir()
+        self.tmp.mkdir()
         if not self.claude:
             raise RuntimeError("no `claude` on PATH")
         proc = self.run([self.claude, "--version"], timeout=60)
@@ -228,8 +242,9 @@ class Runner:
         return proc.stdout.strip() if proc.returncode == 0 else "UNKNOWN"
 
     def build(self) -> None:
-        if self.plugin.exists():
-            shutil.rmtree(self.plugin)
+        # No removal here: the generator validates the owned entry/config and
+        # the empty output before it writes a byte. Deleting an existing
+        # `plugin/` would destroy a caller's directory before that validation.
         if self.owned_entry:
             record = cc_builder.generate(
                 skills_source=SHARED_SKILLS, out=self.plugin,
@@ -314,22 +329,41 @@ class Runner:
             initialize = "initialize" in methods
             initialized = "notifications/initialized" in methods
             tools_list = "tools/list" in methods
+            wire = str(self.interposer_log) if self.interposer_log else None
             self.record("CC_CLI_CONNECTED", "PASS" if connected else "FAIL",
                         "Claude Code mcp list reported Connected",
-                        {"qualified_server": self.qualified_server})
-            self.record(
-                "MCP_INITIALIZE_OK", "PASS" if initialize and initialized else "FAIL",
-                "CC's own interposed wire sent initialize and notifications/initialized"
-                if initialize and initialized else "CC handshake frames missing",
-                {"methods": methods, "wire": str(self.interposer_log)})
-            self.record(
-                "TOOLS_LIST_OK",
-                "PASS" if tools_list and count else "NOT_RUN",
-                f"CC's own tools/list returned {count} tools" if tools_list
-                else "CC's mcp list did not send tools/list; separate probe not used",
-                {"tool_count": count, "methods": methods,
-                 "wire": str(self.interposer_log)})
-            return connected and initialize and initialized
+                        {"qualified_server": self.qualified_server,
+                         "note": "connection is not a tools/list"})
+            if not rows:
+                handshake_status, handshake_detail = (
+                    "NOT_RUN", "no CC wire frames captured; a connection string "
+                    "or the separate probe is not a client handshake")
+            elif initialize and initialized:
+                handshake_status, handshake_detail = (
+                    "PASS", "CC's own interposed wire sent initialize and "
+                    "notifications/initialized")
+            else:
+                handshake_status, handshake_detail = (
+                    "FAIL", "CC wire frames are present but the handshake is "
+                    "incomplete")
+            self.record("MCP_INITIALIZE_OK", handshake_status, handshake_detail,
+                        {"methods": methods, "wire": wire,
+                         "source": "CC interposed stdio wire"})
+            if tools_list and count:
+                tools_status = "PASS"
+                tools_detail = f"CC's own tools/list returned {count} tools"
+            elif not tools_list:
+                tools_status = "NOT_RUN"
+                tools_detail = ("CC's mcp list sent no tools/list; the separate "
+                                "probe is not used and connection is not a list")
+            else:
+                tools_status = "NOT_RUN"
+                tools_detail = "tools/list frame had no tool count"
+            self.record("TOOLS_LIST_OK", tools_status, tools_detail,
+                        {"tool_count": count, "methods": methods,
+                         "wire": wire,
+                         "source": "CC interposed stdio wire"})
+            return connected and initialize and initialized and tools_list
         methods = [row.get("method") for row in rows if row.get("event") == "request"]
         initialize = "initialize" in methods
         initialized = "notifications/initialized" in methods
@@ -682,7 +716,7 @@ class Runner:
         result = fleet_owned_probe.probe(
             entry=Path(self.owned_entry), config=Path(self.owned_config),
             state_dir=Path(self.owned_state_dir), cwd=self.session_cwd,
-            timeout=60)
+            timeout=60, tmpdir=self.tmp)
         self.owned_result = result
         (self.logs / "owned-readback.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False) + "\n",
@@ -736,10 +770,16 @@ class Runner:
                 "real_device_actions": False,
                 "serverosd_started": False,
                 "credential_read": False,
+                "credential_file_read": False,
+                "credential_env_values_recorded": False,
+                "login_copied": False,
                 "global_config_modified": not (
                     self.results.get("GLOBAL_CONFIG", {}).get("evidence") or {}
                 ).get("unchanged", False),
                 "model_calls": self.model_calls,
+                "client_wire_frames": bool(
+                    (self.results.get("MCP_INITIALIZE_OK", {}).get("evidence")
+                     or {}).get("methods")),
             },
             "layers": {
                 "L0_CODE": {name: self.results.get(name, {}).get("status")
@@ -747,20 +787,40 @@ class Runner:
                                          "PLUGIN_METADATA", "SKILLS_BYTES")},
                 "L1_LOCAL_CLI": {name: self.results.get(name, {}).get("status")
                                  for name in ("CLAUDE_VERSION", "PLUGIN_LOAD_OK",
-                                              "CLI_NO_SIDE_EFFECT",
-                                              "MCP_INITIALIZE_OK", "TOOLS_LIST_OK")},
-                ("L2_OWNED_RUNTIME" if owned else "L2_TEMP_DAEMON"): (
+                                              "CLI_NO_SIDE_EFFECT")},
+                ("L2_OWNED_RUNTIME_CLIENT_WIRE" if owned
+                 else "L2_TEMP_DAEMON"): (
                     {name: self.results.get(name, {}).get("status")
                      for name in ("CC_CLI_CONNECTED", "MCP_INITIALIZE_OK",
-                                  "TOOLS_LIST_OK", "OWNED_PROBE_READBACK",
-                                  "OWNED_PROBE_PROJECT_CAPABILITY")}
+                                  "TOOLS_LIST_OK")}
                     if owned else
                     {name: self.results.get(name, {}).get("status")
                      for name in ("TEMP_DAEMON_VIRTUAL_FACTS",
                                   "SEND_SCOPE_DENIED")}),
+                **({"L2_OWNED_PROBE_SEPARATE": {
+                    name: self.results.get(name, {}).get("status")
+                    for name in ("OWNED_PROBE_READBACK",
+                                 "OWNED_PROBE_PROJECT_CAPABILITY",
+                                 "OWNED_PROBE_AUTH_SCOPE")}}
+                   if owned else {}),
                 "L3_CLIENT_E2E_MODEL": {
                     "CLIENT_E2E": self.results.get("CLIENT_E2E", {}).get("status")},
             },
+            "claim_sources": {
+                "CLAUDE_VERSION/PLUGIN_LOAD_OK/CLI_NO_SIDE_EFFECT":
+                    "real Claude Code CLI on this host",
+                "CC_CLI_CONNECTED": "claude mcp list text + qualified server",
+                "MCP_INITIALIZE_OK":
+                    "CC's own interposed stdio wire (initialize + "
+                    "notifications/initialized)",
+                "TOOLS_LIST_OK":
+                    "CC's own interposed stdio wire (tools/list + tool count)",
+                "OWNED_PROBE_*":
+                    "fleet_owned_probe.py separate read-only chain; never a "
+                    "client handshake or tool-call claim",
+                "CLIENT_E2E": "real model turn only; otherwise NOT_RUN",
+            },
+            "MODEL_SKILL_BEHAVIOR": "NOT_RUN",
             "results": self.results,
         }
         (self.out / "RECEIPT.json").write_text(
@@ -814,6 +874,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owned-state-dir",
                         default="/data/home/vince/state/serveros")
     args = parser.parse_args(argv)
+
+    # Refuse before constructing a Runner: a receipt must never be written
+    # into a directory that already belongs to someone else.
+    if args.out.exists() or args.out.is_symlink() or any(
+            part.is_symlink() for part in [args.out, *args.out.parents]
+            if part.exists()):
+        print(f"refused: {args.out} already exists or an ancestor is a symlink; "
+              f"choose a fresh evidence directory", file=sys.stderr)
+        return 2
 
     runner = Runner(args.out, args.model_readbacks,
                     owned_entry=args.owned_entry,

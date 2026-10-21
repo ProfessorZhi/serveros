@@ -67,6 +67,12 @@ authority:
 - `bypassPermissions`, if configured by the owner, belongs to that runtime,
   account and project. It is never "the fleet runs with bypass", never a
   requestable widening, and never OS root/sudo;
+- an **existing-project** session is gated by the device's project list and
+  the surface's static `create_allow`; a **new project** inside the owner's
+  configured `owner_access.project_roots` root is authorized by that root, not
+  by a per-project `create_allow` entry for a name that does not exist yet.
+  Requiring a static allow row first would re-introduce per-project approval
+  for an owner-max action;
 - a human decision is still required when the target is outside the configured
   profile, the capability is absent, identity is ambiguous or contradictory,
   or an irreversible action would exceed the grant.
@@ -111,6 +117,36 @@ and a stdio MCP fixture for a no-model handshake. The real handshake uses an iso
 or any other global config. CC and Codex artifacts have different layouts and
 are not described as interchangeable ZIP formats.
 
+### Client-runner boundary
+
+The runners are evidence instruments, so a fact they did not observe must not
+become a `PASS`:
+
+- **Per-client wire, not a side probe.** CC's `initialize`/`initialized`/
+  `tools/list` claims come only from a transparent interposer around the real
+  owned process; Codex's `tools/list`/tool-call claims come only from the
+  app-server. The independent read-only probe is a separate chain. A
+  connection string is not a tool list, and a probe response is not a client
+  response.
+- **Bounded byte framing.** A newline JSON reader owns one byte buffer, caps a
+  line and the unterminated look-ahead, and delivers frames through a queue.
+  `select()` plus `TextIOWrapper.readline()` can miss a reply already buffered
+  behind a notification in the same burst; the byte reader does not.
+- **Explicit environment.** The Codex app-server gets an environment built
+  from an explicit copy with provider-credential variables removed, a fresh
+  `CODEX_HOME`, and the runner's own `TMPDIR`. No login is copied and no
+  credential value is recorded; only the names seen/removed are.
+- **Fresh exclusive evidence root.** A runner refuses an existing `--out`
+  (or a symlink/ancestor symlink) before writing. The CC runner no longer
+  removes an existing `plugin/` before validating the owned entry; the
+  generator validates and refuses before its first write.
+- **Skills sources are real trees.** Every source ancestor and member is
+  checked for symlinks and escape before any copy; a symlinked skill directory
+  is refused and the output directory is not created.
+- **Model/Skill behavior is `NOT_RUN` unless a model turn actually ran.** A
+  no-model handshake proves the protocol and the tool inventory, not that a
+  model follows the Skills.
+
 ### Update package
 
 The existing overlay identity rules remain: same `plugin_id`, name,
@@ -143,6 +179,25 @@ Re-read against the eight existing Skill names, the package identity constraints
 and the actual Codex CLI. No unresolved critical/warning remains. The remaining
 risk is that a model turn was not spent; the Skills use the actual project
 capability and report it as missing if a future surface does not serve it.
+
+### Round 3 — independent counterexamples (2026-10-22)
+
+An independent reviewer supplied seven synthetic counterexamples at
+`RUN-0046/.../client-independent/f0d54ae/probe_client.py`; all seven were RED at
+`f0d54ae`. They are retained unmodified and re-run against this head. The
+resolutions are the client-runner boundary above: owner-root versus static
+`create_allow`, explicit credential-free environment and runner `TMPDIR`,
+bounded framing, client/probe separation, fresh exclusive output without
+`rmtree`, symlink-refusing Skills copy, and "no model turn means `NOT_RUN`".
+At the hardening head the same seven tests are GREEN; the OpenViking memory
+contains no substitute for running them.
+
+### Round 4 — post-fix review
+
+Re-read against the seven counterexamples, the update rehearsal and the real
+owned runtime receipts. No unresolved critical/warning. `production_verified`
+stays false, no model/Skill behavior is claimed, and the remaining limits are
+the live Creator/OAuth path and the root/CloudCLI project workflow.
 
 ## Open Questions / Unverified
 

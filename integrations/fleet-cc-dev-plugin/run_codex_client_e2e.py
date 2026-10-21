@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import select
 import subprocess
 import sys
 import time
@@ -33,6 +32,7 @@ REPO = ROOT.parent
 import importlib.util
 sys.path.insert(0, str(HERE))
 import fleet_owned_probe  # noqa: E402
+from stdio_framing import LineFramer  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "fleet_codex_fixture_runner", HERE / "build_codex_local_fixture.py")
@@ -45,44 +45,67 @@ SERVER = _fixture.SERVER_NAME
 FIXTURE_NAME = _fixture.FIXTURE_NAME
 MARKET_NAME = _fixture.MARKET_NAME
 
+#: No model turn is requested, so provider credentials are neither needed nor
+#: inherited. Only their names are recorded; values are never read or copied.
+CREDENTIAL_ENV_KEYS = (
+    "OPENAI_API_KEY", "CODEX_API_KEY",
+    "OPENAI_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN",
+)
+
+
+def _client_env(home: Path, tmpdir: Path) -> dict[str, str]:
+    """An explicit, isolated environment for the real Codex CLI."""
+    env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV_KEYS}
+    env["CODEX_HOME"] = str(home)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["TMPDIR"] = str(tmpdir)
+    return env
+
 
 class CodexServer:
-    def __init__(self, codex: str, home: Path, cwd: Path, timeout: float):
+    def __init__(self, codex: str, home: Path, cwd: Path, timeout: float,
+                 tmpdir: Path | None = None):
         self.timeout = timeout
         self.notifications: list[dict] = []
-        env = dict(os.environ)
-        env["CODEX_HOME"] = str(home)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        self.tmpdir = Path(tmpdir) if tmpdir is not None else Path(cwd) / "tmp"
+        env = _client_env(home, self.tmpdir)
         self.proc = subprocess.Popen(
             [codex, "app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1, cwd=str(cwd), env=env)
+            stderr=subprocess.PIPE, text=False, bufsize=0,
+            cwd=str(cwd), env=env)
+        # Built on the first request, so constructing the runner does not
+        # require a real child (and so a test can inspect the environment).
+        self.reader: LineFramer | None = None
 
     def send(self, message: dict) -> None:
         assert self.proc.stdin is not None
-        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.write(
+            (json.dumps(message) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
 
     def request(self, request_id: int, method: str, params: dict) -> dict:
         self.send({"jsonrpc": "2.0", "id": request_id,
                    "method": method, "params": params})
-        end = time.time() + self.timeout
-        assert self.proc.stdout is not None
-        while time.time() < end:
-            ready, _, _ = select.select([self.proc.stdout], [], [], 0.2)
-            if not ready:
-                continue
-            line = self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError("codex app-server closed its stdout")
+        if self.reader is None:
+            self.reader = LineFramer(self.proc.stdout)
+        end = time.monotonic() + self.timeout
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"{method} did not answer within {self.timeout}s")
             try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
+                line = self.reader.next_line(remaining)
+            except EOFError as exc:
+                raise RuntimeError("codex app-server closed its stdout") from exc
+            try:
+                message = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
             if message.get("id") == request_id:
                 return message
             self.notifications.append(message)
-        raise TimeoutError(f"{method} did not answer within {self.timeout}s")
 
     def close(self) -> str:
         self.proc.terminate()
@@ -90,8 +113,8 @@ class CodexServer:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-        stderr = self.proc.stderr.read() if self.proc.stderr else ""
-        return stderr
+        stderr = self.proc.stderr.read() if self.proc.stderr else b""
+        return stderr.decode("utf-8", errors="replace")
 
 
 def _run(cmd: list[str], *, env: dict, cwd: Path, timeout: float) -> subprocess.CompletedProcess:
@@ -128,7 +151,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owned-cwd")
     args = parser.parse_args(argv)
 
-    out = Path(args.out).resolve()
+    raw_out = Path(args.out)
+    if raw_out.is_symlink() or any(
+            part.is_symlink() for part in [raw_out, *raw_out.parents]
+            if part.exists()):
+        print(f"refused: {raw_out} or an ancestor is a symlink; choose a fresh "
+              f"exclusive evidence root", file=sys.stderr)
+        return 2
+    out = raw_out.resolve()
     if out.exists():
         print(f"refused: {out} already exists; choose a fresh evidence directory",
               file=sys.stderr)
@@ -146,10 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         fixture = _fixture.generate(out=out / "fixture")
     home = out / "codex-home"
     home.mkdir()
-    env = dict(os.environ)
-    env["CODEX_HOME"] = str(home)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["TMPDIR"] = str(tmp)
+    env = _client_env(home, tmp)
+    credential_names = sorted(k for k in CREDENTIAL_ENV_KEYS if k in os.environ)
 
     claims: dict[str, object] = {
         "schema": "serveros/fleet-codex-client-e2e.v1",
@@ -161,8 +189,16 @@ def main(argv: list[str] | None = None) -> int:
         "real_device_actions": False,
         "global_config_modified": False,
         "credential_read": False,
+        "credential_file_read": False,
+        "credential_env_values_recorded": False,
+        "credential_env_names_present": credential_names,
+        "credential_env_names_removed": credential_names,
+        "login_copied": False,
+        "codex_home_isolated": True,
+        "tmpdir": str(tmp),
         "model_turns_requested": 0,
         "model_calls": 0,
+        "model_skill_behavior": "NOT_RUN",
         "fixture_plugin": fixture["fixture_name"],
         "real_owned_entry": owned,
         "fixture_device": not owned,
@@ -201,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         if not skills_ok:
             failures.append("SKILLS_BYTES")
 
-        server = CodexServer(args.codex, home, REPO, args.timeout)
+        server = CodexServer(args.codex, home, REPO, args.timeout, tmp)
         stderr = ""
         try:
             init = server.request(1, "initialize", {
@@ -264,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                 entry=Path(args.owned_entry), config=Path(args.owned_config),
                 state_dir=Path(args.owned_state_dir),
                 cwd=Path(args.owned_cwd) if args.owned_cwd else REPO,
-                timeout=args.timeout)
+                timeout=args.timeout, tmpdir=tmp)
             (out / "logs" / "owned-readback.json").write_text(
                 json.dumps(readback, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8")
@@ -294,23 +330,43 @@ def main(argv: list[str] | None = None) -> int:
         **({"OWNED_PROBE_OK": claims.get("OWNED_PROBE_OK", False)}
            if owned else {}),
     }
+    claims["claim_sources"] = {
+        "PLUGIN_INSTALL_OK": "codex plugin marketplace add + plugin add",
+        "MCP_INITIALIZE_OK": "app-server initialize frame",
+        "MCP_CONNECTED": "app-server mcpServerStatus/list runtimeStatus",
+        "TOOLS_LIST_OK": "app-server mcpServerStatus/list tools",
+        "tool_count_actual": "app-server mcpServerStatus/list tools",
+        "project_create_capability_actual":
+            "app-server mcpServerStatus/list tools",
+        "TOOL_CALL_OK": "app-server mcpServer/tool/call",
+        "SKILLS_BYTES": "installed CODEX_HOME vs shared Skills bytes",
+        "OWNED_PROBE_OK": "fleet_owned_probe.py (separate read-only chain)",
+        "MODEL_SKILL_BEHAVIOR": "not requested",
+    }
+    claims["MODEL_SKILL_BEHAVIOR"] = "NOT_RUN"
     claims["failures"] = failures
     (out / "RECEIPT.json").write_text(
         json.dumps(claims, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (out / "RECEIPT.md").write_text(
         "# Codex local client E2E\n\n"
-        f"- Evidence level: `LOCAL_FIXTURE` (real Codex CLI, invented device)\n"
+        f"- Evidence level: `{claims.get('evidence_level')}`\n"
         f"- Codex: `{claims.get('codex_version', 'UNKNOWN')}`\n"
         f"- Plugin install: `{claims.get('PLUGIN_INSTALL_OK')}`\n"
         f"- MCP connected: `{claims.get('MCP_CONNECTED')}`\n"
-        f"- Tools listed: `{claims.get('tool_count_actual', 0)}`\n"
-        f"- Project-create capability present: `{claims.get('project_create_capability_actual')}`\n"
+        f"- Tools listed (app-server): `{claims.get('tool_count_actual', 0)}`\n"
+        f"- Project-create capability (app-server): "
+        f"`{claims.get('project_create_capability_actual')}`\n"
         f"- Tool call (app-server): `{claims.get('TOOL_CALL_OK')}`\n"
         f"- Independent owned probe: `{claims.get('OWNED_PROBE_OK')}` (separate chain)\n"
         f"- Skills byte-identical: `{claims.get('SKILLS_BYTES')}`\n"
-        f"- Model turns requested: `0`\n"
+        f"- Model turns requested: `{claims.get('model_turns_requested', 0)}`\n"
+        f"- Model/Skill behavior: `{claims.get('MODEL_SKILL_BEHAVIOR')}`\n"
         f"- Real owned runtime: `{owned}`\n"
-        f"- Global config modified: `false`\n"
+        f"- Global config modified: `{claims.get('global_config_modified')}`\n"
+        f"- Credential env names seen/removed: "
+        f"`{claims.get('credential_env_names_present')}` "
+        f"(values never recorded)\n"
+        f"- Login copied: `{claims.get('login_copied')}`\n"
         f"- Failures: `{failures}`\n",
         encoding="utf-8")
     return 0 if not failures else 1

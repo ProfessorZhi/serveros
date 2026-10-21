@@ -40,7 +40,10 @@ Run and capture the expected red result.
   model and native permission read back; remove the fixed tool count.
 - `fleet-create-with-grants`: create is routine inside the managed profile;
   keep idempotency/UNKNOWN rules; add project-create capability discovery and
-  missing-capability reporting; keep effective model/mode read-back.
+  missing-capability reporting; keep effective model/mode read-back. Bind an
+  **existing-project** session to the static `create_allow` list, but bind a
+  **new project** to the owner-configured `owner_access.project_roots` root;
+  do not require a per-project static allow row for a name that does not exist.
 - `fleet-reuse-idle-session`: prefer reuse but do not treat create as an
   exceptional per-call approval; keep ACK/return/UNKNOWN contract.
 - `fleet-device-and-session-discovery`: discover the actual tool list and
@@ -96,6 +99,33 @@ Record exact commands/exits/SHA/artifacts; commit and push a narrow branch,
 open/update one Draft PR. No merge, deploy, upload, global install, credential
 read or paid model call.
 
+## Phase 6 — independent counterexample hardening (2026-10-22)
+
+Accept the independent reviewer's seven synthetic counterexamples unchanged,
+reproduce them RED at `f0d54ae`, and fix in this lane:
+
+1. `fleet-create-with-grants`: separate existing-project `create_allow` from a
+   new project's owner-configured `project_roots`; no static per-project row.
+2. Codex app-server environment: explicit copy, provider credential variables
+   removed, evidence `TMPDIR`, no login copy; receipt records names seen and
+   removed, never values.
+3. CC wire and `fleet_owned_probe` stay separate; Codex's app-server
+   `tool_count_actual`/`project_create_capability_actual` are never overwritten
+   by the probe.
+4. Bounded byte framing for `CodexServer.request` and
+   `fleet_owned_probe._call`; burst notification+reply tests for both.
+5. Fresh exclusive CC evidence root; no `rmtree` of an existing `plugin/`
+   before owned-entry/config validation.
+6. Skills source copy rejects symlink ancestors/members and escape before any
+   output directory is created; the normal shared eight still copy.
+7. Client claims require real client frames; no model turn means model/Skill
+   behavior is `NOT_RUN`.
+
+Verify with the seven counterexamples GREEN, the targeted union under the
+resource caps, a regenerated v1/v2 overlay and plan/readback/rollback/
+rehearsal, and real CC/Codex owned runs. Update the receipts, README, review
+and PR body with the exact final SHA.
+
 ## Plan review rounds
 
 ### Round 1
@@ -116,3 +146,18 @@ Re-read the plan against the eight Skills, the package identity rules and the
 local Codex CLI. No unresolved critical/warning remains. The real owned runtime
 and project-create capability were exercised read-only; a model turn remains
 NOT_RUN rather than being inferred.
+
+### Round 3 — independent counterexamples
+
+Seven RED cases at `f0d54ae` are the acceptance gate: project root vs static
+allow, explicit credential-free Codex env, buffered burst framing, per-client
+wire attribution, fresh output without `rmtree`, symlink-refusing Skills copy,
+and real-frame-or-`NOT_RUN`. Resolution is Phase 6. Re-run the same seven
+unmodified files; do not replace them with a weaker local test.
+
+### Round 4 — post-fix review
+
+Re-read after the fixes against the counterexamples, the real owned receipts
+and the update rehearsal. No unresolved critical/warning. Remaining NOT_RUN:
+model/Skill behavior, real project create → session → long task, live Creator/
+OAuth, avatar/display-name.

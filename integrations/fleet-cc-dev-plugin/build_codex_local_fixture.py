@@ -52,7 +52,7 @@ def generate(*, out: Path, skills_source: Path = SHARED) -> dict:
         raise Refused(SOURCE_REFUSED,
                       f"{out} already exists; the fixture is generated once into "
                       f"an empty directory")
-    source = Path(skills_source).resolve()
+    source = _cc.check_skills_source(skills_source)
     _cc.check_paths(source, out)
     skills = _cc.read_skills(source)
     for name, body in skills:
@@ -172,7 +172,7 @@ def generate_owned(*, out: Path, entry: Path, config: Path, state_dir: Path,
     state_dir = Path(state_dir).resolve()
     if not state_dir.is_dir():
         raise Refused(SOURCE_REFUSED, f"state dir is not a directory: {state_dir}")
-    source = Path(skills_source).resolve()
+    source = _cc.check_skills_source(skills_source)
     _cc.check_paths(source, out)
     skills = _cc.read_skills(source)
     for name, body in skills:

@@ -91,7 +91,7 @@ def generate(*, skills_source: Path = SHARED_SKILLS, out: Path,
              name: str = DEV_PLUGIN_NAME, transport: str = "http",
              owned_entry: str | None = None,
              owned_config: str | None = None) -> dict:
-    source = Path(skills_source).resolve()
+    source = _cc.check_skills_source(skills_source)
     out = Path(out).resolve()
     _cc.check_paths(source, out)
     transport = str(transport)
