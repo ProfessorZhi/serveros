@@ -158,11 +158,20 @@ class ProviderBinding:
     #: the device's own protocol; until then the honest answer is UNVERIFIED,
     #: never a quiet fallback to a different profile.
     instance_id: str | None = None
+    # Explicitly serve unqualified Claude/Codex session namespaces through
+    # this one base account gateway. This adds no runtime or grant.
+    multiplex_native_families: bool = False
 
     def __post_init__(self) -> None:
         """Shape only. Whether a declared runtime EXISTS is not a question a
         single binding can answer, and set-level questions are asked where the
         whole set is visible."""
+        if not isinstance(self.multiplex_native_families, bool):
+            raise ValueError("multiplex_native_families must be true or false")
+        if self.multiplex_native_families and (
+                self.runtime != BASE_RUNTIME or self.family != BASE_RUNTIME
+                or self.profile is not None):
+            raise ValueError("multiplex_native_families requires an unprofiled base Claude gateway")
         if self.family not in runtime_identity.FAMILIES:
             raise ValueError(
                 f"family {self.family!r} is not one this surface names; it is "
@@ -387,6 +396,30 @@ class FleetConfig:
     #: what keeps a binding written before these axes existed loading as it did.
     device_default_account: str | None = None
 
+    def __post_init__(self):
+        for key, binding in self.providers.items():
+            if not binding.multiplex_native_families:
+                continue
+            if key != provider_key(binding.device_ref, binding.runtime):
+                raise ValueError("multiplexed binding key disagrees with its device/runtime")
+            if (binding.account is not None
+                    and (self.device_default_account is None
+                         or binding.account != self.device_default_account)):
+                raise ValueError("multiplexed account must be the declared device owner")
+            if any(other.device_ref == binding.device_ref and other.runtime == "codex"
+                   for other in self.providers.values()):
+                raise ValueError("multiplexed base conflicts with an explicit Codex binding")
+
+    def session_binding(self, key: SessionKey) -> ProviderBinding | None:
+        exact = self.provider_for(key.device_ref, key.provider)
+        if exact is not None:
+            return exact
+        base = self.provider_for(key.device_ref)
+        if (key.provider == "codex" and base is not None and base.enabled
+                and base.multiplex_native_families):
+            return base
+        return None
+
     def provider_for(self, device_ref: str,
                      runtime: str = BASE_RUNTIME) -> ProviderBinding | None:
         """The binding for one runtime on one device, or `None`.
@@ -405,6 +438,7 @@ class FleetConfig:
                 ref: {
                     "device_ref": b.device_ref,
                     "runtime": b.runtime,
+                    "multiplex_native_families": b.multiplex_native_families,
                     "kind": b.kind,
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
@@ -879,24 +913,28 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         # the authority for that grammar is `SessionKey`, so it is asked rather
         # than restated here.
         SessionKey(device_ref, runtime, "binding-validation")
-        providers[provider_key(device_ref, runtime)] = ProviderBinding(
-            device_ref=device_ref,
-            runtime=runtime,
-            kind=kind,
-            endpoint=str(entry.get("endpoint") or ""),
-            credential_anchor=_anchor(entry.get("credential_anchor"), f"provider {ref} credential_anchor"),
-            connect_timeout=float(entry.get("connect_timeout", 5.0)),
-            read_timeout=float(entry.get("read_timeout", 45.0)),
-            enabled=bool(entry.get("enabled", True)),
-            note=entry.get("note"),
-            allow_send=bool(entry.get("allow_send", False)),
-            allow_create=bool(entry.get("allow_create", False)),
-            allow_control=bool(entry.get("allow_control", False)),
-            account=entry.get("account"),
-            profile=entry.get("profile"),
-            family=str(entry.get("family", BASE_RUNTIME)),
-            instance_id=entry.get("instance_id"),
-        )
+        try:
+            providers[provider_key(device_ref, runtime)] = ProviderBinding(
+                device_ref=device_ref,
+                runtime=runtime,
+                kind=kind,
+                endpoint=str(entry.get("endpoint") or ""),
+                credential_anchor=_anchor(entry.get("credential_anchor"), f"provider {ref} credential_anchor"),
+                connect_timeout=float(entry.get("connect_timeout", 5.0)),
+                read_timeout=float(entry.get("read_timeout", 45.0)),
+                enabled=bool(entry.get("enabled", True)),
+                note=entry.get("note"),
+                allow_send=bool(entry.get("allow_send", False)),
+                allow_create=bool(entry.get("allow_create", False)),
+                allow_control=bool(entry.get("allow_control", False)),
+                account=entry.get("account"),
+                profile=entry.get("profile"),
+                family=str(entry.get("family", BASE_RUNTIME)),
+                instance_id=entry.get("instance_id"),
+                multiplex_native_families=entry.get("multiplex_native_families", False),
+            )
+        except ValueError as exc:
+            raise refuse(BAD_REQUEST, f"provider {ref}: {exc}") from None
 
     # Two set-level questions a single binding cannot answer, asked once the
     # whole set is visible. Both refuse rather than pick a winner: a duplicate
@@ -1095,14 +1133,17 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
-    return FleetConfig(
-        source=source,
-        local_device_ref=str(local_device),
-        providers=providers,
-        auth=auth,
-        server=server,
-        policy=policy,
-        audit=audit,
-        registry_path=registry_path,
-        device_default_account=device_default_account,
-    )
+    try:
+        return FleetConfig(
+            source=source,
+            local_device_ref=str(local_device),
+            providers=providers,
+            auth=auth,
+            server=server,
+            policy=policy,
+            audit=audit,
+            registry_path=registry_path,
+            device_default_account=device_default_account,
+        )
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None

@@ -28,7 +28,8 @@ def node(payload, *, runtime="claude", family="claude"):
     binding = ProviderBinding(device_ref=DEVICE, kind="fleet-node",
                               endpoint="http://127.0.0.1:1",
                               credential_anchor=Path("/nonexistent/fixture-anchor"),
-                              runtime=runtime, family=family)
+                              runtime=runtime, family=family,
+                              multiplex_native_families=runtime == "claude" and family == "claude")
     provider = FleetNodeProvider(binding)
     provider._request = lambda *args, **kwargs: copy.deepcopy(payload)
     return provider

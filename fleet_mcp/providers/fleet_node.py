@@ -385,7 +385,11 @@ class FleetNodeProvider(DeviceProvider):
             query["state"] = state
         path = "/v1/sessions?" + urllib.parse.urlencode(query)
         payload = self._request("GET", path)
-        return [summary_from_dict(row) for row in (payload.get("sessions") or []) if isinstance(row, dict)]
+        from ..session_detail import validate_binding_target
+        summaries = [summary_from_dict(row) for row in (payload.get("sessions") or []) if isinstance(row, dict)]
+        for summary in summaries:
+            validate_binding_target(summary.key, self.binding, observation=True)
+        return summaries
 
     def get_session(self, key: SessionKey) -> dict[str, Any]:
         from ..session_detail import normalize_detail, validate_binding_target

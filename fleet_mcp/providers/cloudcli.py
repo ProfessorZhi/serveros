@@ -18,6 +18,7 @@ from typing import Any
 from ..config import ProviderBinding
 from .. import cloudcli_native
 from ..errors import (
+    BAD_SESSION_REF,
     BAD_REQUEST,
     INTERNAL,
     PROVIDER_TIMEOUT,
@@ -233,9 +234,17 @@ class CloudCliProvider(DeviceProvider):
             if not native:
                 continue
             verdict, running, resident, evidence = classify(row)
+            family = row.get("provider")
+            namespace = str(family or "claude")
+            if self.binding.runtime != "claude":
+                if family is not None and family != self.binding.family:
+                    raise refuse(BAD_SESSION_REF, "listed native family contradicts its binding")
+                namespace = self.binding.runtime
+            elif self.binding.multiplex_native_families and namespace not in ("claude", "codex"):
+                raise refuse(BAD_SESSION_REF, "listed native family is not declared by this gateway")
             summaries.append(
                 SessionSummary(
-                    key=SessionKey.compose(self.device_ref, str(row.get("provider") or "claude"), str(native)),
+                    key=SessionKey.compose(self.device_ref, namespace, str(native)),
                     title=str(row.get("title") or ""),
                     classification=verdict,
                     running=running,

@@ -5,14 +5,15 @@ from .errors import BAD_SESSION_REF, FleetRefusal, refuse
 from .identity import SessionKey
 
 
-def validate_binding_target(key, binding):
+def validate_binding_target(key, binding, *, observation=False):
     if binding is None:
         return
     if key.device_ref != binding.device_ref:
         raise refuse(BAD_SESSION_REF, "session does not belong to this device binding")
-    # The base gateway can serve both native families in one account.
-    # An explicitly provisioned account/profile is an exact namespace.
-    allowed = ("claude", "codex") if binding.runtime == "claude" else (binding.runtime,)
+    # Legacy lists can observe an unresolved native family. Addressed calls
+    # require the explicit route; an observation is not that declaration.
+    multiplex = binding.multiplex_native_families or observation
+    allowed = ("claude", "codex") if binding.runtime == "claude" and multiplex else (binding.runtime,)
     if key.provider not in allowed:
         raise refuse(BAD_SESSION_REF, "session does not belong to this runtime binding")
 
