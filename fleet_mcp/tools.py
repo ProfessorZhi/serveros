@@ -743,8 +743,9 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
         class_note = "Read-only."
     elif native.governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
         class_note = (
-            f"A {native.governance} verb: it needs an explicit grant on top of the "
-            f"device's `allow_{native.governance}` flag, and `session_ref` (the "
+            f"A {native.governance} verb: selected owner-max profiles authorize it "
+            f"once; other callers need the explicit grant and device's "
+            f"`allow_{native.governance}` flag. It needs `session_ref` (the "
             f"full `device:<id>|<provider>|<native id>`) — the session floor "
             f"(`policy.send_allow` / `policy.control_allow`) is checked on that "
             f"address, never on a session id inside `arguments`."
@@ -757,10 +758,24 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             "checked on that name, never on a project "
             "read out of `arguments`."
         )
+    elif native.governance == cloudcli_native.GOV_RECONFIGURE:
+        class_note = (
+            "A reconfigure verb: session control is required, and model/mode "
+            "changes also validate the actual project's create policy. Selected "
+            "owner-max profiles supply approved maximum permissions; omitted "
+            "fields remain unchanged."
+        )
+    elif native.governance == cloudcli_native.GOV_APPROVE:
+        class_note = (
+            "An approval verb: requires the approve scope, selected runtime "
+            "grant, authorized session address and a request actually enumerated "
+            "in that session. Owner-max supplies the managed grant once."
+        )
     else:
         class_note = (
-            f"A {native.governance} verb: its Fleet scope is planned and not "
-            f"implemented, so it is refused rather than inherited."
+            "A navigation verb: requires its navigate scope, selected runtime "
+            "grant and authorized session address. Owner-max supplies the "
+            "managed grant once; opening UI remains separate from sending work."
         )
     schema = cloudcli_native.mirrored_schema(native)
     properties = schema["properties"]
@@ -878,11 +893,13 @@ NATIVE_CAPABILITY_TOOL = Tool(
     title="Live capability snapshot for one device",
     description=(
         "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
-        "verb's state (`USABLE` only when the device declares it AND this build "
-        "records a wired handler; `DECLARED_NOT_IMPLEMENTED` when the device "
-        "declares it but its handler is the named not-implemented refusal, e.g. "
-        "`overview`; `UNSUPPORTED_BY_DEVICE` when the device does not declare "
-        "it), the device's own annotations, and the source/version/sample time. "
+        "verb's live registration state (`USABLE` when the device explicitly "
+        "reports a bound handler; `DECLARED_NOT_IMPLEMENTED` when it explicitly "
+        "reports no handler; `HANDLER_BINDING_UNKNOWN` for older or untyped "
+        "metadata; `UNSUPPORTED_BY_DEVICE` when the name is absent), the "
+        "device's annotations and source/version/sample time. A bound handler "
+        "is not a verified workflow. Historical placeholder defaults are "
+        "provenance and do not establish current availability. "
         "A device whose tool list cannot be read is reported `UNKNOWN` with a "
         "reason — a count of 22 is never evidence that 22 answer."
     ),
