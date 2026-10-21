@@ -33,7 +33,7 @@ from functools import partial
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
-from .dispatch import DispatchGuard
+from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
@@ -46,6 +46,7 @@ from .errors import (
     BAD_SESSION_REF,
     FleetRefusal,
     IDEMPOTENT_REPLAY,
+    DISPATCH_OUTCOME_UNKNOWN,
     INTERNAL,
     RATE_LIMITED,
     SCOPE_DENIED,
@@ -1339,6 +1340,24 @@ class FleetService:
         )
         return result
 
+    def _record_delivery_ack(self, claim, record, *, expect_execution=False):
+        # An omitted idempotency key removes replay protection, not ACK checks.
+        # In particular a busy/error envelope cannot become accepted:true merely
+        # because no claim was requested.
+        try:
+            receipt = delivery_receipt(record)
+            if expect_execution and not (receipt["run_id"] or receipt["queued_message_uuid"]):
+                raise ValueError("execution acknowledgement has no original reference")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise refuse(DISPATCH_OUTCOME_UNKNOWN,
+                         "the provider did not return a valid delivery acknowledgement; "
+                         "reconcile the original session before retrying",
+                         retry_safe=False,
+                         idempotency_durability=(self.dispatch.durability if claim
+                                                else "NOT_REQUESTED")) from exc
+        if claim is not None:
+            self.dispatch.complete(claim, record)
+
     def send_to_session(
         self,
         principal: Principal,
@@ -1402,8 +1421,7 @@ class FleetService:
             "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if claim is not None:
-            self.dispatch.complete(claim, record)
+        self._record_delivery_ack(claim, record, expect_execution=True)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -1727,8 +1745,8 @@ class FleetService:
             "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if claim is not None:
-            self.dispatch.complete(claim, record)
+        self._record_delivery_ack(claim, record,
+                                  expect_execution=bool(message and message.strip()))
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
