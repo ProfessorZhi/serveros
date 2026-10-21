@@ -156,7 +156,7 @@ StatePathVerdict path_ok(std::string reason) {
 
 }  // namespace
 
-// Only an actual private/writable exception retains this chain after open.
+// A private/writable exception or an explicit lease proof retains this chain.
 // FDs, not names or the exception flag, establish and revalidate its enclosure.
 struct StateDirectory::Ancestry {
     struct Node {
@@ -233,7 +233,7 @@ struct StateDirectory::Ancestry {
             previous = now;
         }
         struct stat actual {};
-        if (!enclosed || ::fstat(parent, &actual) != 0 || actual.st_dev != previous.st_dev ||
+        if ((exception_used && !enclosed) || ::fstat(parent, &actual) != 0 || actual.st_dev != previous.st_dev ||
             actual.st_ino != previous.st_ino || actual.st_uid != principal ||
             (actual.st_mode & (S_IWGRP | S_IWOTH)) != 0 ||
             ::faccessat(parent, ".", W_OK | X_OK, AT_EACCESS) != 0) {
@@ -277,7 +277,8 @@ void StateDirectory::close() {
 
 bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
                           const OpenObservationHook& after_lookup,
-                          const std::function<void()>& after_file_lookup) {
+                          const std::function<void()>& after_file_lookup,
+                          bool retain_namespace) {
     close();
     basename_.clear();
     parent_path_.clear();
@@ -576,7 +577,7 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
     dirfd_ = current.release();
     basename_ = basename;
     parent_path_ = parent_path;
-    if (ancestry->exception_used) {
+    if (ancestry->exception_used || retain_namespace) {
         ancestry_ = std::move(ancestry);
         std::string error;
         if (!ancestry_->validate(dirfd_, error) || !target_still_owned(dirfd_, basename_, error)) {
@@ -587,6 +588,14 @@ bool StateDirectory::open(const std::string& path, StatePathVerdict& verdict,
     }
     verdict = path_ok("the state directory is an opened, owned, non-shared inode");
     return true;
+}
+
+bool StateDirectory::namespace_current(std::string& error) const {
+    if (dirfd_ < 0 || !ancestry_) {
+        error = "no retained namespace proof is open";
+        return false;
+    }
+    return ancestry_->validate(dirfd_, error);
 }
 
 bool StateDirectory::read(std::string& text, bool& present, std::string& error) const {
