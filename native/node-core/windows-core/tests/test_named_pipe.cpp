@@ -176,6 +176,11 @@ int main() {
     }
     {
         auto watch = open_local_watch_state();
+        if (!watch)
+            std::fprintf(
+                stderr, "WATCH_FACTORY %s ERROR %lu input=%lu n=%lu writer=%lu verify=%lu\n",
+                detail::state_stage, detail::state_error, detail::state_input_bytes,
+                detail::state_written_bytes, detail::state_writer_size, detail::state_verify_size);
         CHECK(watch != nullptr);
         CHECK(!open_local_watch_state());
         if (watch) {

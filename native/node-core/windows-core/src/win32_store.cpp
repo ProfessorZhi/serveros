@@ -326,25 +326,19 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         discard_owned_temp(file);
         return false;
     }
-    detail::Handle destination_directory(::CreateFileW(
-        root.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | FILE_TRAVERSE,
-        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!destination_directory.valid() || !owner_only(destination_directory, sid, true)) {
-        detail::state_fault("RENAME_DIRECTORY_UNTRUSTED");
-        discard_owned_temp(file);
-        return false;
-    }
-    const std::wstring basename(name);
-    const DWORD name_bytes = static_cast<DWORD>(basename.size() * sizeof(wchar_t));
-    const DWORD info_bytes = static_cast<DWORD>(offsetof(FILE_RENAME_INFO, FileName)) + name_bytes;
+    // The Win32 wrapper normalizes the absolute DOS pathname. Supply an
+    // explicit NUL as required by FILE_RENAME_INFO::FileName, even though
+    // FileNameLength excludes it; exact alignment must not remove padding.
+    const DWORD name_bytes = static_cast<DWORD>(path.size() * sizeof(wchar_t));
+    const DWORD info_bytes =
+        static_cast<DWORD>(offsetof(FILE_RENAME_INFO, FileName)) + name_bytes + sizeof(wchar_t);
     std::vector<std::max_align_t> storage((info_bytes + sizeof(std::max_align_t) - 1) /
                                           sizeof(std::max_align_t));
     auto *rename = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
     rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
-    rename->RootDirectory = destination_directory;
+    rename->RootDirectory = nullptr;
     rename->FileNameLength = name_bytes;
-    ::CopyMemory(rename->FileName, basename.data(), name_bytes);
+    ::CopyMemory(rename->FileName, path.c_str(), name_bytes + sizeof(wchar_t));
     if (!::SetFileInformationByHandle(file, FileRenameInfoEx, rename, info_bytes)) {
         auto error = ::GetLastError();
         detail::state_fault(error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_FUNCTION ||

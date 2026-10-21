@@ -60,3 +60,11 @@ manifest; unsupported APIs refuse and discard only the current temp. Hosted
 read-held tests keep both READ|DELETE and ordinary no-delete-sharing reader
 positive cases, verify old reader bytes/new opens, and exercise read-only target
 refusal followed by successful configuration. The recovery budget path is unchanged.
+
+Exact readback guards remain mandatory: verify the target path reopens the same
+writer FileID, size and bytes before acknowledging publication. The Win32 rename
+wrapper receives an explicit NUL-terminated absolute path (FileNameLength excludes
+the terminator); buffer padding must not be used as the terminator at exact
+alignment. Relative RootDirectory was not accepted by the exercised wrapper and
+is not claimed as delivered. Source identity stays the original writer handle,
+ancestors remain pinned, and no arbitrary caller destination is accepted.
