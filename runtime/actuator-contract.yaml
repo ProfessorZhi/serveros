@@ -409,6 +409,40 @@ actuators:
     sites:
       - {file: scripts/verify.py, symbols: [measure], verb: "<argv0>"}
 
+  - id: constrained-test-runner-systemd
+    kind: unresolved_argv
+    verb: subprocess.run
+    why: >-
+      §169's runner and its whole conversation with systemd, in one capability:
+      `<systemd-run> --user --unit … <argv>`, `<systemctl> --user show …`, and —
+      only for a unit this same runner created — `<systemctl> --user stop` and
+      `reset-failed`. It is `unresolved_argv` because both binaries are
+      configuration (so a test can drive a fake systemd without reimplementing
+      policy) and the payload argv is built from a caller's test paths, so the
+      scanner reads a variable and says so rather than guessing.
+
+      The direction of the write is the part worth stating, because "this file
+      runs systemctl" is not by itself a safe sentence. Every unit name it
+      passes was generated in this same process a moment earlier from a
+      timestamp, a random nonce and the `serveros-test-` prefix; the runner
+      re-checks that generated shape before it uses one; and it never addresses
+      a slice — `build_launch_argv` emits no property naming `user.slice`,
+      `root.slice` or any other, which a test asserts across every profile. So
+      `stop` and `reset-failed` reach a unit this run made and nothing else, and
+      a leftover unit is reset at the end of every run rather than left failed.
+
+      `Systemd.available` is the third shape and reads only: `<systemd-run>
+      --user --version` plus two `/sys/fs/cgroup` reads, which is how the runner
+      decides whether a bounded run is possible on this host at all — before it
+      launches anything, and with a refusal rather than a fallback when it is
+      not.
+    sites:
+      - {file: runtime/constrained_runner.py,
+         symbols: [Systemd.available, Systemd.stop, Systemd.reset_failed],
+         verb: "<argv0>"}
+      - {file: runtime/constrained_runner.py,
+         symbols: [Systemd.launch, Systemd.unit_snapshot]}
+
   # ---------------------------------------------------------------------
   # Writes that delete, and the two different reasons a delete is allowed.
   # ---------------------------------------------------------------------

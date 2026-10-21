@@ -98,6 +98,12 @@ lease_store_mod = _load("serveros_runtime_lease_store", "lease_store.py")
 # 在整棵树上的第一个条目是一个 error：`fixture 'roots' not found`。
 # 见 pytest.ini 与 `tests/test_collection_scope.py`。
 test_contract_mod = _load("serveros_runtime_testing_contract", "testing_contract.py")
+# §169. The remote test runner. It is a runtime module and not a `fleet/`
+# transport on purpose: `tests/test_fleet_transport.py` refuses any transport
+# that names `ssh`, and this one names no transport at all — it runs on the
+# host it was invoked on and bounds the run with that host's own systemd. The
+# caller on the far side reaches it over whatever channel it already has.
+constrained_runner_mod = _load("serveros_runtime_constrained_runner", "constrained_runner.py")
 
 EXIT_OK = 0
 EXIT_FAULT = 1
@@ -13103,6 +13109,103 @@ def cmd_test_contract(args) -> int:
     return EXIT_OK if contract.ok else EXIT_COULD_NOT_ANSWER
 
 
+def _default_pytest_bin(paths) -> Path | None:
+    """Where a test run's interpreter is, named rather than discovered.
+
+    `python3` on this host's PATH has no pytest installed, and the project's own
+    venv is not on PATH either. Resolving the interpreter from a declaration —
+    an explicit flag, then an environment name, then the toolchains root — is
+    the difference between "the run used the pinned venv" and "the run used
+    whatever `pytest` meant to the shell that started it".
+    """
+    override = os.environ.get("SERVEROS_TEST_PYTEST")
+    if override:
+        return Path(override)
+    try:
+        return paths.root("toolchains") / "serveros-test" / "bin" / "pytest"
+    except Exception:
+        return None
+
+
+def _receipt_dir(paths, explicit: str | None) -> Path | None:
+    """Where a run's evidence goes. Item evidence has its own place; this is a
+    skill-level record, so it lands under the artifacts root's `skills/`."""
+    if explicit:
+        return Path(explicit)
+    try:
+        return paths.root("artifacts") / "skills" / "constrained-test-runner" / "runs"
+    except Exception:
+        return None
+
+
+def _render_run(receipt: dict) -> list[str]:
+    lines = [f"{receipt.get('outcome', 'unknown'):<20} {receipt.get('unit', '-')}"]
+    if receipt.get("refusal"):
+        lines.append(f"  refused            {receipt['refusal']}")
+    lines.append(f"  exit code          {receipt.get('exit_code')}")
+    if receipt.get("requested"):
+        asked = receipt["requested"]
+        lines.append(f"  asked              MemoryMax={asked['memory_max_bytes']} "
+                     f"CPUQuota={asked['cpu_quota_percent']}% "
+                     f"RuntimeMaxSec={asked['runtime_max_sec']}")
+    for name, value in sorted((receipt.get("observed") or {}).items()):
+        lines.append(f"  kernel {name:<12} {value if value is not None else 'UNREADABLE'}")
+    if receipt.get("peak_bytes") is not None:
+        lines.append(f"  peak               {human_bytes(receipt['peak_bytes'])} "
+                     f"of {human_bytes(receipt.get('cap_bytes'))} cap")
+    for finding in receipt.get("verification") or []:
+        lines.append(f"  FINDING            {finding['code']}  {finding}")
+    if receipt.get("receipt_path"):
+        lines.append(f"  receipt            {receipt['receipt_path']}")
+    return lines
+
+
+def cmd_test_run(args) -> int:
+    """Run a repo's tests inside a bounded systemd user cgroup, and verify it.
+
+    The verb is a thin adapter over `runtime/constrained_runner.py`: it resolves
+    where the interpreter and the receipt go, and it returns the runner's own
+    exit code unchanged. It does not decide anything about the envelope — a
+    refusal from the runner is a refusal here, and a verification failure is a
+    non-zero exit rather than a printed warning.
+    """
+    paths = paths_mod.Paths()
+
+    receipt_dir = _receipt_dir(paths, args.receipt_dir)
+    if receipt_dir is None:
+        emit({"schema": constrained_runner_mod.SCHEMA, "outcome": "refused",
+              "exit_code": constrained_runner_mod.EXIT_REFUSED,
+              "refusal": "no artifacts root is bound on this node"},
+             as_json=args.json,
+             lines=["REFUSED  no artifacts root is bound, so a receipt has no "
+                    "declared home", "         pass --receipt-dir to name one"])
+        return constrained_runner_mod.EXIT_REFUSED
+
+    pytest_bin = Path(args.pytest_bin) if args.pytest_bin else _default_pytest_bin(paths)
+    if pytest_bin is None or not Path(pytest_bin).exists():
+        emit({"schema": constrained_runner_mod.SCHEMA, "outcome": "refused",
+              "exit_code": constrained_runner_mod.EXIT_REFUSED,
+              "refusal": f"no pytest interpreter at {pytest_bin}"},
+             as_json=args.json,
+             lines=[f"REFUSED  no pytest interpreter at {pytest_bin}",
+                    "         pass --pytest-bin, or set SERVEROS_TEST_PYTEST"])
+        return constrained_runner_mod.EXIT_REFUSED
+
+    try:
+        home = paths.root("home")
+    except Exception:
+        home = None
+    request = constrained_runner_mod.Request(
+        worktree=Path(args.worktree), pytest_bin=str(pytest_bin),
+        receipt_dir=Path(receipt_dir), profile=args.profile,
+        all_tests=bool(args.all_tests), test_paths=list(args.tests or []),
+        reason=args.reason or "", authorized=bool(args.authorized),
+        home=home, device_ref=getattr(args, "device", None))
+    receipt = constrained_runner_mod.run(request)
+    emit(receipt, as_json=args.json, lines=_render_run(receipt))
+    return int(receipt.get("exit_code", EXIT_FAULT))
+
+
 def build_parser() -> argparse.ArgumentParser:
     # There used to be a second `ArgumentParser(prog="serverosctl", ...)` right
     # here, immediately overwritten by the one below. Its `description` was the
@@ -13411,6 +13514,52 @@ def build_parser() -> argparse.ArgumentParser:
         "the declared document itself, with its content-addressed revision")
     t_contract.add_argument("project")
     t_contract.set_defaults(func=cmd_test_contract)
+
+    # §169. The four verbs above answer "how must this project be tested" and
+    # change nothing. This one is the other half: it runs a suite, and it is the
+    # only verb in this group that starts a process. It sits here rather than
+    # under `resource` because what it enforces is the testing contract's own
+    # floor — a run bounded by the kernel, from a worktree root, over explicit
+    # paths. See `runtime/constrained_runner.py` for why the bound has to be a
+    # cgroup and not a `timeout`.
+    t_run = _test_parser(
+        "run",
+        "run explicit tests from a worktree under a verified cgroup envelope")
+    t_run.add_argument(
+        "--worktree", required=True,
+        help="absolute path to a git worktree root. A run must start in a "
+             "repository root: `testpaths` only applies from one, and from a "
+             "home directory pytest collects the whole tree below it")
+    t_run.add_argument(
+        "--tests", nargs="*", default=[], metavar="PATH",
+        help="explicit paths under tests/ (files or directories). Empty means "
+             "nothing is selected, which is refused rather than widened")
+    t_run.add_argument(
+        "--all", action="store_true", dest="all_tests",
+        help="the whole suite, i.e. `tests`. It is a flag because it is the "
+             "decision that has to be made on purpose")
+    t_run.add_argument(
+        "--profile", default="default",
+        choices=sorted(constrained_runner_mod.PROFILES),
+        help="the memory/CPU/lifetime envelope. Anything above `default` "
+             "needs --authorized")
+    t_run.add_argument(
+        "--authorized", action="store_true",
+        help="the larger profile was granted for this run. It is recorded in "
+             "the receipt as a decision, not as a detail")
+    t_run.add_argument(
+        "--reason", default="",
+        help="why this run needs the envelope it asked for. Scrubbed and "
+             "recorded")
+    t_run.add_argument(
+        "--pytest-bin", default=None,
+        help="the interpreter to run. Default: $SERVEROS_TEST_PYTEST, else the "
+             "toolchains root's serveros-test venv")
+    t_run.add_argument(
+        "--receipt-dir", default=None,
+        help="where the run's evidence goes. Default: the artifacts root's "
+             "skills/constrained-test-runner/runs")
+    t_run.set_defaults(func=cmd_test_run)
 
     runtime = sub.add_parser("runtime", help="managed runtimes (§16)", **_COMMON)
     runtime_sub = runtime.add_subparsers(dest="subcommand", required=True)
