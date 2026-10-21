@@ -143,6 +143,7 @@ import os
 import re
 import sys
 import tempfile
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -988,8 +989,10 @@ class AgentControlStore:
         one `json.loads`; there is no cache here to invalidate, and so none to
         be wrong.
         """
-        self._data = self._load()
-        return self._data
+        # A read must not replace a mutation's in-memory snapshot while that
+        # mutation is paused before flush. The file lock serializes writers,
+        # not readers sharing this Python instance.
+        return self._load()
 
     @contextmanager
     def _mutation(self):
@@ -1149,6 +1152,78 @@ class AgentControlStore:
     # its owner and because a second attempt store is the "new-lease-system"
     # shape `integration/components.yaml` refuses by name.
 
+    def claim_dispatch_attempt(self, intent: dict, *, actor: str) -> dict:
+        """Atomically latch one Fleet delivery before IO, in the existing collection.
+
+        The private marker correlates the claimant's later ACK. It is not an
+        execution grant. No generic UNKNOWN transition is relaxed.
+        """
+        fields = {"key", "action", "device_ref", "verb", "intent_digest",
+                  "principal", "runtime", "session_ref"}
+        required = fields - {"session_ref"}
+        if (not isinstance(intent, dict) or set(intent) - fields
+                or not required.issubset(intent)
+                or any(not isinstance(intent[k], str) or not intent[k].strip()
+                       for k in required)):
+            raise StoreError("invalid delivery claim")
+        if not isinstance(actor, str) or not actor.strip() or intent["principal"] != actor:
+            raise AttemptRefused("UNTRUSTED_ACTOR", "claim principal differs from its actor")
+        if (not re.fullmatch(r"[a-f0-9]{64}", intent["intent_digest"])
+                or len(intent["key"]) > 256):
+            raise StoreError("invalid delivery claim identity")
+        kernel = _dispatch_attempts()
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            existing = section.get(intent["key"])
+            if existing is not None:
+                if existing.get("principal") != actor:
+                    raise AttemptRefused("UNTRUSTED_ACTOR", "attempt belongs to another actor")
+                public = {k: v for k, v in existing.items() if k != "_dispatch_claim"}
+                return {"claimed": False, "record": json.loads(json.dumps(public))}
+            marker = uuid.uuid4().hex
+            record = kernel.attempt_record(
+                **intent, phase=kernel.EFFECT_UNKNOWN, at=datetime.now(timezone.utc).isoformat())
+            record["_dispatch_claim"] = marker
+            section[intent["key"]] = record
+            self._flush()
+            return {"claimed": True, "claim_id": marker,
+                    "record": {k: v for k, v in record.items() if k != "_dispatch_claim"}}
+
+    def complete_dispatch_claim(self, key, *, digest, claim_id, actor, receipt) -> dict:
+        """Record only the original invocation's ACK; unknown retries cannot reopen it."""
+        allowed = {"session_ref", "run_id", "queued_message_uuid", "accepted"}
+        if (not isinstance(receipt, dict) or set(receipt) - allowed
+                or not isinstance(receipt.get("session_ref"), str)
+                or receipt.get("accepted") is not True
+                or len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > 65536):
+            raise StoreError("invalid closed delivery receipt")
+        for name in ("run_id", "queued_message_uuid"):
+            value = receipt.get(name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise StoreError("invalid receipt identifier")
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            record = section.get(str(key))
+            if (not record or record.get("principal") != actor
+                    or record.get("intent_digest") != digest
+                    or not claim_id or record.get("_dispatch_claim") != claim_id
+                    or record.get("phase") != "EFFECT_UNKNOWN"):
+                raise AttemptRefused("INVALID_CONTEXT", "not the original unresolved delivery claim")
+            parts = receipt["session_ref"].split("|")
+            if (len(parts) != 3 or not parts[2]
+                    or parts[:2] != [record["device_ref"], record["runtime"]]
+                    or (record.get("session_ref")
+                        and record["session_ref"] != receipt["session_ref"])):
+                raise StoreError("receipt addresses a different target")
+            if (record["verb"] == "session.send" and not receipt.get("run_id")
+                    and not receipt.get("queued_message_uuid")):
+                raise StoreError("send acknowledgement has no execution reference")
+            updated = {k: v for k, v in record.items() if k != "_dispatch_claim"}
+            updated.update(phase="ACCEPTED", result=dict(receipt))
+            section[str(key)] = updated
+            self._flush()
+            return json.loads(json.dumps(updated))
+
     def put_dispatch_attempt(self, record: dict, *, context_ref=None,
                              actor=None) -> dict:
         """Record one dispatch attempt, durably, keyed by its idempotency key.
@@ -1246,6 +1321,7 @@ class AgentControlStore:
                                           kernel.SETTLE_NOT_APPLIED):
                 return verdict
             updated = dict(recorded)
+            updated.pop("_dispatch_claim", None)
             updated["phase"] = verdict["phase"]
             updated["reconciled_by"] = str((reconciler or {}).get("principal") or "")
             if now:
@@ -1254,14 +1330,22 @@ class AgentControlStore:
                 updated["result"] = verdict["result"]
             section[str(key)] = updated
             self._flush()
-            return dict(verdict, attempt=updated)
+            return dict(verdict, attempt=self._dispatch_view(updated))
 
     def get_dispatch_attempt(self, key: str) -> dict | None:
         """The recorded attempt for a key, or None if nothing was recorded."""
-        return self._read().get("dispatch_attempts", {}).get(str(key))
+        return self._dispatch_view(self._read().get("dispatch_attempts", {}).get(str(key)))
 
     def dispatch_attempts(self) -> dict:
-        return dict(self._read().get("dispatch_attempts", {}))
+        return {key: self._dispatch_view(value) for key, value in
+                self._read().get("dispatch_attempts", {}).items()}
+
+    @staticmethod
+    def _dispatch_view(record):
+        if record is None:
+            return None
+        return json.loads(json.dumps({k: v for k, v in record.items()
+                                      if k != "_dispatch_claim"}))
 
     def close_binding(self, ref: str, *, at: str, reason: str | None = None,
                       successor: dict | None = None,

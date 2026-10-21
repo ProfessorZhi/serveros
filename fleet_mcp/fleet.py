@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
+from .dispatch import DispatchGuard
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
@@ -65,11 +65,6 @@ from .registry import (
 # this module is where callers have always imported them from.
 from .scopes import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE, SCOPE_NAVIGATE,  # noqa: F401
                      SCOPE_READ, SCOPE_SEND)
-
-# How long a recorded idempotency key is honoured. Long enough to cover a
-# caller's retry after a timeout, short enough that the table is bounded by the
-# session it belongs to rather than by uptime.
-IDEMPOTENCY_TTL_SECONDS = 3600
 
 #: The largest mirrored CloudCLI answer this surface will relay, in BYTES. A
 #: paginated read (`limit`, `cursor`) stays far under it; a runaway single
@@ -200,15 +195,9 @@ class Principal:
                 "scopes": sorted(self.scopes)}
 
 
-@dataclass
-class _IdempotencyEntry:
-    run: dict[str, Any]
-    at: float = field(default_factory=time.time)
-
-
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
-                 core_lite_source=None) -> None:
+                 core_lite_source=None, attempts=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
@@ -221,8 +210,7 @@ class FleetService:
         self.core_lite_source = core_lite_source
         self.audit = AuditLog(config.audit)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
-        self._idempotency: dict[str, _IdempotencyEntry] = {}
-        self._idem_lock = threading.Lock()
+        self.dispatch = DispatchGuard(attempts)
 
     # -- helpers -----------------------------------------------------------
 
@@ -1206,9 +1194,15 @@ class FleetService:
         # `_may_send` is the revocation recheck. A session dropped from
         # `policy.send_allow` must stop answering from the idempotency cache too.
         self._may_send(principal, key)
+        provider = self._require_provider(key.device_ref, key.provider)
 
-        if idempotency_key:
-            replayed = self._lookup_idempotent(principal, _VERB_SEND, key.ref, idempotency_key)
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, _VERB_SEND, key.ref, idempotency_key,
+                device_ref=key.device_ref, runtime=key.provider,
+                session_ref=key.ref, params={"message": message})
+            replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
                     "fleet.send.replay",
@@ -1224,9 +1218,9 @@ class FleetService:
                               "no second message was sent",
                     "run": replayed,
                     "run_id": replayed.get("run_id"),
+                    "idempotency_durability": self.dispatch.durability,
                 }
 
-        provider = self._require_provider(key.device_ref, key.provider)
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
         record = {
@@ -1236,8 +1230,8 @@ class FleetService:
             "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if idempotency_key and run_id:
-            self._remember_idempotent(principal, _VERB_SEND, key.ref, idempotency_key, record)
+        if claim is not None:
+            self.dispatch.complete(claim, record)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -1251,6 +1245,7 @@ class FleetService:
             "run_id": run_id,
             "queued_message_uuid": record["queued_message_uuid"],
             "run": record,
+            "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             "note": "session_send is message delivery. It grants no authority "
                     "over anything the receiving session may then operate on.",
         }
@@ -1456,10 +1451,16 @@ class FleetService:
             device_ref, project, grant, model=model, permission_mode=permission_mode
         )
 
-        if idempotency_key:
-            replayed = self._lookup_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key
-            )
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime),
+                idempotency_key, device_ref=device_ref, runtime=runtime,
+                params={"project": project, "message": message, "provider": provider,
+                        "model": requested_defaults["model"],
+                        "permission_mode": requested_defaults["permission_mode"],
+                        "lifecycle_mode": lifecycle_mode})
+            replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
                     "fleet.create_session.replay",
@@ -1476,6 +1477,7 @@ class FleetService:
                               "no second session was created",
                     "run_id": replayed.get("run_id"),
                     "created": replayed,
+                    "idempotency_durability": self.dispatch.durability,
                     # Recomputed rather than replayed: the session is the thing
                     # the key remembers, and what may be done with it is a
                     # question about policy *now*. A cached answer here would be
@@ -1496,7 +1498,7 @@ class FleetService:
             permission_mode=permission_mode,
         )
         session_id = payload.get("sessionId") or payload.get("session_id")
-        if not session_id:
+        if not isinstance(session_id, str) or not session_id.strip():
             # A create that reports success must name what it created. There is
             # nothing sensible to return without it, and returning the bare
             # payload would hand the caller a shape this surface never promised.
@@ -1524,12 +1526,11 @@ class FleetService:
         record = {
             "session": key.as_dict(),
             "run_id": run_id,
+            "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if idempotency_key:
-            self._remember_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key, record
-            )
+        if claim is not None:
+            self.dispatch.complete(claim, record)
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -1545,6 +1546,7 @@ class FleetService:
             "idempotent_replay": False,
             "run_id": run_id,
             "created": record,
+            "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             # The caller is told, in the same answer, whether the session it just
             # minted is one it may drive. Sent separately it would be a second
             # round trip the caller could forget, and the natural mistake — treat
@@ -1592,60 +1594,6 @@ class FleetService:
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
         )
         return {**key.as_dict(), "run_id": run_id, **payload}
-
-    # -- idempotency -------------------------------------------------------
-
-    def _idem_identity(self, principal: Principal, verb: str, scope: str, key: str) -> str:
-        """What an idempotency key is a name *for*.
-
-        Four components, and every one of them is here because leaving it out
-        was a bug with the same shape:
-
-        *   **the credential** — otherwise one caller's key answers another's
-            retry, which is a cross-credential answer to a question nobody asked;
-        *   **the verb** — `send` and `create` had one shared table, so a key
-            used to message a session would, replayed with `create`, return a
-            *create* result that had never been created. Two verbs are two
-            namespaces; a key is a name for one attempt, and the verb is part of
-            which attempt it was;
-        *   **the target** — the device and the project for `create`, the session
-            ref for `send`. Without it, the same key against a *different*
-            device or a different project returned the first device's session:
-            the caller would be handed a session id minted somewhere else, on the
-            strength of a key they only meant to retry once, and the second
-            device would never be asked. This is the one that matters most,
-            because the returned record *looks* wholly valid — it names a real
-            session, just not the one that was asked for;
-        *   **the key itself**.
-
-        `\\x00` is the separator because it cannot occur in any of the four: a
-        principal name, a verb, a project id and a session ref all come from
-        text a user or a registry authored, and a separator that could occur in
-        one component would let two distinct identities compose to the same
-        string.
-        """
-        return f"{principal.name}\x00{verb}\x00{scope}\x00{key}"
-
-    def _lookup_idempotent(
-        self, principal: Principal, verb: str, scope: str, key: str
-    ) -> dict[str, Any] | None:
-        with self._idem_lock:
-            self._sweep_idempotent()
-            entry = self._idempotency.get(self._idem_identity(principal, verb, scope, key))
-            return entry.run if entry else None
-
-    def _remember_idempotent(
-        self, principal: Principal, verb: str, scope: str, key: str, run: dict[str, Any]
-    ) -> None:
-        with self._idem_lock:
-            self._idempotency[self._idem_identity(principal, verb, scope, key)] = (
-                _IdempotencyEntry(run=run)
-            )
-
-    def _sweep_idempotent(self) -> None:
-        cutoff = time.time() - IDEMPOTENCY_TTL_SECONDS
-        for key in [k for k, entry in self._idempotency.items() if entry.at < cutoff]:
-            self._idempotency.pop(key, None)
 
     # -- status ------------------------------------------------------------
 
