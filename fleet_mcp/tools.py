@@ -393,11 +393,20 @@ TOOLS: tuple[Tool, ...] = (
             "permission to act on anything the receiving session may then "
             "operate on, and it is not a shell: there is no way to name a "
             "command here.\n\n"
-            "Pass an `idempotency_key` (any stable unique string, e.g. a UUID you "
-            "already generated). If a previous attempt's outcome is unknown and "
-            "you retry with the same key, the recorded run is returned and no "
-            "second message is sent — reported as code IDEMPOTENT_REPLAY.\n\n"
-            "Follow up with `fleet_get_run` using the returned run id."
+            "Pass a stable `idempotency_key`. Its scope is the authenticated "
+            "principal, verb and target session; another target is another "
+            "delivery. An ACCEPTED receipt can be replayed without sending "
+            "again (IDEMPOTENT_REPLAY). An unknown outcome is refused as "
+            "DISPATCH_OUTCOME_UNKNOWN and requires reconciliation. Changing "
+            "the message under the same scoped key is IDEMPOTENCY_CONFLICT. "
+            "Check `idempotency_durability`: PROCESS_LOCAL does not survive "
+            "service reconstruction; AGENT_CONTROL_STORE uses an injected owner "
+            "store; NOT_REQUESTED means no keyed retry protection. A key alone "
+            "does not make a resend safe after a lost ACK or service reset.\n\n"
+            "Keep the returned session_ref, run_id and queued_message_uuid "
+            "when present. Acceptance confirms delivery, not task completion. "
+            "Return to coordination, then use `fleet_get_run` for a later "
+            "readback; avoid repeated blocking waits."
         ),
         input_schema={
             "type": "object",
@@ -408,8 +417,10 @@ TOOLS: tuple[Tool, ...] = (
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "message": _string("The message text to deliver."),
                 "idempotency_key": _string(
-                    "Stable unique key for this message. Reuse it when retrying an "
-                    "attempt whose outcome you did not observe."
+                    "Stable key scoped to principal, verb and target session. "
+                    "Reuse only for the identical intent. Accepted receipts "
+                    "replay; unknown outcomes require reconciliation. "
+                    "PROCESS_LOCAL protection is lost on service reconstruction."
                 ),
             },
             "required": ["message"],
@@ -502,10 +513,17 @@ TOOLS: tuple[Tool, ...] = (
             "things, and a create that started nothing reports no run. Creating a "
             "session grants no authority over anything that session may then "
             "operate on.\n\n"
-            "Pass an `idempotency_key` (any stable unique string) when you may "
-            "need to retry an attempt whose outcome you did not observe. A repeat "
-            "with the same key returns the session already created and mints no "
-            "second one — reported as code IDEMPOTENT_REPLAY."
+            "Pass a stable `idempotency_key`, scoped to the authenticated "
+            "principal, verb and target device/runtime/project. An ACCEPTED "
+            "receipt replays the created session (IDEMPOTENT_REPLAY); an "
+            "unknown outcome is refused as DISPATCH_OUTCOME_UNKNOWN and needs "
+            "reconciliation. Changed create arguments under that scoped key "
+            "are IDEMPOTENCY_CONFLICT. `idempotency_durability` reports "
+            "PROCESS_LOCAL, AGENT_CONTROL_STORE or NOT_REQUESTED; PROCESS_LOCAL "
+            "does not survive service reconstruction. Do not infer retry "
+            "safety from the key alone after a lost ACK or service reset. "
+            "Keep all returned session/run/queued-message references, return "
+            "to coordination after ACK, and read back later."
         ),
         input_schema={
             "type": "object",
@@ -565,9 +583,11 @@ TOOLS: tuple[Tool, ...] = (
                     "has not authorized a mode refuses it rather than applying it."
                 ),
                 "idempotency_key": _string(
-                    "Stable unique key for this create. Reuse it when retrying an "
-                    "attempt whose outcome you did not observe; the second call "
-                    "returns the first session instead of minting another."
+                    "Stable key scoped to principal, verb and target "
+                    "device/runtime/project. Reuse for identical create "
+                    "arguments only. Accepted receipts replay; unknown outcomes "
+                    "require reconciliation. PROCESS_LOCAL protection is lost "
+                    "on service reconstruction."
                 ),
             },
             "required": ["device", "project"],

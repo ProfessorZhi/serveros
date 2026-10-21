@@ -95,6 +95,11 @@ retain historical non-idempotent behavior. A replay of ACCEPTED returns
 the saved delivery receipt without applying the kernel's business-task meaning
 of IN_FLIGHT as a command to wait.
 There is no claim that the default deployed service survives restart safely.
+The key is scoped to principal, verb and target: send targets a session; create
+targets a device/runtime/project. Reusing the same string for another target
+is a separate delivery. The owner's private claim marker is stored internally
+to correlate completion; it is not an execution credential and public views
+must not expose it.
 
 ### Discovery boundary
 
@@ -107,6 +112,9 @@ timeout/capacity gaps without claiming that sessions are absent. It does not
 cancel or restart provider runs.
 Provider IO retains its own transport timeout; caller timeout is not thread
 termination. Test providers must release their blocked worker in cleanup.
+`close(wait_for_io=False)` releases its caller, not Python's process shutdown:
+the interpreter can still wait for outstanding worker IO. Only the discovery
+request deadline is bounded here; CLI process exit is not promised by it.
 
 `fleet_mcp/config.py#PolicyBinding` supplies validated finite positive discovery
 timeout and a positive integer worker count with an explicit upper bound; YAML
