@@ -42,3 +42,34 @@ Offline unit tests plus live acceptance against a real transient user unit:
 recovery, agent busy, link down, stale (writer stopped), second writer (Python vs
 Core on one lease), maintenance/manual-stop behaviour, needs-login, and
 upgrade/rollback of the writer itself.
+
+## Revision 2 — after root review of 7f061f0
+
+Six defects were found in the first cut. Each is fixed in code, not prose.
+
+| # | defect | fix |
+|---|---|---|
+| 1 | `RecoveryActor` existed but `runtime/daemon.py` never used it, so a real `serverosd` reconcile took no lease | the real effect seam (`self.actuator.perform` inside `Daemon.reconcile`) now takes the shared `SafeLease`, released in a `finally`; the resolved default is `$XDG_RUNTIME_DIR/serveros/native-core.lease`, the same file a Core gets from `--lease`. The Core additionally requires `--owner-map` and reads the same map, refusing a unit the map assigns elsewhere |
+| 2 | `read_agent` only understood a hand-maintained marker, with no producer | a real `process` source reusing `probes.Host.process_pids` (conservative: any match is BUSY), a `session` source for an injected typed status, and a marker that is UNKNOWN when its producer's directory is gone. An unmeasurable host is UNKNOWN, never idle |
+| 3 | `SharedLease` used `O_CREAT` and followed symlinks | `SafeLease` refuses symlink/traversal, requires a regular file owned by this uid, `st_nlink == 1`, not group/world writable, and re-binds fd↔path (dev/ino) after open |
+| 4 | the facts document omitted services owned by the other program, so the Core saw `unknown` runtime for exactly its own units | `collect_facts` now describes **every** managed service; the owner map only filters who may *act* |
+| 5 | `validate_document` did not match `facts.cpp` | closed field sets, bool types, UTF-8 **byte** bounds, closed runtime words, duplicate ids — the writer now refuses what the reader would refuse |
+| 6 | publication could follow a symlinked parent | `secure_parent` refuses traversal, a symlink parent, a foreign owner, and a group/world-writable directory |
+
+### Evidence for revision 2
+
+Live, against real transient user units:
+
+| case | observed |
+|---|---|
+| Daemon, free lease | real `systemctl --user restart`; InvocationID changed; lease released |
+| Daemon while another writer holds the lease | `blocked_by: LEASE_BUSY`, InvocationID unchanged |
+| Daemon with the unit misowned (`native-core`) | `blocked_by: OWNER_NOT_MINE`, unchanged |
+| Daemon default lease path | `/run/user/1000/serveros/native-core.lease` — the Core's default; holding it refuses the daemon |
+| Core with a misowned manifest | exit 2, "owned by serverosd in the shared owner map" |
+| Core with no `--owner-map` | exit 2 |
+| Core while the daemon holds the same default lease | "another writer holds the lease at the given path", unit untouched |
+
+Offline: 44 Python unittests (this host has no pytest, so `test_daemon.py` cannot run and is
+reported as NOT_RUN rather than claimed); `test_sup_facts` 65 checks and all 14 other
+supervisor suites pass.

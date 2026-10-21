@@ -36,6 +36,18 @@
 #       Same reason the status socket is: it is private to this user and it does
 #       not survive a reboot with a stale timestamp inside it.
 #
+#   --agent-process, not a hand-maintained marker
+#       A marker is only as current as its producer, and nothing in this
+#       template produces one. A process observation is a real fact about this
+#       host, and it errs toward BUSY, which is the safe direction for "do not
+#       interrupt an agent". Set @AGENT_BUSY_PATTERN@ to the runtime's own
+#       process name; leaving it unrendered starts nothing.
+#
+#   --owner-map
+#       The same file the Core is given with --owner-map. Rendering it here is
+#       what makes "one owner per unit" machine-checked on both sides instead of
+#       a rule each program remembers.
+#
 #   --link is a target, not a verdict
 #       The probe connects; if it cannot, the fact is a KNOWN DOWN. Omitting the
 #       target makes the link fact UNKNOWN, which refuses downstream.
@@ -50,7 +62,8 @@ ExecStart=@SERVEROS_PYTHON@ @SERVEROS_REPO@/runtime/native_core_facts.py \
   --facts %t/serveros/native-core-facts.json \
   --interval 15 \
   --link @LINK_TARGET@ \
-  --agent-marker %t/serveros/agent-busy \
+  --owner-map %t/serveros/native-core-owner-map.json \
+  --agent-process @AGENT_BUSY_PATTERN@ \
   --service @SERVICE_1@ \
   --service @SERVICE_2@
 Restart=on-failure

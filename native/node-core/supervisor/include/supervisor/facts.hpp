@@ -88,6 +88,26 @@ struct FactsOptions {
     long future_skew_seconds = 5;
 };
 
+//: The document that says which program owns which unit. Python writes it; this
+//: Core reads the SAME file, so "one owner per service" is a fact both sides
+//: check rather than a rule one side remembers.
+inline constexpr const char* kOwnerMapSchema = "serveros/native-core-owner-map.v1";
+
+struct OwnerMap {
+    bool usable = false;
+    std::string code;
+    std::string reason;
+    std::vector<std::pair<std::string, std::string>> owners;
+
+    //: The owner of `unit`, or null when the map does not mention it. Null is
+    //: not "fine": a Core manifest naming an undeclared unit has no verified
+    //: owner, and the caller refuses on that.
+    const std::string* owner_of(const std::string& unit) const;
+};
+
+//: Parse one owner map. `text` is null when the file could not be read.
+OwnerMap load_owner_map(const char* text);
+
 //: Parse and age one facts document.
 //:
 //: `text` is null when the file could not be read at all — that is

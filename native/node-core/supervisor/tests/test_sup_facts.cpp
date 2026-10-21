@@ -206,6 +206,46 @@ void a_missing_epoch_is_refused() {
     CHECK_EQ(facts.code, std::string(kFactsMalformed));
 }
 
+void a_well_formed_owner_map_names_owners() {
+    const OwnerMap map = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1",
+            "units":{"toy.service":"serverosd","core.service":"native-core"}})");
+    CHECK(map.usable);
+    const std::string* toy = map.owner_of("toy.service");
+    const std::string* core = map.owner_of("core.service");
+    CHECK(toy != nullptr);
+    CHECK(core != nullptr);
+    if (toy != nullptr) CHECK_EQ(*toy, std::string("serverosd"));
+    if (core != nullptr) CHECK_EQ(*core, std::string("native-core"));
+    // An undeclared unit is NOT "fine": it has no verified owner.
+    CHECK(map.owner_of("unlisted.service") == nullptr);
+}
+
+void an_owner_map_with_an_unknown_owner_is_refused() {
+    const OwnerMap map = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1","units":{"toy.service":"whoever"}})");
+    CHECK(!map.usable);
+    CHECK(!map.owner_of("toy.service"));
+}
+
+void an_owner_map_naming_another_schema_is_refused() {
+    const OwnerMap map = load_owner_map(
+        R"({"schema":"serveros/something-else","units":{}})");
+    CHECK(!map.usable);
+}
+
+void an_absent_owner_map_is_not_usable() {
+    const OwnerMap map = load_owner_map(nullptr);
+    CHECK(!map.usable);
+    CHECK(map.owner_of("toy.service") == nullptr);
+}
+
+void an_owner_map_with_a_stray_field_is_refused() {
+    const OwnerMap map = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1","units":{},"extra":1})");
+    CHECK(!map.usable);
+}
+
 }  // namespace
 
 int main() {
@@ -225,5 +265,10 @@ int main() {
     maintenance_and_runtime_are_carried();
     an_undescribed_service_has_no_fact();
     a_missing_epoch_is_refused();
+    a_well_formed_owner_map_names_owners();
+    an_owner_map_with_an_unknown_owner_is_refused();
+    an_owner_map_naming_another_schema_is_refused();
+    an_absent_owner_map_is_not_usable();
+    an_owner_map_with_a_stray_field_is_refused();
     return check::report("test_sup_facts");
 }

@@ -107,6 +107,9 @@ void print_usage(std::FILE* out) {
                  "                         Absent, stale, malformed or unreadable leaves link and\n"
                  "                         agent unknown, which refuses rather than assumes.\n"
                  "  --facts-max-age-seconds N  how old the facts document may be (default 90).\n"
+                 "  --owner-map FILE       the shared owner map (serveros/native-core-owner-map.v1).\n"
+                 "                         REQUIRED with --serve --enable-actions: a manifest unit\n"
+                 "                         the map assigns to another program is refused.\n"
                  "  --lease FILE           single-writer lease. Taken with flock, never\n"
                  "                         waited for, and released when this process exits.\n"
                  "  --link-state up|down|unknown\n"
@@ -231,6 +234,7 @@ int main(int argc, char** argv) {
     //: and a loop that reuses them is a loop that hard-codes LINK_UP/AGENT_IDLE
     //: for as long as it runs. This file is re-read on every tick instead.
     std::string facts_path;
+    std::string owner_map_path;
     long facts_max_age_seconds = 90;
     bool act = false;
     bool serve = false;
@@ -347,6 +351,8 @@ int main(int argc, char** argv) {
             allowed_units.push_back(value);
         } else if (flag == "--facts") {
             facts_path = value;
+        } else if (flag == "--owner-map") {
+            owner_map_path = value;
         } else if (flag == "--facts-max-age-seconds") {
             facts_max_age_seconds = std::strtol(value.c_str(), nullptr, 10);
             if (facts_max_age_seconds < 1 || facts_max_age_seconds > 3600) {
@@ -370,6 +376,21 @@ int main(int argc, char** argv) {
 
     if (manifest_path.empty()) {
         std::fprintf(stderr, "--manifest is required\n");
+        return 2;
+    }
+    if (serve && act && owner_map_path.empty()) {
+        // The owner map is how "this unit is mine" stops being a review rule.
+        // Both programs read the same file, so a manifest that silently claims
+        // another program's unit is refused here rather than discovered at the
+        // first restart of somebody else's service.
+        std::fprintf(stderr,
+                     "--serve and --enable-actions require --owner-map FILE: without it this "
+                     "Core cannot show that the units it would act on are its own, and the "
+                     "Python daemon may own them\n");
+        return 2;
+    }
+    if (!owner_map_path.empty() && !(serve && act)) {
+        std::fprintf(stderr, "--owner-map only applies to --serve --enable-actions\n");
         return 2;
     }
     if (serve && act) {
@@ -480,6 +501,42 @@ int main(int argc, char** argv) {
         return 2;
     }
     const nodecore::supervisor::Manifest& manifest = parsed.manifest;
+
+    //: The SAME owner map the Python daemon reads. A manifest unit that the map
+    //: assigns to `serverosd`, or does not mention at all, is refused: "this
+    //: unit is mine" is a fact two programs agree on, not a comment in a
+    //: manifest nobody re-checks.
+    if (serve && act && !owner_map_path.empty()) {
+        std::string owner_text;
+        const bool readable = read_file(owner_map_path, owner_text);
+        const nodecore::supervisor::OwnerMap owners =
+            nodecore::supervisor::load_owner_map(readable ? owner_text.c_str() : nullptr);
+        if (!owners.usable) {
+            std::fprintf(stderr, "--owner-map unusable (%s): %s\n",
+                         owners.code.c_str(), owners.reason.c_str());
+            return 2;
+        }
+        bool misowned = false;
+        for (const nodecore::supervisor::ServiceDesired& service : manifest.services) {
+            const std::string* owner = owners.owner_of(service.unit);
+            if (owner == nullptr) {
+                std::fprintf(stderr,
+                             "manifest unit %s has no entry in the owner map; an undeclared "
+                             "unit is not this Core's to act on\n",
+                             service.unit.c_str());
+                misowned = true;
+            } else if (*owner != "native-core") {
+                std::fprintf(stderr,
+                             "manifest unit %s is owned by %s in the shared owner map; this "
+                             "Core may not act on it\n",
+                             service.unit.c_str(), owner->c_str());
+                misowned = true;
+            }
+        }
+        if (misowned) {
+            return 2;
+        }
+    }
 
     const nodecore::supervisor::UnitAllowlistBuilt allowlist =
         nodecore::supervisor::UnitAllowlist::build(allowed_units);

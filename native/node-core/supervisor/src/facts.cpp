@@ -188,6 +188,70 @@ const ServiceFact* HostFacts::service(const std::string& id) const {
     return nullptr;
 }
 
+const std::string* OwnerMap::owner_of(const std::string& unit) const {
+    for (const auto& entry : owners) {
+        if (entry.first == unit) {
+            return &entry.second;
+        }
+    }
+    return nullptr;
+}
+
+OwnerMap load_owner_map(const char* text) {
+    OwnerMap map;
+    if (text == nullptr) {
+        map.code = kFactsAbsent;
+        map.reason = "no owner map was readable; every unit's owner stays unverified";
+        return map;
+    }
+    const std::string document(text);
+    Json root;
+    std::string error;
+    detail::Reader reader(document);
+    if (!reader.parse(root, error) || !root.is_object()) {
+        map.code = kFactsMalformed;
+        map.reason = "owner map is not a JSON object: " + error;
+        return map;
+    }
+    if (!allowed_only(root, {"schema", "units"}, "owner map", error)) {
+        map.code = kFactsMalformed;
+        map.reason = error;
+        return map;
+    }
+    const Json* schema = root.find("schema");
+    if (schema == nullptr || !schema->is_string() || schema->text != kOwnerMapSchema) {
+        map.code = kFactsBadSchema;
+        map.reason = std::string("owner map does not name schema ") + kOwnerMapSchema;
+        return map;
+    }
+    const Json* units = root.find("units");
+    if (units == nullptr || !units->is_object()) {
+        map.code = kFactsMalformed;
+        map.reason = "owner map has no \"units\" object";
+        return map;
+    }
+    for (const auto& member : units->members) {
+        const std::string& unit = member.first;
+        const Json& owner = member.second;
+        if (unit.empty()) {
+            map.code = kFactsMalformed;
+            map.reason = "owner map names an empty unit";
+            return map;
+        }
+        if (!owner.is_string() || (owner.text != "native-core" && owner.text != "serverosd")) {
+            // A closed vocabulary: an owner this Core does not know is not a
+            // reason to guess which program should act.
+            map.code = kFactsMalformed;
+            map.reason = "owner map names an unknown owner for \"" + unit + "\"";
+            return map;
+        }
+        map.owners.emplace_back(unit, owner.text);
+    }
+    map.usable = true;
+    map.code = kFactsOk;
+    return map;
+}
+
 HostFacts load_host_facts(const char* text, long now_epoch, const FactsOptions& options) {
     HostFacts facts;
     if (text == nullptr) {

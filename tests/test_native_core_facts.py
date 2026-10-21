@@ -136,13 +136,27 @@ class CollectTest(unittest.TestCase):
         self.assertFalse(doc["agent"]["known"])
         self.assertEqual(doc["services"][0]["runtime"], "unknown")
 
-    def test_a_unit_owned_by_the_other_program_is_omitted(self):
+    def test_every_managed_service_is_described_regardless_of_who_acts(self):
+        # The Core needs needs-login/maintenance for ITS units, and those are the
+        # units Python may not act on. Filtering them out by action owner would
+        # leave the Core with `unknown` runtime for exactly the services it owns.
         sources = facts.FactsSources(services=[
             spec(id="mine", unit="mine.service", owner=facts.OWNER_SERVEROSD),
             spec(id="theirs", unit="theirs.service", owner=facts.OWNER_NATIVE_CORE),
         ])
-        doc = facts.collect_facts(sources, owner=facts.OWNER_SERVEROSD, now=lambda: 1.0)
-        self.assertEqual([s["id"] for s in doc["services"]], ["mine"])
+        doc = facts.collect_facts(sources, now=lambda: 1.0)
+        self.assertEqual([s["id"] for s in doc["services"]], ["mine", "theirs"])
+
+    def test_a_core_owned_service_still_reports_needs_login(self):
+        with tempfile.TemporaryDirectory() as td:
+            marker = Path(td) / "login"
+            marker.write_text("expired", encoding="utf-8")
+            doc = facts.collect_facts(
+                facts.FactsSources(services=[spec(unit="core.service",
+                                                  owner=facts.OWNER_NATIVE_CORE,
+                                                  runtime_marker=marker)]),
+                now=lambda: 1.0)
+        self.assertEqual(doc["services"][0]["runtime"], "needs-login")
 
     def test_maintenance_is_carried(self):
         with tempfile.TemporaryDirectory() as td:
@@ -266,6 +280,123 @@ class ActorTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, facts.LEASE_BUSY)
         finally:
             core.release()
+
+
+class LeaseSafetyTest(unittest.TestCase):
+    def test_a_symlinked_lease_path_is_refused(self):
+        # Two owners each "holding" a different inode is exactly how a split
+        # lock happens; the symlink is refused rather than followed.
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real.lease"
+            real.write_text("", encoding="utf-8")
+            link = Path(td) / "lease"
+            link.symlink_to(real)
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.SafeLease(link).acquire()
+            self.assertIn(caught.exception.code, (facts.LEASE_UNSAFE, facts.PATH_UNSAFE))
+
+    def test_a_multiply_linked_lease_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real.lease"
+            real.write_text("", encoding="utf-8")
+            os.link(real, Path(td) / "second.lease")
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.SafeLease(real).acquire()
+            self.assertEqual(caught.exception.code, facts.LEASE_UNSAFE)
+
+    def test_a_world_writable_lease_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "lease"
+            path.write_text("", encoding="utf-8")
+            os.chmod(path, 0o666)
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.SafeLease(path).acquire()
+            self.assertEqual(caught.exception.code, facts.LEASE_UNSAFE)
+
+    def test_a_traversal_is_refused(self):
+        with self.assertRaises(facts.FactsRefused) as caught:
+            facts.secure_parent(Path("/tmp/../etc/facts.json"))
+        self.assertEqual(caught.exception.code, facts.PATH_UNSAFE)
+
+    def test_a_symlinked_parent_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            inside = Path(td) / "inside"
+            inside.mkdir()
+            link = Path(td) / "linked"
+            link.symlink_to(inside)
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.publish_facts(link / "facts.json", _doc())
+            self.assertIn(caught.exception.code, (facts.PATH_UNSAFE, facts.LEASE_UNSAFE))
+
+
+def _doc():
+    return facts.collect_facts(facts.FactsSources(services=[spec()]), now=lambda: 1.0)
+
+
+class OwnerMapTest2(unittest.TestCase):
+    def test_the_map_round_trips_and_is_read_by_owner(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "owner-map.json"
+            facts.OwnerMap({"toy.service": facts.OWNER_SERVEROSD}).write(path)
+            loaded = facts.OwnerMap.load(path)
+            self.assertEqual(loaded.owner_of("toy.service"), facts.OWNER_SERVEROSD)
+            self.assertIsNone(loaded.owner_of("other.service"))
+
+    def test_an_unknown_owner_in_the_map_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "owner-map.json"
+            path.write_text(json.dumps({"schema": facts.OWNER_MAP_SCHEMA,
+                                        "units": {"a.service": "someone"}}), encoding="utf-8")
+            with self.assertRaises(facts.FactsRefused) as caught:
+                facts.OwnerMap.load(path)
+            self.assertEqual(caught.exception.code, facts.OWNER_UNKNOWN)
+
+
+class DocumentStrictnessTest(unittest.TestCase):
+    def test_an_unknown_field_is_refused(self):
+        doc = _doc()
+        doc["extra"] = 1
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+    def test_a_non_bool_flag_is_refused(self):
+        doc = _doc()
+        doc["link"]["known"] = "yes"
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+    def test_a_text_over_its_utf8_byte_bound_is_refused(self):
+        # Bytes, not characters: the C++ reader measures bytes, so a multi-byte
+        # string under 200 chars can still be over the bound.
+        doc = _doc()
+        doc["agent"]["holder"] = "ü" * 150  # 300 bytes
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+    def test_an_unknown_response_field_is_refused(self):
+        doc = _doc()
+        doc["services"][0]["why"] = "because"
+        with self.assertRaises(facts.FactsRefused):
+            facts.validate_document(doc)
+
+
+class AgentSourceTest(unittest.TestCase):
+    def test_a_process_source_reports_busy_from_a_real_observation(self):
+        agent = facts.read_agent({"kind": "process", "pattern": "x"},
+                                 process_pids=lambda _p: [1234])
+        self.assertTrue(agent["known"])
+        self.assertTrue(agent["busy"])
+
+    def test_a_process_source_that_cannot_observe_is_unknown(self):
+        def boom(_p):
+            raise OSError("pgrep unavailable")
+        agent = facts.read_agent({"kind": "process", "pattern": "x"}, process_pids=boom)
+        self.assertFalse(agent["known"], "an unmeasurable host is not an idle one")
+
+    def test_a_marker_whose_producer_is_gone_is_unknown_not_idle(self):
+        agent = facts.read_agent({"kind": "marker", "path": "/nonexistent-dir-xyz/busy"})
+        self.assertFalse(agent["known"])
+        self.assertFalse(agent["busy"])
 
 
 if __name__ == "__main__":
