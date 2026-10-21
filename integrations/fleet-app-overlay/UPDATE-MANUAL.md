@@ -112,7 +112,7 @@ Creator 更新，也不证明私有 Creator 接受同 ID 更新或回滚。真�
 | 后端设备 / runtime 增减、处理器更换、扩实例 | **不需要**插件重装，也不需要新 ZIP |
 | hosted MCP 工具本身变化 | **不需要**新 ZIP（MCP scans 单独处理；也可在 MCPs → Issues → Rescan 手动请求） |
 | **工具 schema 或 scope 变化** | 可能需要客户端 `tools/list` **刷新**，以及 **OAuth 再授权** |
-| Skill / 素材 / 元数据 | **需要**新的 overlay ZIP + 一次 Creator 更新 |
+| Skill / 受支持的 supporting metadata（在 App-backed 允许边界内） | **需要**新的 overlay ZIP + 一次 Creator 更新；App-owned 的 avatar/display/presentation/assets 不在此列 |
 
 **绝不向用户承诺"连刷新都不需要"。**
 
@@ -121,7 +121,9 @@ Creator 更新，也不证明私有 Creator 接受同 ID 更新或回滚。真�
 ## 2. 日常更新流程
 
 ```
-1) 改源                 operator 的 overlay 源树（不入库）：skills/、assets/、plugin.json 的 version
+1) 改源                 operator 的 overlay 源树（不入库）：skills/ 及其 supporting files、
+                        plugin.json 的 version / keywords / onboarding / local-executor；
+                        不改 assets/、displayName、描述、defaultPrompt 或其它 App-owned presentation
 2) 构建                 python3 integrations/fleet-app-overlay/build_overlay.py \
                           --source <源树> --baseline integrations/fleet-app-overlay/baseline.json --out dist
 3) 复核                 看 distribution 标记、sha256、以及两个 icon slot 的校验结论
