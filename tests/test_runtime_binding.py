@@ -488,9 +488,14 @@ class MembershipTests(unittest.TestCase):
 
 
 class ReachabilityTests(unittest.TestCase):
-    def test_three_devices_each_resolve_a_binding(self):
-        for ref in ("device:server-beijing", "device:work-fj",
-                    "device:personal-dell"):
+    def test_each_device_declaring_both_runtimes_resolves_both(self):
+        # Two, not three, since `device:server-beijing` was retired on
+        # 2026-10-21; it and the two Windows machines were the only devices
+        # declaring two runtimes and it was one of them. Tokyo and the Dell LLM
+        # Lab host declare `claude-code` alone, so "every device has two" was
+        # never the property here — "two declarations resolve to two bindings"
+        # is, and it is asserted per device rather than assumed.
+        for ref in ("device:work-fj", "device:personal-dell"):
             listed = binding.list_bindings(real_registry(), ref, reference=REFERENCE)
             self.assertEqual(listed["state"], "BOUND", ref)
             self.assertEqual(listed["count"], 2, ref)
@@ -527,10 +532,12 @@ class ReachabilityTests(unittest.TestCase):
         self.assertIn("not a device in this registry", listed["state_because"])
 
     def test_only_the_host_that_probed_has_an_observation(self):
-        """§14: FJ and Dell get a binding and no version. Filling their column
-        from the Beijing row is the failure this asserts against."""
+        """§14: one device gets a binding and no version. Filling its column
+        from the row of the device that DID probe is the failure this asserts
+        against — the probing device used to be `device:server-beijing`, retired
+        on 2026-10-21, so it is the other device that declares both runtimes."""
         real = real_registry()
-        here = binding.list_bindings(real, "device:server-beijing",
+        here = binding.list_bindings(real, "device:personal-dell",
                                      observed={"agent-runtime:codex": OBSERVED},
                                      reference=REFERENCE)
         there = binding.list_bindings(real, "device:work-fj", reference=REFERENCE,

@@ -86,52 +86,6 @@ binding_states: [BOUND, UNBOUND, NOT_APPLICABLE]
 volume_states: [BOUND, NOT_ASSERTED, ABSENT]
 
 profiles:
-  linux-server:
-    device_ref: device:server-beijing
-    platform: linux
-    paths:
-      data_root:
-        path: /opt/applications/data/home-hwz
-        state: BOUND
-        provenance: server_local_agent
-      workspace.src:
-        path: /opt/applications/data/home-hwz/workspace/src
-        state: BOUND
-        provenance: server_local_agent
-      workspace.worktrees:
-        path: /opt/applications/data/home-hwz/workspace/worktrees
-        state: BOUND
-        provenance: server_local_agent
-      artifacts:
-        path: /opt/applications/data/home-hwz/artifacts
-        state: BOUND
-        provenance: server_local_agent
-      state:
-        path: /opt/applications/data/home-hwz/state/serveros
-        state: BOUND
-        provenance: server_local_agent
-      toolchains:
-        path: /opt/applications/data/home-hwz/toolchains
-        state: BOUND
-        provenance: server_local_agent
-      runtime-assets:
-        path: /opt/applications/data/home-hwz/runtime-assets
-        state: BOUND
-        provenance: server_local_agent
-      downloads:
-        state: UNBOUND
-        provenance: server_local_agent
-      software.gui:
-        state: NOT_APPLICABLE
-        provenance: server_local_agent
-      knowledge.corporate:
-        state: UNBOUND
-        provenance: user_reported
-      home:
-        path: /home/hwz
-        state: BOUND
-        provenance: server_local_agent
-
   windows-corporate:
     device_ref: device:work-fj
     platform: windows
@@ -306,7 +260,8 @@ profiles:
   # Every path below was measured ON THIS DEVICE. None was inferred from the
   # Beijing profile it superficially resembles: the two hosts answer the same
   # ten questions with unrelated physical paths, which is the point of this
-  # file. Where the shapes are alike (runtime-assets binds the parent on both)
+  # file. (`linux-server` was the profile it is compared with here; it was
+  # retired with its only device on 2026-10-21.) Where the shapes are alike (runtime-assets binds the parent on both)
   # that is a decision repeated, not a value copied.
   #
   # `server_local_agent` is the provenance throughout: an agent running on this
@@ -323,15 +278,16 @@ profiles:
   #
   # `fleet/registry.yaml` states the rule - "A device names one; it does not
   # carry the profile inline, so a profile cannot fork per device" - and every
-  # other profile here follows it: `linux-server`, `windows-corporate`,
-  # `windows-personal`. This was first written as `tokyo-shared-dev-01`, which
+  # other profile here follows it: `windows-corporate`, `windows-personal`.
+  # This was first written as `tokyo-shared-dev-01`, which
   # is a device id, and a device id as a profile name is the fork the rule
   # forbids.
   #
   # Every path below was measured ON THIS DEVICE. None was inferred from the
   # Beijing profile it superficially resembles: the two hosts answer the same
   # ten questions with unrelated physical paths, which is the point of this
-  # file. Where the shapes are alike (runtime-assets binds the parent on both)
+  # file. (`linux-server` was the profile it is compared with here; it was
+  # retired with its only device on 2026-10-21.) Where the shapes are alike (runtime-assets binds the parent on both)
   # that is a decision repeated, not a value copied.
   #
   # `server_local_agent` is the provenance throughout: an agent running on this
@@ -413,8 +369,7 @@ profiles:
         state: BOUND
         provenance: server_local_agent
         note: >-
-          Binds the PARENT, as `linux-server` does, so the two profiles stay
-          shaped alike. The distribution inside it is `hwz-server-os`, not
+          Binds the PARENT, so the two Linux profiles stay shaped alike. The distribution inside it is `hwz-server-os`, not
           `serveros`, and `SEMANTIC_ROLES["runtime.serveros-distribution"]`
           names it. This note used to record a disagreement: `runtime/paths.py`
           declared `runtime-assets/serveros`, nothing had ever been there, and
@@ -458,8 +413,8 @@ profiles:
 
   # ---------------------------------------------------------------------------
   # Dell LLM Lab: a company-owned GPU compute and development worker, enrolled
-  # 2026-10-12. Named for its SHAPE and not for the device -- `linux-server` is
-  # the same kind of name, and `fleet/registry.yaml` states the rule it obeys:
+  # 2026-10-12. Named for its SHAPE and not for the device -- `linux-gpu-compute`
+  # is a shape name, and `fleet/registry.yaml` states the rule it obeys:
   # a device NAMES a profile and does not carry one inline, so a profile name
   # may not be a device id.
   #

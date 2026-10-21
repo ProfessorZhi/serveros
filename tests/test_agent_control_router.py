@@ -72,9 +72,23 @@ CONTEXT = minted_context()
 CONTEXT_REF = CONTEXT["context_ref"]
 CONTEXT_STORE = {CONTEXT_REF: CONTEXT}
 
-LOCAL = "device:server-beijing"
+# The device these fixtures act AS. It has to declare BOTH runtimes, because
+# `RUNTIME` below is codex on nearly every call — and it used to be
+# `device:server-beijing`, which was the only Linux device that did. Beijing was
+# retired on 2026-10-21, which leaves the two Windows machines, and this is the
+# one of those that is not used as a remote below.
+#
+# A fixture ROLE, not a claim about the host: the suite runs on Tokyo, which
+# declares `claude-code` alone.
+LOCAL = "device:personal-dell"
 FJ = "device:work-fj"
-DELL = "device:personal-dell"
+# The second remote. It was the Windows laptop until that laptop became `LOCAL`.
+# The Dell LLM Lab host carries the same role in these tests -- "a device that is
+# not the one the call is about" -- and it is deliberately NOT
+# `device:tokyo-shared-dev-01`: Tokyo is the device the router tests leave
+# uncovered on purpose, so that "enrolled, no transport covers it" stays a
+# reachable state and not a thing this suite can no longer express.
+LLM_LAB = "device:llm-lab-dell"
 RUNTIME = "agent-runtime:codex"
 KIND_PROVIDER = "provider:test-agent-session"
 FAKE_NODE = HERE / "fake_node_control.py"
@@ -198,7 +212,7 @@ def resume_to(device: str = LOCAL, *, context_ref: str = CONTEXT_REF,
         session_ref=session_ref))
 
 
-def fake_node_transport(*, device_refs=(FJ, DELL), mode="ok", reason=None,
+def fake_node_transport(*, device_refs=(FJ, LLM_LAB), mode="ok", reason=None,
                         presence=None, node_runtime=None, timeout_s=5.0):
     """A `NodeControlTransport` whose connector drives a real child process."""
     env = dict(os.environ, SERVEROS_FAKE_NODE_MODE=mode)
@@ -267,7 +281,7 @@ def deployed_router(service, **kwargs):
     second one is UNKNOWN rather than a typed unavailability.
     """
     return router(service, router_mod.NodeControlTransport(
-        connector=None, device_refs=(FJ, DELL)), **kwargs)
+        connector=None, device_refs=(FJ, LLM_LAB)), **kwargs)
 
 
 def ok_service(**kwargs) -> RecordingService:
@@ -678,7 +692,7 @@ class TestFailuresStayDistinct(unittest.TestCase):
         self.assertFalse(response.ok)
         self.assertEqual(response.reason, "NODE_RUNTIME_UNAVAILABLE")
         self.assertIn("no ServerOS node runtime is deployed", response.detail)
-        for device in (FJ, DELL):
+        for device in (FJ, LLM_LAB):
             self.assertIn(device, json.dumps(
                 deployed_router(RecordingService()).evidence((device,))))
 
@@ -686,7 +700,7 @@ class TestFailuresStayDistinct(unittest.TestCase):
         # The two must not share a word: one is repairable by enrolling or
         # deploying, the other by fixing the caller.
         response = deployed_router(RecordingService()).route(
-            router_mod.request_from_payload(payload(READ_ONLY, DELL)))
+            router_mod.request_from_payload(payload(READ_ONLY, LLM_LAB)))
         self.assertEqual(response.reason, "NODE_RUNTIME_UNAVAILABLE")
         with self.assertRaises(target.Rejected):
             deployed_router(RecordingService()).route(
@@ -751,7 +765,7 @@ class TestFailuresStayDistinct(unittest.TestCase):
         # it is down, so DEVICE_UNREACHABLE would be a claim wider than the
         # evidence; the resolver says UNKNOWN and the router does not upgrade it.
         response = router(RecordingService()).route(router_mod.request_from_payload(
-            payload(READ_ONLY, DELL, session_ref="session:a:b:c")))
+            payload(READ_ONLY, FJ, session_ref="session:a:b:c")))
         self.assertFalse(response.ok)
         self.assertIsNone(response.reason)
         self.assertEqual(response.resolved["status"], "UNKNOWN")
@@ -767,7 +781,7 @@ class TestFailuresStayDistinct(unittest.TestCase):
         node = router_mod.NodeControlTransport(device_refs=(FJ,))
         with self.assertRaises(router_mod.TransportFailure) as caught:
             node.send(router_mod.request_from_payload(payload(
-                READ_ONLY, DELL)))
+                READ_ONLY, LLM_LAB)))
         self.assertEqual(caught.exception.reason, "DEVICE_UNREACHABLE")
 
 
@@ -837,11 +851,11 @@ class TestRemoteIntegration(unittest.TestCase):
         # was being asked to do. The whitelist is the fix.
         def hostile(payload: dict) -> dict:
             if payload.get("op") == "resolve.inputs":
-                return {"ok": True, "result": {"action": None, "device_ref": DELL,
+                return {"ok": True, "result": {"action": None, "device_ref": LLM_LAB,
                                                "providers": [], "instances": []}}
             return {"ok": True, "result": {"session_ref": "session:hostile:1"}}
 
-        node = router_mod.NodeControlTransport(connector=hostile, device_refs=(FJ, DELL))
+        node = router_mod.NodeControlTransport(connector=hostile, device_refs=(FJ, LLM_LAB))
         node.reachable = lambda device_ref: {  # the node claims to be up
             "presence": {"state": "KNOWN_ONLINE"},
             "node_runtime": {"state": "RUNNING"},
@@ -850,12 +864,12 @@ class TestRemoteIntegration(unittest.TestCase):
             router_mod.request_from_payload(payload(
                 READ_ONLY, FJ, session_ref="session:a:b:c")))
         # The refusal is the resolver's, about providers, for the device the
-        # caller named — not one about a null action on the Dell.
+        # caller named — not one about a null action on the other device.
         self.assertFalse(response.ok)
         self.assertEqual(response.action, READ_ONLY)
         self.assertEqual(response.device_ref, FJ)
         self.assertEqual(response.verb, "session.inspect")
-        self.assertNotIn(DELL, json.dumps(response.show()))
+        self.assertNotIn(LLM_LAB, json.dumps(response.show()))
 
     def test_a_node_that_never_answers_is_a_typed_failure(self):
         node = fake_node_transport(mode="hang")
@@ -1651,7 +1665,7 @@ class TestRouterIdentity(unittest.TestCase):
 
     def test_an_unobserved_device_produces_no_evidence(self):
         node = router_mod.NodeControlTransport(device_refs=())
-        reported = node.reachable(DELL)
+        reported = node.reachable(LLM_LAB)
         self.assertNotIn("presence", reported)
         self.assertNotIn("node_runtime", reported)
 

@@ -40,11 +40,15 @@ router_mod = _load("serveros_fleet_agent_control_router",
 provider_instance = _load("serveros_abilities_provider_instance",
                           ROOT / "abilities" / "provider_instance.py")
 
-LOCAL = "device:server-beijing"
+# The device this view runs on. It used to be `device:server-beijing`; Beijing
+# was retired on 2026-10-21, and the machine the suite actually runs on is the
+# one that should stand in for "here". There is no separate `TOKYO` constant
+# any more for the same reason there is no `BEIJING` one: the local device and
+# a remote device that happens to be this device would be the same row twice.
+LOCAL = "device:tokyo-shared-dev-01"
 FJ = "device:work-fj"
 DELL = "device:personal-dell"
 # See test_agent_mcp: enrolled 2026-09-17.
-TOKYO = "device:tokyo-shared-dev-01"
 # The other Dell. `DELL` above is the Windows laptop and this one is the Linux
 # GPU worker, which is why this is not named `DELL_TWO`: two machines from one
 # maker are two devices, and a name that counts them is a name that will read
@@ -53,8 +57,8 @@ LLM_LAB = "device:llm-lab-dell"
 LEVELS = ("L0", "L1", "L2", "L3")
 
 # What `FJ` declares, and what the view must not promote into a claim. It is
-# NOT every device any more: Beijing and the two Windows machines declare both
-# agents, while Tokyo and the Dell LLM Lab host declare `claude-code` alone.
+# NOT every device any more: the two Windows machines declare both agents,
+# while Tokyo and the Dell LLM Lab host declare `claude-code` alone.
 # The constant is named for the device it is used with rather than for the
 # registry, so that the next device declaring one agent does not make it a
 # false statement about the file.
@@ -294,8 +298,8 @@ class TestAnUnreachedDeviceIsTyped(unittest.TestCase):
         # leave a fleet that looks smaller rather than one that looks broken.
         envelope = deployed().render(level="L2")
         self.assertEqual({row["device_ref"] for row in envelope["devices"]},
-                         {LOCAL, FJ, DELL, TOKYO, LLM_LAB})
-        self.assertEqual(envelope["count"], 5)
+                         {LOCAL, FJ, DELL, LLM_LAB})
+        self.assertEqual(envelope["count"], 4)
 
     def test_a_device_the_runtime_cannot_see_is_unknown_not_absent(self):
         # No routing layer at all is not the same as a device that is down.
@@ -369,7 +373,13 @@ class TestNoEmptyListMeansUnknown(unittest.TestCase):
         # Once per device in the answer, because "what is running there now" is
         # a question about a device. Asking for one unnamed fleet-wide total
         # would be the view inventing a scope the provider never agreed to.
-        self.assertEqual(seen, [LOCAL, FJ, DELL, TOKYO, LLM_LAB])
+        #
+        # Compared as a multiset: which device is listed first is the routing
+        # layer's business and not part of this contract. It became observable
+        # when the local device stopped being the one the loopback transport
+        # had always been given, and pinning it here would have made a fact
+        # about the fixture look like a fact about the view.
+        self.assertEqual(sorted(seen), sorted([LOCAL, FJ, DELL, LLM_LAB]))
 
 
 class TestTheViewDoesNotInventProvenance(unittest.TestCase):

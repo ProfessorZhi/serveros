@@ -276,10 +276,14 @@ def test_the_steps_that_may_be_unevaluable_are_declared_and_agent_runtime_is_not
 
     # And the one step declared never-unevaluable is genuinely never so: with
     # every piece of optional evidence absent, the runtime check still answered.
-    starved = target.resolve({"device_ref": "device:server-beijing",
+    # `device:work-fj` because this test needs a device that declares BOTH
+    # runtimes: the point is that the runtime step answers even when every
+    # other input is absent. It used to be `device:server-beijing`, which was
+    # retired on 2026-10-21.
+    starved = target.resolve({"device_ref": "device:work-fj",
                               "agent_runtime": "agent-runtime:codex",
                               "action": "session.create",
-                              "local_device_ref": "device:server-beijing",
+                              "local_device_ref": "device:work-fj",
                               "resolved_at": NOW})
     assert "agent_runtime" not in starved["unevaluated"]
     runtime_step = next(s for s in starved["steps"] if s["step"] == "agent_runtime")
@@ -853,12 +857,12 @@ def test_summarize_is_one_line_in_every_outcome():
 # ---------------------------------------------------------------------------
 
 def test_the_cli_answers_from_a_supplied_evidence_file(tmp_path):
-    evidence = {"local_device_ref": "device:server-beijing", "resolved_at": NOW,
+    evidence = {"local_device_ref": "device:llm-lab-dell", "resolved_at": NOW,
                 "providers": [dict(PROVIDER)], "instances": [instance()],
                 "runtime_record": dict(RUNTIME_RECORD)}
     path = tmp_path / "evidence.json"
     path.write_text(json.dumps(evidence), encoding="utf-8")
-    assert target.main(["--device", "device:server-beijing",
+    assert target.main(["--device", "device:llm-lab-dell",
                         "--runtime", "agent-runtime:claude-code",
                         "--action", "session.create",
                         "--evidence", str(path)]) == 0

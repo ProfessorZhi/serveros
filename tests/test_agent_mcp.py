@@ -53,15 +53,22 @@ provider_instance = _load("serveros_abilities_provider_instance",
                           REPO / "abilities" / "provider_instance.py")
 actor = sys.modules["_serveros_context_actor"]
 
-LOCAL = "device:server-beijing"
+# The device these fixtures act AS. It has to declare BOTH runtimes, because
+# `RUNTIME` below is codex on nearly every call in this suite — and it used to
+# be `device:server-beijing`, which was the only Linux device that did. Beijing
+# was retired on 2026-10-21, which leaves the two Windows machines, and this is
+# the one of those that is not used as the remote device below.
+#
+# It is a fixture ROLE and not a claim about the host running the suite: the
+# suite runs on Tokyo, which declares `claude-code` alone.
+LOCAL = "device:personal-dell"
 FJ = "device:work-fj"
-DELL = "device:personal-dell"
 # Enrolled 2026-09-17. Named here rather than derived from the registry so that
 # the expected ORDER stays asserted: `device.list` returns registry order, and
 # a set would let a reordering pass unnoticed.
 TOKYO = "device:tokyo-shared-dev-01"
 # Enrolled 2026-10-12, and last in registry order. The Linux GPU worker, not
-# the Windows laptop `DELL` above: same maker, different machine.
+# the Windows laptop `LOCAL` above: same maker, different machine.
 LLM_LAB = "device:llm-lab-dell"
 RUNTIME = "agent-runtime:codex"
 PROVIDER = "provider:test-agent-session"
@@ -280,7 +287,7 @@ def build(*, daemon=None, provider=None, providers=None, decision="ALLOW"):
                         bindings=threads.MemoryBindings(
                             unknown=threads.ASSUME_BOUND)),
                     router_mod.NodeControlTransport(connector=None,
-                                                    device_refs=(FJ, DELL))],
+                                                    device_refs=(FJ, TOKYO))],
         context_store=agent_mcp.DaemonContexts(daemon))
     view = agent_mcp.view_mod.FleetView(routing=router, sessions=lambda ref: {
         "state": "KNOWN", "sessions": service.session_list().get("sessions") or []},
@@ -869,8 +876,10 @@ class TestTheReadPath(unittest.TestCase):
         is_error, answer = payload(call(self.client, "device.list", level="L1"))
         self.assertFalse(is_error, answer)
         self.assertEqual(answer["level"], "L1")
+        # Registry order, written out rather than compared as a set: a
+        # reordering is a change to this contract and should show up as one.
         self.assertEqual([row["device_ref"] for row in answer["devices"]],
-                         [LOCAL, FJ, DELL, TOKYO, LLM_LAB])
+                         [FJ, LOCAL, TOKYO, LLM_LAB])
 
     def test_two_levels_do_not_return_the_same_fields(self):
         """§12 asks for this by name, so it is asserted rather than described."""
@@ -1365,7 +1374,7 @@ class TheSessionSourceAnswersForOneDevice(unittest.TestCase):
         self.assertEqual(answer["sessions"], [{"session_id": "s-1"}])
 
     def test_a_remote_device_is_unknown_and_not_an_empty_list(self):
-        for remote in (FJ, DELL):
+        for remote in (FJ, TOKYO):
             with self.subTest(device=remote):
                 answer = self.source({"sessions": [{"session_id": "s-1"}]})(remote)
                 self.assertEqual(answer["state"], "UNKNOWN")
@@ -1448,7 +1457,7 @@ class TheAgentInventoryAndTheSourceItReads(unittest.TestCase):
         "that device has no agents" about a machine nobody asked.
         """
         client, _, _ = build()
-        for remote in (FJ, DELL):
+        for remote in (FJ, TOKYO):
             with self.subTest(device=remote):
                 answer = client.agent_list(remote)
                 self.assertEqual("UNKNOWN", answer["state"])

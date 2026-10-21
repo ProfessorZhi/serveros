@@ -79,14 +79,19 @@ from fleet_mcp.registry import load_registry  # noqa: E402
 TOKYO = "device:tokyo-shared-dev-01"
 WINDOWS = "device:work-fj"
 DELL = "device:llm-lab-dell"
-BEIJING = "device:server-beijing"
 PERSONAL_DELL = "device:personal-dell"
 
-# The three the operator named, and the two that must stay refused. Written
+# The three the operator named, and the one that must stay refused. Written
 # here as the *expected* set so the rule below is checked against an answer that
 # was stated independently of it.
+#
+# It was two refusals while `device:server-beijing` was enrolled; Beijing was
+# retired on 2026-10-21, and it was the only other personally-owned device. A
+# tuple of one is still a tuple: the rule is "company devices are eligible", and
+# the single personal device left is what keeps that rule from degenerating into
+# "every device is eligible".
 WANTED = (TOKYO, WINDOWS, DELL)
-REFUSED = (BEIJING, PERSONAL_DELL)
+REFUSED = (PERSONAL_DELL,)
 
 OAUTH = "oauth:fleet-EXAMPLEprincipal01"
 SOMEONE_ELSE = "oauth:fleet-EXAMPLEprincipal02"
@@ -168,7 +173,7 @@ def _registry_file(ownership: dict[str, str | None]) -> Path:
 
 
 class Harness:
-    """A service over the real five-device ownership map, both gates stated."""
+    """A service over the real ownership map, both gates stated."""
 
     def __init__(self, tmp: Path, *, ownership=None, grants=None, send_allow=(),
                  allow_send=True, sessions=(TOKYO,)):
@@ -177,7 +182,7 @@ class Harness:
         anchor.write_text("owner-token-value", encoding="utf-8")
         if ownership is None:
             ownership = {TOKYO: "company", WINDOWS: "company", DELL: "company",
-                         BEIJING: "personal", PERSONAL_DELL: "personal"}
+                         PERSONAL_DELL: "personal"}
         self.ownership = ownership
         self.registry = _registry(ownership=ownership)
         self.config = FleetConfig(
@@ -265,7 +270,7 @@ class TheDeviceRule(unittest.TestCase):
                     if service._device_is_grant_eligible(d.device_ref.ref)]
         self.assertEqual(sorted(eligible), sorted(WANTED))
 
-    def test_the_refused_set_is_exactly_the_two_personal_devices(self):
+    def test_the_refused_set_is_exactly_the_personal_device(self):
         service = self._service()
         refused = [d.device_ref.ref for d in self.real.all()
                    if not service._device_is_grant_eligible(d.device_ref.ref)]
@@ -588,7 +593,6 @@ class TheReadSurfacesAgree(unittest.TestCase):
         rows = {d["device_ref"]: d["control"] for d in h.devices()["devices"]}
         self.assertEqual(rows[TOKYO]["operator_grant_verbs"], ["send"])
         self.assertEqual(rows[WINDOWS]["operator_grant_verbs"], ["send"])
-        self.assertEqual(rows[BEIJING]["operator_grant_verbs"], [])
         self.assertEqual(rows[PERSONAL_DELL]["operator_grant_verbs"], [])
 
     def test_list_devices_never_reports_another_principal_s_grant(self):
