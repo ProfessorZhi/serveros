@@ -8,6 +8,8 @@ on:
       - 'runtime/daemon.py'
       - 'tests/test_daemon.py'
       - 'tests/test_native_core_facts.py'
+      - '.github/scripts/hosted_daemon_inputs.py'
+      - 'tests/test_hosted_daemon_inputs.py'
       - '.github/workflows/serveros-native-linux-contract.yml'
   push:
     branches:
@@ -18,6 +20,8 @@ on:
       - 'runtime/daemon.py'
       - 'tests/test_daemon.py'
       - 'tests/test_native_core_facts.py'
+      - '.github/scripts/hosted_daemon_inputs.py'
+      - 'tests/test_hosted_daemon_inputs.py'
       - '.github/workflows/serveros-native-linux-contract.yml'
 
 permissions:
@@ -80,18 +84,14 @@ jobs:
           python3 --version > "$DAEMON_EVIDENCE_DIR/python-version.txt"
           daemon_work_root="$(mktemp -d /tmp/sod.XXXXXXXX)"
           test "$(stat -c '%a' "$daemon_work_root")" = 700
-          mkdir "$daemon_work_root/t" "$daemon_work_root/r" "$daemon_work_root/s"
-          mkdir "$daemon_work_root/s/serveros"
+          mkdir "$daemon_work_root/t" "$daemon_work_root/r"
           export TMPDIR="$daemon_work_root/t"
           export XDG_RUNTIME_DIR="$daemon_work_root/r"
-          export XDG_STATE_HOME="$daemon_work_root/s"
-          export SERVEROS_STATE_DIR="$daemon_work_root/s/serveros"
           daemon_checkout_root="$(git rev-parse --show-toplevel)"
           export PYTHONPATH="$daemon_checkout_root/runtime:$daemon_checkout_root"
           printf '%s\n' "DAEMON_EVIDENCE_DIR=$DAEMON_EVIDENCE_DIR" "DAEMON_VENV=$DAEMON_VENV" \
             "DAEMON_WORK_ROOT=$daemon_work_root" "TMPDIR=$TMPDIR" \
-            "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "XDG_STATE_HOME=$XDG_STATE_HOME" \
-            "SERVEROS_STATE_DIR=$SERVEROS_STATE_DIR" "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
+            "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           printf '%s\n' 'PyYAML==6.0.2' 'pytest==9.1.1' > "$DAEMON_EVIDENCE_DIR/dependency-pins.txt"
           ulimit -v 2097152
           if timeout --signal=TERM --kill-after=5s 90s bash -c '
@@ -108,7 +108,17 @@ jobs:
           fi
           printf '%s\n' "$daemon_setup_exit" > "$DAEMON_EVIDENCE_DIR/setup.exit-code"
           cat "$DAEMON_EVIDENCE_DIR/setup.log"
-          exit "$daemon_setup_exit"
+          if (( daemon_setup_exit != 0 )); then exit "$daemon_setup_exit"; fi
+          if "$DAEMON_VENV/bin/python" -B .github/scripts/hosted_daemon_inputs.py \
+            --work-root "$daemon_work_root" --evidence-dir "$DAEMON_EVIDENCE_DIR" \
+            --github-env "$GITHUB_ENV" > "$DAEMON_EVIDENCE_DIR/bootstrap.log" 2>&1; then
+            daemon_bootstrap_exit=0
+          else
+            daemon_bootstrap_exit=$?
+          fi
+          printf '%s\n' "$daemon_bootstrap_exit" > "$DAEMON_EVIDENCE_DIR/bootstrap.exit-code"
+          cat "$DAEMON_EVIDENCE_DIR/bootstrap.log"
+          exit "$daemon_bootstrap_exit"
 
       - name: Run both complete files sequentially under one bounded budget
         shell: bash
@@ -145,7 +155,7 @@ jobs:
             printf '%s\n' "$daemon_test_file" >> "$DAEMON_EVIDENCE_DIR/files.started"
             if timeout --signal=TERM --kill-after=10s "${daemon_remaining}s" \
               taskset --cpu-list "$daemon_cpu" "$DAEMON_VENV/bin/python" -B -m pytest \
-              -q -p no:cacheprovider -o addopts='' \
+              -q -ra -p no:cacheprovider -o addopts='' \
               --basetemp "$DAEMON_WORK_ROOT/p$daemon_file_index" \
               --junitxml "$DAEMON_EVIDENCE_DIR/$daemon_label.junit.xml" \
               "$daemon_test_file" > "$DAEMON_EVIDENCE_DIR/$daemon_label.log" 2>&1; then
