@@ -10,6 +10,8 @@ or nonzero test exit cannot be reported as PASS.
 Only GitHub's isolated Ubuntu24.04 runner creates the short private `/tmp/sod.*`
 fixture root. `TMPDIR`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`, `SERVEROS_STATE_DIR`
 and each pytest `--basetemp` point inside it. The job keeps `HOME` unchanged,
+sets `PYTHONPATH` to the exact checkout's `runtime` and repository root for the
+standalone `native_core_facts` import in each separate pytest process,
 uses an isolated venv with PyYAML6.0.2 and pytest9.1.1, disables pytest cache and
 bytecode, and pins the test process/children to one available CPU with a2GiB
 virtual-memory limit. The two complete files share540 seconds; the job has a

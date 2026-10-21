@@ -86,10 +86,12 @@ jobs:
           export XDG_RUNTIME_DIR="$daemon_work_root/r"
           export XDG_STATE_HOME="$daemon_work_root/s"
           export SERVEROS_STATE_DIR="$daemon_work_root/s/serveros"
+          daemon_checkout_root="$(git rev-parse --show-toplevel)"
+          export PYTHONPATH="$daemon_checkout_root/runtime:$daemon_checkout_root"
           printf '%s\n' "DAEMON_EVIDENCE_DIR=$DAEMON_EVIDENCE_DIR" "DAEMON_VENV=$DAEMON_VENV" \
             "DAEMON_WORK_ROOT=$daemon_work_root" "TMPDIR=$TMPDIR" \
             "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "XDG_STATE_HOME=$XDG_STATE_HOME" \
-            "SERVEROS_STATE_DIR=$SERVEROS_STATE_DIR" >> "$GITHUB_ENV"
+            "SERVEROS_STATE_DIR=$SERVEROS_STATE_DIR" "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           printf '%s\n' 'PyYAML==6.0.2' 'pytest==9.1.1' > "$DAEMON_EVIDENCE_DIR/dependency-pins.txt"
           ulimit -v 2097152
           if timeout --signal=TERM --kill-after=5s 90s bash -c '
