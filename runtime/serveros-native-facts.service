@@ -1,0 +1,73 @@
+# serveros-native-facts.service — user unit, TEMPLATE. NOT INSTALLED.
+#
+# This publishes the facts document that a resident Native Core re-reads every
+# tick (`serveros/native-core-facts.v1`). Without it a Core in
+# `--serve --enable-actions` has no usable facts and therefore does not act,
+# which is the intended failure rather than a gap.
+#
+# INSTALLING IT DOES NOT START IT. Installing and enabling are separate acts,
+# and neither is performed by this round.
+#
+# Rendering
+# ---------
+# `@SERVEROS_PYTHON@`, `@SERVEROS_REPO@`, `@FACTS_PATH@`, `@LINK_TARGET@` and the
+# `@SERVICE_*@` values are placeholders rendered by an installer, the same way
+# `runtime/serverosd.service` is. They are deliberately NOT systemd specifiers:
+# systemd expands `%` and `$`, so a `$VAR` here would expand to the empty string
+# when unset and ExecStart would silently become a path that may exist and start
+# the wrong program. `@...@` is inert to systemd, and an unrendered unit fails
+# naming the literal path it could not find.
+#
+# Conventions it follows, and why
+# -------------------------------
+#
+#   No --owner on the command line
+#       The default owner is `serverosd`, and a unit that silently published
+#       under another owner's name would be describing units it does not own.
+#       Rendering an owner is a deliberate act.
+#
+#   The lease is NOT referenced here
+#       This service OBSERVES. The single-writer lease serialises processes that
+#       change something; a facts publication changes only its own document, and
+#       holding the act lease here would stop the Core from ever acquiring the
+#       pen it needs to act on these very facts.
+#
+#   The document path is under $XDG_RUNTIME_DIR
+#       Same reason the status socket is: it is private to this user and it does
+#       not survive a reboot with a stale timestamp inside it.
+#
+#   --link is a target, not a verdict
+#       The probe connects; if it cannot, the fact is a KNOWN DOWN. Omitting the
+#       target makes the link fact UNKNOWN, which refuses downstream.
+
+[Unit]
+Description=ServerOS native-core facts publisher (observe only)
+Documentation=file://@SERVEROS_REPO@/docs/proposals/proposal-native-facts-and-owner.md
+
+[Service]
+Type=simple
+ExecStart=@SERVEROS_PYTHON@ @SERVEROS_REPO@/runtime/native_core_facts.py \
+  --facts %t/serveros/native-core-facts.json \
+  --interval 15 \
+  --link @LINK_TARGET@ \
+  --agent-marker %t/serveros/agent-busy \
+  --service @SERVICE_1@ \
+  --service @SERVICE_2@
+Restart=on-failure
+RestartSec=5
+# A facts writer that has been failing for a while is not evidence that the
+# services are broken; it is evidence that the facts are stale, and stale facts
+# make the Core refuse rather than act. Bounding the restarts keeps that visible
+# in `systemctl --user status` instead of hiding it in a restart loop.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Observe-only: no writable paths beyond the runtime directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/serveros
+
+[Install]
+WantedBy=default.target
