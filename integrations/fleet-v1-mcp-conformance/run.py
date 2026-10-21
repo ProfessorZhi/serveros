@@ -113,8 +113,7 @@ class FakeDevice:
 
     def native_call(self, tool, arguments, *, session_ref=None) -> dict:
         self.calls.append(("native_call", tool, session_ref))
-        return {"ok": True, "served_by": self.runtime,
-                "runId": f"{self.runtime}-fixture-run-{len(self.calls)}"}
+        return {"ok": True, "served_by": self.runtime}
 
     def capability_snapshot(self) -> dict:
         self.calls.append(("capability_snapshot",))
