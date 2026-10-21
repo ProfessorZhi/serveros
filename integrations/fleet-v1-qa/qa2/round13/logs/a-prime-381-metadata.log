@@ -1,0 +1,16 @@
+== gh pr 381 ==
+{"baseRefName":"feat/s1-single-write-entry-20261021","baseRefOid":"cbbfb63a76072871edfa6aa639355f5b63cc5853","headRefName":"feat/s1-commit-token-binding-20261021","headRefOid":"043e08b916b2b511b56b30a419d21ad4450451c2","isDraft":true,"mergeable":"MERGEABLE","number":381,"state":"OPEN","title":"fix(prototype): bind effect capability to the exact committed token + post-hold fence","updatedAt":"2026-10-21T00:09:19Z","url":"https://github.com/ProfessorZhi/serveros/pull/381"}
+== remote refs ==
+043e08b916b2b511b56b30a419d21ad4450451c2	refs/heads/feat/s1-commit-token-binding-20261021
+043e08b916b2b511b56b30a419d21ad4450451c2	refs/pull/381/head
+== diff files ==
+integrations/fleet-v1-atomic-prototype/README.md
+integrations/fleet-v1-atomic-prototype/atomic_fence.py
+integrations/fleet-v1-atomic-prototype/single_write_entry.py
+tests/test_s1_atomic_prototype_single_write.py
+== stat ==
+ integrations/fleet-v1-atomic-prototype/README.md   |   39 +++
+ .../fleet-v1-atomic-prototype/atomic_fence.py      |   45 +++-
+ .../single_write_entry.py                          |   60 ++++-
+ tests/test_s1_atomic_prototype_single_write.py     |  243 ++++++++++++++++++++
+ 4 files changed, 361 insertions(+), 26 deletions(-)

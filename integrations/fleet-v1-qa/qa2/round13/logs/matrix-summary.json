@@ -1,0 +1,51 @@
+{
+  "api": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "api",
+    "status": {
+      "PASS": 12
+    },
+    "total": 12
+  },
+  "binding": {
+    "failed": 1,
+    "failed_names": [
+      "B3-historical-replay-capability"
+    ],
+    "mode": "binding",
+    "status": {
+      "P1": 1,
+      "P2": 2,
+      "PASS": 2
+    },
+    "total": 5
+  },
+  "osuid": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "osuid",
+    "status": {
+      "NOT_RUN": 2
+    },
+    "total": 2
+  },
+  "race": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "race",
+    "status": {
+      "PASS": 3
+    },
+    "total": 3
+  },
+  "raw": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "raw",
+    "status": {
+      "EXPECTED_FAIL": 5
+    },
+    "total": 5
+  }
+}
