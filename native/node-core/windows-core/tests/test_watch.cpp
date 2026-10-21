@@ -1,5 +1,12 @@
 #include "check.hpp"
 #include "windows-core/watch.hpp"
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <winsock2.h>
+#include <windows.h>
+#include <thread>
+#endif
 using namespace nodecore::windows_core;
 struct TestTx : RecoveryTransaction {
     RecoveryState &state;
@@ -34,6 +41,12 @@ struct TestBackend : RecoveryBackend {
     }
 };
 int main() {
+    CHECK(!service_phase_transition(WatchServicePhase::Stopped, WatchServicePhase::Stopping));
+    CHECK(!service_phase_transition(WatchServicePhase::Stopping, WatchServicePhase::Running));
+    CHECK(service_phase_transition(WatchServicePhase::Running, WatchServicePhase::Stopping));
+    CHECK(service_phase_transition(WatchServicePhase::Stopping, WatchServicePhase::Stopped));
+    CHECK(service_phase_transition(WatchServicePhase::Starting, WatchServicePhase::Stopped));
+
     const std::string sid = "S-1-5-21-1";
     const std::string valid =
         R"({"schema":"serveros/windows-core-desired.v1","node":"device:fixture","principal":"S-1-5-21-1","generation":1,"services":[{"id":"cloudcli","owner":"S-1-5-21-1","manager":"scm","unit":"SyntheticService","desired":"running","health":{"probe":"loopback-http-json","port":8080,"path":"/health","key":"status","value":"ok"}}]})";
@@ -97,5 +110,36 @@ int main() {
         CHECK_EQ(rows[0].recovery_code, std::string("RECOVERED"));
         CHECK_EQ(rows[0].readiness, std::string("READY"));
     }
+#if defined(_WIN32)
+    {
+        WSADATA network{};
+        CHECK(::WSAStartup(MAKEWORD(2, 2), &network) == 0);
+        SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        CHECK(listener != INVALID_SOCKET);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        CHECK(::bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+        int size = sizeof(address);
+        CHECK(::getsockname(listener, reinterpret_cast<sockaddr *>(&address), &size) == 0);
+        CHECK(::listen(listener, 1) == 0);
+        WatchConfig native;
+        WatchUnit unit;
+        unit.grant.role = UnitRole::CloudCli;
+        unit.probe = {static_cast<unsigned>(::ntohs(address.sin_port)),
+                      "/health",
+                      "status",
+                      "ok",
+                      false,
+                      false};
+        native.services.push_back(unit);
+        // The owned listener exists, then is stopped before probing. Winsock
+        // must report its async refusal as a measured NOT_READY, not timeout.
+        ::closesocket(listener);
+        LoopbackFunctionalProbe probe(native);
+        CHECK_EQ(probe.check(UnitRole::CloudCli), ProbeReadiness::NotReady);
+        ::WSACleanup();
+    }
+#endif
     return check::report("windows_watch_contract");
 }

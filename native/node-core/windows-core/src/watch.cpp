@@ -35,6 +35,15 @@ std::string lower(std::string s) {
     return s;
 }
 } // namespace
+bool service_phase_transition(WatchServicePhase before, WatchServicePhase after) {
+    if (before == WatchServicePhase::Stopped)
+        return after == WatchServicePhase::Stopped;
+    if (before == WatchServicePhase::Stopping)
+        return after == WatchServicePhase::Stopping || after == WatchServicePhase::Stopped;
+    if (before == WatchServicePhase::Running)
+        return after != WatchServicePhase::Starting;
+    return true;
+}
 bool parse_watch_config(const std::string &source, const std::string &sid, WatchConfig &out,
                         std::string &error) {
     auto fail = [&](const char *code) {

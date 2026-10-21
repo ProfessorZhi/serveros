@@ -108,6 +108,7 @@ add_executable(test_windows_watch tests/test_watch.cpp)
 target_link_libraries(test_windows_watch PRIVATE windows_core_scm)
 target_include_directories(test_windows_watch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
 add_test(NAME windows_watch_contract COMMAND test_windows_watch)
+set_tests_properties(windows_watch_contract PROPERTIES TIMEOUT 15)
 
 add_executable(windows-core-watch src/watch_main.cpp)
 target_link_libraries(windows-core-watch PRIVATE windows_core_scm)

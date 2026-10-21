@@ -182,6 +182,32 @@ int main() {
             CHECK(!watch->commit_generation(0, manifest));
             CHECK(!watch->commit_generation(1, manifest + " "));
             CHECK(watch->publish("{\"synthetic\":true}"));
+            PWSTR appdata = nullptr;
+            CHECK(SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appdata)));
+            if (appdata) {
+                auto path = std::wstring(appdata) + L"\\ServerOS\\Core\\desired-state.v1.json";
+                ::CoTaskMemFree(appdata);
+                HANDLE reader =
+                    ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, 0, nullptr);
+                CHECK(reader != INVALID_HANDLE_VALUE);
+                CHECK(publish_windows_desired(manifest + " "));
+                CHECK(publish_windows_desired(manifest + "  "));
+                if (reader != INVALID_HANDLE_VALUE)
+                    ::CloseHandle(reader);
+                // An incompatible external reader may legitimately prevent a
+                // replace. This call must remove only its own temp, so a later
+                // configure can succeed after that reader releases the file.
+                reader = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                       OPEN_EXISTING, 0, nullptr);
+                CHECK(reader != INVALID_HANDLE_VALUE);
+                CHECK(!publish_windows_desired(manifest + "   "));
+                if (reader != INVALID_HANDLE_VALUE)
+                    ::CloseHandle(reader);
+                CHECK(publish_windows_desired(manifest + "    "));
+                CHECK(publish_windows_desired(manifest + "     "));
+            }
+
             watch.reset();
             auto reopened = open_local_watch_state();
             CHECK(reopened != nullptr);

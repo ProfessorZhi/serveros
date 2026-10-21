@@ -34,7 +34,7 @@ struct Socket {
             ::closesocket(value);
     }
 };
-bool wait_socket(SOCKET socket, bool write, ULONGLONG deadline) {
+bool wait_socket(SOCKET socket, bool write, ULONGLONG deadline, bool connecting = false) {
     auto now = ::GetTickCount64();
     if (now >= deadline)
         return false;
@@ -44,7 +44,12 @@ bool wait_socket(SOCKET socket, bool write, ULONGLONG deadline) {
     FD_SET(socket, &set);
     timeval timeout{static_cast<long>(remaining / 1000),
                     static_cast<long>((remaining % 1000) * 1000)};
-    return ::select(0, write ? nullptr : &set, write ? &set : nullptr, nullptr, &timeout) > 0;
+    fd_set errors;
+    FD_ZERO(&errors);
+    if (connecting)
+        FD_SET(socket, &errors);
+    return ::select(0, write ? nullptr : &set, write ? &set : nullptr,
+                    connecting ? &errors : nullptr, &timeout) > 0;
 }
 ProbeReadiness http_probe(const HttpProbe &spec) {
     Network network;
@@ -69,7 +74,7 @@ ProbeReadiness http_probe(const HttpProbe &spec) {
             return ProbeReadiness::NotReady;
         if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS)
             return ProbeReadiness::Unmeasured;
-        if (!wait_socket(socket.value, true, deadline))
+        if (!wait_socket(socket.value, true, deadline, true))
             return ProbeReadiness::Unmeasured;
         int result = 0;
         int n = sizeof(result);
@@ -129,33 +134,58 @@ std::string utc_now() {
     return out.str();
 }
 std::atomic<bool> service_stop{false};
+SRWLOCK service_lock = SRWLOCK_INIT;
 SERVICE_STATUS_HANDLE service_handle = nullptr;
-SERVICE_STATUS service_status{};
-void report_service(DWORD state, DWORD error = NO_ERROR) {
-    service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    service_status.dwCurrentState = state;
-    service_status.dwControlsAccepted =
-        state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
-    service_status.dwWin32ExitCode = error;
-    service_status.dwWaitHint = state == SERVICE_STOP_PENDING ? 30000 : 0;
-    ::SetServiceStatus(service_handle, &service_status);
+WatchServicePhase service_phase = WatchServicePhase::Starting;
+DWORD service_checkpoint = 0;
+struct ServiceGuard {
+    ServiceGuard() { ::AcquireSRWLockExclusive(&service_lock); }
+    ~ServiceGuard() { ::ReleaseSRWLockExclusive(&service_lock); }
+};
+void report_service(WatchServicePhase next, DWORD error = NO_ERROR) {
+    ServiceGuard guard;
+    if (!service_phase_transition(service_phase, next))
+        return;
+    SERVICE_STATUS status{};
+    status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    status.dwCurrentState = next == WatchServicePhase::Starting   ? SERVICE_START_PENDING
+                            : next == WatchServicePhase::Running  ? SERVICE_RUNNING
+                            : next == WatchServicePhase::Stopping ? SERVICE_STOP_PENDING
+                                                                  : SERVICE_STOPPED;
+    status.dwControlsAccepted =
+        next == WatchServicePhase::Running ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
+    status.dwWin32ExitCode = error;
+    status.dwServiceSpecificExitCode = error == ERROR_SERVICE_SPECIFIC_ERROR ? 1 : 0;
+    bool pending = next == WatchServicePhase::Starting || next == WatchServicePhase::Stopping;
+    status.dwWaitHint = pending ? 30000 : 0;
+    status.dwCheckPoint = pending ? ++service_checkpoint : 0;
+    service_phase = next;
+    if (service_handle)
+        ::SetServiceStatus(service_handle, &status);
 }
 void WINAPI control_service(DWORD control) {
     if (control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN) {
-        service_stop = true;
-        report_service(SERVICE_STOP_PENDING);
+        // Publish STOP_PENDING before allowing the loop to publish STOPPED.
+        report_service(WatchServicePhase::Stopping);
+        service_stop.store(true);
     }
 }
 void WINAPI service_main(DWORD, LPWSTR *) {
-    service_handle = ::RegisterServiceCtrlHandlerW(L"ServerOSCoreUser", control_service);
-    if (!service_handle)
+    service_stop.store(false);
+    auto handle = ::RegisterServiceCtrlHandlerW(L"ServerOSCoreUser", control_service);
+    if (!handle)
         return;
-    report_service(SERVICE_START_PENDING);
-    service_stop = false;
-    report_service(SERVICE_RUNNING);
+    {
+        ServiceGuard guard;
+        service_handle = handle;
+    }
+    report_service(WatchServicePhase::Starting);
+    report_service(WatchServicePhase::Running);
     int result = run_windows_watch(service_stop);
-    report_service(SERVICE_STOPPED, result == 0 ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR);
+    report_service(WatchServicePhase::Stopped,
+                   result == 0 ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR);
 }
+
 } // namespace
 ProbeReadiness LoopbackFunctionalProbe::check(UnitRole role) {
     for (const auto &unit : config_.services)

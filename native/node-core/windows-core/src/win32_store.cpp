@@ -53,6 +53,17 @@ std::wstring state_directory(const std::string &owner, detail::OwnerSecurity &se
         return {};
     std::wstring root(raw);
     ::CoTaskMemFree(raw);
+    // Known folders may be redirected. Recovery state must remain available
+    // without the network and must support persistent security descriptors.
+    wchar_t volume[MAX_PATH]{};
+    DWORD flags = 0;
+    if (root.size() < 3 || root[1] != L':' || root[2] != L'\\' ||
+        !::GetVolumePathNameW(root.c_str(), volume, MAX_PATH) ||
+        ::GetDriveTypeW(volume) != DRIVE_FIXED ||
+        !::GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, &flags, nullptr, 0) ||
+        !(flags & FILE_PERSISTENT_ACLS))
+        return {};
+
     // Only this OS-resolved private root is used; no caller-selected pathname.
     // Keep the OS-resolved base open without write/delete sharing. Open
     // children only while every ancestor is pinned against rename/reparse.
@@ -63,6 +74,20 @@ std::wstring state_directory(const std::string &owner, detail::OwnerSecurity &se
     if (!base->valid() || !::GetFileInformationByHandle(*base, &base_info) ||
         (base_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
         !(base_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        return {};
+    PSID base_owner = nullptr, expected_owner = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    auto security_error = ::GetSecurityInfo(*base, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                            &base_owner, nullptr, nullptr, nullptr, &descriptor);
+    std::wstring expected(owner.begin(), owner.end());
+    bool owner_matches = security_error == ERROR_SUCCESS && base_owner &&
+                         ::ConvertStringSidToSidW(expected.c_str(), &expected_owner) &&
+                         ::EqualSid(base_owner, expected_owner);
+    if (expected_owner)
+        ::LocalFree(expected_owner);
+    if (descriptor)
+        ::LocalFree(descriptor);
+    if (!owner_matches)
         return {};
     pins.push_back(std::move(base));
     for (const wchar_t *part : {L"ServerOS", L"Core"}) {
@@ -223,7 +248,7 @@ bool read_document(const std::wstring &root, const wchar_t *name, const std::str
                    std::string &out, bool &missing) {
     missing = false;
     detail::Handle file(::CreateFileW((root + L"\\" + name).c_str(), GENERIC_READ | READ_CONTROL,
-                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                      FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                                       FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!file.valid()) {
         missing = ::GetLastError() == ERROR_FILE_NOT_FOUND;
@@ -248,19 +273,31 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         return false;
     auto path = root + L"\\" + name;
     auto temp = path + L".next";
-    {
-        detail::Handle file(::CreateFileW(
-            temp.c_str(), GENERIC_WRITE | READ_CONTROL, 0, &security.attributes, CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
-            nullptr));
-        DWORD n = 0;
-        if (!file.valid() || !owner_only(file, sid, false) ||
-            !::WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &n, nullptr) ||
-            n != text.size() || !::FlushFileBuffers(file))
-            return false;
+    detail::Handle file(::CreateFileW(
+        temp.c_str(), GENERIC_WRITE | READ_CONTROL | DELETE, FILE_SHARE_READ | FILE_SHARE_DELETE,
+        &security.attributes, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr));
+    if (!file.valid())
+        return false;
+    auto discard_owned_temp = [&]() {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        ::SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition));
+    };
+    DWORD n = 0;
+    if (!owner_only(file, sid, false) ||
+        !::WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &n, nullptr) ||
+        n != text.size() || !::FlushFileBuffers(file)) {
+        discard_owned_temp();
+        return false;
     }
-    return ::MoveFileExW(temp.c_str(), path.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!::MoveFileExW(temp.c_str(), path.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        // Delete only our still-open newly-created file by identity. Never
+        // delete a preexisting .next left by another process/crash.
+        discard_owned_temp();
+        return false;
+    }
+    return true;
 }
 std::string sha256(const std::string &text) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;

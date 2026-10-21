@@ -33,3 +33,12 @@ also requires measured current-user interactive session, LUA and ignore-new.
 Native watch startup rejects built-in service accounts; no service installation,
 credentials or global policy changes occur. Linux and Win32 build validate source;
 actual Windows runtime remains NOT_RUN.
+
+Resident review regression cases: real hosted Win32 stopped-listener connection
+refusal must yield NOT_READY; read-held atomic configure and a subsequent
+configure must succeed; a deliberately incompatible external reader can refuse
+one configure but must not poison the next call after release. Lifecycle tests
+pin STOPPED terminal and forbid STOPPING-to-RUNNING; native SCM status publication
+uses one SRW lock for state and SetServiceStatus, publishes STOP_PENDING before
+the stop flag and never reports a backwards terminal transition. Recovery state
+is refused on redirected remote/non-ACL volumes or a mismatched base owner.

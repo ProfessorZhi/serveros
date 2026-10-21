@@ -45,6 +45,8 @@ class LocalWatchState {
 };
 std::unique_ptr<LocalWatchState> open_local_watch_state();
 int run_windows_watch(std::atomic<bool> &stop);
+enum class WatchServicePhase { Starting, Running, Stopping, Stopped };
+bool service_phase_transition(WatchServicePhase before, WatchServicePhase after);
 int run_windows_service();
 bool publish_windows_desired(const std::string &);
 } // namespace nodecore::windows_core

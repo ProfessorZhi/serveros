@@ -30,3 +30,13 @@ Real Windows service/task identity and functional probe configurations require l
 Independent review found three concrete blockers in the first source candidate: AccessCheck lacked owner/group; CancelIoEx followed by infinite GetOverlappedResult violated deadlines; first healthy/refused transaction never initialized its journal. Request the complete task descriptor and exercise real AccessCheck fixtures; heap-own every OVERLAPPED and kernel-facing buffer, retain incomplete cancellations in a process-lifetime registry capped at 128, and close failed pipe instances; initialize the journal durably under its first exclusive lock before exposing it. Reopening a deleted committed record remains a refusal.
 
 The next commit adds a minimal resident Windows watch console/SCM service wrapper, fixed owner-protected local desired configuration, per-target functional loopback HTTP JSON probes and per-pass status publication. It reuses running/manual/disabled, observe_only and generation semantics; it does not install a service or invent a second machine authority. The watch must remain responsive when a status client stalls. Native service actions remain real-device NOT_RUN.
+
+The resident review additionally confirmed three Windows-specific defects and
+fixed them: async Winsock connect must monitor write and exception sets before
+SO_ERROR; immutable document readers must share deletion for atomic replacement,
+and a failed publisher removes only its own open newly-created temp by handle;
+SCM lifecycle status is serialized and STOP_PENDING is published before the stop
+flag, with STOPPED terminal. A local fixed ACL-capable volume and measured base
+owner are required, so redirected network storage cannot become recovery state.
+The generation/hash record is a local per-pass accepted-config fence only; it is
+not a Work/epoch authority or a replacement for the owning control runtime.
