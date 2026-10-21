@@ -239,9 +239,9 @@ class Harness:
 
 
 class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
-    def test_it_is_the_ninth_and_the_only_thing_after_create(self):
+    def test_interrupt_stays_ninth_before_the_project_extension(self):
         names = fleet_tools.tool_names()
-        self.assertEqual(names[8:], ["fleet_interrupt_session"])
+        self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project"])
         # The eight that came before are still there, still in their order.
         self.assertEqual(names[:8], [
             "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
@@ -705,11 +705,11 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
         self.assertEqual(np.ROUTES.count("POST /v1/sessions/{id}/interrupt"), 1)
         self.assertIn("POST /v1/sessions/{id}/interrupt", np.ROUTES)
 
-    def test_the_route_table_gained_exactly_one_entry(self):
+    def test_the_route_table_contains_one_interrupt_entry(self):
         from fleet_mcp import node_protocol as np
 
-        # Nine session routes plus the one mirrored-native route.
-        self.assertEqual(len(np.ROUTES), 10)
+        # The session routes, native mirror, core status and fresh projects.
+        self.assertEqual(len(np.ROUTES), 12)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

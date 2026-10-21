@@ -161,8 +161,10 @@ class FakeDeviceProvider:
         return cloudcli_native.capability_snapshot(
             device_ref=DEVICE,
             observed={
-                "sessions_list": {"annotations": {"readOnlyHint": True}, "schema": {}},
-                "session_get": {"annotations": {"readOnlyHint": True}, "schema": {}},
+                "sessions_list": {"annotations": {"readOnlyHint": True}, "schema": {},
+                                 "_meta": {"cloudcli/handlerBound": True}},
+                "session_get": {"annotations": {"readOnlyHint": True}, "schema": {},
+                                 "_meta": {"cloudcli/handlerBound": True}},
             },
             source="TEST_FIXTURE",
             version="0.0.0-test",
