@@ -46,7 +46,7 @@ NOW = "2026-09-15T00:00:00Z"
 
 
 def row(ref: str = "session:dev:botmux:s1", *, runtime: str = "claude-code",
-        device: str = "device:server-beijing", status: str = "RUNNING",
+        device: str = "device:tokyo-shared-dev-01", status: str = "RUNNING",
         support: dict | None = None, **extra) -> dict:
     """A provider row, shaped the way `mcp/botmux_provider.py#list_sessions`
     really shapes one. Copied from that method rather than invented, because a
@@ -305,8 +305,8 @@ class TheLevelsSayWhatTheyMayAndNoMore(unittest.TestCase):
         for ref in ("session:dev:botmux:s1", "session:dev:botmux:s2"):
             self.assertNotIn(ref, encoded)
         by_device = {entry["device_ref"]: entry for entry in payload["by_device"]}
-        self.assertEqual(by_device["device:server-beijing"]["total"], 2)
-        self.assertEqual(by_device["device:server-beijing"]["by_runtime"],
+        self.assertEqual(by_device["device:tokyo-shared-dev-01"]["total"], 2)
+        self.assertEqual(by_device["device:tokyo-shared-dev-01"]["by_runtime"],
                          {"claude-code": 1, "codex": 1})
 
     def test_l1_is_one_card_per_session_with_the_six_facts(self):

@@ -7,6 +7,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,7 +101,15 @@ def test_registry_public_surface_carries_no_transport_or_machine_identifiers():
 def test_legacy_ids_migrate_rather_than_fork_identity():
     """A rename adds an alias; it does not strand earlier evidence."""
     registry = DeviceRegistry(contract("registry.yaml"))
-    assert registry.resolve("linux-server").device_ref.ref == "device:server-beijing"
+    # `linux-server` was `device:server-beijing`'s alias, and Beijing was
+    # retired on 2026-10-21. An alias outliving the device it named is how a
+    # retired machine keeps answering requests: it resolves, the caller gets a
+    # row that says `enrolled`, and nothing anywhere says the host is gone.
+    # So the assertion flipped from "the alias still resolves" to "the alias
+    # refuses" — the property being defended is unchanged, and it is now the
+    # property this fleet actually has.
+    with pytest.raises(transport.UnknownDevice):
+        registry.resolve("linux-server")
     assert registry.resolve("dell-work").device_ref.ref == "device:personal-dell"
     # The alias resolves to the SAME Device object, not a second one.
     assert registry.resolve("dell-work") is registry.resolve("device:personal-dell")
@@ -137,23 +146,23 @@ def test_profiles_bind_one_role_to_different_physical_paths():
     registry = DeviceRegistry(contract("registry.yaml"))
     profiles = Profiles(contract("profiles.yaml"))
 
-    beijing = profiles.resolve(registry.resolve("device:server-beijing"), "workspace.src")
+    lab = profiles.resolve(registry.resolve("device:llm-lab-dell"), "workspace.src")
     fj = profiles.resolve(registry.resolve("device:work-fj"), "workspace.src")
     dell = profiles.resolve(registry.resolve("device:personal-dell"), "workspace.src")
 
-    assert beijing.role == fj.role == dell.role == "workspace.src"
-    assert len({beijing.path, fj.path, dell.path}) == 3, "paths must differ per device"
-    assert beijing.path.startswith("/") and ":" in fj.path, "platform-native forms are expected"
+    assert lab.role == fj.role == dell.role == "workspace.src"
+    assert len({lab.path, fj.path, dell.path}) == 3, "paths must differ per device"
+    assert lab.path.startswith("/") and ":" in fj.path, "platform-native forms are expected"
 
 
 def test_unbound_and_not_applicable_are_different_facts():
     registry = DeviceRegistry(contract("registry.yaml"))
     profiles = Profiles(contract("profiles.yaml"))
-    beijing = registry.resolve("device:server-beijing")
+    lab = registry.resolve("device:llm-lab-dell")
 
     # A role that exists here but has no path yet is a real gap.
     try:
-        profiles.resolve(beijing, "downloads")
+        profiles.resolve(lab, "downloads")
     except transport.PathRoleUnbound as exc:
         assert not isinstance(exc, transport.PathRoleNotApplicable)
     else:
@@ -162,7 +171,7 @@ def test_unbound_and_not_applicable_are_different_facts():
     # A role with no meaning on this device is not a gap, and saying so is
     # different from saying "we have not looked".
     try:
-        profiles.resolve(beijing, "software.gui")
+        profiles.resolve(lab, "software.gui")
     except transport.PathRoleNotApplicable:
         pass
     else:
@@ -482,14 +491,14 @@ def test_profiles_are_not_required_to_be_isomorphic():
     """
     c = contract("profiles.yaml")
     profiles = c["profiles"]
-    # Five, not three, since `tokyo-shared-dev-01` and then `llm-lab-dell` were
-    # enrolled. Written out in full rather than counted, so that a profile
-    # appearing or disappearing shows up in a diff as a NAME -- a
-    # `len(...) == 4` here would report a substitution as nothing having
-    # happened.
-    assert set(profiles) == {"linux-server", "windows-corporate",
-                             "windows-personal", "linux-shared-multiuser",
-                             "linux-gpu-compute"}
+    # Four since `linux-server` was retired with `device:server-beijing` on
+    # 2026-10-21 -- it was five when `tokyo-shared-dev-01` and then
+    # `llm-lab-dell` were enrolled. Written out in full rather than counted, so
+    # that a profile appearing or disappearing shows up in a diff as a NAME --
+    # a `len(...) == 4` here would report a substitution as nothing having
+    # happened, which is exactly the shape of the change that retired one.
+    assert set(profiles) == {"windows-corporate", "windows-personal",
+                             "linux-shared-multiuser", "linux-gpu-compute"}
 
     bound = {
         name: {role for role, e in p["paths"].items() if e.get("state", "BOUND") == "BOUND"}
@@ -499,7 +508,7 @@ def test_profiles_are_not_required_to_be_isomorphic():
         "forcing identical bound sets would install Linux-shaped roles onto "
         "Windows laptops"
     )
-    assert bound["linux-server"] != bound["windows-corporate"]
+    assert bound["linux-shared-multiuser"] != bound["windows-corporate"]
 
     non_applicable = {
         name: {role for role, e in p["paths"].items() if e.get("state") == "NOT_APPLICABLE"}

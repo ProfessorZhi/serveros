@@ -31,36 +31,23 @@ schema: serveros/fleet-registry.v1
 # nothing measured it, it is UNKNOWN.
 # ---------------------------------------------------------------------------
 
+# `device:server-beijing` was retired on 2026-10-21 and is deliberately ABSENT
+# from this list. It is not renamed, not folded into another row, and not kept
+# as an `enrolled` record with an empty body: a row that still answers is a row
+# that still tells callers the machine is there. Its `linux-server` environment
+# profile went with it, and its `linux-server` legacy id went with it -- an alias
+# that outlives the device is how a retired host keeps answering requests.
+#
+# `roles` loses `fleet-controller-primary` without that role moving to another
+# device. Nothing in this fleet is the node it is controlled FROM: the two
+# control planes are MCP servers, not controllers, and `fleet.devices` reports
+# `controller: NOT_EXPOSED` because that is what is true. Inventing a successor
+# would put a role on a row whose own host profile does not claim it.
+#
+# ---------------------------------------------------------------------------
 # Environment profiles are declared in fleet/profiles.yaml. A device names one;
 # it does not carry the profile inline, so a profile cannot fork per device.
 devices:
-  - device_ref: device:server-beijing
-    device_id: server-beijing
-    display_name: Beijing-Server
-    platform: linux
-    ownership: personal
-    # `server` was this device's earlier role. It restated `platform: linux`,
-    # which is the one thing a role must not do: a role that duplicates a
-    # field next to it hides the role that carries information. The role that
-    # carries information here is the one below — that this host is the node
-    # the fleet is controlled FROM.
-    #
-    # Roles are not identities and not aliases: nothing resolves by role, and
-    # changing this line renames nothing and strands no evidence.
-    roles: [fleet-controller-primary]
-    environment_profile: linux-server
-    agents: [claude-code, codex]
-    runtime_bindings:
-      - runtime_ref: agent-runtime:claude-code
-        declared_at: 2026-09-14
-      - runtime_ref: agent-runtime:codex
-        declared_at: 2026-09-14
-    # Historical ids remain resolvable. They renamed; they did not disappear.
-    # Preserving them keeps earlier Installation and Revision evidence attached
-    # to a stable identity instead of stranding it under a dead key.
-    legacy_ids: [linux-server]
-    enrollment: enrolled
-
   - device_ref: device:work-fj
     device_id: work-fj
     display_name: FJPCOS

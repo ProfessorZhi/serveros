@@ -1886,6 +1886,34 @@ def cmd_space_meeting(args) -> int:
     return EXIT_OK
 
 
+def _fleet_roles_for(device_ref: str | None) -> list[str]:
+    """The roles `fleet/registry.yaml` states for this device, read and not repeated.
+
+    This field used to be the literal `fleet-controller-primary (reference
+    node)`. That was a second place declaring a fact the registry document
+    already stated, which the comment one line below says is exactly how two
+    places come to disagree -- and on 2026-10-21 they did: the role was retired
+    with `device:server-beijing`, and the literal went on claiming it.
+
+    A device ref nobody enrolled gets no roles, which is the same answer the
+    registry gives any other caller, and an unreadable registry is reported as
+    no roles rather than as a crash: this command's job is to say what this
+    host is, and "the fleet file would not parse" is not an identity.
+    """
+    if not device_ref:
+        return []
+    path = REPO_ROOT / "fleet/registry.yaml"
+    try:
+        import yaml
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return []
+    for entry in document.get("devices") or ():
+        if isinstance(entry, dict) and entry.get("device_ref") == device_ref:
+            return [str(role) for role in entry.get("roles") or ()]
+    return []
+
+
 def cmd_device_show(args) -> int:
     reg = load_registry(args.registry)
     inv = inventory_mod.Inventory()
@@ -1895,7 +1923,7 @@ def cmd_device_show(args) -> int:
         # copy of a fact the registry document already states, and two places
         # declaring one node's identity is exactly how they come to disagree.
         "device_ref": reg.device_ref,
-        "role": "fleet-controller-primary (reference node)",
+        "roles": _fleet_roles_for(reg.device_ref),
         "host": host,
         "managed_resources": {
             "count": len(reg),

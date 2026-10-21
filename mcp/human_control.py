@@ -1178,7 +1178,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--record-ref", default=INGRESS_RECORD_REF,
                         help="which declared path reference the record is "
                              "appended to; defaults to this product's")
-    parser.add_argument("--device", default="device:server-beijing")
+    # `device:server-beijing` was retired on 2026-10-21. A default naming a
+    # device that is no longer enrolled is worse than no default at all: it
+    # answers, so nobody looks, and the id it answers with belongs to a host
+    # that is gone. The botmux host this mounts on is Tokyo.
+    parser.add_argument("--device", default="device:tokyo-shared-dev-01")
     args = parser.parse_args(argv)
 
     provider = BotMuxHumanControlProvider()

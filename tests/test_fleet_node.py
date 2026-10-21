@@ -50,7 +50,7 @@ def _profiles() -> transport.Profiles:
     return transport.Profiles(PROFILES)
 
 
-def _root(tmp_path: Path, device_ref: str | None = "device:server-beijing") -> Path:
+def _root(tmp_path: Path, device_ref: str | None = "device:llm-lab-dell") -> Path:
     """A temporary control root, optionally bound."""
     root = tmp_path / "serveros"
     root.mkdir(parents=True, exist_ok=True)
@@ -92,10 +92,10 @@ def test_the_binding_resolves_through_the_registry_rather_than_declaring(tmp_pat
     root = _root(tmp_path)
     local = node.local_node(root, _registry())
 
-    assert local.device_ref.ref == "device:server-beijing"
+    assert local.device_ref.ref == "device:llm-lab-dell"
     # Attributes come from the registry, and came from it whole.
-    assert local.device.display_name == "Beijing-Server"
-    assert local.device.environment_profile == "linux-server"
+    assert local.device.display_name == "Dell-LLM-Lab"
+    assert local.device.environment_profile == "linux-gpu-compute"
     assert local.device.platform == "linux"
 
     shown = local.show()
@@ -108,7 +108,7 @@ def test_a_binding_that_declares_an_attribute_is_rejected(tmp_path):
     root.mkdir()
     (root / "node.yaml").write_text(
         "schema: serveros/node.v1\n"
-        "device_ref: device:server-beijing\n"
+        "device_ref: device:llm-lab-dell\n"
         "display_name: Something-Else\n"
         "roles: [personal-workstation]\n",
         encoding="utf-8",
@@ -124,11 +124,11 @@ def test_a_binding_naming_an_unenrolled_device_does_not_enrol_it(tmp_path):
     with pytest.raises(node.NodeBindingInvalid) as exc:
         node.local_node(root, _registry())
     assert "cannot enrol" in str(exc.value)
-    # And the fleet is unchanged by the attempt. Five since the Dell LLM Lab
-    # host was enrolled; this asserts the count did not move DURING the
+    # And the fleet is unchanged by the attempt. Four since the Beijing host
+    # was retired on 2026-10-21; this asserts the count did not move DURING the
     # attempt, so the number is only meaningful relative to the registry it is
     # read from.
-    assert len(_registry().all()) == 5
+    assert len(_registry().all()) == 4
 
 
 def test_the_control_root_may_not_carry_a_credential(tmp_path):
@@ -136,7 +136,7 @@ def test_the_control_root_may_not_carry_a_credential(tmp_path):
     root.mkdir()
     (root / "node.yaml").write_text(
         "schema: serveros/node.v1\n"
-        "device_ref: device:server-beijing\n"
+        "device_ref: device:llm-lab-dell\n"
         "note: {access_token: 'x'}\n",
         encoding="utf-8",
     )
@@ -213,13 +213,26 @@ def test_a_binding_carrying_a_credential_is_refused(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_beijing_is_frozen_as_the_fleet_controller_primary():
-    dev = _registry().resolve("device:server-beijing")
-    assert dev.device_ref.ref == "device:server-beijing"
-    assert dev.environment_profile == "linux-server"
-    assert "fleet-controller-primary" in dev.roles
-    # The old role restated `platform`; the new one carries information.
-    assert "server" not in dev.roles
+def test_the_retired_reference_node_is_gone_and_nothing_claims_its_role():
+    """Beijing was retired on 2026-10-21, and retirement is a human decision.
+
+    There are two ways it could come back without anyone deciding that it
+    should: an alias left behind in some other row's `legacy_ids`, or a
+    replacement device quietly adopting `fleet-controller-primary` because a
+    fleet "ought" to have a controller. Both are refused here.
+
+    The honest state of this fleet is that no device is the node it is
+    controlled FROM. `fleet.devices` already reports `controller:
+    NOT_EXPOSED`, and an empty role is the registry saying the same thing in
+    the same words.
+    """
+    registry = _registry()
+    with pytest.raises(transport.UnknownDevice):
+        registry.resolve("device:server-beijing")
+    with pytest.raises(transport.UnknownDevice):
+        registry.resolve("linux-server")
+    assert [d.device_ref.ref for d in registry.all()
+            if "fleet-controller-primary" in d.roles] == []
 
 
 def test_fj_is_frozen_as_a_corporate_windows_workstation():
@@ -322,7 +335,7 @@ def test_every_interface_is_answerable_with_no_controller(tmp_path):
     for name in interfaces.declared_interfaces():
         kwargs = {
             "device.show": {}, "environment.inspect": {}, "context.resolve": {"role": "workspace.src"},
-            "path.resolve": {"role": "workspace.src", "device_ref": "device:server-beijing"},
+            "path.resolve": {"role": "workspace.src", "device_ref": "device:llm-lab-dell"},
             "ability.list": {"device_ref": "device:work-fj"},
             "ability.status": {"device_ref": "device:work-fj", "ability": "feishu-report"},
             "fleet.devices": {}, "fleet.device.inspect": {"device_ref": "device:work-fj"},
@@ -335,7 +348,7 @@ def test_every_interface_is_answerable_with_no_controller(tmp_path):
 def test_device_show_returns_no_transport_name(tmp_path):
     root = _root(tmp_path)
     shown = _api(tmp_path, control_root=root).call("device.show")
-    assert shown["device_ref"] == "device:server-beijing"
+    assert shown["device_ref"] == "device:llm-lab-dell"
     blob = repr(shown).lower()
     for forbidden in ("hostname", "uuid", "fj-cvm-bj", "fj-nj-cl", "computer_name"):
         assert forbidden not in blob, forbidden
@@ -359,11 +372,11 @@ def test_unbound_and_not_applicable_stay_distinguishable_through_the_interface(t
     """The caller must be able to tell 'wait' from 'stop asking'."""
     api = _api(tmp_path, control_root=_root(tmp_path))
     with pytest.raises(transport.PathRoleUnbound) as unbound:
-        api.call("path.resolve", role="downloads", device_ref="device:server-beijing")
+        api.call("path.resolve", role="downloads", device_ref="device:llm-lab-dell")
     assert not isinstance(unbound.value, transport.PathRoleNotApplicable)
 
     with pytest.raises(transport.PathRoleNotApplicable):
-        api.call("path.resolve", role="software.gui", device_ref="device:server-beijing")
+        api.call("path.resolve", role="software.gui", device_ref="device:llm-lab-dell")
 
 
 def test_ability_list_reports_unavailable_rather_than_empty(tmp_path):
@@ -436,9 +449,9 @@ def test_a_controller_less_runtime_still_lists_every_device(tmp_path):
     api = _api(tmp_path, control_root=_root(tmp_path))
     fleet = api.call("fleet.devices")
 
-    assert fleet["count"] == 5
+    assert fleet["count"] == 4
     assert {d["device_ref"] for d in fleet["devices"]} == {
-        "device:server-beijing", "device:work-fj", "device:personal-dell",
+        "device:work-fj", "device:personal-dell",
         "device:tokyo-shared-dev-01", "device:llm-lab-dell"}
     assert fleet["controller"] == "NOT_EXPOSED"
     for device in fleet["devices"]:
@@ -490,7 +503,7 @@ def test_capability_find_reports_external_only_rather_than_dropping_devices(tmp_
         found = api.call("fleet.capability.find", level=level)
         assert found["level"] == "inspect" and found["aliased"] is (level != "inspect")
         assert {row["device_ref"] for row in found["devices"]} == {
-            "device:server-beijing", "device:work-fj", "device:personal-dell",
+            "device:work-fj", "device:personal-dell",
             "device:tokyo-shared-dev-01", "device:llm-lab-dell"}
         assert found["summary"] == ["EXTERNAL_ONLY"]
         assert "unsupported" not in found["note"].split("It is not")[0]
