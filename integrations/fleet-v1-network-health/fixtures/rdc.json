@@ -1,0 +1,103 @@
+{
+  "profile": {
+    "profile_id": "rdc/windows-fixture",
+    "service_kind": "rdc",
+    "platform": "windows",
+    "owner_device_ref": "device:fixture-windows",
+    "owner_principal_ref": "fixture-windows-user",
+    "required_axes": ["liveness", "listener", "transport", "identity", "functional"],
+    "identity": {
+      "declared_by": "owner_declared",
+      "service_name": "owner-declared-rdc-adapter",
+      "identity_ref": "identity:rdc-fixture",
+      "listener_address": "127.0.0.1",
+      "listener_port": 48001,
+      "remote_device_ref": "device:fixture-rdc-target",
+      "tunnel_id": null,
+      "pid": null,
+      "fixture_only": true
+    },
+    "required_grants": ["grant:network-health:read"],
+    "recovery_grant": null,
+    "recovery_domain": "human_only",
+    "allowed_verbs": [],
+    "retry": {
+      "max_attempts": 3,
+      "base_delay_s": 5.0,
+      "factor": 2.0,
+      "max_delay_s": 20.0,
+      "window_s": 3600.0
+    },
+    "requires_listener": true,
+    "requires_remote_identity": true,
+    "requires_tunnel_identity": false,
+    "requires_service_identity": true,
+    "claims_authenticated_health": true,
+    "offline_recoverable": false,
+    "link_dependent": true,
+    "local_tunnel": false,
+    "human_only": true,
+    "stream_scope": null,
+    "fixture_only": true
+  },
+  "readings": [
+    {
+      "axis": "liveness",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-windows-scmanager"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "SERVICE_RUNNING"
+    },
+    {
+      "axis": "listener",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-rdc-listener"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "LISTENER_ACCEPTING"
+    },
+    {
+      "axis": "transport",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-rdc-transport"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "RDC_TRANSPORT_OK"
+    },
+    {
+      "axis": "identity",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-rdc-identity"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "provider-response"},
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "RDC_IDENTITY_OK"
+    },
+    {
+      "axis": "functional",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-rdc-session"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {
+        "type": "provider-response",
+        "remote_device_ref": "device:fixture-rdc-target"
+      },
+      "device_ref": "device:fixture-windows",
+      "principal_ref": "fixture-windows-user",
+      "max_age_s": 120,
+      "detail_code": "RDC_SESSION_READY"
+    }
+  ]
+}

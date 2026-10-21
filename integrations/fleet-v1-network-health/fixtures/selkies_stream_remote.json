@@ -1,0 +1,92 @@
+{
+  "profile": {
+    "profile_id": "selkies-stream-remote/fixture",
+    "service_kind": "selkies_stream",
+    "platform": "linux",
+    "owner_device_ref": "device:tokyo-shared-dev-01",
+    "owner_principal_ref": "vince",
+    "required_axes": ["listener", "transport", "identity", "functional"],
+    "identity": {
+      "declared_by": "owner_declared",
+      "service_name": "owner-declared-remote-stream",
+      "identity_ref": "identity:selkies-remote-fixture",
+      "listener_address": "127.0.0.1",
+      "listener_port": 47001,
+      "remote_device_ref": "device:fixture-remote-selkies",
+      "tunnel_id": null,
+      "pid": null,
+      "fixture_only": true
+    },
+    "required_grants": ["grant:network-health:read"],
+    "recovery_grant": null,
+    "recovery_domain": "remote_device",
+    "allowed_verbs": ["request_remote_owner_recovery"],
+    "retry": {
+      "max_attempts": 3,
+      "base_delay_s": 5.0,
+      "factor": 2.0,
+      "max_delay_s": 20.0,
+      "window_s": 3600.0
+    },
+    "requires_listener": true,
+    "requires_remote_identity": true,
+    "requires_tunnel_identity": false,
+    "requires_service_identity": true,
+    "claims_authenticated_health": true,
+    "offline_recoverable": false,
+    "link_dependent": true,
+    "local_tunnel": false,
+    "human_only": false,
+    "stream_scope": "remote",
+    "fixture_only": true
+  },
+  "readings": [
+    {
+      "axis": "listener",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-local-relay"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "LISTENER_ACCEPTING"
+    },
+    {
+      "axis": "transport",
+      "state": "OK",
+      "observed_by": {"type": "host-measurement", "id": "fixture-stream-transport"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "host-measurement"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "STREAM_TRANSPORT_OK"
+    },
+    {
+      "axis": "identity",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-stream-identity"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {"type": "provider-response"},
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "STREAM_IDENTITY_OK"
+    },
+    {
+      "axis": "functional",
+      "state": "OK",
+      "observed_by": {"type": "provider-response", "id": "fixture-remote-stream"},
+      "observed_at": "2026-10-17T23:59:50Z",
+      "evidence": {
+        "type": "provider-response",
+        "remote_device_ref": "device:fixture-remote-selkies"
+      },
+      "device_ref": "device:tokyo-shared-dev-01",
+      "principal_ref": "vince",
+      "max_age_s": 120,
+      "detail_code": "REMOTE_STREAM_AUTHENTICATED_READY"
+    }
+  ]
+}
