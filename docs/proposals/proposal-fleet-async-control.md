@@ -126,6 +126,13 @@ aggregate health query is a prerequisite for a targeted read.
 
 ### Session identity
 
+The implemented shared validator is `fleet_mcp/session_detail.py`. Both the
+Node adapter and final Fleet service consume it. The CloudCLI normalizer keeps
+the complete flat native source nested before attaching a routing key, so
+family/device/native-id evidence cannot be overwritten. Only the Node adapter
+may repair its demonstrably legacy outer Claude wrapper; native contradictions
+and other account namespaces remain refusals.
+
 Trace `fleet_mcp/providers/fleet_node.py#get_session` through
 `fleet_mcp/node/connector.py#Connector._key` to
 `fleet_mcp/providers/cloudcli.py#CloudCliProvider._normalize_detail`. The

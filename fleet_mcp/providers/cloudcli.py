@@ -273,6 +273,11 @@ class CloudCliProvider(DeviceProvider):
         verdict, running, resident, evidence = classify(source)
         run = payload.get("run") or payload.get("currentRun") or source.get("run")
         detail = dict(payload)
+        if "session" not in payload:
+            # Preserve the flat native identity before attaching a routing key.
+            # In particular, the legacy connector's synthesized Claude key
+            # must not erase evidence that the native session is Codex.
+            detail["session"] = dict(source)
         detail.update(
             {
                 **key.as_dict(),

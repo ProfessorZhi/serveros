@@ -11,7 +11,7 @@ from .errors import PROVIDER_TIMEOUT, FleetRefusal
 
 def discovery_settings(timeout, workers):
     if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout) or not 0 < timeout <= 60):
+            or not 0 < timeout <= 60 or not math.isfinite(timeout)):
         raise ValueError("discovery_timeout_seconds must be finite and in (0, 60]")
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
         raise ValueError("discovery_workers must be an integer in [1, 16]")

@@ -55,6 +55,7 @@ from .errors import (
     refuse,
 )
 from .identity import SessionKey
+from .session_detail import normalize_detail
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
 from .registry import (
@@ -1129,6 +1130,8 @@ class FleetService:
         self.admit(principal)
         provider = self._require_provider(key.device_ref, key.provider)
         detail = provider.get_session(key)
+        detail = normalize_detail(
+            key, detail, self.config.provider_for(key.device_ref, key.provider))
         detail["control"] = self._session_control_state(principal, key)
         self.audit.record("fleet.get_session", principal=principal.name, session_ref=key.ref)
         return detail

@@ -108,7 +108,7 @@ class Discovery(unittest.TestCase):
 
 class DiscoveryPolicy(unittest.TestCase):
     def test_invalid_direct_policy_is_rejected(self):
-        for timeout in (0, -1, float("nan"), float("inf"), True, "5", 61):
+        for timeout in (0, -1, float("nan"), float("inf"), True, "5", 61, 10**1000):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 PolicyBinding(discovery_timeout_seconds=timeout)
         for workers in (0, -1, True, 1.5, "2", 17):

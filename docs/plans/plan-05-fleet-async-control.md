@@ -105,6 +105,11 @@ as receiving this aggregate deadline.
 
 ### 3. Runtime identity and integration
 
+Implementation refinement: `fleet_mcp/session_detail.py` owns the shared
+validation used by FleetNodeProvider and FleetService. CloudCliProvider preserves
+all flat native source fields before outer address attachment. Include actual
+CloudCLI-path cases for every identity alias, not only synthetic Node responses.
+
 Objectives: preserve the provider/session identity observed on the device.
 
 Stages (TDD first): reproduce the Windows Codex mismatch with nested native

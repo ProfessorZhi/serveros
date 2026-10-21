@@ -388,10 +388,12 @@ class FleetNodeProvider(DeviceProvider):
         return [summary_from_dict(row) for row in (payload.get("sessions") or []) if isinstance(row, dict)]
 
     def get_session(self, key: SessionKey) -> dict[str, Any]:
+        from ..session_detail import normalize_detail, validate_binding_target
+        validate_binding_target(key, self.binding)
         payload = self._request("GET", f"/v1/sessions/{urllib.parse.quote(key.native_session_id)}")
         if not payload:
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
-        return payload
+        return normalize_detail(key, payload, self.binding, repair_legacy_claude=True)
 
     def read_session(
         self,
