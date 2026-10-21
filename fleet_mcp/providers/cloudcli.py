@@ -13,6 +13,7 @@ this surface is not going to have its own opinion about it.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from ..config import ProviderBinding
@@ -71,6 +72,7 @@ class CloudCliProvider(DeviceProvider):
         self._health: ProviderHealth | None = None
         self._health_at: float = 0.0
         self._tools: list[dict[str, Any]] | None = None
+        self._tools_sampled_at: str | None = None
         self._coverage: dict[str, Any] = {}
 
     def native_coverage(self) -> dict[str, Any]:
@@ -90,7 +92,7 @@ class CloudCliProvider(DeviceProvider):
         assumed present. Nothing here reads a credential or mutates the device.
         """
         health = self.health()
-        if not self._tools:
+        if health.error_code or self._tools is None:
             return cloudcli_native.capability_snapshot(
                 device_ref=self.device_ref, source=self.kind,
                 reason=health.error_code or "the device's tool list was not read")
@@ -103,7 +105,7 @@ class CloudCliProvider(DeviceProvider):
         return cloudcli_native.capability_snapshot(
             device_ref=self.device_ref, observed=observed, source=self.kind,
             version=health.server_version,
-            sampled_at=health.__dict__.get("sampled_at"))
+            sampled_at=self._tools_sampled_at)
 
     # -- plumbing ----------------------------------------------------------
 
@@ -177,6 +179,9 @@ class CloudCliProvider(DeviceProvider):
             info = client.initialize()
             tools = client.tools_list()
         except ProviderRefusal as exc:
+            self._tools = None
+            self._tools_sampled_at = None
+            self._coverage = {}
             self._health = ProviderHealth(
                 device_ref=self.device_ref,
                 kind=self.kind,
@@ -190,6 +195,7 @@ class CloudCliProvider(DeviceProvider):
             return self._health
         server = (info or {}).get("serverInfo") or {}
         self._tools = tools
+        self._tools_sampled_at = datetime.now(timezone.utc).isoformat()
         # HIGH-7(f): the device's LIVE tool list is compared with the recorded
         # set here, so a device running a different CloudCLI is a fact in
         # `fleet_status` rather than a surprise at call time.

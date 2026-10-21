@@ -1,6 +1,8 @@
 """Live registration metadata wins over the historical default-handler table."""
 from fleet_mcp import cloudcli_native
 from test_fleet_mcp_cloudcli_provider import FakeClient, provider, DEVICE
+from fleet_mcp.mcp_http import ProviderRefusal
+from fleet_mcp.errors import PROVIDER_TIMEOUT
 
 
 def snapshot(value):
@@ -43,3 +45,28 @@ def test_cloudcli_provider_preserves_only_the_typed_binding_metadata():
     result = provider(client).capability_snapshot()
     assert result["tools"]["run_get"]["state"] == cloudcli_native.USABLE
     assert "unrelated" not in str(result)
+
+
+def test_failed_refresh_does_not_relabel_old_evidence_as_live():
+    client = FakeClient()
+    client.tools_list = lambda: [{"name": "run_get", "inputSchema": {},
+                                 "_meta": {"cloudcli/handlerBound": True}}]
+    instance = provider(client)
+    assert instance.capability_snapshot()["tools"]["run_get"]["state"] == cloudcli_native.USABLE
+
+    def unavailable():
+        raise ProviderRefusal(PROVIDER_TIMEOUT, "synthetic timeout")
+
+    client.tools_list = unavailable
+    result = instance.capability_snapshot()
+    assert result["state"] == "UNKNOWN" and result["tools"] == {}
+    assert instance.native_coverage() == {}
+
+
+def test_successful_empty_list_is_observed_not_unknown():
+    client = FakeClient()
+    client.tools_list = lambda: []
+    result = provider(client).capability_snapshot()
+    assert result["state"] == "OBSERVED" and result["observed_count"] == 0
+    assert result["sampled_at"]
+    assert len(result["unsupported_by_device"]) == 22
