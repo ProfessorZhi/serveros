@@ -235,8 +235,10 @@ def main(argv: list[str] | None = None) -> int:
             claims["TOOLS_LIST_OK"] = bool(tools) and claims["MCP_CONNECTED"]
             claims["tool_count_actual"] = len(tools)
             claims["tool_names"] = sorted(tools)
-            claims["project_create_capability_actual"] = (
-                "fleet_create_project" in tools)
+            project_tool = tools.get("fleet_create_project") or {}
+            claims["project_create_capability_actual"] = bool(project_tool)
+            claims["project_create_schema"] = project_tool
+            claims["TOOLS_LIST_SOURCE"] = "app-server mcpServerStatus/list"
             if not claims["TOOLS_LIST_OK"]:
                 failures.append("TOOLS_LIST_OK")
 
@@ -248,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             claims["TOOL_CALL_OK"] = (
                 "error" not in call and result.get("isError") is not True
                 and bool(result.get("content")))
+            claims["TOOL_CALL_SOURCE"] = "app-server mcpServer/tool/call"
             if not claims["TOOL_CALL_OK"]:
                 failures.append("TOOL_CALL_OK")
         finally:
@@ -265,18 +268,18 @@ def main(argv: list[str] | None = None) -> int:
             (out / "logs" / "owned-readback.json").write_text(
                 json.dumps(readback, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8")
-            claims["owned_readback"] = readback
-            claims["tool_count_actual"] = readback["tool_count_actual"]
-            claims["project_create_capability_actual"] = readback["project_create_present"]
-            claims["OWNED_READBACK_OK"] = bool(
+            claims["owned_probe"] = readback
+            claims["PROBE_TOOL_COUNT_ACTUAL"] = readback["tool_count_actual"]
+            claims["PROBE_PROJECT_CREATE_PRESENT"] = readback["project_create_present"]
+            claims["OWNED_PROBE_OK"] = bool(
                 readback["tool_count_actual"] >= 34
                 and readback["project_create_present"]
                 and readback["six_scopes"]
                 and readback["durability"] == "AGENT_CONTROL_STORE"
                 and {"claude", "codex"} <= set(readback["owner_access_families"])
                 and readback["session_read"] is not None)
-            if not claims["OWNED_READBACK_OK"]:
-                failures.append("OWNED_READBACK_OK")
+            if not claims["OWNED_PROBE_OK"]:
+                failures.append("OWNED_PROBE_OK")
     except Exception as exc:  # receipt first, then nonzero exit
         claims["error"] = f"{type(exc).__name__}: {exc}"
         failures.append("EXCEPTION")
@@ -288,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         "TOOLS_LIST_OK": claims.get("TOOLS_LIST_OK", False),
         "TOOL_CALL_OK": claims.get("TOOL_CALL_OK", False),
         "SKILLS_BYTES": claims.get("SKILLS_BYTES", False),
-        **({"OWNED_READBACK_OK": claims.get("OWNED_READBACK_OK", False)}
+        **({"OWNED_PROBE_OK": claims.get("OWNED_PROBE_OK", False)}
            if owned else {}),
     }
     claims["failures"] = failures
@@ -302,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
         f"- MCP connected: `{claims.get('MCP_CONNECTED')}`\n"
         f"- Tools listed: `{claims.get('tool_count_actual', 0)}`\n"
         f"- Project-create capability present: `{claims.get('project_create_capability_actual')}`\n"
-        f"- Tool call: `{claims.get('TOOL_CALL_OK')}`\n"
+        f"- Tool call (app-server): `{claims.get('TOOL_CALL_OK')}`\n"
+        f"- Independent owned probe: `{claims.get('OWNED_PROBE_OK')}` (separate chain)\n"
         f"- Skills byte-identical: `{claims.get('SKILLS_BYTES')}`\n"
         f"- Model turns requested: `0`\n"
         f"- Real owned runtime: `{owned}`\n"

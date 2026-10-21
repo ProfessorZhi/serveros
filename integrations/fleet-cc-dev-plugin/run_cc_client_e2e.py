@@ -147,6 +147,7 @@ class Runner:
         self.server_name = "serveros-fleet" if owned_entry else fixture.SERVER_NAME
         self.qualified_server = f"plugin:{self.plugin_name}:{self.server_name}"
         self.owned_result: dict | None = None
+        self.interposer_log = None
         self.out = out
         # Named apart from the method below: a bool attribute with the method's
         # name shadows it, and the call becomes "'bool' object is not callable".
@@ -234,6 +235,22 @@ class Runner:
                 skills_source=SHARED_SKILLS, out=self.plugin,
                 transport="stdio-owner", owned_entry=self.owned_entry,
                 owned_config=self.owned_config)
+            self.interposer_log = self.logs / "cc-owned-wire.jsonl"
+            binding_path = self.plugin / ".mcp.json"
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            binding["mcpServers"]["serveros-fleet"] = {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": [
+                    str(HERE / "stdio_interposer.py"),
+                    "--log", str(self.interposer_log), "--",
+                    self.owned_entry, "--stdio", "--config", self.owned_config,
+                ],
+                "env": {"SERVEROS_STATE_DIR": self.owned_state_dir,
+                        "PYTHONDONTWRITEBYTECODE": "1"},
+            }
+            binding_path.write_text(
+                json.dumps(binding, indent=2) + "\n", encoding="utf-8")
             (self.logs / "owned-plugin-build.json").write_text(
                 json.dumps(record, indent=2) + "\n", encoding="utf-8")
             self.record("PLUGIN_BUILD", "PASS", "REAL_OWNED_STDIO",
@@ -281,33 +298,53 @@ class Runner:
         (self.logs / "mcp-list.log").write_text(text, encoding="utf-8")
         connected = "Connected" in text and self.qualified_server in text
         if self.owned_entry:
-            result = self.owned_result or {}
-            count = result.get("tool_count_actual")
-            initialize = bool(result)
-            initialized = bool(result)
-            tools_list = bool(result and count and count >= 34)
-            rows = []
+            rows = _read_json_lines(self.interposer_log)
         else:
             rows = _read_json_lines(wire)
         (self.logs / "mcp-list-wire.jsonl").write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
             encoding="utf-8")
-        methods = [row.get("method") for row in rows if row.get("event") == "request"]
-        if not self.owned_entry:
+        if self.owned_entry:
+            methods = [row.get("method") for row in rows
+                       if row.get("direction") == "cc->owned" and row.get("method")]
+            counts = [row.get("tool_count") for row in rows
+                      if row.get("direction") == "owned->cc"
+                      and isinstance(row.get("tool_count"), int)]
+            count = counts[-1] if counts else None
             initialize = "initialize" in methods
             initialized = "notifications/initialized" in methods
             tools_list = "tools/list" in methods
-            counts = [row.get("tool_count") for row in rows
-                      if row.get("event") == "response" and row.get("method") == "tools/list"]
-            count = counts[-1] if counts else None
-        ok = connected and initialize and initialized and tools_list and count and count >= 33
+            self.record("CC_CLI_CONNECTED", "PASS" if connected else "FAIL",
+                        "Claude Code mcp list reported Connected",
+                        {"qualified_server": self.qualified_server})
+            self.record(
+                "MCP_INITIALIZE_OK", "PASS" if initialize and initialized else "FAIL",
+                "CC's own interposed wire sent initialize and notifications/initialized"
+                if initialize and initialized else "CC handshake frames missing",
+                {"methods": methods, "wire": str(self.interposer_log)})
+            self.record(
+                "TOOLS_LIST_OK",
+                "PASS" if tools_list and count else "NOT_RUN",
+                f"CC's own tools/list returned {count} tools" if tools_list
+                else "CC's mcp list did not send tools/list; separate probe not used",
+                {"tool_count": count, "methods": methods,
+                 "wire": str(self.interposer_log)})
+            return connected and initialize and initialized
+        methods = [row.get("method") for row in rows if row.get("event") == "request"]
+        initialize = "initialize" in methods
+        initialized = "notifications/initialized" in methods
+        tools_list = "tools/list" in methods
+        counts = [row.get("tool_count") for row in rows
+                  if row.get("event") == "response" and row.get("method") == "tools/list"]
+        count = counts[-1] if counts else None
+        ok = connected and initialize and initialized and tools_list and count == 33
         self.record(
             "MCP_INITIALIZE_OK", "PASS" if initialize and initialized else "FAIL",
             "the client sent initialize and notifications/initialized"
             if initialize and initialized else "handshake frames missing",
             {"methods": methods, "connected": connected})
         self.record(
-            "TOOLS_LIST_OK", "PASS" if tools_list and count else "FAIL",
+            "TOOLS_LIST_OK", "PASS" if tools_list and count == 33 else "FAIL",
             f"tools/list returned {count} tools" if tools_list
             else "tools/list was not sent",
             {"tool_count": count, "connected": connected,
@@ -652,7 +689,7 @@ class Runner:
             encoding="utf-8")
         project = result.get("project_create_schema") or {}
         required = set((project.get("inputSchema") or {}).get("required") or [])
-        self.record("OWNED_READBACK",
+        self.record("OWNED_PROBE_READBACK",
                     "PASS" if (result["tool_count_actual"] >= 34
                                and result["project_create_present"]
                                and result["six_scopes"]
@@ -667,12 +704,12 @@ class Runner:
                       "project_create_present", "scopes", "six_scopes",
                       "durability", "owner_access_families", "sessions_total",
                       "tokyo_sessions")})
-        self.record("PROJECT_CAPABILITY",
+        self.record("OWNED_PROBE_PROJECT_CAPABILITY",
                     "PASS" if result["project_create_present"]
                     and {"device", "root", "name"} <= required else "FAIL",
                     "fleet_create_project schema read from tools/list",
                     {"required": sorted(required)})
-        self.record("AUTH_SCOPE",
+        self.record("OWNED_PROBE_AUTH_SCOPE",
                     "PASS" if result["six_scopes"] else "FAIL",
                     "the owned principal read back the six scopes",
                     {"scopes": result["scopes"], "six_scopes": result["six_scopes"]})
@@ -714,7 +751,9 @@ class Runner:
                                               "MCP_INITIALIZE_OK", "TOOLS_LIST_OK")},
                 ("L2_OWNED_RUNTIME" if owned else "L2_TEMP_DAEMON"): (
                     {name: self.results.get(name, {}).get("status")
-                     for name in ("OWNED_READBACK", "PROJECT_CAPABILITY")}
+                     for name in ("CC_CLI_CONNECTED", "MCP_INITIALIZE_OK",
+                                  "TOOLS_LIST_OK", "OWNED_PROBE_READBACK",
+                                  "OWNED_PROBE_PROJECT_CAPABILITY")}
                     if owned else
                     {name: self.results.get(name, {}).get("status")
                      for name in ("TEMP_DAEMON_VIRTUAL_FACTS",
@@ -804,7 +843,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("PLUGIN_METADATA", "SKILLS_BYTES", "PLUGIN_LOAD_OK",
                  "CLI_NO_SIDE_EFFECT", "MCP_INITIALIZE_OK", "TOOLS_LIST_OK",
                  "TEMP_DAEMON_VIRTUAL_FACTS", "SEND_SCOPE_DENIED",
-                 "AUTH_SCOPE", "OWNED_READBACK", "PROJECT_CAPABILITY",
+                 "AUTH_SCOPE", "CC_CLI_CONNECTED", "OWNED_PROBE_READBACK",
+                 "OWNED_PROBE_PROJECT_CAPABILITY", "OWNED_PROBE_AUTH_SCOPE",
                  "CLIENT_E2E"):
         print(f"{name}: {statuses.get(name, 'NOT_RUN')}")
     failed = [name for name, status in statuses.items()

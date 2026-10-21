@@ -348,10 +348,13 @@ python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
     --owned-cwd /absolute/path/complete-tree
 ```
 
-The receipts distinguish `LOCAL_REAL_OWNED` from the fixture path, read the
-actual tool count and project-create schema from `tools/list`, and report the
-six scopes, durability, owner-access families and read-only session readback.
-They do not send/create or request a model turn.
+The receipts distinguish `LOCAL_REAL_OWNED` from the fixture path. CC's
+`MCP_INITIALIZE_OK` and `TOOLS_LIST_OK` are judged from a transparent stdio
+interposer's own CC-to-owned wire (method/id/tool/count/error/hash only; bytes
+are passed unchanged), not from a separate probe. Codex judges its tools/list
+and tool call from the app-server's own `mcpServerStatus/list` and
+`mcpServer/tool/call`. The independent `OWNED_PROBE_*` readback is a separate
+lane. The runners do not send/create or fabricate MCP replies.
 
 ## Local trusted owner stdio mode
 
