@@ -84,7 +84,7 @@ add_test(NAME core_lite_profile COMMAND test_core_lite_profile)
 # The SHIPPED profiles must be readable by the reader this repository ships.
 add_test(NAME core_lite_shipped_profiles
          COMMAND test_core_lite_profile
-                 "${CMAKE_CURRENT_SOURCE_DIR}/profiles/tokyo-node.profile.json"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/profiles/tokyo-vince.profile.json"
                  "${CMAKE_CURRENT_SOURCE_DIR}/profiles/dell-fjd.profile.json")
 
 # The status contract and the runtime identity readback.

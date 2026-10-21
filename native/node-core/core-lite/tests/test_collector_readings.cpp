@@ -76,10 +76,10 @@ std::string fixture_text() {
 }
 
 std::string shipped_profile_text() {
-    for (const char* candidate : {"core-lite/profiles/tokyo-node.profile.json",
-                                  "../core-lite/profiles/tokyo-node.profile.json",
-                                  "../../core-lite/profiles/tokyo-node.profile.json",
-                                  "native/node-core/core-lite/profiles/tokyo-node.profile.json"}) {
+    for (const char* candidate : {"core-lite/profiles/tokyo-vince.profile.json",
+                                  "../core-lite/profiles/tokyo-vince.profile.json",
+                                  "../../core-lite/profiles/tokyo-vince.profile.json",
+                                  "native/node-core/core-lite/profiles/tokyo-vince.profile.json"}) {
         bool ok = false;
         const std::string text = read_file(candidate, ok);
         if (ok) {

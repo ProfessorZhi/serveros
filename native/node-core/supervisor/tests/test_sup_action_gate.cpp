@@ -308,7 +308,10 @@ void test_a_final_file_lookup_switch_is_refused() {
     const auto after_file_lookup = [&] {
         if (!swapped) {
             swapped = true;
-            ::unlink((root + "/state/state.json").c_str());
+            // Keep the old inode alive. unlink+recreate can reuse its number
+            // immediately on ext4, which would not exercise an inode switch.
+            CHECK(::rename((root + "/state/state.json").c_str(),
+                           (root + "/state/previous.json").c_str()) == 0);
             CHECK(write_file(root + "/state/state.json", "{\"different\":true}", 0600));
         }
     };
@@ -320,6 +323,7 @@ void test_a_final_file_lookup_switch_is_refused() {
     CHECK(!directory.valid());
 
     ::unlink((root + "/state/state.json").c_str());
+    ::unlink((root + "/state/previous.json").c_str());
     ::rmdir((root + "/state").c_str());
     ::rmdir(root.c_str());
 }
