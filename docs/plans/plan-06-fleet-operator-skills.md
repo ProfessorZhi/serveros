@@ -78,12 +78,17 @@ TDD first: tests for equal plugin id, changed plugin id refusal, changed
 refusal, archive hash mismatch, contradictory readback, missing release id, and
 rollback to a mismatched archive. Add adversarial tests for:
 
-- source file and directory symlinks, and a symlinked shared-Skill entry;
-- output path and parent symlinks, non-empty output, source/output overlap;
+- source file and directory symlinks, a symlinked shared-Skill entry, and
+  source/shared-Skills **ancestor** symlinks (including nested parents);
+- output path and parent symlinks, non-empty output, lexical and realpath
+  source/output overlap;
 - a sentinel outside the output remaining unchanged and no `rmtree`;
 - protected manifest drift (`shortDescription`, `defaultPrompt`, top-level
   description), root/`.codex-plugin` repeated fields and version sync;
 - `mcp.json`/`.mcp.json` URL, added/removed server and referenced-file drift;
+- normalized MCP references such as `scripts/../scripts/server.py`, traversal
+  escape, changed referenced skill-script bytes, and an unrelated skill edit as
+  the positive control;
 - added/removed/changed non-Skill members.
 
 The rehearsal test runs entirely offline and asserts `writes: []`, `uploads: []`,

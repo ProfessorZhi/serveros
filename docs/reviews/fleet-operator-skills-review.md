@@ -2,7 +2,7 @@
 
 Reviewer scope: this branch's Operator Skills and packaging changes only.
 Baseline `597f7b8b5507ec10435b75fd4658b922bcf5c56a`. No control code
-(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited. Revisions 2 and 3
+(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited. Revisions 2, 3 and 4
 review the P1 fixes requested after Draft PR #384. The control candidate
 `1011eb56a930b4e29fa165e44bd55d7dd230003f` supplied the durability enum and
 `RUN_NOT_FOUND` / `never_issued` semantics, but was not merged into this lane.
@@ -87,6 +87,43 @@ Creator readback; backend/MCP/tool behavior changes remain server deployment;
 a local rehearsal cannot prove the private Creator accepts or rolls back an
 update.
 
+## Revision 4 — second boundary closure (two rounds)
+
+### Review round 1 — remaining probes
+
+The r3 review probes (`RUN-0041/operator-independent-r3-probes.json`) found two
+residual paths:
+
+- **Source/shared ancestor symlink.** A source path under a symlinked parent
+  passed the lexical overlap check; the output could be created inside the
+  physical source before recursion/copy. The same gap applied to a shared-Skills
+  ancestor.
+- **MCP normalized reference.** `./skills/.../scripts/../scripts/server.py` was
+  not normalized before matching members, so a referenced skill script could
+  change while the plan PASSed; skill members were exempt from the member-byte
+  check.
+
+Round-1 resolution: reject any existing ancestor symlink for source and shared
+Skills; compare real resolved source/output boundaries in both directions before
+any `mkdir`; POSIX-normalize MCP references, refuse traversal/escape, and compare
+the bytes of every normalized local target — including files under `skills/`.
+
+### Review round 2 — after implementation
+
+- **Ancestor safety.** `_preflight_tree()` now calls
+  `_reject_symlink_components()` on source and shared Skills before walking or
+  copying. `_preflight_output()` checks lexical and `realpath` overlap in both
+  directions before creating anything. Tests cover a parent alias, a nested
+  symlink parent, a shared-Skills ancestor alias, source sentinel preservation
+  and no output creation.
+- **MCP references.** `_mcp_references()` strips `./`/`${PLUGIN_ROOT}/`,
+  POSIX-normalizes dot/`..`, refuses escapes/backslashes, and records the
+  normalized target hash. The exact `scripts/../scripts/server.py` counterexample
+  now refuses changed script bytes; a normal unrelated skill edit still PASSes.
+- **No weakening.** Canonical identity/manifest/MCP/member checks remain; the
+  change closes only the two reported boundaries. Targeted count moved
+  239/117 to 245/117; no baseline test was removed or skipped.
+
 ## Design review
 
 The design is in `docs/proposals/proposal-fleet-operator-skills.md` and the
@@ -129,8 +166,9 @@ as a file for the other verbs. Re-run exit is 0.
   `fleet_mcp.tools.SERVED_BY_NAME`; no batch/scheduler tool is invented.
 - Same-ID update: plugin id, name, `displayName` and `apps` unchanged; the
   complete protected root/compat manifest projection, MCP structures and
-  referenced files, and non-Skill member bytes unchanged; version strictly
-  advances; no previous Skill removed; archive hash matches record.
+  normalized referenced-file hashes (including skill files), and non-Skill
+  member bytes unchanged; version strictly advances; no previous Skill
+  removed; archive hash matches record.
 - Readback: plugin id, new/different release id, version, Skills and archive
   hash must agree; missing icons are `PARTIAL`, not PASS; `LIVE` is refused.
 - Rollback: previous archive hash, plugin id and version ordering are checked;
@@ -140,11 +178,11 @@ as a file for the other verbs. Re-run exit is 0.
 
 All commands were executed with `ulimit -v 2097152` (2 GiB), `ulimit -t 300`
 (300 CPU seconds), `timeout 300`, and `taskset -c 0` (one CPU). Evidence is in
-`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0044/operator-skills-20261021-r3/`.
+`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0045/operator-skills-20261021-r4/`.
 
 | check | command | result |
 |---|---|---|
-| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **239 passed, 117 subtests, exit 0** |
+| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **245 passed, 117 subtests, exit 0** |
 | CC development adapter | `build_cc_plugin.py --out … --next-mcp-url https://fleet-next.example.ts.net/mcp` | exit 0; **8 Skills**, 1 MCP binding |
 | local CC fixture | `build_local_fixture.py --out … --json` | exit 0; 8 Skills; `TEST_FIXTURE_ONLY_NOT_A_RELEASE` |
 | Claude Code package load | `claude plugin validate … --strict`; `claude --plugin-dir … plugin details` | **exit 0**; **Skills (8) / MCP servers (1)**; local only |

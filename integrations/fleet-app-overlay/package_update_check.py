@@ -32,6 +32,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -193,8 +194,22 @@ def _iter_strings(value):
             yield from _iter_strings(item)
 
 
-def _mcp_references(config: dict, member_sha256: dict[str, str]) -> dict[str, str]:
-    """Local files named by an MCP config, by plugin-relative path."""
+def _normalize_mcp_reference(candidate: str, label: str) -> str | None:
+    """POSIX-normalize a plugin-relative MCP reference; refuse escapes."""
+    if "\\" in candidate:
+        raise Refused(f"{label} reference uses a non-POSIX path")
+    normalized = posixpath.normpath(candidate)
+    if normalized in ("", "."):
+        return None
+    if (normalized == ".." or normalized.startswith("../")
+            or normalized.startswith("/")):
+        raise Refused(f"{label} reference escapes the plugin root: {candidate}")
+    return normalized
+
+
+def _mcp_references(config: dict, member_sha256: dict[str, str],
+                    label: str = "mcp") -> dict[str, str]:
+    """Local files named by an MCP config, normalized to plugin-relative paths."""
     found: dict[str, str] = {}
     for text in _iter_strings(config):
         candidate = text
@@ -205,8 +220,11 @@ def _mcp_references(config: dict, member_sha256: dict[str, str]) -> dict[str, st
         else:
             if "://" in candidate or candidate.startswith("/"):
                 continue
-        if candidate in member_sha256:
-            found[candidate] = member_sha256[candidate]
+            if "/" not in candidate:
+                continue
+        normalized = _normalize_mcp_reference(candidate, label)
+        if normalized is not None and normalized in member_sha256:
+            found[normalized] = member_sha256[normalized]
     return found
 
 
@@ -365,8 +383,8 @@ def plan_update(*, previous_record: dict, previous_archive: Path,
             _check(checks, f"{label}_configuration",
                    _canonical_json(left) == _canonical_json(right),
                    f"{label} configuration changed")
-            left_refs = _mcp_references(left, previous["member_sha256"])
-            right_refs = _mcp_references(right, following["member_sha256"])
+            left_refs = _mcp_references(left, previous["member_sha256"], label)
+            right_refs = _mcp_references(right, following["member_sha256"], label)
             _check(checks, f"{label}_references", left_refs == right_refs,
                    f"{label} referenced-file set changed")
             drifted = sorted(path for path in left_refs
@@ -595,6 +613,7 @@ def _reject_symlink_components(path: Path, label: str) -> None:
 def _preflight_tree(root: Path, label: str, builder) -> None:
     """Refuse symlinks, forbidden members and non-regular files before any copy."""
     root = _abs_path(root)
+    _reject_symlink_components(root, label)
     if os.path.islink(root):
         raise Refused(f"{label} root is a symlink: {root}")
     if not os.path.isdir(root):
@@ -630,8 +649,12 @@ def _preflight_output(out_dir: Path, source_root: Path) -> Path:
     out_dir = _abs_path(out_dir)
     source_root = _abs_path(source_root)
     _reject_symlink_components(out_dir, "output")
+    source_real = Path(os.path.realpath(source_root))
+    out_real = Path(os.path.realpath(out_dir))
     if (out_dir == source_root or _is_within(out_dir, source_root)
-            or _is_within(source_root, out_dir)):
+            or _is_within(source_root, out_dir)
+            or out_real == source_real or _is_within(out_real, source_real)
+            or _is_within(source_real, out_real)):
         raise Refused("source-output overlap: the output must be outside the source tree")
     if os.path.lexists(out_dir):
         info = os.lstat(out_dir)

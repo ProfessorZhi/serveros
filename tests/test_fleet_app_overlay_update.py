@@ -280,6 +280,18 @@ def _add_mcp(root: Path, *, url: str = "https://example.invalid/mcp",
         encoding="utf-8")
 
 
+def _add_mcp_args(root: Path, target: str, *, script: bytes = b"# one\n") -> None:
+    script_path = root / "skills" / "fleet-create-with-grants" / "scripts" / "server.py"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_bytes(script)
+    (root / "mcp.json").write_text(
+        json.dumps({"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+                    "mcpServers": {"fleet": {"type": "stdio",
+                                             "command": "python3",
+                                             "args": [target]}}}, indent=2),
+        encoding="utf-8")
+
+
 def _add_legacy_mcp(root: Path, *,
                     url: str = "https://example.invalid/mcp") -> None:
     (root / ".mcp.json").write_text(
@@ -349,6 +361,35 @@ class TheProtectedAppConfigurationCannotDrift(unittest.TestCase):
             lambda root: _add_legacy_mcp(root, url="https://one.invalid/mcp"),
             lambda root: _add_legacy_mcp(root, url="https://two.invalid/mcp"))
         self.assertIn("mcp", message.lower())
+
+    def test_normalized_mcp_skill_entrypoint_drift_is_refused(self) -> None:
+        target = "./skills/fleet-create-with-grants/scripts/../scripts/server.py"
+        message = self._refused(
+            lambda root: _add_mcp_args(root, target, script=b"# one\n"),
+            lambda root: _add_mcp_args(root, target, script=b"# two\n"))
+        self.assertIn("mcp", message.lower())
+
+    def test_mcp_traversal_reference_is_refused(self) -> None:
+        target = "./skills/../../outside.py"
+        message = self._refused(
+            lambda root: _add_mcp_args(root, target),
+            lambda root: _add_mcp_args(root, target))
+        self.assertIn("escape", message.lower())
+
+    def test_unreferenced_skill_edit_is_allowed(self) -> None:
+        target = "./skills/fleet-create-with-grants/scripts/../scripts/server.py"
+
+        def edit_skill(root):
+            _add_mcp_args(root, target, script=b"# one\n")
+            skill = root / "skills" / "fleet-create-with-grants" / "SKILL.md"
+            skill.write_text(skill.read_text(encoding="utf-8") + "\nnormal edit\n",
+                             encoding="utf-8")
+
+        prev, nxt = self._pair(lambda root: _add_mcp_args(root, target, script=b"# one\n"),
+                               edit_skill)
+        plan = pkg.plan_update(previous_record=prev[0], previous_archive=prev[1],
+                               next_record=nxt[0], next_archive=nxt[1])
+        self.assertEqual(plan["verdict"], "PASS")
 
     def test_referenced_mcp_file_drift_is_refused(self) -> None:
         def with_script(root):
@@ -445,13 +486,14 @@ class TheRehearsalRefusesUnsafeTreesBeforeWriting(unittest.TestCase):
         self.canary = self.outside / "canary.txt"
         self.canary.write_text("CANARY-CONTENT\n", encoding="utf-8")
 
-    def _rehearse(self, out: Path) -> None:
-        pkg.rehearse(source_root=self.src,
+    def _rehearse(self, out: Path, source: Path | None = None) -> None:
+        pkg.rehearse(source_root=source or self.src,
                      baseline_path=OVERLAY / "baseline.json", out_dir=out)
 
-    def _assert_refused_and_sentinel(self, out: Path) -> str:
+    def _assert_refused_and_sentinel(self, out: Path,
+                                     source: Path | None = None) -> str:
         with self.assertRaises(pkg.Refused) as caught:
-            self._rehearse(out)
+            self._rehearse(out, source)
         message = str(caught.exception)
         self.assertNotIn("CANARY-CONTENT", message)
         self.assertTrue(self.canary.is_file())
@@ -471,6 +513,42 @@ class TheRehearsalRefusesUnsafeTreesBeforeWriting(unittest.TestCase):
         (self.src / "linked-dir").symlink_to(self.outside, target_is_directory=True)
         out = self.tmp / "out"
         message = self._assert_refused_and_sentinel(out)
+        self.assertIn("symlink", message.lower())
+        self.assertFalse(out.exists())
+
+    def test_source_parent_alias_is_refused_before_write(self) -> None:
+        alias = self.tmp / "source-parent-alias"
+        alias.symlink_to(self.src.parent, target_is_directory=True)
+        source = alias / self.src.name
+        sentinel = self.src / "sentinel.txt"
+        sentinel.write_text("KEEP-SOURCE\n", encoding="utf-8")
+        out = self.src / "generated-output"
+        message = self._assert_refused_and_sentinel(out, source)
+        self.assertIn("symlink", message.lower())
+        self.assertFalse(out.exists())
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "KEEP-SOURCE\n")
+
+    def test_nested_source_ancestor_symlink_is_refused(self) -> None:
+        real_parent = self.tmp / "real-parent"
+        real_parent.mkdir()
+        nested = real_parent / "nested"
+        nested.symlink_to(self.src.parent, target_is_directory=True)
+        alias = self.tmp / "outer-alias"
+        alias.symlink_to(real_parent, target_is_directory=True)
+        source = alias / "nested" / self.src.name
+        out = self.src / "generated-output"
+        message = self._assert_refused_and_sentinel(out, source)
+        self.assertIn("symlink", message.lower())
+        self.assertFalse(out.exists())
+
+    def test_shared_skills_ancestor_alias_is_refused(self) -> None:
+        real_parent = self.tmp / "shared-real"
+        shutil.copytree(SHARED, real_parent / "skills")
+        alias = self.tmp / "shared-alias"
+        alias.symlink_to(real_parent, target_is_directory=True)
+        out = self.tmp / "out"
+        with mock.patch.object(pkg, "SHARED_SKILLS", alias / "skills"):
+            message = self._assert_refused_and_sentinel(out)
         self.assertIn("symlink", message.lower())
         self.assertFalse(out.exists())
 

@@ -160,10 +160,14 @@ two overlay archives/release records and performs:
 A local rehearsal generator uses the synthetic overlay fixture, builds two
 versions, synthesizes a readback receipt from the second archive, and runs the
 three checks. Before any copy or write it validates the source tree and shared
-Skills for symlinks, forbidden members and boundaries, and it requires a fresh
-empty output whose path (including existing parents) has no symlink and does
-not overlap the source. It never removes a caller-owned directory. The output
-is local evidence; it discharges no live update.
+Skills for symlinks, including every existing ancestor path, forbidden members
+and boundaries, and it requires a fresh empty output whose path (including
+existing parents) has no symlink and does not overlap the source's **real
+resolved** path in either direction. It never removes a caller-owned directory.
+MCP-referenced local files are POSIX-normalized; dot segments are resolved,
+traversal/escape is refused, and the normalized target bytes are compared even
+when the target lives under a mutable skill. The output is local evidence; it
+discharges no live update.
 
 ## Alternatives
 
