@@ -141,6 +141,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import uuid
@@ -907,9 +908,12 @@ class AgentControlStore:
     why it is here rather than in a store of its own.
     """
 
-    def __init__(self, path: Path | str, *, now=None) -> None:
+    def __init__(self, path: Path | str, *, now=None, require_existing: bool = False) -> None:
         self.path = Path(path)
         self._now = now
+        if type(require_existing) is not bool:
+            raise StoreError("require_existing must be a boolean")
+        self.require_existing = require_existing
         # Whether THIS instance has written the store. It is what separates a
         # file that was never there — an ordinary node where nothing has been
         # recorded yet — from a file that was there and is gone. See `_load`.
@@ -927,8 +931,9 @@ class AgentControlStore:
     # -- loading -----------------------------------------------------------
 
     def _load(self) -> dict:
+        strict_data = self._existing_owner_document() if self.require_existing else None
         if not self.path.exists():
-            if self._wrote:
+            if self._wrote or self.require_existing:
                 # An absent file is not read as an empty store once this process
                 # has put something in it. The two are the same bytes on disk and
                 # opposite answers: "nothing has been recorded here" versus "what
@@ -947,7 +952,7 @@ class AgentControlStore:
                     "admissions": {}, "checkpoints": {},
                     "dispatch_attempts": {}, "grant_epoch": 0}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = strict_data if strict_data is not None else json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             # Refused rather than replaced with an empty store. An unreadable
             # control-plane store means every approval that existed is no
@@ -976,6 +981,41 @@ class AgentControlStore:
         # grants are NOT backfilled (see `verify_live_grant`).
         data.setdefault("grant_epoch", 0)
         data["schema"] = SCHEMA
+        return data
+
+    def _existing_owner_document(self) -> dict:
+        """Keep a configured owner anchor existing and attributable on every IO.
+
+        The owner normally atomically replaces the file; no inode is pinned.
+        This mode never bootstraps an empty register after disappearance.
+        """
+        if not self.path.is_absolute():
+            raise StoreError("the existing owner store requires an absolute anchor")
+        try:
+            for ancestor in reversed(self.path.parents):
+                observed = ancestor.lstat()
+                if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+                    raise StoreError("owner store ancestors must be real directories")
+                if observed.st_uid not in (0, os.geteuid()):
+                    raise StoreError("owner store ancestor belongs to another account")
+            observed = self.path.lstat()
+            if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+                    or observed.st_mode & 0o022 or observed.st_nlink != 1):
+                raise StoreError("owner store must be an existing, unshared owner file")
+            handle = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(handle, encoding="utf-8") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_ino, opened.st_dev) != (observed.st_ino, observed.st_dev):
+                    raise StoreError("owner anchor changed while it was opened")
+                data = json.load(stream)
+        except (OSError, ValueError) as exc:
+            raise StoreError("the configured existing owner store is unavailable or invalid") from exc
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+            raise StoreError("the configured owner anchor is not an Agent Control store")
+        for collection in ("contexts", "approvals", "bindings", "selections", "grants",
+                           "admissions", "checkpoints", "dispatch_attempts"):
+            if collection in data and not isinstance(data[collection], dict):
+                raise StoreError("the owner store contains an invalid collection")
         return data
 
     def _read(self) -> dict:
@@ -1008,6 +1048,8 @@ class AgentControlStore:
         a refusal reached after the mutation started must not leave the store
         locked for the rest of the process's life.
         """
+        if self.require_existing:
+            self._existing_owner_document()
         with _exclusive(self.lock_path):
             self._data = self._load()
             self._writing = True
@@ -1031,6 +1073,8 @@ class AgentControlStore:
                 "the write lock and re-reads first (`_mutation`), because a "
                 "write that skips either one drops whatever another writer "
                 "recorded in between")
+        if self.require_existing:
+            self._existing_owner_document()
         _atomic_write(self.path, self._data)
         self._wrote = True
 
@@ -1159,8 +1203,8 @@ class AgentControlStore:
         execution grant. No generic UNKNOWN transition is relaxed.
         """
         fields = {"key", "action", "device_ref", "verb", "intent_digest",
-                  "principal", "runtime", "session_ref"}
-        required = fields - {"session_ref"}
+                  "principal", "runtime", "session_ref", "expected_project_path"}
+        required = fields - {"session_ref", "expected_project_path"}
         if (not isinstance(intent, dict) or set(intent) - fields
                 or not required.issubset(intent)
                 or any(not isinstance(intent[k], str) or not intent[k].strip()
@@ -1171,6 +1215,12 @@ class AgentControlStore:
         if (not re.fullmatch(r"[a-f0-9]{64}", intent["intent_digest"])
                 or len(intent["key"]) > 256):
             raise StoreError("invalid delivery claim identity")
+        project = intent["verb"] == "project.create"
+        expected = intent.get("expected_project_path")
+        if (project and (not isinstance(expected, str) or not expected.strip()
+                         or len(expected) > 4096 or "session_ref" in intent)
+                or not project and expected is not None):
+            raise StoreError("invalid project delivery target")
         kernel = _dispatch_attempts()
         with self._mutation():
             section = self._data.setdefault("dispatch_attempts", {})
@@ -1182,7 +1232,10 @@ class AgentControlStore:
                 return {"claimed": False, "record": json.loads(json.dumps(public))}
             marker = uuid.uuid4().hex
             record = kernel.attempt_record(
-                **intent, phase=kernel.EFFECT_UNKNOWN, at=datetime.now(timezone.utc).isoformat())
+                **{k: v for k, v in intent.items() if k != "expected_project_path"},
+                phase=kernel.EFFECT_UNKNOWN, at=datetime.now(timezone.utc).isoformat())
+            if project:
+                record["expected_project_path"] = expected
             record["_dispatch_claim"] = marker
             section[intent["key"]] = record
             self._flush()
@@ -1191,9 +1244,7 @@ class AgentControlStore:
 
     def complete_dispatch_claim(self, key, *, digest, claim_id, actor, receipt) -> dict:
         """Record only the original invocation's ACK; unknown retries cannot reopen it."""
-        allowed = {"session_ref", "run_id", "queued_message_uuid", "accepted"}
-        if (not isinstance(receipt, dict) or set(receipt) - allowed
-                or not isinstance(receipt.get("session_ref"), str)
+        if (not isinstance(receipt, dict)
                 or receipt.get("accepted") is not True
                 or len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > 65536):
             raise StoreError("invalid closed delivery receipt")
@@ -1209,15 +1260,25 @@ class AgentControlStore:
                     or not claim_id or record.get("_dispatch_claim") != claim_id
                     or record.get("phase") != "EFFECT_UNKNOWN"):
                 raise AttemptRefused("INVALID_CONTEXT", "not the original unresolved delivery claim")
-            parts = receipt["session_ref"].split("|")
-            if (len(parts) != 3 or not parts[2]
-                    or parts[:2] != [record["device_ref"], record["runtime"]]
-                    or (record.get("session_ref")
-                        and record["session_ref"] != receipt["session_ref"])):
-                raise StoreError("receipt addresses a different target")
-            if (record["verb"] == "session.send" and not receipt.get("run_id")
-                    and not receipt.get("queued_message_uuid")):
-                raise StoreError("send acknowledgement has no execution reference")
+            if record["verb"] == "project.create":
+                if (set(receipt) != {"project_id", "project_path", "accepted"}
+                        or not isinstance(receipt["project_id"], str)
+                        or not receipt["project_id"].strip()
+                        or receipt["project_path"] != record.get("expected_project_path")):
+                    raise StoreError("invalid or misbound project receipt")
+            else:
+                if (set(receipt) - {"session_ref", "run_id", "queued_message_uuid", "accepted"}
+                        or not isinstance(receipt.get("session_ref"), str)):
+                    raise StoreError("invalid session receipt")
+                parts = receipt["session_ref"].split("|")
+                if (len(parts) != 3 or not parts[2]
+                        or parts[:2] != [record["device_ref"], record["runtime"]]
+                        or (record.get("session_ref")
+                            and record["session_ref"] != receipt["session_ref"])):
+                    raise StoreError("receipt addresses a different target")
+                if (record["verb"] == "session.send" and not receipt.get("run_id")
+                        and not receipt.get("queued_message_uuid")):
+                    raise StoreError("send acknowledgement has no execution reference")
             updated = {k: v for k, v in record.items() if k != "_dispatch_claim"}
             updated.update(phase="ACCEPTED", result=dict(receipt))
             section[str(key)] = updated

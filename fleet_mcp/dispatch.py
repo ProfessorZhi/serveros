@@ -13,11 +13,23 @@ from .errors import (BAD_REQUEST, DISPATCH_OUTCOME_UNKNOWN, DISPATCH_STATE_UNAVA
 from .identity import SessionKey
 
 RECEIPT_FIELDS = frozenset(("session_ref", "run_id", "queued_message_uuid", "accepted"))
+PROJECT_RECEIPT_FIELDS = frozenset(("project_id", "project_path", "accepted"))
 MAX_RECEIPT_BYTES = 65536
 
 
-def delivery_receipt(record: dict[str, Any]) -> dict[str, Any]:
+def delivery_receipt(record: dict[str, Any], *, project: bool = False) -> dict[str, Any]:
     """Keep address/ACK facts; never persist raw provider data or instructions."""
+    if project:
+        if any(k in record for k in ("session", "display_name", "session_ref", "run_id", "queued_message_uuid")):
+            raise ValueError("a project receipt cannot contain session identifiers")
+        receipt = {k: record.get(k) for k in PROJECT_RECEIPT_FIELDS}
+        if (receipt["accepted"] is not True or any(
+                not isinstance(receipt[k], str) or not receipt[k].strip()
+                for k in ("project_id", "project_path"))):
+            raise ValueError("provider did not acknowledge a real project")
+        if len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > MAX_RECEIPT_BYTES:
+            raise ValueError("project receipt exceeds its byte bound")
+        return receipt
     address = record.get("session") or record.get("display_name") or {}
     ref = address.get("session_ref")
     if not isinstance(ref, str) or not ref:
@@ -47,6 +59,8 @@ class Claim:
     actor: str
     claim_id: str | None
     replay: dict[str, Any] | None = None
+    verb: str | None = None
+    expected_project_path: str | None = None
 
 
 class DispatchGuard:
@@ -66,21 +80,32 @@ class DispatchGuard:
         return "AGENT_CONTROL_STORE" if self.owner is not None else "PROCESS_LOCAL"
 
     def begin(self, principal, verb: str, target: str, key: str, *,
-              device_ref: str, runtime: str, params: dict, session_ref=None) -> Claim:
+              device_ref: str, runtime: str, params: dict, session_ref=None,
+              expected_project_path=None) -> Claim:
         if not isinstance(key, str) or not key.strip():
             raise refuse(BAD_REQUEST, "idempotency_key must be a non-empty string")
         actor = json.dumps([principal.credential_kind, principal.name], separators=(",", ":"))
         identity = json.dumps([actor, verb, target, key], separators=(",", ":"))
         token = "fleet-mcp:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        payload = json.dumps({"principal": actor, "verb": verb, "target": target,
-                              "params": params}, sort_keys=True, separators=(",", ":"),
+        project = verb == "project.create"
+        if ((project and (not isinstance(expected_project_path, str) or not expected_project_path.strip()))
+                or (not project and expected_project_path is not None)):
+            raise refuse(BAD_REQUEST, "project.create requires its expected target path")
+        intent_payload = {"principal": actor, "verb": verb, "target": target, "params": params}
+        if project:
+            intent_payload["expected_project_path"] = expected_project_path
+        payload = json.dumps(intent_payload, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=False, allow_nan=False)
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         intent = {"key": token, "action": "fleet." + verb, "device_ref": device_ref,
-                  "verb": "session." + verb, "intent_digest": digest,
+                  "verb": verb if project else "session." + verb, "intent_digest": digest,
                   "principal": actor, "runtime": runtime}
         if session_ref:
             intent["session_ref"] = session_ref
+        if project:
+            if session_ref is not None:
+                raise refuse(BAD_REQUEST, "a project claim cannot name a session")
+            intent["expected_project_path"] = expected_project_path
         try:
             if self.owner is not None:
                 answer = self.owner.claim_dispatch_attempt(intent, actor=actor)
@@ -105,10 +130,23 @@ class DispatchGuard:
         if record.get("intent_digest") != digest:
             raise refuse(IDEMPOTENCY_CONFLICT, "this key already names a different request; nothing sent")
         if answer.get("claimed") is True and answer.get("claim_id"):
-            return Claim(token, digest, actor, answer["claim_id"])
+            return Claim(token, digest, actor, answer["claim_id"], verb=verb,
+                         expected_project_path=expected_project_path)
         if record.get("phase") == "ACCEPTED" and isinstance(record.get("result"), dict):
             receipt = record["result"]
             try:
+                if project:
+                    if (record.get("verb") != "project.create"
+                            or set(receipt) != PROJECT_RECEIPT_FIELDS
+                            or record.get("expected_project_path") != expected_project_path):
+                        raise ValueError("misbound project receipt")
+                    delivery_receipt(receipt, project=True)
+                    if receipt["project_path"] != expected_project_path:
+                        raise ValueError("project receipt path differs from intent")
+                    return Claim(token, digest, actor, None, dict(receipt), verb=verb,
+                                 expected_project_path=expected_project_path)
+                if record.get("verb") == "project.create":
+                    raise ValueError("a session replay cannot contain a project receipt")
                 if set(receipt) - RECEIPT_FIELDS or receipt.get("accepted") is not True:
                     raise ValueError("unexpected receipt field")
                 ref = SessionKey.parse(receipt["session_ref"])
@@ -132,7 +170,10 @@ class DispatchGuard:
 
     def complete(self, claim: Claim, record: dict[str, Any]) -> None:
         try:
-            receipt = delivery_receipt(record)
+            project = claim.verb == "project.create"
+            receipt = delivery_receipt(record, project=project)
+            if project and receipt["project_path"] != claim.expected_project_path:
+                raise ValueError("project acknowledgement differs from the claimed path")
             if self.owner is not None:
                 self.owner.complete_dispatch_claim(
                     claim.key, digest=claim.digest, claim_id=claim.claim_id,

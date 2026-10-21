@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from .config import FleetConfig, load_config
-from .errors import INTERNAL, FleetRefusal, refuse
+from .errors import INTERNAL, DISPATCH_STATE_UNAVAILABLE, FleetRefusal, refuse
 from .fleet import FleetService, Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 from .http_transport import HttpSurface, build_oauth, local_base_url, serve
 from .local_roots import binding_root, state_root
@@ -58,6 +58,9 @@ def owner_principal(config: FleetConfig | None = None) -> Principal:
 
 
 def build_service(config: FleetConfig) -> FleetService:
+    if config.policy.owner_max:
+        raise refuse(DISPATCH_STATE_UNAVAILABLE,
+                     "owner-max uses bin/serveros-fleet-owned and the existing ServerOS ledger")
     return FleetService(config)
 
 
@@ -206,7 +209,7 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, service_factory=build_service) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = "stdio"
     config_path: str | None = None
@@ -262,9 +265,14 @@ def main(argv: list[str] | None = None) -> int:
         return clients_command(config, revoke=revoke_client, as_json=as_json)
 
     sys.stderr.write(f"{SERVER_NAME} {SERVER_VERSION}: binding from {config.source}\n")
-    if mode == "http":
-        return run_http(config)
-    return run_stdio(config)
+    try:
+        service = service_factory(config)
+        if mode == "http":
+            return run_http(config, service=service)
+        return run_stdio(config, service=service)
+    except FleetRefusal as exc:
+        sys.stderr.write(f"{SERVER_NAME}: {exc.code}: {exc.detail}\n")
+        return 3
 
 
 _HELP = f"""\

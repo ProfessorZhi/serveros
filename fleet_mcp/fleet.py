@@ -2478,6 +2478,7 @@ class FleetService:
                 "local_device_ref": self.config.local_device_ref,
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
+                "idempotency_durability": self.dispatch.durability,
             },
             "identity_layer": {
                 "authority": "fleet/registry.yaml",
