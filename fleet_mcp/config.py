@@ -350,6 +350,12 @@ class PolicyBinding:
     max_message_chars: int = 8000
     read_redact: bool = True
     sessions_cache_seconds: float = 0.0
+    discovery_timeout_seconds: float = 5.0
+    discovery_workers: int = 4
+
+    def __post_init__(self):
+        from .discovery import discovery_settings
+        discovery_settings(self.discovery_timeout_seconds, self.discovery_workers)
 
 
 @dataclass(frozen=True)
@@ -1053,6 +1059,13 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                     "provider credential anchors and endpoints; owner must "
                     "repair the device binding before creating sessions",
                 )
+    from .discovery import discovery_settings
+    try:
+        discovery_timeout, discovery_workers = discovery_settings(
+            policy_raw.get("discovery_timeout_seconds", 5.0),
+            policy_raw.get("discovery_workers", 4))
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None
     policy = PolicyBinding(
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
@@ -1066,6 +1079,8 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         max_message_chars=int(policy_raw.get("max_message_chars", 8000)),
         read_redact=bool(policy_raw.get("read_redact", True)),
         sessions_cache_seconds=float(policy_raw.get("sessions_cache_seconds", 0.0)),
+        discovery_timeout_seconds=discovery_timeout,
+        discovery_workers=discovery_workers,
     )
 
     audit_raw = raw.get("audit") or {}

@@ -29,10 +29,12 @@ import datetime as dt
 import json
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard
+from .discovery import DiscoveryPool
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
@@ -211,6 +213,7 @@ class FleetService:
         self.audit = AuditLog(config.audit)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self.dispatch = DispatchGuard(attempts)
+        self.discovery = DiscoveryPool(config.policy.discovery_workers)
 
     # -- helpers -----------------------------------------------------------
 
@@ -910,9 +913,23 @@ class FleetService:
         sessions: list[dict[str, Any]] = []
         unreachable: list[dict[str, Any]] = []
         queried: list[str] = []
+        selections = {entry.device_ref.ref: self._runtimes_for(entry.device_ref.ref, runtime)
+                      for entry in targets}
+        jobs = {}
         for entry in targets:
             ref = entry.device_ref.ref
-            selected = self._runtimes_for(ref, runtime)
+            for one in selections[ref]:
+                provider = self._provider(ref, one)
+                if provider is not None:
+                    where = provider_key(ref, one)
+                    token = (principal.credential_kind, principal.name, where, limit, project, state)
+                    jobs[where] = (token, partial(provider.list_sessions,
+                                                 limit=limit, project=project, state=state))
+        outcomes = self.discovery.collect(
+            jobs, timeout=self.config.policy.discovery_timeout_seconds)
+        for entry in targets:
+            ref = entry.device_ref.ref
+            selected = selections[ref]
             if not selected:
                 # `all` resolved to no runtimes, which happens on a device this
                 # host holds no binding for. Skipped, that device would
@@ -953,7 +970,9 @@ class FleetService:
                     )
                     continue
                 try:
-                    found = provider.list_sessions(limit=limit, project=project, state=state)
+                    found = outcomes[where]
+                    if isinstance(found, Exception):
+                        raise found
                 except Exception as exc:  # noqa: BLE001 - one runtime's failure is one runtime's failure
                     code = getattr(exc, "code", "INTERNAL")
                     detail = getattr(exc, "detail", str(exc))
