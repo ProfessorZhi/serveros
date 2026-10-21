@@ -266,14 +266,16 @@ int main() {
                                  static_cast<unsigned long long>(detail::state_read_file_id));
                 }
                 CHECK_EQ(loaded, manifest + "  ");
-                // POSIX replacement also supports existing ordinary readers.
-                // The reader keeps old bytes; new opens see the replacement.
+                // An external reader that denies delete-sharing may refuse
+                // publication. Releasing it must permit the next update.
                 reader = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                        OPEN_EXISTING, 0, nullptr);
                 CHECK(reader != INVALID_HANDLE_VALUE);
-                CHECK(publish_windows_desired(manifest + "   "));
+                CHECK(!publish_windows_desired(manifest + "   "));
                 if (reader != INVALID_HANDLE_VALUE)
                     ::CloseHandle(reader);
+                CHECK(publish_windows_desired(manifest + "   "));
+                CHECK(publish_windows_desired(manifest + "   "));
                 DWORD attributes = ::GetFileAttributesW(path.c_str());
                 CHECK(attributes != INVALID_FILE_ATTRIBUTES);
                 CHECK(::SetFileAttributesW(path.c_str(), attributes | FILE_ATTRIBUTE_READONLY) !=

@@ -65,6 +65,8 @@ Exact readback guards remain mandatory: verify the target path reopens the same
 writer FileID, size and bytes before acknowledging publication. The Win32 rename
 wrapper receives an explicit NUL-terminated absolute path (FileNameLength excludes
 the terminator); buffer padding must not be used as the terminator at exact
-alignment. Relative RootDirectory was not accepted by the exercised wrapper and
-is not claimed as delivered. Source identity stays the original writer handle,
+alignment. The relative RootDirectory experiment failed the hosted factory and is
+not claimed as delivered. Source identity stays the original writer handle,
 ancestors remain pinned, and no arbitrary caller destination is accepted.
+
+Final sharing boundary: keep the real READ|DELETE exact-ID/bytes positive case. A reader denying delete-sharing is an explicit bounded refusal; release followed by repeated configure succeeds. Retry only sharing/lock conflicts, at most 26 calls within 250 ms, and never retry unknown/unsupported errors. Exact target bytes are checked before ACK; read-only intent remains a refusal.

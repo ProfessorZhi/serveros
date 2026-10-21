@@ -339,12 +339,26 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
     rename->RootDirectory = nullptr;
     rename->FileNameLength = name_bytes;
     ::CopyMemory(rename->FileName, path.c_str(), name_bytes + sizeof(wchar_t));
-    if (!::SetFileInformationByHandle(file, FileRenameInfoEx, rename, info_bytes)) {
+    bool renamed = false;
+    auto retry_deadline = ::GetTickCount64() + 250;
+    for (unsigned attempt = 0; attempt < 26; attempt++) {
+        if (::SetFileInformationByHandle(file, FileRenameInfoEx, rename, info_bytes)) {
+            renamed = true;
+            break;
+        }
         auto error = ::GetLastError();
+        if ((error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) && attempt < 25 &&
+            ::GetTickCount64() < retry_deadline) {
+            ::Sleep(10);
+            continue;
+        }
         detail::state_fault(error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_FUNCTION ||
                                     error == ERROR_NOT_SUPPORTED
                                 ? "ATOMIC_RENAME_UNSUPPORTED"
                                 : "ATOMIC_HANDLE_REPLACE");
+        break;
+    }
+    if (!renamed) {
         discard_owned_temp(file);
         return false;
     }
