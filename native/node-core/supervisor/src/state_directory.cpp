@@ -201,6 +201,7 @@ struct StateDirectory::Ancestry {
             const Node& node = nodes[i];
             struct stat now {}, entry {};
             if (::fstat(node.fd.get(), &now) != 0 || !S_ISDIR(now.st_mode) ||
+                now.st_dev != node.observed.st_dev || now.st_ino != node.observed.st_ino ||
                 now.st_uid != node.observed.st_uid || now.st_gid != node.observed.st_gid ||
                 now.st_mode != node.observed.st_mode) {
                 error = "the captured private state ancestry owner or permissions changed";

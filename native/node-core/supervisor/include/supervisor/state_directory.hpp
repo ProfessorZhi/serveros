@@ -60,7 +60,8 @@ inline constexpr const char* kStateAncestorSymlink = "STATE_ANCESTOR_SYMLINK";
 inline constexpr const char* kStateAncestorNotADirectory = "STATE_ANCESTOR_NOT_A_DIRECTORY";
 inline constexpr const char* kStateAncestorMissing = "STATE_ANCESTOR_MISSING";
 inline constexpr const char* kStateAncestorWrongOwner = "STATE_ANCESTOR_WRONG_OWNER";
-//: A group-writable ancestor WITHOUT the sticky bit: any member of the group
+//: A group-writable ancestor outside a private enclosure WITHOUT the sticky bit:
+//: any member of the group
 //: can rename the entry that leads to the state root.
 inline constexpr const char* kStateAncestorGroupWritable = "STATE_ANCESTOR_GROUP_WRITABLE";
 //: A world-writable ancestor WITHOUT the sticky bit: any account can rename the
@@ -84,8 +85,9 @@ struct StatePathVerdict {
 //:
 //: `open` walks from `/` component by component with
 //: `openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`,
-//: `fstat`s every opened inode, and keeps only the immediate parent. The file is
-//: then addressed by `basename` relative to that fd, never by the full path.
+//: `fstat`s every opened inode, and keeps the immediate parent. Paths using the
+//: private-writable exception also retain their complete ancestry. The file is
+//: addressed by `basename` relative to its parent fd, never by the full path.
 class StateDirectory {
 public:
     StateDirectory();
