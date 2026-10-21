@@ -40,6 +40,9 @@ and active agents, bound recovery attempts, and prove a real recovery effect.
 | Restart and replay | Fresh Node processes reconstruct the new completed run and exact final snapshot from the same SQLite receipt owner. Original CC completed and original Codex UNKNOWN records remain unchanged. Accepted intent/key replay returns the same run ID with IDEMPOTENT_REPLAY while model dispatch is disabled. Root Evidence641 records this isolated acceptance. |
 | Windows source | PR387 at 3eeb84c: official hosted Windows build, six suites/477 checks, extracted static ZIP startup, and a real current-user ScheduledTask recovery effect. Independent source/hosted evidence review passes. Actual SCM StartServiceW effect and user-device LIVE acceptance are not covered. |
 | Private state ancestry | a4d74b8 source, integrated as 7edfce8/2a8c295/d7a6c14. Hosted native full tree: 33 suites/2844 checks pass. The current-user private boundary permits the measured state-root layout while retaining no-follow identity checks. Independent review passes. |
+| Codex commander Skill | One native-owner invocation discovers eight Skills, reads orchestration Skill with exact source hash, makes three read-only Fleet calls and returns a long-task DAG. Read output is 7492 characters / 7504 UTF-8 bytes. Old read-only bwrap failures remain recorded. |
+| Linux recovery source | PR390 through bc1ad5c plus root correction2bc869a, independently reviewed. C++ and Python effects retain/revalidate the actual lease namespace; the daemon guards its real actuator; private state ancestors work while immediate writer parents remain nonshared. Each Core tick releases its lease. |
+| Combined Fleet regression | Exact integration75f0855: all96 Fleet test files,3102 tests and3522 subtests pass in196.07 seconds under2GiB/no swap/oneCPU. Later CI input and documentation changes do not alter these product/client source bytes. Evidence646. |
 | CC commander Skill | A real model selects fleet-commander-orchestration, makes three Fleet reads and returns a parallel DAG. It reports four enrolled devices with three live routes, as returned by tools. One invocation; CLI reports six internal turns, exceeding the three-turn test target. No writes were requested. |
 
 The native model evidence is under root Run0046's exclusive
@@ -49,35 +52,65 @@ CloudCLI policy metadata and the six-patch packet are in Run0050's exclusive
 Skill evidence retain their separate Runs and source pins. Existing historical
 Run finalization files are not overwritten.
 
-## Remaining acceptance gates
+## Full-build acceptance and live boundaries
 
-- Linux PR390 at b25a9e8 is **CHANGES_REQUIRED**. Independent probes confirm
-  a broken default busy-process import, ancestor-symlink writes, stale held
-  lease identity, missing real daemon map/lease wiring and unknown-unit
-  refusal, and writer/consumer schema disagreement. A single complete repair
-  batch is dispatched to the Dell executor. A process-lifetime shared lease
-  also prevents useful coexistence with the Python recovery writer.
-- Client PR388 at 169e50b passes the original seven review cases but still has
-  four residuals: an outdated owner-max Skill condition, output-directory
-  ownership race, initialize-error misclassification, and unbounded buffering
-  or short writes. An isolated source repair lane owns this complete batch.
-- CloudCLI c6be626 has root native acceptance and focused regressions;
-  independent source review is pending. Its deliverable is a pinned patch
-  packet, not an upstream merge or a production installation.
-- Initial Codex commander Skill reading was blocked by the local bwrap
-  loopback setup error. MCP reads passed; Skill compliance was not claimed.
-  A separate one-invocation native-owner acceptance is in progress.
-- Final combined Python/native checks, real pinned-ability runtime build,
-  isolated version promotion/rollback, and final source/package hashes remain
-  to be completed after the remaining source lanes freeze.
-- User Windows LIVE execution was rejected by automatic approval review:
-  execution required approval while policy was never. Hosted testing does
-  not substitute for that device. No alternate route bypasses the rejection.
-- The existing App's actual Creator backend ID is not resolved by its
-  plugin:// URI. Same-ID production upload, OAuth and ChatGPT rollout are
-  separate remaining gates. Developer adapter directories and synthetic
-  update checks are not represented as an uploaded release.
+All source lanes above have scoped review. The final build gate is the exact
+candidate's official Linux workflow: all34 native suites and both entire
+Python files (`test_daemon.py` and `test_native_core_facts.py`). Logs, JUnit,
+source SHA and the actual root-input contract are retained. The three existing
+pilot-specific daemon skips remain visible; the hosted runner does not have
+this user's installed/running pilot service.
 
-Production Fleet, resident services, global clients and network transports
-have not been changed by this candidate. Current reverse tunnels remain the
-observed transport; no Tailscale migration is included.
+The first2cfb0ad run passed34 native suites and56 facts tests but failed five
+of the148 daemon cases: the runner had not bound its four semantic filesystem
+roots. It was not recorded as a combined PASS. The CI-only input driver at
+3ab74c5 supplies real private DATA/workspace/artifacts/toolchains/state paths
+through the existing environment seam. The unchanged five cases then pass;
+no product code, old assertions, catalogue authority or extra skips are changed.
+A missing global ability catalogue remains NOT_MATERIALIZED. The final workflow
+still runs both whole files rather than extrapolating those five cases.
+
+Client source3ebd5f7 closes the four residuals at169e50b: owner-max Skill
+semantics, output-root ownership, correlated successful initialization and
+bounded stdio/notification observation with complete writes. Original ten
+review probes and42 independent focused cases pass. The real commander Skill
+model evidence uses the earlier identical orchestration Skill bytes; it is not
+mislabelled as a rerun of every model on the final client head.
+
+The commander evidence has explicit limits. CC's CLI reported six internal
+turns against a three-turn target: the budget was exceeded, even though the
+logical stages were three. Some Codex redacted model-log lines were cut at
+20000 characters and are not complete JSON; their call identities can be
+counted, with summaries as additional evidence. The exact Skill read bytes and
+final answer are retained. Requested native-owner flags are not misrepresented
+as policy fields absent from the event stream. Native executor effective policy
+has its separate exact-conversation metadata evidence.
+
+The complete Python owned-runtime build uses the real pinned ability revision
+c3fa07205bdd714e82c82e3dfc8df358c316e0c8. The first isolated ZIP was extracted,
+started outside the checkout, promoted twice and rolled back using the actual
+release.py entry; config and owner-ledger hashes remained unchanged. It carries
+392 payload files including runtime/bin/Fleet and three ServerOS bootstrap
+Skills. It does **not** contain C++ NativeCore, and is not an App upload ZIP.
+Final delivery records the refreshed source/package hashes, separate native
+artifacts, and update/rollback receipts. Build --check verifies expected content;
+release.py's own gate verifies structure/startup and records measured hashes,
+without pretending to authenticate an externally modified artifact.
+
+CloudCLI c6be626 is a separate six-patch packet with independent source review
+and root native warm/cold/replay acceptance. It is not represented as an
+upstream merge or a production installation. Local CC/Codex development
+adapters and the eight shared Fleet Skills remain distinct from the three
+ServerOS bootstrap Skills and from the existing App's presentation metadata.
+
+User Windows LIVE execution was rejected by automatic approval review:
+execution required approval while policy was never. Hosted testing does not
+substitute for that device. Native SCM StartServiceW effect and onsite update
+remain unverified. No alternate route bypasses the rejection.
+
+The actual existing App's Creator backend ID is not resolved by its plugin://
+URI. Same-ID production upload, OAuth and ChatGPT rollout have not occurred;
+GPT follows local acceptance as requested. Synthetic update checks are not
+reported as an uploaded release. Production Fleet, resident services, global
+clients and network transports remain unchanged. Reverse tunnels remain the
+observed transport; this candidate does not migrate the network to Tailscale.
