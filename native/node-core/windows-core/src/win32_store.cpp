@@ -295,27 +295,52 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         discard_owned_temp(file);
         return false;
     }
-    // MOVEFILE_WRITE_THROUGH may open the source for a write/flush. Retain an
-    // identity-checked DELETE handle instead of holding our original writer.
-    ::CloseHandle(file.h);
-    file.h = INVALID_HANDLE_VALUE;
-    detail::Handle cleanup(::CreateFileW(temp.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
-                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
-                                         nullptr));
-    BY_HANDLE_FILE_INFORMATION current{};
-    if (!cleanup.valid() || !owner_only(cleanup, sid, false) ||
-        !::GetFileInformationByHandle(cleanup, &current) ||
-        created.dwVolumeSerialNumber != current.dwVolumeSerialNumber ||
-        created.nFileIndexHigh != current.nFileIndexHigh ||
-        created.nFileIndexLow != current.nFileIndexLow) {
-        detail::state_fault("TEMP_REOPEN_ID");
+    // Rename the exact file handle we created, never reopen it by pathname.
+    // POSIX replacement keeps old readers on their old immutable inode.
+    detail::Handle prior(::CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                       nullptr));
+    if (prior.valid()) {
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!owner_only(prior, sid, false) || !::GetFileInformationByHandle(prior, &info)) {
+            detail::state_fault("TARGET_UNTRUSTED");
+            discard_owned_temp(file);
+            return false;
+        }
+        if (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) {
+            ::SetLastError(ERROR_ACCESS_DENIED);
+            detail::state_fault("TARGET_READ_ONLY");
+            discard_owned_temp(file);
+            return false;
+        }
+    } else if (::GetLastError() != ERROR_FILE_NOT_FOUND) {
+        detail::state_fault("TARGET_UNREADABLE");
+        discard_owned_temp(file);
         return false;
     }
-    if (!::MoveFileExW(temp.c_str(), path.c_str(),
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        detail::state_fault("ATOMIC_REPLACE");
-        discard_owned_temp(cleanup);
+    const DWORD name_bytes = static_cast<DWORD>(path.size() * sizeof(wchar_t));
+    const DWORD info_bytes = static_cast<DWORD>(offsetof(FILE_RENAME_INFO, FileName)) + name_bytes;
+    std::vector<std::max_align_t> storage((info_bytes + sizeof(std::max_align_t) - 1) /
+                                          sizeof(std::max_align_t));
+    auto *rename = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+    rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    rename->RootDirectory = nullptr;
+    rename->FileNameLength = name_bytes;
+    ::CopyMemory(rename->FileName, path.data(), name_bytes);
+    if (!::SetFileInformationByHandle(file, FileRenameInfoEx, rename, info_bytes)) {
+        auto error = ::GetLastError();
+        detail::state_fault(error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_FUNCTION ||
+                                    error == ERROR_NOT_SUPPORTED
+                                ? "ATOMIC_RENAME_UNSUPPORTED"
+                                : "ATOMIC_HANDLE_REPLACE");
+        discard_owned_temp(file);
+        return false;
+    }
+    // The record is already published: a failed post-rename flush is unknown,
+    // and must never trigger deletion of the now-live target by this handle.
+    if (!::FlushFileBuffers(file)) {
+        detail::state_fault("POST_RENAME_FLUSH_UNKNOWN");
         return false;
     }
     return true;

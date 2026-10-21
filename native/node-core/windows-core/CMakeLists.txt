@@ -97,6 +97,7 @@ target_include_directories(test_windows_recovery PRIVATE "${CMAKE_CURRENT_SOURCE
 add_test(NAME windows_recovery_protocol COMMAND test_windows_recovery)
 
 if(WIN32)
+ target_compile_definitions(windows_core_scm PUBLIC _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000002)
  target_link_libraries(windows_core_scm PUBLIC advapi32 taskschd ole32 oleaut32 uuid shell32 ws2_32 bcrypt wtsapi32)
 endif()
 

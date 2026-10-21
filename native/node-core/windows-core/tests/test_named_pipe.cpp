@@ -212,17 +212,34 @@ int main() {
                     std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
                                  detail::state_error);
                 CHECK(second);
-                if (reader != INVALID_HANDLE_VALUE)
+                if (reader != INVALID_HANDLE_VALUE) {
+                    std::string old_contents(manifest.size(), '\0');
+                    DWORD count = 0;
+                    CHECK(::ReadFile(reader, old_contents.data(),
+                                     static_cast<DWORD>(old_contents.size()), &count,
+                                     nullptr) != 0);
+                    CHECK_EQ(count, static_cast<DWORD>(manifest.size()));
+                    CHECK_EQ(old_contents, manifest);
                     ::CloseHandle(reader);
-                // An incompatible external reader may legitimately prevent a
-                // replace. This call must remove only its own temp, so a later
-                // configure can succeed after that reader releases the file.
+                }
+                CHECK(watch->read_desired(loaded));
+                CHECK_EQ(loaded, manifest + "  ");
+                // POSIX replacement also supports existing ordinary readers.
+                // The reader keeps old bytes; new opens see the replacement.
                 reader = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                        OPEN_EXISTING, 0, nullptr);
                 CHECK(reader != INVALID_HANDLE_VALUE);
-                CHECK(!publish_windows_desired(manifest + "   "));
+                CHECK(publish_windows_desired(manifest + "   "));
                 if (reader != INVALID_HANDLE_VALUE)
                     ::CloseHandle(reader);
+                DWORD attributes = ::GetFileAttributesW(path.c_str());
+                CHECK(attributes != INVALID_FILE_ATTRIBUTES);
+                CHECK(::SetFileAttributesW(path.c_str(), attributes | FILE_ATTRIBUTE_READONLY) !=
+                      0);
+                // Valid JSON reaches the native owned-temp failure path.
+                CHECK(!publish_windows_desired(manifest + "    "));
+                CHECK_EQ(std::string(detail::state_stage), std::string("TARGET_READ_ONLY"));
+                CHECK(::SetFileAttributesW(path.c_str(), attributes) != 0);
                 CHECK(publish_windows_desired(manifest + "    "));
                 CHECK(publish_windows_desired(manifest + "     "));
             }
