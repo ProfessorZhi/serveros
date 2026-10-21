@@ -242,7 +242,11 @@ def secure_parent(path: Path | str) -> int:
 def _parent_binding(path: Path | str) -> _DirectoryBinding:
     destination = Path(path)
     _reject_traversal(destination)
-    return _open_directory_binding(destination.parent, create=True)
+    binding = _open_directory_binding(destination.parent, create=True)
+    if os.fstat(binding.fd).st_mode & 0o022:
+        binding.close()
+        raise FactsRefused(PATH_UNSAFE, "write parent must be owned and nonshared")
+    return binding
 
 
 def _bounded(text: str) -> str:

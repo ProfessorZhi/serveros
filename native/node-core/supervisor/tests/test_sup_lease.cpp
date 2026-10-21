@@ -755,6 +755,18 @@ int main() {
         CHECK(::unlinkat(scratch.leaf_fd, "lease-moved", AT_REMOVEDIR) == 0);
     }
 
+    {
+        // Fully owned nonshared 0755 paths need no 0700 exception. Retaining
+        // their namespace must not accidentally make the private barrier mandatory.
+        CHECK(::fchmod(scratch.leaf_fd, 0755) == 0);
+        WriterLease lease;
+        CHECK(lease.acquire(root + "/ordinary.lock", "core-a").ok);
+        CHECK(lease.revalidate().ok);
+        lease.release();
+        CHECK(::unlinkat(scratch.leaf_fd, "ordinary.lock", 0) == 0);
+        CHECK(::fchmod(scratch.leaf_fd, 0700) == 0);
+    }
+
     // Remove exactly what this test created, by name, relative to the pinned
     // descriptors.
     release_scratch(scratch, {"a.lock", "b.lock", "c.lock", "d.lock", "e.lock", "f.lock",

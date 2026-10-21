@@ -496,6 +496,19 @@ class NullFieldTest(unittest.TestCase):
 
 
 class PrivateDirectoryBindingTest(unittest.TestCase):
+    def test_shared_immediate_parent_remains_readable_but_cannot_publish_or_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            shared = Path(td) / "shared"
+            shared.mkdir(mode=0o775)
+            shared.chmod(0o775)
+            fd = facts.open_secure_dir(shared)
+            os.close(fd)
+            with self.assertRaises(facts.FactsRefused):
+                facts.publish_facts(shared / "facts.json", _doc())
+            with self.assertRaises(facts.FactsRefused):
+                facts.SafeLease(shared / "lease").acquire()
+            self.assertEqual(list(shared.iterdir()), [])
+
     def test_private_ancestor_protects_shared_state_and_retains_lease_identity(self):
         with tempfile.TemporaryDirectory() as td:
             private = Path(td) / "private"

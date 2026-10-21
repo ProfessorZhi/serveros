@@ -233,7 +233,7 @@ struct StateDirectory::Ancestry {
             previous = now;
         }
         struct stat actual {};
-        if (!enclosed || ::fstat(parent, &actual) != 0 || actual.st_dev != previous.st_dev ||
+        if ((exception_used && !enclosed) || ::fstat(parent, &actual) != 0 || actual.st_dev != previous.st_dev ||
             actual.st_ino != previous.st_ino || actual.st_uid != principal ||
             (actual.st_mode & (S_IWGRP | S_IWOTH)) != 0 ||
             ::faccessat(parent, ".", W_OK | X_OK, AT_EACCESS) != 0) {
