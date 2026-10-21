@@ -207,6 +207,8 @@ documents:
 # the source tree, rather than a second, subtly different one.
 runtime:
   path: runtime
+fleet_mcp:
+  path: fleet_mcp
 bin:
   path: bin
 
