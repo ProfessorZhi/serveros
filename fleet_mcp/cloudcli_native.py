@@ -482,19 +482,16 @@ def coverage(observed_names: Iterable[str],
 #: differs is refused by name rather than widened to a union no device accepts.
 UNSUPPORTED_BY_DEVICE = "UNSUPPORTED_BY_DEVICE"
 
-#: A verb the device DECLARES on `tools/list` whose recorded handler is the named
-#: `MCP_TOOL_NOT_IMPLEMENTED` refusal — registered so the name set stays stable
-#: while its deps are absent. `overview` is one: the installed 1.39.0 registers it
-#: as `notImplemented('overview', 'AC-247')`. It is deliberately NOT `USABLE`: a
-#: verb that answers a named refusal is not a capability this device has, and
-#: reporting it as one would answer "what does this device expose?" with a verb
-#: that provably cannot answer. That is the count-of-22 error reappearing in the
-#: one place built to prevent it.
+#: The live registration explicitly reports its handler is absent. Historical
+#: `placeholder_default` remains provenance and cannot establish current wiring.
 DECLARED_NOT_IMPLEMENTED = "DECLARED_NOT_IMPLEMENTED"
 
-#: A verb the device declares with a wired handler. The only state that asserts
-#: the device will answer a call.
+#: The live registration reports a wired handler; no end-to-end call is implied.
 USABLE = "USABLE"
+
+#: Older gateways advertise no registration evidence. Do not guess from names
+#: or the default handlers captured in a different process/version.
+HANDLER_BINDING_UNKNOWN = "HANDLER_BINDING_UNKNOWN"
 
 
 def native_schema(tool_entry: dict) -> dict | None:
@@ -632,20 +629,13 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
                         reason: str | None = None) -> dict[str, Any]:
     """A read-only snapshot of what ONE device actually exposes.
 
-    `observed` is `{tool_name: {"annotations": ..., "schema": ...}}` read from
-    the device's OWN `tools/list`, or `None` when nobody could read it (a device
-    that needs a credential this surface does not hold is reported UNKNOWN, not
-    assumed complete).
-
-    A recorded verb the device does NOT declare is `UNSUPPORTED_BY_DEVICE` — the
-    22 names this build mirrors are not 22 working verbs on every machine, and a
-    count of 22 is not evidence that any of them answer. A recorded verb the
-    device DOES declare but whose recorded handler is the named
-    `MCP_TOOL_NOT_IMPLEMENTED` refusal is `DECLARED_NOT_IMPLEMENTED`, never
-    `USABLE`: being on `tools/list` is not answering. A verb the device declares
-    that this build did NOT record is reported separately; it is not silently
-    added, because a name that arrived from the wire is not a capability this
-    build decided to offer.
+    `observed` carries the device's own `tools/list` schema, annotations and
+    `_meta`. Only the typed `cloudcli/handlerBound` registration bit establishes
+    handler binding. `USABLE` means declared wired, not a verified workflow.
+    Older lists without this evidence remain `HANDLER_BINDING_UNKNOWN`; the
+    recorded default-handler table is provenance, not live runtime truth.
+    Missing tools are unsupported; unrecorded names are never added to the
+    mirror. No tool is called to manufacture this read-only snapshot.
     """
     base = {
         "schema": "serveros/fleet-cloudcli-capability.v1",
@@ -659,12 +649,13 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
         return {**base, "state": "UNKNOWN", "observed_count": None,
                 "reason": reason or "the device's tool list was not read",
                 "tools": {}, "unsupported_by_device": sorted(NATIVE_BY_NAME),
-                "declared_not_implemented": [],
+                "declared_not_implemented": [], "handler_binding_unknown": [],
                 "unrecorded_by_build": []}
     observed = {k: v for k, v in observed.items() if isinstance(k, str)}
     tools: dict[str, Any] = {}
     unsupported: list[str] = []
     declared_not_implemented: list[str] = []
+    handler_binding_unknown: list[str] = []
     for native in NATIVE_TOOLS:
         entry = observed.get(native.name)
         if entry is None:
@@ -675,26 +666,29 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
             unsupported.append(native.name)
             continue
         entry = entry if isinstance(entry, dict) else {}
-        # A verb the device DECLARES is not thereby a verb that ANSWERS. The 22
-        # names are all registered at stage 4; the ones whose deps are absent sit
-        # on a named `MCP_TOOL_NOT_IMPLEMENTED` refusal. `USABLE` is the only
-        # state that asserts the device will answer, so it is withheld from a
-        # recorded placeholder — and the recorded fact rides ALONGSIDE the state
-        # rather than being replaced by it, so a consumer can see which reading
-        # produced the classification instead of trusting a bare word.
+        meta = entry.get("_meta")
+        bound = meta.get("cloudcli/handlerBound") if isinstance(meta, dict) else None
+        if bound is True:
+            state = USABLE
+        elif bound is False:
+            state = DECLARED_NOT_IMPLEMENTED
+            declared_not_implemented.append(native.name)
+        else:
+            state = HANDLER_BINDING_UNKNOWN
+            handler_binding_unknown.append(native.name)
         tools[native.name] = {
-            "state": (DECLARED_NOT_IMPLEMENTED if native.placeholder_default
-                      else USABLE),
+            "state": state,
             "placeholder_default": native.placeholder_default,
-            # Carried through, not interpreted: the device's own annotation.
+            "binding_evidence": ("LIVE_HANDLER_METADATA" if type(bound) is bool
+                                 else "NOT_OBSERVED"),
+            "workflow_verified": False,
             "annotations": entry.get("annotations"),
             "schema_present": isinstance(entry.get("schema"), dict),
         }
-        if native.placeholder_default:
-            declared_not_implemented.append(native.name)
     return {**base, "state": "OBSERVED", "observed_count": len(observed),
             "tools": tools, "unsupported_by_device": sorted(unsupported),
             "declared_not_implemented": sorted(declared_not_implemented),
+            "handler_binding_unknown": sorted(handler_binding_unknown),
             "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME))}
 
 

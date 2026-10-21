@@ -98,7 +98,8 @@ class CloudCliProvider(DeviceProvider):
         for row in self._tools:
             if isinstance(row, dict) and isinstance(row.get("name"), str):
                 observed[row["name"]] = {"annotations": row.get("annotations"),
-                                         "schema": row.get("inputSchema")}
+                                         "schema": row.get("inputSchema"),
+                                         "_meta": row.get("_meta")}
         return cloudcli_native.capability_snapshot(
             device_ref=self.device_ref, observed=observed, source=self.kind,
             version=health.server_version,
