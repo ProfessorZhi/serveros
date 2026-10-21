@@ -176,16 +176,25 @@ class NodeSignature(unittest.TestCase):
         self.assertEqual(np.split_path_and_query("/v1/health"), ("/v1/health", ""))
 
     def test_the_route_set_is_closed(self):
-        """An added route must be a deliberate edit to this tuple."""
+        """Pin every route declared by fleet/fleet-mcp-contract.yaml."""
         self.assertNotIn("POST /v1/exec", np.ROUTES)
         for route in np.ROUTES:
             method, _, path = route.partition(" ")
             self.assertIn(method, ("GET", "POST"))
             self.assertTrue(path.startswith("/v1/"))
-        self.assertEqual(len(np.ROUTES), 10)
-        # The one route control added, named so that a future edit cannot add a
-        # second one under cover of this count going up.
-        self.assertIn("POST /v1/sessions/{id}/interrupt", np.ROUTES)
+        self.assertCountEqual(np.ROUTES, (
+            "GET /v1/health",
+            "GET /v1/self",
+            "GET /v1/sessions",
+            "POST /v1/sessions",
+            "GET /v1/sessions/{id}",
+            "POST /v1/sessions/{id}/read",
+            "POST /v1/sessions/{id}/send",
+            "POST /v1/sessions/{id}/interrupt",
+            "GET /v1/runs/{run_id}",
+            "POST /v1/native/call",
+            "GET /v1/core/status",
+        ))
 
 
 def _free_port() -> int:
