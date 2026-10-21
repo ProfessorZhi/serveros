@@ -322,6 +322,16 @@ class NodeConfig:
     # latency and the same place as every other binding in this system. Nothing
     # else reads this file, so nothing else can re-grant it.
     allow_all_sessions_for_owner: tuple[str, ...] = ()
+    owner_access: Any = None
+
+    def __post_init__(self):
+        if self.owner_access is not None:
+            from ..owner_access import OwnerAccessProfile
+            if not isinstance(self.owner_access, OwnerAccessProfile):
+                raise ValueError("owner_access must be a validated owner profile")
+            for name in ("allow_create", "allow_control", "allow_approve", "allow_navigate"):
+                object.__setattr__(self, name, True)
+            object.__setattr__(self, "allow_all_sessions_for_owner", OWNER_FLOOR_VERBS)
 
     def secret(self) -> str | None:
         try:
@@ -680,9 +690,14 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
             "A hostname would give two machines the same identity the moment one "
             "was renamed.",
         )
+    from ..owner_access import parse_owner_access, OwnerAccessError
+    try:
+        owner_access = parse_owner_access(raw.get("owner_access"))
+    except OwnerAccessError as exc:
+        raise FleetRefusal(BAD_REQUEST, str(exc)) from None
     allow_create = _flag(raw.get("allow_create"), name="allow_create")
     allow_create_projects = _create_projects(raw.get("allow_create_projects"))
-    if allow_create and not allow_create_projects:
+    if allow_create and not allow_create_projects and owner_access is None:
         # "Creation is on, for nothing" is only reachable by accident, and the
         # accident is invisible at the moment it happens: the connector starts,
         # serves, and refuses every project for a reason no operator wrote
@@ -698,6 +713,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
             "false`).",
         )
     return NodeConfig(
+        owner_access=owner_access,
         device_ref=device_ref,
         secret_anchor=Path(str(raw["secret_anchor"])).expanduser(),
         cloudcli_endpoint=str(raw["cloudcli_endpoint"]),
@@ -1082,6 +1098,11 @@ class Connector:
                     "`allow_create` is off in its own binding.",
                 )
             project = arguments.get("project")
+            if self.config.owner_access is not None:
+                from ..fleet import FleetService
+                FleetService._verify_owner_project(self.provider, project)
+                arguments.setdefault("permissionMode", self.config.owner_access.permission_mode)
+                return
             if (not isinstance(project, str) or not project.strip()
                     or project not in self.config.allow_create_projects):
                 raise FleetRefusal(
@@ -1246,7 +1267,10 @@ class Connector:
                 f"binding, and that file lives on this machine, not on the "
                 f"caller's. It is {self.config.allow_create!r} here.",
             )
-        if project.strip() not in self.config.allow_create_projects:
+        if self.config.owner_access is not None:
+            from ..fleet import FleetService
+            FleetService._verify_owner_project(self.provider, project)
+        elif project.strip() not in self.config.allow_create_projects:
             raise FleetRefusal(
                 "WRITE_NOT_GRANTED",
                 f"this connector is not authorized to create a session on "
@@ -1263,7 +1287,8 @@ class Connector:
             provider=str(payload.get("provider") or "claude"),
             model=payload.get("model"),
             lifecycle_mode=payload.get("lifecycleMode"),
-            permission_mode=payload.get("permissionMode"),
+            permission_mode=(payload.get("permissionMode") or self.config.owner_access.permission_mode
+                             if self.config.owner_access is not None else payload.get("permissionMode")),
         )
 
     def _send(self, native: str, payload: dict[str, Any]):

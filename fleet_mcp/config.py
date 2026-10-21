@@ -36,6 +36,7 @@ from .runtime_identity import BASE_RUNTIME
 from .runtime_create_policy import (RuntimeProjectDefaults, PolicyError,
                                     parse_runtime_create_defaults)
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
+from .owner_access import OwnerAccessProfile, parse_owner_access
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
 
@@ -161,11 +162,14 @@ class ProviderBinding:
     # Explicitly serve unqualified Claude/Codex session namespaces through
     # this one base account gateway. This adds no runtime or grant.
     multiplex_native_families: bool = False
+    owner_access: OwnerAccessProfile | None = None
 
     def __post_init__(self) -> None:
         """Shape only. Whether a declared runtime EXISTS is not a question a
         single binding can answer, and set-level questions are asked where the
         whole set is visible."""
+        if self.owner_access is not None and not isinstance(self.owner_access, OwnerAccessProfile):
+            raise ValueError("owner_access must be a validated owner profile")
         if not isinstance(self.multiplex_native_families, bool):
             raise ValueError("multiplex_native_families must be true or false")
         if self.multiplex_native_families and (
@@ -285,6 +289,9 @@ class CreateGrant:
 
 @dataclass(frozen=True)
 class PolicyBinding:
+    # Explicit owners of exact native namespaces, configured once. Other
+    # principals and independently bound account profiles retain their floors.
+    owner_max: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Sessions this runtime is additionally authorized to drive. Control into a
     # session is granted per session by an operator, never by the caller naming
     # an id — see `APPROVAL_REQUIRED`.
@@ -365,6 +372,7 @@ class PolicyBinding:
     def __post_init__(self):
         from .discovery import discovery_settings
         discovery_settings(self.discovery_timeout_seconds, self.discovery_workers)
+        object.__setattr__(self, "owner_max", load_owner_max(self.owner_max))
 
 
 @dataclass(frozen=True)
@@ -409,13 +417,22 @@ class FleetConfig:
             if any(other.device_ref == binding.device_ref and other.runtime == "codex"
                    for other in self.providers.values()):
                 raise ValueError("multiplexed base conflicts with an explicit Codex binding")
+        for namespaces in self.policy.owner_max.values():
+            for namespace in namespaces:
+                device, _, runtime = namespace.partition("|")
+                binding = self.namespace_binding(device, runtime or BASE_RUNTIME)
+                if binding is None or not binding.enabled or binding.owner_access is None:
+                    raise ValueError("owner_max requires an enabled binding with an owner_access profile")
 
     def session_binding(self, key: SessionKey) -> ProviderBinding | None:
-        exact = self.provider_for(key.device_ref, key.provider)
+        return self.namespace_binding(key.device_ref, key.provider)
+
+    def namespace_binding(self, device_ref: str, namespace: str) -> ProviderBinding | None:
+        exact = self.provider_for(device_ref, namespace)
         if exact is not None:
             return exact
-        base = self.provider_for(key.device_ref)
-        if (key.provider == "codex" and base is not None and base.enabled
+        base = self.provider_for(device_ref)
+        if (namespace == "codex" and base is not None and base.enabled
                 and base.multiplex_native_families):
             return base
         return None
@@ -439,6 +456,10 @@ class FleetConfig:
                     "device_ref": b.device_ref,
                     "runtime": b.runtime,
                     "multiplex_native_families": b.multiplex_native_families,
+                    "owner_access": ({"owner_approved": True,
+                                      "project_roots": dict(b.owner_access.project_roots),
+                                      "permission_mode": b.owner_access.permission_mode}
+                                     if b.owner_access else None),
                     "kind": b.kind,
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
@@ -452,6 +473,7 @@ class FleetConfig:
             "server": {"bind": self.server.bind, "port": self.server.port,
                        "mcp_path": self.server.mcp_path},
             "policy": {
+                "owner_max": {p: list(v) for p, v in self.policy.owner_max.items()},
                 "send_allow": list(self.policy.send_allow),
                 "control_allow": list(self.policy.control_allow),
                 "create_allow": {
@@ -816,6 +838,34 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
     return grants
 
 
+def load_owner_max(raw) -> dict[str, tuple[str, ...]]:
+    if not isinstance(raw, dict):
+        raise ValueError("policy.owner_max must map exact principals to namespace lists")
+    result = {}
+    for principal, namespaces in raw.items():
+        if (not isinstance(principal, str) or not principal.strip()
+                or principal != principal.strip() or "*" in principal):
+            raise ValueError("owner_max requires exact nonempty principal names")
+        if not isinstance(namespaces, (list, tuple)) or not namespaces:
+            raise ValueError("owner_max requires a nonempty namespace list")
+        selected = []
+        for namespace in namespaces:
+            if (not isinstance(namespace, str) or namespace != namespace.strip()
+                    or "*" in namespace or namespace.count("|") > 1):
+                raise ValueError("owner_max requires exact device/runtime keys")
+            device, _, runtime = namespace.partition("|")
+            if runtime == BASE_RUNTIME or ("|" in namespace and not runtime):
+                raise ValueError("the base owner namespace uses its bare device key")
+            SessionKey(device, runtime or BASE_RUNTIME, "owner-config")
+            if runtime_identity.is_a_selector(runtime):
+                raise ValueError("owner_max cannot name a runtime query selector")
+            if namespace in selected:
+                raise ValueError("duplicate owner_max namespace")
+            selected.append(namespace)
+        result[principal] = tuple(selected)
+    return result
+
+
 def load_config(path: str | Path | None = None) -> FleetConfig:
     explicit = path if path is not None else default_config_path()
     if explicit is None:
@@ -932,6 +982,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                 family=str(entry.get("family", BASE_RUNTIME)),
                 instance_id=entry.get("instance_id"),
                 multiplex_native_families=entry.get("multiplex_native_families", False),
+                owner_access=parse_owner_access(entry.get("owner_access")),
             )
         except ValueError as exc:
             raise refuse(BAD_REQUEST, f"provider {ref}: {exc}") from None
@@ -1104,7 +1155,12 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             policy_raw.get("discovery_workers", 4))
     except ValueError as exc:
         raise refuse(BAD_REQUEST, str(exc)) from None
+    try:
+        owner_max = load_owner_max(policy_raw.get("owner_max", {}))
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None
     policy = PolicyBinding(
+        owner_max=owner_max,
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
         operator_grants=load_operator_grants(policy_raw),

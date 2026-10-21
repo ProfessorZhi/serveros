@@ -30,9 +30,10 @@ from .oauth import TokenStore, store_root_for
 from .server import SUPPORTED_PROTOCOL_VERSIONS, McpServer, dumps, loads
 from .tools import ToolContext
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION
+from .scopes import ALLOWED_SCOPES
 
 
-def owner_principal() -> Principal:
+def owner_principal(config: FleetConfig | None = None) -> Principal:
     """The principal for a channel that is already inside the trust boundary.
 
     All three scopes, including `fleet:create` — and that is not a loosening.
@@ -50,7 +51,9 @@ def owner_principal() -> Principal:
     authority and the scope merely stops the call before the binding is read.
     """
     return Principal(name="local-owner",
-                     scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
+                     scopes=frozenset(ALLOWED_SCOPES if config is not None
+                                      and config.policy.owner_max.get("local-owner")
+                                      else (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
                      credential_kind="pat")
 
 
@@ -130,7 +133,7 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
     have to restart the server to recover.
     """
     service = service or build_service(config)
-    context = lambda: ToolContext(service=service, principal=owner_principal())  # noqa: E731
+    context = lambda: ToolContext(service=service, principal=owner_principal(config))  # noqa: E731
     mcp = McpServer(context)
     out = sys.stdout
     for line in sys.stdin:
