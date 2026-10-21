@@ -141,8 +141,13 @@ The overlay builder remains the release builder. A new offline checker reads
 two overlay archives/release records and performs:
 
 1. **same-ID plan** — equal `plugin_id`, `name`, `displayName` and `apps`;
-   strictly increasing semver; the previous Skills are all still present; the
-   expected archive hashes match the records.
+   a complete protected manifest projection (root and `.codex-plugin`
+   repeated effective fields), `mcp.json`/`.mcp.json` structure and referenced
+   files, and every non-Skill member byte; strictly increasing semver; the
+   previous Skills are all still present; the expected archive hashes match
+   the records. App-owned title, descriptions, prompts, presentation, MCP and
+   connection data are not overlay-updatable; backend/tool changes remain
+   server deployment.
 2. **readback check** — compare an explicitly labelled readback receipt
    (plugin id, previous release id, new release id, version, Skills and archive
    hash) against the plan. A missing or contradictory field is a refusal, not a
@@ -154,7 +159,11 @@ two overlay archives/release records and performs:
 
 A local rehearsal generator uses the synthetic overlay fixture, builds two
 versions, synthesizes a readback receipt from the second archive, and runs the
-three checks. The output is local evidence; it discharges no live update.
+three checks. Before any copy or write it validates the source tree and shared
+Skills for symlinks, forbidden members and boundaries, and it requires a fresh
+empty output whose path (including existing parents) has no symlink and does
+not overlap the source. It never removes a caller-owned directory. The output
+is local evidence; it discharges no live update.
 
 ## Alternatives
 

@@ -2,10 +2,12 @@
 
 Reviewer scope: this branch's Operator Skills and packaging changes only.
 Baseline `597f7b8b5507ec10435b75fd4658b922bcf5c56a`. No control code
-(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited. Revision 2
-reviews the P1 fixes requested after Draft PR #384; the control candidate
+(`fleet_mcp/`, `runtime/`, `fleet/`, WorkEngine or Core) was edited. Revisions 2 and 3
+review the P1 fixes requested after Draft PR #384. The control candidate
 `1011eb56a930b4e29fa165e44bd55d7dd230003f` supplied the durability enum and
 `RUN_NOT_FOUND` / `never_issued` semantics, but was not merged into this lane.
+The later `6c34efe` control revision is tool-description/boundary text only;
+behavior remains `1011eb56`.
 
 ## Revision 2 — the P1 corrections
 
@@ -28,6 +30,62 @@ reviews the P1 fixes requested after Draft PR #384; the control candidate
   negative control. Package byte identity, frontmatter, tool resolution and
   member retention remain. Total targeted count moved 224/120 to 219/117; no
   baseline test was removed or skipped.
+
+## Revision 3 — independent-review P1 hardening (two rounds)
+
+### Review round 1 — reproduced findings
+
+The independent probes in `RUN-0041/operator-independent-probes.json` showed:
+
+- **Critical — source symlink dereference before audit.** `rehearse()` used
+  `copytree` before any source-tree check, so a `notes.md` symlink to an
+  external canary was copied as regular content and packaged; `plan` PASSed.
+- **Critical — output-parent symlink and `rmtree`.** An `out/v1` parent symlink
+  let `_stage()` remove/rewrite a reviewer-owned directory outside `out`, and
+  the eventual icon refusal happened too late.
+- **Critical — protected configuration under-compared.** `plan_update()` checked
+  a small identity set only. Changed MCP URL/server, `shortDescription` and
+  `defaultPrompt` still PASSed.
+
+Round-1 resolution: preflight source, shared Skills and output before any
+copy/write; reject all symlinks in the source tree and shared Skills, all
+symlink components on the output path, non-empty output, source/output overlap
+and escapes; remove `rmtree` from staging; compare the complete protected
+manifest projection (root and `.codex-plugin` repeated fields), MCP structures
+and referenced files, and every non-Skill member byte.
+
+### Review round 2 — after implementation
+
+Re-read the revised code against the four requested boundaries and the
+account-updates reference:
+
+- **Source/shared-tree safety.** `_preflight_tree()` walks with
+  `followlinks=False`, rejects symlink files/directories, forbidden members,
+  non-regular files and the root symlink case before the first `mkdir` or
+  `copytree`. Shared Skills are checked by the same function.
+- **Output safety.** `_preflight_output()` rejects every symlink component on
+  the path, non-empty output, non-owned/world-writable output and source/output
+  overlap. Staging creates fresh `v1`/`v2` directories and never removes a
+  caller path. Tests use an external sentinel and patch `rmtree` to prove it is
+  not called.
+- **Protected App configuration.** The plan compares the full root and compat
+  manifest projections after removing only version/keywords/onboarding/
+  local-executor; it enforces compat/root version sync. MCP presence,
+  structure and referenced-file hashes are compared; non-Skill members cannot
+  be added, removed or changed. Adversarial tests cover URL, extra server,
+  legacy `.mcp.json`, short description, default prompt, top-level description,
+  compat repeated fields and supporting-file drift.
+- **QA handoff.** The new handoff uses an admitted artifacts root, a detached
+  worktree and empty output dirs, sets `TMPDIR`,
+  `PYTHONDONTWRITEBYTECODE`, `pytest -p no:cacheprovider` and resource limits,
+  and makes host cleanup proposal-only after a fresh state/worktree/container/
+  open-file/active-Run snapshot. It no longer instructs `/tmp`, shared-checkout
+  `git checkout`, or automatic worktree/config removal.
+
+Residual limits: the checker is a local file/manifest comparison, not a live
+Creator readback; backend/MCP/tool behavior changes remain server deployment;
+a local rehearsal cannot prove the private Creator accepts or rolls back an
+update.
 
 ## Design review
 
@@ -70,7 +128,8 @@ as a file for the other verbs. Re-run exit is 0.
 - Every `fleet_*` backtick reference resolves in
   `fleet_mcp.tools.SERVED_BY_NAME`; no batch/scheduler tool is invented.
 - Same-ID update: plugin id, name, `displayName` and `apps` unchanged; the
-  bytes of the file the `apps` reference names are unchanged; version strictly
+  complete protected root/compat manifest projection, MCP structures and
+  referenced files, and non-Skill member bytes unchanged; version strictly
   advances; no previous Skill removed; archive hash matches record.
 - Readback: plugin id, new/different release id, version, Skills and archive
   hash must agree; missing icons are `PARTIAL`, not PASS; `LIVE` is refused.
@@ -81,11 +140,11 @@ as a file for the other verbs. Re-run exit is 0.
 
 All commands were executed with `ulimit -v 2097152` (2 GiB), `ulimit -t 300`
 (300 CPU seconds), `timeout 300`, and `taskset -c 0` (one CPU). Evidence is in
-`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0043/operator-skills-20261021-r2/`.
+`/data/home/vince/artifacts/work-items/serveros/SRV-0011/RUN-0044/operator-skills-20261021-r3/`.
 
 | check | command | result |
 |---|---|---|
-| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **219 passed, 117 subtests, exit 0** |
+| targeted test union | `python -m pytest -q` over the 8 operator/package modules | **239 passed, 117 subtests, exit 0** |
 | CC development adapter | `build_cc_plugin.py --out … --next-mcp-url https://fleet-next.example.ts.net/mcp` | exit 0; **8 Skills**, 1 MCP binding |
 | local CC fixture | `build_local_fixture.py --out … --json` | exit 0; 8 Skills; `TEST_FIXTURE_ONLY_NOT_A_RELEASE` |
 | Claude Code package load | `claude plugin validate … --strict`; `claude --plugin-dir … plugin details` | **exit 0**; **Skills (8) / MCP servers (1)**; local only |

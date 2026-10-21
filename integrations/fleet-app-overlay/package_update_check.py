@@ -5,28 +5,36 @@ This is the checkable half of `UPDATE-MANUAL.md`. It reads local overlay
 archives and release records, never a Creator, a token or a network. Two
 properties are deliberate:
 
-* **The identity is compared, not assumed.** The plugin id, manifest name,
-  `displayName` and `apps` reference must be identical; the version must
-  advance; a previous Skill may not disappear. A release record whose archive
-  hash does not match the bytes on disk is refused before any plan is emitted.
+* **The identity and protected configuration are compared, not assumed.** The
+  plugin id, manifest name, `displayName` and `apps` reference must be
+  identical; version/keywords/onboarding/local-executor are the only manifest
+  changes; the complete protected root/compat manifest projection, MCP
+  structures and referenced files, and non-Skill member bytes must match. The
+  version must advance and a previous Skill may not disappear. A release record
+  whose archive hash does not match the bytes on disk is refused before any
+  plan is emitted.
 * **A readback is a claim with provenance.** A receipt is labelled
   `SYNTHETIC_LOCAL_REHEARSAL` or `OPERATOR_SUPPLIED_RECEIPT`; the result always
   says `production_verified: false`. A receipt labelled `LIVE` is refused here
   because this tool did not observe a live Creator and will not authenticate
   someone else's claim.
 
-A rollback check produces a target, never an action. Nothing here uploads,
-installs, creates a plugin, changes OAuth/services/routes or writes outside the
-caller's output directory.
+A rollback check produces a target, never an action. The rehearsal validates
+source, shared-Skill and output paths before any copy/write and never removes a
+caller-owned directory. Nothing here uploads, installs, creates a plugin,
+changes OAuth/services/routes or writes outside the caller's output directory.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -44,6 +52,30 @@ READBACK_SOURCES = ("SYNTHETIC_LOCAL_REHEARSAL", "OPERATOR_SUPPLIED_RECEIPT")
 SOURCE_SYNTHETIC = "SYNTHETIC_LOCAL_REHEARSAL"
 SOURCE_OPERATOR = "OPERATOR_SUPPLIED_RECEIPT"
 SEMVER_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
+
+# The update reference permits only version, Skills/supporting files, keywords,
+# onboarding selection and the local-executor requirement to change. Everything
+# else in the manifest is App-/Creator-owned and must remain effective.
+ROOT_ALLOWED_PATHS = frozenset({
+    ("version",),
+    ("keywords",),
+    ("onboardingSkill",),
+    ("requires_local_executor",),
+    ("localExecutor",),
+    ("extensions", "com.openai", "onboardingSkill"),
+    ("extensions", "com.openai", "requires_local_executor"),
+    ("extensions", "com.openai", "localExecutor"),
+})
+COMPAT_ALLOWED_PATHS = frozenset({
+    ("version",),
+    ("keywords",),
+    ("onboardingSkill",),
+    ("requires_local_executor",),
+    ("localExecutor",),
+    ("interface", "onboardingSkill"),
+    ("interface", "requires_local_executor"),
+    ("interface", "localExecutor"),
+})
 
 OLD_SKILLS = (
     "fleet-create-with-grants",
@@ -119,6 +151,65 @@ def _member_sha(zf, name: str) -> str | None:
         return None
 
 
+def _read_member_json(zf, name: str, archive_name: str):
+    if name not in zf.namelist():
+        return None
+    try:
+        value = json.loads(zf.read(name).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Refused(f"{archive_name}: {name} is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise Refused(f"{archive_name}: {name} is not a JSON object")
+    return value
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False)
+
+
+def _drop_paths(value: dict, paths) -> dict:
+    clone = copy.deepcopy(value)
+    for path in paths:
+        current = clone
+        for key in path[:-1]:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        if isinstance(current, dict):
+            current.pop(path[-1], None)
+    return clone
+
+
+def _iter_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings(item)
+
+
+def _mcp_references(config: dict, member_sha256: dict[str, str]) -> dict[str, str]:
+    """Local files named by an MCP config, by plugin-relative path."""
+    found: dict[str, str] = {}
+    for text in _iter_strings(config):
+        candidate = text
+        if candidate.startswith("${PLUGIN_ROOT}/"):
+            candidate = candidate[len("${PLUGIN_ROOT}/"):]
+        elif candidate.startswith("./"):
+            candidate = candidate[2:]
+        else:
+            if "://" in candidate or candidate.startswith("/"):
+                continue
+        if candidate in member_sha256:
+            found[candidate] = member_sha256[candidate]
+    return found
+
+
 def archive_view(record: dict, archive: Path) -> dict:
     """Read one archive and prove it is the archive its record names."""
     archive = Path(archive)
@@ -168,6 +259,14 @@ def archive_view(record: dict, archive: Path) -> dict:
             apps_sha256 = None
             if isinstance(apps_path, str) and apps_path.startswith("./"):
                 apps_sha256 = _member_sha(zf, apps_path[2:])
+            member_sha256 = {
+                name: hashlib.sha256(zf.read(name)).hexdigest()
+                for name in names if not name.endswith("/")
+            }
+            compat_manifest = _read_member_json(
+                zf, ".codex-plugin/plugin.json", archive.name)
+            mcp = _read_member_json(zf, "mcp.json", archive.name)
+            legacy_mcp = _read_member_json(zf, ".mcp.json", archive.name)
     except Refused:
         raise
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -188,6 +287,12 @@ def archive_view(record: dict, archive: Path) -> dict:
         "skill_sha256": skill_sha256,
         "icon_sha256": icons,
         "app_sha256": apps_sha256,
+        "members": sorted(member_sha256),
+        "member_sha256": member_sha256,
+        "root_manifest": manifest,
+        "compat_manifest": compat_manifest,
+        "mcp": mcp,
+        "legacy_mcp": legacy_mcp,
         "archive_sha256": actual,
     }
 
@@ -221,6 +326,76 @@ def plan_update(*, previous_record: dict, previous_archive: Path,
            previous["app_sha256"] == following["app_sha256"] else
            f"{previous['apps']} content changed; the App binding is not ours to move")
 
+    # App-backed updates may change version, Skills/supporting files, keywords,
+    # onboarding selection and the local-executor requirement. Everything else
+    # in the effective manifest is protected: title, descriptions, prompts,
+    # presentation, App/connection fields and any unknown future field.
+    prev_root = previous["root_manifest"]
+    next_root = following["root_manifest"]
+    prev_compat = previous["compat_manifest"]
+    next_compat = following["compat_manifest"]
+    _check(checks, "manifest_root_protected",
+           _canonical_json(_drop_paths(prev_root, ROOT_ALLOWED_PATHS))
+           == _canonical_json(_drop_paths(next_root, ROOT_ALLOWED_PATHS)),
+           "root manifest protected configuration changed")
+    _check(checks, "compat_manifest_presence",
+           (prev_compat is None) == (next_compat is None),
+           "compat manifest presence changed")
+    for label, root, compat in (("previous", prev_root, prev_compat),
+                                ("next", next_root, next_compat)):
+        if compat is not None:
+            _check(checks, f"compat_version_{label}",
+                   compat.get("version") == root.get("version"),
+                   f"{label} compat manifest version does not match the root manifest")
+    if prev_compat is not None and next_compat is not None:
+        _check(checks, "compat_manifest_protected",
+               _canonical_json(_drop_paths(prev_compat, COMPAT_ALLOWED_PATHS))
+               == _canonical_json(_drop_paths(next_compat, COMPAT_ALLOWED_PATHS)),
+               "compat manifest protected configuration changed")
+
+    # MCP is App-owned. Compare the effective structures and every local file
+    # they reference; a server, URL, transport or referenced script change is a
+    # server deployment, not an overlay update.
+    for label in ("mcp", "legacy_mcp"):
+        left = previous[label]
+        right = following[label]
+        _check(checks, f"{label}_presence", (left is None) == (right is None),
+               f"{label} presence changed")
+        if left is not None and right is not None:
+            _check(checks, f"{label}_configuration",
+                   _canonical_json(left) == _canonical_json(right),
+                   f"{label} configuration changed")
+            left_refs = _mcp_references(left, previous["member_sha256"])
+            right_refs = _mcp_references(right, following["member_sha256"])
+            _check(checks, f"{label}_references", left_refs == right_refs,
+                   f"{label} referenced-file set changed")
+            drifted = sorted(path for path in left_refs
+                             if right_refs.get(path) != left_refs[path])
+            _check(checks, f"{label}_referenced_bytes", not drifted,
+                   f"{label} referenced file(s) changed: {drifted}")
+
+    # A non-skill member is not an editable supporting file in this workflow:
+    # adding, removing or changing one is drift. Skills and their supporting
+    # files are the only member changes the update path permits.
+    def protected_members(view: dict) -> set[str]:
+        return {name for name in view["members"] if not name.startswith("skills/")}
+
+    prev_members = protected_members(previous)
+    next_members = protected_members(following)
+    _check(checks, "member_set", prev_members == next_members,
+           "non-skill member set changed: "
+           f"added {sorted(next_members - prev_members)} "
+           f"removed {sorted(prev_members - next_members)}")
+    manifest_members = {"plugin.json", ".codex-plugin/plugin.json",
+                        "mcp.json", ".mcp.json"}
+    changed_members = sorted(
+        name for name in prev_members & next_members
+        if name not in manifest_members
+        and previous["member_sha256"][name] != following["member_sha256"][name]
+    )
+    _check(checks, "member_bytes", not changed_members,
+           f"protected non-skill member(s) changed: {changed_members}")
+
     from_version = _semver(previous["version"], "previous version")
     to_version = _semver(following["version"], "next version")
     _check(checks, "version", to_version > from_version,
@@ -252,6 +427,18 @@ def plan_update(*, previous_record: dict, previous_archive: Path,
         "skills_changed": changed,
         "skills_removed": removed,
         "icons": following["icon_sha256"],
+        "protected": {
+            "manifest_root": "identical except allowed version/keywords/onboarding/local-executor",
+            "manifest_compat": (
+                "absent" if prev_compat is None else
+                "identical except allowed version/keywords/onboarding/local-executor"),
+            "mcp": "absent" if previous["mcp"] is None and following["mcp"] is None
+                   else "structurally identical with identical referenced files",
+            "members": sorted(prev_members),
+        },
+        "note": ("Only version, Skills/supporting files, keywords, onboarding "
+                 "selection and the local-executor requirement are overlay "
+                 "updates. MCP/backend/tool behavior is server deployment."),
         "expected": {
             "plugin_id": previous["plugin_id"],
             "version": following["version"],
@@ -382,31 +569,134 @@ def _load_builder():
     return module
 
 
+def _abs_path(path: Path) -> Path:
+    """Absolute lexical path; do not follow a symlink before it is checked."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    try:
+        return os.path.commonpath([os.fspath(child), os.fspath(parent)]) == os.fspath(parent)
+    except ValueError:
+        return False
+
+
+def _reject_symlink_components(path: Path, label: str) -> None:
+    current = Path(path)
+    for candidate in (current, *current.parents):
+        try:
+            info = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise Refused(f"{label} path has a symlink component: {candidate}")
+
+
+def _preflight_tree(root: Path, label: str, builder) -> None:
+    """Refuse symlinks, forbidden members and non-regular files before any copy."""
+    root = _abs_path(root)
+    if os.path.islink(root):
+        raise Refused(f"{label} root is a symlink: {root}")
+    if not os.path.isdir(root):
+        raise Refused(f"{label} is not a directory: {root}")
+    forbidden_parts = set(builder.FORBIDDEN_PARTS)
+    forbidden_suffixes = tuple(builder.FORBIDDEN_SUFFIXES)
+    forbidden_names = set(builder.FORBIDDEN_NAMES)
+    for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        dirs.sort()
+        files.sort()
+        for name in list(dirs):
+            path = Path(base) / name
+            rel = path.relative_to(root)
+            if os.path.islink(path):
+                raise Refused(f"{label} contains a symlink: {rel.as_posix()}")
+            if set(rel.parts) & forbidden_parts:
+                raise Refused(f"{label} contains a forbidden member: {rel.as_posix()}")
+        for name in files:
+            path = Path(base) / name
+            rel = path.relative_to(root)
+            if os.path.islink(path):
+                raise Refused(f"{label} contains a symlink: {rel.as_posix()}")
+            if (set(rel.parts) & forbidden_parts
+                    or path.suffix.lower() in forbidden_suffixes
+                    or path.name in forbidden_names):
+                raise Refused(f"{label} contains a forbidden member: {rel.as_posix()}")
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode):
+                raise Refused(f"{label} contains a non-regular file: {rel.as_posix()}")
+
+
+def _preflight_output(out_dir: Path, source_root: Path) -> Path:
+    out_dir = _abs_path(out_dir)
+    source_root = _abs_path(source_root)
+    _reject_symlink_components(out_dir, "output")
+    if (out_dir == source_root or _is_within(out_dir, source_root)
+            or _is_within(source_root, out_dir)):
+        raise Refused("source-output overlap: the output must be outside the source tree")
+    if os.path.lexists(out_dir):
+        info = os.lstat(out_dir)
+        if not stat.S_ISDIR(info.st_mode):
+            raise Refused("output is not a directory")
+        if info.st_uid != os.geteuid():
+            raise Refused("output is not owned by the current user")
+        if stat.S_IMODE(info.st_mode) & 0o002:
+            raise Refused("output is world-writable")
+        if any(Path(out_dir).iterdir()):
+            raise Refused("output must be a fresh empty directory")
+    return out_dir
+
+
+def _make_fresh_dir(path: Path) -> None:
+    if os.path.lexists(path):
+        raise Refused(f"output component already exists: {path.name}")
+    os.mkdir(path, 0o700)
+    if os.path.islink(path) or not os.path.isdir(path):
+        raise Refused(f"output component is not a real directory: {path.name}")
+
+
 def _stage(source_root: Path, dest: Path, version: str, skills) -> None:
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source_root, dest)
+    if os.path.lexists(dest):
+        raise Refused(f"stage destination already exists: {dest.name}")
+    if os.path.islink(dest.parent) or not os.path.isdir(dest.parent):
+        raise Refused(f"stage parent is not a real directory: {dest.parent.name}")
+    shutil.copytree(source_root, dest, symlinks=False,
+                    ignore=shutil.ignore_patterns("skills"))
     skills_dir = dest / "skills"
-    if skills_dir.exists():
-        shutil.rmtree(skills_dir)
-    skills_dir.mkdir()
+    if os.path.lexists(skills_dir):
+        raise Refused("the source skills directory was not ignored")
+    os.mkdir(skills_dir, 0o700)
     for name in skills:
-        shutil.copytree(SHARED_SKILLS / name, skills_dir / name)
+        source = SHARED_SKILLS / name
+        if os.path.islink(source) or not os.path.isdir(source):
+            raise Refused(f"shared skill is not a real directory: {name}")
+        shutil.copytree(source, skills_dir / name, symlinks=False)
     for rel in ("plugin.json", ".codex-plugin/plugin.json"):
         path = dest / rel
         data = json.loads(path.read_text(encoding="utf-8"))
         data["version"] = version
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
 def rehearse(source_root: Path, baseline_path: Path, out_dir: Path) -> dict:
-    """Build v1 and v2 locally, then run plan/readback/rollback checks."""
-    import tempfile
-    source_root = Path(source_root).resolve()
-    out_dir = Path(out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    baseline = _read_json(Path(baseline_path), "baseline")
+    """Build v1 and v2 locally, then run plan/readback/rollback checks.
+
+    Every source, shared-skill and output boundary is checked before the first
+    mkdir/copytree. No caller-owned directory is removed.
+    """
+    source_root = _abs_path(source_root)
+    out_dir = _abs_path(out_dir)
+    baseline_path = _abs_path(baseline_path)
+    if os.path.islink(baseline_path):
+        raise Refused("baseline path is a symlink")
+    baseline = _read_json(baseline_path, "baseline")
     builder = _load_builder()
+    _preflight_tree(source_root, "source", builder)
+    _preflight_tree(SHARED_SKILLS, "shared skills", builder)
+    out_dir = _preflight_output(out_dir, source_root)
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir, mode=0o700, exist_ok=False)
+    if os.path.islink(out_dir) or not os.path.isdir(out_dir):
+        raise Refused("output is not a real directory")
+    _make_fresh_dir(out_dir / "v1")
+    _make_fresh_dir(out_dir / "v2")
 
     v1_src = out_dir / "v1" / "src"
     v2_src = out_dir / "v2" / "src"

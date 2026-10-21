@@ -76,13 +76,23 @@ Add to `integrations/fleet-app-overlay/`:
 TDD first: tests for equal plugin id, changed plugin id refusal, changed
 `.app.json` binding bytes refusal, non-advancing version refusal, removed Skill
 refusal, archive hash mismatch, contradictory readback, missing release id, and
-rollback to a mismatched archive. The
-rehearsal test runs entirely offline and asserts `writes: []`, `uploads: []`,
+rollback to a mismatched archive. Add adversarial tests for:
+
+- source file and directory symlinks, and a symlinked shared-Skill entry;
+- output path and parent symlinks, non-empty output, source/output overlap;
+- a sentinel outside the output remaining unchanged and no `rmtree`;
+- protected manifest drift (`shortDescription`, `defaultPrompt`, top-level
+  description), root/`.codex-plugin` repeated fields and version sync;
+- `mcp.json`/`.mcp.json` URL, added/removed server and referenced-file drift;
+- added/removed/changed non-Skill members.
+
+The rehearsal test runs entirely offline and asserts `writes: []`, `uploads: []`,
 `installs: []`, `production_verified: false`.
 
 Acceptance: a buildable synthetic local package; same-ID update/readback and
 rollback verdicts are deterministic; no network, install, Creator or OAuth
-operation exists in the code path.
+operation exists in the code path; unsafe source/output paths are refused
+before any write or deletion.
 
 ## Phase 4 — bounded verification and delivery
 
@@ -98,3 +108,11 @@ removed or skipped; prior artifact revisions are preserved, not overwritten;
 the diff stays inside the lane; commit and push the narrow branch (or update
 the original Draft PR) so independent QA can reference the exact SHA. No merge,
 deploy, publish or global install.
+
+The QA handoff uses an admitted absolute artifacts root, a detached worktree
+and empty output directories; it sets `TMPDIR`, `PYTHONDONTWRITEBYTECODE`,
+`pytest -p no:cacheprovider` and resource limits. It must not instruct a reader
+to use `/tmp`, `git checkout` in a shared checkout, or automatically remove a
+shared worktree/config. Host cleanup is proposal-only after a fresh
+state/worktree/container/open-file/active-Run snapshot and requires
+authorization; evidence is preserved.

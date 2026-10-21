@@ -84,9 +84,20 @@ python3 integrations/fleet-app-overlay/package_update_check.py rehearse \
     --out <rehearsal-dir>
 ```
 
-它只证明本地 identity/版本/readback/rollback 规则成立；它不是一次真实 Creator
-更新，也不证明私有 Creator 接受同 ID 更新或回滚。真实更新、回读和回滚仍由
-真人在 Creator 里执行，并按 §5 记录结果。
+`rehearse` 的 `--out` 必须是**新建的空目录**（或尚不存在），且从该路径到根的
+所有已存在父路径都不得是 symlink；输出不得与 source 重叠。源树和共享 Skills
+会在任何 copy/write 之前检查 symlink、禁入成员和边界；工具不会 `rmtree` 调用者
+已有目录。拒绝时外部 sentinel 不变，也不读取 symlink 目标内容。
+
+`plan` 不只比较 plugin id/name/version/Skills。它比较完整的受保护 manifest
+（root 与 `.codex-plugin` 重复字段）、`mcp.json`/`.mcp.json` 的结构及其引用
+文件，并拒绝非 Skill 成员的增删或字节漂移。App-backed 更新只允许版本、
+Skills/其 supporting files、keywords、onboarding selection 和 local-executor
+requirement；MCP/后端/tool 行为变化属于 server deployment，不是 overlay 更新。
+
+它只证明本地 identity/受保护配置/readback/rollback 规则成立；它不是一次真实
+Creator 更新，也不证明私有 Creator 接受同 ID 更新或回滚。真实更新、回读和回滚
+仍由真人在 Creator 里执行，并按 §5 记录结果。
 
 ---
 
