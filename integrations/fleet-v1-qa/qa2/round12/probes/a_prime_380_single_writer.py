@@ -124,6 +124,13 @@ def effect_count(w):
         return int(conn.execute("SELECT COUNT(*) FROM proto_effect").fetchone()[0])
 
 
+def ledger(w):
+    return {"lease": w._writer.lease(RES),
+            "token_next": w._writer.token_next(RES),
+            "commit_count": w._writer.commit_count(),
+            "effect_count": effect_count(w)}
+
+
 def query(w, statement, params=()):
     conn = sqlite3.connect(w._writer.db_path)
     conn.row_factory = sqlite3.Row
@@ -255,6 +262,7 @@ def api_mode():
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
         w = writer(td)
         receipt = w.acquire(req())
+        before = ledger(w)
         bad = receipt["capability"][:-1] + (
             "0" if receipt["capability"][-1] != "0" else "1")
         check_code, _ = code_of(lambda: w.check_use(
@@ -262,18 +270,20 @@ def api_mode():
         effect_code, _ = code_of(lambda: w.commit_effect(
             receipt["request_id"], receipt["token"], bad,
             effect_ref="effect:bad", payload_digest="d"))
+        after = ledger(w)
         record("A5-tampered-capability",
-               "BLOCKED_CAPABILITY; effect_count 0",
+               "BLOCKED_CAPABILITY; ledger unchanged",
                {"check": check_code, "effect": effect_code,
-                "effect_count": effect_count(w)}, mode="api",
+                "before": before, "after": after}, mode="api",
                ok=(check_code == "BLOCKED_CAPABILITY"
                    and effect_code == "BLOCKED_CAPABILITY"
-                   and effect_count(w) == 0))
+                   and before == after))
 
     # A6 revoke-first: use and effect refuse; no marker.
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
         w = writer(td)
         receipt = w.acquire(req())
+        before = ledger(w)
         w.revoke_policy(POLICY_REF, expected_policy_epoch=1)
         check_code, check_detail = code_of(lambda: w.check_use(
             receipt["request_id"], receipt["token"],
@@ -281,18 +291,20 @@ def api_mode():
         effect_code, effect_detail = code_of(lambda: w.commit_effect(
             receipt["request_id"], receipt["token"], receipt["capability"],
             effect_ref="effect:revoked", payload_digest="d"))
-        record("A6-revoke-first", "POLICY_DENIED; effect_count 0",
+        after = ledger(w)
+        record("A6-revoke-first", "POLICY_DENIED; ledger unchanged",
                {"check": check_code, "check_detail": check_detail,
                 "effect": effect_code, "effect_detail": effect_detail,
-                "effect_count": effect_count(w)}, mode="api",
+                "before": before, "after": after}, mode="api",
                ok=(check_code == "POLICY_DENIED"
                    and effect_code == "POLICY_DENIED"
-                   and effect_count(w) == 0))
+                   and before == after))
 
     # A7 context ABA.
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
         w = writer(td)
         receipt = w.acquire(req())
+        before = ledger(w)
         issue_grant2(w)
         w.rebind_context(CTX, expected_context_epoch=1, grant_ref=GRANT2_REF)
         w.rebind_context(CTX, expected_context_epoch=2, grant_ref=GRANT_REF)
@@ -302,13 +314,14 @@ def api_mode():
         effect_code, _ = code_of(lambda: w.commit_effect(
             receipt["request_id"], receipt["token"], receipt["capability"],
             effect_ref="effect:aba", payload_digest="d"))
+        after = ledger(w)
         record("A7-context-aba",
-               "BLOCKED_STALE_CONTEXT_EPOCH; effect_count 0",
+               "BLOCKED_STALE_CONTEXT_EPOCH; ledger unchanged",
                {"check": check_code, "effect": effect_code,
-                "effect_count": effect_count(w)}, mode="api",
+                "before": before, "after": after}, mode="api",
                ok=(check_code == "BLOCKED_STALE_CONTEXT_EPOCH"
                    and effect_code == "BLOCKED_STALE_CONTEXT_EPOCH"
-                   and effect_count(w) == 0))
+                   and before == after))
 
     # A8 expired / superseded token.
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
@@ -343,6 +356,7 @@ def api_mode():
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
         w = writer(td)
         receipt = w.acquire(req())
+        before = ledger(w)
         execute(w, "DELETE FROM proto_grant WHERE grant_ref=?", (GRANT_REF,))
         code, detail = code_of(lambda: w.check_use(
             receipt["request_id"], receipt["token"],
@@ -350,16 +364,18 @@ def api_mode():
         effect_code, _ = code_of(lambda: w.commit_effect(
             receipt["request_id"], receipt["token"], receipt["capability"],
             effect_ref="effect:nogrant", payload_digest="d"))
-        record("A9-missing-grant", "BLOCKED_OWNER_POLICY; effect_count 0",
+        after = ledger(w)
+        record("A9-missing-grant", "BLOCKED_OWNER_POLICY; ledger unchanged",
                {"check": code, "detail": detail, "effect": effect_code,
-                "effect_count": effect_count(w)}, mode="api",
+                "before": before, "after": after}, mode="api",
                ok=(code == "BLOCKED_OWNER_POLICY"
                    and effect_code == "BLOCKED_OWNER_POLICY"
-                   and effect_count(w) == 0))
+                   and before == after))
 
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:
         w = writer(td)
         receipt = w.acquire(req())
+        before = ledger(w)
         execute(w, "DELETE FROM proto_owner_policy WHERE policy_ref=?",
                 (POLICY_REF,))
         code, detail = code_of(lambda: w.check_use(
@@ -368,12 +384,13 @@ def api_mode():
         effect_code, _ = code_of(lambda: w.commit_effect(
             receipt["request_id"], receipt["token"], receipt["capability"],
             effect_ref="effect:nopolicy", payload_digest="d"))
-        record("A9b-missing-policy", "BLOCKED_OWNER_POLICY; effect_count 0",
+        after = ledger(w)
+        record("A9b-missing-policy", "BLOCKED_OWNER_POLICY; ledger unchanged",
                {"check": code, "detail": detail, "effect": effect_code,
-                "effect_count": effect_count(w)}, mode="api",
+                "before": before, "after": after}, mode="api",
                ok=(code == "BLOCKED_OWNER_POLICY"
                    and effect_code == "BLOCKED_OWNER_POLICY"
-                   and effect_count(w) == 0))
+                   and before == after))
 
     # A10 caller-side authority injection.
     with tempfile.TemporaryDirectory(prefix="qa2-380-api-") as td:

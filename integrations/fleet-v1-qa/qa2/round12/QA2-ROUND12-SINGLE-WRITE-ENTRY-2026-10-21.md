@@ -74,6 +74,8 @@ Logs: `logs/a-prime-380-metadata.log`, `logs/a-prime-380-check-scope.log`,
   `BLOCKED_STALE_CONTEXT_EPOCH` (the fence runs before the idempotency lookup;
   fail-closed, but no historical replay receipt is available once authority
   changed).
+- In A5–A7/A9/A9b the refusal leaves the lease row, `id_sequences` token,
+  `proto_commit` count and `proto_effect` count byte-for-byte unchanged.
 - no `verified` key, no `COMMIT_FENCED` value; `classification()` reports
   A/B/C, `EFFECT_COMMIT_NOT_PROVEN`, `NOT_V1_SIGNED`.
 
