@@ -153,3 +153,17 @@ def test_native_create_uses_same_namespace_and_maximum_default(tmp_path, family)
                           native_tool="session_create", project="just-created",
                           arguments={"project": "just-created", "provider": family})
     assert calls[0]["permissionMode"] == "bypassPermissions"
+
+
+def test_codex_owner_does_not_inherit_claude_model_defaults(tmp_path):
+    from fleet_mcp.runtime_create_policy import RuntimeProjectDefaults
+    h = owned(tmp_path)
+    rule = RuntimeProjectDefaults("cloudcli-deepseek", "claude", "claude-account-model",
+                                  "default", ("claude-account-model",), ("default",))
+    h.config = replace(h.config, policy=replace(h.config.policy,
+        runtime_create_defaults={TOKYO: {"just-created": rule}}))
+    h.service.config = h.config
+    h.service.create_session(owner_principal(h.config), device=TOKYO,
+                              project="just-created", provider="codex")
+    assert h.providers[TOKYO].created[0]["model"] is None
+    assert h.providers[TOKYO].created[0]["permission_mode"] == "bypassPermissions"

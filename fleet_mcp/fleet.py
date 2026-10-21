@@ -237,10 +237,18 @@ class FleetService:
         if profile is None:
             return None
         existing = self.config.policy.create_allow.get(project)
-        rule = self.config.policy.runtime_create_defaults.get(
-            provider_key(device_ref, runtime), {}).get(project)
+        rule = self._project_runtime_rule(principal, device_ref, project, runtime, namespace)
         models = rule.allowed_models if rule is not None else (existing.models if existing else ())
         return CreateGrant(permission_modes=(profile.permission_mode,), models=tuple(models))
+
+    def _project_runtime_rule(self, principal, device_ref, project, runtime, namespace):
+        binding = self.config.provider_for(device_ref, runtime)
+        policy_runtime = runtime
+        if (self._owner_profile(principal, device_ref, namespace) is not None
+                and binding is not None and binding.multiplex_native_families):
+            policy_runtime = namespace
+        return self.config.policy.runtime_create_defaults.get(
+            provider_key(device_ref, policy_runtime), {}).get(project)
 
     def _resolve_create_policy(self, principal, device_ref, project, runtime,
                                namespace, family, model, permission_mode):
@@ -252,8 +260,7 @@ class FleetService:
             raise refuse(BAD_REQUEST, "provider must name the Claude or Codex native family")
         if profile is not None and not binding.multiplex_native_families and family != binding.family:
             raise refuse(WRITE_NOT_GRANTED, "native family differs from the selected account profile")
-        rule = self.config.policy.runtime_create_defaults.get(
-            provider_key(device_ref, runtime), {}).get(project)
+        rule = self._project_runtime_rule(principal, device_ref, project, runtime, namespace)
         by = None
         if rule is not None:
             if "create" not in self._operator_grant_verbs(principal, device_ref, namespace):
@@ -2236,8 +2243,10 @@ class FleetService:
         actual_runtime = binding.runtime if binding is not None else key.provider
         family = key.provider if key.provider in runtime_identity.FAMILIES else (
             binding.family if binding is not None else None)
-        runtime_rule = self.config.policy.runtime_create_defaults.get(
-            provider_key(device_ref, actual_runtime), {}).get(actual)
+        runtime_rule = (self._project_runtime_rule(principal, device_ref, actual,
+                                                  actual_runtime, key.provider)
+                        if principal is not None else self.config.policy.runtime_create_defaults.get(
+                            provider_key(device_ref, actual_runtime), {}).get(actual))
         if runtime_rule is not None:
             if family != runtime_rule.family:
                 raise refuse(WRITE_NOT_GRANTED, "session family is not authorized on this account/project")

@@ -143,6 +143,8 @@ external/runtime denial precisely after all independent work is completed.
 
 ## Review refinements
 
+- A multiplexed owner alias uses only its exact typed-namespace model rule;
+  missing Codex rules leave model omitted rather than borrowing Claude defaults.
 - project.create's idempotency target is the actual bound device/runtime key.
   Its intent includes authorization namespace, root, name and display_name.
   Changing a name under that same target/key conflicts; existing session
