@@ -1,0 +1,54 @@
+{
+  "api": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "api",
+    "status": {
+      "PASS": 15
+    },
+    "total": 15
+  },
+  "capability": {
+    "failed": 6,
+    "failed_names": [
+      "C1-cross-token-capability",
+      "C2-caller-self-issue",
+      "C3-readable-hmac-key",
+      "C4-public-state-dir-db-path",
+      "C6-replay-capability-reauthorizes",
+      "C5-constructor-self-assert"
+    ],
+    "mode": "capability",
+    "status": {
+      "P1": 6
+    },
+    "total": 6
+  },
+  "osuid": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "osuid",
+    "status": {
+      "NOT_RUN": 2
+    },
+    "total": 2
+  },
+  "race": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "race",
+    "status": {
+      "PASS": 3
+    },
+    "total": 3
+  },
+  "raw": {
+    "failed": 0,
+    "failed_names": [],
+    "mode": "raw",
+    "status": {
+      "EXPECTED_FAIL": 6
+    },
+    "total": 6
+  }
+}

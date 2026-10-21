@@ -1,0 +1,18 @@
+== gh pr 380 ==
+{"baseRefName":"feat/s1-context-generation-20261021","baseRefOid":"7245fc6b3711172251e20450d4356abff8af91ee","headRefName":"feat/s1-single-write-entry-20261021","headRefOid":"cbbfb63a76072871edfa6aa639355f5b63cc5853","isDraft":true,"mergeable":"MERGEABLE","number":380,"state":"OPEN","title":"feat(prototype): single-writer capability API with same-transaction effect marker","updatedAt":"2026-10-21T00:01:03Z","url":"https://github.com/ProfessorZhi/serveros/pull/380"}
+== remote refs ==
+cbbfb63a76072871edfa6aa639355f5b63cc5853	refs/heads/feat/s1-single-write-entry-20261021
+cbbfb63a76072871edfa6aa639355f5b63cc5853	refs/pull/380/head
+== diff files ==
+integrations/fleet-v1-atomic-prototype/README.md
+integrations/fleet-v1-atomic-prototype/atomic_fence.py
+integrations/fleet-v1-atomic-prototype/check_scope.py
+integrations/fleet-v1-atomic-prototype/single_write_entry.py
+tests/test_s1_atomic_prototype_single_write.py
+== stat ==
+ integrations/fleet-v1-atomic-prototype/README.md   |   31 +
+ .../fleet-v1-atomic-prototype/atomic_fence.py      |  263 ++++++-------
+ .../fleet-v1-atomic-prototype/check_scope.py       |   10 
+ .../single_write_entry.py                          |  415 ++++++++++++++++++++
+ tests/test_s1_atomic_prototype_single_write.py     |  390 +++++++++++++++++++
+ 5 files changed, 969 insertions(+), 140 deletions(-)
