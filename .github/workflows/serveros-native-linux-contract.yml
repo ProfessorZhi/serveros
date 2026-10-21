@@ -1,0 +1,48 @@
+name: serveros-native-linux-contract
+
+on:
+  pull_request:
+    paths:
+      - 'native/node-core/**'
+      - 'runtime/native_core_facts.py'
+      - 'runtime/daemon.py'
+      - '.github/workflows/serveros-native-linux-contract.yml'
+  push:
+    branches:
+      - 'test/fleet-v1-complete-*'
+    paths:
+      - 'native/node-core/**'
+      - 'runtime/native_core_facts.py'
+      - 'runtime/daemon.py'
+      - '.github/workflows/serveros-native-linux-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build and test the complete native tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -v 2097152
+          git rev-parse HEAD
+          cmake -S native/node-core -B "$RUNNER_TEMP/serveros-native-build"
+          timeout 240s cmake --build "$RUNNER_TEMP/serveros-native-build" --parallel 1
+          timeout 60s ctest --test-dir "$RUNNER_TEMP/serveros-native-build" --output-on-failure --parallel 1
+      - name: Retain native test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-contract-${{ github.sha }}
+          path: ${{ runner.temp }}/serveros-native-build/Testing/Temporary/*.log
+          if-no-files-found: warn
+          retention-days: 7
