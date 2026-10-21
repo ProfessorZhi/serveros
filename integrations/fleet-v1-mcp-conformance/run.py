@@ -95,7 +95,8 @@ class FakeDevice:
 
     def send(self, key, message, *, idempotency_key=None) -> dict:
         self.calls.append(("send", key.ref, message))
-        return {"ok": True, "served_by": self.runtime}
+        return {"ok": True, "served_by": self.runtime,
+                "runId": f"{self.runtime}-fixture-run-{len(self.calls)}"}
 
     def interrupt(self, key) -> dict:
         self.calls.append(("interrupt", key.ref))
@@ -112,7 +113,8 @@ class FakeDevice:
 
     def native_call(self, tool, arguments, *, session_ref=None) -> dict:
         self.calls.append(("native_call", tool, session_ref))
-        return {"ok": True, "served_by": self.runtime}
+        return {"ok": True, "served_by": self.runtime,
+                "runId": f"{self.runtime}-fixture-run-{len(self.calls)}"}
 
     def capability_snapshot(self) -> dict:
         self.calls.append(("capability_snapshot",))
