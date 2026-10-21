@@ -82,6 +82,14 @@ inline std::string account_sid(const std::wstring &account) {
     ::LocalFree(text);
     return std::string(w.begin(), w.end());
 }
+// Windows can assign an administrator/SYSTEM as profile-directory owner.
+// These are OS trust principals, not another ordinary user's profile. Child
+// Core directories/files still require an exact current-user-only owner/DACL.
+inline bool trusted_profile_owner(PSID actual, PSID current) {
+    return actual && current &&
+           (::EqualSid(actual, current) || ::IsWellKnownSid(actual, WinLocalSystemSid) ||
+            ::IsWellKnownSid(actual, WinBuiltinAdministratorsSid));
+}
 struct OwnerSecurity {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     SECURITY_ATTRIBUTES attributes{};

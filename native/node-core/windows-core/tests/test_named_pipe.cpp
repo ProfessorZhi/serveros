@@ -35,6 +35,17 @@ int main() {
                                                L")"));
         CHECK(!detail::task_execute_descriptor(L"D:(A;;FA;;;" + sid + L")"));
         CHECK(!detail::task_execute_descriptor(L"invalid descriptor"));
+        PSID current = nullptr, other = nullptr;
+        CHECK(::ConvertStringSidToSidW(sid.c_str(), &current) != 0);
+        CHECK(::ConvertStringSidToSidW(L"S-1-5-21-999-999-999-999", &other) != 0);
+        if (current && other) {
+            CHECK(detail::trusted_profile_owner(current, current));
+            CHECK(!detail::trusted_profile_owner(other, current));
+        }
+        if (current)
+            ::LocalFree(current);
+        if (other)
+            ::LocalFree(other);
     }
     {
         std::promise<PipeIdentity> ready;

@@ -62,7 +62,7 @@ ProbeReadiness http_probe(const HttpProbe &spec) {
     u_long nonblocking = 1;
     if (::ioctlsocket(socket.value, FIONBIO, &nonblocking) != 0)
         return ProbeReadiness::Unmeasured;
-    auto deadline = ::GetTickCount64() + 1000;
+    auto deadline = ::GetTickCount64() + 3000;
     sockaddr_in target{};
     target.sin_family = AF_INET;
     target.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);

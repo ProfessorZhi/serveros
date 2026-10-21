@@ -25,7 +25,7 @@ Then add strict owner-local manifest/config/probe/watch contracts with failing p
 
 Resident implementation details: fixed LocalAppData owner-only config publisher and
 singleton watch; persisted generation plus BCrypt SHA256 exact-byte fence;
-nonblocking IPv4-loopback HTTP with a one-second absolute deadline and strict
+nonblocking IPv4-loopback HTTP with a three-second absolute deadline and strict
 length/JSON marker; per-pass recovery via the same RecoveryEngine; status snapshot
 and pipe publication; SCM dispatcher wrapper reusing the same loop. Directory
 handles pin every OS-resolved ancestor against write/delete sharing. Task start
@@ -42,3 +42,5 @@ pin STOPPED terminal and forbid STOPPING-to-RUNNING; native SCM status publicati
 uses one SRW lock for state and SetServiceStatus, publishes STOP_PENDING before
 the stop flag and never reports a backwards terminal transition. Recovery state
 is refused on redirected remote/non-ACL volumes or a mismatched base owner.
+
+Hosted 24144a4 exposed Windows default profile ownership (administrator/SYSTEM may own the OS profile root) and loopback refusal latency at the original one-second budget. The private Core children still enforce exact current-user owner-only ACLs; only the OS-resolved base admits current user or trusted OS administrator/SYSTEM ownership. The socket budget is now three seconds total, retaining unknown on genuine timeout. These are executable hosted failures and require a new hosted PASS before release.

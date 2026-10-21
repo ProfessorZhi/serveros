@@ -100,7 +100,7 @@ Use the actual device reference, user SID, registered unit and its existing
 functional health contract; the example does not grant a guessed installed
 service. At most three roles (`cloudcli`, `connector`, `tunnel`) are admitted.
 Manager is `scm` or `task-scheduler`. Probes connect only to literal IPv4 loopback,
-use a 1-second absolute nonblocking socket deadline and bounded strict HTTP/JSON
+use a 3-second absolute nonblocking socket deadline and bounded strict HTTP/JSON
 response, and require the configured string/boolean field. They use no shell,
 DNS, remote host, model call, credential or arbitrary command.
 

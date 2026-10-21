@@ -82,7 +82,7 @@ std::wstring state_directory(const std::string &owner, detail::OwnerSecurity &se
     std::wstring expected(owner.begin(), owner.end());
     bool owner_matches = security_error == ERROR_SUCCESS && base_owner &&
                          ::ConvertStringSidToSidW(expected.c_str(), &expected_owner) &&
-                         ::EqualSid(base_owner, expected_owner);
+                         detail::trusted_profile_owner(base_owner, expected_owner);
     if (expected_owner)
         ::LocalFree(expected_owner);
     if (descriptor)
