@@ -132,6 +132,34 @@ def test_strict_owner_accepts_other_legitimate_atomic_writers(tmp_path):
     assert observer.get_dispatch_attempt(claim.key)["phase"] == "ACCEPTED"
 
 
+def test_strict_owner_refuses_a_redirected_lock_sidecar(tmp_path):
+    path = tmp_path / "store.json"
+    cls = type(existing_store(path))
+    other = tmp_path / "other-lock"
+    other.write_text("")
+    other.chmod(0o600)
+    Path(str(path) + ".lock").symlink_to(other)
+    with pytest.raises(sys.modules["serveros_runtime_agent_control_store"].StoreError):
+        cls(path, require_existing=True)
+    assert other.read_text() == ""
+
+
+def test_strict_owner_rechecks_lock_before_mutation(tmp_path):
+    path = tmp_path / "store.json"
+    cls = type(existing_store(path))
+    store = cls(path, require_existing=True)
+    other = tmp_path / "other-lock"
+    other.write_text("")
+    other.chmod(0o600)
+    Path(str(path) + ".lock").symlink_to(other)
+    guard = DispatchGuard(store)
+    with pytest.raises(FleetRefusal) as caught:
+        guard.begin(Principal("owner", frozenset(), "pat"), "send", "target", "new",
+                    device_ref=TOKYO, runtime="claude", params={"message": "task"})
+    assert caught.value.code == "DISPATCH_STATE_UNAVAILABLE"
+    assert json.loads(path.read_text()).get("dispatch_attempts", {}) == {}
+
+
 def test_project_receipt_is_independent_and_survives_reconstruction(tmp_path):
     path = tmp_path / "store.json"
     store = existing_store(path)

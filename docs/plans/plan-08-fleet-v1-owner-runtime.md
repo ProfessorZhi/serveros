@@ -152,5 +152,8 @@ external/runtime denial precisely after all independent work is completed.
 - Anchor validation refuses illegal owner/schema/path replacements and missing
   stores, while allowing the owner's ordinary atomic os.replace updates.
   It must not pin one inode across legitimate writes.
+- Strict owned mode validates the persistent lock sidecar too: no symlink,
+  hardlink, foreign owner or writable-by-others file; O_NOFOLLOW plus descriptor
+  identity checks surround locking. Contention is bounded, not a task wait.
 - Add explicit owner-max revocation tests: accepted replay against an offline
   provider refuses after the current selected namespace grant is removed.

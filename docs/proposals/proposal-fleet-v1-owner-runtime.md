@@ -91,6 +91,8 @@ An owner namespace multiplexed through a base gateway reads only its exact
 typed-namespace model rule. Codex never borrows the base Claude model default;
 without a Codex declaration it omits model and retains the native default and
 any explicit project model ceiling. This does not broaden runtime selectors.
+The global model list alone is not family evidence: a multiplexed alias without
+its own model rule accepts omission only, even if a global list names models.
 
 The Node Connector has its own local `owner_access` profile. It opens the
 existing owner-session floors and implemented verbs once, verifies project IDs

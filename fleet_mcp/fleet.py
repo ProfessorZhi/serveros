@@ -240,7 +240,10 @@ class FleetService:
             return None
         existing = self.config.policy.create_allow.get(project)
         rule = self._project_runtime_rule(principal, device_ref, project, runtime, namespace)
-        models = rule.allowed_models if rule is not None else (existing.models if existing else ())
+        binding = self.config.provider_for(device_ref, runtime)
+        alias = binding is not None and binding.multiplex_native_families and namespace != runtime
+        models = rule.allowed_models if rule is not None else (
+            existing.models if existing is not None and not alias else ())
         return CreateGrant(permission_modes=(profile.permission_mode,), models=tuple(models))
 
     def _project_runtime_rule(self, principal, device_ref, project, runtime, namespace):

@@ -168,3 +168,14 @@ def test_codex_owner_does_not_inherit_claude_model_defaults(tmp_path):
                               project="just-created", provider="codex")
     assert h.providers[TOKYO].created[0]["model"] is None
     assert h.providers[TOKYO].created[0]["permission_mode"] == "bypassPermissions"
+
+
+def test_codex_owner_cannot_name_a_claude_global_model_without_family_proof(tmp_path):
+    from fleet_mcp.config import CreateGrant
+    h = owned(tmp_path)
+    h.service.config = replace(h.config, policy=replace(h.config.policy,
+        create_allow={"just-created": CreateGrant(models=("claude-account-model",))}))
+    with pytest.raises(FleetRefusal):
+        h.service.create_session(owner_principal(h.config), device=TOKYO,
+                                 project="just-created", provider="codex", model="claude-account-model")
+    assert h.providers[TOKYO].created == []

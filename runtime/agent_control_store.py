@@ -144,6 +144,7 @@ import re
 import stat
 import sys
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -184,7 +185,7 @@ def lock_path(path: Path | str) -> Path:
 
 
 @contextmanager
-def _exclusive(lock: Path):
+def _exclusive(lock: Path, *, owner_only: bool = False):
     """Hold the write lock for the duration of a mutation.
 
     Why the lock is not taken on the store file, which is the obvious target and
@@ -208,10 +209,24 @@ def _exclusive(lock: Path):
     resource". Here a file left by a killed writer is a file and nothing more.
     """
     lock.parent.mkdir(parents=True, exist_ok=True)
-    handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    handle = os.open(lock, os.O_CREAT | os.O_RDWR | (os.O_NOFOLLOW if owner_only else 0), 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if owner_only:
+            _validate_owner_lock(lock, handle)
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise LockUnavailable("owner delivery ledger is busy; no effect was admitted") from None
+                    time.sleep(0.005)
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
         try:
+            if owner_only:
+                _validate_owner_lock(lock, handle)
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -407,6 +422,19 @@ RECEIPT_STATUSES = ("STARTED", "EXITED", "REFUSED", "TIMED_OUT", "OUTPUT_LIMIT",
 
 class StoreError(RuntimeError):
     pass
+
+
+def _validate_owner_lock(path: Path, handle=None):
+    observed = path.lstat()
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+            or observed.st_mode & 0o022 or observed.st_nlink != 1):
+        raise StoreError("the owner ledger lock must be an unshared owner file")
+    if handle is not None:
+        opened = os.fstat(handle)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid()
+                or opened.st_mode & 0o022 or opened.st_nlink != 1
+                or (opened.st_ino, opened.st_dev) != (observed.st_ino, observed.st_dev)):
+            raise StoreError("the owner ledger lock changed while it was opened")
 
 
 class AttemptRefused(StoreError):
@@ -992,6 +1020,8 @@ class AgentControlStore:
         if not self.path.is_absolute():
             raise StoreError("the existing owner store requires an absolute anchor")
         try:
+            if self.lock_path.exists() or self.lock_path.is_symlink():
+                _validate_owner_lock(self.lock_path)
             for ancestor in reversed(self.path.parents):
                 observed = ancestor.lstat()
                 if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
@@ -1050,7 +1080,7 @@ class AgentControlStore:
         """
         if self.require_existing:
             self._existing_owner_document()
-        with _exclusive(self.lock_path):
+        with _exclusive(self.lock_path, owner_only=self.require_existing):
             self._data = self._load()
             self._writing = True
             try:
