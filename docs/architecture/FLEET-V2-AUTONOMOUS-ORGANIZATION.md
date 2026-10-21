@@ -199,7 +199,7 @@ ServerOS 对每个受管 Native Provider 实现同一 **能力语义** 而不是
 
 ### 8.1 用户说：「新建一个项目，把原型做出来」
 
-总管识别目标和 Owner 在受管工作根、仓库、Runtime 的持续授权；Project Parent 自动创建工作对象、项目文件与 repo/worktree，分配 DS H/CC/Codex（按照真实能力和成本），分别执行编码、测试和独立 review。普通失败由 Parent 与 Worker 自行修复，最终以原始文件、测试/CI/设备证据给总管阶段结论。你不需要每个 Session 再下指令，也不因为浏览器对话关闭而停止。
+总管识别目标和 Owner 在受管工作根、仓库、Runtime 的持续授权；Project Parent 自动创建工作对象、项目文件与 repo/worktree，分配 DSH/CC/Codex（按照真实能力和成本），分别执行编码、测试和独立 review。普通失败由 Parent 与 Worker 自行修复，最终以原始文件、测试/CI/设备证据给总管阶段结论。你不需要每个 Session 再下指令，也不因为浏览器对话关闭而停止。
 
 ### 8.2 「ServerOS 某功能继续开发」
 
