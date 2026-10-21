@@ -727,6 +727,33 @@ int main() {
         CHECK(holder.holder.size() <= 200);
     }
 
+    {
+        // A no-follow leaf open must not create a lock through an ancestor alias.
+        CHECK(::mkdirat(scratch.leaf_fd, "ancestor-owned", 0700) == 0);
+        CHECK(::symlinkat("ancestor-owned", scratch.leaf_fd, "ancestor-alias") == 0);
+        WriterLease lease;
+        CHECK(!lease.acquire(root + "/ancestor-alias/new.lock", "core-a").ok);
+        CHECK(!std::filesystem::exists(root + "/ancestor-owned/new.lock"));
+        // This branch also cleans up a lock incorrectly created by the RED version.
+        ::unlink((root + "/ancestor-owned/new.lock").c_str());
+        CHECK(::unlinkat(scratch.leaf_fd, "ancestor-alias", 0) == 0);
+        CHECK(::unlinkat(scratch.leaf_fd, "ancestor-owned", AT_REMOVEDIR) == 0);
+    }
+    {
+        // Replacing an ancestor with an alias to the SAME inode must not keep
+        // the namespace claim valid just because leaf dev/ino still matches.
+        CHECK(::mkdirat(scratch.leaf_fd, "lease-parent", 0700) == 0);
+        WriterLease lease;
+        CHECK(lease.acquire(root + "/lease-parent/stable.lock", "core-a").ok);
+        CHECK(::renameat(scratch.leaf_fd, "lease-parent", scratch.leaf_fd, "lease-moved") == 0);
+        CHECK(::symlinkat("lease-moved", scratch.leaf_fd, "lease-parent") == 0);
+        CHECK(!lease.revalidate().ok);
+        lease.release();
+        CHECK(::unlinkat(scratch.leaf_fd, "lease-parent", 0) == 0);
+        CHECK(::unlink((root + "/lease-moved/stable.lock").c_str()) == 0);
+        CHECK(::unlinkat(scratch.leaf_fd, "lease-moved", AT_REMOVEDIR) == 0);
+    }
+
     // Remove exactly what this test created, by name, relative to the pinned
     // descriptors.
     release_scratch(scratch, {"a.lock", "b.lock", "c.lock", "d.lock", "e.lock", "f.lock",
