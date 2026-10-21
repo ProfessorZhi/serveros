@@ -5,7 +5,7 @@ The receipt is four separate claims, because one can be true while another is
 false and an earlier revision of this lane reported one as another:
 
 1. **PLUGIN_LOAD_OK** — `claude plugin validate --strict` and
-   `claude --plugin-dir … plugin details` enumerate five Skills and one MCP
+   `claude --plugin-dir … plugin details` enumerate the shared Skills and one MCP
    component. This is a directory/registration fact. It enumerates no tool.
 2. **MCP_INITIALIZE_OK / TOOLS_LIST_OK** — `claude --plugin-dir … mcp list`
    actually starts the stdio server, sends `initialize`,
@@ -233,15 +233,17 @@ class Runner:
         (self.logs / "plugin-details.log").write_text(
             details.stdout + details.stderr, encoding="utf-8")
         text = details.stdout + details.stderr
-        skills = "Skills (5)" in text
+        expected_skills = len(list(fixture.SHARED_SKILLS.glob("*/SKILL.md")))
+        skills = f"Skills ({expected_skills})" in text
         mcp = "MCP servers (1)" in text and SERVER_NAME in text
         ok = validate.returncode == 0 and skills and mcp
         self.record(
             "PLUGIN_LOAD_OK", "PASS" if ok else "FAIL",
-            "validate --strict exit 0; details list 5 Skills and 1 MCP server"
+            f"validate --strict exit 0; details list {expected_skills} Skills and 1 MCP server"
             if ok else "package load did not show the expected inventory",
             {"validate_exit": validate.returncode,
-             "skills_five": skills, "mcp_one": mcp})
+             "skills_count": skills, "expected_skill_count": expected_skills,
+             "mcp_one": mcp})
 
     def mcp_list(self) -> bool:
         """The real client's initialize/tools/list, with no model call."""
@@ -303,14 +305,14 @@ class Runner:
               and identical and binding_ok)
         self.record(
             "PLUGIN_METADATA", "PASS" if ok else "FAIL",
-            "documented manifest keys, five Skills byte-identical, stdio binding"
+            "documented manifest keys, the shared Skills byte-identical, stdio binding"
             if ok else "metadata, Skills bytes or binding did not match",
             {"manifest_keys": sorted(manifest), "stray_keys": stray,
              "skills_generated": generated, "skills_source": source,
              "binding_type": server.get("type")})
         self.record(
             "SKILLS_BYTES", "PASS" if identical else "FAIL",
-            "5/5 SKILL.md byte-identical to the canonical source"
+            f"{len(source)}/{len(source)} SKILL.md byte-identical to the canonical source"
             if identical else "a SKILL.md was re-typed",
             {"sha256": {name: _sha256(self.plugin / "skills" / name / "SKILL.md")
                         for name in generated}})

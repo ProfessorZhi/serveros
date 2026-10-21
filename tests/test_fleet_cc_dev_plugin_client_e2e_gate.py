@@ -49,17 +49,21 @@ cc = importlib.util.module_from_spec(_spec)
 sys.modules["fleet_cc_dev_gate"] = cc
 _spec.loader.exec_module(cc)
 
-#: sha256 of the five canonical Skill sources, as of the revision this file was
-#: added. The adapter carries no second copy -- it reads these bytes -- so a
-#: change here is a change to everything that ships them. Re-pinning is a
+#: sha256 of the canonical Skill sources, as of the revision this file was
+#: updated for the Operator Skills set. The adapter carries no second copy --
+#: it reads these bytes -- so a change here is a change to everything that ships
+#: them. Re-pinning is a
 #: deliberate act: change the digest in the same commit as the text, and say in
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
-    "fleet-create-with-grants": "b0a68f5463528ddf3eea3c37dd1de866621f9c911d458cf9be155e4132174a46",
-    "fleet-device-and-session-discovery": "62283dd6484a26489db2f5cb4e1a74c8f0bb13a4388f7043bae2f4037a06b664",
+    "fleet-async-dispatch": "ad0e4d3e3a3e6073b6ca57c324ce80d07fe3863ba791c2ec4f3f765394b17a4b",
+    "fleet-commander-orchestration": "216aa82564e7c0becc39705b6772240bb661965fe9f9ad399e3ca6dcaf47c88c",
+    "fleet-create-with-grants": "9b9a489d64a1855350988ebff45e58b1d0cddb6c7d9e80dbbf904a0c63eb4a57",
+    "fleet-device-and-session-discovery": "5c7131e2325d3742b7c6b14bf258e5dd468148f12490de5c825956e880c116d3",
     "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
-    "fleet-reuse-idle-session": "7b74361db7a60586cbba871ede985893f07c256668dde0366f499a6b4af52b1e",
-    "fleet-safety-boundaries": "a61b5f3ca9cf0bf6fa89b2bef1d82ff8686a116ad6f1819571e4548d1e9b6a76",
+    "fleet-plugin-update": "f10d852c0bc286eb8b7343a8a9a6839d54e14a384efd00e226b2d894767d8205",
+    "fleet-reuse-idle-session": "7e0cf5e428bde2f4f0cd626a8881344742c564a1284a9961d03c354a1ffe6eba",
+    "fleet-safety-boundaries": "a1773f96c221741a4bbea7ecf7d0184d44acae28497cf2ee186bc787475471e5",
 }
 
 

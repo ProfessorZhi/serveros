@@ -1,7 +1,7 @@
-# Fleet — the Claude Code development adapter
+# Fleet — development client adapters
 
-A **DEVELOPMENT ONLY** Claude Code plugin generated from the same sources as the
-ChatGPT first-install package. It exists so the server side can be verified in a
+**DEVELOPMENT ONLY** client adapters for Claude Code and Codex, generated from
+the same sources as the ChatGPT first-install package. It exists so the server side can be verified in a
 real Claude Code session while the release stays blocked.
 
 ```sh
@@ -12,7 +12,7 @@ python3 integrations/fleet-cc-dev-plugin/build_cc_plugin.py \
 claude --plugin-dir <empty-dir> plugin details serveros-fleet-dev
 ```
 
-## Two artefacts, one source, and they are not interchangeable
+## Client artefacts, one source, and they are not interchangeable
 
 | | this adapter | `integrations/fleet-v1-first-install/` |
 |---|---|---|
@@ -23,11 +23,11 @@ claude --plugin-dir <empty-dir> plugin details serveros-fleet-dev
 | blocked by | nothing | `MISSING_BRAND_ASSET`, and an unobserved endpoint |
 | status | **DEVELOPMENT_ONLY** | **FINAL ZIP BLOCKED** |
 
-The **Skills are not duplicated**: the generator reads
+The Claude Code adapter below and the Codex adapter further down are two client artefacts over the same Skills. The **Skills are not duplicated**: each generator reads
 `integrations/fleet-v1-first-install/plugin/skills/` and writes those bytes into
 the plugin. The scope vocabulary comes from the same builder's `FLEET_SCOPES`, so
 there is one list rather than two that drift. `tests/test_fleet_cc_dev_plugin.py`
-pins the byte-identity, because a test that only counted five directories would
+pins the byte-identity, because a test that only counted directories would
 pass on a generator that had re-typed them.
 
 The absence of the approved PNGs blocks the **release build** and nothing else.
@@ -44,8 +44,12 @@ Claude Code **2.1.272**, `--plugin-dir`, from a clean working directory.
 | binding | `.mcp.json` — `{"type": "http", "url": …, "oauth": {"scopes": "…"}}` |
 
 `claude plugin validate` → **Validation passed** (also under `--strict`, with no
-warnings). `claude --plugin-dir … plugin details serveros-fleet-dev` → 5 Skills
-enumerated by name, **1 MCP server** registered.
+warnings). `claude --plugin-dir … plugin details serveros-fleet-dev` → the shared
+Skills enumerated by name, **1 MCP server** registered. Re-executed on
+2026-10-21 for the eight-Skill source: **8 Skills / 1 MCP server**, exit 0. The
+receipt is under Run `RUN-0042` at
+`operator-skills-20261021/package/cc-dev-plugin`, with
+`logs/claude-validate.log` and `logs/claude-plugin-details.log`.
 
 ### What that evidence is, and what it is not
 
@@ -82,7 +86,7 @@ Each is a separate fact, and none is discharged by another.
 
 | receipt | state | what it rests on |
 |---|---|---|
-| `LOCAL_CC_PLUGIN_LOADED` | **VERIFIED** | validate passed; `plugin details` listed 5 Skills and 1 MCP server |
+| `LOCAL_CC_PLUGIN_LOADED` | **VERIFIED on 2026-10-21 for the eight-Skill source** | `validate --strict` exit 0; `plugin details` listed **8 Skills and 1 MCP server** (Run `RUN-0042`). This is package load, not a tool list |
 | `NEXT_TOOLS_DISCOVERED` | **NOT ACHIEVED — `BLOCKED_BY_OWNER_OAUTH`** | unauthenticated `initialize` and `tools/list` both returned HTTP **401 `invalid_token`** with `www-authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`. No token was obtained and no consent was completed, so there is **no tool list** — this is a refusal, not a discovery |
 | `SKILL_BEHAVIOR_VERIFIED` | **PARTIAL — one item withdrawn as `FAILED_REQUIREMENT`** | a restricted model call answered from the Skills, but its self-healing answer was wrong: it called self-healing V2, and **V1 has bounded self-healing of approved services**. The Skills were corrected on this branch; the corrected text has **not** been re-run against a model, so that item is pending re-test |
 | `DEVICE_ACTIONS_TESTED` | **NOT_RUN** | no create/send/control attempted, and none was possible: no credential, `fleet:read` pinned, and `Task`/`Bash`/`Write`/`Edit` denied to the probe |
@@ -112,7 +116,7 @@ no one of them can be quoted for another:
 
 | claim | what is actually driven | what it cannot say |
 |---|---|---|
-| **package load** | the generated directory, structurally: a manifest, a typed binding, five Skills byte-identical to the one shared source | that any tool exists — the directory carries no tool *declaration* (`inputSchema` appears in no generated file), and the manifest and binding name no tool at all |
+| **package load** | the generated directory, structurally: a manifest, a typed binding, the shared Skills byte-identical to the one shared source | that any tool exists — the directory carries no tool *declaration* (`inputSchema` appears in no generated file), and the manifest and binding name no tool at all |
 | **an authenticated `tools/list`** | the real `HttpSurface` on loopback: 401 `invalid_token` with the `resource_metadata` challenge when unauthenticated, and 33 distinct names when the owner token is presented | that the credential may *do* them — 13 of the 33 are writes, and the advertised six scopes are not the two granted by default |
 | **an ability resolution** | the real `abilities/resolver.py`, which intersects eight inputs and knows nothing of `fleet_mcp` | anything about authority — no status is a grant, the record carries no `authorized`/`granted` field, and `UNKNOWN` is an answer rather than a pass |
 | **a session lifecycle** | the real `FleetService` over a fake device: an accepted send carries a run id and **no** run state; the state arrives from a separate `get_run` | that the run finished — and a read-only credential is refused `SCOPE_DENIED` before the device is reached at all |
@@ -181,9 +185,9 @@ python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
 `run_cc_client_e2e.py` writes `RECEIPT.json` / `RECEIPT.md` and keeps five
 claims apart:
 
-| receipt | measured on 2026-10-20, Claude Code 2.1.272 | what it is not |
+| receipt | measured on 2026-10-20 / re-run 2026-10-21, Claude Code 2.1.272 | what it is not |
 |---|---|---|
-| `PLUGIN_LOAD_OK` | `validate --strict` exit 0; `plugin details` listed **5 Skills / 1 MCP server** | not a tool list |
+| `PLUGIN_LOAD_OK` | `validate --strict` exit 0; `plugin details` listed **8 Skills / 1 MCP server** on 2026-10-21 (Run `RUN-0042`) | not a tool list |
 | `MCP_INITIALIZE_OK` | the real client sent `initialize` and `notifications/initialized`; the server answered `serveros-fleet-mcp` | not authentication |
 | `TOOLS_LIST_OK` | `tools/list` returned **33** names over the fixture's stdio | not the live Next surface, and not entitlement |
 | `AUTH_SCOPE` | a `fleet:read` principal discovered all 33; `fleet_send_to_session` was refused `SCOPE_DENIED`; the fake provider saw **0** sends | not a real token's grants |
@@ -288,3 +292,61 @@ three read-only tools (0 permission denials, **1** model call, **$0.218094**).
 All layers pass at **LOCAL**; the live Next read remains
 `BLOCKED_OWNER_OAUTH`, and no real device, `serverosd` or production state was
 touched.
+
+## Codex adapter (Codex 0.160.0, verified locally)
+
+Codex does **not** read the Claude Code `.claude-plugin`/`.mcp.json` layout. Its
+verified layout is:
+
+```text
+.codex-plugin/plugin.json      # name/version, skills: "./skills/", mcpServers: "./.codex-mcp.json"
+.codex-mcp.json                # one remote {"url": ...} or local command/args entry
+skills/<name>/SKILL.md         # the same eight shared Skills
+```
+
+A local marketplace `.agents/plugins/marketplace.json` points at the plugin so
+an isolated `CODEX_HOME` can install it without touching `~/.codex`:
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/build_codex_plugin.py \
+    --out <empty-dir> --next-mcp-url https://<next-ingress>.ts.net/mcp
+
+python3 integrations/fleet-cc-dev-plugin/build_codex_local_fixture.py \
+    --out <fresh-fixture-dir>
+
+python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
+    --out <fresh-evidence-dir>
+```
+
+`run_codex_client_e2e.py` installs the fixture into a fresh `CODEX_HOME`, starts
+the real Codex app-server, performs initialize / thread-start /
+`mcpServerStatus/list` / one read-only `mcpServer/tool/call`, and writes
+`RECEIPT.json`. It requests no model turn; the receipt records the actual tool
+count and whether a project-create capability is present. The plugin id in that
+receipt is a local marketplace selector, not an App/Creator backend id.
+
+## Local trusted owner stdio mode
+
+Both builders also accept an opt-in local runtime entry, avoiding a remote OAuth
+round-trip when the local owner runtime is already configured:
+
+```sh
+# Claude Code
+python3 integrations/fleet-cc-dev-plugin/build_cc_plugin.py \
+    --out <empty-dir> --transport stdio-owner \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/owner-config.yaml
+
+# Codex
+python3 integrations/fleet-cc-dev-plugin/build_codex_plugin.py \
+    --out <empty-dir> --transport stdio-owner \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/owner-config.yaml
+```
+
+The generated binding is `command=<entry>, args=["--stdio","--config",<path>]`
+and carries no `url`, OAuth scope or token. The builders validate that both
+paths are absolute, the entry is executable and the config is a regular file;
+they never open the config or a credential. The remote HTTP mode remains the
+default and keeps the actual token scopes (`oauth.scopes` in the CC adapter);
+it does not fabricate an OAuth consent.
