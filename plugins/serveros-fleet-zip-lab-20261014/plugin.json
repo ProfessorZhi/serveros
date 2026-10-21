@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "serveros-fleet-zip-lab-20261014",
+  "version": "0.1.1",
+  "description": "Private packaging lab for ServerOS Fleet; ZIP update verification."
+}
