@@ -21,12 +21,24 @@ fills from `SO_PEERCRED`. That is not REAL_DEVICE evidence.
 """
 from __future__ import annotations
 
-import importlib.util
 import os
-import sys
-from pathlib import Path
 
 import pytest
+
+# POSIX-ONLY, and before any POSIX import: this module loads
+# `runtime/daemon.py` at module scope, and `runtime/agent_control_store.py`
+# imports `fcntl`; the epoch read uses the daemon route and a kernel peer.
+# On Windows the module cannot be collected at all. Only `os.name == "nt"` is
+# skipped; Linux keeps every assertion below.
+if os.name == "nt":
+    pytest.skip(
+        "POSIX_ONLY: runtime/daemon.py and runtime/agent_control_store.py "
+        "import fcntl; the epoch read uses the daemon route and peer",
+        allow_module_level=True)
+
+import importlib.util
+import sys
+from pathlib import Path
 
 import owner_policy_fixtures as opf
 
