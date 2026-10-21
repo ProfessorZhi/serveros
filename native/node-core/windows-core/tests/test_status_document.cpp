@@ -438,5 +438,14 @@ int main() {
     test_no_posix_mechanism_is_claimed();
     test_identity_vocabulary_matches_core_lite();
 
+    {
+        const auto schema=schema_document(WINDOWS_STATUS_SCHEMA_PATH);
+        auto resident=input_with_all_cases();resident.recover_local=true;resident.observed_at="2026-10-21T00:00:00Z";
+        resident.runtime_reason="LOCAL_CONFIG_MISSING_OR_UNTRUSTED";
+        resident.runtime.push_back({"cloudcli","manual","UNMEASURED","DESIRED_MANUAL",false});
+        WindowsTaskObservation task;task.task_path="\\Fixture\\Task";task.state=kTaskReady;task.measured=true;task.last_result=0;resident.tasks.push_back(task);
+        bool ok=false;auto doc=parse(build_windows_status_json(resident),ok);CHECK(ok);assert_object_within("resident",schema,schema,doc);
+        CHECK_EQ(text_of(doc,"mode"),std::string("recover-local"));CHECK(doc.find("tasks")!=nullptr);CHECK(doc.find("runtime")!=nullptr);
+    }
     return check::report("test_windows_status_document");
 }

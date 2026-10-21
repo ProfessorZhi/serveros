@@ -4,6 +4,7 @@
 #include <exception>
 #include <limits>
 #include <atomic>
+#include <array>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -56,8 +57,8 @@ DWORD remaining(ULONGLONG end) {
 struct PendingIo;
 struct IoRegistry {
     std::atomic<unsigned> slots{0};
-    std::mutex mutex;
-    std::vector<std::unique_ptr<PendingIo>> retired;
+    SRWLOCK mutex = SRWLOCK_INIT;
+    std::array<std::unique_ptr<PendingIo>, 128> retired;
 };
 IoRegistry &registry() {
     // Deliberately OS-lifetime storage: static destructors must not free a
@@ -75,19 +76,27 @@ struct PendingIo {
 std::unique_ptr<PendingIo> operation(DWORD size) {
     auto &state = registry();
     {
-        std::lock_guard<std::mutex> guard(state.mutex);
-        for (auto it = state.retired.begin(); it != state.retired.end();) {
-            if (::WaitForSingleObject((*it)->event, 0) == WAIT_OBJECT_0)
-                it = state.retired.erase(it);
-            else
-                ++it;
+        struct Guard {
+            SRWLOCK *lock;
+            explicit Guard(SRWLOCK *p) : lock(p) { ::AcquireSRWLockExclusive(lock); }
+            ~Guard() { ::ReleaseSRWLockExclusive(lock); }
+        } guard(&state.mutex);
+        for (auto &slot : state.retired) {
+            if (slot && ::WaitForSingleObject(slot->event, 0) == WAIT_OBJECT_0)
+                slot.reset();
         }
     }
     if (state.slots.fetch_add(1) >= 128) {
         state.slots.fetch_sub(1);
         return {};
     }
-    auto op = std::make_unique<PendingIo>(size);
+    std::unique_ptr<PendingIo> op;
+    try {
+        op = std::make_unique<PendingIo>(size);
+    } catch (...) {
+        state.slots.fetch_sub(1);
+        throw;
+    }
     if (!op->event.valid())
         return {};
     return op;
@@ -98,8 +107,24 @@ bool finish(HANDLE h, std::unique_ptr<PendingIo> &op, ULONGLONG end, DWORD &coun
         ::CancelIoEx(h, &op->ov);
         if (::WaitForSingleObject(op->event, 0) != WAIT_OBJECT_0) {
             auto &state = registry();
-            std::lock_guard<std::mutex> guard(state.mutex);
-            state.retired.push_back(std::move(op));
+            struct Guard {
+                SRWLOCK *lock;
+                explicit Guard(SRWLOCK *p) : lock(p) { ::AcquireSRWLockExclusive(lock); }
+                ~Guard() { ::ReleaseSRWLockExclusive(lock); }
+            } guard(&state.mutex);
+            bool retained = false;
+            for (auto &slot : state.retired)
+                if (!slot) {
+                    slot = std::move(op);
+                    retained = true;
+                    break;
+                }
+            if (!retained) {
+                // Slots include this operation, so this is an invariant
+                // failure. Never destroy kernel memory even on this path.
+                (void)op.release();
+                std::terminate();
+            }
         }
         return false;
     }

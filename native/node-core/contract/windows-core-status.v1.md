@@ -259,3 +259,11 @@ needs-login, unknown and running-but-unhealthy states refuse automatic restart.
 The source has no stop/reconfigure/register/elevate operation. Cross compilation
 and hosted local IPC testing are separate from real-device and Fleet acceptance;
 those remain explicitly NOT_RUN until evidence exists.
+
+The resident source now provides `windows-core-watch console|service`, and a fixed
+owner-only desired configuration (`serveros/windows-core-desired.v1`) with the
+same observe_only/running/manual/disabled/generation semantics. Optional status
+fields add observed_at, tasks and runtime desired/readiness/recovery rows;
+recover-local mode appears only after an accepted current generation with an
+explicit recovery setting. Missing/corrupt config remains observe-only and names
+its refusal. The existing Node-owned device mapping is still authoritative.

@@ -22,3 +22,14 @@ Acceptance: protocol/policy suites pass, cross-build proves `_WIN32` paths compi
 ### 4. Reviewed boundary fixes and resident wiring
 First repair all three independent-review findings as a separate frozen commit. Acceptance: hosted actual AccessCheck allow/deny/incomplete SD fixtures, bounded heap-owned cancellation lifetime without infinite wait or use-after-free, first lock/load/release without explicit save followed by successful reopen, and deleted journal refusal. Cross-link actual Win32 branches again.
 Then add strict owner-local manifest/config/probe/watch contracts with failing portable tests, native read/write/grant/generation wiring, console and OS service wrapper, and fixed-schema runtime observations. Verify observe-only never invokes an action, manual/disabled stay observed, and the fixed watch interval is not shortened by clients. Retain live Windows deployment NOT_RUN. Two amendment reviews must confirm no unresolved warnings before implementation.
+
+Resident implementation details: fixed LocalAppData owner-only config publisher and
+singleton watch; persisted generation plus BCrypt SHA256 exact-byte fence;
+nonblocking IPv4-loopback HTTP with a one-second absolute deadline and strict
+length/JSON marker; per-pass recovery via the same RecoveryEngine; status snapshot
+and pipe publication; SCM dispatcher wrapper reusing the same loop. Directory
+handles pin every OS-resolved ancestor against write/delete sharing. Task start
+also requires measured current-user interactive session, LUA and ignore-new.
+Native watch startup rejects built-in service accounts; no service installation,
+credentials or global policy changes occur. Linux and Win32 build validate source;
+actual Windows runtime remains NOT_RUN.

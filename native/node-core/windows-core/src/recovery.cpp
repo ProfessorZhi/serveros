@@ -39,7 +39,7 @@ bool valid_grants(const std::vector<UnitGrant> &gs) {
             (g.manager != UnitManager::Scm && g.manager != UnitManager::TaskScheduler) ||
             !ascii_name(g.target, g.manager == UnitManager::TaskScheduler) ||
             g.owner_sid.size() > 184 || g.owner_sid.rfind("S-1-", 0) != 0 ||
-            !roles.insert(g.role).second || !targets.insert(unit_key(g)).second)
+            !roles.insert(g.role).second || !targets.insert(unit_key(g)).second || unit_key(g)=="scm:serveroscoreuser" || unit_key(g)=="task:\\serveros\\corewatch")
             return false;
         for (char c : g.owner_sid)
             if (!((c >= '0' && c <= '9') || c == 'S' || c == '-'))

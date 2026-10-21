@@ -68,7 +68,9 @@ jobs:
             "build-windows/Release/test_windows_status_document.exe",
             "build-windows/Release/test_windows_recovery.exe",
             "build-windows/Release/test_windows_named_pipe.exe",
-            "build-windows/Release/windows-core-status.exe"
+            "build-windows/Release/windows-core-status.exe",
+            "build-windows/Release/windows-core-watch.exe",
+            "build-windows/Release/test_windows_watch.exe"
           )
           foreach ($exe in $exes) {
             if (-not (Test-Path -LiteralPath $exe)) {

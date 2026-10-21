@@ -63,12 +63,66 @@ using synthetic status and unique journal targets on the ephemeral runner. It
 never starts/stops a service or task. Cross-build with a Windows CMake toolchain
 compiles/links all actual SDK branches, but does not execute them.
 
-Remaining owner integration: real local grant inventory and functional probes,
-trusted launch identity persistence, a host service wrapper/watch loop, and Fleet
-projection of this status. Actual Windows machine acceptance is NOT_RUN. This
-library and read-only binary do not install themselves or claim deployed
-self-healing. An interactive-token task whose user is logged out remains refused
-by native admission/run and must not trigger credential or logon changes.
+## Resident watch and configuration
+
+`windows-core-watch console` runs the bounded local watch. `service` is the
+same loop under the OS SCM dispatcher named `ServerOSCoreUser`. The binary never
+registers a service/task, supplies logon credentials or changes OS recovery policy.
+Run it as the intended user; LocalSystem/LocalService/NetworkService are refused.
+The OS manager owns process restart and its backoff; the watch owns the admitted
+component starts. It refuses its own reserved SCM/task target.
+
+The fixed owner-protected config is
+`LocalAppData/ServerOS/Core/desired-state.v1.json`. Install/update it with
+`windows-core-watch configure < manifest.json`; this validates the current OS SID
+and exact closed config before an atomic owner-only write, and can run while the
+watch is active. There are no extra approval prompts. Omitted `observe_only`
+means true. `running` may recover only with explicit `observe_only:false`;
+`manual` and `disabled` are observed and never started. `interval_ms` is 1–10
+seconds, default 5 seconds; clients cannot accelerate this interval.
+
+```json
+{
+  "schema": "serveros/windows-core-desired.v1",
+  "node": "device:fixture",
+  "principal": "S-1-5-21-REPLACE-WITH-ACTUAL-USER-SID",
+  "generation": 1,
+  "observe_only": true,
+  "services": [{
+    "id": "cloudcli", "owner": "S-1-5-21-REPLACE-WITH-ACTUAL-USER-SID",
+    "manager": "scm", "unit": "EXACT_INSTALLED_SERVICE_NAME", "desired": "running",
+    "health": {"probe":"loopback-http-json","port":8080,"path":"/health","key":"status","value":"ok"}
+  }]
+}
+```
+
+Use the actual device reference, user SID, registered unit and its existing
+functional health contract; the example does not grant a guessed installed
+service. At most three roles (`cloudcli`, `connector`, `tunnel`) are admitted.
+Manager is `scm` or `task-scheduler`. Probes connect only to literal IPv4 loopback,
+use a 1-second absolute nonblocking socket deadline and bounded strict HTTP/JSON
+response, and require the configured string/boolean field. They use no shell,
+DNS, remote host, model call, credential or arbitrary command.
+
+The watch reserves its singleton writer and a durable monotonic generation/SHA256
+fence before recovery. Same generation with changed bytes and older generations
+refuse. It publishes `watch-status.v1.json` atomically in the protected Core
+state root and serves the same snapshot on the authenticated pipe, including
+sample time, desired/readiness/recovery codes and independently measured SCM/task
+rows. Missing/bad config publishes an explicit observe-only refusal.
+
+Interactive tasks additionally require a measured currently logged-on owner
+session; inability to read that fact remains unknown. Native action errors and
+missing/corrupt journals stay fenced. Deferred cancelled pipe operations retain
+all kernel memory in a fixed 128-slot registry; no cancelled I/O wait or later
+allocation can extend a transaction deadline or free a pending context.
+
+Actual Windows machine deployment/acceptance remains NOT_RUN. The host's real
+unit inventory and functional endpoint fields must be supplied from its existing
+runtime authority. The watch has no automatic service installer and does not
+claim Fleet device attestation. The existing Node agent can consume the fixed
+status snapshot; remote Fleet projection acceptance remains a separate client
+integration check.
 
 SDK references: [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew),
 [ImpersonateNamedPipeClient](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient),

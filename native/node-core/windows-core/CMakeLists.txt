@@ -23,6 +23,8 @@ endif()
 add_library(windows_core_scm STATIC
   src/win32_store.cpp
   src/win32_recovery.cpp
+  src/win32_watch.cpp
+  src/watch.cpp
   src/recovery.cpp
   src/status_pipe.cpp
   src/scm_status.cpp
@@ -37,6 +39,7 @@ add_library(windows_core_scm STATIC
 )
 target_include_directories(windows_core_scm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(windows_core_scm PUBLIC nodecore_supervisor)
+target_include_directories(windows_core_scm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor/src")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(windows_core_scm PRIVATE -Wall -Wextra -Wpedantic)
@@ -89,7 +92,7 @@ target_include_directories(test_windows_recovery PRIVATE "${CMAKE_CURRENT_SOURCE
 add_test(NAME windows_recovery_protocol COMMAND test_windows_recovery)
 
 if(WIN32)
- target_link_libraries(windows_core_scm PUBLIC advapi32 taskschd ole32 oleaut32 uuid shell32)
+ target_link_libraries(windows_core_scm PUBLIC advapi32 taskschd ole32 oleaut32 uuid shell32 ws2_32 bcrypt wtsapi32)
 endif()
 
 add_executable(windows-core-status src/main.cpp)
@@ -100,3 +103,11 @@ target_link_libraries(test_windows_named_pipe PRIVATE windows_core_scm Threads::
 target_include_directories(test_windows_named_pipe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 add_test(NAME windows_named_pipe_and_store COMMAND test_windows_named_pipe)
 set_tests_properties(windows_named_pipe_and_store PROPERTIES TIMEOUT 15)
+
+add_executable(test_windows_watch tests/test_watch.cpp)
+target_link_libraries(test_windows_watch PRIVATE windows_core_scm)
+target_include_directories(test_windows_watch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+add_test(NAME windows_watch_contract COMMAND test_windows_watch)
+
+add_executable(windows-core-watch src/watch_main.cpp)
+target_link_libraries(windows-core-watch PRIVATE windows_core_scm)

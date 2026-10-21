@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <oleauto.h>
 #include <taskschd.h>
+#include <wtsapi32.h>
 #include <vector>
 namespace nodecore::windows_core {
 namespace {
@@ -111,6 +112,42 @@ bool open_task(const UnitGrant &g, Com<ITaskService> &service, Com<IRegisteredTa
     Bstr path(wide(g.target));
     return SUCCEEDED(root->GetTask(path, &task.p));
 }
+bool interactive_owner_present(const std::string &sid, bool &measured) {
+    PWTS_SESSION_INFOW sessions = nullptr;
+    DWORD count = 0;
+    measured = false;
+    if (!::WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count))
+        return false;
+    if (count > 256) {
+        ::WTSFreeMemory(sessions);
+        return false;
+    }
+    bool all_read = true, present = false;
+    for (DWORD i = 0; i < count; i++) {
+        if (sessions[i].State != WTSActive && sessions[i].State != WTSDisconnected)
+            continue;
+        LPWSTR user = nullptr, domain = nullptr;
+        DWORD user_bytes = 0, domain_bytes = 0;
+        bool ok = ::WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessions[i].SessionId,
+                                                WTSUserName, &user, &user_bytes) &&
+                  ::WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessions[i].SessionId,
+                                                WTSDomainName, &domain, &domain_bytes);
+        if (!ok || user_bytes > 1024 || domain_bytes > 1024)
+            all_read = false;
+        else if (user && *user) {
+            std::wstring name = (domain && *domain ? std::wstring(domain) + L"\\" : L"") + user;
+            if (detail::account_sid(name) == sid)
+                present = true;
+        }
+        if (user)
+            ::WTSFreeMemory(user);
+        if (domain)
+            ::WTSFreeMemory(domain);
+    }
+    ::WTSFreeMemory(sessions);
+    measured = present || all_read;
+    return present;
+}
 UnitState task_state(IRegisteredTask *task, const UnitGrant &g) {
     UnitState out;
     TASK_STATE state;
@@ -138,6 +175,16 @@ UnitState task_state(IRegisteredTask *task, const UnitGrant &g) {
     out.owner_matches = logon == TASK_LOGON_INTERACTIVE_TOKEN && run_level == TASK_RUNLEVEL_LUA &&
                         detail::account_sid(std::wstring(user.s ? user.s : L"")) == g.owner_sid;
     out.native_grant = task_execute_grant(task);
+    bool login_measured = false;
+    bool logged_in = interactive_owner_present(g.owner_sid, login_measured);
+    if (!login_measured) {
+        out.measured = false;
+        return out;
+    }
+    if (!logged_in) {
+        out.condition = UnitCondition::NeedsLogin;
+        return out;
+    }
     if (enabled == VARIANT_FALSE || state == TASK_STATE_DISABLED)
         out.condition = UnitCondition::Disabled;
     else if (static_cast<unsigned long>(result) == 0x8007052eUL ||

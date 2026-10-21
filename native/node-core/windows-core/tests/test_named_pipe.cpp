@@ -1,6 +1,7 @@
 #include "check.hpp"
 #include "windows-core/recovery.hpp"
 #include "windows-core/status_pipe.hpp"
+#include "windows-core/watch.hpp"
 #include <chrono>
 #include <future>
 #include <thread>
@@ -162,6 +163,33 @@ int main() {
             }
         }
     }
+    {
+        auto watch = open_local_watch_state();
+        CHECK(watch != nullptr);
+        CHECK(!open_local_watch_state());
+        if (watch) {
+            auto manifest =
+                std::string(
+                    "{\"schema\":\"serveros/"
+                    "windows-core-desired.v1\",\"node\":\"device:fixture\",\"principal\":\"") +
+                self.owner_sid + "\",\"generation\":1,\"services\":[]}";
+            CHECK(publish_windows_desired(manifest));
+            std::string loaded;
+            CHECK(watch->read_desired(loaded));
+            CHECK_EQ(loaded, manifest);
+            CHECK(watch->commit_generation(1, manifest));
+            CHECK(watch->commit_generation(1, manifest));
+            CHECK(!watch->commit_generation(0, manifest));
+            CHECK(!watch->commit_generation(1, manifest + " "));
+            CHECK(watch->publish("{\"synthetic\":true}"));
+            watch.reset();
+            auto reopened = open_local_watch_state();
+            CHECK(reopened != nullptr);
+            if (reopened)
+                CHECK(reopened->commit_generation(1, manifest));
+        }
+    }
+
 #else
     PipeIdentity id;
     CHECK(!current_pipe_identity(id));

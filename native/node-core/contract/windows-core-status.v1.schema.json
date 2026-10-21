@@ -26,7 +26,10 @@
       "const": "windows"
     },
     "mode": {
-      "const": "observe-only"
+      "enum": [
+        "observe-only",
+        "recover-local"
+      ]
     },
     "node": {
       "type": "string",
@@ -57,6 +60,92 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/service_row"
+      }
+    },
+    "observed_at": {
+      "type": "string"
+    },
+    "runtime_reason": {
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "state",
+          "measured"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "TASK_READY",
+              "TASK_RUNNING",
+              "TASK_DISABLED",
+              "TASK_UNKNOWN",
+              "TASK_UNSUPPORTED"
+            ]
+          },
+          "measured": {
+            "type": "boolean"
+          },
+          "last_result": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "desired",
+          "readiness",
+          "recovery_code",
+          "acted"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "cloudcli",
+              "connector",
+              "tunnel"
+            ]
+          },
+          "desired": {
+            "enum": [
+              "running",
+              "manual",
+              "disabled"
+            ]
+          },
+          "readiness": {
+            "enum": [
+              "READY",
+              "NOT_READY",
+              "UNMEASURED"
+            ]
+          },
+          "recovery_code": {
+            "type": "string"
+          },
+          "acted": {
+            "type": "boolean"
+          }
+        }
       }
     }
   },
