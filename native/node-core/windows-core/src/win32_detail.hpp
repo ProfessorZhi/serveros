@@ -14,6 +14,12 @@
 #include <vector>
 #include <cstdint>
 namespace nodecore::windows_core::detail {
+inline thread_local const char *state_stage = "NONE";
+inline thread_local DWORD state_error = 0;
+inline void state_fault(const char *stage) {
+    state_stage = stage;
+    state_error = ::GetLastError();
+}
 struct Handle {
     HANDLE h = INVALID_HANDLE_VALUE;
     explicit Handle(HANDLE v = INVALID_HANDLE_VALUE) : h(v) {}

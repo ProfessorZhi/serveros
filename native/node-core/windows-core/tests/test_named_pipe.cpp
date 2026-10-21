@@ -202,8 +202,16 @@ int main() {
                     ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
                                   nullptr, OPEN_EXISTING, 0, nullptr);
                 CHECK(reader != INVALID_HANDLE_VALUE);
-                CHECK(publish_windows_desired(manifest + " "));
-                CHECK(publish_windows_desired(manifest + "  "));
+                auto first = publish_windows_desired(manifest + " ");
+                if (!first)
+                    std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
+                                 detail::state_error);
+                CHECK(first);
+                auto second = publish_windows_desired(manifest + "  ");
+                if (!second)
+                    std::fprintf(stderr, "CONFIG_STAGE %s ERROR %lu\n", detail::state_stage,
+                                 detail::state_error);
+                CHECK(second);
                 if (reader != INVALID_HANDLE_VALUE)
                     ::CloseHandle(reader);
                 // An incompatible external reader may legitimately prevent a

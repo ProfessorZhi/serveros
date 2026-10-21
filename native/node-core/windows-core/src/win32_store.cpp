@@ -277,8 +277,10 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         temp.c_str(), GENERIC_WRITE | READ_CONTROL | DELETE, FILE_SHARE_READ | FILE_SHARE_DELETE,
         &security.attributes, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr));
-    if (!file.valid())
+    if (!file.valid()) {
+        detail::state_fault("CREATE_TEMP");
         return false;
+    }
     auto discard_owned_temp = [](HANDLE owned) {
         FILE_DISPOSITION_INFO disposition{TRUE};
         ::SetFileInformationByHandle(owned, FileDispositionInfo, &disposition, sizeof(disposition));
@@ -289,6 +291,7 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         !::WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &n, nullptr) ||
         n != text.size() || !::FlushFileBuffers(file) ||
         !::GetFileInformationByHandle(file, &created)) {
+        detail::state_fault("TEMP_WRITE_FLUSH_ID");
         discard_owned_temp(file);
         return false;
     }
@@ -305,10 +308,13 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         !::GetFileInformationByHandle(cleanup, &current) ||
         created.dwVolumeSerialNumber != current.dwVolumeSerialNumber ||
         created.nFileIndexHigh != current.nFileIndexHigh ||
-        created.nFileIndexLow != current.nFileIndexLow)
+        created.nFileIndexLow != current.nFileIndexLow) {
+        detail::state_fault("TEMP_REOPEN_ID");
         return false;
+    }
     if (!::MoveFileExW(temp.c_str(), path.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        detail::state_fault("ATOMIC_REPLACE");
         discard_owned_temp(cleanup);
         return false;
     }
@@ -432,6 +438,8 @@ std::unique_ptr<LocalWatchState> open_local_watch_state() {
 }
 
 bool publish_windows_desired(const std::string &text) {
+    detail::state_stage = "CONFIG_PARSE";
+    detail::state_error = 0;
     auto sid = detail::current_sid();
     WatchConfig config;
     std::string error;
@@ -440,6 +448,7 @@ bool publish_windows_desired(const std::string &text) {
         return false;
     detail::OwnerSecurity security(sid);
     std::vector<std::unique_ptr<detail::Handle>> pins;
+    detail::state_stage = "STATE_DIRECTORY";
     auto root = state_directory(sid, security, pins);
     if (root.empty())
         return false;
@@ -447,8 +456,10 @@ bool publish_windows_desired(const std::string &text) {
     detail::Handle lock(::CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
                                       FILE_SHARE_READ, &security.attributes, OPEN_ALWAYS,
                                       FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!lock.valid() || !owner_only(lock, sid, false))
+    if (!lock.valid() || !owner_only(lock, sid, false)) {
+        detail::state_fault("CONFIG_WRITER_LOCK");
         return false;
+    }
     return write_document(root, L"desired-state.v1.json", sid, text);
 }
 
