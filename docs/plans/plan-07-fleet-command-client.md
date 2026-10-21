@@ -40,7 +40,11 @@ Run and capture the expected red result.
   model and native permission read back; remove the fixed tool count.
 - `fleet-create-with-grants`: create is routine inside the managed profile;
   keep idempotency/UNKNOWN rules; add project-create capability discovery and
-  missing-capability reporting; keep effective model/mode read-back.
+  missing-capability reporting; keep effective model/mode read-back. Bind an
+  owner-max session to actual selected-runtime project membership and owner
+  grant, including existing and newly registered projects without another static
+  edit. Keep `create_allow` as the legacy/non-owner alternative. A **new project**
+  is bound to `owner_access.project_roots`, not a static row for an absent name.
 - `fleet-reuse-idle-session`: prefer reuse but do not treat create as an
   exceptional per-call approval; keep ACK/return/UNKNOWN contract.
 - `fleet-device-and-session-discovery`: discover the actual tool list and
@@ -96,6 +100,34 @@ Record exact commands/exits/SHA/artifacts; commit and push a narrow branch,
 open/update one Draft PR. No merge, deploy, upload, global install, credential
 read or paid model call.
 
+## Phase 6 — independent counterexample hardening (2026-10-22)
+
+Accept the independent reviewer's seven synthetic counterexamples unchanged,
+reproduce them RED at `f0d54ae`, and fix in this lane:
+
+1. `fleet-create-with-grants`: owner-max existing and newly registered projects
+   use the actual runtime owner grant before legacy static `create_allow`;
+   new project creation is bound to the owner's `project_roots`.
+2. Codex app-server environment: explicit copy, provider credential variables
+   removed, evidence `TMPDIR`, no login copy; receipt records names seen and
+   removed, never values.
+3. CC wire and `fleet_owned_probe` stay separate; Codex's app-server
+   `tool_count_actual`/`project_create_capability_actual` are never overwritten
+   by the probe.
+4. Bounded byte framing for `CodexServer.request` and
+   `fleet_owned_probe._call`; burst notification+reply tests for both.
+5. Fresh exclusive CC evidence root; no `rmtree` of an existing `plugin/`
+   before owned-entry/config validation.
+6. Skills source copy rejects symlink ancestors/members and escape before any
+   output directory is created; the normal shared eight still copy.
+7. Client claims require real client frames; no model turn means model/Skill
+   behavior is `NOT_RUN`.
+
+Verify with the seven counterexamples GREEN, the targeted union under the
+resource caps, a regenerated v1/v2 overlay and plan/readback/rollback/
+rehearsal, and real CC/Codex owned runs. Update the receipts, README, review
+and PR body with the exact final SHA.
+
 ## Plan review rounds
 
 ### Round 1
@@ -116,3 +148,39 @@ Re-read the plan against the eight Skills, the package identity rules and the
 local Codex CLI. No unresolved critical/warning remains. The real owned runtime
 and project-create capability were exercised read-only; a model turn remains
 NOT_RUN rather than being inferred.
+
+### Round 3 — independent counterexamples
+
+Seven RED cases at `f0d54ae` are the acceptance gate: project root vs static
+allow, explicit credential-free Codex env, buffered burst framing, per-client
+wire attribution, fresh output without `rmtree`, symlink-refusing Skills copy,
+and real-frame-or-`NOT_RUN`. Resolution is Phase 6. Re-run the same seven
+unmodified files; do not replace them with a weaker local test.
+
+### Round 4 — post-fix review
+
+Re-read after the fixes against the counterexamples, the real owned receipts
+and the update rehearsal. No unresolved critical/warning. Remaining NOT_RUN:
+model/Skill behavior, real project create → session → long task, live Creator/
+OAuth, avatar/display-name.
+
+## Phase7 — residual evidence/stream correctness
+
+Base169e50b, independent RUN-0057/client-residuals-20261022 namespace; existing
+finalize files remain untouched. First replay the unmodified original seven and
+three residual probes on a Git archive of the base. Add actual deterministic
+output acquisition race/replacement/exclusive receipt tests, same-connection ACK
+positive and error/wrong-id/cross-connection negatives, short-frame count/bytes
+flood, unterminated observer input and interrupted/short-write tests. Capture RED.
+Then update only create-with-grants, CC/Codex runners, framing/interposer and
+necessary tests/docs. Re-run new tests, unchanged original seven/residual probes
+and CLI/adapter/package regressions with artifact TMPDIR, no cache/bytecode,
+2GiB/no-swap/1CPU bounds. No model, real client turn, device request, global config
+or credential read/write, existing output deletion or service change. Freeze one
+small source SHA for root cherry-pick and scoped independent review, no new PR.
+
+Plan review round1: preserve independent probe vs client claim distinction and
+all old seven cases; require terminal observer budget failure to invalidate ACK
+claims. Round2: exclusive receipts must be FD-relative and never overwrite an
+existing receipt even after successful directory acquisition; cap pending IDs and
+metadata field/log growth as well as line buffers. No unresolved critical/warning.

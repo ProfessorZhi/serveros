@@ -120,6 +120,58 @@ def check_endpoint(url: object) -> str:
     return url.rstrip("/")
 
 
+def check_skills_source(source: Path) -> Path:
+    """Resolve a Skills source after refusing every symlink on the way in.
+
+    `Path.resolve()` erases the evidence: a source directory that is a symlink,
+    or a skill folder that points outside the tree, becomes an ordinary path and
+    the copy then reads bytes the source owner never put there. Reject the
+    symlink before copying, including a symlink anywhere below the source.
+    """
+    raw = Path(source)
+    absolute = Path(os.path.abspath(raw))
+    for part in [absolute, *absolute.parents]:
+        if part.is_symlink():
+            raise Refused(SOURCE_REFUSED,
+                          f"skills source path contains a symlink: {part}")
+    resolved = raw.resolve()
+    if not resolved.is_dir():
+        raise Refused(SOURCE_REFUSED, f"no skills source at {resolved}")
+    for root, dirs, files in os.walk(resolved, followlinks=False):
+        for name in sorted(dirs):
+            path = Path(root) / name
+            if path.is_symlink():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source contains a symlinked directory: "
+                    f"{path.relative_to(resolved)}")
+            real = path.resolve()
+            if real != resolved and resolved not in real.parents:
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source entry escapes the source tree: "
+                    f"{path.relative_to(resolved)}")
+        for name in sorted(files):
+            path = Path(root) / name
+            if path.is_symlink():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source contains a symlinked file: "
+                    f"{path.relative_to(resolved)}")
+            if not path.is_file():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source member is not a regular file: "
+                    f"{path.relative_to(resolved)}")
+            real = path.resolve()
+            if resolved not in real.parents:
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source entry escapes the source tree: "
+                    f"{path.relative_to(resolved)}")
+    return resolved
+
+
 def check_paths(source: Path, out: Path) -> None:
     """Refuse an output at or below the source, on resolved paths.
 
@@ -142,9 +194,7 @@ def check_paths(source: Path, out: Path) -> None:
 
 def read_skills(source: Path) -> list[tuple[str, str]]:
     """`skills/<name>/SKILL.md`, immediate children only, from the shared source."""
-    source = Path(source)
-    if not source.is_dir():
-        raise Refused(SOURCE_REFUSED, f"no skills source at {source}")
+    source = check_skills_source(source)
     found: list[tuple[str, str]] = []
     for child in sorted(source.iterdir()):
         if not child.is_dir():
@@ -304,7 +354,7 @@ def generate(*, skills_source: Path, out: Path,
     `transport="stdio-owner"` binds the local trusted owner runtime and is
     deliberately OAuth-free.
     """
-    skills_source = Path(skills_source).resolve()
+    skills_source = check_skills_source(skills_source)
     out = Path(out).resolve()
     check_paths(skills_source, out)
     transport = str(transport)

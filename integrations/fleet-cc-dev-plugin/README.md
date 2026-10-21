@@ -348,10 +348,13 @@ python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
     --owned-cwd /absolute/path/complete-tree
 ```
 
-The receipts distinguish `LOCAL_REAL_OWNED` from the fixture path, read the
-actual tool count and project-create schema from `tools/list`, and report the
-six scopes, durability, owner-access families and read-only session readback.
-They do not send/create or request a model turn.
+The receipts distinguish `LOCAL_REAL_OWNED` from the fixture path. CC's
+`MCP_INITIALIZE_OK` and `TOOLS_LIST_OK` are judged from a transparent stdio
+interposer's own CC-to-owned wire (method/id/tool/count/error/hash only; bytes
+are passed unchanged), not from a separate probe. Codex judges its tools/list
+and tool call from the app-server's own `mcpServerStatus/list` and
+`mcpServer/tool/call`. The independent `OWNED_PROBE_*` readback is a separate
+lane. The runners do not send/create or fabricate MCP replies.
 
 ## Local trusted owner stdio mode
 
@@ -378,3 +381,51 @@ paths are absolute, the entry is executable and the config is a regular file;
 they never open the config or a credential. The remote HTTP mode remains the
 default and keeps the actual token scopes (`oauth.scopes` in the CC adapter);
 it does not fabricate an OAuth consent.
+
+## Client-runner hardening (2026-10-22)
+
+Seven independent synthetic counterexamples at `RUN-0046/.../f0d54ae/
+probe_client.py` were RED at `f0d54ae` and are retained unmodified. They are
+GREEN at the hardening head, and the same checks are kept in
+`tests/test_fleet_client_runner_hardening.py`:
+
+- **CC output is fresh and never cleared.** `Runner.prepare` refuses an
+  existing `--out` or symlink component; `build` no longer removes `plugin/`.
+  The generator validates the owned entry/config and refuses before any write.
+- **Codex environment is explicit.** `CodexServer` copies the environment,
+  removes `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENAI_ACCESS_TOKEN` and
+  `CODEX_ACCESS_TOKEN`, sets `TMPDIR` to the evidence directory, and uses a
+  fresh `CODEX_HOME`. The receipt records only the names seen/removed, not
+  their values; `login_copied` is false.
+- **Framing is bounded bytes, not `select()`+`readline()`.** `stdio_framing.py`
+  owns one buffer and a queue, so a notification and its already-buffered reply
+  in one burst are both read. Both the Codex app-server and the owned probe
+  use it.
+- **Claims are per client wire.** CC's handshake/tools claims come from the
+  interposer; Codex's inventory and tool call come from the app-server. The
+  independent probe is `OWNED_PROBE_*` and never overwrites a client field.
+- **Skills copy refuses symlinks.** `build_cc_plugin.check_skills_source`
+  checks every source ancestor and member before any output directory exists.
+- **No model turn means `NOT_RUN`.** `MODEL_SKILL_BEHAVIOR` and `CLIENT_E2E`
+  are not inferred from a connection or a probe call.
+
+Commands (fresh output directories; no model turn):
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
+    --out <fresh-dir> --owned-entry <entry> --owned-config <config> \
+    --owned-state-dir /data/home/vince/state/serveros
+
+python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
+    --out <fresh-dir> --owned-entry <entry> --owned-config <config> \
+    --owned-state-dir /data/home/vince/state/serveros \
+    --owned-cwd <complete-tree>
+
+python3 integrations/fleet-cc-dev-plugin/build_codex_local_fixture.py \
+    --out <fresh-dir>
+```
+
+The counterexample re-run is `pytest -q <copy-of-probe_client.py>` against a
+`frozen` link to this worktree; the probe file itself is byte-identical to the
+reviewer's copy. Its result, the runners' receipts and the package hashes are
+recorded under `SRV-0011/RUN-0053/command-client-hardening-20261022/`.
