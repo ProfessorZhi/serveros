@@ -191,6 +191,57 @@ class Generated(unittest.TestCase):
         self.assertFalse(inside.exists())
 
 
+class TheLocalOwnerStdioTransport(unittest.TestCase):
+    """The local trusted owner runtime is a separate, OAuth-free binding."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="cc-owner-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.entry = self.tmp / "serveros-fleet-owned"
+        self.entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.entry.chmod(0o755)
+        self.config = self.tmp / "owner-config.yaml"
+        self.config.write_text("owner: synthetic\n", encoding="utf-8")
+        self.out = self.tmp / "plugin"
+
+    def test_the_stdio_binding_has_no_remote_url_or_oauth(self) -> None:
+        record = cc.generate(skills_source=SHARED_SKILLS, out=self.out,
+                             transport="stdio-owner",
+                             owned_entry=str(self.entry),
+                             owned_config=str(self.config))
+        server = json.loads((self.out / ".mcp.json").read_text())["mcpServers"]["serveros-fleet"]
+        self.assertEqual(server["type"], "stdio")
+        self.assertEqual(server["command"], str(self.entry))
+        self.assertEqual(server["args"], ["--stdio", "--config", str(self.config)])
+        self.assertNotIn("url", server)
+        self.assertNotIn("oauth", server)
+        self.assertEqual(record["transport"], "stdio-owner")
+        self.assertIsNone(record["oauth_scopes"])
+
+    def test_relative_missing_or_non_executable_owned_entry_is_refused(self) -> None:
+        cases = [
+            dict(owned_entry="bin/serveros-fleet-owned", owned_config=str(self.config)),
+            dict(owned_entry=str(self.tmp / "missing"), owned_config=str(self.config)),
+            dict(owned_entry=str(self.config), owned_config=str(self.config)),
+            dict(owned_entry=str(self.entry), owned_config=str(self.tmp / "missing")),
+        ]
+        for index, case in enumerate(cases):
+            with self.subTest(case=index):
+                out = self.tmp / f"refused-{index}"
+                with self.assertRaises(cc.Refused):
+                    cc.generate(skills_source=SHARED_SKILLS, out=out,
+                                transport="stdio-owner", **case)
+                self.assertFalse(out.exists())
+
+    def test_http_mode_may_not_also_carry_a_local_owner_binding(self) -> None:
+        with self.assertRaises(cc.Refused):
+            cc.generate(skills_source=SHARED_SKILLS, out=self.out,
+                        next_mcp_url="https://fleet-next.example.ts.net/mcp",
+                        transport="http", owned_entry=str(self.entry),
+                        owned_config=str(self.config))
+        self.assertFalse(self.out.exists())
+
+
 class TheV1SelfHealingBoundary(unittest.TestCase):
     """V1 has bounded self-healing; it is not a V2 capability.
 

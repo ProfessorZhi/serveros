@@ -49,6 +49,21 @@ to *proceed*. The same rule holds at every layer below — presence, reachabilit
 inventory, and the node's own floor. A refusal outranks an unknown, and an
 unknown outranks nothing at all.
 
+## Discover capabilities, not names
+
+The surface's capability list is read, not remembered. Use `tools/list` (or the
+plugin's recorded list from the same source) before assuming a verb exists.
+The **project-create** capability is a core-owned addition, not a name this
+Skill can invent: if the actual list serves it, use its exact name and schema;
+if it is absent, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and return the
+decision to the core/owner. Do not hardcode a tool count (the current count is
+not a permanent fact), and do not guess a project-create verb.
+
+The owner-max managed profile is configured once by the owner. Inside it,
+routine create/send/dispatch is pre-authorized; the client does not ask a human
+to reconfirm each call. Outside it, a refusal or a human decision is the
+correct answer.
+
 ## OS user and credential profile are part of the address
 
 One physical machine can run several Linux accounts, and one account can hold
@@ -57,7 +72,9 @@ runtime because they share a device reference, and the same session id can
 exist under both. Before you send anything, be able to say which
 **device × OS user × credential instance × runtime × project** you are
 addressing — that is what the session reference encodes, and a reference that
-only names the device is not enough.
+only names the device is not enough. A Codex alias runtime is its own address;
+do not infer it from the base runtime or from the agent family, and do not
+assume a provider family has a runtime binding just because another family does.
 
 If the answer you need is not in the facts you have, say so. Do not infer a
 device, a user or a session from a friendly name, a screenshot or a previous

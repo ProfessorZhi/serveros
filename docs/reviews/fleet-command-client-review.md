@@ -1,0 +1,77 @@
+# Fleet command-side client adaptation review
+
+Reviewer scope: this branch's shared Skills and client/package adaptation only.
+No `fleet_mcp/**`, `runtime/**`, `native/**`, WorkEngine or Core edits.
+
+## Proposal round 1
+
+- **Warning — owner-max could be read as universal privilege.** Resolved by
+  separating one-time owner configuration from Linux root/OS administration and
+  another OS account, and by requiring effective model/permission read-back.
+- **Warning — routine approval conflict.** Resolved by stating that routine
+  create/send/dispatch inside the owner-max profile is pre-authorized; a human
+  decision remains only outside the profile, when a capability is absent, when
+  identity is ambiguous, or when an irreversible action exceeds the grant.
+- **Warning — project entry point not exposed.** Resolved by capability
+  discovery: use the exact name/schema from the actual tool list; report
+  `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` if absent.
+- **Warning — Codex format assumption.** Resolved by using the locally verified
+  Codex 0.160.0 `.codex-plugin` + `.codex-mcp.json` + marketplace layout.
+
+## Proposal round 2
+
+Re-read against the eight Skill names, package identity and Codex CLI. No
+unresolved critical/warning. The core project-create capability remains a
+pending integration item, not an invented tool.
+
+## Plan round 1
+
+- **Critical — per-call approval contradiction.** Resolved by editing
+  safety/create/reuse/commander together and adding a negation-aware static
+  regression.
+- **Warning — fixed tool count and guessed verb.** Resolved by removing numeric
+  counts from Skills and adding capability-discovery tests.
+- **Warning — Codex adapter must be isolated.** Resolved by a local marketplace
+  and fresh `CODEX_HOME`, with no global config or credential read.
+- **Warning — local owner OAuth round-trip.** Resolved by an opt-in
+  `stdio-owner` transport in both builders (`bin/serveros-fleet-owned --stdio
+  --config PATH`), with no OAuth fields and no config read.
+
+## Plan round 2
+
+Re-read against the implementation plan and the real Codex CLI. No unresolved
+critical/warning. The only NOT_RUN item is the core-owned project-create
+capability and the real owned runtime binary, which this lane cannot provide.
+
+## Implementation evidence
+
+Measured on this host with Codex CLI `0.160.0`:
+
+- Shared Skills: eight names, one source, byte-identical in both adapters.
+- Codex builder: `.codex-plugin/plugin.json`, `.codex-mcp.json`, shared skills,
+  no archive; local fixture marketplace under `.agents/plugins/`.
+- Real Codex CLI isolated `CODEX_HOME`: marketplace add + plugin add, app-server
+  initialize, thread/start, MCP connected, actual `tools/list`, read-only
+  `tools/call`; no model turn; global config untouched. The receipt records the
+  actual tool count returned by the fixture (33 on this branch) and
+  `project_create_capability_actual: false`; neither is a package constant.
+- CC `--transport stdio-owner` package: `claude plugin validate --strict` passed,
+  `Skills (8) / MCP servers (1)`; the entry is a stand-in, so a real
+  `bin/serveros-fleet-owned` handshake is NOT_RUN.
+- Codex remote dev adapter installed successfully from a local marketplace into
+  an isolated `CODEX_HOME`; the plugin id shown by Codex is a local marketplace
+  selector, not an App/Creator id.
+- Update checker: same-ID/protected manifest/MCP/member rules from the previous
+  revision remain; tool count is read from the actual surface, not fixed.
+- First-install release remains BLOCKED on approved brand assets/observed
+  endpoint; no new Creator/App id is invented.
+
+## NOT_RUN / UNVERIFIED
+
+- Real `bin/serveros-fleet-owned` handshake: the binary is root-owned and not
+  present on this branch; the adapter shape is tested with a stand-in executable.
+- Core `fleet_create_project` capability: not present in this branch's backend;
+  the client reports absence and the integration branch must verify the actual
+  tool list after root lands it.
+- Live Creator update/readback/rollback, OAuth consent, real device actions and
+  model behaviour: NOT_RUN.

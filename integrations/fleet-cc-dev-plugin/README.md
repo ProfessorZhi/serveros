@@ -1,7 +1,7 @@
-# Fleet — the Claude Code development adapter
+# Fleet — development client adapters
 
-A **DEVELOPMENT ONLY** Claude Code plugin generated from the same sources as the
-ChatGPT first-install package. It exists so the server side can be verified in a
+**DEVELOPMENT ONLY** client adapters for Claude Code and Codex, generated from
+the same sources as the ChatGPT first-install package. It exists so the server side can be verified in a
 real Claude Code session while the release stays blocked.
 
 ```sh
@@ -12,7 +12,7 @@ python3 integrations/fleet-cc-dev-plugin/build_cc_plugin.py \
 claude --plugin-dir <empty-dir> plugin details serveros-fleet-dev
 ```
 
-## Two artefacts, one source, and they are not interchangeable
+## Client artefacts, one source, and they are not interchangeable
 
 | | this adapter | `integrations/fleet-v1-first-install/` |
 |---|---|---|
@@ -23,7 +23,7 @@ claude --plugin-dir <empty-dir> plugin details serveros-fleet-dev
 | blocked by | nothing | `MISSING_BRAND_ASSET`, and an unobserved endpoint |
 | status | **DEVELOPMENT_ONLY** | **FINAL ZIP BLOCKED** |
 
-The **Skills are not duplicated**: the generator reads
+The Claude Code adapter below and the Codex adapter further down are two client artefacts over the same Skills. The **Skills are not duplicated**: each generator reads
 `integrations/fleet-v1-first-install/plugin/skills/` and writes those bytes into
 the plugin. The scope vocabulary comes from the same builder's `FLEET_SCOPES`, so
 there is one list rather than two that drift. `tests/test_fleet_cc_dev_plugin.py`
@@ -292,3 +292,61 @@ three read-only tools (0 permission denials, **1** model call, **$0.218094**).
 All layers pass at **LOCAL**; the live Next read remains
 `BLOCKED_OWNER_OAUTH`, and no real device, `serverosd` or production state was
 touched.
+
+## Codex adapter (Codex 0.160.0, verified locally)
+
+Codex does **not** read the Claude Code `.claude-plugin`/`.mcp.json` layout. Its
+verified layout is:
+
+```text
+.codex-plugin/plugin.json      # name/version, skills: "./skills/", mcpServers: "./.codex-mcp.json"
+.codex-mcp.json                # one remote {"url": ...} or local command/args entry
+skills/<name>/SKILL.md         # the same eight shared Skills
+```
+
+A local marketplace `.agents/plugins/marketplace.json` points at the plugin so
+an isolated `CODEX_HOME` can install it without touching `~/.codex`:
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/build_codex_plugin.py \
+    --out <empty-dir> --next-mcp-url https://<next-ingress>.ts.net/mcp
+
+python3 integrations/fleet-cc-dev-plugin/build_codex_local_fixture.py \
+    --out <fresh-fixture-dir>
+
+python3 integrations/fleet-cc-dev-plugin/run_codex_client_e2e.py \
+    --out <fresh-evidence-dir>
+```
+
+`run_codex_client_e2e.py` installs the fixture into a fresh `CODEX_HOME`, starts
+the real Codex app-server, performs initialize / thread-start /
+`mcpServerStatus/list` / one read-only `mcpServer/tool/call`, and writes
+`RECEIPT.json`. It requests no model turn; the receipt records the actual tool
+count and whether a project-create capability is present. The plugin id in that
+receipt is a local marketplace selector, not an App/Creator backend id.
+
+## Local trusted owner stdio mode
+
+Both builders also accept an opt-in local runtime entry, avoiding a remote OAuth
+round-trip when the local owner runtime is already configured:
+
+```sh
+# Claude Code
+python3 integrations/fleet-cc-dev-plugin/build_cc_plugin.py \
+    --out <empty-dir> --transport stdio-owner \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/owner-config.yaml
+
+# Codex
+python3 integrations/fleet-cc-dev-plugin/build_codex_plugin.py \
+    --out <empty-dir> --transport stdio-owner \
+    --owned-entry /absolute/path/bin/serveros-fleet-owned \
+    --owned-config /absolute/path/owner-config.yaml
+```
+
+The generated binding is `command=<entry>, args=["--stdio","--config",<path>]`
+and carries no `url`, OAuth scope or token. The builders validate that both
+paths are absolute, the entry is executable and the config is a regular file;
+they never open the config or a credential. The remote HTTP mode remains the
+default and keeps the actual token scopes (`oauth.scopes` in the CC adapter);
+it does not fabricate an OAuth consent.

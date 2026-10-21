@@ -11,7 +11,9 @@ task finished, and it is **not a result**. The result arrives later, from the
 run, the session read and the artefact.
 
 The commander's job after the ACK is to make the handoff durable enough that a
-fresh session can resume it, then return to coordination.
+fresh session can resume it, then return to coordination. Owner-max changes the
+authorization for routine create/send; it does not change delivery semantics:
+an ACK is still not completion, and UNKNOWN still does not authorize a resend.
 
 ## The record to preserve
 

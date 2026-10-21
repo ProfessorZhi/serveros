@@ -126,6 +126,35 @@ def has_single_intent_restriction(text: str) -> bool:
     return "one message, one intent" in lowered or "three things" in lowered
 
 
+PER_CALL_APPROVAL = re.compile(
+    r"(?is)(?:ask|approval|approve|approval_required).{0,100}"
+    r"(?:before|each|per).{0,60}(?:create|send|dispatch)")
+
+
+def requires_per_call_approval(text: str) -> bool:
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if PER_CALL_APPROVAL.search(sentence) and not re.search(
+                r"(?i)\b(?:do not|does not|never|not)\b", sentence):
+            return True
+    return False
+
+
+def hardcodes_tool_count(text: str) -> bool:
+    return bool(re.search(r"\b33\b", text)) or "thirty-three" in text.lower()
+
+
+def names_invented_project_verb(text: str) -> bool:
+    return any(name in text for name in
+               ("fleet_create_project", "fleet_project_create",
+                "fleet_new_project"))
+
+
+def has_capability_discovery(text: str) -> bool:
+    lowered = text.lower()
+    return (("tools/list" in lowered or "tool list" in lowered)
+            and "capability" in lowered)
+
+
 class TheSourceIsOneAndPackaged(unittest.TestCase):
     def test_the_shared_source_has_the_expected_members(self) -> None:
         self.assertEqual({p.name for p in SHARED.iterdir() if p.is_dir()},
@@ -240,6 +269,50 @@ class TheRoutingAndAppBoundariesRemain(unittest.TestCase):
         for word in ("avatar", "display", "unverified"):
             self.assertIn(word, text)
         self.assertIn("app", text)
+
+
+class TheOwnerMaxManagedProfileIsStated(unittest.TestCase):
+    """Owner-max is a one-time managed profile, not OS root or per-call approval."""
+
+    def test_owner_max_is_named_in_the_command_and_safety_skills(self) -> None:
+        for name in ("fleet-safety-boundaries", "fleet-create-with-grants",
+                     "fleet-commander-orchestration"):
+            with self.subTest(skill=name):
+                self.assertIn("owner-max", body(name).lower())
+
+    def test_routine_actions_are_not_written_as_per_call_approval(self) -> None:
+        old = ("Ask the owner for approval before each fleet_create_session "
+               "call; every send needs a fresh approval.")
+        self.assertTrue(requires_per_call_approval(old))
+        for name in ("fleet-safety-boundaries", "fleet-create-with-grants",
+                     "fleet-reuse-idle-session",
+                     "fleet-commander-orchestration"):
+            with self.subTest(skill=name):
+                self.assertFalse(requires_per_call_approval(body(name)))
+
+    def test_no_sudo_or_os_root_claim(self) -> None:
+        all_text = "\n".join(p.read_text(encoding="utf-8")
+                              for p in SHARED.glob("*/SKILL.md")).lower()
+        self.assertNotIn("sudo", all_text)
+        self.assertNotIn("root access", all_text)
+
+    def test_tool_count_is_discovered_not_hardcoded(self) -> None:
+        old = "# Thirty-three tools are not thirty-three permissions"
+        self.assertTrue(hardcodes_tool_count(old))
+        all_text = "\n".join(p.read_text(encoding="utf-8")
+                              for p in SHARED.glob("*/SKILL.md"))
+        self.assertFalse(hardcodes_tool_count(all_text))
+
+    def test_project_creation_uses_capability_discovery(self) -> None:
+        invented = "Call `fleet_create_project` to make a new project."
+        self.assertTrue(names_invented_project_verb(invented))
+        for name in ("fleet-create-with-grants",
+                     "fleet-device-and-session-discovery",
+                     "fleet-commander-orchestration"):
+            with self.subTest(skill=name):
+                text = body(name)
+                self.assertTrue(has_capability_discovery(text))
+                self.assertFalse(names_invented_project_verb(text))
 
 
 class TheSkillsNameOnlyServedTools(unittest.TestCase):

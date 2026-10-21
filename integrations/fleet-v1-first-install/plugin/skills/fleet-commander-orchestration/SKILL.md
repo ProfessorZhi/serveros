@@ -10,6 +10,13 @@ It is not doing its job when it dispatches one short task, waits for it, then
 dispatches the next. That pattern turns the commander into a slow serial
 worker and leaves every other eligible task idle.
 
+Inside the owner-max managed profile, dispatch/create is routine and
+pre-authorized: do not stop to ask a human for each ordinary task. The profile
+is the owner's one-time configuration, not Linux root, not another OS account,
+and not a universal bypass. Ask only when the target is outside that profile, a
+required capability is absent, identity is ambiguous, or an irreversible action
+would exceed the grant.
+
 This Skill is about the shape of the work, not about a new scheduler. There is
 no batch verb and no scheduler tool. The commander uses the existing Fleet
 verbs and the existing Work/Parent records.
@@ -70,9 +77,16 @@ on each other is a chain wearing a batch's clothes.
 
 Before a write, resolve the five coordinates: **device × runtime × project ×
 grant × effective model**. Prefer an idle session that already owns the
-context; create only when no session can carry the task. Use
-`fleet_send_to_session` for an existing session and `fleet_create_session` only
-inside a grant you can name.
+context; when none can carry the task, create inside the owner-max profile
+without a fresh human approval. Use `fleet_send_to_session` for an existing
+session and `fleet_create_session` for a new one.
+
+For a **new project**, use the core's project-create capability only if the
+actual tool list serves it. Take the exact name and schema from that tool list;
+if the capability is absent, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and
+return the decision to the core/owner. Do not guess a verb name or a tool count.
+After create, read back the effective model and native permission mode for that
+CC or Codex runtime; they are per-runtime facts, not a fleet default.
 
 Pass a stable `idempotency_key` for every create/send that may be retried after
 an unknown outcome. After the ACK:
@@ -82,7 +96,9 @@ an unknown outcome. After the ACK:
 3. return promptly to coordination.
 
 The ACK contract and the no-resend rule are in `fleet-async-dispatch`. Do not
-poll a run until it settles just to make your own turn feel finished.
+poll a run until it settles just to make your own turn feel finished. Owner-max
+does not change delivery semantics: an ACK is still not completion, and an
+UNKNOWN outcome still does not authorize a blind resend.
 
 ## 5. Inspect, accept, and keep the graph honest
 

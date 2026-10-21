@@ -90,6 +90,11 @@ python3 integrations/fleet-app-overlay/package_update_check.py rehearse \
 在任何 copy/write 之前。工具不会 `rmtree` 调用者已有目录。拒绝时外部 sentinel
 不变，也不读取 symlink 目标内容。
 
+本地 CC/Codex adapter 不是本 overlay：它们从同一 Skills 源生成、在隔离客户端 home 中加载，
+不带 App/Creator plugin id，也不改全局配置或 OAuth。Codex 的 `.codex-plugin` +
+`.codex-mcp.json` + marketplace 格式与 CC 的 `.claude-plugin`/`.mcp.json` 不同，二者不是
+可互换的 ZIP。overlay 的更新对象仍是已存在的 App-backed 插件。
+
 `plan` 不只比较 plugin id/name/version/Skills。它比较完整的受保护 manifest
 （root 与 `.codex-plugin` 重复字段）、`mcp.json`/`.mcp.json` 的结构及其引用
 文件，并拒绝非 Skill 成员的增删或字节漂移。MCP 引用会按 POSIX 归一化

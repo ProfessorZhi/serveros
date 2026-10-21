@@ -5,9 +5,10 @@ description: Continue an existing idle Claude/Codex session instead of starting 
 
 # Reuse the session that is already there
 
-Creating is the expensive, permissioned path. **Look for an idle session that
-already owns the context before you ask for a new one**, because a new session
-starts with no project context, no prior turns, and a fresh grant requirement.
+Prefer an idle session that already owns the context; reusing it avoids a
+cold start. Inside the owner-max managed profile, creating a new session is also
+a routine, pre-authorized action when no idle session carries the task: do not
+ask a human to approve each ordinary create.
 
 ## Resolve the session before sending
 
@@ -30,6 +31,11 @@ If the address is not in the facts you have, discover only the missing fact:
 `fleet_list_devices` for a device identity, `fleet_status` or the failed call's
 diagnosis for a route/credential problem, and the filtered listing for a
 session. A global status read is a diagnostic, not a prerequisite.
+
+If no session can carry the task, create one inside the owner-max profile
+following `fleet-create-with-grants`. For a new project, use the capability
+discovery described there: the exact project-create name comes from the actual
+tool list, not from this Skill.
 
 ## Sending well
 

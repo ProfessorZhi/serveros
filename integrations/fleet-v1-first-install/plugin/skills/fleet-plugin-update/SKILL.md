@@ -21,6 +21,7 @@ cover, and must not be used to force, avatar or display-name changes.
 | Avatar, `displayName`, presentation fields | the **App**/Creator owner | **UNVERIFIED** here; an overlay ZIP is not a way to force it |
 | MCP URL, OAuth scopes/consent, services, routes | the service/owner path | **not this workflow**; never changed by an overlay |
 | Backend devices/runtimes/handlers | service side | no new ZIP is needed |
+| Tool count / new project-create entry | core/server deployment | no overlay update; read the actual `tools/list` after the core exposes it |
 
 Do not tell a user "the new ZIP changes the avatar". The official public
 documentation does not establish that an App-backed private Creator update
@@ -124,4 +125,7 @@ rollback target — say so before the update, not after.
 
 The stable identity is the point: the same plugin id, the same `apps` binding,
 a new version, the old Skills still there, and a rollback target that a person
-can actually return to.
+can actually return to. The tool count is not a package constant: after the core
+adds the project-create capability, read the actual `tools/list` and update the
+client evidence rather than assuming a count. A missing project-create capability is reported as absent,
+not invented by the package.
