@@ -146,6 +146,23 @@ def test_setup_also_emits_local_node_owner_profile(tmp_path):
     assert node.read_bytes() == original
 
 
+@pytest.mark.parametrize("url", ["http://user:password@127.0.0.1:1/mcp",
+                                  "http://127.0.0.1:1/mcp?ticket=synthetic-canary",
+                                  "http://127.0.0.1:1/mcp#synthetic-canary"])
+def test_setup_never_copies_node_endpoint_credentials(tmp_path, url):
+    from fleet_mcp.owner_setup import prepare
+    from fleet_mcp.node.connector import SCHEMA
+    source, request = setup_inputs(tmp_path)
+    node = tmp_path / "node.yaml"
+    node.write_text(yaml.safe_dump({"schema": SCHEMA, "device_ref": TOKYO,
+        "secret_anchor": str(tmp_path / "node.anchor"),
+        "cloudcli_endpoint": url,
+        "cloudcli_credential_anchor": str(tmp_path / "provider.anchor")}))
+    with pytest.raises(ValueError):
+        prepare(source, request, tmp_path / "prepared", node_sources={TOKYO: node})
+    assert not (tmp_path / "prepared").exists()
+
+
 def test_full_built_runtime_starts_owned_entry_outside_checkout(tmp_path):
     from test_build import build, make_ability_repo, write_pack_contract
     from test_fleet_owned_runtime import existing_store

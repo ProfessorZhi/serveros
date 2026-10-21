@@ -54,7 +54,8 @@ def _plain(value, depth=0, labels=False):
                 raise ValueError("configuration keys must be strings")
             if not labels and re.sub(r"[^a-z0-9]", "", key.lower()) in _SECRET_KEYS:
                 raise ValueError("configuration must name credential anchors, never credential values")
-            if key == "endpoint" and isinstance(child, str):
+            if (re.sub(r"[^a-z0-9]", "", key.lower()).endswith("endpoint")
+                    and isinstance(child, str)):
                 parsed = urlsplit(child)
                 if (parsed.username is not None or parsed.password is not None
                         or parsed.query or parsed.fragment):
