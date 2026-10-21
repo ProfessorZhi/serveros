@@ -157,3 +157,7 @@ external/runtime denial precisely after all independent work is completed.
   identity checks surround locking. Contention is bounded, not a task wait.
 - Add explicit owner-max revocation tests: accepted replay against an offline
   provider refuses after the current selected namespace grant is removed.
+
+- Setup preserves the global OAuth issuer scope ceiling even for an owner-max
+  request. Its readback plan separates required owner scopes from the existing
+  issuer ceiling; local/PAT owner rights do not expand other OAuth clients.

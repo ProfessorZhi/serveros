@@ -18,7 +18,7 @@ def setup_inputs(tmp_path):
     source = tmp_path / "fleet.yaml"
     source.write_text(yaml.safe_dump({
         "schema": "serveros/fleet-mcp.local/v1", "device_ref": TOKYO,
-        "auth": {"oauth_enabled": False},
+        "auth": {"oauth_enabled": False, "grantable_scopes": ["fleet:read"]},
         "providers": {TOKYO: {"kind": "cloudcli-mcp-http", "endpoint": "http://127.0.0.1:1/mcp",
                                "credential_anchor": str(tmp_path / "owner.anchor")}},
         "policy": {"operator_grants": {"other": {TOKYO: ["send"]}}},
@@ -42,7 +42,9 @@ def test_setup_is_once_per_owner_and_preserves_other_grants(tmp_path):
     assert candidate.providers[TOKYO].allow_send is False
     assert candidate.providers[TOKYO].allow_create is False
     assert candidate.providers[TOKYO].owner_access.permission_mode == "bypassPermissions"
-    assert set(candidate.auth.grantable_scopes) == set(ALLOWED_SCOPES)
+    assert candidate.auth.grantable_scopes == ("fleet:read",)
+    assert result["expected"]["issuer_grantable_scopes"] == ["fleet:read"]
+    assert set(result["expected"]["required_owner_scopes"]) == set(ALLOWED_SCOPES)
     assert candidate.policy.create_allow == {}
     assert Path(result["rollback_fleet_config"]).read_bytes() == before
 
@@ -79,6 +81,29 @@ def test_setup_does_not_follow_output_ancestor_symlinks(tmp_path):
     with pytest.raises(ValueError):
         prepare(source, request, tmp_path / "alias/prepared")
     assert list(target.iterdir()) == []
+
+
+@pytest.mark.parametrize("field", ["clientSecret", "apiKey", "privateKey", "passphrase", "secretKey"])
+def test_setup_rejects_credential_field_spellings_before_copying(tmp_path, field):
+    from fleet_mcp.owner_setup import prepare
+    source, request = setup_inputs(tmp_path)
+    document = yaml.safe_load(source.read_text())
+    document["auth"][field] = "synthetic-canary-credential"
+    source.write_text(yaml.safe_dump(document))
+    with pytest.raises(ValueError):
+        prepare(source, request, tmp_path / "prepared")
+    assert not (tmp_path / "prepared").exists()
+
+
+def test_setup_rejects_endpoint_query_credentials(tmp_path):
+    from fleet_mcp.owner_setup import prepare
+    source, request = setup_inputs(tmp_path)
+    document = yaml.safe_load(source.read_text())
+    document["providers"][TOKYO]["endpoint"] += "?key=synthetic-canary-credential"
+    source.write_text(yaml.safe_dump(document))
+    with pytest.raises(ValueError):
+        prepare(source, request, tmp_path / "prepared")
+    assert not (tmp_path / "prepared").exists()
 
 
 def test_setup_breaks_yaml_provider_aliases_before_editing(tmp_path):
