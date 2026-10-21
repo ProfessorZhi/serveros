@@ -110,11 +110,14 @@ class Gateway(FakeProvider):
             replace(_summary(DEVICE, "codex-id"), key=SessionKey(DEVICE, "codex", "codex-id"))])
         self.calls = []
         self.created = []
+        self.families = {"claude-id": "claude", "codex-id": "codex"}
 
     def get_session(self, key):
         self.calls.append(("get", key.ref))
+        if key.native_session_id not in self.families:
+            raise FleetRefusal("SESSION_NOT_FOUND", "unknown fixture id")
         return {"session": {"id": key.native_session_id,
-                            "provider": "codex" if key.provider == "codex" else "claude"}}
+                            "provider": self.families[key.native_session_id], "projectId": "p1"}}
 
     def read_session(self, key, **kwargs):
         self.calls.append(("read", key.ref))
@@ -137,6 +140,7 @@ class Gateway(FakeProvider):
     def create(self, **kwargs):
         self.created.append(dict(kwargs))
         result = {"sessionId": "created-" + str(len(self.created))}
+        self.families[result["sessionId"]] = kwargs["provider"]
         if kwargs.get("message") is not None:
             result["queuedMessageUuid"] = "queued-first-message"
         return result
@@ -176,7 +180,7 @@ class SessionRouting(SessionFixture):
         self.assertEqual(self.service.get_session(self.principal, key)["session_ref"], key.ref)
         self.assertEqual(self.service.read_session(self.principal, key)["session_ref"], key.ref)
         self.assertEqual(self.service.get_run(self.principal, key, "original-run")["session_ref"], key.ref)
-        self.assertEqual([x[0] for x in self.gateway.calls], ["get", "read", "run"])
+        self.assertEqual([x[0] for x in self.gateway.calls], ["get", "get", "read", "get", "run"])
 
     def test_base_grant_does_not_authorize_codex_but_typed_grants_do(self):
         self.configure(operator_grants={"tester": {DEVICE: ("send", "control")}})
@@ -191,7 +195,8 @@ class SessionRouting(SessionFixture):
         self.service.send_to_session(self.principal, self.key, message="complete task")
         self.service.interrupt_session(self.principal, self.key)
         self.assertEqual(self.gateway.sent[0][0], self.key.ref)
-        self.assertEqual(self.gateway.calls, [("interrupt", self.key.ref)])
+        self.assertEqual(self.gateway.calls, [("get", self.key.ref), ("get", self.key.ref),
+                                              ("interrupt", self.key.ref)])
         self.configure(send_allow=(), operator_grants={"tester": {provider_key(DEVICE, "codex"): ("send",)}})
         self.service.send_to_session(self.principal, self.key, message="another complete task")
         read_only = self.h.principal("fleet:read")
@@ -281,7 +286,7 @@ class NativeRouting(SessionFixture):
         self.configure(operator_grants={"tester": {provider_key(DEVICE, "codex"): ("send",)}})
         result = tools.call_tool(tools.ToolContext(self.service, self.principal), native.namespaced, args)
         self.assertFalse(result["isError"], result)
-        self.assertEqual(self.gateway.calls, [("session_send", args["arguments"])])
+        self.assertEqual(self.gateway.calls, [("get", self.key.ref), ("session_send", args["arguments"])])
 
     def test_other_runtime_selectors_cannot_acquire_session_aliases(self):
         for tool, args in (("session_create", {"project": "p1"}), ("projects_list", {}),
@@ -329,14 +334,14 @@ class NativeRouting(SessionFixture):
         for changes in ({"id": "another-session"}, {"provider": "claude"}, {"device_ref": OTHER}):
             with self.subTest(changes=changes):
                 calls = []
-                def metadata(tool, args, **kwargs):
-                    calls.append(tool)
+                def metadata(key):
+                    calls.append("get")
                     return {"session": {"id": "codex-id", "provider": "codex",
                                         "projectId": "p1", **changes}}
-                self.gateway.native_call = metadata
+                self.gateway.get_session = metadata
                 with self.assertRaises(FleetRefusal):
                     self.call("session_reconfigure", {"session": "codex-id", "model": "approved"}, project="p1")
-                self.assertEqual(calls, ["session_get"])
+                self.assertEqual(calls, ["get"])
 
 
 class CreateReceipts(SessionFixture):

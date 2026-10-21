@@ -38,6 +38,14 @@ verbs keep their additional existing grant checks. Account/project model and
 permission ceilings are read from the actual binding and include their native
 family restriction. The device's own authorization remains independent.
 
+On an opted-in gateway, the server reads actual native family and ID evidence
+before a read/run query or first delivery. A caller-spelled outer ref is not
+evidence; missing or contradictory native fields refuse. A new keyed send
+latches its claim before that read, and proof failure conservatively leaves
+UNKNOWN. Accepted receipt replay needs no provider lookup or metadata read;
+disabled configuration and revoked grants still refuse. No proof is cached
+for another operation. Run payloads cannot replace the requested address/ID.
+
 A non-base CloudCLI binding preserves its exact profile namespace after
 checking native family evidence. Node wire refs must already identify the
 correct device/profile; contradictory legacy metadata is a gap, not permission

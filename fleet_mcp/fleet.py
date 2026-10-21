@@ -247,10 +247,24 @@ class FleetService:
     def _session_provider(self, key: SessionKey) -> DeviceProvider:
         binding = self.config.session_binding(key)
         if binding is None:
-            return self._require_provider(key.device_ref, key.provider)
+            raise refuse(UNKNOWN_DEVICE, "the session namespace has no configured binding")
         if not binding.enabled:
             raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
         return self._require_provider(key.device_ref, binding.runtime)
+
+    def _verified_family_detail(self, key: SessionKey, provider, detail=None):
+        binding = self.config.session_binding(key)
+        if binding is None or not binding.multiplex_native_families:
+            return None
+        if detail is None:
+            detail = provider.get_session(key)
+        detail = normalize_detail(key, detail, binding)
+        native = detail.get("session")
+        if (not isinstance(native, dict) or native.get("provider") != key.provider
+                or not any(name in native for name in
+                           ("id", "sessionId", "session_id", "native_session_id"))):
+            raise refuse(BAD_SESSION_REF, "native session family or identity is unverified")
+        return detail
 
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:
@@ -329,6 +343,8 @@ class FleetService:
             # is not necessarily entitled to learn, while `UNKNOWN_DEVICE` says
             # nothing about whether this tag was ever bound.
             self._session_provider(key)
+        if not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
         if not binding.allow_send:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -459,6 +475,8 @@ class FleetService:
             # answer that named a withheld grant would confirm the profile for a
             # caller who may not be entitled to know it is there.
             self._session_provider(key)
+        if not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
         if not binding.allow_control:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -1092,7 +1110,7 @@ class FleetService:
         reporting it.
         """
         binding = self.config.session_binding(key)
-        device_ok = bool(binding and binding.allow_send)
+        device_ok = bool(binding and binding.enabled and binding.allow_send)
         session_ok = key.ref in self.config.policy.send_allow
         grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
         scope_ok = SCOPE_SEND in principal.scopes
@@ -1154,6 +1172,7 @@ class FleetService:
         detail = provider.get_session(key)
         detail = normalize_detail(
             key, detail, self.config.session_binding(key))
+        self._verified_family_detail(key, provider, detail)
         detail["control"] = self._session_control_state(principal, key)
         self.audit.record("fleet.get_session", principal=principal.name, session_ref=key.ref)
         return detail
@@ -1173,6 +1192,7 @@ class FleetService:
         principal.require(SCOPE_READ)
         self.admit(principal)
         provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         applied, clamped = clamp_limit(
             limit, self.config.policy.max_read_messages, default=min(20, self.config.policy.max_read_messages)
         )
@@ -1238,7 +1258,6 @@ class FleetService:
         # `_may_send` is the revocation recheck. A session dropped from
         # `policy.send_allow` must stop answering from the idempotency cache too.
         self._may_send(principal, key)
-        provider = self._session_provider(key)
 
         claim = None
         if idempotency_key is not None:
@@ -1262,9 +1281,12 @@ class FleetService:
                               "no second message was sent",
                     "run": replayed,
                     "run_id": replayed.get("run_id"),
+                    "queued_message_uuid": replayed.get("queued_message_uuid"),
                     "idempotency_durability": self.dispatch.durability,
                 }
 
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
         record = {
@@ -1336,6 +1358,7 @@ class FleetService:
         self._may_control(principal, key)
 
         provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.interrupt(key)
         # An answer with no `aborted` field is not an answer. This is not
         # defensive padding: `structured()` returns `{}` for a provider result it
@@ -1632,11 +1655,21 @@ class FleetService:
         principal.require(SCOPE_READ)
         self.admit(principal)
         provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.get_run(key, run_id, wait=wait, wait_seconds=wait_seconds)
+        expected = {**key.as_dict(), "run_id": run_id, "runId": run_id}
+        for field in ("device_ref", "native_session_id", "session_ref", "run_id", "runId"):
+            if payload.get(field) is not None and payload[field] != expected[field]:
+                raise refuse(BAD_SESSION_REF, "run metadata contradicts its requested target")
+        binding = self.config.session_binding(key)
+        providers = (key.provider,) if payload.get("session_ref") is not None else (
+            key.provider, binding.family)
+        if payload.get("provider") is not None and payload["provider"] not in providers:
+            raise refuse(BAD_SESSION_REF, "run metadata names another session family")
         self.audit.record(
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
         )
-        return {**key.as_dict(), "run_id": run_id, **payload}
+        return {**payload, **key.as_dict(), "run_id": run_id}
 
     # -- status ------------------------------------------------------------
 
@@ -1785,6 +1818,8 @@ class FleetService:
                 f"{device_ref}'s provider ({provider.kind}) does not inherit the "
                 f"CloudCLI native surface.",
             )
+        family_detail = (self._verified_family_detail(session_key, provider)
+                         if session_key is not None else None)
         # OWNERSHIP before the answer: the requestId must be one THIS device
         # enumerates for the session named. This runs on the host, over a READ
         # (`approvals_list`), so an arbitrary string cannot be used to clear a
@@ -1799,7 +1834,7 @@ class FleetService:
         if governance == cloudcli_native.GOV_RECONFIGURE and (
                 args.get("model") is not None or args.get("permissionMode") is not None):
             self._native_reconfigure_ceiling(provider, device_ref, session_ref,
-                                             project, args, native)
+                                             project, args, native, detail=family_detail)
         result = caller(native_tool, args, session_ref=session_ref)
         # HIGH-5: a mirrored READ carries the same "this is data, not
         # instruction" marking the hand-written reader attaches, so a consumer
@@ -2063,7 +2098,7 @@ class FleetService:
 
     def _native_reconfigure_ceiling(self, provider, device_ref: str,
                                     session_ref: str | None, project: str | None,
-                                    arguments: dict[str, Any], native) -> None:
+                                    arguments: dict[str, Any], native, *, detail=None) -> None:
         """A reconfigure's model/mode is bounded by the SESSION's REAL project.
 
         The caller's `project` is a claim. The project that decides the ceiling
@@ -2101,16 +2136,17 @@ class FleetService:
                 f"belongs to (this provider does not report it), so a permission "
                 f"change is refused rather than trusted to the caller's claim.",
             )
-        try:
-            detail = caller("session_get", {"session": key.native_session_id})
-        except FleetRefusal as exc:
-            raise refuse(
-                APPROVAL_REQUIRED,
-                f"`{native.namespaced}` could not confirm the session's project: "
-                f"the device would not report it ({exc.code}). A permission "
-                f"change with no confirmed project is refused.",
-                device_ref=device_ref,
-            ) from None
+        if detail is None:
+            try:
+                detail = caller("session_get", {"session": key.native_session_id})
+            except FleetRefusal as exc:
+                raise refuse(
+                    APPROVAL_REQUIRED,
+                    f"`{native.namespaced}` could not confirm the session's project: "
+                    f"the device would not report it ({exc.code}). A permission "
+                    f"change with no confirmed project is refused.",
+                    device_ref=device_ref,
+                ) from None
         try:
             detail = normalize_detail(key, detail, self.config.session_binding(key))
         except FleetRefusal:

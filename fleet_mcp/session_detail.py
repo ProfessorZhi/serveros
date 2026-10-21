@@ -72,4 +72,9 @@ def normalize_detail(key, payload, binding=None, *, repair_legacy_claude=False):
         typed_native = native.get("session_ref") == key.ref
         if not native_id_seen or not (typed_native or native_family == expected_family):
             raise refuse(BAD_SESSION_REF, "legacy wrapper lacks matching native identity evidence")
-    return {**payload, **key.as_dict()}
+    result = {**payload, **key.as_dict()}
+    if nested is None:
+        # Preserve evidence before adding a caller-supplied routing key. A
+        # second normalization must not turn an absent native family into proof.
+        result["session"] = dict(native)
+    return result

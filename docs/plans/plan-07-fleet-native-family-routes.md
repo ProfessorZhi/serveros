@@ -76,10 +76,28 @@ Stages, RED first:
    Claude-only grant never supplies a Codex grant. Positive namespace grants
    and exact allowlists retain their existing verb-specific behavior. No
    implicit grant/config mutation, and no change to read redaction or limits.
+5. Following the 041f6e9 source review, add actual-CloudCliProvider adversarial
+   fixtures whose native ID/family lookup is independent of the supplied ref.
+   Both Codex-only grant -> Claude ID and Claude-only grant -> Codex ID must
+   refuse before mutation. Missing native family/ID and address-only metadata
+   must not count as proof, even when normalization adds a matching outer key.
+6. Introduce a private fresh native-proof helper for multiplexed bindings.
+   Require original native family and matching native ID, preserving flat
+   upstream source in both CloudCliProvider and shared normalize_detail before
+   attaching routing fields. Keep malformed nested session invalid. Get uses
+   its existing read; read/run prove before their result call; interrupt proves
+   before effect. Early scopes/grants/args/config-enabled checks precede proof.
+   Include repeated-normalization tests: an absent-family flat payload must
+   remain absent-family after routing fields are attached, never become proof.
+7. Correct `_session_provider`: no configured session binding means immediate
+   UNKNOWN_DEVICE, independent of extra injected map entries. Test missing
+   Codex/profile entries and disabled bindings with injected provider objects.
 
 Acceptance: returned refs stay `device|codex|native-id` through the same account
 route; querying another profile never falls back. Scope/grant failures cause
 zero provider IO. Old accepted/unknown retry behavior remains unchanged.
+No wrong-family content/run result is labeled as the requested family. The
+proof helper cannot manufacture evidence from a route key or a stale cache.
 
 Dependencies: Phase 1 green. Gate: focused session tests plus
 `tests/test_fleet_session_detail_identity.py`,
@@ -147,6 +165,12 @@ Stages, RED first:
    and mode ceilings all bind. Claude-only rules cannot authorize Codex changes.
    Omitted parameters keep existing semantics. Authorized metadata reads may
    occur for a ceiling decision, but a refused mutation must never be sent.
+5. Require positive native target proof after the existing scope/floor/argument
+   checks and before every existing session mirror's effect, including modeless
+   reconfigure, approvals and dynamic background cases. Do not add outer fields
+   to ordinary native read/runtime tools. Reuse the already verified target
+   detail in `_native_reconfigure_ceiling`; prove only one metadata read is made
+   for that decision. Contradictory or absent proof causes zero mutation IO.
 
 Acceptance: namespace-only grants are enforced and actual account/project rules
 cannot be skipped. Native schemas and exact runtime lookup are unchanged. No
@@ -187,6 +211,24 @@ Stages, RED first:
    rewritten or create a second session. Disable opt-in after a Codex receipt:
    its old ref does not acquire a fallback route. Preserve PROCESS_LOCAL's
    restart limitation and UNKNOWN's no-resend rule.
+5. Amend keyed send ordering: current argument/scope/grant/allowlist/configured
+   enabled-binding checks first, then DispatchGuard.begin. Return ACCEPTED
+   replay before provider lookup or live proof. Only a new claim resolves the
+   provider, proves native family/ID and sends. A provider/proof read failure
+   leaves EFFECT_UNKNOWN and is never downgraded to CALL_NOT_SENT or erased;
+   after owner/service reconstruction a retry still cannot resend.
+6. Add tests that successful send records exactly one accepted receipt after
+   positive proof; wrong/missing proof records no ACCEPTED result; repeated
+   unknown attempts do not perform another proof/send; accepted replay succeeds
+   while provider.get_session raises/offline and even when no provider object is
+   built, provided current route/grants remain valid. Disabled/revoked routes
+   must still refuse before replay. Unkeyed send proves target but claims no
+   durable guard.
+7. Creation already sends native provider as part of its atomic upstream
+   operation. Keep expected namespace before IO and all ACK execution refs;
+   do not add a post-create proof GET or discard an ACK if a later read fails.
+   Re-run existing queue-only/no-message/reconstruction/toggle cases only when
+   the amended source affects them, rather than changing owner/store/kernel.
 
 Acceptance: exactly one provider create/send for a durable replay; saved refs and
 all closed receipt fields are unchanged; config toggles cannot convert a retry

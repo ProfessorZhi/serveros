@@ -46,8 +46,12 @@ provider_for(device, runtime) remains exact and unchanged: create/runtime
 selectors cannot use a missing runtime through a session alias.
 
 An exact disabled binding remains authoritative: it must not be skipped to find
-another route. A disabled/missing base or missing provider object cannot serve
-the opt-in. Ambiguity validation examines declarations, including disabled
+another route. An absent configured session binding immediately yields
+UNKNOWN_DEVICE, even when an injected provider-map entry exists. A disabled or
+missing base cannot serve the opt-in. A missing/offline provider cannot perform
+new IO, but is not a prerequisite for returning an already ACCEPTED delivery
+receipt after current configuration/authorization checks.
+Ambiguity validation examines declarations, including disabled
 entries, rather than only providers built by `build_providers`. It does not
 install a second provider object under the alias or mutate the provider map.
 
@@ -62,6 +66,59 @@ the output still carries the originally addressed namespace.
 Operator-grant lookup continues to use key.provider
 (the addressed namespace) so a base claude grant does NOT silently authorize
 codex; exact session allowlists keep using the complete existing ref.
+
+### Positive native identity proof for a multiplexed account
+
+The upstream session send/control/read/run APIs carry a bare native ID, not the
+typed family. The source review at 041f6e9 proved that a caller could label a
+Claude ID as Codex, obtain a Codex-only grant decision, and send/interrupt that
+Claude session; the inverse worked too. A correctly selected gateway and a
+syntactically valid ref therefore do not establish the native-family target.
+
+On a multiplexed binding, require positive native family plus matching native
+ID evidence for both unqualified families. Use the original upstream native
+session object, or the original flat native payload retained before routing-key
+attachment. Do not use the adapter's generated outer provider/session_ref/
+native_session_id as that evidence. A dictionary containing only a SessionKey
+address, even wrapped as metadata, is not native proof. The existing semantic
+distinction remains: a provider in an explicitly typed wire ref is a namespace,
+not independent native-family evidence. Missing/ambiguous/malformed native
+family or ID must refuse; all supplied contradictory native IDs still refuse.
+
+Both CloudCliProvider normalization and shared `session_detail.normalize_detail`
+must retain the original flat native source before adding typed routing fields.
+An originally malformed nested session remains invalid. Normalizing an empty or
+identity-free payload must never manufacture the positive family/ID evidence
+from the caller's key. No new persistence namespace or public proof token.
+
+Use a private fresh-proof helper over the selected provider. `get_session` uses
+the metadata it already read; read_session/get_run prove the target before their
+content/run call. Interrupt and existing native session verbs prove it before
+effectful IO. Do not cache proof across operations. Scope/grant/argument and
+configured enabled-route checks happen before proof IO. The original native
+source remains distinct from the normalized routing wrapper on subsequent
+validation; a second normalization must not promote a synthesized wrapper to
+native proof. Proof is an internal condition for the authorized operation,
+not a new public metadata permission.
+Native reconfigure reuses this verified detail for project/family/model/mode
+ceiling checks rather than reading the target twice.
+
+Keyed send has this explicit order:
+
+1. Validate arguments and current configured/enabled binding, flags, scope and
+   addressed-namespace grant/allowlist, without requiring a provider connection.
+2. Call `DispatchGuard.begin`. ACCEPTED replays the closed receipt immediately
+   without provider lookup/proof/read; UNKNOWN/conflict still refuses.
+3. Only a new claim resolves the provider, obtains positive native proof, and
+   then sends. The existing claim has already latched EFFECT_UNKNOWN before
+   those steps. Missing provider/proof failure produces no mutation and leaves
+   that claim UNKNOWN; do not delete it, reopen CALL_NOT_SENT, or resend.
+4. Only a successful acknowledged send completes the existing closed receipt.
+
+Unkeyed send still requires proof before its effect, without pretending it has
+a durable attempt. Accepted replay rechecks revocation but does not revalidate
+the present provider's live family: it reports a historical delivery and does
+not send anything. No owner/store/kernel phase transition or schema is changed.
 
 Only native tools already identified by
 `cloudcli_native.is_session_addressed(native)` select the session binding/provider
@@ -111,6 +168,13 @@ principal/verb/actual-runtime/project/key scope and full intent digest stay
 unchanged; changing family under that same create key is a conflict. A later
 opt-in/config change never rewrites a saved receipt or authorizes resend:
 current validation may replay or refuse, but may not rebind historical results.
+
+Create differs from bare-ID delivery: its upstream API already carries the
+native `provider` as part of the creation operation. Retain that atomic family
+selection and the precomputed expected receipt namespace. Do not add a
+post-create proof GET: a lost proof response must not erase a valid ACK's
+session/run/queued-message references or invite duplicate creation. Effective
+model/mode and later session observations remain separately reported facts.
 
 ### Listing normalization and provenance
 
@@ -173,6 +237,15 @@ TDD at service/config/provider boundaries:
   requirements; an exact session allowlist does not remove those requirements.
 - Native inner/outer identity disagreement remains refused; read-only
   capability and no-session runtime calls cannot treat an alias as a runtime.
+- Actual-adapter target tests must supply native identity independently of the
+  caller's namespace: both forged-family directions, missing native family/ID,
+  flat-source preservation and address-only metadata refuse. Cover read/run,
+  interrupt and all existing session-addressed mirrors, including modeless
+  reconfigure; no wrong-family mutation or ACCEPTED receipt may result.
+- Prove keyed send replay needs no online/mapped provider after a valid accepted
+  receipt, while disabled configuration/revoked grants still refuse. New-claim
+  proof failure remains UNKNOWN after owner reconstruction; no reverse phase
+  transition, second proof/send or automatic retry is permitted.
 - Base account/project family, model and permission ceilings still bind native
   reconfigure; omitted parameters retain existing behavior.
 - Keyed Codex create and send accepted replay survive injected owner
