@@ -16,6 +16,7 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import native_core_facts as facts
@@ -496,6 +497,35 @@ class NullFieldTest(unittest.TestCase):
 
 
 class PrivateDirectoryBindingTest(unittest.TestCase):
+    def test_failed_publish_preserves_entries_after_namespace_or_temp_identity_loss(self):
+        for failure in ("permissions", "replacement"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as td:
+                parent = Path(td)
+                rename = os.rename
+                recorded = []
+                def fail_rename(source, destination, *, src_dir_fd, dst_dir_fd):
+                    recorded.append(source)
+                    if failure == "permissions":
+                        parent.chmod(0o775)
+                    else:
+                        rename(source, "retained-original", src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
+                        fd = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=src_dir_fd)
+                        try:
+                            os.write(fd, b"another-actor-entry")
+                        finally:
+                            os.close(fd)
+                    raise OSError("synthetic atomic rename failure")
+                with patch.object(facts.os, "rename", fail_rename):
+                    with self.assertRaises(OSError):
+                        facts.publish_facts(parent / "facts.json", _doc())
+                self.assertEqual(len(recorded), 1)
+                remaining = parent / recorded[0]
+                self.assertTrue(remaining.is_file())
+                if failure == "replacement":
+                    self.assertEqual(remaining.read_text(), "another-actor-entry")
+                    self.assertTrue((parent / "retained-original").is_file())
+                parent.chmod(0o700)
+
     def test_shared_immediate_parent_remains_readable_but_cannot_publish_or_lock(self):
         with tempfile.TemporaryDirectory() as td:
             shared = Path(td) / "shared"

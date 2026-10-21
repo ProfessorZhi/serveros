@@ -597,6 +597,7 @@ def _publish_document(destination: Path, document: dict) -> None:
         _existing_file(parent, destination.name)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
         fd = os.open(temporary, flags, 0o600, dir_fd=parent.fd)
+        created = os.fstat(fd)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(document, handle, ensure_ascii=False, sort_keys=True)
@@ -609,8 +610,15 @@ def _publish_document(destination: Path, document: dict) -> None:
             parent.validate()
         except BaseException:
             try:
-                os.unlink(temporary, dir_fd=parent.fd)
-            except OSError:
+                parent.validate()
+                current = os.stat(temporary, dir_fd=parent.fd, follow_symlinks=False)
+                if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                        and (current.st_dev, current.st_ino, current.st_uid, current.st_mode) ==
+                            (created.st_dev, created.st_ino, created.st_uid, created.st_mode)):
+                    os.unlink(temporary, dir_fd=parent.fd)
+            except (FactsRefused, OSError):
+                # Lost namespace/identity means this entry may belong to another
+                # actor. Preserve it; refusal never authorizes unknown cleanup.
                 pass
             raise
     finally:
