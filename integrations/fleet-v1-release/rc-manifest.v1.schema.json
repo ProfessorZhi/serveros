@@ -1,0 +1,460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ProfessorZhi/serveros/integrations/fleet-v1-release/rc-manifest.v1.schema.json",
+  "title": "ServerOS Fleet V1 integration release manifest",
+  "description": "One multi-repo, SHA-pinned release candidate manifest. It records what was pinned, what was observed, and what is still unproven. It never asserts a device, client or production result that has no receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_id",
+    "generated_at",
+    "campaign_ref",
+    "integration_ref",
+    "state",
+    "integrator",
+    "qa",
+    "drift_guard",
+    "repos",
+    "candidates",
+    "source_merge",
+    "gates",
+    "hosted_ci",
+    "open_p0",
+    "rollback",
+    "claims"
+  ],
+  "properties": {
+    "schema": { "const": "serveros/fleet-v1-rc-manifest.v1" },
+    "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+    "supersedes": { "type": ["string", "null"] },
+    "generated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "campaign_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
+    "integration_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$" },
+    "state": { "enum": ["RC_CANDIDATE", "COMPLETE_V1", "BLOCKED", "ABORTED"] },
+    "integrator": { "$ref": "#/$defs/principal" },
+    "qa": { "$ref": "#/$defs/qa" },
+    "qa_triage": { "$ref": "#/$defs/qaTriage" },
+    "drift_guard": { "$ref": "#/$defs/driftGuard" },
+    "dependency_opportunities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependencyOpportunity" }
+    },
+    "work_in_flight": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workInFlight" }
+    },
+    "repos": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/repoPin" }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "source_merge": { "$ref": "#/$defs/sourceMerge" },
+    "composition_preflight": { "$ref": "#/$defs/compositionPreflight" },
+    "proof_requirements": { "$ref": "#/$defs/proofRequirements" },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "hosted_ci": { "$ref": "#/$defs/hostedCi" },
+    "open_p0": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/openP0" }
+    },
+    "rollback": { "$ref": "#/$defs/rollback" },
+    "claims": { "$ref": "#/$defs/claims" }
+  },
+  "$defs": {
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "device_ref", "authority"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 3 },
+        "device_ref": { "type": "string", "minLength": 3 },
+        "authority": { "type": "string", "minLength": 3 }
+      }
+    },
+    "qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "status", "independent_of_integrator", "signature"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 3 },
+        "status": { "enum": ["PENDING", "ACTIVE", "INDEPENDENT_QA_PARTIAL", "SIGNED"] },
+        "independent_of_integrator": { "type": "boolean" },
+        "session_ref": { "type": ["string", "null"] },
+        "run_ref": { "type": ["string", "null"] },
+        "signature": { "type": ["string", "null"] }
+      }
+    },
+    "qaTriage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "pr", "head", "status", "findings", "pins_are_snapshot_of"],
+      "properties": {
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "pr": { "type": "integer", "minimum": 1 },
+        "head": { "$ref": "#/$defs/sha40" },
+        "status": { "enum": ["PENDING", "INDEPENDENT_QA_PARTIAL", "SIGNED"] },
+        "findings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "severity", "candidate", "summary", "state_at_snapshot"],
+            "properties": {
+              "id": { "type": "string", "minLength": 2 },
+              "severity": { "enum": ["P0", "P1", "P2"] },
+              "candidate": { "type": "string", "minLength": 2 },
+              "summary": { "type": "string", "minLength": 10 },
+              "state_at_snapshot": { "enum": ["OPEN", "FIXED_PENDING_RECHECK", "RECHECK_REQUIRED", "CLOSED"] }
+            }
+          }
+        },
+        "pins_are_snapshot_of": { "type": "string", "minLength": 10 }
+      }
+    },
+    "workInFlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "owner_session",
+        "run_ref",
+        "status",
+        "has_pr",
+        "pin",
+        "is_evidence",
+        "is_landable"
+      ],
+      "properties": {
+        "lane": { "type": "string", "minLength": 1 },
+        "owner_session": { "type": "string", "minLength": 8 },
+        "run_ref": { "type": "string", "minLength": 8 },
+        "status": { "const": "WORK_IN_FLIGHT" },
+        "has_pr": { "const": false },
+        "pin": { "type": "null" },
+        "is_evidence": { "const": false },
+        "is_landable": { "const": false },
+        "note": { "type": "string" }
+      }
+    },
+    "dependencyOpportunity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "description", "pin", "is_release_receipt"],
+      "properties": {
+        "lane": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 10 },
+        "pin": { "type": ["string", "null"] },
+        "is_release_receipt": { "const": false }
+      }
+    },
+    "driftGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_time", "policy", "recheck_before"],
+      "properties": {
+        "snapshot_time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+        "policy": { "type": "string", "minLength": 20 },
+        "recheck_before": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["push", "composition", "qa_signature", "release"] }
+        }
+      }
+    },
+    "sha40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "evidenceLevel": { "enum": ["SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
+    "evidenceClass": {
+      "enum": [
+        "CODE_CANDIDATE",
+        "LOCAL_PASS",
+        "REAL_READ_ONLY",
+        "ACTUAL_DEV_PASS",
+        "OAUTH_CLIENT_E2E",
+        "FINAL_ACCEPTANCE"
+      ]
+    },
+    "repoPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repo", "revision", "role", "reachable"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "revision": { "$ref": "#/$defs/sha40" },
+        "role": { "type": "string", "minLength": 1 },
+        "reachable": { "type": "boolean" },
+        "designated_release_ref": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "repo",
+        "pr",
+        "head",
+        "base_ref",
+        "base_is_pr",
+        "stacks_on",
+        "draft",
+        "evidence_level",
+        "evidence_class",
+        "installed",
+        "observed_at"
+      ],
+      "properties": {
+        "lane": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,3}$" },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "pr": { "type": "integer", "minimum": 1 },
+        "head": { "$ref": "#/$defs/sha40" },
+        "base_ref": { "type": "string", "minLength": 1 },
+        "base_is_pr": { "type": "boolean" },
+        "stacks_on": { "type": ["integer", "null"] },
+        "draft": { "const": true },
+        "evidence_level": { "$ref": "#/$defs/evidenceLevel" },
+        "evidence_class": { "$ref": "#/$defs/evidenceClass" },
+        "installed": { "type": "boolean" },
+        "observed_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+        "notes": { "type": "string" }
+      }
+    },
+    "proofRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authenticated_lease_producer",
+        "t10_we_finalize_link",
+        "independent_exact_sha_negative_qa"
+      ],
+      "properties": {
+        "authenticated_lease_producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "present", "sha"],
+          "properties": {
+            "required": { "const": true },
+            "present": { "type": "boolean" },
+            "sha": { "type": ["string", "null"] }
+          }
+        },
+        "t10_we_finalize_link": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "present", "evidence_sha"],
+          "properties": {
+            "required": { "const": true },
+            "present": { "type": "boolean" },
+            "evidence_sha": { "type": ["string", "null"] }
+          }
+        },
+        "independent_exact_sha_negative_qa": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "present", "sha", "qa_snapshot"],
+          "properties": {
+            "required": { "const": true },
+            "present": { "type": "boolean" },
+            "sha": { "type": ["string", "null"] },
+            "qa_snapshot": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "compositionPreflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "verdict", "work_lease", "pairs"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "verdict": {
+          "enum": [
+            "CLEAN_PREFLIGHT",
+            "BLOCKED_SEMANTIC",
+            "CONFLICT",
+            "BLOCKED_DEPENDENCY",
+            "NOT_ATTEMPTED"
+          ]
+        },
+        "work_lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "authority",
+            "observed_authority",
+            "session_create_producer",
+            "negative_proof"
+          ],
+          "properties": {
+            "status": { "enum": ["SEND_ADMISSION_BOUND", "SEND_ADMISSION_UNBOUND"] },
+            "authority": { "type": "string", "minLength": 10 },
+            "observed_authority": { "type": "string", "minLength": 10 },
+            "session_create_producer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["present", "sha", "authenticated_writer"],
+              "properties": {
+                "present": { "type": "boolean" },
+                "sha": { "type": ["string", "null"] },
+                "authenticated_writer": { "type": "boolean" }
+              }
+            },
+            "negative_proof": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "required": ["sha", "qa_snapshot", "exit", "held", "security_fail"],
+              "properties": {
+                "sha": { "$ref": "#/$defs/sha40" },
+                "qa_snapshot": { "type": "string", "minLength": 7 },
+                "exit": { "type": "integer" },
+                "held": { "type": "integer", "minimum": 0 },
+                "security_fail": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "left",
+              "right",
+              "merge_base_left",
+              "merge_base_right",
+              "shared_files",
+              "semantic_status",
+              "repo_dependency",
+              "order",
+              "test_roots",
+              "commands"
+            ],
+            "properties": {
+              "left": { "type": "string", "minLength": 1 },
+              "right": { "type": "string", "minLength": 1 },
+              "merge_base_left": { "$ref": "#/$defs/sha40" },
+              "merge_base_right": { "$ref": "#/$defs/sha40" },
+              "shared_files": { "type": "integer", "minimum": 0 },
+              "semantic_status": {
+                "enum": ["JOINED", "UNJOINED", "NOT_APPLICABLE", "UNKNOWN"]
+              },
+              "repo_dependency": { "type": "string", "minLength": 10 },
+              "order": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "test_roots": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "commands": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "sourceMerge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "policy", "conflict_audit"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "policy": { "type": "string", "minLength": 10 },
+        "conflict_audit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["left", "right", "shared_own_commit_files", "conclusion"],
+            "properties": {
+              "left": { "type": "string", "minLength": 1 },
+              "right": { "type": "string", "minLength": 1 },
+              "shared_own_commit_files": { "type": "integer", "minimum": 0 },
+              "conclusion": { "type": "string", "minLength": 3 }
+            }
+          }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "required_level", "achieved_level", "verdict", "owner"],
+      "properties": {
+        "id": { "type": "string", "minLength": 2 },
+        "required_level": { "$ref": "#/$defs/evidenceLevel" },
+        "achieved_level": { "enum": ["NOT_RUN", "SOURCE", "MOCK", "LOCAL", "REAL_DEVICE", "CLIENT_E2E"] },
+        "verdict": { "enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED", "PARTIAL"] },
+        "blocker_code": {
+          "enum": [
+            "NONE",
+            "BLOCKED_PROVIDER_SOURCE",
+            "BLOCKED_AUTH_CLIENT_E2E",
+            "BLOCKED_REAL_DEVICE",
+            "BLOCKED_NO_CANDIDATE",
+            "BLOCKED_UNLANDED_CHAIN",
+            "BLOCKED_OWNER_ACTION",
+            "BLOCKED_SEMANTIC_JOIN"
+          ]
+        },
+        "owner": { "type": "string", "minLength": 3 },
+        "blocker": { "type": "string" },
+        "receipt": { "type": ["string", "null"] }
+      }
+    },
+    "hostedCi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": { "enum": ["GREEN", "FAILED", "QUOTA_WAIVED", "NOT_CONFIGURED", "UNKNOWN"] },
+        "evidence": { "type": "string", "minLength": 3 }
+      }
+    },
+    "openP0": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary", "owner_action"],
+      "properties": {
+        "id": { "type": "string", "minLength": 2 },
+        "summary": { "type": "string", "minLength": 10 },
+        "owner_action": { "type": "string", "minLength": 10 }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["design", "verified"],
+      "properties": {
+        "design": { "type": "string", "minLength": 10 },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "live_device",
+        "client_e2e",
+        "production",
+        "code_composed_rc",
+        "final_acceptance"
+      ],
+      "properties": {
+        "live_device": { "type": "boolean" },
+        "client_e2e": { "type": "boolean" },
+        "production": { "type": "boolean" },
+        "code_composed_rc": { "type": "boolean" },
+        "final_acceptance": { "type": "boolean" }
+      }
+    }
+  }
+}

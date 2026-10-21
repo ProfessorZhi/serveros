@@ -1,0 +1,934 @@
+{
+  "schema": "serveros/fleet-v1-rc-manifest.v1",
+  "manifest_id": "fleet-v1-rc-20261018-i",
+  "supersedes": "fleet-v1-rc-20261018-h",
+  "generated_at": "2026-10-18T04:10:51Z",
+  "campaign_ref": "ProfessorZhi/serveros#244",
+  "integration_ref": "ProfessorZhi/serveros#250",
+  "state": "RC_CANDIDATE",
+  "integrator": {
+    "owner": "Tokyo Integration Owner Session (I1)",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "authority": "read-only source audit; additive manifest under integrations/fleet-v1-release/ only"
+  },
+  "qa": {
+    "owner": "independent QA session 6955184a — INDEPENDENT_QA_PARTIAL, Snapshot H, no signature",
+    "status": "INDEPENDENT_QA_PARTIAL",
+    "independent_of_integrator": true,
+    "session_ref": "device:tokyo-shared-dev-01|claude|6955184a-f580-43cb-8ad4-2019980fbc02",
+    "run_ref": "8384fcda-97c0-4d38-820d-4778f8ce5c8d",
+    "signature": null
+  },
+  "qa_triage": {
+    "repo": "ProfessorZhi/serveros",
+    "pr": 256,
+    "head": "b7dabbe0bf7cf170cbc2f1fbc4549887af63faeb",
+    "status": "INDEPENDENT_QA_PARTIAL",
+    "pins_are_snapshot_of": "Snapshot H: exact-SHA probes at #262 9ada9f5 + WE #13 40b0622 (A: 22 checks, exit 0) and #263 c9fb802 (B: 34 checks, exit 0). A classifies the lease producer as BLOCKED_PRODUCER_BOUNDARY; B classifies the T10 continuation link as BLOCKED_WIRING. Synthetic offline runner/DB only; no Docker, provider, OAuth or device. QA_PARTIAL, no signature.",
+    "findings": [
+      {
+        "id": "QA-P0-1",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "intent_digest omitted session_ref and agent_runtime, so the same key sent to another session or runtime was answered as a REPLAY. Snapshot C closes this at LOCAL: target, runtime and principal are in the digest, all three axes return CONFLICT, and no/expired context and self-asserted principal are refused.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P0-2",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "The observation-to-SETTLED judgment was not wired into the production path and the write entry could self-attest. Snapshot D closes the effect-safety half at LOCAL with a red->green control: D3, D4 and D10 are closed and regressions D1/D2/D5-D9/D11-D14 hold. The residual is P1: owner-observation reconcile still has no production caller.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P0-7-E5",
+        "severity": "P0",
+        "candidate": "#241 + work-engine#13",
+        "summary": "E5: the S1 pair is individually green but NOT authoritatively joined at send admission. agent.binding.record accepts a caller-forged writer (EVIL/999), then LocalLoopbackTransport sends ADMITTED even though the live Work Engine lease on the same resource is held by a different owner/token (A/1). held_leases is not on the send path. Exit 1: 22 held, 1 SECURITY_FAIL.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-5-D3",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "D3 cross-actor forgery: another trusted actor could settle A's attempt using A's copied digest and a fabricated result. Snapshot D closes this at LOCAL: the write is refused UNTRUSTED_ACTOR and the attempt is unchanged.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P0-6-D4",
+        "severity": "P0",
+        "candidate": "#252",
+        "summary": "D4 terminal-state regression: a terminal SETTLED could be written back to CALL_NOT_SENT, after which the kernel returns PROCEED, so a retry becomes a second effect. Snapshot D closes this at LOCAL: an authentic SETTLED cannot move to CALL_NOT_SENT or EFFECT_UNKNOWN, EFFECT_UNKNOWN cannot move back, and a terminal retry is REPLAY.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P0-3",
+        "severity": "P0",
+        "candidate": "#243",
+        "summary": "test_no_node_paths_in_product_data.py failed at 494f452 on an inherited absolute home literal in fleet_mcp/deploy/release_plan.py. Snapshot B re-ran the full guard independently at 4a5d0a0: 10 tests OK, exit 0 (LOCAL). Closed at that SHA.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P1-1",
+        "severity": "P1",
+        "candidate": "#255",
+        "summary": "G1 present-but-null is read as an affirmative answer: {\"health\": null, \"policy\": null} yields READY/ALLOWED and a non-null effective, so a negative invariant is bypassed. The QA artifact rates this P1; the campaign brief called it P0 — recorded here at the rate the evidence supports.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P2-1",
+        "severity": "P2",
+        "candidate": "#252",
+        "summary": "_same_writer matched an empty or partial writer record; an empty current_writer equalled a reconciler with every field absent. Snapshot D closes this at LOCAL (D10): empty writer, no-principal record and empty reconciler all refuse.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P1-3",
+        "severity": "P1",
+        "candidate": "#252",
+        "summary": "Owner-observation reconcile still has no production caller: the kernel is correct but nothing invokes it on the real path. Grant enforcement was not exercised in this probe (SOURCE/NOT_RUN).",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P1-2",
+        "severity": "P1",
+        "candidate": "#254",
+        "summary": "I1 manifest drift: earlier manifests pinned stale heads and omitted new candidates. Fixed in manifest -g.",
+        "state_at_snapshot": "CLOSED"
+      },
+      {
+        "id": "QA-P2-2",
+        "severity": "P2",
+        "candidate": "#254",
+        "summary": "Gate level inconsistency: FLEET_NEXT_33_6 requires REAL_DEVICE while its supporting rows are SOURCE. This is intentional — a gate may require more than it has and then reports BLOCKED — but it must not be read as a near-PASS.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P1-4",
+        "severity": "P1",
+        "candidate": "#230",
+        "summary": "Offline plugin packaging is green (70 checks, exit 0): five generated Skills byte-identical to the shared source, deterministic SHA-256 across two builds, documented manifest keys, no secret/path/env/argv/bypass content, and refusals for unsupported scope/endpoint/out-of-source. Authenticated client load, initialize/tools/list/tools/call are BLOCKED_BY_OWNER_OAUTH.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P0-8-G-PRODUCER",
+        "severity": "P0",
+        "candidate": "#241/#261/#262",
+        "summary": "Snapshot H (A, 22 checks exit 0): create reports write_authority; a no-lease create records no claim, reports lease=None and does not acquire or mutate a lease; the send gate refuses; a pre-acquired A/1 is admitted; forged caller owner/epoch and a second claimant refuse. Source: no acquire_lease or lease writes in serveros, and WE has no lease CLI/MCP and no actor/grant table. Classification BLOCKED_PRODUCER_BOUNDARY — a refusal, not a closed gap.",
+        "state_at_snapshot": "OPEN"
+      },
+      {
+        "id": "QA-P1-5-T10-CONSUME",
+        "severity": "P1",
+        "candidate": "#260/#263",
+        "summary": "Snapshot H (B, 34 checks exit 0): real executor + bounded_invocation + consumer; exit 0 -> ELIGIBLE only, exit 1 with PASS text -> DENY; 0/ambiguous Runs, missing execution_context, stale revision, revoked grant and cross-principal refuse before spawn; cross-run/tampered bytes/forged principal -> DENY; missing anchor -> BLOCKED_WIRING. Source: wake/checkpoint do not attach Run/context and WE does not ingest the proof. Classification BLOCKED_WIRING.",
+        "state_at_snapshot": "OPEN"
+      }
+    ]
+  },
+  "drift_guard": {
+    "snapshot_time": "2026-10-18T04:10:51Z",
+    "policy": "Every pin is re-read from the provider API immediately before push and again before composition. A candidate whose observed_at precedes snapshot_time is stale and must be re-pinned, never assumed. An independent QA triage signs a snapshot, not a branch name.",
+    "recheck_before": [
+      "push",
+      "composition",
+      "qa_signature"
+    ]
+  },
+  "repos": [
+    {
+      "name": "serveros",
+      "repo": "ProfessorZhi/serveros",
+      "revision": "4a3162864911420309665e92ec38fb68e9ef76ec",
+      "role": "host, fleet_mcp, runtime, native/node-core, fleet contracts",
+      "reachable": true,
+      "designated_release_ref": null,
+      "note": "main tip used as the I1 base; no release ref designated."
+    },
+    {
+      "name": "work-engine",
+      "repo": "ProfessorZhi/work-engine",
+      "revision": "19d9520eabcbd713933515543d128bee35ef336d",
+      "role": "exclusive Work write lease (S1 cross-repo pair)",
+      "reachable": true,
+      "designated_release_ref": null
+    },
+    {
+      "name": "ability-management",
+      "repo": "ProfessorZhi/ability-management",
+      "revision": "27df5748c88b496a3934fd776f0a729f3cd2e822",
+      "role": "canonical ability registry (abilities-manifest.yaml, schema_version 3)",
+      "reachable": true,
+      "designated_release_ref": null,
+      "note": "Authoritative SHA read from the repository API; it is a pin, not a G1 acceptance receipt."
+    }
+  ],
+  "candidates": [
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 241,
+      "head": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Individually LOCAL-green, but the pair is NOT authoritatively joined: QA Snapshot E shows a forged binding writer admitted while the live Work Engine lease names another owner/token. Do not land or label landable until the S1 corrective SHA passes an independent negative proof. A corrective (#261 a6bed15) is stacked on this head and is under independent QA; do not land the pair without it.",
+      "evidence_class": "LOCAL_PASS"
+    },
+    {
+      "lane": "S2",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 252,
+      "head": "7a87e5cd6dc290a339c0d6d1eb6abf167b4b4cf1",
+      "base_ref": "feat/v1-session-write-fence-20261016",
+      "base_is_pr": true,
+      "stacks_on": 241,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Head moved fdc223f -> 7a87e5c and claims D3/D4/D10 repaired (attempt mutation bound to the same actor; dispatch transition table enforced atomically; terminal states cannot reopen; empty writer no longer compares equal). QA Snapshot C tested only fdc223f, so every repair is FIXED_PENDING_RECHECK until Snapshot D exists.",
+      "evidence_class": "LOCAL_PASS"
+    },
+    {
+      "lane": "F1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 243,
+      "head": "4a5d0a06f2452424972d66399b7c2b60dc8d03a1",
+      "base_ref": "feat/fleet-v1-core-lite-status-wiring-20261016",
+      "base_is_pr": true,
+      "stacks_on": 231,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Head moved 494f452 -> 4a5d0a0: release_plan.py replaces an absolute home literal with ~/runtime-assets via expanduser, and adds a test asserting the Fleet Core block is not an Ability registry. Snapshot B re-ran the full guard independently at this SHA: 10 tests OK, exit 0 (LOCAL), QA-P0-3 closed.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "N1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 242,
+      "head": "bec4835cf3c54066850808278d86de81ddedf561",
+      "base_ref": "feat/native-bounded-recovery-20261016",
+      "base_is_pr": true,
+      "stacks_on": 232,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "N2",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 253,
+      "head": "5e7d074850ad873e00809eca329e3792833cc656",
+      "base_ref": "feat/c-line-bounded-recovery-v1-20261016",
+      "base_is_pr": true,
+      "stacks_on": 242,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Windows Core status source only: adds native/node-core/windows-core/**. One commit ahead of #242; no Windows build or run has been observed.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "P1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 230,
+      "head": "a934beece13af429808f04c1bd5b887e9c19ae91",
+      "base_ref": "fix/fleet-v1-build-outside-source-20261016",
+      "base_is_pr": true,
+      "stacks_on": 227,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "PR body still names corrective head 43a9555f, which is two commits behind the real head a934bee; the body pin is stale by construction.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "G1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 255,
+      "head": "619cf637cbdba3020f989cee3d9f72b7f2b25ce5",
+      "base_ref": "integration/fleet-v1-candidate-20261017",
+      "base_is_pr": true,
+      "stacks_on": 243,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Child of F1: base is #243's head. The present-but-null fail-open (QA-P1-1) is uncorrected at this head, and the G1 owner dispatch is platform-blocked. A re-base of #243 invalidates this base.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "R1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 257,
+      "head": "4045d16b64a20527a1e9587e753f4d16f94e2f24",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "REAL_DEVICE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Head moved c2e2e8d -> 4045d16 and now carries a real read-only observation (OBSERVED-2026-10-18.md, snapshot 2026-10-17T22:16:25Z-22:17:00Z on device:tokyo-shared-dev-01). Codex is observed online but UNBOUND in the device registry; Claude Code has no direct provider adapter and NEEDS_LOGIN at BotMux. Per-surface states are kept separate: READ_AUTHORIZED for metadata, REFUSED/PROVIDER_UNBOUND for new work. This is REAL_READ_ONLY, not ACTUAL_DEV_PASS.",
+      "evidence_class": "REAL_READ_ONLY"
+    },
+    {
+      "lane": "N3",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 259,
+      "head": "f81ad9d5df80ac6f6b66e4d732a5194d93b7b548",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "New: SOURCE_ONLY/OFFLINE network-health profiles and bounded recovery plans under integrations/fleet-v1-network-health/**. Six dependency profiles, five separate axes, fail-closed verdicts, synthetic fixtures only. A profile that measures only local layers reports LOCAL_ONLY, never HEALTHY. No listener, tunnel or remote application was observed.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "T10",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 258,
+      "head": "5043ba14232adff86dddbd444597c76865db5f41",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Head moved 4156572 -> 5043ba1: adds bounded_provenance.py and expands the test suite. Still a pure offline seam, NOT wired to the trusted runner. A source seam with negative fixtures is not a T10 gate.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "M1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 233,
+      "head": "36a206d3ac42f7b28ad815a5e8c9d6013dcb0bd8",
+      "base_ref": "feat/v13-two-surface-integration-candidate-20261014",
+      "base_is_pr": true,
+      "stacks_on": 196,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Consumer of F1; #243 deliberately does not merge it. Not part of the F1 source composition.",
+      "evidence_class": "CODE_CANDIDATE"
+    },
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/work-engine",
+      "pr": 13,
+      "head": "40b062209de4a989a84b04ea57b6cc8657e1be1e",
+      "base_ref": "main",
+      "base_is_pr": false,
+      "stacks_on": null,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "Cross-repo pair of serveros #241. The lease writer is correct at LOCAL (exclusivity, token, TTL, release, renewal fencing), but nothing on the serveros send path reads it. Pair status: UNJOINED.",
+      "evidence_class": "LOCAL_PASS"
+    },
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 261,
+      "head": "a6bed158ff0f1e79778a486d66810fd77a2ad18b",
+      "base_ref": "feat/v1-session-write-fence-20261016",
+      "base_is_pr": true,
+      "stacks_on": 241,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "evidence_class": "CODE_CANDIDATE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "S1 corrective, stacked on #241. The send gate now reads the Work Engine lease: context/resolver.py, runtime/coordination.py, runtime/daemon.py and the agent-control contract change; a new tests/test_v1_lease_authority_gate.py asserts the negative. Independent QA is retesting this exact branch now — PENDING, no receipt. Not merged, not landable."
+    },
+    {
+      "lane": "T10",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 260,
+      "head": "ca1c05e72822c1507374d6d47c6559d4d8e4c605",
+      "base_ref": "feat/fleet-v1-t10-verdict-evidence-20261018",
+      "base_is_pr": true,
+      "stacks_on": 258,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "evidence_class": "CODE_CANDIDATE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "T10 producer binding, stacked on #258. Adds runtime/cli.py and bounded provenance; the Work Engine finalization/continuation consumption is still NOT wired (mcp/continuation_mcp.py was deliberately not edited because its wake envelope lacks work_run_id/commit_sha/runner_identity)."
+    },
+    {
+      "lane": "S1",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 262,
+      "head": "9ada9f585e2c5d5a0ae3185abb27eb83b9b81eba",
+      "base_ref": "feat/v1-s1-lease-authority-send-gate-20261018",
+      "base_is_pr": true,
+      "stacks_on": 261,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "evidence_class": "CODE_CANDIDATE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "S1 follow-up, stacked on #261. create reports write_authority; the acquisition path is BLOCKED_PRODUCER_BOUNDARY: work-engine exposes acquire_lease only as Python methods (no CLI, no MCP), serveros has no import/subprocess boundary, and WE has no actor/grant to authorize one. Nothing fabricates an actor. QA Snapshot H is in flight."
+    },
+    {
+      "lane": "T10",
+      "repo": "ProfessorZhi/serveros",
+      "pr": 263,
+      "head": "c9fb802a9db6ee307a7a239137aa2da03e4bad0f",
+      "base_ref": "feat/fleet-v1-t10-producer-binding-20261018",
+      "base_is_pr": true,
+      "stacks_on": 260,
+      "draft": true,
+      "evidence_level": "SOURCE",
+      "evidence_class": "CODE_CANDIDATE",
+      "installed": false,
+      "observed_at": "2026-10-18T04:10:51Z",
+      "notes": "T10 continuation binding, stacked on #260. Wires runtime/bounded_executor.py and mcp/continuation_mcp.py fail-closed; runtime/wake.py is deliberately unchanged because Run id, exact SHA and runner identity are Work Engine store facts, not caller-supplied envelope fields. QA Snapshot H is in flight."
+    }
+  ],
+  "source_merge": {
+    "performed": false,
+    "policy": "No cross-branch merge, cherry-pick or rewrite of an owner branch. Composition is BLOCKED at the semantic layer: an unbound send-admission lease forbids landing the S1 pair regardless of structural cleanliness. The manifest records pins, conflicts and gates only.",
+    "conflict_audit": [
+      {
+        "left": "#243 (F1)",
+        "right": "#230 (P1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Siblings from merge-base 008a3360 (#200 head). Their own-commit surfaces are 22 and 13 files with an empty intersection; 163 files shared in the net sets are inherited ancestry, not collision. #243 has since advanced by one guard commit."
+      },
+      {
+        "left": "#243 (F1)",
+        "right": "#242 (N1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Disjoint file surfaces."
+      },
+      {
+        "left": "#230 (P1)",
+        "right": "#242 (N1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "Disjoint file surfaces."
+      },
+      {
+        "left": "#241/#252 (S1/S2)",
+        "right": "#243, #230, #242, #255",
+        "shared_own_commit_files": 0,
+        "conclusion": "The safety line is file-disjoint from the Fleet, G1 and Core lanes. Semantic coupling remains: #241 edits fleet/agent-control-contract.yaml while F1 adds fleet/fleet-mcp-contract.yaml."
+      },
+      {
+        "left": "#255 (G1)",
+        "right": "#243 (F1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "G1 is a child of F1, not a sibling: it adds integrations/device-ability-projection/** and one test. Disjoint from F1's own commits, but ordering is forced (F1 first)."
+      },
+      {
+        "left": "#256 (independent QA)",
+        "right": "#254 (I1)",
+        "shared_own_commit_files": 0,
+        "conclusion": "QA writes only integrations/fleet-v1-qa/**; I1 writes only integrations/fleet-v1-release/**. Neither edits the other, and the QA triage is not a signature on this manifest."
+      },
+      {
+        "left": "#257 (R1)",
+        "right": "#241/#252, #243, #242, #255, #230",
+        "shared_own_commit_files": 0,
+        "conclusion": "R1 adds only integrations/fleet-v1-runtime-parity/** and one test. It is file-disjoint from every other lane and based on current main, but it is SOURCE/OFFLINE evidence only."
+      }
+    ]
+  },
+  "composition_preflight": {
+    "performed": true,
+    "verdict": "BLOCKED_SEMANTIC",
+    "work_lease": {
+      "status": "SEND_ADMISSION_UNBOUND",
+      "authority": "The live Work Engine lease (owner, token, expires_at) is the only authority that may admit a write to a protected Work scope.",
+      "observed_authority": "The send gate reads the lease after #261 (Snapshot G: 24/24 exit 0), but the producer is absent: work-engine exposes acquire_lease only as Python methods, serveros has no boundary to it, and WE has no actor/grant. #262 records BLOCKED_PRODUCER_BOUNDARY rather than fabricating one.",
+      "negative_proof": {
+        "sha": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+        "qa_snapshot": "07e58ea (Snapshot E)",
+        "exit": 1,
+        "held": 22,
+        "security_fail": 1
+      },
+      "session_create_producer": {
+        "present": false,
+        "sha": null,
+        "authenticated_writer": false
+      }
+    },
+    "pairs": [
+      {
+        "left": "#241 -> #261 -> #262 (S1 chain)",
+        "right": "(internal ancestry)",
+        "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "merge_base_right": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "shared_files": 0,
+        "semantic_status": "JOINED",
+        "repo_dependency": "git merge-base --is-ancestor proves each link contains the previous head, so landing the chain is a fast-forward. A 3-way diff of a stacked pair reports a false conflict; real git merge fast-forwards. The chain is mechanically clean but NOT authorized: no lease producer exists.",
+        "order": [
+          "#241",
+          "#261",
+          "#262"
+        ],
+        "test_roots": [
+          "tests/test_v1_write_fence.py",
+          "tests/test_v1_lease_authority_gate.py",
+          "tests/test_v1_lease_acquire_producer.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_v1_write_fence -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_v1_lease_authority_gate tests.test_v1_lease_acquire_producer -v"
+        ]
+      },
+      {
+        "left": "#262 (S1 tip)",
+        "right": "#252 (S2)",
+        "merge_base_left": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+        "merge_base_right": "d0754edfd65a490213a40b3033a70a43b0a4a187",
+        "shared_files": 5,
+        "semantic_status": "UNKNOWN",
+        "repo_dependency": "changed in both: fleet/agent-control-contract.yaml, fleet/agent_control_router.py, mcp/agent_mcp.py, runtime/daemon.py, tests/test_coordination.py. merge-tree reports ZERO conflict markers, so it is mechanically mergeable in either order; the admission authority still requires #262 first, after which #252 re-bases and is re-reviewed.",
+        "order": [
+          "#262 (owns the admission authority)",
+          "#252 re-based and re-reviewed"
+        ],
+        "test_roots": [
+          "tests/test_agent_control_router.py",
+          "tests/test_dispatch_attempts.py",
+          "tests/test_coordination.py",
+          "tests/test_v1_lease_acquire_producer.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_agent_control_router tests.test_dispatch_attempts -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_coordination -v"
+        ]
+      },
+      {
+        "left": "#258 -> #260 -> #263 (T10 chain)",
+        "right": "(internal ancestry)",
+        "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "merge_base_right": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "shared_files": 0,
+        "semantic_status": "JOINED",
+        "repo_dependency": "Ancestry proves fast-forward for each link. #263 wires bounded_executor and continuation_mcp fail-closed; the finalize/continuation link still has no independent receipt.",
+        "order": [
+          "#258",
+          "#260",
+          "#263"
+        ],
+        "test_roots": [
+          "tests/test_fleet_v1_verdict_evidence.py",
+          "tests/test_fleet_v1_t10_producer_binding.py",
+          "tests/test_fleet_v1_t10_continuation_provenance.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_verdict_evidence -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_t10_producer_binding tests.test_fleet_v1_t10_continuation_provenance -v"
+        ]
+      },
+      {
+        "left": "#263 (T10 tip)",
+        "right": "#240 (journey B1)",
+        "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "merge_base_right": "91330f21253052e901bf500fd9fe09d03b80b35e",
+        "shared_files": 1,
+        "semantic_status": "NOT_APPLICABLE",
+        "repo_dependency": "changed in both: runtime/cli.py; merge-tree reports zero conflict markers. A rebase question for the two owners, not a semantic join.",
+        "order": [
+          "whichever lands first owns runtime/cli.py",
+          "the other re-bases"
+        ],
+        "test_roots": [
+          "tests/test_fleet_v1_t10_producer_binding.py",
+          "tests/test_journey.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_t10_producer_binding -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_journey -v"
+        ]
+      },
+      {
+        "left": "#263 (T10 tip)",
+        "right": "#262 (S1 tip)",
+        "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "merge_base_right": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "shared_files": 0,
+        "semantic_status": "NOT_APPLICABLE",
+        "repo_dependency": "merge-tree: zero files changed in both. Fully disjoint.",
+        "order": [
+          "either, independently"
+        ],
+        "test_roots": [
+          "tests/test_fleet_v1_t10_continuation_provenance.py",
+          "tests/test_v1_lease_acquire_producer.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_t10_continuation_provenance -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_v1_lease_acquire_producer -v"
+        ]
+      },
+      {
+        "left": "#257 / #259 (source-only seams)",
+        "right": "all lane tips",
+        "merge_base_left": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "merge_base_right": "4a3162864911420309665e92ec38fb68e9ef76ec",
+        "shared_files": 0,
+        "semantic_status": "NOT_APPLICABLE",
+        "repo_dependency": "Same repository, disjoint integrations/ directories; no lane writes them.",
+        "order": [
+          "independent of the S1/T10 lines"
+        ],
+        "test_roots": [
+          "tests/test_fleet_v1_runtime_parity.py",
+          "tests/test_fleet_v1_network_health.py"
+        ],
+        "commands": [
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_runtime_parity -v",
+          "cd <serveros-worktree> && python3 -m unittest tests.test_fleet_v1_network_health -v"
+        ]
+      }
+    ]
+  },
+  "gates": [
+    {
+      "id": "P0_T1_T7_T9_LOCAL",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "S1/S2 lane owners",
+      "blocker": "QA Snapshot D gives LOCAL receipts for T5 (digest target/runtime/principal, all three axes CONFLICT) and T4 (D3/D4/D10 closed with a red->green control; terminal retry is REPLAY). T1/T2/T3/T6 remain lane-reported without an integrator receipt; T7 is reported as half and grant enforcement was NOT_RUN; T9 stays BLOCKED_PROVIDER_SOURCE. T8/T12 are separate rows.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T10_SELF_REPORT",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_NO_CANDIDATE",
+      "owner": "unassigned",
+      "blocker": "PR #258 now provides a pure offline verdict-evidence seam and negative fixtures, but it is not wired to the trusted runner. A source seam is not a T10 gate: the parent-acceptance path has no end-to-end receipt.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T11_OFFLINE_RECOVERY",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
+      "owner": "N1 lane owner",
+      "blocker": "Bounded local recovery exists as source in #242 only; native/node-core is absent from main and no offline recovery run was performed.",
+      "receipt": null
+    },
+    {
+      "id": "P0_T8_T12_REAL_DEVICE",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
+      "owner": "S1 lane owner + device owner",
+      "blocker": "No trusted Tokyo to Dell transport was observed; T8 and T12 require a real cross-device effect.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_CORE_LINUX",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
+      "owner": "N1 lane owner",
+      "blocker": "native/node-core is absent from main; no Linux binary or readback was observed by this integrator.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_SELF_HEALING",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
+      "owner": "N1 lane owner",
+      "blocker": "A toy proves the mechanism; it is not an authorized production recovery receipt.",
+      "receipt": null
+    },
+    {
+      "id": "NODE_CORE_WINDOWS",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "NOT_RUN",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
+      "owner": "N2 lane owner",
+      "blocker": "PR #253 adds Windows Core status source only; no Windows build, SCM probe or run exists on this host.",
+      "receipt": null
+    },
+    {
+      "id": "NETWORK_SSH_SELKIES_RDC",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
+      "owner": "N3 lane owner",
+      "blocker": "PR #259 provides source-only network-health profiles with synthetic fixtures. No listener, tunnel, Tailscale state or remote Selkies/RDC application was observed; a LOCAL_ONLY profile is not HEALTHY.",
+      "receipt": null
+    },
+    {
+      "id": "RUNTIME_CC_CODEX_CLOUDCLI",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_PROVIDER_SOURCE",
+      "owner": "R1 lane owner",
+      "blocker": "Ambiguous provider effect: an observation can only be resolved by the native turn id returned in the send response. R1 now has a source candidate at #257 c2e2e8d (pure projection plus fixtures, 34 local fixture tests claimed); that is SOURCE/OFFLINE and explicitly not a REAL_DEVICE result.",
+      "receipt": null
+    },
+    {
+      "id": "FLEET_NEXT_33_6",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_REAL_DEVICE",
+      "owner": "F1 lane owner",
+      "blocker": "33 is a catalogue (9 authored Fleet + 22 CloudCLI mirror + 2 capability reads) over six scopes; #243 serves nine authored tools, and the installed canary fleet-mcp-20261016@008a336 is the A line, so none of #243 is installed.",
+      "receipt": null
+    },
+    {
+      "id": "DEVICE_ABILITIES",
+      "required_level": "REAL_DEVICE",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_UNLANDED_CHAIN",
+      "owner": "G1 lane owner",
+      "blocker": "G1 has a source candidate (#255) and a pinned registry, but QA-P0-4 (present-null fail-open) is open and nothing was executed on a device.",
+      "receipt": null
+    },
+    {
+      "id": "LOCAL_CC_PLUGIN",
+      "required_level": "CLIENT_E2E",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_AUTH_CLIENT_E2E",
+      "owner": "P1 lane owner",
+      "blocker": "AUTH_CLIENT_E2E blocked on owner OAuth consent plus an authenticated client; neither exists in this milestone.",
+      "receipt": null
+    },
+    {
+      "id": "INTEGRATION_QA",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "PARTIAL",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "independent QA session 6955184a (PR #256 Snapshot C a9c3ea5, INDEPENDENT_QA_PARTIAL)",
+      "blocker": "Manifest and checker exist at SOURCE, and an independent Snapshot C probe exists at LOCAL for #252 fdc223f. It carries no signature and does not cover the real-device, Windows, network or client gates.",
+      "receipt": null
+    },
+    {
+      "id": "S1_SEND_ADMISSION_BOUND",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_SEMANTIC_JOIN",
+      "owner": "Security A owner (S1 corrective milestone)",
+      "blocker": "Snapshot H: #262+WE #13 passes 22 checks at exit 0 (send gate refuses without a lease; a pre-acquired A/1 is admitted; forged writer/epoch and a second claimant refuse). The producer is still absent: no acquire_lease or lease writes in serveros, and WE has no CLI/MCP or actor/grant. BLOCKED_PRODUCER_BOUNDARY.",
+      "receipt": null
+    },
+    {
+      "id": "SESSION_CREATE_LEASE_PRODUCER",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_SEMANTIC_JOIN",
+      "owner": "Security A owner",
+      "blocker": "BLOCKED_PRODUCER_BOUNDARY: work-engine exposes acquire_lease/renew_lease/release_lease/check_writer only as Python methods (no CLI, no MCP), serveros has no import or subprocess boundary, and WE has no actor/grant to authorize one. A legitimate producer needs one of those three to change.",
+      "receipt": null
+    },
+    {
+      "id": "AUTHENTICATED_WRITER_GRANT",
+      "required_level": "LOCAL",
+      "achieved_level": "NOT_RUN",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "Security A owner + grant owner",
+      "blocker": "The writer is not authenticated by a grant on the send path; a forged binding record is accepted.",
+      "receipt": null
+    },
+    {
+      "id": "T10_PRODUCER_BINDING",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "T10 owner",
+      "blocker": "Snapshot H: #263 passes 34 checks at exit 0, but a missing anchor returns BLOCKED_WIRING and WE does not ingest the proof. The continuation link is wired fail-closed; the finalize/consume receipt does not exist.",
+      "receipt": null
+    },
+    {
+      "id": "T10_WE_FINALIZE_CONSUMPTION",
+      "required_level": "LOCAL",
+      "achieved_level": "SOURCE",
+      "verdict": "BLOCKED",
+      "blocker_code": "BLOCKED_OWNER_ACTION",
+      "owner": "T10 owner + Work Engine owner",
+      "blocker": "Snapshot H classifies the link BLOCKED_WIRING: wake/checkpoint do not attach the Run/context and Work Engine does not ingest the T10 proof. A verified finalize/consume receipt is required.",
+      "receipt": null
+    }
+  ],
+  "hosted_ci": {
+    "status": "QUOTA_WAIVED",
+    "evidence": "check-runs returned empty for every candidate head when read on 2026-10-17. Hosted CI is waived, not green; no local test receipt is thereby replaced."
+  },
+  "open_p0": [
+    {
+      "id": "B1-LANDING-DEPTH",
+      "summary": "F1 needs a 14-link unmerged chain plus two branches; N1 needs an 11-link chain. Every link is a Draft and each rebase changes a reviewed SHA.",
+      "owner_action": "Integrator must choose chain-merge vs single squashed RC, in writing, before any composition run."
+    },
+    {
+      "id": "B2-NO-RC",
+      "summary": "No release candidate branch existed before #254 and no multi-repo manifest existed before this file.",
+      "owner_action": "Create the single RC only after B1 and the gate owners agree; do not branch off an owner head."
+    },
+    {
+      "id": "B3-HOSTED-CI",
+      "summary": "All candidate heads have zero hosted check runs.",
+      "owner_action": "Record runner, command, environment and exit code for each bounded local test; never report waived as green."
+    },
+    {
+      "id": "B4-README-CONFLICT",
+      "summary": "main changed README.md in the first lines while #243 and #230 inherit an adjacent first-lines change; a small rebase conflict is probable.",
+      "owner_action": "Resolve at rebase time inside the lane owner branch, never inside an I1 file."
+    },
+    {
+      "id": "B5-NO-REAL-DEVICE",
+      "summary": "No Tokyo to Dell transport and no real device effect was observed. T8, T12, T10 and T11 have no receipt; real Windows and Local CC E2E have none either.",
+      "owner_action": "Those gates stay BLOCKED until a device owner or the independent QA session produces a receipt."
+    },
+    {
+      "id": "B6-NON-PR-BASE",
+      "summary": "#231, and therefore #243, declares a base branch (stack/fleet-v1-pre-core-lite-wiring) that is not a PR head; #230 declares #227, which is a PR, but its own body pin is stale.",
+      "owner_action": "Re-pin base refs and heads immediately before composition; do not trust PR bodies or branch names."
+    },
+    {
+      "id": "B7-G1-AFTER-F1",
+      "summary": "#255 (G1) is a child of #243 and its base is #243's head. Any re-base of #243 changes #255's base and forces a G1 re-pin.",
+      "owner_action": "Compose F1 before G1 and re-pin G1 after every F1 change; never merge G1 against a stale F1."
+    },
+    {
+      "id": "B9-S2-RESIDUAL-P1",
+      "summary": "Effect-safety P0s D3/D4/D10 are CLOSED at LOCAL by Snapshot D with a red->green control. Residual: owner-observation reconcile still has no production caller, and grant enforcement was not exercised (SOURCE/NOT_RUN).",
+      "owner_action": "S2 owner and the daemon caller must wire reconcile into the production path and add a grant-enforcement negative test; QA rechecks before T7 moves."
+    },
+    {
+      "id": "B10-QA-P1-1-G1-NULL",
+      "summary": "QA-P1-1 is OPEN at #255: a present-but-null field is accepted as affirmative, so {\"health\": null, \"policy\": null} yields READY/ALLOWED and a non-null effective. The QA artifact rates this P1.",
+      "owner_action": "G1 owner must treat present-null as unknown; QA rechecks after the fix."
+    },
+    {
+      "id": "B11-QA-SIGNATURE",
+      "summary": "Independent QA is at Snapshot D (3ac74d5) and its verdict is QA_PARTIAL: no signature and no PASS. Its release-hygiene finding about stale-manifest pins is closed by manifest -f.",
+      "owner_action": "Independent QA must re-run against the exact heads in this manifest and sign that snapshot, or record a superseding one."
+    },
+    {
+      "id": "B12-WORK-IN-FLIGHT-NO-ARTIFACT",
+      "summary": "The two accepted Tokyo Owner runs materialized as PRs: N3 as #259 f81ad9d and T10 as #258 4156572. Both are SOURCE/OFFLINE candidates now, not work in flight, and neither is evidence.",
+      "owner_action": "Record them as candidates with evidence_level SOURCE. The T10 seam is not wired to the trusted runner and the N3 profiles are synthetic, so both gates stay BLOCKED."
+    },
+    {
+      "id": "B13-MANIFEST-IS-NOT-AN-RC",
+      "summary": "PR #254 is docs-only. This manifest describes pins, conflicts and gates; it is not a code-composed release candidate. claims.code_composed_rc is false and the checker refuses to let it be true without a performed source merge.",
+      "owner_action": "Do not cite #254 as an RC. A code-composed RC requires owner-landed merges and QA approval, then a new manifest that sets code_composed_rc only after source_merge.performed is true."
+    },
+    {
+      "id": "B14-S1-SEND-ADMISSION-UNBOUND",
+      "summary": "S1 #241 + WE #13 are individually LOCAL-green but semantically unjoined: agent.binding.record accepts a caller-supplied writer and send admission returns ADMITTED without reading the live lease. QA Snapshot E is exit 1 with 22 held / 1 SECURITY_FAIL.",
+      "owner_action": "Security A owner lands the isolated S1 corrective milestone, then independent QA must produce a same-SHA negative proof (forged writer refused, lease mismatch refused, exit 0, security_fail 0). Only then may SEND_ADMISSION_BOUND be claimed."
+    },
+    {
+      "id": "B15-CORRECTIVE-IN-PROGRESS",
+      "summary": "Security A is executing a separate isolated S1 corrective milestone and the T10 owner is working on different product files. Neither has a published PR or SHA, so neither is a candidate.",
+      "owner_action": "Record them as work in progress in prose only; do not pin, cite or compose them until a PR and head SHA exist."
+    },
+    {
+      "id": "B16-S1-CORRECTIVE-PENDING",
+      "summary": "#261 a6bed15 exists and changes the admission authority, but independent QA has not issued a receipt. Snapshot E's E5 P0 is still the operative finding.",
+      "owner_action": "QA must retest #261 at a6bed15 and produce exit 0 with security_fail 0 (forged writer refused, lease mismatch refused) before SEND_ADMISSION_BOUND may be claimed."
+    },
+    {
+      "id": "B17-T10-CONSUMPTION-UNWIRED",
+      "summary": "#260 binds a producer in runtime/cli.py, but Work Engine finalization and continuation consumption is not wired; the wake envelope lacks work_run_id/commit_sha/runner_identity.",
+      "owner_action": "T10 owner must wire the consumption path and prove the child-fails/parent-not-ACCEPTED negative with a receipt."
+    },
+    {
+      "id": "B18-SIBLING-OVERLAPS",
+      "summary": "#261 and #252 share four files because both are stacked on #241; #260 and #240 both modify runtime/cli.py.",
+      "owner_action": "Owners must choose an order and re-base; I1 records the overlap and does not resolve it."
+    },
+    {
+      "id": "B19-PRODUCER-BOUNDARY",
+      "summary": "No legitimate session-create producer acquires the authoritative WE lease. WE has no CLI/MCP and no actor/grant; serveros has no boundary to WE. #262 says so instead of fabricating an actor.",
+      "owner_action": "Work Engine must expose an authenticated acquire operation (or an actor/grant), and serveros must call it at session.create; then QA proves the attachment with a receipt."
+    },
+    {
+      "id": "B20-QA-H-LANDED",
+      "summary": "Independent QA Snapshot H landed at b7dabbe: S1 BLOCKED_PRODUCER_BOUNDARY (22 checks exit 0) and T10 BLOCKED_WIRING (34 checks exit 0). It is a QA_PARTIAL, not a signature.",
+      "owner_action": "Do not promote. Use the two classifications as the owner's work items: expose an authenticated acquire operation and have WE ingest the T10 proof, each with a receipt."
+    },
+    {
+      "id": "B21-NO-TEXTUAL-CONFLICTS",
+      "summary": "merge-tree found zero conflict markers on every proposed pair. The blockers are semantic and authority-based, not textual.",
+      "owner_action": "Do not read 'no conflicts' as 'ready'. Use the conflict-resolution worksheet; the owners still decide order and rebase."
+    }
+  ],
+  "dependency_opportunities": [
+    {
+      "lane": "R1",
+      "description": "Materialized since the last snapshot as PR #257, a pure runtime parity projection plus fixtures. It remains an opportunity to unblock RUNTIME_CC_CODEX_CLOUDCLI, not a release receipt: 34 local fixture tests are SOURCE/OFFLINE and no provider or device was reached.",
+      "pin": "c2e2e8d75f5658c2a9b19887cdfc24e185fc64ef",
+      "is_release_receipt": false
+    }
+  ],
+  "work_in_flight": [],
+  "rollback": {
+    "design": "This branch is additive only: every file lives under integrations/fleet-v1-release/. Reverting the single I1 commit removes the manifest and checker without touching any lane-owned file. No lane branch, ref or worktree is modified by this PR.",
+    "verified": false
+  },
+  "claims": {
+    "live_device": false,
+    "client_e2e": false,
+    "production": false,
+    "code_composed_rc": false,
+    "final_acceptance": false
+  },
+  "proof_requirements": {
+    "authenticated_lease_producer": {
+      "required": true,
+      "present": false,
+      "sha": null
+    },
+    "t10_we_finalize_link": {
+      "required": true,
+      "present": false,
+      "evidence_sha": null
+    },
+    "independent_exact_sha_negative_qa": {
+      "required": true,
+      "present": false,
+      "sha": null,
+      "qa_snapshot": null
+    }
+  }
+}
