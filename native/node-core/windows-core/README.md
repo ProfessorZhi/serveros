@@ -129,3 +129,24 @@ SDK references: [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win
 [GetNamedPipeServerProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid),
 [StartServiceW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicew),
 [IRegisteredTask::RunEx](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-iregisteredtask-runex).
+
+## Versioned Windows package
+
+Standalone Windows builds default `SERVEROS_WINDOWS_STATIC_RUNTIME=ON` (MSVC /MT,
+MinGW static C++ runtime). `cmake --build BUILD --config Release --target package`
+produces a versioned ZIP containing both binaries, docs and the exact source
+revision manifest. `windows-core-watch --version` reads back that revision
+without accessing config or services. The hosted workflow extracts the ZIP,
+checks binary/manifest identity and starts the extracted watch with an empty
+observe-only fixture before preserving the ZIP and its SHA256. It does not
+install or restart an OS service.
+
+Keep the existing owner config/journals outside the release directory. For an
+update, verify SHA256, extract into a new version directory, read back version,
+stop only the Core watch owned by this user through its existing OS manager,
+select the new binary path and start it. Retain the prior version directory and
+manager configuration; rollback selects that prior path and starts it. Never
+clear pending journals or lower the accepted config generation during rollback.
+An in-use Windows binary is not overwritten; config, sessions and native unit
+registration are not included in the ZIP. User-device update/restart acceptance
+remains NOT_RUN until that authorized Windows host can execute the candidate.

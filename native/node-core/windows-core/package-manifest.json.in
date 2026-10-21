@@ -1,0 +1,9 @@
+{
+  "schema": "serveros/windows-core-package.v1",
+  "component": "serveros-windows-core",
+  "version": "@PROJECT_VERSION@",
+  "source_revision": "@SERVEROS_WINDOWS_SOURCE_REVISION@",
+  "static_runtime": "@SERVEROS_WINDOWS_STATIC_RUNTIME@",
+  "executables": ["bin/windows-core-watch.exe", "bin/windows-core-status.exe"],
+  "configuration_included": false
+}

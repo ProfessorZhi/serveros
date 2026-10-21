@@ -279,22 +279,37 @@ bool write_document(const std::wstring &root, const wchar_t *name, const std::st
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr));
     if (!file.valid())
         return false;
-    auto discard_owned_temp = [&]() {
+    auto discard_owned_temp = [](HANDLE owned) {
         FILE_DISPOSITION_INFO disposition{TRUE};
-        ::SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition));
+        ::SetFileInformationByHandle(owned, FileDispositionInfo, &disposition, sizeof(disposition));
     };
     DWORD n = 0;
+    BY_HANDLE_FILE_INFORMATION created{};
     if (!owner_only(file, sid, false) ||
         !::WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &n, nullptr) ||
-        n != text.size() || !::FlushFileBuffers(file)) {
-        discard_owned_temp();
+        n != text.size() || !::FlushFileBuffers(file) ||
+        !::GetFileInformationByHandle(file, &created)) {
+        discard_owned_temp(file);
         return false;
     }
+    // MOVEFILE_WRITE_THROUGH may open the source for a write/flush. Retain an
+    // identity-checked DELETE handle instead of holding our original writer.
+    ::CloseHandle(file.h);
+    file.h = INVALID_HANDLE_VALUE;
+    detail::Handle cleanup(::CreateFileW(temp.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                         nullptr));
+    BY_HANDLE_FILE_INFORMATION current{};
+    if (!cleanup.valid() || !owner_only(cleanup, sid, false) ||
+        !::GetFileInformationByHandle(cleanup, &current) ||
+        created.dwVolumeSerialNumber != current.dwVolumeSerialNumber ||
+        created.nFileIndexHigh != current.nFileIndexHigh ||
+        created.nFileIndexLow != current.nFileIndexLow)
+        return false;
     if (!::MoveFileExW(temp.c_str(), path.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        // Delete only our still-open newly-created file by identity. Never
-        // delete a preexisting .next left by another process/crash.
-        discard_owned_temp();
+        discard_owned_temp(cleanup);
         return false;
     }
     return true;

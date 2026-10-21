@@ -44,3 +44,10 @@ the stop flag and never reports a backwards terminal transition. Recovery state
 is refused on redirected remote/non-ACL volumes or a mismatched base owner.
 
 Hosted 24144a4 exposed Windows default profile ownership (administrator/SYSTEM may own the OS profile root) and loopback refusal latency at the original one-second budget. The private Core children still enforce exact current-user owner-only ACLs; only the OS-resolved base admits current user or trusted OS administrator/SYSTEM ownership. The socket budget is now three seconds total, retaining unknown on genuine timeout. These are executable hosted failures and require a new hosted PASS before release.
+
+Package closure: optional static C++ runtime (/MT or MinGW -static), actual PE
+imports check, version/source --version readback, CPack versioned ZIP and SHA256.
+Hosted Windows extracts that package and starts its watch with an empty
+observe-only fixture before retaining the complete candidate. No missing runtime
+DLL assembly is delegated to the user. Cross-toolchain runtime notices accompany
+that distribution; deployed user-device OS-manager switching remains NOT_RUN.

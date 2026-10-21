@@ -1,11 +1,25 @@
 #include "windows-core/watch.hpp"
 #include <csignal>
 #include <iostream>
+#include "nodecore/json.hpp"
+#ifndef SERVEROS_WINDOWS_COMPONENT_VERSION
+#define SERVEROS_WINDOWS_COMPONENT_VERSION "development"
+#define SERVEROS_WINDOWS_SOURCE_REVISION "unknown"
+#endif
 namespace {
 std::atomic<bool> stop{false};
 void terminate(int) { stop.store(true); }
 } // namespace
 int main(int argc, char **argv) {
+    if (argc == 2 && std::string(argv[1]) == "--version") {
+        auto version = nodecore::Json::object();
+        version.set("component", nodecore::Json::string("serveros-windows-core"));
+        version.set("version", nodecore::Json::string(SERVEROS_WINDOWS_COMPONENT_VERSION));
+        version.set("source_revision", nodecore::Json::string(SERVEROS_WINDOWS_SOURCE_REVISION));
+        std::cout << version.dump_compact() << '\n';
+        return 0;
+    }
+
     if (argc == 2 && std::string(argv[1]) == "configure") {
         std::string text;
         char byte;
