@@ -1,24 +1,13 @@
-# The Windows contract build for the native Core.
-#
-# WHAT THIS PROVES. That `native/node-core/windows-core` — including the
-# `_WIN32` half that a Linux build cannot compile — compiles with MSVC and that
-# its synthetic suites pass on a real Windows kernel. That is the whole claim.
-#
-# WHAT IT DOES NOT DO. It never calls the runner's Service Control Manager or
-# Task Scheduler, starts no service, installs nothing, reads no credential and
-# contacts no network endpoint. Every observation in the suites is text the test
-# itself supplied; the only Win32 gate the tests assert is that the `_WIN32`
-# branch is present. The label for a green run is HOSTED_WINDOWS_BUILD/UNIT —
-# not REAL_DEVICE and not CLIENT_E2E.
-#
-# TRIGGER. Pull requests only, and only when they touch this directory or this
-# file. No scheduled, tag, release, or default-branch push run.
+# Hosted Windows build and local named-pipe/journal tests. No SCM/task action,
+# installation, credential access, remote endpoint, or user's device is used.
+# Green means HOSTED_WINDOWS_BUILD/LOCAL_IPC, never REAL_DEVICE/CLIENT_E2E.
 name: serveros-native-windows-contract
 
 on:
   pull_request:
     paths:
       - "native/node-core/windows-core/**"
+      - "native/node-core/contract/windows-core-status.v1.schema.json"
       - ".github/workflows/serveros-native-windows-contract.yml"
 
 permissions:
@@ -71,12 +60,17 @@ jobs:
       - name: Build under _WIN32 and prove the binaries exist
         shell: pwsh
         run: |
-          cmake --build build-windows --config Release --parallel
+          cmake --build build-windows --config Release --parallel 1
           if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
           $exes = @(
             "build-windows/Release/test_windows_scm_status.exe",
             "build-windows/Release/test_windows_core_source_contract.exe",
-            "build-windows/Release/test_windows_status_document.exe"
+            "build-windows/Release/test_windows_status_document.exe",
+            "build-windows/Release/test_windows_recovery.exe",
+            "build-windows/Release/test_windows_named_pipe.exe",
+            "build-windows/Release/windows-core-status.exe",
+            "build-windows/Release/windows-core-watch.exe",
+            "build-windows/Release/test_windows_watch.exe"
           )
           foreach ($exe in $exes) {
             if (-not (Test-Path -LiteralPath $exe)) {
@@ -85,8 +79,53 @@ jobs:
             Write-Host "compiled binary present: $exe"
           }
 
-      - name: Run the synthetic suites
+      - name: Run policy and local IPC suites
         shell: pwsh
         run: |
           ctest --test-dir build-windows -C Release --output-on-failure -V
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
+
+      - name: Package and start the extracted static candidate
+        shell: pwsh
+        run: |
+          cmake --build build-windows --config Release --target package --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw "package failed" }
+          $zip = Get-ChildItem -LiteralPath build-windows -Filter 'serveros-windows-core-*-win64.zip' | Select-Object -First 1
+          if (-not $zip) { throw "versioned package missing" }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'serveros-core-package-smoke'
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $unpacked
+          $manifest = Get-ChildItem -LiteralPath $unpacked -Filter manifest.json -Recurse | Select-Object -First 1
+          if (-not $manifest) { throw "manifest missing" }
+          $metadata = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
+          $expected = (git rev-parse HEAD).Trim()
+          if ($metadata.source_revision -ne $expected -or $metadata.static_runtime -ne 'ON') { throw "package identity mismatch" }
+          $binary = Join-Path $manifest.Directory.FullName 'bin/windows-core-watch.exe'
+          $readback = & $binary --version | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $readback.source_revision -ne $expected) { throw "extracted binary readback failed" }
+          $fixture = @{ schema='serveros/windows-core-desired.v1'; node='device:hosted-package-fixture'; principal=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; generation=2; observe_only=$true; services=@() } | ConvertTo-Json -Compress
+          $fixture | & $binary configure
+          if ($LASTEXITCODE -ne 0) { throw "extracted config publisher failed" }
+          $stdout = Join-Path $env:RUNNER_TEMP 'serveros-core-watch-smoke.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'serveros-core-watch-smoke.stderr'
+          $watch = Start-Process -FilePath $binary -ArgumentList 'console' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            Start-Sleep -Seconds 2
+            if ($watch.HasExited) { throw "extracted watch exited: $(Get-Content -LiteralPath $stderr -Raw)" }
+            $status = Join-Path $env:LOCALAPPDATA 'ServerOS/Core/watch-status.v1.json'
+            $snapshot = Get-Content -LiteralPath $status -Raw | ConvertFrom-Json
+            if ($snapshot.schema -ne 'serveros/windows-core-status.v1') { throw "watch snapshot missing" }
+          } finally {
+            if (-not $watch.HasExited) { Stop-Process -InputObject $watch -Force }
+          }
+          $hash = (Get-FileHash -LiteralPath $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($zip.Name)" | Set-Content -LiteralPath ($zip.FullName + '.sha256') -Encoding ascii
+          Write-Host "HOSTED_WINDOWS_PACKAGE_START: PASS $hash"
+
+      - name: Preserve the complete Windows candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-core-static-candidate
+          path: |
+            build-windows/serveros-windows-core-*-win64.zip
+            build-windows/serveros-windows-core-*-win64.zip.sha256
+          if-no-files-found: error

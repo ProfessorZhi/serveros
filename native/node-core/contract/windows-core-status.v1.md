@@ -240,3 +240,30 @@ separate contract, not a second set of states bolted onto this one.
    **by a person**, with the same `REAL_TOY` labelling the Linux side uses.
 4. Explicit owner approval, per issue #244's policy: no Windows policy, registry,
    service start/stop, or login change without it.
+
+## 7. Current source extension: local IPC and recovery (2026-10-21)
+
+The earlier sections describe the original query-only milestone. The current
+Windows target additionally implements the secured named pipe and native
+SCM/Task Scheduler recovery adapters described in `windows-core/README.md`.
+`ipc.status` now reports compiled availability (`AVAILABLE` on Windows,
+`UNSUPPORTED` elsewhere); availability is not a bound-route or identity verdict.
+The schema retains UNKNOWN principal/device identities and NOT_ASSERTED freshness.
+
+Recovery is a separate trusted in-process API, never an IPC mutation verb. It
+requires immutable enabled role/target/current-user grants, actual OS native
+access and identity readback, a functional probe, and a protected durable
+per-native-target writer journal. Unknown outcomes remain fenced. Only stopped
+SCM services / ready interactive-current-user tasks can start; disabled, busy,
+needs-login, unknown and running-but-unhealthy states refuse automatic restart.
+The source has no stop/reconfigure/register/elevate operation. Cross compilation
+and hosted local IPC testing are separate from real-device and Fleet acceptance;
+those remain explicitly NOT_RUN until evidence exists.
+
+The resident source now provides `windows-core-watch console|service`, and a fixed
+owner-only desired configuration (`serveros/windows-core-desired.v1`) with the
+same observe_only/running/manual/disabled/generation semantics. Optional status
+fields add observed_at, tasks and runtime desired/readiness/recovery rows;
+recover-local mode appears only after an accepted current generation with an
+explicit recovery setting. Missing/corrupt config remains observe-only and names
+its refusal. The existing Node-owned device mapping is still authoritative.

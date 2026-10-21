@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "serveros/windows-core-status.v1",
-  "title": "Windows Core status — one read-only envelope",
+  "title": "Windows Core status \u2014 one read-only envelope",
   "description": "The machine-checkable form of contract/windows-core-status.v1.md. It carries what a Windows Core may report about its services and about itself; it cannot carry a verb, a remote host, a credential, or a claim that the unimplemented named-pipe route works. Every object is additionalProperties:false, so a consumer can tell from this file alone which keys may appear.",
   "type": "object",
   "additionalProperties": false,
@@ -26,7 +26,10 @@
       "const": "windows"
     },
     "mode": {
-      "const": "observe-only"
+      "enum": [
+        "observe-only",
+        "recover-local"
+      ]
     },
     "node": {
       "type": "string",
@@ -57,6 +60,92 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/service_row"
+      }
+    },
+    "observed_at": {
+      "type": "string"
+    },
+    "runtime_reason": {
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "state",
+          "measured"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "TASK_READY",
+              "TASK_RUNNING",
+              "TASK_DISABLED",
+              "TASK_UNKNOWN",
+              "TASK_UNSUPPORTED"
+            ]
+          },
+          "measured": {
+            "type": "boolean"
+          },
+          "last_result": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "desired",
+          "readiness",
+          "recovery_code",
+          "acted"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "cloudcli",
+              "connector",
+              "tunnel"
+            ]
+          },
+          "desired": {
+            "enum": [
+              "running",
+              "manual",
+              "disabled"
+            ]
+          },
+          "readiness": {
+            "enum": [
+              "READY",
+              "NOT_READY",
+              "UNMEASURED"
+            ]
+          },
+          "recovery_code": {
+            "type": "string"
+          },
+          "acted": {
+            "type": "boolean"
+          }
+        }
       }
     }
   },
@@ -101,7 +190,7 @@
       }
     },
     "ipc_route": {
-      "description": "The Core's own status route. UNSUPPORTED is a constant in this build: a named pipe with a DACL and a client token has not been compiled or run, and an unverified security descriptor is not a guarantee.",
+      "description": "Compiled local status transport capability. AVAILABLE still requires a successfully bound current-user pipe and trusted launcher pinned server identity; it is not a health or device attestation.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -110,10 +199,16 @@
       ],
       "properties": {
         "status": {
-          "const": "UNSUPPORTED"
+          "enum": [
+            "UNSUPPORTED",
+            "AVAILABLE"
+          ]
         },
         "reason": {
-          "const": "NO_VERIFIED_SECURITY_DESCRIPTOR"
+          "enum": [
+            "NO_VERIFIED_SECURITY_DESCRIPTOR",
+            "LOCAL_PIPE_REQUIRES_PINNED_INSTANCE"
+          ]
         }
       }
     },
