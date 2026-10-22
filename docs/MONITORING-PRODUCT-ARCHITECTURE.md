@@ -1,6 +1,12 @@
 # Monitoring Product Architecture · 资源、基础设施、事件与低噪声告警
 
-状态：2026-09-24 产品架构合同。本文基于当日对 Tokyo live ServerOS、飞书应用1、资源采集、Tailscale userspace daemon、Laya shared service、共享 LiteLLM gateway 与当前 alert registry 的只读实测。**DESIGN != LIVE**：本文不修改 timer、sender、threshold、systemd、container 或 Feishu 卡片。
+> **这篇回答什么：** 监控产品只保留哪三种表面；状态卡、告警与 Incident 各自回答什么问题；什么该报、什么不该报；以及监控和 Core 恢复之间那条不能越过的线。
+>
+> **状态：** 产品架构合同 · 2026-09-24，2026-10-17 补充 Fleet V1 的服务与来源验收。**DESIGN != LIVE**：本文不修改 timer、sender、threshold、systemd、container 或飞书卡片。
+>
+> **一条原则：** 监控是**来源可验证的状态投影**，不是 Core 的另一份业务/恢复数据库。不得为了展示而重启服务或产生副作用；HTTP 200 不等于 WebSocket 或会话已经可用。
+>
+> **怎么读：** §1 是 live 基线；§2 是三种表面；§3–§5 是状态卡、资源与告警的分工；§6–§9 是告警分类、Episode、Incident 与首层示意；§10–§12 是 ownership、实现差距与验收；§13–§15 是 Session hygiene 与工作流质量告警；§16–§24 是卡片节奏、principal scoping、可处理对象、已知漂移与真实样本。
 
 ## 2026-10-17 Fleet V1 服务与来源验收补充
 
