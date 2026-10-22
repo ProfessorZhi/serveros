@@ -991,26 +991,58 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     """
     tool = SERVED_BY_NAME.get(name)
     if tool is None:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=refuse(
+        return _refusal_answer(ctx, refuse(
             BAD_REQUEST,
             f"unknown tool {name!r}. This surface exposes: "
             f"{sorted(SERVED_BY_NAME)}",
-        )))
+        ))
     args = arguments or {}
     if not isinstance(args, dict):
-        return _disclose(ctx, _error(principal=ctx.principal,
-                                     exc=refuse(BAD_REQUEST, "arguments must be an object")))
+        return _refusal_answer(ctx, refuse(BAD_REQUEST, "arguments must be an object"))
     unknown = unknown_argument_refusal(tool, args)
     if unknown is not None:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=unknown, tool=tool.name))
+        return _refusal_answer(ctx, unknown, tool=tool.name)
     try:
         payload = tool.handler(ctx, args)
     except FleetRefusal as exc:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=exc, tool=tool.name))
+        return _refusal_answer(ctx, exc, tool=tool.name)
     except ValueError as exc:
-        return _disclose(ctx, _error(principal=ctx.principal,
-                                     exc=refuse(BAD_REQUEST, str(exc)), tool=tool.name))
+        return _refusal_answer(ctx, refuse(BAD_REQUEST, str(exc)), tool=tool.name)
     return _disclose(ctx, _ok(payload))
+
+
+def _refusal_answer(ctx: ToolContext, exc: FleetRefusal,
+                    tool: str | None = None) -> dict[str, Any]:
+    """Record a refusal, then shape it as the answer the caller gets.
+
+    Refusals used to leave the audit log with nothing but a byte count.
+    `record_grant` fires only when a grant *admits* a call, so a caller probing
+    for a door that is shut produced one `mcp.request` line and no evidence of
+    which door, on which device, or why. On a surface that answers on a public
+    Funnel that is the fact an operator most needs — a login path that records
+    its failures beside an authorization path that does not is a log that
+    answers half the question it exists for.
+
+    Only values this surface writes from a closed set are recorded. `error_code`
+    is the refusal code; `device_ref` / `session_ref` / `project` are the
+    addresses the caller already named, and `tool` is a name from the served
+    set. `exc.detail` is deliberately absent: it is prose assembled around
+    caller input and, for a device error, around the provider's own words —
+    recording it would put free text from the far end into the control plane's
+    log under the control plane's name.
+    """
+    audit = getattr(getattr(ctx, "service", None), "audit", None)
+    if audit is not None:
+        extra = exc.extra if isinstance(exc.extra, dict) else {}
+        fields: dict[str, Any] = {"principal": ctx.principal.name, "error_code": exc.code}
+        if tool:
+            fields["tool"] = tool
+        for identifier in ("device_ref", "session_ref", "project"):
+            value = extra.get(identifier)
+            if isinstance(value, str) and value:
+                fields[identifier] = value
+        audit.record("fleet.refused", **fields)
+    return _disclose(ctx, _error(principal=ctx.principal, exc=exc, tool=tool))
 
 
 def _disclose(ctx: ToolContext, result: dict[str, Any]) -> dict[str, Any]:

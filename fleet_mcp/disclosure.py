@@ -127,10 +127,24 @@ REF = "ref"
 SCOPE = "scope"
 URI = "uri"
 DIGEST = "digest"
+ERROR_CODE = "error_code"
 
 # A control-plane code: `fleet.send.replay`, `oauth.token`, `latest`. Lowercase,
 # dotted or dashed, no whitespace and no punctuation a credential would need.
 _CODE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+
+# A refusal code from `errors.py`: `APPROVAL_REQUIRED`, `SCOPE_DENIED`,
+# `WRITE_NOT_GRANTED`. A second kind rather than a wider `_CODE`, because these
+# are a different word list with a different owner, not a different case of the
+# same one. `error` already means the RFC 6749 name on the OAuth path, and
+# folding the two together would either let an uppercase word through a
+# lowercase shape (which is what the shape exists to stop) or force this
+# surface to lowercase its own codes in the log, so that the record and the
+# refusal the caller received no longer say the same word.
+#
+# Still a closed set: `errors.py` is where these are defined, and a caller
+# never supplies one. The shape accepts exactly what that file can produce.
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
 
 # A record's own timestamp, which this module writes and nothing else does.
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -184,6 +198,13 @@ KIND_BY_FIELD: dict[str, str] = {
     # it holds the redirect_uri), and a caller that passes a description under
     # this name loses it to the `code` shape rather than parking it in the log.
     "error": CODE,
+    # The refusal a call received, named from `errors.py`'s closed set. A
+    # separate field from `error` above because it is a separate vocabulary:
+    # that one holds RFC 6749 names in lowercase, this one holds this surface's
+    # own constants. Recording the code and not the detail is the line: the
+    # detail is prose built around what the caller sent, the code is what an
+    # operator greps for when asking whether a door was tested.
+    "error_code": ERROR_CODE,
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,
@@ -415,6 +436,8 @@ def project_value(value: Any, *, kind: str = WITHHELD) -> Any:
         return value if isinstance(value, str) and _shaped(value, _STAMP) else OMITTED_MARK
     if kind == CODE:
         return value if isinstance(value, str) and _shaped(value, _CODE) else OMITTED_MARK
+    if kind == ERROR_CODE:
+        return value if isinstance(value, str) and _shaped(value, _ERROR_CODE) else OMITTED_MARK
     if kind == REF:
         return value if isinstance(value, str) and _shaped(value, _REF) else OMITTED_MARK
     if kind == SCOPE:
