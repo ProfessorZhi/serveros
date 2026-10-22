@@ -1,37 +1,62 @@
 {
   "schema": "serveros/fleet-next-brand-assets.v1",
-  "status": "APPROVED_USER_UPLOAD_PENDING_REPOSITORY_BINARY",
-  "warning": "The exact 512x512 user-uploaded PNG is the sole approved ServerOS Fleet artwork as of 2026-10-22. The previous 1254x1254 source and old logo/composer digests are superseded. These digests are computed from the actual user attachment and a labeled 2x resize in the conversation container; the image bytes are NOT in the GitHub repository or current private Plugin Release until separately verified. Missing bytes must block packaging, not be substituted by synthetic or old assets.",
+  "status": "SOURCE_DELIVERED_BY_FEISHU_JPEG_TRANSCODE",
+  "warning": "The sole approved ServerOS Fleet artwork of 2026-10-22 reached this repository through the owner's Feishu self-chat, and Feishu serves images re-encoded as JPEG: the delivered file is 512x512 JPEG, 219855 bytes, sha256 9fc328825e113b465009b850a6eedf5e3b18680fb4a26b1b3c9877e8a9f9cef1. The PNG pinned in the earlier conversation container (500326 bytes, sha256 15ad7a51...) could not be obtained from this host; it is recorded under `superseded_pins` as unverified and is not what the slots below are made from. The slots below are the measured bytes this repository now holds, derived from the delivered JPEG without drawing anything new. A file at these paths that does not match these digests is a different asset and is refused rather than shipped.",
   "approved_source": {
-    "description": "Photorealistic asymmetric sci-fi starship fleet: foreground capital ship, supporting starships, planet and sunrise; exact user-supplied image 2026-10-22",
+    "description": "Photorealistic asymmetric sci-fi starship fleet: foreground capital ship, supporting starships, planet and sunrise; exact user-supplied image 2026-10-22, re-sent to the owner's Feishu self-chat for retrieval",
+    "delivery": {
+      "channel": "feishu",
+      "chat_id": "oc_30cf50026f10afd8b91875f361efbdbd",
+      "message_id": "om_x100b62af6a89d8bccfc1f24e4644c65",
+      "image_key": "img_v3_0216n_ac6b59d5-edde-48d2-ba22-02afa444a97g",
+      "sent_at": "2026-10-22T14:50+08:00",
+      "transcoded_by": "Feishu IM resource download (image resources are re-encoded to JPEG)"
+    },
     "original_filename": "image(20261022-061408).png",
     "width": 512,
     "height": 512,
-    "mime_type": "image/png",
-    "bytes": 500326,
-    "sha256": "15ad7a51e11070a43691cc69b1a1be43593ff87ed70412cceb7549c83c275836",
+    "mime_type": "image/jpeg",
+    "bytes": 219855,
+    "sha256": "9fc328825e113b465009b850a6eedf5e3b18680fb4a26b1b3c9877e8a9f9cef1",
+    "committed_path": "brand-source/feishu-20261022.jpg",
     "shipped": false
+  },
+  "superseded_pins": {
+    "note": "Digests recorded from the ChatGPT conversation container on 2026-10-22. They were never verified against a file on this host and the bytes are not obtainable here; they are kept for audit, not as validation values.",
+    "source_png": {
+      "mime_type": "image/png",
+      "bytes": 500326,
+      "sha256": "15ad7a51e11070a43691cc69b1a1be43593ff87ed70412cceb7549c83c275836"
+    },
+    "composerIcon_png": {
+      "bytes": 500326,
+      "sha256": "15ad7a51e11070a43691cc69b1a1be43593ff87ed70412cceb7549c83c275836"
+    },
+    "logo_png": {
+      "bytes": 1330429,
+      "sha256": "cdb7ccbdc4c8bf28a5afc8e3b81ac8c9da617242a12197db4864ad645ae5bfe2"
+    }
   },
   "slots": [
     {
       "slot": "composerIcon",
       "shipped_path": "assets/composerIcon.png",
-      "expected_sha256": "15ad7a51e11070a43691cc69b1a1be43593ff87ed70412cceb7549c83c275836",
+      "expected_sha256": "49c68d16dd4e130ce909743e92a3ac4ec6ed2579abf85ac3b03ff08e844966dc",
       "width": 512,
       "height": 512,
-      "bytes": 500326,
+      "bytes": 452278,
       "square_required": true,
-      "derivation": "bit-for-bit copy of the approved user PNG"
+      "derivation": "lossless PNG encode of the decoded pixels of the Feishu-delivered JPEG; no crop, no scale, no redraw"
     },
     {
       "slot": "logo",
       "shipped_path": "assets/logo.png",
-      "expected_sha256": "cdb7ccbdc4c8bf28a5afc8e3b81ac8c9da617242a12197db4864ad645ae5bfe2",
+      "expected_sha256": "4f816acc8d94bef97475f92f3186136e8133764d92ee5dadb60915d6fe07aa9e",
       "width": 1024,
       "height": 1024,
-      "bytes": 1330429,
+      "bytes": 1371784,
       "square_required": true,
-      "derivation": "2x LANCZOS resized PNG from the same user source, no new image generated"
+      "derivation": "2x LANCZOS resize (Pillow 10.2.0) of the same decoded pixels, saved as PNG; not a second image"
     }
   ],
   "on_absent": "MISSING_BRAND_ASSET",
