@@ -223,8 +223,21 @@ class FleetService:
 
     # -- helpers -----------------------------------------------------------
 
+    def _owner_namespaces(self, principal: Principal) -> tuple[str, ...]:
+        """The namespaces `policy.owner_max` gives THIS caller.
+
+        `"*"` is the principal-axis fallback, consulted only when the caller has
+        no entry of its own — an exact entry says what it holds, including when
+        that is a namespace list this device is not in. The namespace side is
+        never a wildcard. One reader, so `fleet_status` and the create gate
+        cannot answer "is this an owner" differently.
+        """
+        by_principal = self.config.policy.owner_max
+        return (by_principal[principal.name] if principal.name in by_principal
+                else by_principal.get("*", ()))
+
     def _owner_profile(self, principal: Principal, device_ref: str, namespace: str):
-        selected = self.config.policy.owner_max.get(principal.name, ())
+        selected = self._owner_namespaces(principal)
         if provider_key(device_ref, namespace) not in selected:
             return None
         binding = self.config.namespace_binding(device_ref, namespace)
@@ -2730,7 +2743,7 @@ class FleetService:
                  "runtime": namespace.partition("|")[2] or BASE_RUNTIME,
                  "root_refs": list(profile.project_roots),
                  "permission_mode": profile.permission_mode}
-                for namespace in self.config.policy.owner_max.get(principal.name, ())
+                for namespace in self._owner_namespaces(principal)
                 if (profile := self._owner_profile(
                     principal, namespace.partition("|")[0],
                     namespace.partition("|")[2] or BASE_RUNTIME)) is not None

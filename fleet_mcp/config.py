@@ -869,13 +869,27 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
 
 
 def load_owner_max(raw) -> dict[str, tuple[str, ...]]:
+    """Compile `policy.owner_max` — exact principals, or one `"*"` fallback.
+
+    The namespace list is always exact: a device/runtime pair, never a wildcard.
+    What `"*"` widens is only the PRINCIPAL axis, and only for principals this
+    runtime admits at all — the same shape `policy.operator_grants` already has,
+    and for the same reason: an OAuth principal is `oauth:<client_id>`, an opaque
+    id that a re-registration can change. Pinning it into a binding makes the
+    owner's own project creation depend on an id nobody authored.
+
+    `"*"` is consulted only when the presented principal has no entry of its own.
+    An exact entry says what that principal holds, including when the device it
+    needs is not in it.
+    """
     if not isinstance(raw, dict):
         raise ValueError("policy.owner_max must map exact principals to namespace lists")
     result = {}
     for principal, namespaces in raw.items():
         if (not isinstance(principal, str) or not principal.strip()
-                or principal != principal.strip() or "*" in principal):
-            raise ValueError("owner_max requires exact nonempty principal names")
+                or principal != principal.strip()
+                or ("*" in principal and principal != "*")):
+            raise ValueError("owner_max requires exact nonempty principal names, or \"*\"")
         if not isinstance(namespaces, (list, tuple)) or not namespaces:
             raise ValueError("owner_max requires a nonempty namespace list")
         selected = []

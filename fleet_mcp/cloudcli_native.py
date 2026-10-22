@@ -396,6 +396,26 @@ def input_schema(native_name: str) -> dict[str, Any]:
 #: The count this build mirrors, as a number a test and a status can both read.
 NATIVE_TOOL_COUNT = 22
 
+#: Native verbs this build reaches through an AUTHORED tool, never the mirror.
+#:
+#: `project_create` is the first one. `fleet_create_project` calls it directly
+#: (`providers/cloudcli.py#create_project`) because minting a project is not a
+#: passthrough: it needs an owner-configured root, a fresh-directory guarantee,
+#: an idempotency key and a fresh-ACK readback, and none of those can be
+#: expressed by forwarding a caller's arguments unchanged.
+#:
+#: Recording it in `NATIVE_TOOLS` would advertise a second way to do the same
+#: thing — an ungoverned one — so it stays out. But leaving it out entirely made
+#: the device's declaration read as unexplained drift ("the device grew a verb
+#: nobody recorded"), which is a false alarm on every status call. Naming it
+#: here is the third option: the build says, in one place, which native verbs it
+#: claims through an extension, so `coverage()` can tell "claimed elsewhere" from
+#: "nobody recorded this".
+#:
+#: Claimed is not ignored. A claimed verb that the device STOPS declaring is
+#: still drift, because the authored tool would then fail at call time.
+EXTENSION_CLAIMED_NATIVE_TOOLS: tuple[str, ...] = ("project_create",)
+
 
 def namespaced(native_name: str) -> str:
     return PREFIX + native_name
@@ -437,17 +457,33 @@ def coverage(observed_names: Iterable[str],
 
     Returns a drift report, not a verdict: `missing` are recorded tools the
     device no longer declares (the mirror would forward a name that is gone),
-    `extra` are device tools this build does not mirror (the device grew a verb
-    nobody recorded), and `annotation_drift` are tools whose read/write hints
-    moved (a verb that became destructive under a name this surface already
-    governs). An empty report is the only state in which the recorded baseline
-    and the device agree.
+    `extra` are device tools this build neither mirrors nor claims through an
+    authored tool (the device grew a verb nobody recorded), and
+    `annotation_drift` are tools whose read/write hints moved (a verb that became
+    destructive under a name this surface already governs).
+
+    `extension_claimed` is the third state, and it is not drift: a verb the
+    device declares and this build reaches through an authored tool instead of
+    the mirror. It is reported so a reader can see the claim rather than infer
+    it from an absence.
+
+    `extension_claimed_missing` is the same claim seen from the other side: a
+    claimed verb this device does not declare. That is ALSO not drift, and the
+    reason matters — the recorded baseline is CloudCLI 1.39.0, which never had
+    `project_create`. A device that matches the baseline exactly must therefore
+    read as agreement; making the claim part of `agrees` would make every
+    conforming device permanently in drift. What a missing claim means is
+    "this device's CloudCLI predates the verb", and the authored tool refuses
+    that call on its own live evidence (`providers/cloudcli.py#create_project`
+    checks the advertised schema before it calls).
     """
     observed = list(observed_names)
     observed_set = set(observed)
     recorded_set = set(NATIVE_BY_NAME)
+    claimed_set = set(EXTENSION_CLAIMED_NATIVE_TOOLS)
     missing = sorted(recorded_set - observed_set)
-    extra = sorted(observed_set - recorded_set)
+    extra = sorted(observed_set - recorded_set - claimed_set)
+    claimed_missing = sorted(claimed_set - observed_set)
     drift: list[dict[str, Any]] = []
     if observed_annotations:
         for name in sorted(recorded_set & observed_set):
@@ -469,6 +505,8 @@ def coverage(observed_names: Iterable[str],
         "observed_count": len(observed),
         "missing": missing,
         "extra": extra,
+        "extension_claimed": sorted(claimed_set & observed_set),
+        "extension_claimed_missing": claimed_missing,
         "annotation_drift": drift,
         "agrees": not (missing or extra or drift),
     }
@@ -689,7 +727,11 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
             "tools": tools, "unsupported_by_device": sorted(unsupported),
             "declared_not_implemented": sorted(declared_not_implemented),
             "handler_binding_unknown": sorted(handler_binding_unknown),
-            "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME))}
+            "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME)
+                                          - set(EXTENSION_CLAIMED_NATIVE_TOOLS)),
+            "extension_claimed": sorted(set(EXTENSION_CLAIMED_NATIVE_TOOLS) & set(observed)),
+            "extension_claimed_missing": sorted(
+                set(EXTENSION_CLAIMED_NATIVE_TOOLS) - set(observed))}
 
 
 def approval_ids(listing) -> set[str]:
