@@ -21,11 +21,12 @@ never grow one. That is why `build_first_install.py` requires `mcp.json` while
 `integrations/chatgpt-fleet-next/build_zip.py` refuses it: they are different
 artefacts, and the tests here pin the difference rather than the similarity.
 
-No network, no secret, no Plugin Creator, no Feishu, no Tailscale. The two brand
-images do not exist on any machine this suite runs on, so the positive path uses
-a lock built from PNGs the test generates — which is exactly the point: the
-builder reads the pinned bytes, and a test that could not produce them could not
-test the gate.
+No network, no secret, no Plugin Creator, no Feishu, no Tailscale. The positive
+path uses a lock built from PNGs the test generates — which is exactly the
+point: the builder reads the pinned bytes, and a test that could not produce
+them could not test the gate. The repository's own approved images are
+committed now, so one test below also checks the committed files against the
+lock's pins rather than only checking that the lock is internally consistent.
 """
 from __future__ import annotations
 
@@ -116,7 +117,12 @@ class Fixture:
         self.source = self.root / "plugin"
         shutil.copytree(HERE / "plugin", self.source)
 
+        # The real tree now carries the two committed PNGs. A fixture that kept
+        # them would make `omit_assets` mean "use the repository's assets", and
+        # the absent-asset gate would never be exercised.
         self.assets = self.source / "assets"
+        if self.assets.exists():
+            shutil.rmtree(self.assets)
         self.assets.mkdir(exist_ok=True)
         icon_data = icon_bytes if icon_bytes is not None else make_png(icon, icon)
         logo_data = logo_bytes if logo_bytes is not None else make_png(logo, logo)
@@ -1010,13 +1016,13 @@ class TheRepositorysOwnArtifactsStayConsistent(unittest.TestCase):
         pinned = {slot["slot"]: slot["expected_sha256"] for slot in lock["slots"]}
         self.assertEqual(
             pinned["composerIcon"],
-            "644cf5a3ea36bcb16d1d560af45b3bec84aa4310ea510cdabcf80b304f13b111")
+            "49c68d16dd4e130ce909743e92a3ac4ec6ed2579abf85ac3b03ff08e844966dc")
         self.assertEqual(
             pinned["logo"],
-            "31bd3a24c3379190a8523a5dad0331d87b57a439f83a3d4ff9b77778d0d5c5f9")
+            "4f816acc8d94bef97475f92f3186136e8133764d92ee5dadb60915d6fe07aa9e")
         self.assertEqual(
             lock["approved_source"]["sha256"],
-            "b5ae68cd337a29cc3d6a6df3212041c496c5432544380e84b784306e65db4fec")
+            "9fc328825e113b465009b850a6eedf5e3b18680fb4a26b1b3c9877e8a9f9cef1")
 
         doc = (ROOT / "integrations" / "fleet-app-overlay"
                / "NEXT-BRAND-ASSET-LOCK.md").read_text(encoding="utf-8")
@@ -1030,16 +1036,19 @@ class TheRepositorysOwnArtifactsStayConsistent(unittest.TestCase):
         self.assertEqual(lock["on_absent"], builder.MISSING_BRAND_ASSET)
         self.assertEqual(lock["on_mismatched"], builder.BRAND_ASSET_MISMATCH)
 
-    def test_no_approved_image_is_committed_here(self) -> None:
-        """`status` in the lock says the bytes are not in this repository, and
-        this asserts it: a PNG appearing under assets/ would make the lock's
-        own warning false."""
-        assets = HERE / "plugin" / "assets"
-        if assets.is_dir():
-            committed = sorted(p.name for p in assets.iterdir() if p.suffix == ".png")
-            self.assertEqual(committed, [],
-                             "an image was committed; the lock says the approved "
-                             "bytes are not in this repository")
+    def test_the_committed_assets_are_the_bytes_the_lock_pins(self) -> None:
+        """The lock's digests were once a description of files that did not
+        exist here. Now they are the bytes in this tree, so the check runs the
+        other way: every pinned slot must be present and match."""
+        lock = json.loads((HERE / "brand-assets.lock.json").read_text(encoding="utf-8"))
+        for slot in lock["slots"]:
+            path = HERE / "plugin" / slot["shipped_path"]
+            with self.subTest(slot=slot["slot"]):
+                self.assertTrue(path.is_file(), f"{slot['shipped_path']} is absent")
+                self.assertEqual(
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    slot["expected_sha256"],
+                    f"{slot['shipped_path']} is not the pinned asset")
 
 
 if __name__ == "__main__":
