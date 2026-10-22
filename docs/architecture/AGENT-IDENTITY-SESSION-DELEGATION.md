@@ -1,4 +1,33 @@
-# Agent Identity, Session Resources and Multi-Agent Delegation
+# Agent 身份、Session 资源与多 Agent 委派
+
+> **这篇回答什么：** V2 里「Agent 身份、Session、职责、委派、消息」之间怎么拆分；为什么 Session 是资源而不是身份；以及哪些能力必须等 V1 的安全门通过之后才做。正文为英文设计原文，本页头部是中文导读。
+>
+> **状态：V2 设计，未构建。** 设计方向于 2026-10-16 评审；没有对应的服务、数据库或版本。本文**不授权**任何新服务、账号、daemon、插件安装或 Agent 执行。
+>
+> **先决条件：** [V1 正确性与安全门 #237](https://github.com/ProfessorZhi/serveros/issues/237)。在这些门通过前扩大 Agent 编排，只会放大不安全行为。
+>
+> **V1 读者请绕开：** 如果你在部署或验收 V1，读 [Fleet V1 拓扑与验收](FLEET-V1-TOPOLOGY-OPERATIONS.md) 就够了。本文的 V2 语义不适用于当前生产。
+
+| 节 | 回答的问题 |
+|---|---|
+| §1 | 为什么要分开 Work / 角色 / Session / Turn / Runtime / 设备 |
+| §2 | 现有权威归属：哪个事实由谁拥有 |
+| §3 | V1 的「logical Agent」与 V2 身份如何兼容 |
+| §4 | Session 资源池按容量管理，而不是复制私密对话历史 |
+| §5 | 交接时如何避免「源 Session 仍在跑」的陷阱（V1 P0） |
+| §6 | V1 安全门：持久效果与正确的租约 |
+| §7 | 没有一个巨型推理 Agent 时，分布式编排如何成立 |
+| §8 | Agent 间通信先定语义，再定传输 |
+| §9 | V2 Role Principal 与 Assignment 的最小扩展 |
+| §10 | V2 的 transport 选择：Codex 已属 V1，OpenAgents 是实验 |
+| §11 | 设备与客户端的边界 |
+| §12 | V1 / V2 各自的范围与证据要求 |
+| §13 | 最小迁移顺序 |
+| §14 | 验收与「诚实就绪」 |
+| §15 | 可追溯性与不变量 |
+
+<details>
+<summary>状态说明原文（英文，含日期与优先顺序）</summary>
 
 > **2026-10-22 Fleet V2 product-target companion:** [Fleet V2 Autonomous Organization / Owner Full-Control](FLEET-V2-AUTONOMOUS-ORGANIZATION.md) describes the new user-requested organization, native Runtime mix, device-repair team, self-update, and standing Owner-mode expectations. This file continues to define the existing identity/session/delegation invariants; the new product target neither grants live OS permission nor waives #237. [V2 phased acceptance](../plans/fleet-v2-delivery-and-acceptance.md).
 
@@ -11,6 +40,8 @@
 > **2026-10-17 Fleet V1 release-scope correction:** [Complete Fleet Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) and [per-node V1 plan](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) now require supported **Claude Code AND Codex** provider/session lifecycle on the three authorized devices, tested by a local CC Fleet Plugin before ChatGPT packaging. Earlier lines in this document deferring formal Codex acceptance until V2 are superseded. V2 retains identity-independent role pools, governed peer messaging and optional OpenAgents, not the basic Codex adapter. This is a target change, NOT evidence installed Codex is live.
 >
 > **Immediate prerequisite:** [V1 correctness and security gates #237](https://github.com/ProfessorZhi/serveros/issues/237). Expanding Agent orchestration before these gates are satisfied amplifies unsafe behavior.
+
+</details>
 
 ## 1. Decision: separation without a second system of record
 
