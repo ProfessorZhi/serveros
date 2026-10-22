@@ -67,6 +67,16 @@ MCP_FILE = ".mcp.json"
 MANIFEST_DIR = ".claude-plugin"
 MANIFEST_NAME = "plugin.json"
 
+#: The directory review asks every plugin that reaches a remote MCP server for a
+#: privacy policy. The notice ships inside the package (`PRIVACY.md`), and this
+#: is its durable address on `main`. Until the branch carrying it is merged that
+#: URL is not yet live; a stale-but-honest pointer is reported rather than a
+#: policy invented at a URL that never will be.
+PRIVACY_POLICY_URL = (
+    "https://github.com/ProfessorZhi/serveros/blob/main/"
+    "integrations/fleet-v1-first-install/plugin/PRIVACY.md"
+)
+
 
 def release_manifest() -> dict:
     """The agent-plugins.org manifest this adapter is the Claude Code shape of."""
@@ -85,6 +95,10 @@ def cc_manifest(release: dict, icon_path: str) -> dict:
     field: Claude Code ignores it at load time, and the plugin directory reads
     it, which is exactly where a brand slot belongs. It points at the same
     composer icon the portable package declares.
+
+    `privacyPolicyUrl` is required by the directory review for any plugin that
+    reaches a remote MCP server, which this one does. The notice itself is in
+    the package; the URL is where the directory can read it.
     """
     interface = (release.get("extensions", {})
                  .get("com.openai", {}).get("interface", {}))
@@ -100,6 +114,7 @@ def cc_manifest(release: dict, icon_path: str) -> dict:
         "repository": release.get("repository"),
         "keywords": release.get("keywords", []),
         "icon": "./" + icon_path,
+        "privacyPolicyUrl": PRIVACY_POLICY_URL,
     }
 
 
@@ -152,6 +167,9 @@ def generate(*, out: Path, next_mcp_url: str, scopes=RELEASE_SCOPES) -> dict:
         encoding="utf-8")
 
     written = [f"{MANIFEST_DIR}/{MANIFEST_NAME}", MCP_FILE]
+    for rel in ("README.md", "PRIVACY.md"):
+        shutil.copyfile(RELEASE_PLUGIN / rel, out / rel)
+        written.append(rel)
     for slot in lock["slots"]:
         rel = slot["shipped_path"]
         dest = out / rel

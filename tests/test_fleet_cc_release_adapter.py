@@ -9,7 +9,9 @@ portable package, not a second one:
 - the two brand assets are the bytes the lock pins, copied rather than
   regenerated;
 - the binding is the observed ingress, all six scopes, and the pinned loopback
-  port.
+  port;
+- the installer-facing README and the privacy notice ship unchanged, and the
+  manifest points at the notice a directory review can read.
 
 `claude plugin validate` is the authority for the manifest shape; these tests
 cover what it does not: that the content matches the release package, and that
@@ -87,6 +89,18 @@ class GeneratedFromTheReleasePackage(unittest.TestCase):
             with self.subTest(slot=slot["slot"]):
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
                                  slot["expected_sha256"])
+
+    def test_the_privacy_notice_ships_and_the_manifest_names_it(self) -> None:
+        manifest = json.loads(
+            (self.out / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["privacyPolicyUrl"], ra.PRIVACY_POLICY_URL)
+        self.assertEqual((self.out / "PRIVACY.md").read_bytes(),
+                         (RELEASE / "plugin" / "PRIVACY.md").read_bytes())
+
+    def test_the_readme_is_the_packages_own_and_is_long_enough_to_review(self) -> None:
+        shipped = (self.out / "README.md").read_bytes()
+        self.assertEqual(shipped, (RELEASE / "plugin" / "README.md").read_bytes())
+        self.assertGreaterEqual(len(shipped.decode("utf-8").split()), 40)
 
     def test_the_skills_are_byte_identical_to_the_shared_source(self) -> None:
         names = sorted(p.name for p in SHARED_SKILLS.iterdir() if p.is_dir())
