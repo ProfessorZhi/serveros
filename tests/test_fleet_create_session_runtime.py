@@ -96,7 +96,8 @@ class TwoAccounts:
     """
 
     def __init__(self, tmp: Path, *, first_create: bool = True,
-                 second_create: bool = True, second: bool = True):
+                 second_create: bool = True, second: bool = True,
+                 grants=None, provider_cls=_CreatingProvider):
         self.tmp = tmp
         first_anchor = tmp / "vince.node-secret"
         second_anchor = tmp / "fjd.node-secret"
@@ -121,16 +122,17 @@ class TwoAccounts:
             auth=AuthBinding(pat_anchor=first_anchor),
             server=ServerBinding(bind="127.0.0.1", port=0),
             policy=PolicyBinding(
-                create_allow={PROJECT: CreateGrant(), OTHER_PROJECT: CreateGrant()}),
+                create_allow=(grants if grants is not None else
+                              {PROJECT: CreateGrant(), OTHER_PROJECT: CreateGrant()})),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
         )
 
         # The SAME native session id from both runtimes, on purpose: that is the
         # case the runtime exists to disambiguate, and a fixture with distinct
         # ids would pass even if the address ignored the runtime entirely.
-        self.owner_provider = _CreatingProvider(
+        self.owner_provider = provider_cls(
             DEVICE, BASE_RUNTIME, native_id=OWNER_ID)
-        self.second_provider = _CreatingProvider(
+        self.second_provider = provider_cls(
             DEVICE, SECOND, native_id=OWNER_ID) if second else None
 
         instances = {provider_key(DEVICE, BASE_RUNTIME): self.owner_provider}
@@ -162,14 +164,20 @@ class TheAddressReachesTheAccountThatCreatedIt(unittest.TestCase):
         out = h.create()
         self.assertEqual(out["session_ref"], f"{DEVICE}|{BASE_RUNTIME}|{OWNER_ID}")
         self.assertEqual(SessionKey.parse(out["session_ref"]).provider, BASE_RUNTIME)
-        self.assertEqual([c[0] for c in h.owner_provider.calls], ["create"])
+        self.assertEqual([c[0] for c in h.owner_provider.calls],
+                         ["create", "get_session"],
+                         "create is followed by a readback: the mode the session "
+                         "actually took is read, not inferred from the request")
         self.assertEqual(h.second_provider.calls, [])
 
     def test_the_second_account_is_addressed_by_its_own_tag(self):
         h = TwoAccounts(self.tmp)
         out = h.create(runtime=SECOND)
         self.assertEqual(out["session_ref"], f"{DEVICE}|{SECOND}|{OWNER_ID}")
-        self.assertEqual([c[0] for c in h.second_provider.calls], ["create"])
+        self.assertEqual([c[0] for c in h.second_provider.calls],
+                         ["create", "get_session"],
+                         "create is followed by a readback of the mode that "
+                         "session actually took")
         self.assertEqual(h.owner_provider.calls, [],
                          "the base account must not be asked for a session the "
                          "caller asked the second account to mint")
@@ -232,8 +240,14 @@ class OneKeyCannotReplayAcrossAccounts(unittest.TestCase):
                          "here would hand back a session this account never made")
         self.assertEqual(first["session_ref"], f"{DEVICE}|{BASE_RUNTIME}|{OWNER_ID}")
         self.assertEqual(second["session_ref"], f"{DEVICE}|{SECOND}|{OWNER_ID}")
-        self.assertEqual([c[0] for c in h.owner_provider.calls], ["create"])
-        self.assertEqual([c[0] for c in h.second_provider.calls], ["create"])
+        self.assertEqual([c[0] for c in h.owner_provider.calls],
+                         ["create", "get_session"],
+                         "create is followed by a readback: the mode the session "
+                         "actually took is read, not inferred from the request")
+        self.assertEqual([c[0] for c in h.second_provider.calls],
+                         ["create", "get_session"],
+                         "create is followed by a readback of the mode that "
+                         "session actually took")
 
     def test_the_same_key_within_one_runtime_still_replays(self):
         """The control. Naming the runtime must not break idempotency itself."""
@@ -242,8 +256,10 @@ class OneKeyCannotReplayAcrossAccounts(unittest.TestCase):
         again = h.create(runtime=SECOND, idempotency_key="k-2")
         self.assertTrue(again["idempotent_replay"])
         self.assertEqual(again["session_ref"], first["session_ref"])
-        self.assertEqual([c[0] for c in h.second_provider.calls], ["create"],
-                         "a replay must not call the device a second time")
+        self.assertEqual([c[0] for c in h.second_provider.calls],
+                         ["create", "get_session"],
+                         "one create and the readback that follows it — a replay "
+                         "must not call the device a second time")
 
     def test_the_same_key_on_two_projects_still_mints_two_sessions(self):
         """The pre-existing axis, kept honest by the change to the scope."""

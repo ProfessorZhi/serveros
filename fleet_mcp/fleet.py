@@ -1612,6 +1612,69 @@ class FleetService:
                 "fresh_directory_created": True,
                 "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
 
+    # Modes that never wait for a person, and modes that do. These classify a
+    # value the DEVICE reported; they are not a list of what a caller may ask
+    # for (that is `create_allow.<project>.permission_modes`) and they never
+    # stand in for a readback. A mode this build does not know is `UNKNOWN`
+    # rather than guessed safe.
+    _UNATTENDED_SAFE_MODES = frozenset({"dontAsk", "plan", "bypassPermissions"})
+    _INTERACTIVE_MODES = frozenset({"default", "manual", "auto", "acceptEdits"})
+
+    def _read_effective_permission_mode(self, provider, key, resolved_mode):
+        """Ask the device what it actually applied; never infer it from the ask.
+
+        One `session_get`, after the session exists. A failure here is a finding
+        about the READBACK, not about the create: the session may well exist and
+        be fine, and turning a successful mint into an error because the second
+        read failed would report a failure this surface did not observe. The
+        caller gets `UNVERIFIED` and the reason, which is the honest answer.
+        """
+        try:
+            detail = provider.get_session(key)
+        except Exception as exc:  # noqa: BLE001 - any readback failure is a finding
+            return None, {
+                "state": "UNVERIFIED",
+                "prompt_risk": "UNKNOWN",
+                "requested": resolved_mode,
+                "effective": None,
+                "reason": f"session_get failed: {type(exc).__name__}",
+            }
+        native = detail.get("session") if isinstance(detail.get("session"), dict) else {}
+        mode = native.get("permissionMode")
+        if mode is None:
+            mode = detail.get("permissionMode")
+        if not isinstance(mode, str) or not mode.strip():
+            return None, {
+                "state": "UNVERIFIED",
+                "prompt_risk": "UNKNOWN",
+                "requested": resolved_mode,
+                "effective": None,
+                "reason": "the device did not report a permission mode for this "
+                          "session; a requested value is not proof of the effective "
+                          "one",
+            }
+        mode = mode.strip()
+        if resolved_mode is None:
+            state = "REPORTED"
+            reason = ("the device reported its own default; nothing was requested "
+                      "for it to be compared against")
+        elif mode == resolved_mode:
+            state = "CONFIRMED"
+            reason = "the device reported the mode that was resolved for this create"
+        else:
+            state = "MISMATCH"
+            reason = ("the device reported a mode other than the one resolved for "
+                      "this create")
+        risk = ("NONE" if mode in self._UNATTENDED_SAFE_MODES
+                else "HIGH" if mode in self._INTERACTIVE_MODES else "UNKNOWN")
+        return mode, {
+            "state": state,
+            "prompt_risk": risk,
+            "requested": resolved_mode,
+            "effective": mode,
+            "reason": reason,
+        }
+
     def create_session(
         self,
         principal: Principal,
@@ -1737,6 +1800,15 @@ class FleetService:
                     # exactly the stale grant this surface refuses everywhere
                     # else.
                     "control": self._control_block(principal, key) if key else None,
+                    "permission_readiness": {
+                        "state": "UNVERIFIED",
+                        "prompt_risk": "UNKNOWN",
+                        "requested": None,
+                        "effective": None,
+                        "reason": "replayed from the idempotency record; no device "
+                                  "call was made, so the effective mode of the "
+                                  "session that already exists is unknown here",
+                    },
                     "note": "replayed from the idempotency record; no second "
                             "session was created and nothing on the device was "
                             "called.",
@@ -1778,6 +1850,13 @@ class FleetService:
         }
         self._record_delivery_ack(claim, record,
                                   expect_execution=bool(message and message.strip()))
+        # The one fact the create could not know: what the DEVICE applied. Read
+        # back here, in the same answer, because a second call is a second
+        # round trip a caller can forget — and "created" being mistaken for
+        # "permission-ready" is the exact inference this block exists to stop.
+        effective_mode, readiness = self._read_effective_permission_mode(
+            adapter, key, permission_mode)
+        readiness["run_started"] = bool(message and message.strip())
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -1813,12 +1892,20 @@ class FleetService:
             "defaults": {
                 "requested": requested_defaults,
                 "resolved": resolved_defaults,
-                "effective": None,
+                "effective": {"model": None, "permission_mode": effective_mode},
                 "effective_reason": (
-                    "not read back: what the device applied is a property of the "
-                    "device, and this surface does not infer it from what it asked "
-                    "for. Null means UNKNOWN, never 'the resolved values were used'."),
+                    "permission_mode is what the device reported for this session, "
+                    "or null when it reported nothing; a null is UNKNOWN, never "
+                    "'the resolved value was used'. model is not read back: the "
+                    "provider reports no effective model on this surface."),
             },
+            # Four states, not a boolean: CONFIRMED and MISMATCH are comparisons
+            # against what was resolved, REPORTED is a device default with
+            # nothing to compare, and UNVERIFIED is the absence of an answer.
+            # `prompt_risk` is a statement about the mode the DEVICE reported:
+            # NONE means nothing in that mode waits for a person, HIGH means it
+            # does, UNKNOWN means this build does not know the mode.
+            "permission_readiness": readiness,
             "note": "session_create mints a session and, when a first message was "
                     "given, starts its run. It grants no authority over anything "
                     "that session may then operate on: see `control` for whether "
