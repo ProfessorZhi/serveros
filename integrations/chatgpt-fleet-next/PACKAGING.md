@@ -108,7 +108,7 @@ release/update; the tool surface moves by the server's own release.
 
 ## The ChatGPT tool-refresh gates
 
-These are the conditions that must hold before anyone may say "the 33 tools are
+These are the conditions that must hold before anyone may say "the 34 tools are
 live in the client". **None of them has been exercised from this worktree**, and
 each is marked with what it would take. This is a checklist for the acceptance
 run, not a report of one.

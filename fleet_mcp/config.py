@@ -198,6 +198,24 @@ class ProviderBinding:
 class AuthBinding:
     pat_anchor: Path | None = None
     owner_grant_anchor: Path | None = None
+    # The human login proof for the consent page: a `0600` file holding
+    # `<username>:$scrypt$<n>$<r>$<p>$<salt>$<hash>`. When present it REPLACES
+    # the PAT as the way a person approves an authorization — the operator types
+    # a username and password instead of pasting a token. The PAT is still what
+    # an API client authenticates with, unless `pat_enabled` is false.
+    password_anchor: Path | None = None
+    # Whether a PAT may authenticate an MCP request at all. True preserves the
+    # behaviour of every deployment that predates password login; a deployment
+    # that wants the browser login to be the only door sets it false. The code
+    # path is never removed, so turning it back on is one line of YAML.
+    pat_enabled: bool = True
+    #: How long a browser login lasts. Long enough that authorizing three MCP
+    #: clients in one sitting asks for the password once; short enough that a
+    #: borrowed laptop does not stay authorized overnight.
+    session_ttl: int = 8 * 3600
+    #: The TOTP secret anchor. Absent means password-only login; present means
+    #: the consent form also asks for the six-digit code.
+    totp_anchor: Path | None = None
     oauth_enabled: bool = True
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
@@ -331,6 +349,22 @@ class PolicyBinding:
     # configuration mistake should be an outage on start, not a silent widening
     # at 3am.
     allow_wildcard_create: bool = False
+    # Directory prefixes under which `project_create` may make a NEW project.
+    # A separate list from `create_allow` because that one is keyed by project
+    # ids that already exist, and this verb's whole purpose is the case where no
+    # project does. An entry is an absolute path; a project path is permitted
+    # when it equals an entry or lies beneath it, so `["/data/home/vince/
+    # workspace"]` admits `.../workspace/p-notes` and not `.../workspace-evil`.
+    #
+    # Empty — the default — is no project creation anywhere, exactly as an empty
+    # `create_allow` is no session minting. This is a second bound, not the
+    # only one: CloudCLI applies its own workspace root before it makes a
+    # directory, and a path outside that root is refused there too.
+    project_create_allow: tuple[str, ...] = ()
+    # `project_create_allow: ["*"]` would make the path allowlist meaningless,
+    # exactly as a wildcard create does. Refused at load: a configuration
+    # mistake should be an outage on start, not a silent widening at 3am.
+    allow_wildcard_project_create: bool = False
     # Sessions this runtime is additionally authorized to *interrupt*. A
     # separate list from `send_allow` on purpose, and not a superset of it: an
     # operator who authorized messaging a session has not thereby authorized
@@ -418,6 +452,7 @@ class FleetConfig:
                     project: grant.as_dict()
                     for project, grant in sorted(self.policy.create_allow.items())
                 },
+                "project_create_allow": list(self.policy.project_create_allow),
                 # Grants are reported as their *shape* — how many principals,
                 # which devices, which verbs — and not as the principal names.
                 # A principal name is a credential identifier (`oauth:<client_id>`,
@@ -670,6 +705,68 @@ def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
     return grants
 
 
+def _project_create_allow(policy_raw: dict[str, Any]) -> tuple[str, ...]:
+    """Parse `policy.project_create_allow` into path prefixes.
+
+        project_create_allow:
+          - /data/home/vince/workspace
+
+    A prefix is refused unless it is ABSOLUTE and NORMALISED. A relative prefix
+    would be resolved against whatever directory the daemon happened to start
+    in, which is a different answer on the next restart; a `..` segment would
+    make the prefix mean something other than it reads. Both are the kind of
+    mistake that turns an allowlist into a different allowlist at 3am.
+    """
+    raw = policy_raw.get("project_create_allow")
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.project_create_allow must be a list of absolute directory "
+            "prefixes (or a single-element list containing '*')",
+        )
+    prefixes: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise refuse(BAD_REQUEST,
+                         "policy.project_create_allow entries must be non-empty strings")
+        prefix = entry.strip()
+        if prefix == "*":
+            if len(raw) != 1:
+                raise refuse(
+                    BAD_REQUEST,
+                    "policy.project_create_allow must not mix '*' with named "
+                    "prefixes; '*' already admits every prefix",
+                )
+            if not bool(policy_raw.get("allow_wildcard_project_create", False)):
+                raise refuse(
+                    BAD_REQUEST,
+                    "policy.project_create_allow contains '*'. A wildcard makes "
+                    "the path allowlist meaningless; set "
+                    "`allow_wildcard_project_create: true` if that is genuinely "
+                    "intended.",
+                )
+            prefixes.append("*")
+            continue
+        if not os.path.isabs(prefix):
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.project_create_allow[{prefix!r}] must be an absolute "
+                f"path; a relative prefix is resolved against the daemon's "
+                f"working directory and means something different after a restart.",
+            )
+        normalised = os.path.normpath(prefix)
+        if normalised != prefix.rstrip("/") or "/.." in f"{prefix}/":
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.project_create_allow[{prefix!r}] must be written already "
+                f"normalised (no '..' segments, no trailing slash)",
+            )
+        prefixes.append(normalised)
+    return tuple(prefixes)
+
+
 def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tuple[str, ...]]]:
     """Parse `policy.operator_grants` into `{principal: {device_ref: (verbs,)}}`.
 
@@ -716,14 +813,12 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
         if not isinstance(principal, str) or not principal.strip():
             raise refuse(BAD_REQUEST, "policy.operator_grants principal names must be non-empty strings")
         name = principal.strip()
-        if name == "*":
-            raise refuse(
-                BAD_REQUEST,
-                "policy.operator_grants names '*' as a principal. A wildcard "
-                "principal would give every credential that can reach this "
-                "runtime the same authority — the global grant this field "
-                "exists to replace. Name the principals.",
-            )
+        # `"*"` is the vocabulary a deployment uses to say "every principal that
+        # can reach this runtime". It is not a default and it is not implied:
+        # a binding that does not write it grants nothing it did not name. The
+        # behaviour this field produces is therefore still entirely a property
+        # of the file, which is what lets one binding ship open and another
+        # ship closed with the same code.
         if not isinstance(devices, dict):
             raise refuse(
                 BAD_REQUEST,
@@ -738,14 +833,13 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
                     f"policy.operator_grants[{name!r}] device refs must be non-empty strings",
                 )
             ref = device_ref.strip()
-            if ref == "*":
-                raise refuse(
-                    BAD_REQUEST,
-                    f"policy.operator_grants[{name!r}] names '*' as a device. A "
-                    f"wildcard device would make the device axis meaningless; "
-                    f"write the device refs out.",
-                )
-            if not ref.startswith("device:"):
+            # `"*"` on the device axis is the same word as on the principal
+            # axis: "every enrolled device". It is not a fallback for a typo —
+            # an exact ref that names nothing still grants nothing — and the
+            # grant eligibility check (`ownership == company`) is applied after
+            # this lookup, so a wildcard cannot reach a device a named ref
+            # could not.
+            if ref != "*" and not ref.startswith("device:"):
                 raise refuse(
                     BAD_REQUEST,
                     f"policy.operator_grants[{name!r}] device ref {ref!r} is not a "
@@ -964,6 +1058,12 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         owner_grant_anchor=(
             Path(_expand(auth_raw["owner_grant_anchor"])) if auth_raw.get("owner_grant_anchor") else None
         ),
+        password_anchor=(
+            Path(_expand(auth_raw["password_anchor"])) if auth_raw.get("password_anchor") else None
+        ),
+        pat_enabled=bool(auth_raw.get("pat_enabled", True)),
+        session_ttl=int(auth_raw.get("session_ttl", 8 * 3600)),
+        totp_anchor=(Path(_expand(auth_raw["totp_anchor"])) if auth_raw.get("totp_anchor") else None),
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
@@ -1060,6 +1160,9 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         create_allow=create_grants,
         runtime_create_defaults=runtime_defaults,
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
+        project_create_allow=_project_create_allow(policy_raw),
+        allow_wildcard_project_create=bool(
+            policy_raw.get("allow_wildcard_project_create", False)),
         control_allow=control_allow,
         allow_wildcard_control=bool(policy_raw.get("allow_wildcard_control", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),

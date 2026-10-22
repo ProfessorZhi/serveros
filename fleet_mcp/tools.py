@@ -642,7 +642,7 @@ TOOLS: tuple[Tool, ...] = (
 # The CloudCLI native mirror — one typed tool per native verb
 # --------------------------------------------------------------------------
 #
-# Each of CloudCLI's 22 native verbs becomes `fleet_cloudcli_<native_name>`, a
+# Each of CloudCLI's 23 native verbs becomes `fleet_cloudcli_<native_name>`, a
 # first-class tool a caller discovers directly. The native parameters ride in an
 # `arguments` object rather than being flattened into this schema: the native
 # tool's own schema is the AUTHORITY on what it accepts, and a flattened copy
@@ -652,7 +652,7 @@ TOOLS: tuple[Tool, ...] = (
 # module relies on still holds.
 #
 # Governance lives in `FleetService.native_call`, not here: the handler is the
-# thinnest possible edge so there is one place, not twenty-two, where a write
+# thinnest possible edge so there is one place, not twenty-three, where a write
 # gate could be forgotten.
 
 def _native_handler(native: cloudcli_native.NativeTool):
@@ -664,8 +664,9 @@ def _native_handler(native: cloudcli_native.NativeTool):
             arguments=args.get("arguments") or {},
             session_ref=args.get("session_ref"),
             project=args.get("project"),
+            project_path=args.get("project_path"),
             # The second runtime axis, and it used to stop here: every one of
-            # the 22 mirrored verbs fell back to the device's own runtime, so a
+            # the mirrored verbs fell back to the device's own runtime, so a
             # device serving two runtimes was reachable through the hand-written
             # tools and NOT through the mirror. `native_call` already resolves
             # and gates this (session_ref agreement, binding existence, and the
@@ -695,10 +696,39 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             "(`policy.create_allow`) is checked on that name, never on a project "
             "read out of `arguments`."
         )
+    elif native.governance == cloudcli_native.GOV_PROJECT_CREATE:
+        class_note = (
+            "A project-create verb: it makes a NEW directory and project row, so "
+            "it needs the device's `allow_create` flag, `fleet:create`, a "
+            "`create` operator grant, and `project_path` — the location is "
+            "checked against `policy.project_create_allow`, never read out of "
+            "`arguments`, and must equal `arguments.projectPath`."
+        )
+    elif native.governance == cloudcli_native.GOV_APPROVE:
+        class_note = (
+            "An approve verb: it needs `fleet:approve` plus an `approve` operator "
+            "grant, and `session_ref` — the request's ownership is enumerated on "
+            "that session before it is answered, so a bare `requestId` is never "
+            "enough."
+        )
+    elif native.governance == cloudcli_native.GOV_NAVIGATE:
+        class_note = (
+            "A navigate verb: it needs `fleet:navigate` plus a `navigate` operator "
+            "grant, and it takes the same per-session floor as `send` — a caller "
+            "may only put a session it may already address in front of whoever is "
+            "at that machine."
+        )
+    elif native.governance == cloudcli_native.GOV_RECONFIGURE:
+        class_note = (
+            "A reconfigure verb: it changes a session's model, effort and "
+            "permission mode, so it carries `fleet:control` plus a `control` "
+            "operator grant and is still bounded by the project's own model/mode "
+            "ceiling."
+        )
     else:
         class_note = (
-            f"A {native.governance} verb: its Fleet scope is planned and not "
-            f"implemented, so it is refused rather than inherited."
+            f"A {native.governance} verb: this build has no Fleet floor for that "
+            f"class, so it is refused rather than inherited."
         )
     schema = cloudcli_native.mirrored_schema(native)
     properties = schema["properties"]
@@ -729,6 +759,11 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
         properties["project"] = _string(
             "Required for this verb. The project the new session is for; "
             "checked against `policy.create_allow`.")
+    if "project_path" in properties:
+        properties["project_path"] = _string(
+            "Required for this verb. The absolute, normalised directory to "
+            "create; checked against `policy.project_create_allow` and required "
+            "to equal `arguments.projectPath`.")
     properties["arguments"]["description"] = (
         f"`{native.name}`'s own arguments, passed through to the device "
         f"unchanged; `null` and an omitted key stay distinct. Arguments are "
@@ -764,7 +799,7 @@ TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
 # `fleet/fleet-mcp-contract.yaml` enumerates and what the surface contract tests
 # pin; enumerating 22 generated verbs in that contract is a contract-owned edit,
 # not this module's. `call_tool` and the MCP server's `tools/list` read the
-# MERGED set, so ONE MCP surface serves all 31 and a caller discovers the native
+# MERGED set, so ONE MCP surface serves all 34 and a caller discovers the native
 # verbs directly. Until the contract is extended, it declares the nine and this
 # module declares the generated mirror — the known integration point, reported
 # rather than hidden by quietly appending to `TOOLS`.
@@ -774,17 +809,17 @@ def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]
     A refusal that says «this name is not among the mirrored tools» is only
     actionable if the caller can FIND the mirrored set, so the set is itself a
     read tool. It carries each verb's governance, native scope, and the JSON
-    schema recorded from CloudCLI 1.39.0, so a client can discover the closed
-    set rather than guess.
+    schema recorded from CloudCLI (each entry names its `recorded_from`), so a
+    client can discover the closed set rather than guess.
     """
     return cloudcli_native.manifest()
 
 
 NATIVE_MANIFEST_TOOL = Tool(
     name="fleet_cloudcli_native_manifest",
-    title="The inherited CloudCLI surface (22 verbs)",
+    title="The inherited CloudCLI surface (23 verbs)",
     description=(
-        "The 22 CloudCLI-native verbs this surface mirrors as "
+        "The 23 CloudCLI-native verbs this surface mirrors as "
         "`fleet_cloudcli_<name>`, each with its governance class, the native "
         "scope it needs, and the input schema recorded from CloudCLI. Read this "
         "to discover the closed set; a name not in it is refused rather than "
@@ -815,14 +850,14 @@ NATIVE_CAPABILITY_TOOL = Tool(
     name="fleet_cloudcli_native_capability",
     title="Live capability snapshot for one device",
     description=(
-        "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
-        "verb's state (`USABLE` only when the device declares it AND this build "
-        "records a wired handler; `DECLARED_NOT_IMPLEMENTED` when the device "
-        "declares it but its handler is the named not-implemented refusal, e.g. "
-        "`overview`; `UNSUPPORTED_BY_DEVICE` when the device does not declare "
-        "it), the device's own annotations, and the source/version/sample time. "
-        "A device whose tool list cannot be read is reported `UNKNOWN` with a "
-        "reason — a count of 22 is never evidence that 22 answer."
+        "Read what ONE device ACTUALLY exposes of the 23 inherited verbs: each "
+        "verb's state (`USABLE` when the device declares it; "
+        "`UNSUPPORTED_BY_DEVICE` when it does not), which verbs rest on the "
+        "registry capture rather than on a call this surface made "
+        "(`unverified_handlers`), the device's own annotations, and the "
+        "source/version/sample time. A device whose tool list cannot be read is "
+        "reported `UNKNOWN` with a reason — a count of 23 is never evidence "
+        "that 23 answer."
     ),
     input_schema={
         "type": "object",

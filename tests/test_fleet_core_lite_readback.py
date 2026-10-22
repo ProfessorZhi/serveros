@@ -941,12 +941,13 @@ class NoFleetSurfaceIsTouchedTest(unittest.TestCase):
     def test_importing_this_module_does_not_change_the_tool_surface(self):
         from fleet_mcp import tools
         from fleet_mcp.version import TOOL_SURFACE_REVISION
-        # `fleet-mcp-4`: the two status tools gained an OPTIONAL `core_lite`
-        # block. The tool COUNT is unchanged, which is why this module
-        # still asserts it; the revision moved for the output shape.
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-4")
+        # Importing the readback module adds nothing: the surface is still the
+        # one `tools.py` declares. `fleet-mcp-4` moved for an output shape; a
+        # later revision, `fleet-mcp-5`, added the 23rd mirrored verb. Neither
+        # is this module's doing, and the counts below are the surface's.
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-5")
         self.assertEqual(len(tools.TOOLS), 9)
-        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS), 22)
+        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS), 23)
 
     def test_the_module_exports_nothing_that_could_be_mistaken_for_a_tool(self):
         for name in rb.__all__:

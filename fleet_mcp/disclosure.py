@@ -215,6 +215,24 @@ KIND_BY_FIELD: dict[str, str] = {
     "verb": CODE,
     "decision": CODE,
     "grant_reason": CODE,
+    # Who signed in at `/oauth/authorize`, and how it went.
+    #
+    # `username` is a `ref` and not a `code` because a real account name is
+    # neither lowercase-dotted nor a closed word. The narrowing that matters is
+    # not the kind but the call site: what is recorded here is an entry read
+    # from the operator's own password anchor, and the caller's submitted text
+    # is recorded ONLY when it matched one. An unknown name — which is exactly
+    # what a probe sends, and may be a pasted token — is passed as None and
+    # never reaches the log. That is the opposite of the usual direction and it
+    # is deliberate: `ref`'s residual (see the module docstring) accepts a
+    # token that happens to have the shape, and an unauthenticated form is the
+    # one place a stranger chooses the value.
+    "username": REF,
+    # The closed word this module decided: `ok`, `bad_password`, `bad_totp`,
+    # `unknown_user`, `no_totp_secret`, `missing_username`, `throttled`, `csrf`.
+    # A code and not `withheld`, for the same reason `grant_reason` is: the
+    # value is written here from a closed set, never taken from the request.
+    "login_result": CODE,
     # what came back
     "bytes": COUNT,
     "detail": WITHHELD,  # free text a caller filled

@@ -487,9 +487,11 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
     def test_no_tool_and_no_scope_was_added(self):
         from fleet_mcp import scopes
         from fleet_mcp.version import TOOL_SURFACE_REVISION
-        self.assertEqual(len(tools_mod.SERVED_TOOLS), 33)
+        self.assertEqual(len(tools_mod.SERVED_TOOLS), 34)
         self.assertEqual(len(scopes.ALLOWED_SCOPES), 6)
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-4")
+        # `fleet-mcp-5` is the 23rd mirrored verb, not a core-lite tool: this
+        # module still adds none, which is what the name below checks.
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-5")
         self.assertNotIn("core_lite_status",
                          [t.name for t in tools_mod.SERVED_TOOLS])
 
@@ -682,7 +684,7 @@ class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
     device*. G1 owns that projection and this lane does not edit it.
 
     The risk this test exists for is the quiet one: Fleet already carries a
-    per-device block (`core_lite`) in two of its 33 tools, so the cheapest way to
+    per-device block (`core_lite`) in two of its 34 tools, so the cheapest way to
     "support Device Ability" would be to grow that block until it answered
     questions G1 owns. Then two surfaces would answer "what can this device do",
     and the one that is not the authority would be the one somebody read.
@@ -750,9 +752,9 @@ class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
                 node.stop()
 
     def test_fleet_exposes_no_device_ability_tool(self):
-        """The catalogue is 33 and none of them is an Ability projection."""
+        """The catalogue is 34 and none of them is an Ability projection."""
         names = [tool.name for tool in tools_mod.SERVED_TOOLS]
-        self.assertEqual(len(names), 33)
+        self.assertEqual(len(names), 34)
         # TOKENS, not substrings: `fleet_cloudcli_native_capability` is the
         # CloudCLI capability read and contains "ability" inside "capability".
         # A substring check would fail on the one word it must not confuse, and

@@ -131,7 +131,7 @@ host: this repository refuses V1's host as the Next binding for that reason.
 
 ## What must not be claimed
 
-- **33 tools** is true and measured — `SERVED_TOOLS` is 33 (9 hand-written +
+- **34 tools** is true and measured — `SERVED_TOOLS` is 34 (9 hand-written +
   22 mirror + 2 descriptor tools), asserted in `tests/test_fleet_release_plan.py`.
   It is a count of what is *reachable*, not of what a given token may do.
 - **6 scopes** is true: `ALLOWED_SCOPES` equals `IMPLEMENTED_SCOPES` — all six,

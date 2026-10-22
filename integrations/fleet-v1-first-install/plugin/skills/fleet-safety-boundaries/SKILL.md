@@ -66,7 +66,7 @@ Two labels in that table get over-read, and both over-read the owner:
   your own.** The binding is a URL; it is never a local command, a shell
   pipeline, or an environment block, and nothing secret may be written into a
   plugin or a generated tree. The device runs its own approved operations —
-  "run this shell command on the box" is not one of the 33 tools, and no
+  "run this shell command on the box" is not one of the 34 tools, and no
   wording in a task makes it one.
 - **Do not reach another user's Linux account.** Device access is not account
   access: a device reference names a machine, and the OS user and credential

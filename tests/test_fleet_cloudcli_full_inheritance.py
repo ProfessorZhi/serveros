@@ -150,9 +150,9 @@ class Harness:
 # ---------------------------------------------------------------------------
 
 class ManifestTest(unittest.TestCase):
-    def test_all_twenty_two_native_tools_are_recorded(self):
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 22)
-        self.assertEqual(cloudcli_native.NATIVE_TOOL_COUNT, 22)
+    def test_every_native_tool_is_recorded(self):
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 23)
+        self.assertEqual(cloudcli_native.NATIVE_TOOL_COUNT, 23)
 
     def test_names_are_the_recorded_native_set(self):
         expected = {
@@ -162,14 +162,14 @@ class ManifestTest(unittest.TestCase):
             "session_send", "session_create", "session_interrupt", "session_start",
             "session_close", "ui_open_session", "session_cancel_queued",
             "session_reconfigure", "session_background", "approvals_list",
-            "approval_answer",
+            "approval_answer", "project_create",
         }
         self.assertEqual(set(cloudcli_native.NATIVE_BY_NAME), expected)
 
-    def test_read_write_split_is_twelve_and_ten(self):
+    def test_read_write_split_is_twelve_and_eleven(self):
         ro = [t for t in cloudcli_native.NATIVE_TOOLS if t.read_only]
         self.assertEqual(len(ro), 12)
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS) - len(ro), 10)
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS) - len(ro), 11)
 
     def test_approve_and_navigate_are_implemented_but_not_default_granted(self):
         self.assertEqual(
@@ -213,7 +213,7 @@ class ManifestTest(unittest.TestCase):
 
     def test_manifest_is_machine_readable(self):
         m = cloudcli_native.manifest()
-        self.assertEqual(m["count"], 22)
+        self.assertEqual(m["count"], 23)
         self.assertEqual(m["schema"], "serveros/fleet-cloudcli-native-manifest.v1")
         self.assertIn("fleet_cloudcli_", json.dumps(m, ensure_ascii=False))
 
@@ -796,14 +796,14 @@ class NodeRouteSignatureTest(unittest.TestCase):
 
 
 class SurfaceTest(unittest.TestCase):
-    def test_the_served_surface_is_the_nine_plus_the_twenty_two(self):
+    def test_the_served_surface_is_the_nine_plus_the_twenty_three(self):
         names = {t.name for t in tools_mod.SERVED_TOOLS}
         for tool in cloudcli_native.NATIVE_TOOLS:
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
-        self.assertEqual(len(mirrored), 22)
-        # nine hand-written + 22 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 33)
+        self.assertEqual(len(mirrored), 23)
+        # nine hand-written + 23 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 34)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
         self.assertEqual(len(tools_mod.tool_names()), 9)
@@ -838,7 +838,7 @@ class SurfaceTest(unittest.TestCase):
 
 
 class MatrixTest(unittest.TestCase):
-    """All 22 tools × the routing and the deny-path, counted, not sampled."""
+    """All 23 tools × the routing and the deny-path, counted, not sampled."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -887,7 +887,7 @@ class MatrixTest(unittest.TestCase):
 
     def test_the_whole_surface_is_discoverable_and_counted(self):
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
-        self.assertEqual(len(mirrored), 22)
+        self.assertEqual(len(mirrored), 23)
         self.assertTrue(mirrored <= {t.name for t in tools_mod.SERVED_TOOLS})
 
 
@@ -1466,21 +1466,21 @@ class CapabilitySnapshotTest(unittest.TestCase):
         self.assertEqual(snap["tools"]["session_send"]["state"], "USABLE")
         self.assertEqual(snap["tools"]["overview"]["state"],
                          cloudcli_native.UNSUPPORTED_BY_DEVICE)
-        self.assertEqual(len(snap["unsupported_by_device"]), 21)
+        self.assertEqual(len(snap["unsupported_by_device"]), 22)
 
     def test_an_unreadable_device_is_unknown_not_complete(self):
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO,
                                                    reason="needs a credential")
         self.assertEqual(snap["state"], "UNKNOWN")
         self.assertIsNone(snap["observed_count"])
-        self.assertEqual(len(snap["unsupported_by_device"]), 22)
+        self.assertEqual(len(snap["unsupported_by_device"]), 23)
         self.assertIn("credential", snap["reason"])
 
     def test_a_verb_the_build_did_not_record_is_reported_not_added(self):
         snap = cloudcli_native.capability_snapshot(
             device_ref=TOKYO, observed={"overview": {}, "session_teleport": {}})
         self.assertEqual(snap["unrecorded_by_build"], ["session_teleport"])
-        self.assertEqual(len(snap["tools"]), 22)   # the recorded set, unchanged
+        self.assertEqual(len(snap["tools"]), 23)   # the recorded set, unchanged
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1511,15 +1511,23 @@ class CapabilitySnapshotTest(unittest.TestCase):
 
     # -- a declared verb is not a verb that answers -------------------------
 
-    def test_a_declared_placeholder_is_never_usable(self):
-        """Being on the device's `tools/list` is not answering.
+    def test_a_declared_placeholder_is_usable_and_carries_its_caveat(self):
+        """Being on the device's `tools/list` IS answering, once the deps are in.
 
-        CloudCLI registers all 22 names at stage 4 and leaves the ones whose deps
-        are absent on the named `MCP_TOOL_NOT_IMPLEMENTED` refusal — the installed
-        1.39.0 registers `overview` as `notImplemented('overview', 'AC-247')`. A
-        snapshot calling such a verb `USABLE` would answer "what does this device
-        expose?" with a verb that cannot answer, which is the count-of-22 error
-        reappearing in the one place built to prevent it.
+        The 1.39.0 registry capture records eight verbs whose *default body*
+        (deps not injected) is `MCP_TOOL_NOT_IMPLEMENTED`. That is a property of
+        the capture, not a verdict about a running device, and treating it as one
+        reported eight working verbs as unavailable.
+
+        Measured 2026-10-22 against `device:tokyo-shared-dev-01`: `overview`,
+        `ui_clients_list`, `ui_visible_context`, `ui_last_opened_session`,
+        `session_search`, `run_get` and `quay_snapshot` all returned real
+        answers — including real handler errors (`RUN_NOT_FOUND`,
+        `no_quay_config`) rather than the not-implemented refusal.
+
+        So the state is `USABLE`, the recorded fact rides beside it, and the
+        residual doubt is named in `unverified_handlers` rather than turned into
+        a false "this device cannot do it".
         """
         observed = {t.name: {"annotations": {}, "schema": {}}
                     for t in cloudcli_native.NATIVE_TOOLS}
@@ -1528,25 +1536,32 @@ class CapabilitySnapshotTest(unittest.TestCase):
                               if t.placeholder_default)
         self.assertTrue(placeholders, "the recorded set must still carry placeholders")
         for name in placeholders:
-            self.assertEqual(snap["tools"][name]["state"],
-                             cloudcli_native.DECLARED_NOT_IMPLEMENTED)
-            self.assertNotEqual(snap["tools"][name]["state"], cloudcli_native.USABLE)
+            self.assertEqual(snap["tools"][name]["state"], cloudcli_native.USABLE)
             self.assertIs(snap["tools"][name]["placeholder_default"], True)
-        self.assertEqual(snap["declared_not_implemented"], placeholders)
+            self.assertIn("capture", snap["tools"][name]["handler_note"])
+        self.assertEqual(snap["unverified_handlers"], placeholders)
+        # Nothing here measured a refusal, so the measured-refusal list is empty
+        # — and that is not the same claim as "nothing is unimplemented".
+        self.assertEqual(snap["declared_not_implemented"], [])
 
-    def test_usable_is_exactly_the_wired_verbs(self):
-        """`USABLE` is withheld from every placeholder and given to every other
-        declared verb, so a declared count of 22 can never read as 22 answering."""
+    def test_every_declared_verb_is_usable(self):
+        """A declared verb is usable; the caveat is a separate field, never a
+        state. `UNSUPPORTED_BY_DEVICE` remains for verbs the device omits."""
         observed = {t.name: {} for t in cloudcli_native.NATIVE_TOOLS}
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
         usable = sorted(n for n, v in snap["tools"].items()
                         if v["state"] == cloudcli_native.USABLE)
-        wired = sorted(t.name for t in cloudcli_native.NATIVE_TOOLS
-                       if not t.placeholder_default)
-        self.assertEqual(usable, wired)
-        self.assertLess(len(usable), cloudcli_native.NATIVE_TOOL_COUNT)
-        self.assertEqual(len(usable) + len(snap["declared_not_implemented"]),
-                         cloudcli_native.NATIVE_TOOL_COUNT)
+        self.assertEqual(usable, sorted(t.name for t in cloudcli_native.NATIVE_TOOLS))
+        self.assertEqual(len(usable), cloudcli_native.NATIVE_TOOL_COUNT)
+        self.assertEqual(snap["unsupported_by_device"], [])
+
+    def test_a_verb_the_device_omits_is_unsupported(self):
+        observed = {t.name: {} for t in cloudcli_native.NATIVE_TOOLS}
+        observed.pop("overview")
+        snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
+        self.assertEqual(snap["tools"]["overview"]["state"],
+                         cloudcli_native.UNSUPPORTED_BY_DEVICE)
+        self.assertEqual(snap["unsupported_by_device"], ["overview"])
 
     def test_an_unknown_snapshot_claims_no_usable_verb(self):
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, reason="no list")
@@ -1669,13 +1684,30 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
     """Every restatement in `cloudcli_native`, held against the capture it restates."""
 
     def test_the_capture_is_the_build_the_table_claims(self):
+        """The capture is a subset of the table, and the difference says where
+        it came from.
+
+        Once a verb can be recorded from a newer source, "the table equals the
+        1.39.0 capture" is no longer the invariant that keeps the table honest —
+        equality would forbid ever recording one. The invariant that survives is
+        stricter in the direction that matters: every name the CAPTURE declares
+        is in the table (nothing the build has is missing), and every table entry
+        the capture does not declare carries a `recorded_from` that is not
+        1.39.0 (nothing is silently presented as coming from a build that never
+        had it).
+        """
         capture = _capture()
         self.assertEqual(capture["server"]["name"], "claudecodeui-mcp-gateway")
         self.assertEqual(capture["protocolVersion"], "2025-06-18")
         self.assertEqual(capture["cloudcli_package_version"], CAPTURED_CLOUDCLI_VERSION)
-        self.assertEqual(len(capture["tools"]), cloudcli_native.NATIVE_TOOL_COUNT)
-        self.assertEqual(sorted(entry["name"] for entry in capture["tools"]),
-                         sorted(cloudcli_native.NATIVE_BY_NAME))
+        captured = {entry["name"] for entry in capture["tools"]}
+        self.assertEqual(len(captured), 22)
+        self.assertLessEqual(captured, set(cloudcli_native.NATIVE_BY_NAME))
+        for name in set(cloudcli_native.NATIVE_BY_NAME) - captured:
+            self.assertNotEqual(
+                cloudcli_native.NATIVE_BY_NAME[name].recorded_from,
+                "CloudCLI 1.39.0",
+                f"{name} is not in the 1.39.0 capture but claims to come from it")
 
     def test_no_recorded_schema_omits_a_constraint_the_device_declares(self):
         problems = []

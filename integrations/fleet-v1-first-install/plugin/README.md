@@ -39,4 +39,4 @@ skill nested one level further is invisible rather than wrong.
 | `fleet-reuse-idle-session` | continue a session that already holds the context instead of minting a new one |
 | `fleet-create-with-grants` | creation is owner + project + runtime + scope, and is tracked by run id |
 | `fleet-evidence-review` | accept a delegated result only from evidence that was read |
-| `fleet-safety-boundaries` | 33 tools are not 33 permissions; runtimes are separate; do not interrupt |
+| `fleet-safety-boundaries` | 34 tools are not 34 permissions; runtimes are separate; do not interrupt |

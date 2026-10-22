@@ -1,7 +1,7 @@
-# The 33-tool catalogue and what actually authorizes a call
+# The 34-tool catalogue and what actually authorizes a call
 
-`TOOL_SURFACE_REVISION = "fleet-mcp-4"` serves **33 tools**: 9 hand-written,
-22 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 33
+`TOOL_SURFACE_REVISION = "fleet-mcp-5"` serves **34 tools**: 9 hand-written,
+23 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 34
 to every client that can reach the surface. That is discovery. It is not
 entitlement.
 
@@ -37,7 +37,7 @@ Consequences visible in the catalogue:
   or the default grant. A caller that needs them needs an OAuth token minted
   with them and a deployment that marks them grantable.
 
-## 2. The 33 rows
+## 2. The 34 rows
 
 Scope is **necessary, never sufficient**. The `gates` column names the binding
 checks that still apply after the scope. A scope-admitted call can be refused.
@@ -75,28 +75,29 @@ checks that still apply after the scope. A scope-admitted call can be refused.
 | 29 | `fleet_cloudcli_session_reconfigure` | mirror | `fleet:control` | device `allow_control` AND operator `control`; model/mode ceiling is a separate policy check |
 | 30 | `fleet_cloudcli_session_background` | mirror | `fleet:read` (list) / `fleet:control` (stop) | list: —; stop: device `allow_control` AND operator `control` |
 | 31 | `fleet_cloudcli_approval_answer` | mirror | `fleet:approve` | device `allow_control` AND operator `control`; approval ownership verified against the named session |
-| 32 | `fleet_cloudcli_native_manifest` | capability | **none** | — (static catalogue; discovery is not entitlement) |
-| 33 | `fleet_cloudcli_native_capability` | capability | `fleet:read` | — (live per-device answer) |
+| 32 | `fleet_cloudcli_project_create` | mirror | `fleet:create` | device `allow_create` AND `project_path` under `project_create_allow` AND operator `create`; `arguments.projectPath` must equal the outer `project_path` |
+| 33 | `fleet_cloudcli_native_manifest` | capability | **none** | — (static catalogue; discovery is not entitlement) |
+| 34 | `fleet_cloudcli_native_capability` | capability | `fleet:read` | — (live per-device answer) |
 
 ## 3. What each credential can reach
 
-Counts are scope admission only; rows 5, 8, 9 and 22–31 still need their
-binding gates.
+Counts are scope admission only; rows 5, 8, 9, 23, 24 and 27–32 still need
+their binding gates.
 
 | credential | scopes | tools admitted | tools denied at the scope |
 |---|---|---|---|
-| operator who writes nothing | `read`, `send` | **23** | **10** |
-| owner personal access token | `read`, `send`, `create` | **25** | **8** |
-| a token granted all six | all six | **33** | **0** |
+| operator who writes nothing | `read`, `send` | **23** | **11** |
+| owner personal access token | `read`, `send`, `create` | **26** | **8** |
+| a token granted all six | all six | **34** | **0** |
 
-The 10 tools the default grant cannot reach are the two creates, the six
+The 11 tools the default grant cannot reach are the three creates, the six
 controls (`fleet_interrupt_session` and five mirror verbs), the one navigate
 (`fleet_cloudcli_ui_open_session`) and the one approve
 (`fleet_cloudcli_approval_answer`). `fleet_cloudcli_session_background` is
 scope-admitted by `fleet:read` in its **list** branch only; the stop branch is
 still denied.
 
-The owner PAT's 8 denials are the same set minus the two creates.
+The owner PAT's 8 denials are the same set minus the three creates.
 
 ## 4. Differences that are real, and are not defects of this table
 
@@ -117,7 +118,14 @@ capability. They are recorded so nobody has to rediscover them from a refusal.
    recorded native scope is `cloudcli:session:control` only, so the Fleet scope
    is `fleet:control`. The model/mode ceiling is enforced by
    `policy.runtime_create_defaults`, not by `fleet:create`.
-4. **Stale prose.** `oauth.py`'s module docstring still says the scopes are
+4. **`session_create` vs `project_create`.** Both are creates and both need
+the device's `allow_create`, but they are floored over different subjects.
+`fleet_cloudcli_session_create` floors over an EXISTING project id and so
+checks `policy.create_allow`; `fleet_cloudcli_project_create` floors over a
+path that does not exist yet and so checks `policy.project_create_allow`, a
+prefix allowlist. Neither allowlist can stand in for the other, which is why
+the second has its own governance class rather than reusing `create`.
+5. **Stale prose.** `oauth.py`'s module docstring still says the scopes are
    read/send/create, and `config.py`'s comment above `OPERATOR_GRANT_VERBS`
    still says approve/navigate are planned. Both lists have since grown to six
    and five respectively. The code is authoritative; the prose is not.
@@ -148,7 +156,9 @@ documented contract (`fleet_status`) and the two protocol behaviours below.
 * It does not claim any tool reached a real device. `selftest.py` and `run.py`
   run against an in-process `FakeDevice`; the mode is `FAKE_DEVICE`.
 * It does not claim the installed Next canary serves this revision. The
-  installed canary is A `008a336`, which predates `fleet-mcp-4`.
+  installed canary is A `008a336`, which predates `fleet-mcp-4`, and the 23rd
+  verb comes from a CloudCLI fork branch the running device does not carry yet;
+  `fleet_cloudcli_native_capability` reports it `UNSUPPORTED_BY_DEVICE` there.
 * It does not claim `effective` anything. `fleet_create_session` reports
   `effective: null` because no device read it back; that is UNKNOWN, not a
   resolved value.

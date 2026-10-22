@@ -40,7 +40,7 @@ WHAT IT IS NOT
   `runtime/ability_projection.py` remains the module that writes `effective.json`;
 * **not a claim that anything is callable**: see `effective`;
 * **not a Fleet tool**: it adds no 34th tool and changes no served surface. `fleet_mcp/` is
-  not imported. The route to the 33-tool consumer is stated in README.md.
+  not imported. The route to the 34-tool consumer is stated in README.md.
 
 NO CLOCK, NO IO
 ---------------

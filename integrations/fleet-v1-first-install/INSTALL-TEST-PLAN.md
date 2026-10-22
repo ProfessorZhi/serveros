@@ -40,7 +40,7 @@ with.
 
 | # | claim | procedure | expected | evidence to keep | status |
 |---|---|---|---|---|---|
-| T1 | the surface is 33 tools | read the plugin's tool list back through the client | 33 **distinct** names, including `fleet_cloudcli_native_manifest` and `fleet_cloudcli_native_capability` | the tool list as returned, and the count | NOT_RUN |
+| T1 | the surface is 34 tools | read the plugin's tool list back through the client | 34 **distinct** names, including `fleet_cloudcli_native_manifest` and `fleet_cloudcli_native_capability` | the tool list as returned, and the count | NOT_RUN |
 | T2 | the AS advertises 6 scopes | read `scopes_supported` from the authorization-server discovery document | exactly `fleet:read`, `fleet:send`, `fleet:control`, `fleet:create`, `fleet:approve`, `fleet:navigate` | the document's `scopes_supported` array | NOT_RUN |
 | T3 | the default grant is two | consent with no explicit grant, then inspect the issued token | the token carries `fleet:read` and `fleet:send`; a create verb is refused | the token's scope claim (redacted to scope names) and the refusal | NOT_RUN |
 | T4 | a read-only grant cannot write | consent with `fleet:read` only, and attempt a write verb end to end | refused, with a refusal the client surfaces — not a silent no-op | the request, the refusal, the client's rendering | NOT_RUN |

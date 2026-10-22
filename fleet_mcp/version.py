@@ -16,7 +16,11 @@ SERVER_VERSION = "0.1.0"
 # that reads `-4` see the same 33 tools and different result shapes, and a
 # revision that only moved when the count moved would not be telling them that.
 # Every field that existed at `-3` is still there, unchanged.
-TOOL_SURFACE_REVISION = "fleet-mcp-4"
+# `fleet-mcp-5`: `fleet_cloudcli_project_create` is a twenty-third inherited
+# verb, so the served surface is 34 tools (9 authored + 23 mirrored + 2
+# capability reads). The count moved, and so did the closed set a caller
+# discovers — both are cached by a client, so both belong to the revision.
+TOOL_SURFACE_REVISION = "fleet-mcp-5"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

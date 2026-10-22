@@ -59,7 +59,10 @@ PINNED_SKILLS = {
     "fleet-device-and-session-discovery": "62283dd6484a26489db2f5cb4e1a74c8f0bb13a4388f7043bae2f4037a06b664",
     "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
     "fleet-reuse-idle-session": "7b74361db7a60586cbba871ede985893f07c256668dde0366f499a6b4af52b1e",
-    "fleet-safety-boundaries": "a61b5f3ca9cf0bf6fa89b2bef1d82ff8686a116ad6f1819571e4548d1e9b6a76",
+    # Re-pinned when the surface moved to `fleet-mcp-5` and the one sentence
+    # that names the tool count went 33 -> 34. Judged against the catalogue
+    # `fleet_mcp.tools.SERVED_TOOLS` actually declares; no other prose changed.
+    "fleet-safety-boundaries": "7949ee6e39e8983d1779a5515e0f7dc4f8a16fd9d3d361bd7cfd58dd627345f5",
 }
 
 

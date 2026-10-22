@@ -4,12 +4,12 @@ per-device rollout and rollback, in DRY-RUN by default.
 
 What this is for
 ----------------
-The 22-tool mirror changes three things a live ingress depends on: the served
+The 23-tool mirror changes three things a live ingress depends on: the served
 `tools/list`, the advertised OAuth scopes (adding `fleet:approve` and
 `fleet:navigate`), and the node route table (one route added). The served set is
-the hand-written nine, the 22 mirrored CloudCLI verbs, and the two read-only
+the hand-written nine, the 23 mirrored CloudCLI verbs, and the two read-only
 tools that describe the mirror (`fleet_cloudcli_native_manifest`,
-`fleet_cloudcli_native_capability`) — 33 today. This module READS that number
+`fleet_cloudcli_native_capability`) — 34 today. This module READS that number
 from `tools.SERVED_TOOLS` and never restates it, because a count written down in
 two places is a count that disagrees the first time one of them moves: this
 docstring said "9 → 31" while the tree served 33.
@@ -559,7 +559,7 @@ def main(argv=None) -> int:
         print(f"mode: {document['mode']}")
         print(f"installed: {document['precheck']['installed']['current']}")
         # The parts are named as a sum that ADDS UP: the hand-written nine, the
-        # mirrored 22, and the two tools that describe the mirror. An earlier
+        # mirrored 23, and the two tools that describe the mirror. An earlier
         # line here printed two of the three parts as though they were the whole.
         _source = document["precheck"]["source"]
         print(f"source serves: {_source['served_tools']} tools "

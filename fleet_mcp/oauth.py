@@ -165,7 +165,6 @@ class TokenStore:
     """Signing key, clients and refresh chains. Lives at 0600, outside git."""
 
     def __init__(self, root: Path, *, access_ttl: int, refresh_ttl: int) -> None:
-        self.root = root
         self.access_ttl = max(60, int(access_ttl))
         self.refresh_ttl = max(600, int(refresh_ttl))
         self._lock = threading.Lock()
@@ -175,6 +174,22 @@ class TokenStore:
         self._key = self._load_or_create_key()
         self._clients, self._refresh, self._revocations = self._load_state()
         self._revocation_stamp: tuple[int, int] | None = None
+
+    @property
+    def root(self) -> Path:
+        """The store's directory, for state that must outlive the process."""
+        return self._state_path.parent
+
+    @property
+    def signing_key(self) -> bytes:
+        """The store's HMAC key, for the one other signature this server makes.
+
+        The browser session cookie is signed with the same key as tokens: it is
+        the same deployment, the same rotation event, and a second key would be
+        a second thing to lose. Exposed as a value rather than by reaching into
+        `_key` so the field keeps its privacy.
+        """
+        return self._key
 
     # -- persistence -------------------------------------------------------
 
@@ -638,7 +653,11 @@ def _validate_redirect_uri(uri: str) -> None:
 def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str | None = None,
                  authorize_path: str = "/oauth/authorize",
                  granted: list[str] | None = None,
-                 feishu_start_path: str | None = None) -> str:
+                 feishu_start_path: str | None = None,
+                 login_mode: str = "pat",
+                 login_user: str | None = None,
+                 csrf: str | None = None,
+                 totp_required: bool = False) -> str:
     """The form the operator completes. Plain HTML, no script, no external refs.
 
     `granted` names the boxes to render ticked. It is None on the first render,
@@ -682,6 +701,12 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         f'<input type="hidden" name="requested_scope" '
         f'value="{html.escape(params.get("scope") or "")}">'
     )
+    # A CSRF token is only meaningful once the browser carries a session cookie:
+    # before that there is no ambient credential for a cross-site request to
+    # ride on, and a token would be ceremony. After login the cookie IS ambient,
+    # so the form binds the token to it and the POST compares.
+    if csrf:
+        hidden += f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
     requested_note = params.get("scope") or "(no scope requested)"
     error_html = (
         f'<p class="error">{html.escape(error)}</p>' if error else ""
@@ -697,8 +722,44 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         feishu_html = (
             f'<p class="muted">Or, if you are one of the identities the operator '
             f'registered, <a href="{html.escape(feishu_start_path)}{joiner}'
-            f'{html.escape(carry)}">sign in with Feishu</a> instead of using the '
-            f'owner token.</p>'
+            f'{html.escape(carry)}">sign in with Feishu</a> instead.</p>'
+        )
+    if login_mode == "password":
+        if login_user:
+            # The cookie already proved the human. Asking for the password again
+            # would be the friction this design exists to remove: three clients
+            # authorize in a row, and only the first one types anything.
+            credentials_html = (
+                f'<p class="muted">Signed in as <b>{html.escape(login_user)}</b>. '
+                f'Continue to approve this client, or '
+                f'<a href="{html.escape(authorize_path)}/logout">sign out</a>.</p>'
+                f'<p><label class="scope"><input type="checkbox" name="continue" value="yes" checked> '
+                f'<b>Continue as {html.escape(login_user)}</b></label></p>'
+            )
+        else:
+            totp_html = ""
+            if totp_required:
+                totp_html = (
+                    '<p><label for="totp"><b>One-time code</b></label><br>'
+                    '<span class="muted">The six digits from your authenticator app.</span></p>'
+                    '<input type="text" id="totp" name="totp" inputmode="numeric" '
+                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>'
+                )
+            credentials_html = (
+                '<p><label for="username"><b>Username</b></label></p>'
+                '<input type="text" id="username" name="username" autocomplete="username" required>'
+                '<p><label for="password"><b>Password</b></label></p>'
+                '<input type="password" id="password" name="password" '
+                'autocomplete="current-password" required>'
+                + totp_html
+            )
+    else:
+        credentials_html = (
+            '<p><label for="pat"><b>Owner access token</b></label><br>'
+            '<span class="muted">Required. This is the token at the configured '
+            '<code>pat_anchor</code> on the machine running this server. It is checked '
+            'here and never stored, logged or forwarded.</span></p>'
+            '<input type="password" id="pat" name="owner_token" autocomplete="off" required>'
         )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -708,7 +769,7 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
  body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1.25rem;color:#1b1b1f}}
  h1{{font-size:1.25rem}} .muted{{color:#5b5b66}} .error{{color:#a3232b;font-weight:600}}
  .scope{{display:block;border:1px solid #d8d8de;border-radius:8px;padding:.75rem 1rem;margin:.5rem 0}}
- input[type=password]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
+ input[type=password],input[type=text]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
  button{{margin-top:1.25rem;padding:.7rem 1.4rem;border:0;border-radius:8px;background:#1b1b1f;color:#fff;font:inherit;cursor:pointer}}
  dl{{display:grid;grid-template-columns:auto 1fr;gap:.25rem 1rem;font-size:.9rem}}
  dt{{color:#5b5b66}} dd{{margin:0;word-break:break-all}}
@@ -729,11 +790,7 @@ Revoking makes the client's existing access tokens stop working immediately.</p>
 <form method="post" action="{html.escape(authorize_path)}">
  {hidden}
  {''.join(rows)}
- <p><label for="pat"><b>Owner access token</b></label><br>
- <span class="muted">Required. This is the token at the configured
- <code>pat_anchor</code> on the machine running this server. It is checked
- here and never stored, logged or forwarded.</span></p>
- <input type="password" id="pat" name="owner_token" autocomplete="off" required>
+ {credentials_html}
  <button type="submit">Approve</button>
 </form>
 </body></html>
@@ -896,12 +953,27 @@ class AuthorizationServer:
         result = self.store.revoke_presented_token(token, client_id=client_id)
         return result
 
-    def approve(self, *, params: dict[str, str], owner_token: str,
-                granted: list[str]) -> tuple[str, RegisteredClient]:
-        """The human step. Returns (code, client) or raises."""
+    def approve(self, *, params: dict[str, str], granted: list[str],
+                owner_token: str = "",
+                verified_user: str | None = None) -> tuple[str, RegisteredClient]:
+        """The human step. Returns (code, client) or raises.
+
+        Two ways to prove the human, and the caller picks exactly one:
+
+        *   `verified_user` — a username whose password and one-time code were
+            checked by `http_transport` before this call. The check happens
+            there because it needs the throttle, the replay record and the
+            error page, none of which belong in the code-minting path.
+        *   `owner_token` — the PAT, compared here, for a deployment that has
+            not moved to password login.
+
+        `verified_user is None` is not "skip the check": it selects the PAT
+        branch, which refuses when the token does not match.
+        """
         client = self.validate_authorize(params)
-        if not self._check_owner(owner_token):
-            raise OAuthError("access_denied", "owner token did not verify", status=401)
+        if verified_user is None:
+            if not self._check_owner(owner_token):
+                raise OAuthError("access_denied", "owner token did not verify", status=401)
         requested = set((params.get("scope") or "").split())
         scopes = tuple(sorted(requested & set(granted) & set(self.auth.grantable_scopes)))
         if not scopes:

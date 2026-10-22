@@ -7,11 +7,11 @@ make a real client test meaningful and keeps them apart:
 
 * the **fixture package** — a stdio binding, the five canonical Skills written
   byte for byte, a `TEST_FIXTURE_ONLY` marker, and no release-shaped claim;
-* the **protocol surface** — the real `fleet_mcp` dispatcher and the real 33
+* the **protocol surface** — the real `fleet_mcp` dispatcher and the real 34
   tools, driven over stdio by a fixture device, with a `fleet:read` principal.
 
 The negative cases are the point of the second half: discovery advertises all
-33 tools, and a write is still refused `SCOPE_DENIED` before the fake provider
+34 tools, and a write is still refused `SCOPE_DENIED` before the fake provider
 is reached. No network, no credential, no model call, and the `claude` CLI is
 not invoked here; the real-client run is `run_cc_client_e2e.py`, whose receipt
 records `PLUGIN_LOAD_OK` / `MCP_INITIALIZE_OK` / `TOOLS_LIST_OK` / `AUTH_SCOPE`
@@ -202,11 +202,11 @@ class TheProtocolSurface(unittest.TestCase):
         self.assertEqual(response["result"]["serverInfo"]["name"],
                          "serveros-fleet-mcp")
 
-    def test_discovery_is_all_33_tools_and_is_not_entitlement(self) -> None:
+    def test_discovery_is_all_34_tools_and_is_not_entitlement(self) -> None:
         tools = self.rpc("tools/list")["result"]["tools"]
         names = [tool["name"] for tool in tools]
-        self.assertEqual(len(names), 33)
-        self.assertEqual(len(set(names)), 33)
+        self.assertEqual(len(names), 34)
+        self.assertEqual(len(set(names)), 34)
         self.assertIn("fleet_list_devices", names)
         self.assertIn("fleet_send_to_session", names)
         self.assertIn("fleet_cloudcli_native_capability", names)

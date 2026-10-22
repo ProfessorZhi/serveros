@@ -31,7 +31,7 @@ Already covered offline, so you do not have to re-derive it by hand:
 | Repeating a create with the same `idempotency_key` makes one session | `tests/test_fleet_create_session_runtime.py` (runtime- and project-scoped keys), `tests/test_fleet_create_session.py` |
 | An idempotency key does not replay across runtimes or projects | `tests/test_fleet_create_session_runtime.py` |
 | Scope denial is a refusal, not a silent no-op | `tests/test_fleet_mcp_surface.py`, `tests/test_fleet_create_policy.py` |
-| The surface is 33 tools and 6 scopes, and the documents say so | `tests/test_fleet_next_release_gate.py` |
+| The surface is 34 tools and 6 scopes, and the documents say so | `tests/test_fleet_next_release_gate.py` |
 
 Not covered offline, and not coverable offline: **whether any of it works on a
 real device with a real account.**
@@ -58,7 +58,7 @@ reports two ids is not proof that two exist.
 
 ## 3. The surface
 
-`33 tools / 6 scopes` is a claim about what is *reachable*, and a registered
+`34 tools / 6 scopes` is a claim about what is *reachable*, and a registered
 tool name is not a usable verb. For each of the six scopes, ask for the receipt
 that shows a call **succeeding** with it and a call **refused** without it. The
 scope list is exact: an extra one means a client can be issued authority no code

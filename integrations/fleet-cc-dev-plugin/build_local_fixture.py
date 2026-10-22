@@ -60,7 +60,7 @@ FIXTURE_DISPLAY_NAME = "ServerOS Fleet (local test fixture)"
 FIXTURE_VERSION = "0.0.1"
 FIXTURE_MARKER = "TEST_FIXTURE_ONLY.md"
 SERVER_NAME = "serveros-fleet-fixture"
-SERVED_TOOL_COUNT = 33
+SERVED_TOOL_COUNT = 34
 
 MARKER_BODY = """# TEST FIXTURE ONLY — not the release, not the development adapter
 

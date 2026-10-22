@@ -9,10 +9,10 @@ false and an earlier revision of this lane reported one as another:
    component. This is a directory/registration fact. It enumerates no tool.
 2. **MCP_INITIALIZE_OK / TOOLS_LIST_OK** — `claude --plugin-dir … mcp list`
    actually starts the stdio server, sends `initialize`,
-   `notifications/initialized` and `tools/list`, and reads a 33-tool answer.
+   `notifications/initialized` and `tools/list`, and reads a 34-tool answer.
    The server's wire log is the evidence; "Connected" alone is not.
 3. **AUTH_SCOPE** — the principal holds exactly `fleet:read`.
-   `tools/list` still advertises all 33 tools (discovery is not entitlement),
+   `tools/list` still advertises all 34 tools (discovery is not entitlement),
    and a `fleet_send_to_session` call is refused `SCOPE_DENIED` before the fake
    provider is reached.
 4. **CLIENT_E2E** — only when `--model-readbacks` is passed: a real `claude -p`
@@ -264,14 +264,14 @@ class Runner:
         counts = [row.get("tool_count") for row in rows
                   if row.get("event") == "response" and row.get("method") == "tools/list"]
         count = counts[-1] if counts else None
-        ok = connected and initialize and initialized and tools_list and count == 33
+        ok = connected and initialize and initialized and tools_list and count == 34
         self.record(
             "MCP_INITIALIZE_OK", "PASS" if initialize and initialized else "FAIL",
             "the client sent initialize and notifications/initialized"
             if initialize and initialized else "handshake frames missing",
             {"methods": methods, "connected": connected})
         self.record(
-            "TOOLS_LIST_OK", "PASS" if tools_list and count == 33 else "FAIL",
+            "TOOLS_LIST_OK", "PASS" if tools_list and count == 34 else "FAIL",
             f"tools/list returned {count} tools" if tools_list
             else "tools/list was not sent",
             {"tool_count": count, "connected": connected,
@@ -556,7 +556,7 @@ class Runner:
         ok = all(checks.values())
         self.negative_results = results
         self.record("AUTH_SCOPE", "PASS" if ok else "FAIL",
-                    "read-only principal: 33 tools discovered, write refused "
+                    "read-only principal: 34 tools discovered, write refused "
                     "SCOPE_DENIED, provider never reached"
                     if ok else f"failed: {[k for k, v in checks.items() if not v]}",
                     {"checks": checks, "results": results})
@@ -575,11 +575,11 @@ class Runner:
         devices_total = (results.get("list_devices") or {}).get("total")
         sessions_total = (results.get("list_sessions") or {}).get("total")
         capability_state = (results.get("capability") or {}).get("state")
-        ok = (tools_count == 33 and devices_total == 1 and sessions_total == 1
+        ok = (tools_count == 34 and devices_total == 1 and sessions_total == 1
               and capability_state == "OBSERVED" and sends == 0)
         self.record(
             "TEMP_DAEMON_VIRTUAL_FACTS", "PASS" if ok else "FAIL",
-            "local stdio daemon: 33 tools, one virtual device and session, "
+            "local stdio daemon: 34 tools, one virtual device and session, "
             "OBSERVED capability" if ok else
             "the local temporary daemon did not answer the virtual facts",
             {"virtual_facts": True, "real_device": False,

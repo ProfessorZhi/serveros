@@ -332,10 +332,10 @@ def evaluate(report):
     if not isinstance(surface, dict):
         surface = {}
     names = surface.get('observed_tools')
-    if (not isinstance(names, list) or len(names) != 33
+    if (not isinstance(names, list) or len(names) != 34
             or any(not isinstance(n, str) or not n for n in names)
-            or len(set(names)) != 33):
-        block('tool_surface: must discover exactly 33 distinct real tools')
+            or len(set(names)) != 34):
+        block('tool_surface: must discover exactly 34 distinct real tools')
     given_scopes = surface.get('authorized_scopes')
     if (not isinstance(given_scopes, list) or
             any(not isinstance(v, str) for v in given_scopes) or

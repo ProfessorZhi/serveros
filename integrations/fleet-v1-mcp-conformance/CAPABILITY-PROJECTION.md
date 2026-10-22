@@ -7,7 +7,7 @@ code can and cannot answer.
 
 ## The catalogue, as the plan defines it
 
-    33 tools = 9 authored Fleet + 22 CloudCLI native mirror + 2 capability reads
+    34 tools = 9 authored Fleet + 23 CloudCLI native mirror + 2 capability reads
     6 scopes = read / send / create / control / approve / navigate
 
 The six are **possible** scopes. Advertising six is not holding six: issuance is
@@ -20,8 +20,11 @@ Both are read-scoped, typed tools on the served surface — not a side channel.
 
 **`fleet_cloudcli_native_manifest`** — the whole inherited surface,
 machine-readable: one entry per recorded verb with its governance class, the
-native scope it needs, and the JSON schema recorded from CloudCLI 1.39.0. This is
-the **closed set**. A name not in it is refused rather than forwarded, which is
+native scope it needs, and the JSON schema recorded from CloudCLI. Each entry
+carries the `recorded_from` it came from, because the 23rd verb
+(`project_create`) is recorded from the CloudCLI fork branch
+`feat/fleet-project-create-20261021 @ 639ded6` and not from 1.39.0. This is the
+**closed set**. A name not in it is refused rather than forwarded, which is
 what makes "the surface grew a tool" a decision rather than a side effect.
 
 **`fleet_cloudcli_native_capability`** — what ONE device **actually** exposes,
@@ -29,14 +32,25 @@ what makes "the surface grew a tool" a decision rather than a side effect.
 
 | state | meaning |
 |---|---|
-| `USABLE` | the device declares it **and** this build records a wired handler |
-| `DECLARED_NOT_IMPLEMENTED` | the device declares it, its handler is the named not-implemented refusal. **Being on `tools/list` is not answering** |
-| `UNSUPPORTED_BY_DEVICE` | the device does not declare it. The 22 mirrored names are not 22 working verbs on every machine, and a count of 22 is not evidence that any answer |
+| `USABLE` | the device declares it. That is the whole of what a `tools/list` capture establishes |
+| `UNSUPPORTED_BY_DEVICE` | the device does not declare it. The 23 mirrored names are not 23 working verbs on every machine, and a count of 23 is not evidence that any answer |
 | `UNKNOWN` | the device's tool list could not be read, with a reason. Never an assumed-complete list |
 
 it also carries `recorded_count`, `source`, `version` and `sampled_at`. A verb the
 device declares that this build did **not** record is reported separately rather
 than added — a name off the wire is not a capability this build decided to offer.
+
+`unverified_handlers` names the verbs whose `USABLE` rests on the CloudCLI 1.39.0
+registry capture rather than on a call this surface made: eight verbs are
+recorded with `placeholder_default: true`, because their *default body when deps
+are not injected* is the named `MCP_TOOL_NOT_IMPLEMENTED` refusal. A running
+device injects them. This used to force a `DECLARED_NOT_IMPLEMENTED` state and
+thereby reported eight answering verbs as unavailable — measured 2026-10-22
+against `device:tokyo-shared-dev-01`, all eight testable ones returned real
+answers (including real handler errors such as `RUN_NOT_FOUND` and
+`no_quay_config`). `declared_not_implemented` remains in the payload for a verb a
+device is **measured** answering with that refusal; nothing in a `tools/list`
+capture can earn it.
 
 ## What that gives the Tokyo local Claude Code Fleet Plugin
 
@@ -49,7 +63,7 @@ tip, the first five are answerable **in code** and two of them carry provenance:
 * negative authorization — the six scopes, the node owner floor, the per-runtime
   binding, the project allowlist and the operator grant are checked *separately*,
   and each has a negative test;
-* session lifecycle — the 22 mirrors plus the authored verbs;
+* session lifecycle — the 23 mirrors plus the authored verbs;
 * Core and network health — the signed Core route (`#231`), with `core_lite`
   beside `provider` rather than derived from it;
 * **raw receipts** — every answer above is the receipt; there is no second,
@@ -65,8 +79,10 @@ of **not** becoming "a second registry copied per device". The authority is
 source/revision, while *installation / ready / supported* are observed per
 device.
 
-The two tools above are **CloudCLI-specific** — they project the 22 mirrored
-verbs. They are not the device's Ability registry, and reading them as one would
+The two tools above are **CloudCLI-specific** — they project the 23 mirrored
+verbs. `project_create` is the one of those 23 the running device cannot yet
+answer: the mirror exists in Fleet, the CloudCLI side is not deployed there, so
+the capability read reports it `UNSUPPORTED_BY_DEVICE` rather than claiming it. They are not the device's Ability registry, and reading them as one would
 be exactly the substitution the architecture forbids.
 
 So the next step is a **projection, not a store**:
@@ -90,5 +106,6 @@ settled first — which is why it is named here rather than invented here.
 
 No device was contacted for any statement above; the capability reads are
 described from their code and their tests. Nothing in this candidate is installed
-(the installed Next revision is A `008a336`, which predates all of it), and no
+(the installed Next revision is A `008a336`, which predates `fleet-mcp-5` as
+well), and no
 mock in this repository is evidence about a live machine.

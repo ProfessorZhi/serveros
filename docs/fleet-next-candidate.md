@@ -22,8 +22,9 @@ Line-level review of the inherited work belongs to its own pull requests
 
 ## The surface, counted from the code
 
-- **33 tools** = `TOOLS` (9 hand-written) + `NATIVE_MIRROR_TOOLS` (22 CloudCLI
-  1.39.0 verbs) + the two mirror-descriptor tools. `SERVED_TOOLS` in
+- **34 tools** = `TOOLS` (9 hand-written) + `NATIVE_MIRROR_TOOLS` (23 CloudCLI
+  verbs: 22 from 1.39.0 plus `project_create` from the maintained fork) + the
+  two mirror-descriptor tools. `SERVED_TOOLS` in
   `fleet_mcp/tools.py` is the definition; `tests/test_fleet_multi_runtime_routing.py`
   and `tests/test_fleet_release_plan.py` assert the count.
 - **6 scopes** — `fleet_mcp/scopes.py`: `fleet:read`, `fleet:send`,
@@ -102,8 +103,8 @@ prints a note saying it will not.
 
 | | state | basis |
 |---|---|---|
-| **CODE READY** | the 33-tool surface, 6 scopes, grant model, per-runtime routing, Feishu SSO broker and the packaging above | present in this branch |
-| **TESTED** | all of the above | asserted in `tests/test_fleet_*.py`, including `test_fleet_multi_runtime_routing.py` (33 tools, per-runtime grants, Dell two-runtime routing) against **fake providers** |
+| **CODE READY** | the 34-tool surface, 6 scopes, grant model, per-runtime routing, Feishu SSO broker and the packaging above | present in this branch |
+| **TESTED** | all of the above | asserted in `tests/test_fleet_*.py`, including `test_fleet_multi_runtime_routing.py` (34 tools, per-runtime grants, Dell two-runtime routing) against **fake providers** |
 | **DEVICE NOT DEPLOYED** | every device | `docs/fleet-multi-runtime-design.md`: "nothing here is deployed and no second runtime exists on any machine yet"; `fleet_mcp/node/README.linux.md`: "`device:llm-lab-dell` is not enrolled by any of this" |
 | **CLIENT NOT INSTALLED** | every client | no upload, no install, no refresh has been performed (see `integrations/chatgpt-fleet-next/PACKAGING.md`) |
 

@@ -2,7 +2,7 @@
 
 Two failure modes this exists for, and they are different.
 
-The first is a change to the surface. "33 tools, 6 scopes, read+send by default,
+The first is a change to the surface. "34 tools, 6 scopes, read+send by default,
 Feishu off" is the sentence several documents and pull requests are written
 against, and every one of those numbers is a constant someone can edit in a
 one-line commit while the prose stays exactly as it was. A gate that reads the
@@ -40,17 +40,19 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
     """Every number here is quoted in at least one document. Change one and the
     prose becomes wrong, which is the thing a test can catch and review cannot."""
 
-    def test_thirty_three_tools_are_served(self):
-        self.assertEqual(len(tools.SERVED_TOOLS), 33)
+    def test_thirty_four_tools_are_served(self):
+        self.assertEqual(len(tools.SERVED_TOOLS), 34)
         self.assertEqual(len(tools.TOOLS), 9)
-        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 24)
+        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 25)
 
     def test_the_tool_surface_revision_is_the_one_the_contract_declares(self):
         import yaml
 
-        # `fleet-mcp-4`: an OUTPUT shape changed (the optional `core_lite`
-        # block on the two status tools). The tool count did not.
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-4")
+        # `fleet-mcp-5`: the mirrored set grew from 22 to 23
+        # (`fleet_cloudcli_project_create`), so both the count and the closed
+        # set a client caches moved. `fleet-mcp-4` was the earlier OUTPUT-only
+        # change (the optional `core_lite` block on the two status tools).
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-5")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -271,6 +272,40 @@ class FleetService:
                 return device.ownership
         return None
 
+    def _declared_grant_verbs(self, principal_name: str, device_ref: str,
+                              runtime: str = BASE_RUNTIME) -> tuple[str, ...]:
+        """What the binding *declares* for this principal on this device.
+
+        Eligibility is deliberately not applied here. This answers "did the
+        operator write a grant that covers this", which is the question both
+        `_may_send` and `_may_control` need in order to tell a missing grant
+        apart from a grant written against a device it cannot reach. Applying
+        eligibility here would erase exactly the distinction the refusal exists
+        to draw, and the caller applies it where it belongs.
+        """
+        grants = self.config.policy.operator_grants
+        # An entry for this principal is authoritative even when it is empty:
+        # `{}` means "this principal holds nothing", and falling through to the
+        # wildcard would turn an explicit deny into a grant. Only an ABSENT
+        # principal entry consults `"*"`.
+        per_device = grants[principal_name] if principal_name in grants else grants.get("*", {})
+        if not per_device:
+            return ()
+        # Looked up under the SAME key a provider binding uses: the base runtime
+        # keeps the bare `device:<id>` key, so a grant written before a device
+        # could serve two means exactly what it meant then, and a SECOND runtime
+        # needs its own entry. That is the "independent owner consent" a new
+        # runtime requires — it is not inherited from the runtime beside it.
+        #
+        # `"*"` is consulted only when no exact device entry exists, for the
+        # same reason: an exact entry says what this device holds, including
+        # when what it holds is an empty list.
+        key = provider_key(device_ref, runtime)
+        verbs = per_device[key] if key in per_device else per_device.get("*")
+        if not verbs:
+            return ()
+        return tuple(verbs)
+
     def _operator_grant_verbs(self, principal: Principal, device_ref: str,
                               runtime: str = BASE_RUNTIME) -> tuple[str, ...]:
         """The verbs `principal` holds on `device_ref` — `()`, usually.
@@ -299,15 +334,7 @@ class FleetService:
         device's owner changes the answer here, with no second list to keep in
         step.
         """
-        per_device = self.config.policy.operator_grants.get(principal.name)
-        if not per_device:
-            return ()
-        # Looked up under the SAME key a provider binding uses: the base runtime
-        # keeps the bare `device:<id>` key, so a grant written before a device
-        # could serve two means exactly what it meant then, and a SECOND runtime
-        # needs its own entry. That is the "independent owner consent" a new
-        # runtime requires — it is not inherited from the runtime beside it.
-        verbs = per_device.get(provider_key(device_ref, runtime))
+        verbs = self._declared_grant_verbs(principal.name, device_ref, runtime)
         if not verbs:
             return ()
         if not self._device_is_grant_eligible(device_ref):
@@ -370,9 +397,8 @@ class FleetService:
             # does not make eligible. Only the third is a policy question rather
             # than a typo, and it is the one worth saying out loud — a grant
             # written against a personal device reads as authority and is inert.
-            granted_here = (
-                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
-            )
+            granted_here = self._declared_grant_verbs(
+                principal.name, key.device_ref, key.provider)
             if granted_here:
                 ownership = self._device_ownership(key.device_ref)
                 # Recorded as well as reported, because the operator who wrote
@@ -388,9 +414,13 @@ class FleetService:
                     grant_reason="device-not-eligible",
                     session_ref=key.ref,
                 )
+                scope = self.config.policy.operator_grants
+                who = principal.name if principal.name in scope else "*"
+                per_device = scope.get(who, {})
+                named = provider_key(key.device_ref, key.provider)
+                what = named if named in per_device else "*"
                 detail = (
-                    f"`policy.operator_grants[{principal.name!r}]"
-                    f"[{provider_key(key.device_ref, key.provider)!r}]` "
+                    f"`policy.operator_grants[{who!r}][{what!r}]` "
                     f"does name {list(granted_here)}, but {key.device_ref} is "
                     f"{ownership!r} and only {GRANT_ELIGIBLE_OWNERSHIP!r} devices "
                     f"may be granted. The grant is inert here rather than "
@@ -483,9 +513,8 @@ class FleetService:
         if self.config.policy.allow_wildcard_control and "*" in allow:
             return
         if key.ref not in allow:
-            granted_here = (
-                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
-            )
+            granted_here = self._declared_grant_verbs(
+                principal.name, key.device_ref, key.provider)
             if granted_here:
                 self.audit.record_grant(
                     event="fleet.grant",
@@ -576,6 +605,56 @@ class FleetService:
                 )
             return wildcard
         return grants[project]
+
+    def _may_project_create(self, device_ref: str, project_path: str,
+                            runtime: str = BASE_RUNTIME) -> None:
+        """Creating a NEW project is a separate grant from minting a session.
+
+        `_may_create` answers "may a session be minted in THIS project", and its
+        allowlist is keyed by ids that exist. A project being created has no id
+        yet, so reusing that gate would mean either refusing every creation or
+        pre-listing a name that is by definition not there. The two grants are
+        therefore separate lists, and neither widens the other:
+
+          * the device gate is still `allow_create` — a machine authorized to be
+            minted on is not thereby authorized to have directories made on it,
+            but this verb is still a write to that machine and reads the same
+            per-runtime binding;
+          * the path gate is `policy.project_create_allow`, a list of absolute
+            prefixes. Empty means nowhere, exactly as an empty `create_allow`
+            means no project.
+
+        The prefix test is on a path-component boundary: `/a/b` admits `/a/b/c`
+        and not `/a/bc`. Anything else would let one writable prefix admit a
+        sibling that merely spells it.
+        """
+        binding = self.config.provider_for(device_ref, runtime)
+        if binding is None:
+            self._require_provider(device_ref, runtime)
+        if binding is None or not binding.allow_create:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{device_ref} is not authorized for creation from this runtime. "
+                f"Project creation is a write to that machine and is gated by the "
+                f"same per-device `allow_create: true` flag session creation uses; "
+                f"it is refused by default and never granted by naming a device id.",
+            )
+        allowed = self.config.policy.project_create_allow
+        if "*" in allowed and self.config.policy.allow_wildcard_project_create:
+            return
+        for prefix in allowed:
+            if project_path == prefix or project_path.startswith(prefix + "/"):
+                return
+        raise refuse(
+            APPROVAL_REQUIRED,
+            f"{project_path!r} is not under any prefix in "
+            f"`policy.project_create_allow` for {device_ref}. The device is "
+            f"authorized for creation and this location is not: a new project "
+            f"path decides where a directory is made, so the allowlist is closed "
+            f"and an unlisted path is refused rather than defaulted.",
+            device_ref=device_ref,
+            allowed=sorted(allowed),
+        )
 
     def _may_name_mode_and_model(
         self, device_ref: str, project: str, grant: CreateGrant, *,
@@ -1687,6 +1766,7 @@ class FleetService:
         arguments: dict[str, Any] | None = None,
         session_ref: str | None = None,
         project: str | None = None,
+        project_path: str | None = None,
         runtime: str | None = None,
     ) -> dict[str, Any]:
         """Inherit ONE CloudCLI native tool, under Fleet's own gates.
@@ -1757,9 +1837,11 @@ class FleetService:
             principal.require(fleet_scope)
         self._gate_native_write(principal, device_ref, binding, native, args,
                                 session_ref=session_ref, project=project,
+                                project_path=project_path,
                                 governance=governance, runtime=runtime)
         # HIGH-7: validate the caller's arguments against the tool's OWN schema
-        # (recorded from CloudCLI 1.39.0; a live per-device schema may override).
+        # (recorded from the CloudCLI build each entry names in `recorded_from`;
+        # a live per-device schema may override).
         # A required parameter that is missing, or one the schema does not
         # declare, is refused rather than forwarded and silently ignored.
         problems = cloudcli_native.validate_arguments(
@@ -1909,6 +1991,7 @@ class FleetService:
     def _gate_native_write(self, principal: Principal, device_ref: str, binding,
                            native, arguments: dict[str, Any], *,
                            session_ref: str | None, project: str | None,
+                           project_path: str | None,
                            governance: str, runtime: str = BASE_RUNTIME) -> None:
         """Route a native write through the SAME floor its Fleet verb uses.
 
@@ -1919,7 +2002,11 @@ class FleetService:
             `device_ref`; the floor is `_may_send` / `_may_control`, reused
             verbatim, so `policy.send_allow` and `policy.control_allow` bind;
           * create -> a `project`; the floor is `_may_create`, so the project
-            allowlist binds.
+            allowlist binds;
+          * project_create -> a `project_path`; the floor is
+            `_may_project_create`, so the device's `allow_create` and the path
+            allowlist bind. The path does not exist yet, which is exactly why it
+            is a different address from `project`.
 
         A class whose identity cannot be established is REFUSED, never guessed
         from the native payload: a native `session` id inside `arguments` is not
@@ -1962,6 +2049,15 @@ class FleetService:
             if governance == cloudcli_native.GOV_NAVIGATE:
                 self._require_operator_verb(principal, device_ref, "navigate", native,
                                                runtime=runtime)
+            return
+        if governance == cloudcli_native.GOV_PROJECT_CREATE:
+            path = self._native_project_path(project_path, native)
+            # BLOCKER-1 on the path axis: the location the floor passed on is
+            # the location the device is asked to create.
+            self._same_identity(arguments, "projectPath", path, native)
+            self._may_project_create(device_ref, path, runtime)
+            self._require_operator_verb(principal, device_ref, "create", native,
+                                        runtime=runtime)
             return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)
@@ -2291,6 +2387,43 @@ class FleetService:
             )
         return project.strip()
 
+    def _native_project_path(self, project_path: str | None, native) -> str:
+        """The directory a native project create names, or a refusal.
+
+        Refused unless it is absolute and already normalised. Both rules are
+        about the allowlist rather than tidiness: `policy.project_create_allow`
+        compares prefixes as strings, so `/root/../etc` would be checked as one
+        location and created as another, and a relative path would be resolved
+        against the daemon's working directory — a different place after every
+        restart. The final bound is still the device's own workspace root; this
+        is the Fleet-side bound, and it has to mean exactly what it reads.
+        """
+        if not isinstance(project_path, str) or not project_path.strip():
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}` creates a project and this call named no "
+                f"`project_path`. The location is named at the outer layer and "
+                f"checked against `policy.project_create_allow`, never read out "
+                f"of the native payload.",
+            )
+        path = project_path.strip()
+        if "\x00" in path or not os.path.isabs(path):
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}`: `project_path` must be an absolute "
+                f"directory path; {path!r} is not.",
+                project_path=path,
+            )
+        if path == "/" or os.path.normpath(path) != path:
+            raise refuse(
+                BAD_REQUEST,
+                f"`{native.namespaced}`: `project_path` must be written already "
+                f"normalised (no '..' segments, no trailing slash, not the root "
+                f"itself); {path!r} is not.",
+                project_path=path,
+            )
+        return path
+
     def _require_operator_verb(self, principal: Principal, device_ref: str,
                                verb: str, native, *, project: str | None = None,
                                runtime: str = BASE_RUNTIME) -> None:
@@ -2313,12 +2446,34 @@ class FleetService:
             )
         verbs = self._operator_grant_verbs(principal, device_ref, runtime)
         if verb not in verbs:
+            # Two refusals, because they send an operator to two edits. A grant
+            # the binding DOES declare but the device cannot hold is a registry
+            # fact, not a missing line; reporting it as "held are none" would
+            # send someone to add a grant that is already there.
+            declared = self._declared_grant_verbs(
+                principal.name, device_ref, runtime)
+            if verb in declared:
+                ownership = self._device_ownership(device_ref)
+                detail = (
+                    f"the binding does name `{verb}` for {principal.name!r} on "
+                    f"{device_ref}, but that device is {ownership!r} and only "
+                    f"{GRANT_ELIGIBLE_OWNERSHIP!r} devices may be granted. The "
+                    f"grant is inert here rather than narrowed: the owner of a "
+                    f"device is a registry fact, and an unset owner is an "
+                    f"unknown one, which this host defers on rather than "
+                    f"authorizes."
+                )
+            else:
+                detail = (
+                    f"the operator grant verbs held are "
+                    f"{list(verbs) or 'none'}."
+                )
             raise refuse(
                 WRITE_NOT_GRANTED,
                 f"`{native.namespaced}` needs a `{verb}` operator grant for "
-                f"{principal.name!r} on {device_ref}; the operator grant verbs "
-                f"held are {list(verbs) or 'none'}. The device floor passed and "
-                f"the principal is not granted, so the call is refused.",
+                f"{principal.name!r} on {device_ref}; {detail} The device floor "
+                f"passed and the principal is not granted, so the call is "
+                f"refused.",
                 device_ref=device_ref, required_verb=verb,
                 **({"project": project} if project is not None else {}),
             )

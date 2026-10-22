@@ -129,7 +129,10 @@ scheduling detail: a matrix with an unowned row cannot pass as a whole.
 | Denied-grant negative tests | SOURCE | present as tests; not executed here |
 
 Reading "33" as "33 tools served by this candidate" is the specific mistake this
-row exists to prevent.
+row exists to prevent. The counts above are what #243 (`fleet-mcp-4`) was
+observed to serve. A later candidate, `fleet-mcp-5`, adds a 23rd mirror
+(`fleet_cloudcli_project_create`) for 34 tools / 6 scopes; that revision is not
+part of this observation and is not installed anywhere yet.
 
 ## Local Claude Code plugin — #230
 

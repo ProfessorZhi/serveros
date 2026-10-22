@@ -129,7 +129,7 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         served = sorted(tools_mod.SERVED_BY_NAME)
         declared = sorted(matrix.BY_NAME)
         self.assertEqual(declared, served)
-        self.assertEqual(len(matrix.AUTHORITY), 33)
+        self.assertEqual(len(matrix.AUTHORITY), 34)
 
     def test_every_tool_is_named_in_the_human_matrix(self):
         text = (HERE / "AUTH-MATRIX.md").read_text(encoding="utf-8")
@@ -144,16 +144,17 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         self.assertEqual(len(matrix.OWNER_PAT), 3)
         self.assertNotIn(SCOPE_CONTROL, matrix.OWNER_PAT)
 
-    def test_the_default_grant_admits_23_and_denies_10(self):
+    def test_the_default_grant_admits_23_and_denies_11(self):
         admitted = matrix.scope_admitted(matrix.DEFAULT_GRANTABLE)
         denied = matrix.scope_denied(matrix.DEFAULT_GRANTABLE)
         self.assertEqual(len(admitted), 23, admitted)
-        self.assertEqual(len(denied), 10, denied)
+        self.assertEqual(len(denied), 11, denied)
         self.assertEqual(
             set(denied),
             {
                 "fleet_create_session", "fleet_interrupt_session",
                 "fleet_cloudcli_session_create", "fleet_cloudcli_session_interrupt",
+                "fleet_cloudcli_project_create",
                 "fleet_cloudcli_session_start", "fleet_cloudcli_session_close",
                 "fleet_cloudcli_session_cancel_queued",
                 "fleet_cloudcli_session_reconfigure",
@@ -161,10 +162,10 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
             },
         )
 
-    def test_the_owner_pat_admits_25_and_still_cannot_control_navigate_or_approve(self):
+    def test_the_owner_pat_admits_26_and_still_cannot_control_navigate_or_approve(self):
         admitted = matrix.scope_admitted(matrix.OWNER_PAT)
         denied = set(matrix.scope_denied(matrix.OWNER_PAT))
-        self.assertEqual(len(admitted), 25, admitted)
+        self.assertEqual(len(admitted), 26, admitted)
         self.assertEqual(len(denied), 8, sorted(denied))
         self.assertIn("fleet_cloudcli_ui_open_session", denied)
         self.assertIn("fleet_cloudcli_approval_answer", denied)
@@ -180,7 +181,7 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         owner = set(matrix.scope_admitted(matrix.OWNER_PAT))
         all_six = set(matrix.scope_admitted(matrix.SIX_SCOPES))
         self.assertLess(default, owner)
-        self.assertEqual(len(all_six), 33)
+        self.assertEqual(len(all_six), 34)
 
 
 class StatusIsAReadAndMustBeGatedAsOne(unittest.TestCase):
@@ -420,7 +421,7 @@ class DiscoveryIsNotEntitlement(unittest.TestCase):
         result = self.h.call(self.h.server(set()),
                              "fleet_cloudcli_native_manifest", {})
         self.assertFalse(result["result"]["isError"])
-        self.assertEqual(result["result"]["structuredContent"]["count"], 22)
+        self.assertEqual(result["result"]["structuredContent"]["count"], 23)
 
     def test_zero_scope_cannot_read_live_capability(self):
         result = self.h.call(self.h.server(set()),
@@ -431,7 +432,7 @@ class DiscoveryIsNotEntitlement(unittest.TestCase):
     def test_zero_scope_can_still_list_tools(self):
         result = self.h.server(set()).handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
-        self.assertEqual(len(result["result"]["tools"]), 33)
+        self.assertEqual(len(result["result"]["tools"]), 34)
 
 
 class UnknownsStayDistinct(unittest.TestCase):

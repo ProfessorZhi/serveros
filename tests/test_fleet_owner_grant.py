@@ -402,6 +402,71 @@ class ThePrincipalAxis(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 2b. The wildcard, which is a binding's way of saying "everyone, everywhere"
+# ---------------------------------------------------------------------------
+
+class TheWildcardBranch(unittest.TestCase):
+    """`"*"` on either axis, and the two rules it does not touch.
+
+    The wildcard is expressible so an OPEN binding can be written in a file
+    without listing every principal and every device by name; closing it is
+    deleting the line. What it must not become is a way around a rule that is
+    deliberately code: ownership eligibility, and the exact name winning over
+    the wildcard.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.session = f"{TOKYO}|claude|never-named-anywhere"
+
+    def test_a_wildcard_principal_reaches_a_stranger(self):
+        h = Harness(self.tmp, grants={"*": {TOKYO: ("send",)}})
+        result = h.send(self.session, principal=h.principal(name=SOMEONE_ELSE))
+        self.assertFalse(result["idempotent_replay"])
+        self.assertEqual(h.providers[TOKYO].sent[0]["session_ref"], self.session)
+
+    def test_a_wildcard_device_reaches_every_company_device(self):
+        h = Harness(self.tmp, grants={OAUTH: {"*": ("send",)}})
+        h.send(self.session)
+        h.send(f"{WINDOWS}|claude|elsewhere")
+        self.assertEqual([s["session_ref"] for s in h.providers[TOKYO].sent],
+                         [self.session])
+        self.assertEqual([s["session_ref"] for s in h.providers[WINDOWS].sent],
+                         [f"{WINDOWS}|claude|elsewhere"])
+
+    def test_the_wildcard_does_not_admit_a_personal_device(self):
+        """Eligibility is code, and the wildcard is not a way to edit code."""
+        h = Harness(self.tmp, grants={"*": {"*": ("send",)}})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.send(f"{PERSONAL_DELL}|claude|x")
+        self.assertIn("only 'company' devices may be granted", caught.exception.detail)
+
+    def test_an_exact_principal_entry_with_nothing_in_it_grants_nothing(self):
+        """Absent consults `"*"`; present-and-empty is a decision, not a gap."""
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: ()},
+                                      "*": {TOKYO: ("send",)}})
+        with self.assertRaises(FleetRefusal):
+            h.send(self.session)
+        # The stranger the wildcard was written for still gets through.
+        h.send(self.session, principal=h.principal(name=SOMEONE_ELSE))
+
+    def test_an_exact_device_entry_with_nothing_in_it_grants_nothing(self):
+        h = Harness(self.tmp, grants={OAUTH: {TOKYO: (), "*": ("send",)}})
+        with self.assertRaises(FleetRefusal):
+            h.send(self.session)
+        h.send(f"{WINDOWS}|claude|elsewhere")
+
+    def test_removing_the_wildcard_closes_the_door_again(self):
+        """The point of the whole arrangement: the switch is the file."""
+        h = Harness(self.tmp, grants={"*": {TOKYO: ("send",)}})
+        h.send(self.session)
+        h.edit_policy(operator_grants={})
+        with self.assertRaises(FleetRefusal) as caught:
+            h.send(self.session)
+        self.assertEqual(caught.exception.code, "APPROVAL_REQUIRED")
+
+
+# ---------------------------------------------------------------------------
 # 3. The verb axis
 # ---------------------------------------------------------------------------
 
@@ -721,15 +786,32 @@ class TheParsedShape(unittest.TestCase):
         # actually granted anything.
         self.assertEqual(load_operator_grants({"operator_grants": {OAUTH: {TOKYO: []}}}), {})
 
-    def test_a_wildcard_principal_or_device_is_refused(self):
-        for shape in (
-            {"operator_grants": {"*": {TOKYO: ["send"]}}},
-            {"operator_grants": {OAUTH: {"*": ["send"]}}},
-        ):
-            with self.subTest(shape=shape):
-                with self.assertRaises(FleetRefusal) as caught:
-                    load_operator_grants(shape)
-                self.assertIn("wildcard", caught.exception.detail.lower())
+    def test_a_wildcard_is_a_grant_like_any_other(self):
+        """`"*"` is expressible on BOTH axes, and it means what it says.
+
+        It exists because a binding has to be able to say "every principal on
+        every company device" without listing devices by name — and because the
+        decision belongs in the file, not in the parser. What the wildcard does
+        NOT do is bypass the ownership rule below, which is code and stays code.
+        """
+        self.assertEqual(
+            load_operator_grants({"operator_grants": {"*": {TOKYO: ["send"]}}}),
+            {"*": {TOKYO: ("send",)}},
+        )
+        self.assertEqual(
+            load_operator_grants({"operator_grants": {OAUTH: {"*": ["send", "control"]}}}),
+            {OAUTH: {"*": ("send", "control")}},
+        )
+
+    def test_a_wildcard_principal_still_cannot_grant_a_verb_that_is_not_real(self):
+        with self.assertRaises(FleetRefusal):
+            load_operator_grants({"operator_grants": {"*": {TOKYO: ["teleport"]}}})
+
+    def test_a_bare_word_on_the_device_axis_is_still_refused(self):
+        """Only the literal `*` is a wildcard; a hostname is a missing type."""
+        with self.assertRaises(FleetRefusal) as caught:
+            load_operator_grants({"operator_grants": {OAUTH: {"tokyo-shared-dev-01": ["send"]}}})
+        self.assertIn("typed ref", caught.exception.detail)
 
     def test_a_device_ref_that_is_not_typed_is_refused(self):
         with self.assertRaises(FleetRefusal) as caught:

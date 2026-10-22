@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-4
+tool_surface_revision: fleet-mcp-5
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -425,11 +425,16 @@ ingress:
     scopes_planned: []
     declared_in: fleet_mcp/scopes.py
     # The consent step has a human in it, and the human proves they are the
-    # owner with the owner token — not with a claim the client made. ServerOS
-    # cannot and does not self-authorize: with no owner token present there is
-    # no issuer, and this surface refuses to serve rather than issuing to
-    # whoever asks.
-    consent_requires_owner_token: true
+    # owner — not with a claim the client made. The form this build ships is an
+    # account name, a password stored only as an scrypt hash, and a six-digit
+    # TOTP code, all read from 0600 anchors named by path in the binding. A
+    # deployment that names no `auth.password_anchor` falls back to the owner
+    # token; `auth.pat_enabled: false` closes that fallback without a code path
+    # changing, so the same build can serve either shape. ServerOS cannot and
+    # does not self-authorize: with no verifier present there is no issuer, and
+    # this surface refuses to serve rather than issuing to whoever asks.
+    consent_requires: [username, password, totp]
+    owner_token_fallback: when no auth.password_anchor is configured
     requires_human_consent: true
 
   # No part of the request body may become a URL, a host or a path this
@@ -562,22 +567,25 @@ authorization:
 # that machine runs.
 
 native_mirror:
-  # The CloudCLI native surface, inherited whole. The 22 verbs are NOT
+  # The CloudCLI native surface, inherited whole. The 23 verbs are NOT
   # enumerated here: the surface is DERIVED once, in
   # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
-  # hand-written nine. Restating 22 rows here would be a second copy that drifts
+  # hand-written nine. Restating 23 rows here would be a second copy that drifts
   # the first time CloudCLI adds a parameter.
   declared_in: fleet_mcp/cloudcli_native.py#NATIVE_TOOLS
   manifest_schema: serveros/fleet-cloudcli-native-manifest.v1
   prefix: 'fleet_cloudcli_'
   native_server: CloudCLI
   native_version_recorded: '1.39.0'
-  count: 22
-  # The hand-written nine, the 22 mirrored verbs, plus the two read-only tools
+  # One verb (`project_create`) comes from this fleet's CloudCLI branch rather
+  # than 1.39.0; its manifest entry says so in `recorded_from`. The count is the
+  # whole recorded set, not the subset the installed build happens to declare.
+  count: 23
+  # The hand-written nine, the 23 mirrored verbs, plus the two read-only tools
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it, and it said 31 while the surface served 33.
-  served_total: 33
+  served_total: 34
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

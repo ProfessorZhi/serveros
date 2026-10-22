@@ -30,7 +30,8 @@
       "cloudcli_project_list", "cloudcli_project_get", "cloudcli_project_create",
       "cloudcli_agent_list", "cloudcli_agent_get", "cloudcli_agent_start",
       "cloudcli_agent_stop", "cloudcli_agent_status", "cloudcli_model_list",
-      "cloudcli_health", "fleet_discover", "fleet_capabilities"
+      "cloudcli_health", "fleet_discover", "fleet_capabilities",
+      "fleet_cloudcli_project_create"
     ],
     "authorized_scopes": [
       "fleet:read", "fleet:send", "fleet:create",

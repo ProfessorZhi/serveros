@@ -1,4 +1,4 @@
-"""The 33-tool catalogue's authorization contract, in one table.
+"""The 34-tool catalogue's authorization contract, in one table.
 
 Why this module exists
 ----------------------
@@ -7,7 +7,7 @@ per tool, *which* Fleet scope a caller must present, and the two questions are
 different: a tool is visible to every client that can read `tools/list`, while
 being callable only by a credential that carries the scope, and (for the write
 verbs) by a principal the local binding also names. A release gate that counted
-33 tools and stopped there would be reporting discovery as entitlement.
+34 tools and stopped there would be reporting discovery as entitlement.
 
 So this module is the join. Every served tool has exactly one row, the row
 names the scope alternatives the call can take, and `selftest.py` fails if the
@@ -114,7 +114,7 @@ AUTHORITY: tuple[Authority, ...] = (
           gates="device allow_control AND (control_allow contains session OR "
                 "operator 'control' grant)"),
 
-    # -- the 22 mirrored CloudCLI verbs ----------------------------------
+    # -- the 23 mirrored CloudCLI verbs ----------------------------------
     _tool("fleet_cloudcli_overview", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_projects_list", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_sessions_list", "mirror", READ, gates="—"),
@@ -156,6 +156,9 @@ AUTHORITY: tuple[Authority, ...] = (
     _tool("fleet_cloudcli_approval_answer", "mirror", APPROVE,
           gates="device allow_control AND operator 'control' grant; approval "
                 "ownership is verified against the named session"),
+    _tool("fleet_cloudcli_project_create", "mirror", CREATE,
+          gates="device allow_create AND project_path under "
+                "project_create_allow AND operator 'create' grant"),
 
     # -- the two capability reads ----------------------------------------
     _tool("fleet_cloudcli_native_manifest", "capability",

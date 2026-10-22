@@ -234,8 +234,12 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
                     self.assertNotIn(name.lower(), forbidden)
 
     def test_the_consent_step_cannot_be_completed_by_an_agent(self):
-        self.assertIs(contract()["ingress"]["auth"]["consent_requires_owner_token"], True)
-        self.assertIs(contract()["ingress"]["auth"]["requires_human_consent"], True)
+        auth = contract()["ingress"]["auth"]
+        # The three factors are a person's, and an agent holds none of them.
+        self.assertEqual(tuple(auth["consent_requires"]),
+                         ("username", "password", "totp"))
+        self.assertIn("password_anchor", auth["owner_token_fallback"])
+        self.assertIs(auth["requires_human_consent"], True)
 
     def test_off_host_reach_is_an_operators_decision_and_is_reported_outstanding(self):
         blockers = {b["id"]: b for b in contract()["blocked_on"]}
