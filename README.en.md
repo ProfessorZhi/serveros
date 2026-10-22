@@ -1,280 +1,164 @@
 # ServerOS
 
-[中文](README.md) · [Canonical architecture](ARCHITECTURE.md) · [Fleet V1 topology and MCP/Skills](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Fleet V2 autonomous organization](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) · [V2 Agent/Session architecture](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+**A personal agent work system for Claude Code and Codex.**
 
-**Fleet complete V1 active delivery target (2026-10-17):** [per-node Fleet architecture](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md), [full multi-line campaign and acceptance](docs/plans/plan-02-complete-fleet-v1-delivery-campaign.md), [campaign #244](https://github.com/ProfessorZhi/serveros/issues/244). One per-authorized-OS-principal C++ Node Core on Tokyo/Dell/Windows, supervised Tailscale/SSH/remote access, actual CC **and Codex** runtimes via CloudCLI, effective local Abilities, unified 34-tool Fleet MCP and a shared-source **local Claude Code Fleet plugin first**. Windows 127.0.0.1:16095 -> SSH forward -> Selkies/Claude Web and RDC have platform-specific acceptance, with development primarily on Tokyo/Dell. ChatGPT plugin installation is a later client rollout. The previous V2-only Codex deferral has been superseded **for full Fleet V1**, but neither a static registry nor this README proves live acceptance. Hosted GitHub Actions quota exhaustion may waive hosted CI only, never local/device tests.
+It does not replace the model, and it does not put a scheduler on top of one. It makes sure the model has the right environment, context, memory, capabilities and permission boundary at the moment it needs them.
 
-Current target: [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md).
-Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-environment.md),
-[verified gaps and changes](docs/architecture/IMPLEMENTATION-DELTA-20261007.md), and
-[CC/GPT research exchange](docs/architecture/RESEARCH-EXCHANGE.md).
-The [earlier P0–P12 plan](docs/CC-EXECUTION-PLAN.md) remains a subsystem reference;
-none of these design documents is a deployment receipt.
+[中文](README.md) · [Architecture guide](ARCHITECTURE.zh.md) · [Full architecture (normative)](ARCHITECTURE.md) · [Documentation map](docs/README.md)
 
-Fleet V1 — the ChatGPT-facing MCP + Skills control surface, and its V1/V2
-boundary: [delivery plan](docs/plans/fleet-v1-delivery-plan.md).
+---
 
-**A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
+## The problem it solves
 
-## Development quickstart
+When you work with an agent every day, the expensive part is rarely the code. It is the other four things:
 
-The commands below were run in a fresh clone with an isolated venv (Linux, Python 3.12). ServerOS is a control plane for a specific authorized device: the repository-wide test suite reads that device's profile and live records tree. The command below therefore runs the zero-configuration core subset, which does not depend on the host binding.
+- **Scattered material.** Feishu, GitHub, the web and meeting notes live in different places; every task starts with finding and re-explaining them.
+- **Broken sessions.** A fresh session needs the earlier conclusions, constraints and progress all over again.
+- **Heavy setup.** Before the agent can do the work, someone has to prepare directories, dependencies, test environments and permissions.
+- **Disconnected devices.** Work does not carry across machines or projects.
 
-### Clone
+ServerOS turns those into standing personal infrastructure: a node Core observes and manages the machine, Skills and MCPs deliver capabilities and context to the model, and the Work Engine records requirements, execution and results.
+
+It is **not** a new chat client, a new model, or a second task scheduler. The model still decides how. ServerOS guarantees that it knows what it needs to know, can reach what it needs to use, and leaves evidence behind.
+
+## Current status
+
+| Area | Status | Notes |
+|---|---|---|
+| Tokyo node, daily use | In use | Core, plugin, MCPs and Work Engine run on the host |
+| Fleet MCP (cross-device sessions) | Candidate | 34 tools (`fleet-mcp-5`); Tokyo and Dell enrolled, Windows pending native acceptance; V1 not released |
+| Feishu information plane | Partial | Capture, Follow and Owned-document stewardship are connected ability by ability |
+| Monitoring and status cards | Partial | Resource and runtime observation works; alerts and cards are still converging |
+| Fleet V2 (autonomous organization, delegation) | Design only | No service or revision exists; do not treat it as a current capability |
+
+Status is judged on three separate layers: **code exists ≠ installed ≠ accepted on real devices**. Criteria and evidence are in the [documentation map](docs/README.md).
+
+## Five-minute start
+
+The commands below were run in a fresh clone with an isolated venv (Linux, Python 3.12). ServerOS is a control plane for one authorized device: the repository-wide suite reads that device's profile and records. The subset below is the zero-configuration core.
 
 ```bash
 git clone https://github.com/ProfessorZhi/serveros.git
 cd serveros
-```
 
-### Install dependencies
-
-```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install pytest pytest-xdist pytest-timeout pyyaml cryptography
-```
 
-### Run tests
-
-```bash
 export TMPDIR=/tmp/serveros-test-tmp
 mkdir -p "$TMPDIR"
 CUDA_VISIBLE_DEVICES="" nice -n 10 python -m pytest -q -n 8 --timeout=300 \
-  tests/test_actor_context.py \
-  tests/test_agent_control_router.py \
-  tests/test_agent_control_store.py \
-  tests/test_agent_mcp.py \
-  tests/test_agent_sessions.py \
-  tests/test_approval.py \
-  tests/test_business_calendar.py \
-  tests/test_card_delivery.py \
-  tests/test_bootstrap_skill_scope.py \
-  tests/test_ability_resolver.py \
+  tests/test_actor_context.py tests/test_agent_control_router.py \
+  tests/test_agent_control_store.py tests/test_agent_mcp.py \
+  tests/test_agent_sessions.py tests/test_approval.py \
+  tests/test_business_calendar.py tests/test_card_delivery.py \
+  tests/test_bootstrap_skill_scope.py tests/test_ability_resolver.py \
   tests/test_ability_projection.py
 ```
 
-Measured: `638 passed, 185 subtests passed in 16.07s`, rc=0. The short `TMPDIR` is required: some tests create deep socket/work paths.
+Measured: `638 passed, 185 subtests passed in 16.07s`. `TMPDIR` must be short; some tests create deep socket/work paths.
 
-The repository-wide suite (`python -m pytest tests -q -n 8 --timeout=300`) additionally needs the real device profile, live records tree, and sibling `ability-management` / ops checkouts. With those roots supplied on this development host it measured `7561 passed, 79 failed, 71 skipped, 4532 subtests passed in 178.48s`; the remaining failures are bound to the live host (uid `1002`, `/data/home/vince`, the Lark CLI, and time-dependent assertions) and are not a clean-host baseline.
-
-### Local start
-
-No service needs to be started for CLI development. The two entry points are:
+CLI development needs no running service. The two entry points are:
 
 ```bash
 bin/serverosctl --help
 python -m workengine --help
 ```
 
-Measured: both rc=0. `bin/serverosctl` is the reference-node control CLI; `python -m workengine` is the v3 work control plane.
+The repository-wide suite (`python -m pytest tests -q -n 8 --timeout=300`) additionally needs a real device profile, the records tree and a sibling `ability-management` checkout. With those roots on this host it measured `7561 passed, 79 failed, 71 skipped, 4532 subtests passed`; the remaining failures are bound to the live host, not a clean-machine baseline.
 
-## The daily experience
-
-```text
-During the day
-├─ Feishu IM / Doc / Wiki / Minutes / files / Follow arrive incrementally
-├─ routine facts update Understanding / Memory without a meeting
-├─ already-selected Focus work keeps moving under its logical Parent
-├─ workspace/runtime/research/Quay/tests are prepared only when needed
-└─ owned/followed/authorized shared documents are maintained in place
-
-19:xx
-└─ source catch-up + understanding reconciliation; missing material remains an explicit gap
-
-20:00
-└─ CloudCLI shows only what deserves attention:
-   automatic updates / decisions needed / conflicts / understanding gaps
-
-After the user accepts or adjusts 0–2 Focus items
-└─ authorized work may continue that evening without repeated "continue" prompts
-
-Next day or a fresh Session
-└─ resume from the current Requirement / checkpoint / worker / effect state
-   without retelling history, duplicating child work or replaying unknown effects
-```
-
-This is not a mandatory workflow. A day may have no new Requirement, no Quay task and no
-report, and Focus may be zero. Research may start with experiments; tests may disprove the
-plan; the useful deliverable may be verification or prose. ServerOS should automate HOW and
-interrupt only for goals, material tradeoffs, protected effects or genuinely irreplaceable
-human input.
-
-Open a fresh Session, mention the work, and recover the **right environment,
-context, memory, capability and safety boundary** without rereading the whole world.
-
-## Architecture at a glance
+## One diagram
 
 ```text
-Human / CloudCLI / Feishu
+You / CloudCLI / Feishu
         │
         ▼
-Claude Code / Codex                    native intelligence
+Claude Code / Codex                     ← the mind: understand, research, design, build
         │
         ▼
-ServerOS Plugin                        thin context / selected Skills / MCP
+ServerOS Plugin                         ← loads only the relevant context / Skills / MCPs
    ├─ serveros-node-mcp ─────────┐
    └─ serveros-agent-mcp ────────┤
                                  ▼
                               serverosd
-                one resident Node Core
-            node facts / admission / leases /
-            effect coordination / self-health
+                     the one resident Node Core
+          node facts / admission / leases / effect coordination / self-health
                                  │
         ┌────────────────────────┼────────────────────────┐
         ▼                        ▼                        ▼
-semantic/work owners         external providers       Ability Fabric
-Claims / Requirements        Feishu / GitHub          G1 registry
-Work Engine / Control        OpenViking / MetaCC      Skills / MCPs
-                             Quay / Browser / OS      Plugins / Providers
+   semantic and work         external providers       ability registry
+   Claims / Requirement      Feishu / GitHub          Skills / MCPs
+   Work Engine / Control     OpenViking / Quay        Plugins / Providers
 ```
 
-Abilities are stable product responsibilities; Skills, MCPs, Plugins and Providers are realizations. The Plugin is the Agent-facing composition, while `serverosd` is the resident node/control core. The two ServerOS MCPs are adapters and do not own a second copy of ServerOS state.
+Three things are enough to remember:
 
-## Five automatic loops
+- **The model is the mind.** Research, experiments, decomposition, tool use and iteration belong to Claude Code / Codex.
+- **The Core is the resident layer.** `serverosd` observes real resources, handles admission and leases, and coordinates external effects. It is not an LLM planner and does not reimplement systemd.
+- **The Plugin is the entry point.** The two MCPs are adapters; neither keeps a second copy of ServerOS state.
 
-ServerOS is designed as five connected loops rather than one mandatory workflow:
+## Five loops
 
-```text
-Information  source/IM/doc/meeting/web -> capture/follow -> understanding -> memory -> requirement candidates
-Work         formal requirement -> Work Item -> Focus -> Parent -> execute -> accept -> Outcome
-Capability   real gap -> native/installed/upstream -> thinnest realization -> eval/install -> fresh consumer
-Knowledge    source revision -> delta reading -> understanding -> document stewardship -> readback/Git continuity
-Runtime      observe -> health/impact/owner -> bounded recovery -> Status/Incident -> human only when needed
-```
+Automation is five connected loops that degrade independently. They are not a mandatory workflow; one unavailable provider only affects the work that depends on it:
 
-Memory, authority and evidence cross all five loops. Failure of one optional provider degrades only the work that depends on it; it does not create one global ServerOS `NOT_READY`.
-
-## What ServerOS organizes automatically
-
-| Object | Default automation | It does not silently do |
+| Loop | From | To |
 |---|---|---|
-| Workspace / paths | place new outputs in the resolved worktree/artifact/test root when the canonical parent is clear; run low-frequency hygiene | move historical repos, other actors' worktrees, unique evidence or unknown roots just to make a map clean |
-| Feishu IM / files | capture new messages, edits, forwards and required attachments incrementally; preserve partial gaps and fill them later | turn every message into a Requirement, download every media item or export private material by default |
-| Followed Docs / Wiki / Web | track stable source identity/revision; reread only changed scope and update understanding/mirror | expand one Follow into a whole space or turn a bookmark into permanent full-content subscription |
-| Meetings / Minutes / recordings | keep one MeetingBundle; process late transcripts/material automatically and refresh only affected understanding | require MP3+transcript+minutes for every meeting, trust background/support audio as business intent, or create MyDocs notes for every call |
-| Owned guides / mirrors | use standing stewardship to patch allowed sections from source revisions, preserve human edits and read back | whole-body overwrite, silently change audience/ACL/owner or turn external source text into internal policy |
-| Daily / weekly reports | standing routine can compose from accepted Outcomes/evidence and maintain one logical report | rerun E2E for prose, count Tasks as成果, or stop night work because a report was sent |
-| Runtime status | patch the workday Daily Status Card and track real incidents by episode | report green merely because no human action is needed, or promote every diagnostic finding to an incident |
+| Information | IM / docs / meetings / web / files | capture → structured understanding → memory → requirement candidates |
+| Work | a formal requirement | Work Item → 0–2 Focus items → execution → acceptance → Outcome |
+| Capability | a real capability gap | check native/installed/upstream → thinnest realization → eval/install → real consumer |
+| Knowledge | a source revision | read only the delta → update understanding → maintain documents → read back |
+| Runtime | observation | health/impact/ownership → bounded recovery → status card/Incident → a human only when needed |
 
-The product rule is: **automate unambiguous placement and maintenance; treat historical or destructive restructuring as a separate effect.** ServerOS should do the locating, diffing, scoped patching, readback, indexing and continuation so the user is not the daily file operator.
+Memory, authority and evidence cross all five. Details are in the [architecture guide](ARCHITECTURE.zh.md).
 
-## Small core, broad capability
+## Documentation map
 
-There is one resident ServerOS core daemon per managed node/runtime scope:
-**serverosd**. It observes real resources, attributes ownership, handles its admission
-boundaries and reconciles explicitly owned desired resources. It is not an LLM planner
-or a second process supervisor.
-
-The product composition has two canonical Core members: **serveros** and
-**ability-management**. Long-lived providers such as memory, UI or networking remain
-outside the daemon.
-
-Two capability families cover the work:
-
-| Family | Examples |
+| I want to… | Start here |
 |---|---|
-| Agent Working Infrastructure | compliance, credentials, runtime, sessions, context/memory, abilities, workspace/Git, build/test environments, E2E, connectivity, release |
-| Information-to-Delivery | source capture/Follow, understanding/alignment, Board, requirements, research/decisions, execution/Quay, document stewardship, reporting and routines |
+| Know what this is and what works | This page + [architecture guide](ARCHITECTURE.zh.md) |
+| Operate or deploy | [Documentation map · operations](docs/README.md#运行与部署) |
+| Change code, run tests | [Documentation map · development](docs/README.md#开发与契约) |
+| Read the design and boundaries | [ARCHITECTURE.md](ARCHITECTURE.md) (normative) |
+| See historical plans and evidence | [docs/plans](docs/plans), [docs/proposals](docs/proposals), [docs/reviews](docs/reviews) |
 
-These are navigation and composition views, not a Skill, repository or daemon for
-every box. See [the complete architecture](ARCHITECTURE.md).
+The full index is [docs/README.md](docs/README.md).
 
-## Native agents stay in charge of method
+## Terms
 
-```text
-ServerOS preserves: goal, constraints, identity, context, continuity and evidence
-Native Agent chooses: investigation, experiments, tools, decomposition and iteration
-```
+| Term | What it means here |
+|---|---|
+| Agent | A native intelligence such as Claude Code or Codex. ServerOS does not implement its own. |
+| Skill | A reusable working method loaded into the agent on demand. |
+| MCP | Model Context Protocol; here, the adapter layer that exposes tools to an agent. |
+| Ability | A product-level responsibility (such as "session management"), realized by Skills / MCPs / Plugins. |
+| Node Core | `serverosd`, the one resident core on each managed device. |
+| Fleet | The cross-device layer: discovering devices, routing sessions, constraining authority. |
+| Item | A piece of formal work with stable identity, evidence and acceptance criteria. |
+| Run | One independent, resumable, traceable execution. |
+| Quay | An execution accelerator: delegating implementation, experiments and independent verification. |
+| OpenViking | The long-term memory provider for cross-session, cross-project recall. |
 
-Bootstrap is thin. Detailed memory, Skill content and MCP tools load when needed and
-when the runtime actually supports it. Existing native tools remain discoverable.
-A catalogue can be global while each device installs and each Session sees a different
-subset.
+## Repositories
 
-The target memory topology is one shared **OpenViking** service on Tokyo for cross-session,
-cross-project and cross-device associative/experience retrieval. Claude Code and Codex use
-their runtime integrations against that same private service; MetaCC supplies session
-history/intelligence, while native memory remains a local convenience. Current Claims/Views,
-source revisions, Requirements, work control and authorization still outrank any retrieved
-memory. GitHub stores versionable records/designs and suitable knowledge, not the OpenViking
-vector index or live database. ChatGPT initially reads the private GitHub/project records;
-ServerOS does not expose OpenViking to the public Internet just to give ChatGPT memory access.
-OpenViking is still a target/unbound provider until a real service, authenticated Binding and
-fresh-agent retrieval/capture are verified. Quay is an execution accelerator, not a mirror
-of the user's personal Board.
-
-## Interfaces and information spaces
-
-CloudCLI and the native terminal remain the main conversational work surfaces.
-Use a supported contextual plugin rather than requiring a CloudCLI fork.
-
-Feishu provides the principal information sources, reminders, readable work documents
-and reporting. My Document Library holds dynamic work, reconciliation and reports; Personal
-Notes holds private long-term knowledge; Public Docs holds maintained owned guides; External
-Docs holds Source Cards / FOLLOW_MIRROR for long-lived read-only sources, while externally
-maintained shared documents stay in their canonical location. Drive is the binary Asset
-Plane for recordings, images, PDFs, archives and E2E evidence. IM and Minutes remain
-original source identities.
-
-GitHub work packets are the durable CC/GPT collaboration path. Authoritative bodies
-and generated human views have explicit revision links; they are not independently
-editable competing copies.
-
-## Devices and safety
-
-Tokyo is the primary node, Windows a specialist device and the phone a human client.
-Beijing is historical, not a normal execution fallback.
-
-Tailscale is the preferred private transport: **tailnet-first, tunnel-by-exception**.
-Node connectivity does not prove every application endpoint is reachable. Verify the
-actual authenticated client-to-service path before retiring an old tunnel.
-
-Compliance and non-interference come first. Default Tokyo principal is vince; the
-ubuntu exception applies only to explicitly delegated shared-gateway work. Current
-LiteLLM production and shared-gateway production changes remain **user-executed**.
-A Skill instruction or a card button is not an enforced security boundary by itself.
-
-## Ownership
-
-Three projects, six repositories. ServerOS code lives only in **serveros** (the
-complete product, including the Work Engine under `workengine/`) and
-**ability-management**; **hwz-records** is the private data repository the node
-runtime reads and writes, not a second code repository.
+ServerOS code lives only in **serveros** (the complete product, including `workengine/`) and **ability-management** (capability registry and Skill distribution). **hwz-records** is the private data repository the node reads and writes, not a second code repository.
 
 | Repository | Owns |
 |---|---|
-| serveros | product architecture, composition, bootstrap, deterministic contracts, node runtime, and the Work Engine (`workengine/`): work/control transitions, Run/effect receipts and Board projections |
-| ability-management | typed capability registry, provenance/revisions, reusable Skills and distribution |
-| hwz-records | understanding, stable intent, designs, human semantic records, instance roots, topology, concrete bindings, policy and observed maps (private data, not code) |
+| serveros | product architecture, plugin composition, entry points, deterministic contracts, node runtime, Work Engine |
+| ability-management | capability identity, provenance, revisions, reusable Skills and distribution |
+| hwz-records | understanding, work intent, designs, topology, policy and observations (private data) |
 | marketops | MarketOps application/MCP, research pipeline and business truth |
-| marketops-session | MarketOps session-derived design analysis and tooling; the session corpus itself is not stored in the repository |
+| marketops-session | MarketOps session-derived design analysis and tooling |
 | llmlab | LLM Lab gateway, evaluation and deployment templates |
-| native providers | their actual task stores, sessions, cloud bodies and runtime interfaces |
 
-The six repositories absorbed their former neighbors: `work-engine` and the
-`serveros-research-exchange` templates/tools into `serveros`; `dev-doctor` and
-`agent-software` into `ability-management`; `hwz-ops` and `agent-session-archive`
-into `hwz-records`; `marketops-private` into `marketops`;
-`marketops-session-private` into `marketops-session`; `llm-lab` and
-`llm-lab-portal` into `llmlab`. The target structure has three public
-repositories (`serveros`, `marketops`, `llmlab`) and three private repositories
-(`ability-management`, `marketops-session`, `hwz-records`).
+The target structure is three public repositories (`serveros`, `marketops`, `llmlab`) and three private ones (`ability-management`, `marketops-session`, `hwz-records`). MarketOps and Support Bot remain independent parallel business projects; ServerOS does not take over their roadmaps.
 
-MarketOps and Support Bot remain independent parallel projects. Support Bot uses
-litellm-support-bot for code and troublebuddy-kb-bridge for knowledge; ServerOS does not
-take over either product's roadmap.
+## A design is not a deployment
 
-## Reading and implementation status
+Keep three things separate when reading this README:
 
-[ARCHITECTURE.md](ARCHITECTURE.md) is the single normative product design. Both READMEs
-are explanatory entrypoints, not additional authorities.
+- **The code exists**: the repository has an implementation and tests.
+- **It is installed**: it actually runs on the target device.
+- **It is accepted**: it passed real scenarios on real devices with real clients.
 
-[docs/README.md](docs/README.md) distinguishes current contracts from older technical
-notes. The [review record](docs/architecture/CONSOLIDATION-REVIEW-20260921.md) records the
-consolidation's evidence and limits.
-
-**A completed design is not a deployed system.** Implementation acceptance uses the
-scenario matrix in the architecture and real revision/environment evidence. Do not
-infer CODE, INTEGRATION or LIVE readiness from this README, file counts, tool listings
-or a successful documentation commit.
+This page, file counts, tool listings and a successful documentation commit replace neither of the last two.
