@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Start Fleet from the full ServerOS runtime and its existing owner ledger."""
+import importlib.util
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
+spec = importlib.util.spec_from_file_location(
+    "serveros_runtime_fleet_mcp_owner", root / "runtime/fleet_mcp_owner.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+if __name__ == "__main__":
+    sys.exit(module.main())

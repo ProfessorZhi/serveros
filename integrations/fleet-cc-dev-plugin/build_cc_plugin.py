@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -119,6 +120,58 @@ def check_endpoint(url: object) -> str:
     return url.rstrip("/")
 
 
+def check_skills_source(source: Path) -> Path:
+    """Resolve a Skills source after refusing every symlink on the way in.
+
+    `Path.resolve()` erases the evidence: a source directory that is a symlink,
+    or a skill folder that points outside the tree, becomes an ordinary path and
+    the copy then reads bytes the source owner never put there. Reject the
+    symlink before copying, including a symlink anywhere below the source.
+    """
+    raw = Path(source)
+    absolute = Path(os.path.abspath(raw))
+    for part in [absolute, *absolute.parents]:
+        if part.is_symlink():
+            raise Refused(SOURCE_REFUSED,
+                          f"skills source path contains a symlink: {part}")
+    resolved = raw.resolve()
+    if not resolved.is_dir():
+        raise Refused(SOURCE_REFUSED, f"no skills source at {resolved}")
+    for root, dirs, files in os.walk(resolved, followlinks=False):
+        for name in sorted(dirs):
+            path = Path(root) / name
+            if path.is_symlink():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source contains a symlinked directory: "
+                    f"{path.relative_to(resolved)}")
+            real = path.resolve()
+            if real != resolved and resolved not in real.parents:
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source entry escapes the source tree: "
+                    f"{path.relative_to(resolved)}")
+        for name in sorted(files):
+            path = Path(root) / name
+            if path.is_symlink():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source contains a symlinked file: "
+                    f"{path.relative_to(resolved)}")
+            if not path.is_file():
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source member is not a regular file: "
+                    f"{path.relative_to(resolved)}")
+            real = path.resolve()
+            if resolved not in real.parents:
+                raise Refused(
+                    SOURCE_REFUSED,
+                    f"skills source entry escapes the source tree: "
+                    f"{path.relative_to(resolved)}")
+    return resolved
+
+
 def check_paths(source: Path, out: Path) -> None:
     """Refuse an output at or below the source, on resolved paths.
 
@@ -141,9 +194,7 @@ def check_paths(source: Path, out: Path) -> None:
 
 def read_skills(source: Path) -> list[tuple[str, str]]:
     """`skills/<name>/SKILL.md`, immediate children only, from the shared source."""
-    source = Path(source)
-    if not source.is_dir():
-        raise Refused(SOURCE_REFUSED, f"no skills source at {source}")
+    source = check_skills_source(source)
     found: list[tuple[str, str]] = []
     for child in sorted(source.iterdir()):
         if not child.is_dir():
@@ -211,7 +262,7 @@ def plugin_manifest() -> dict:
 
 
 def mcp_config(url: str, scopes: str) -> dict:
-    """`.mcp.json` at the plugin root.
+    """`.mcp.json` at the plugin root for the remote HTTP mode.
 
     `type` is required: Claude Code reads an entry with a `url` and no `type` as
     a stdio server, which is a configuration error rather than a fallback.
@@ -229,6 +280,46 @@ def mcp_config(url: str, scopes: str) -> dict:
     }
 
 
+def check_owned_entry(entry: object, config: object) -> tuple[str, str]:
+    """Validate the local trusted owner runtime without reading its config.
+
+    The planned entry is `bin/serveros-fleet-owned --stdio --config PATH`. It is
+    a local runtime, not a remote OAuth client: the adapter must not invent a
+    token, a client id or an OAuth consent. Only the executable and config path
+    are checked; the config is never opened here.
+    """
+    if not isinstance(entry, str) or not entry:
+        raise Refused(SOURCE_REFUSED, "the stdio-owner mode needs --owned-entry")
+    if not isinstance(config, str) or not config:
+        raise Refused(SOURCE_REFUSED, "the stdio-owner mode needs --owned-config")
+    entry_path = Path(entry)
+    config_path = Path(config)
+    if not entry_path.is_absolute() or not config_path.is_absolute():
+        raise Refused(SOURCE_REFUSED,
+                      "owned entry and config must be absolute paths; a relative "
+                      "path would resolve differently on the device")
+    if not entry_path.is_file():
+        raise Refused(SOURCE_REFUSED, f"owned entry is not a file: {entry_path}")
+    if not os.access(entry_path, os.X_OK):
+        raise Refused(SOURCE_REFUSED, f"owned entry is not executable: {entry_path}")
+    if not config_path.is_file():
+        raise Refused(SOURCE_REFUSED, f"owned config is not a file: {config_path}")
+    return str(entry_path), str(config_path)
+
+
+def mcp_config_stdio(entry: str, config: str) -> dict:
+    """`.mcp.json` for the local trusted owner runtime, no OAuth fields."""
+    return {
+        "mcpServers": {
+            "serveros-fleet": {
+                "type": "stdio",
+                "command": entry,
+                "args": ["--stdio", "--config", config],
+            }
+        }
+    }
+
+
 DEV_MARKER_BODY = """# DEVELOPMENT ONLY — this is not the release
 
 This directory was generated by `integrations/fleet-cc-dev-plugin/build_cc_plugin.py`
@@ -240,7 +331,11 @@ verify the **server side**, while the release stays blocked.
 | icons | none, deliberately unbranded | the two approved PNGs, pinned by SHA-256 |
 | output | a directory, loaded with `--plugin-dir` | a ZIP, installed once |
 | plugin id | none | assigned by the client's Plugin Creator |
-| scopes | the subset named in `.mcp.json` | authorised by the owner's consent |
+| scopes | the subset named in `.mcp.json`, or none for the local owner stdio mode | authorised by the owner's consent |
+
+The default binding is the remote Fleet ingress. An opt-in `stdio-owner` mode
+binds the local trusted `bin/serveros-fleet-owned --stdio --config PATH` entry
+instead; it carries no OAuth fields and does not read the config or a credential.
 
 Do not install this, publish it, or describe it as the release. The absence of
 the approved brand assets blocks the **release build** and nothing else; it must
@@ -248,14 +343,41 @@ not be repaired here.
 """
 
 
-def generate(*, skills_source: Path, out: Path, next_mcp_url: str,
-             scopes=DEFAULT_SCOPES, name: str = DEV_PLUGIN_NAME) -> dict:
-    """Write the plugin directory once, into an empty location."""
-    skills_source = Path(skills_source).resolve()
+def generate(*, skills_source: Path, out: Path,
+             next_mcp_url: str | None = None,
+             scopes=DEFAULT_SCOPES, name: str = DEV_PLUGIN_NAME,
+             transport: str = "http", owned_entry: str | None = None,
+             owned_config: str | None = None) -> dict:
+    """Write the plugin directory once, into an empty location.
+
+    `transport="http"` is the remote Fleet ingress with OAuth scopes.
+    `transport="stdio-owner"` binds the local trusted owner runtime and is
+    deliberately OAuth-free.
+    """
+    skills_source = check_skills_source(skills_source)
     out = Path(out).resolve()
     check_paths(skills_source, out)
-    url = check_endpoint(next_mcp_url)
-    scope_string = check_scopes(scopes)
+    transport = str(transport)
+    if transport == "http":
+        if owned_entry is not None or owned_config is not None:
+            raise Refused(SOURCE_REFUSED,
+                          "HTTP mode and the local owned entry are different "
+                          "bindings; choose one")
+        url = check_endpoint(next_mcp_url)
+        scope_string = check_scopes(scopes)
+        binding = None
+    elif transport == "stdio-owner":
+        if next_mcp_url is not None:
+            raise Refused(SOURCE_REFUSED,
+                          "stdio-owner mode is local; it must not also carry a "
+                          "remote MCP URL")
+        owned_entry, owned_config = check_owned_entry(owned_entry, owned_config)
+        url = None
+        scope_string = None
+        binding = mcp_config_stdio(owned_entry, owned_config)
+    else:
+        raise Refused(SOURCE_REFUSED,
+                      f"transport {transport!r} is not http or stdio-owner")
 
     skills = read_skills(skills_source)
     for skill_name, body in skills:
@@ -277,7 +399,8 @@ def generate(*, skills_source: Path, out: Path, next_mcp_url: str,
     (out / MANIFEST_DIR / MANIFEST_NAME).write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (out / MCP_FILE).write_text(
-        json.dumps(mcp_config(url, scope_string), indent=2, ensure_ascii=False) + "\n",
+        json.dumps(binding if binding is not None else mcp_config(url, scope_string),
+                   indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8")
     (out / DEV_MARKER).write_text(DEV_MARKER_BODY, encoding="utf-8")
 
@@ -294,8 +417,11 @@ def generate(*, skills_source: Path, out: Path, next_mcp_url: str,
         "installable": False,
         "name": manifest["name"],
         "version": manifest["version"],
+        "transport": transport,
         "mcp_url": url,
         "oauth_scopes": scope_string,
+        "owned_entry": owned_entry if transport == "stdio-owner" else None,
+        "owned_config": owned_config if transport == "stdio-owner" else None,
         "skills": [s for s, _ in skills],
         "skills_source": str(skills_source.relative_to(ROOT)),
         "members": sorted(written),
@@ -312,20 +438,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--skills-source", default=str(DEFAULT_SKILLS_SOURCE))
     parser.add_argument("--out", required=True)
-    parser.add_argument("--next-mcp-url", required=True)
+    parser.add_argument("--next-mcp-url")
     parser.add_argument("--scopes", default=" ".join(DEFAULT_SCOPES))
+    parser.add_argument("--transport", choices=("http", "stdio-owner"),
+                        default="http")
+    parser.add_argument("--owned-entry")
+    parser.add_argument("--owned-config")
     args = parser.parse_args(argv)
 
     try:
         record = generate(skills_source=Path(args.skills_source), out=Path(args.out),
-                          next_mcp_url=args.next_mcp_url, scopes=args.scopes)
+                          next_mcp_url=args.next_mcp_url, scopes=args.scopes,
+                          transport=args.transport, owned_entry=args.owned_entry,
+                          owned_config=args.owned_config)
     except Refused as refusal:
         print(f"{refusal.status}: {refusal.detail}", file=sys.stderr)
         return 2
 
     print(f"{record['name']} v{record['version']} DEVELOPMENT_ONLY")
     print(f"out={args.out} skills={len(record['skills'])} "
-          f"mcp_url={record['mcp_url']} scopes={record['oauth_scopes']!r}")
+          f"transport={record['transport']} mcp_url={record['mcp_url']} "
+          f"scopes={record['oauth_scopes']!r}")
     for member in record["members"]:
         print(f"  {member}")
     return 0

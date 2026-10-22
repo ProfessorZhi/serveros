@@ -36,6 +36,7 @@ from .runtime_identity import BASE_RUNTIME
 from .runtime_create_policy import (RuntimeProjectDefaults, PolicyError,
                                     parse_runtime_create_defaults)
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
+from .owner_access import OwnerAccessProfile, parse_owner_access
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
 
@@ -158,11 +159,23 @@ class ProviderBinding:
     #: the device's own protocol; until then the honest answer is UNVERIFIED,
     #: never a quiet fallback to a different profile.
     instance_id: str | None = None
+    # Explicitly serve unqualified Claude/Codex session namespaces through
+    # this one base account gateway. This adds no runtime or grant.
+    multiplex_native_families: bool = False
+    owner_access: OwnerAccessProfile | None = None
 
     def __post_init__(self) -> None:
         """Shape only. Whether a declared runtime EXISTS is not a question a
         single binding can answer, and set-level questions are asked where the
         whole set is visible."""
+        if self.owner_access is not None and not isinstance(self.owner_access, OwnerAccessProfile):
+            raise ValueError("owner_access must be a validated owner profile")
+        if not isinstance(self.multiplex_native_families, bool):
+            raise ValueError("multiplex_native_families must be true or false")
+        if self.multiplex_native_families and (
+                self.runtime != BASE_RUNTIME or self.family != BASE_RUNTIME
+                or self.profile is not None):
+            raise ValueError("multiplex_native_families requires an unprofiled base Claude gateway")
         if self.family not in runtime_identity.FAMILIES:
             raise ValueError(
                 f"family {self.family!r} is not one this surface names; it is "
@@ -294,6 +307,9 @@ class CreateGrant:
 
 @dataclass(frozen=True)
 class PolicyBinding:
+    # Explicit owners of exact native namespaces, configured once. Other
+    # principals and independently bound account profiles retain their floors.
+    owner_max: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Sessions this runtime is additionally authorized to drive. Control into a
     # session is granted per session by an operator, never by the caller naming
     # an id — see `APPROVAL_REQUIRED`.
@@ -349,22 +365,6 @@ class PolicyBinding:
     # configuration mistake should be an outage on start, not a silent widening
     # at 3am.
     allow_wildcard_create: bool = False
-    # Directory prefixes under which `project_create` may make a NEW project.
-    # A separate list from `create_allow` because that one is keyed by project
-    # ids that already exist, and this verb's whole purpose is the case where no
-    # project does. An entry is an absolute path; a project path is permitted
-    # when it equals an entry or lies beneath it, so `["/data/home/vince/
-    # workspace"]` admits `.../workspace/p-notes` and not `.../workspace-evil`.
-    #
-    # Empty — the default — is no project creation anywhere, exactly as an empty
-    # `create_allow` is no session minting. This is a second bound, not the
-    # only one: CloudCLI applies its own workspace root before it makes a
-    # directory, and a path outside that root is refused there too.
-    project_create_allow: tuple[str, ...] = ()
-    # `project_create_allow: ["*"]` would make the path allowlist meaningless,
-    # exactly as a wildcard create does. Refused at load: a configuration
-    # mistake should be an outage on start, not a silent widening at 3am.
-    allow_wildcard_project_create: bool = False
     # Sessions this runtime is additionally authorized to *interrupt*. A
     # separate list from `send_allow` on purpose, and not a superset of it: an
     # operator who authorized messaging a session has not thereby authorized
@@ -384,6 +384,13 @@ class PolicyBinding:
     max_message_chars: int = 8000
     read_redact: bool = True
     sessions_cache_seconds: float = 0.0
+    discovery_timeout_seconds: float = 5.0
+    discovery_workers: int = 4
+
+    def __post_init__(self):
+        from .discovery import discovery_settings
+        discovery_settings(self.discovery_timeout_seconds, self.discovery_workers)
+        object.__setattr__(self, "owner_max", load_owner_max(self.owner_max))
 
 
 @dataclass(frozen=True)
@@ -415,6 +422,39 @@ class FleetConfig:
     #: what keeps a binding written before these axes existed loading as it did.
     device_default_account: str | None = None
 
+    def __post_init__(self):
+        for key, binding in self.providers.items():
+            if not binding.multiplex_native_families:
+                continue
+            if key != provider_key(binding.device_ref, binding.runtime):
+                raise ValueError("multiplexed binding key disagrees with its device/runtime")
+            if (binding.account is not None
+                    and (self.device_default_account is None
+                         or binding.account != self.device_default_account)):
+                raise ValueError("multiplexed account must be the declared device owner")
+            if any(other.device_ref == binding.device_ref and other.runtime == "codex"
+                   for other in self.providers.values()):
+                raise ValueError("multiplexed base conflicts with an explicit Codex binding")
+        for namespaces in self.policy.owner_max.values():
+            for namespace in namespaces:
+                device, _, runtime = namespace.partition("|")
+                binding = self.namespace_binding(device, runtime or BASE_RUNTIME)
+                if binding is None or not binding.enabled or binding.owner_access is None:
+                    raise ValueError("owner_max requires an enabled binding with an owner_access profile")
+
+    def session_binding(self, key: SessionKey) -> ProviderBinding | None:
+        return self.namespace_binding(key.device_ref, key.provider)
+
+    def namespace_binding(self, device_ref: str, namespace: str) -> ProviderBinding | None:
+        exact = self.provider_for(device_ref, namespace)
+        if exact is not None:
+            return exact
+        base = self.provider_for(device_ref)
+        if (namespace == "codex" and base is not None and base.enabled
+                and base.multiplex_native_families):
+            return base
+        return None
+
     def provider_for(self, device_ref: str,
                      runtime: str = BASE_RUNTIME) -> ProviderBinding | None:
         """The binding for one runtime on one device, or `None`.
@@ -433,6 +473,11 @@ class FleetConfig:
                 ref: {
                     "device_ref": b.device_ref,
                     "runtime": b.runtime,
+                    "multiplex_native_families": b.multiplex_native_families,
+                    "owner_access": ({"owner_approved": True,
+                                      "project_roots": dict(b.owner_access.project_roots),
+                                      "permission_mode": b.owner_access.permission_mode}
+                                     if b.owner_access else None),
                     "kind": b.kind,
                     "endpoint": b.endpoint,
                     "enabled": b.enabled,
@@ -446,13 +491,13 @@ class FleetConfig:
             "server": {"bind": self.server.bind, "port": self.server.port,
                        "mcp_path": self.server.mcp_path},
             "policy": {
+                "owner_max": {p: list(v) for p, v in self.policy.owner_max.items()},
                 "send_allow": list(self.policy.send_allow),
                 "control_allow": list(self.policy.control_allow),
                 "create_allow": {
                     project: grant.as_dict()
                     for project, grant in sorted(self.policy.create_allow.items())
                 },
-                "project_create_allow": list(self.policy.project_create_allow),
                 # Grants are reported as their *shape* — how many principals,
                 # which devices, which verbs — and not as the principal names.
                 # A principal name is a credential identifier (`oauth:<client_id>`,
@@ -705,68 +750,6 @@ def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
     return grants
 
 
-def _project_create_allow(policy_raw: dict[str, Any]) -> tuple[str, ...]:
-    """Parse `policy.project_create_allow` into path prefixes.
-
-        project_create_allow:
-          - /data/home/vince/workspace
-
-    A prefix is refused unless it is ABSOLUTE and NORMALISED. A relative prefix
-    would be resolved against whatever directory the daemon happened to start
-    in, which is a different answer on the next restart; a `..` segment would
-    make the prefix mean something other than it reads. Both are the kind of
-    mistake that turns an allowlist into a different allowlist at 3am.
-    """
-    raw = policy_raw.get("project_create_allow")
-    if raw is None:
-        return ()
-    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
-        raise refuse(
-            BAD_REQUEST,
-            "policy.project_create_allow must be a list of absolute directory "
-            "prefixes (or a single-element list containing '*')",
-        )
-    prefixes: list[str] = []
-    for entry in raw:
-        if not isinstance(entry, str) or not entry.strip():
-            raise refuse(BAD_REQUEST,
-                         "policy.project_create_allow entries must be non-empty strings")
-        prefix = entry.strip()
-        if prefix == "*":
-            if len(raw) != 1:
-                raise refuse(
-                    BAD_REQUEST,
-                    "policy.project_create_allow must not mix '*' with named "
-                    "prefixes; '*' already admits every prefix",
-                )
-            if not bool(policy_raw.get("allow_wildcard_project_create", False)):
-                raise refuse(
-                    BAD_REQUEST,
-                    "policy.project_create_allow contains '*'. A wildcard makes "
-                    "the path allowlist meaningless; set "
-                    "`allow_wildcard_project_create: true` if that is genuinely "
-                    "intended.",
-                )
-            prefixes.append("*")
-            continue
-        if not os.path.isabs(prefix):
-            raise refuse(
-                BAD_REQUEST,
-                f"policy.project_create_allow[{prefix!r}] must be an absolute "
-                f"path; a relative prefix is resolved against the daemon's "
-                f"working directory and means something different after a restart.",
-            )
-        normalised = os.path.normpath(prefix)
-        if normalised != prefix.rstrip("/") or "/.." in f"{prefix}/":
-            raise refuse(
-                BAD_REQUEST,
-                f"policy.project_create_allow[{prefix!r}] must be written already "
-                f"normalised (no '..' segments, no trailing slash)",
-            )
-        prefixes.append(normalised)
-    return tuple(prefixes)
-
-
 def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tuple[str, ...]]]:
     """Parse `policy.operator_grants` into `{principal: {device_ref: (verbs,)}}`.
 
@@ -870,6 +853,34 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
     return grants
 
 
+def load_owner_max(raw) -> dict[str, tuple[str, ...]]:
+    if not isinstance(raw, dict):
+        raise ValueError("policy.owner_max must map exact principals to namespace lists")
+    result = {}
+    for principal, namespaces in raw.items():
+        if (not isinstance(principal, str) or not principal.strip()
+                or principal != principal.strip() or "*" in principal):
+            raise ValueError("owner_max requires exact nonempty principal names")
+        if not isinstance(namespaces, (list, tuple)) or not namespaces:
+            raise ValueError("owner_max requires a nonempty namespace list")
+        selected = []
+        for namespace in namespaces:
+            if (not isinstance(namespace, str) or namespace != namespace.strip()
+                    or "*" in namespace or namespace.count("|") > 1):
+                raise ValueError("owner_max requires exact device/runtime keys")
+            device, _, runtime = namespace.partition("|")
+            if runtime == BASE_RUNTIME or ("|" in namespace and not runtime):
+                raise ValueError("the base owner namespace uses its bare device key")
+            SessionKey(device, runtime or BASE_RUNTIME, "owner-config")
+            if runtime_identity.is_a_selector(runtime):
+                raise ValueError("owner_max cannot name a runtime query selector")
+            if namespace in selected:
+                raise ValueError("duplicate owner_max namespace")
+            selected.append(namespace)
+        result[principal] = tuple(selected)
+    return result
+
+
 def load_config(path: str | Path | None = None) -> FleetConfig:
     explicit = path if path is not None else default_config_path()
     if explicit is None:
@@ -967,24 +978,29 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         # the authority for that grammar is `SessionKey`, so it is asked rather
         # than restated here.
         SessionKey(device_ref, runtime, "binding-validation")
-        providers[provider_key(device_ref, runtime)] = ProviderBinding(
-            device_ref=device_ref,
-            runtime=runtime,
-            kind=kind,
-            endpoint=str(entry.get("endpoint") or ""),
-            credential_anchor=_anchor(entry.get("credential_anchor"), f"provider {ref} credential_anchor"),
-            connect_timeout=float(entry.get("connect_timeout", 5.0)),
-            read_timeout=float(entry.get("read_timeout", 45.0)),
-            enabled=bool(entry.get("enabled", True)),
-            note=entry.get("note"),
-            allow_send=bool(entry.get("allow_send", False)),
-            allow_create=bool(entry.get("allow_create", False)),
-            allow_control=bool(entry.get("allow_control", False)),
-            account=entry.get("account"),
-            profile=entry.get("profile"),
-            family=str(entry.get("family", BASE_RUNTIME)),
-            instance_id=entry.get("instance_id"),
-        )
+        try:
+            providers[provider_key(device_ref, runtime)] = ProviderBinding(
+                device_ref=device_ref,
+                runtime=runtime,
+                kind=kind,
+                endpoint=str(entry.get("endpoint") or ""),
+                credential_anchor=_anchor(entry.get("credential_anchor"), f"provider {ref} credential_anchor"),
+                connect_timeout=float(entry.get("connect_timeout", 5.0)),
+                read_timeout=float(entry.get("read_timeout", 45.0)),
+                enabled=bool(entry.get("enabled", True)),
+                note=entry.get("note"),
+                allow_send=bool(entry.get("allow_send", False)),
+                allow_create=bool(entry.get("allow_create", False)),
+                allow_control=bool(entry.get("allow_control", False)),
+                account=entry.get("account"),
+                profile=entry.get("profile"),
+                family=str(entry.get("family", BASE_RUNTIME)),
+                instance_id=entry.get("instance_id"),
+                multiplex_native_families=entry.get("multiplex_native_families", False),
+                owner_access=parse_owner_access(entry.get("owner_access")),
+            )
+        except ValueError as exc:
+            raise refuse(BAD_REQUEST, f"provider {ref}: {exc}") from None
 
     # Two set-level questions a single binding cannot answer, asked once the
     # whole set is visible. Both refuse rather than pick a winner: a duplicate
@@ -1153,22 +1169,33 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                     "provider credential anchors and endpoints; owner must "
                     "repair the device binding before creating sessions",
                 )
+    from .discovery import discovery_settings
+    try:
+        discovery_timeout, discovery_workers = discovery_settings(
+            policy_raw.get("discovery_timeout_seconds", 5.0),
+            policy_raw.get("discovery_workers", 4))
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None
+    try:
+        owner_max = load_owner_max(policy_raw.get("owner_max", {}))
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None
     policy = PolicyBinding(
+        owner_max=owner_max,
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
         operator_grants=load_operator_grants(policy_raw),
         create_allow=create_grants,
         runtime_create_defaults=runtime_defaults,
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),
-        project_create_allow=_project_create_allow(policy_raw),
-        allow_wildcard_project_create=bool(
-            policy_raw.get("allow_wildcard_project_create", False)),
         control_allow=control_allow,
         allow_wildcard_control=bool(policy_raw.get("allow_wildcard_control", False)),
         max_read_messages=int(policy_raw.get("max_read_messages", 40)),
         max_message_chars=int(policy_raw.get("max_message_chars", 8000)),
         read_redact=bool(policy_raw.get("read_redact", True)),
         sessions_cache_seconds=float(policy_raw.get("sessions_cache_seconds", 0.0)),
+        discovery_timeout_seconds=discovery_timeout,
+        discovery_workers=discovery_workers,
     )
 
     audit_raw = raw.get("audit") or {}
@@ -1183,14 +1210,17 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
-    return FleetConfig(
-        source=source,
-        local_device_ref=str(local_device),
-        providers=providers,
-        auth=auth,
-        server=server,
-        policy=policy,
-        audit=audit,
-        registry_path=registry_path,
-        device_default_account=device_default_account,
-    )
+    try:
+        return FleetConfig(
+            source=source,
+            local_device_ref=str(local_device),
+            providers=providers,
+            auth=auth,
+            server=server,
+            policy=policy,
+            audit=audit,
+            registry_path=registry_path,
+            device_default_account=device_default_account,
+        )
+    except ValueError as exc:
+        raise refuse(BAD_REQUEST, str(exc)) from None

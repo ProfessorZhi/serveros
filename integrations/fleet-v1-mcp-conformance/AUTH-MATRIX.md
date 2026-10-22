@@ -1,7 +1,7 @@
 # The 34-tool catalogue and what actually authorizes a call
 
-`TOOL_SURFACE_REVISION = "fleet-mcp-5"` serves **34 tools**: 9 hand-written,
-23 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 34
+`TOOL_SURFACE_REVISION = "fleet-mcp-5"` serves **34 tools**: 10 hand-written,
+22 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 34
 to every client that can reach the surface. That is discovery. It is not
 entitlement.
 
@@ -53,35 +53,35 @@ checks that still apply after the scope. A scope-admitted call can be refused.
 | 7 | `fleet_status` | authored | `fleet:read` | — (gate added in this branch) |
 | 8 | `fleet_create_session` | authored | `fleet:create` | device `allow_create` AND project in `create_allow`; operator `create` only when a runtime/project default rule exists |
 | 9 | `fleet_interrupt_session` | authored | `fleet:control` | device `allow_control` AND (`control_allow` contains the session OR operator `control`) |
-| 10 | `fleet_cloudcli_overview` | mirror | `fleet:read` | — |
-| 11 | `fleet_cloudcli_projects_list` | mirror | `fleet:read` | — |
-| 12 | `fleet_cloudcli_sessions_list` | mirror | `fleet:read` | — |
-| 13 | `fleet_cloudcli_session_get` | mirror | `fleet:read` | — |
-| 14 | `fleet_cloudcli_session_read` | mirror | `fleet:read` | — |
-| 15 | `fleet_cloudcli_run_get` | mirror | `fleet:read` | — |
-| 16 | `fleet_cloudcli_quay_snapshot` | mirror | `fleet:read` | — |
-| 17 | `fleet_cloudcli_ui_last_opened_session` | mirror | `fleet:read` | — |
-| 18 | `fleet_cloudcli_ui_visible_context` | mirror | `fleet:read` | — |
-| 19 | `fleet_cloudcli_ui_clients_list` | mirror | `fleet:read` | — |
-| 20 | `fleet_cloudcli_session_search` | mirror | `fleet:read` | — |
-| 21 | `fleet_cloudcli_approvals_list` | mirror | `fleet:read` | — |
-| 22 | `fleet_cloudcli_session_send` | mirror | `fleet:send` | same per-session floor as row 5 |
-| 23 | `fleet_cloudcli_session_create` | mirror | `fleet:create` | device `allow_create` AND project in `create_allow` AND operator `create` (always) |
-| 24 | `fleet_cloudcli_session_interrupt` | mirror | `fleet:control` | device `allow_control` AND operator `control` (always) |
-| 25 | `fleet_cloudcli_session_start` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 26 | `fleet_cloudcli_session_close` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 27 | `fleet_cloudcli_ui_open_session` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
-| 28 | `fleet_cloudcli_session_cancel_queued` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 29 | `fleet_cloudcli_session_reconfigure` | mirror | `fleet:control` | device `allow_control` AND operator `control`; model/mode ceiling is a separate policy check |
-| 30 | `fleet_cloudcli_session_background` | mirror | `fleet:read` (list) / `fleet:control` (stop) | list: —; stop: device `allow_control` AND operator `control` |
-| 31 | `fleet_cloudcli_approval_answer` | mirror | `fleet:approve` | device `allow_control` AND operator `control`; approval ownership verified against the named session |
-| 32 | `fleet_cloudcli_project_create` | mirror | `fleet:create` | device `allow_create` AND `project_path` under `project_create_allow` AND operator `create`; `arguments.projectPath` must equal the outer `project_path` |
+| 10 | `fleet_create_project` | authored | `fleet:create` | exact owner-max principal/namespace AND configured local root AND target-local fresh creation |
+| 11 | `fleet_cloudcli_overview` | mirror | `fleet:read` | — |
+| 12 | `fleet_cloudcli_projects_list` | mirror | `fleet:read` | — |
+| 13 | `fleet_cloudcli_sessions_list` | mirror | `fleet:read` | — |
+| 14 | `fleet_cloudcli_session_get` | mirror | `fleet:read` | — |
+| 15 | `fleet_cloudcli_session_read` | mirror | `fleet:read` | — |
+| 16 | `fleet_cloudcli_run_get` | mirror | `fleet:read` | — |
+| 17 | `fleet_cloudcli_quay_snapshot` | mirror | `fleet:read` | — |
+| 18 | `fleet_cloudcli_ui_last_opened_session` | mirror | `fleet:read` | — |
+| 19 | `fleet_cloudcli_ui_visible_context` | mirror | `fleet:read` | — |
+| 20 | `fleet_cloudcli_ui_clients_list` | mirror | `fleet:read` | — |
+| 21 | `fleet_cloudcli_session_search` | mirror | `fleet:read` | — |
+| 22 | `fleet_cloudcli_approvals_list` | mirror | `fleet:read` | — |
+| 23 | `fleet_cloudcli_session_send` | mirror | `fleet:send` | same per-session floor as row 5 |
+| 24 | `fleet_cloudcli_session_create` | mirror | `fleet:create` | device `allow_create` AND project in `create_allow` AND operator `create` (always) |
+| 25 | `fleet_cloudcli_session_interrupt` | mirror | `fleet:control` | device `allow_control` AND operator `control` (always) |
+| 26 | `fleet_cloudcli_session_start` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 27 | `fleet_cloudcli_session_close` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 28 | `fleet_cloudcli_ui_open_session` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
+| 29 | `fleet_cloudcli_session_cancel_queued` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 30 | `fleet_cloudcli_session_reconfigure` | mirror | `fleet:control` | device `allow_control` AND operator `control`; model/mode ceiling is a separate policy check |
+| 31 | `fleet_cloudcli_session_background` | mirror | `fleet:read` (list) / `fleet:control` (stop) | list: —; stop: device `allow_control` AND operator `control` |
+| 32 | `fleet_cloudcli_approval_answer` | mirror | `fleet:approve` | device `allow_control` AND operator `control`; approval ownership verified against the named session |
 | 33 | `fleet_cloudcli_native_manifest` | capability | **none** | — (static catalogue; discovery is not entitlement) |
 | 34 | `fleet_cloudcli_native_capability` | capability | `fleet:read` | — (live per-device answer) |
 
 ## 3. What each credential can reach
 
-Counts are scope admission only; rows 5, 8, 9, 23, 24 and 27–32 still need
+Counts are scope admission only; rows 5, 8, 9, 10 and 24–32 still need
 their binding gates.
 
 | credential | scopes | tools admitted | tools denied at the scope |
@@ -118,13 +118,13 @@ capability. They are recorded so nobody has to rediscover them from a refusal.
    recorded native scope is `cloudcli:session:control` only, so the Fleet scope
    is `fleet:control`. The model/mode ceiling is enforced by
    `policy.runtime_create_defaults`, not by `fleet:create`.
-4. **`session_create` vs `project_create`.** Both are creates and both need
-the device's `allow_create`, but they are floored over different subjects.
-`fleet_cloudcli_session_create` floors over an EXISTING project id and so
-checks `policy.create_allow`; `fleet_cloudcli_project_create` floors over a
-path that does not exist yet and so checks `policy.project_create_allow`, a
-prefix allowlist. Neither allowlist can stand in for the other, which is why
-the second has its own governance class rather than reusing `create`.
+4. **`session_create` vs `create_project`.** Both are creates, but they are
+floored over different subjects. `fleet_cloudcli_session_create` floors over
+an EXISTING project id and so checks `policy.create_allow`; `fleet_create_project`
+floors over a project that has no id yet, so it requires an exact owner-max
+profile for the named namespace, a root the profile configures, and a
+target-local `freshDirectoryCreated` ACK. `create_allow` cannot stand in for
+the second: it is keyed by ids that by definition do not exist yet.
 5. **Stale prose.** `oauth.py`'s module docstring still says the scopes are
    read/send/create, and `config.py`'s comment above `OPERATOR_GRANT_VERBS`
    still says approve/navigate are planned. Both lists have since grown to six
@@ -155,10 +155,10 @@ documented contract (`fleet_status`) and the two protocol behaviours below.
 
 * It does not claim any tool reached a real device. `selftest.py` and `run.py`
   run against an in-process `FakeDevice`; the mode is `FAKE_DEVICE`.
-* It does not claim the installed Next canary serves this revision. The
-  installed canary is A `008a336`, which predates `fleet-mcp-4`, and the 23rd
-  verb comes from a CloudCLI fork branch the running device does not carry yet;
-  `fleet_cloudcli_native_capability` reports it `UNSUPPORTED_BY_DEVICE` there.
+* It does not claim a particular canary serves this revision. The 22 mirrored
+  verbs are CloudCLI 1.39.0's surface; whether a given device answers one is
+  read per device from `fleet_cloudcli_native_capability` (all 22 answered on
+  `device:tokyo-shared-dev-01` when this table was written), not inferred here.
 * It does not claim `effective` anything. `fleet_create_session` reports
   `effective: null` because no device read it back; that is UNKNOWN, not a
   resolved value.

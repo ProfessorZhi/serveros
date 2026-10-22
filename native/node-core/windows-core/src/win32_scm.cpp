@@ -265,7 +265,7 @@ WindowsServiceObservation Win32ScmQuery::query(const std::string& service_name) 
         // handled by leaving the start type unknown rather than by growing a
         // buffer from a number the SCM chose.
         constexpr DWORD kConfigBytes = 8192;
-        BYTE buffer[kConfigBytes];
+        alignas(QUERY_SERVICE_CONFIGW) BYTE buffer[kConfigBytes];
         DWORD config_needed = 0;
         if (::QueryServiceConfigW(service, reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(buffer),
                                   kConfigBytes, &config_needed) != 0) {
@@ -292,8 +292,8 @@ WindowsServiceObservation Win32ScmQuery::query(const std::string& service_name) 
 #endif
 }
 
-std::string windows_status_ipc_status() { return kIpcStatusUnsupported; }
+std::string windows_status_ipc_status() { return win32_scm_available() ? "AVAILABLE" : kIpcStatusUnsupported; }
 
-std::string windows_status_ipc_reason() { return kIpcReasonUnverified; }
+std::string windows_status_ipc_reason() { return win32_scm_available() ? "LOCAL_PIPE_REQUIRES_PINNED_INSTANCE" : kIpcReasonUnverified; }
 
 }  // namespace nodecore::windows_core

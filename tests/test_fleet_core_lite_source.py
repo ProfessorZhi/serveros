@@ -295,15 +295,12 @@ class ReachabilityIsNotCoreConnectivityTest(unittest.TestCase):
 
 
 class FleetSurfaceIsUnchangedTest(unittest.TestCase):
-    def test_the_authored_verbs_and_the_scope_vocabulary_are_unchanged(self):
-        # What this test is about is Core Lite: it added no TOOL, and no
-        # scope. The mirrored half has since grown by one (`project_create`),
-        # so the served count is stated as the sum rather than frozen at 33 —
-        # a number that would now be wrong for a reason that has nothing to do
-        # with the change under test.
+    def test_no_tool_was_added_and_no_scope_changed(self):
+        # Core-lite remains an optional output block, without a new tool.
+        # V5 adds the independent project-create tool: 10 + 22 + 2.
         self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-5")
-        self.assertEqual(len(fleet_tools.TOOLS), 9)
-        self.assertEqual(len(fleet_tools.NATIVE_MIRROR_TOOLS), 23)
+        self.assertEqual(len(fleet_tools.TOOLS), 10)
+        self.assertEqual(len(fleet_tools.NATIVE_MIRROR_TOOLS), 22)
         self.assertEqual(len(fleet_tools.SERVED_TOOLS), 34)
         self.assertNotIn("core_lite_status", [t.name for t in fleet_tools.SERVED_TOOLS])
 

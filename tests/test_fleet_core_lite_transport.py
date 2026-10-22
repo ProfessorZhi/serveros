@@ -489,8 +489,6 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
         from fleet_mcp.version import TOOL_SURFACE_REVISION
         self.assertEqual(len(tools_mod.SERVED_TOOLS), 34)
         self.assertEqual(len(scopes.ALLOWED_SCOPES), 6)
-        # `fleet-mcp-5` is the 23rd mirrored verb, not a core-lite tool: this
-        # module still adds none, which is what the name below checks.
         self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-5")
         self.assertNotIn("core_lite_status",
                          [t.name for t in tools_mod.SERVED_TOOLS])
@@ -684,7 +682,7 @@ class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
     device*. G1 owns that projection and this lane does not edit it.
 
     The risk this test exists for is the quiet one: Fleet already carries a
-    per-device block (`core_lite`) in two of its 34 tools, so the cheapest way to
+    per-device block (`core_lite`) in two of its 33 tools, so the cheapest way to
     "support Device Ability" would be to grow that block until it answered
     questions G1 owns. Then two surfaces would answer "what can this device do",
     and the one that is not the authority would be the one somebody read.

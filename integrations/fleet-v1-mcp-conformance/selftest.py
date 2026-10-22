@@ -152,9 +152,9 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         self.assertEqual(
             set(denied),
             {
-                "fleet_create_session", "fleet_interrupt_session",
+                "fleet_create_session", "fleet_create_project",
+                "fleet_interrupt_session",
                 "fleet_cloudcli_session_create", "fleet_cloudcli_session_interrupt",
-                "fleet_cloudcli_project_create",
                 "fleet_cloudcli_session_start", "fleet_cloudcli_session_close",
                 "fleet_cloudcli_session_cancel_queued",
                 "fleet_cloudcli_session_reconfigure",
@@ -421,7 +421,7 @@ class DiscoveryIsNotEntitlement(unittest.TestCase):
         result = self.h.call(self.h.server(set()),
                              "fleet_cloudcli_native_manifest", {})
         self.assertFalse(result["result"]["isError"])
-        self.assertEqual(result["result"]["structuredContent"]["count"], 23)
+        self.assertEqual(result["result"]["structuredContent"]["count"], 22)
 
     def test_zero_scope_cannot_read_live_capability(self):
         result = self.h.call(self.h.server(set()),

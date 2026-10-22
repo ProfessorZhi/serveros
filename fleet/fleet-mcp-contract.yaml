@@ -317,6 +317,29 @@ tools:
       reading, because aborting a session with nothing running is not an error;
       the provider answers `aborted: false` and says so.
 
+  fleet_create_project:
+    verb: write
+    answers: the native project ID and owned path of one new project
+    answered_by: the target CloudCLI project service and existing project database
+    schema: >-
+      device, root and name are required. root names a configured owner root,
+      name is a safe single component; no caller path or shell is accepted.
+      Optional display_name, runtime and idempotency_key retain explicit intent.
+    authorization: >-
+      fleet:create and exact owner-max principal/native-namespace selection,
+      enabled provider owner profile and the independent Node owner floor.
+      A new project needs no further per-project allowlist edit.
+    freshness: >-
+      Target-local requireFresh:true is advertised and enforced by exclusive
+      directory creation and atomic database insertion. The ACK must affirm
+      freshDirectoryCreated:true and name the requested path and native ID.
+      Existing directories and archived registrations are not reactivated.
+    idempotency: >-
+      Same existing Agent Control collection, distinct project.create receipt.
+      Accepted replay returns before provider IO; unknown outcomes stay fenced.
+      Process-local standalone mode is reported, never a restart guarantee.
+
+
 # ---------------------------------------------------------------------------
 # Addressability
 # ---------------------------------------------------------------------------
@@ -567,21 +590,18 @@ authorization:
 # that machine runs.
 
 native_mirror:
-  # The CloudCLI native surface, inherited whole. The 23 verbs are NOT
+  # The CloudCLI native surface, inherited whole. The 22 verbs are NOT
   # enumerated here: the surface is DERIVED once, in
   # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
-  # hand-written nine. Restating 23 rows here would be a second copy that drifts
+  # hand-written ten. Restating 22 rows here would be a second copy that drifts
   # the first time CloudCLI adds a parameter.
   declared_in: fleet_mcp/cloudcli_native.py#NATIVE_TOOLS
   manifest_schema: serveros/fleet-cloudcli-native-manifest.v1
   prefix: 'fleet_cloudcli_'
   native_server: CloudCLI
   native_version_recorded: '1.39.0'
-  # One verb (`project_create`) comes from this fleet's CloudCLI branch rather
-  # than 1.39.0; its manifest entry says so in `recorded_from`. The count is the
-  # whole recorded set, not the subset the installed build happens to declare.
-  count: 23
-  # The hand-written nine, the 23 mirrored verbs, plus the two read-only tools
+  count: 22
+  # The hand-written ten, the 22 mirrored verbs, plus the two read-only tools
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it, and it said 31 while the surface served 33.
@@ -635,6 +655,7 @@ node_transport:
     - 'GET /v1/self'
     - 'GET /v1/sessions'
     - 'POST /v1/sessions'
+    - 'POST /v1/projects'
     - 'GET /v1/sessions/{id}'
     - 'POST /v1/sessions/{id}/read'
     - 'POST /v1/sessions/{id}/send'

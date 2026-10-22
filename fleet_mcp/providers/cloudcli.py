@@ -13,11 +13,13 @@ this surface is not going to have its own opinion about it.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from ..config import ProviderBinding
 from .. import cloudcli_native
 from ..errors import (
+    BAD_SESSION_REF,
     BAD_REQUEST,
     INTERNAL,
     PROVIDER_TIMEOUT,
@@ -70,6 +72,7 @@ class CloudCliProvider(DeviceProvider):
         self._health: ProviderHealth | None = None
         self._health_at: float = 0.0
         self._tools: list[dict[str, Any]] | None = None
+        self._tools_sampled_at: str | None = None
         self._coverage: dict[str, Any] = {}
 
     def native_coverage(self) -> dict[str, Any]:
@@ -89,7 +92,7 @@ class CloudCliProvider(DeviceProvider):
         assumed present. Nothing here reads a credential or mutates the device.
         """
         health = self.health()
-        if not self._tools:
+        if health.error_code or self._tools is None:
             return cloudcli_native.capability_snapshot(
                 device_ref=self.device_ref, source=self.kind,
                 reason=health.error_code or "the device's tool list was not read")
@@ -97,11 +100,12 @@ class CloudCliProvider(DeviceProvider):
         for row in self._tools:
             if isinstance(row, dict) and isinstance(row.get("name"), str):
                 observed[row["name"]] = {"annotations": row.get("annotations"),
-                                         "schema": row.get("inputSchema")}
+                                         "schema": row.get("inputSchema"),
+                                         "_meta": row.get("_meta")}
         return cloudcli_native.capability_snapshot(
             device_ref=self.device_ref, observed=observed, source=self.kind,
             version=health.server_version,
-            sampled_at=health.__dict__.get("sampled_at"))
+            sampled_at=self._tools_sampled_at)
 
     # -- plumbing ----------------------------------------------------------
 
@@ -123,6 +127,24 @@ class CloudCliProvider(DeviceProvider):
         return structured(result)
 
     # -- health ------------------------------------------------------------
+
+    def create_project(self, *, root: str, name: str, project_path: str,
+                       display_name: str | None = None):
+        """An explicit extension; never REST auth or arbitrary native passthrough."""
+        client = self._client()
+        try:
+            advertised = client.tools_list()
+            tool = next((t for t in advertised if t.get("name") == "project_create"), {})
+            fresh = tool.get("inputSchema", {}).get("properties", {}).get("requireFresh", {})
+            if fresh.get("type") != "boolean":
+                raise refuse("CAPABILITY_UNSUPPORTED",
+                             "gateway does not advertise target-local fresh project creation")
+            arguments = {"projectPath": project_path, "requireFresh": True}
+            if display_name is not None:
+                arguments["customName"] = display_name
+            return structured(client.tools_call("project_create", arguments))
+        except ProviderRefusal as exc:
+            raise _translate(exc) from None
 
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
@@ -157,6 +179,9 @@ class CloudCliProvider(DeviceProvider):
             info = client.initialize()
             tools = client.tools_list()
         except ProviderRefusal as exc:
+            self._tools = None
+            self._tools_sampled_at = None
+            self._coverage = {}
             self._health = ProviderHealth(
                 device_ref=self.device_ref,
                 kind=self.kind,
@@ -170,6 +195,7 @@ class CloudCliProvider(DeviceProvider):
             return self._health
         server = (info or {}).get("serverInfo") or {}
         self._tools = tools
+        self._tools_sampled_at = datetime.now(timezone.utc).isoformat()
         # HIGH-7(f): the device's LIVE tool list is compared with the recorded
         # set here, so a device running a different CloudCLI is a fact in
         # `fleet_status` rather than a surprise at call time.
@@ -233,9 +259,17 @@ class CloudCliProvider(DeviceProvider):
             if not native:
                 continue
             verdict, running, resident, evidence = classify(row)
+            family = row.get("provider")
+            namespace = str(family or "claude")
+            if self.binding.runtime != "claude":
+                if family is not None and family != self.binding.family:
+                    raise refuse(BAD_SESSION_REF, "listed native family contradicts its binding")
+                namespace = self.binding.runtime
+            elif self.binding.multiplex_native_families and namespace not in ("claude", "codex"):
+                raise refuse(BAD_SESSION_REF, "listed native family is not declared by this gateway")
             summaries.append(
                 SessionSummary(
-                    key=SessionKey.compose(self.device_ref, str(row.get("provider") or "claude"), str(native)),
+                    key=SessionKey.compose(self.device_ref, namespace, str(native)),
                     title=str(row.get("title") or ""),
                     classification=verdict,
                     running=running,
@@ -273,6 +307,11 @@ class CloudCliProvider(DeviceProvider):
         verdict, running, resident, evidence = classify(source)
         run = payload.get("run") or payload.get("currentRun") or source.get("run")
         detail = dict(payload)
+        if "session" not in payload:
+            # Preserve the flat native identity before attaching a routing key.
+            # In particular, the legacy connector's synthesized Claude key
+            # must not erase evidence that the native session is Codex.
+            detail["session"] = dict(source)
         detail.update(
             {
                 **key.as_dict(),

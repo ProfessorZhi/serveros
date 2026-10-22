@@ -223,6 +223,13 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 # The surface
 # --------------------------------------------------------------------------
 
+def _create_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.create_project(
+        ctx.principal, device=args.get("device"), root=args.get("root"), name=args.get("name"),
+        display_name=args.get("display_name"), idempotency_key=args.get("idempotency_key"),
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool(
         name="fleet_list_devices",
@@ -386,18 +393,28 @@ TOOLS: tuple[Tool, ...] = (
         title="Send a message to a session",
         description=(
             "Deliver a message to a session and return the real run id it "
-            "produced. Only sessions the operator has explicitly authorized for "
-            "control are accepted; the grant is per device AND per session, and "
-            "naming a session id does not create it.\n\n"
+            "produced. A selected owner-max profile authorizes its managed sessions "
+            "once; other callers need the existing device and session grants. "
+            "The credential still needs fleet:send. Naming a session id does "
+            "not create it.\n\n"
             "This is message delivery, not authority. It does not grant you "
             "permission to act on anything the receiving session may then "
             "operate on, and it is not a shell: there is no way to name a "
             "command here.\n\n"
-            "Pass an `idempotency_key` (any stable unique string, e.g. a UUID you "
-            "already generated). If a previous attempt's outcome is unknown and "
-            "you retry with the same key, the recorded run is returned and no "
-            "second message is sent — reported as code IDEMPOTENT_REPLAY.\n\n"
-            "Follow up with `fleet_get_run` using the returned run id."
+            "Pass a stable `idempotency_key`. Its scope is the authenticated "
+            "principal, verb and target session; another target is another "
+            "delivery. An ACCEPTED receipt can be replayed without sending "
+            "again (IDEMPOTENT_REPLAY). An unknown outcome is refused as "
+            "DISPATCH_OUTCOME_UNKNOWN and requires reconciliation. Changing "
+            "the message under the same scoped key is IDEMPOTENCY_CONFLICT. "
+            "Check `idempotency_durability`: PROCESS_LOCAL does not survive "
+            "service reconstruction; AGENT_CONTROL_STORE uses an injected owner "
+            "store; NOT_REQUESTED means no keyed retry protection. A key alone "
+            "does not make a resend safe after a lost ACK or service reset.\n\n"
+            "Keep the returned session_ref, run_id and queued_message_uuid "
+            "when present. Acceptance confirms delivery, not task completion. "
+            "Return to coordination, then use `fleet_get_run` for a later "
+            "readback; avoid repeated blocking waits."
         ),
         input_schema={
             "type": "object",
@@ -408,8 +425,10 @@ TOOLS: tuple[Tool, ...] = (
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "message": _string("The message text to deliver."),
                 "idempotency_key": _string(
-                    "Stable unique key for this message. Reuse it when retrying an "
-                    "attempt whose outcome you did not observe."
+                    "Stable key scoped to principal, verb and target session. "
+                    "Reuse only for the identical intent. Accepted receipts "
+                    "replay; unknown outcomes require reconciliation. "
+                    "PROCESS_LOCAL protection is lost on service reconstruction."
                 ),
             },
             "required": ["message"],
@@ -479,33 +498,44 @@ TOOLS: tuple[Tool, ...] = (
         title="Create a session on a device",
         description=(
             "Start a new Claude Code / Codex session on one device and return its "
-            "full `session_ref`. This is the only tool here that makes something "
-            "that did not exist; every other one addresses what is already there."
+            "full `session_ref`. To create a new project first, use the separately "
+            "advertised `fleet_create_project` tool."
             "\n\n"
             "Two independent authorizations are required, and neither is implied "
             "by the other. Your credential must carry the `fleet:create` scope — "
             "a credential that may message sessions is not thereby one that may "
             "make them. And the target device must have granted creation in its "
-            "own local binding (`allow_create`), which is a file on that machine "
-            "that its operator writes; the default is refusal for every device, "
-            "including devices authorized for control.\n\n"
+            "own local binding. For a selected owner-max profile, creation on all "
+            "real projects in that exact managed runtime is configured once: "
+            "no additional per-project grant or repeated approval is needed. "
+            "Other callers retain `allow_create` and project policy checks; "
+            "unconfigured devices refuse.\n\n"
             "The arguments are CloudCLI's own `session_create` schema, carried "
             "unchanged apart from one this surface owns: `runtime`, which picks "
             "which account on the device the create goes to and is consumed here "
             "rather than forwarded. `project` is required and must already be a "
             "project id (a display name is not resolved here), and `provider` "
             "defaults to `claude`. Omit a field rather than sending an empty one "
-            "— an omitted field is filled from the device owner's own remembered "
-            "defaults.\n\n"
+            "— an omitted model retains that native family's configured default. "
+            "The owner-max permission default is `bypassPermissions` (Codex "
+            "danger-full-access/never); verify actual effective values in the "
+            "returned session. Non-owner defaults retain existing policy.\n\n"
             "`run_id` is present only when you supplied a first `message`: "
             "creating a session and starting a run in it are two different "
             "things, and a create that started nothing reports no run. Creating a "
             "session grants no authority over anything that session may then "
             "operate on.\n\n"
-            "Pass an `idempotency_key` (any stable unique string) when you may "
-            "need to retry an attempt whose outcome you did not observe. A repeat "
-            "with the same key returns the session already created and mints no "
-            "second one — reported as code IDEMPOTENT_REPLAY."
+            "Pass a stable `idempotency_key`, scoped to the authenticated "
+            "principal, verb and target device/runtime/project. An ACCEPTED "
+            "receipt replays the created session (IDEMPOTENT_REPLAY); an "
+            "unknown outcome is refused as DISPATCH_OUTCOME_UNKNOWN and needs "
+            "reconciliation. Changed create arguments under that scoped key "
+            "are IDEMPOTENCY_CONFLICT. `idempotency_durability` reports "
+            "PROCESS_LOCAL, AGENT_CONTROL_STORE or NOT_REQUESTED; PROCESS_LOCAL "
+            "does not survive service reconstruction. Do not infer retry "
+            "safety from the key alone after a lost ACK or service reset. "
+            "Keep all returned session/run/queued-message references, return "
+            "to coordination after ACK, and read back later."
         ),
         input_schema={
             "type": "object",
@@ -518,8 +548,9 @@ TOOLS: tuple[Tool, ...] = (
                 "project": _string(
                     "The provider project id the session is filed under. Required, "
                     "already an id — this surface does not resolve a project name. "
-                    "The project must be listed in the local `policy.create_allow`; "
-                    "an unlisted project is refused before the device is asked."
+                    "Owner-max verifies it in the runtime's actual project catalogue, "
+                    "so newly created projects need no allowlist edit. Other "
+                    "callers require local `policy.create_allow`."
                 ),
                 "message": _string(
                     "Optional first message. Supplying one starts a run immediately "
@@ -539,8 +570,8 @@ TOOLS: tuple[Tool, ...] = (
                     "name it does not know is refused, so this selects among "
                     "configured routes and cannot create a new endpoint or reach "
                     "an address the operator never bound.\n\n"
-                    "Authorization is per runtime: `allow_create` is read from "
-                    "that runtime's own binding, so a machine that authorized "
+                    "Authorization is per runtime through its selected owner-max profile "
+                    "or `allow_create` binding, so a machine that authorized "
                     "creation in one account has not authorized it in the account "
                     "beside it. The default is the device's own runtime, and it "
                     "never falls back to another one — a name that is not bound "
@@ -558,16 +589,17 @@ TOOLS: tuple[Tool, ...] = (
                     "remembered default."
                 ),
                 "permission_mode": _string(
-                    "Provider-native permission mode for the session. Omit to use "
-                    "the owner's own remembered default. Naming one is constrained "
-                    "to this project's own policy in the local binding: create is "
-                    "not a route to widening your own authority, so a project that "
-                    "has not authorized a mode refuses it rather than applying it."
+                    "Owner-max defaults to its approved maximum `bypassPermissions` "
+                    "(Codex danger-full-access/never). Other callers retain "
+                    "the project's configured mode policy. Read back the actual "
+                    "effective permission mode; a requested value is not proof."
                 ),
                 "idempotency_key": _string(
-                    "Stable unique key for this create. Reuse it when retrying an "
-                    "attempt whose outcome you did not observe; the second call "
-                    "returns the first session instead of minting another."
+                    "Stable key scoped to principal, verb and target "
+                    "device/runtime/project. Reuse for identical create "
+                    "arguments only. Accepted receipts replay; unknown outcomes "
+                    "require reconciliation. PROCESS_LOCAL protection is lost "
+                    "on service reconstruction."
                 ),
             },
             "required": ["device", "project"],
@@ -596,9 +628,10 @@ TOOLS: tuple[Tool, ...] = (
             "`aborted: false` with a `message` is a **success**, not a failure: "
             "it means the session had no run in flight, so there was nothing to "
             "stop. Branch on `aborted`, not on whether the call raised.\n\n"
-            "Only sessions the operator has explicitly authorized are accepted. "
-            "The grant is per device AND per session, counts separately from the "
-            "grant to send, and naming a session id does not create it.\n\n"
+            "The credential needs fleet:control. A selected owner-max profile "
+            "authorizes control of its managed sessions once. Other callers "
+            "need the separate device/session control grants. Naming a session "
+            "id does not create it.\n\n"
             "There is no idempotency key here, deliberately. An interrupt says "
             "something about the present — 'the run in flight is not in flight "
             "any more' — and a cached answer to that would be a statement about "
@@ -636,13 +669,41 @@ TOOLS: tuple[Tool, ...] = (
         },
         handler=_interrupt_session,
     ),
+    Tool(
+        name="fleet_create_project",
+        title="Create a project on a managed device",
+        description=("Create one new project below a named owner-configured root. "
+                     "fleet_status.owner_access reports the available root refs. "
+                     "The configured owner needs no per-project approval. The target "
+                     "must support exclusive fresh-directory creation; existing "
+                     "directories are refused. Preserve the returned project_id for "
+                     "fleet_create_session. Supply a stable idempotency_key; an "
+                     "accepted replay returns without provider IO. UNKNOWN requires "
+                     "reconciliation, never a blind second create."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "root": _string("An owner-configured root ref from fleet_status.owner_access."),
+                "name": _string("A safe single-component project directory name."),
+                "display_name": _string("Optional human-readable project label."),
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+                "idempotency_key": _string("Stable key for this project intent; keep it across retries."),
+            },
+            "required": ["device", "root", "name"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": True},
+        handler=_create_project,
+    ),
 )
 
 # --------------------------------------------------------------------------
 # The CloudCLI native mirror — one typed tool per native verb
 # --------------------------------------------------------------------------
 #
-# Each of CloudCLI's 23 native verbs becomes `fleet_cloudcli_<native_name>`, a
+# Each of CloudCLI's 22 native verbs becomes `fleet_cloudcli_<native_name>`, a
 # first-class tool a caller discovers directly. The native parameters ride in an
 # `arguments` object rather than being flattened into this schema: the native
 # tool's own schema is the AUTHORITY on what it accepts, and a flattened copy
@@ -652,7 +713,7 @@ TOOLS: tuple[Tool, ...] = (
 # module relies on still holds.
 #
 # Governance lives in `FleetService.native_call`, not here: the handler is the
-# thinnest possible edge so there is one place, not twenty-three, where a write
+# thinnest possible edge so there is one place, not twenty-two, where a write
 # gate could be forgotten.
 
 def _native_handler(native: cloudcli_native.NativeTool):
@@ -664,9 +725,8 @@ def _native_handler(native: cloudcli_native.NativeTool):
             arguments=args.get("arguments") or {},
             session_ref=args.get("session_ref"),
             project=args.get("project"),
-            project_path=args.get("project_path"),
             # The second runtime axis, and it used to stop here: every one of
-            # the mirrored verbs fell back to the device's own runtime, so a
+            # the 22 mirrored verbs fell back to the device's own runtime, so a
             # device serving two runtimes was reachable through the hand-written
             # tools and NOT through the mirror. `native_call` already resolves
             # and gates this (session_ref agreement, binding existence, and the
@@ -683,8 +743,9 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
         class_note = "Read-only."
     elif native.governance in (cloudcli_native.GOV_SEND, cloudcli_native.GOV_CONTROL):
         class_note = (
-            f"A {native.governance} verb: it needs an explicit grant on top of the "
-            f"device's `allow_{native.governance}` flag, and `session_ref` (the "
+            f"A {native.governance} verb: selected owner-max profiles authorize it "
+            f"once; other callers need the explicit grant and device's "
+            f"`allow_{native.governance}` flag. It needs `session_ref` (the "
             f"full `device:<id>|<provider>|<native id>`) — the session floor "
             f"(`policy.send_allow` / `policy.control_allow`) is checked on that "
             f"address, never on a session id inside `arguments`."
@@ -692,43 +753,29 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
     elif native.governance == cloudcli_native.GOV_CREATE:
         class_note = (
             "A create verb: it needs an explicit grant on top of the device's "
-            "`allow_create` flag, and `project` — the project floor "
-            "(`policy.create_allow`) is checked on that name, never on a project "
+            "owner-max profile or `allow_create` flag, and `project` — the project "
+            "floor is the actual owner catalogue or `policy.create_allow`, "
+            "checked on that name, never on a project "
             "read out of `arguments`."
-        )
-    elif native.governance == cloudcli_native.GOV_PROJECT_CREATE:
-        class_note = (
-            "A project-create verb: it makes a NEW directory and project row, so "
-            "it needs the device's `allow_create` flag, `fleet:create`, a "
-            "`create` operator grant, and `project_path` — the location is "
-            "checked against `policy.project_create_allow`, never read out of "
-            "`arguments`, and must equal `arguments.projectPath`."
-        )
-    elif native.governance == cloudcli_native.GOV_APPROVE:
-        class_note = (
-            "An approve verb: it needs `fleet:approve` plus an `approve` operator "
-            "grant, and `session_ref` — the request's ownership is enumerated on "
-            "that session before it is answered, so a bare `requestId` is never "
-            "enough."
-        )
-    elif native.governance == cloudcli_native.GOV_NAVIGATE:
-        class_note = (
-            "A navigate verb: it needs `fleet:navigate` plus a `navigate` operator "
-            "grant, and it takes the same per-session floor as `send` — a caller "
-            "may only put a session it may already address in front of whoever is "
-            "at that machine."
         )
     elif native.governance == cloudcli_native.GOV_RECONFIGURE:
         class_note = (
-            "A reconfigure verb: it changes a session's model, effort and "
-            "permission mode, so it carries `fleet:control` plus a `control` "
-            "operator grant and is still bounded by the project's own model/mode "
-            "ceiling."
+            "A reconfigure verb: session control is required, and model/mode "
+            "changes also validate the actual project's create policy. Selected "
+            "owner-max profiles supply approved maximum permissions; omitted "
+            "fields remain unchanged."
+        )
+    elif native.governance == cloudcli_native.GOV_APPROVE:
+        class_note = (
+            "An approval verb: requires the approve scope, selected runtime "
+            "grant, authorized session address and a request actually enumerated "
+            "in that session. Owner-max supplies the managed grant once."
         )
     else:
         class_note = (
-            f"A {native.governance} verb: this build has no Fleet floor for that "
-            f"class, so it is refused rather than inherited."
+            "A navigation verb: requires its navigate scope, selected runtime "
+            "grant and authorized session address. Owner-max supplies the "
+            "managed grant once; opening UI remains separate from sending work."
         )
     schema = cloudcli_native.mirrored_schema(native)
     properties = schema["properties"]
@@ -758,12 +805,7 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
     if "project" in properties:
         properties["project"] = _string(
             "Required for this verb. The project the new session is for; "
-            "checked against `policy.create_allow`.")
-    if "project_path" in properties:
-        properties["project_path"] = _string(
-            "Required for this verb. The absolute, normalised directory to "
-            "create; checked against `policy.project_create_allow` and required "
-            "to equal `arguments.projectPath`.")
+            "checked against the selected owner catalogue or `policy.create_allow`.")
     properties["arguments"]["description"] = (
         f"`{native.name}`'s own arguments, passed through to the device "
         f"unchanged; `null` and an omitted key stay distinct. Arguments are "
@@ -799,7 +841,7 @@ TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
 # `fleet/fleet-mcp-contract.yaml` enumerates and what the surface contract tests
 # pin; enumerating 22 generated verbs in that contract is a contract-owned edit,
 # not this module's. `call_tool` and the MCP server's `tools/list` read the
-# MERGED set, so ONE MCP surface serves all 34 and a caller discovers the native
+# MERGED set, so ONE MCP surface serves all 31 and a caller discovers the native
 # verbs directly. Until the contract is extended, it declares the nine and this
 # module declares the generated mirror — the known integration point, reported
 # rather than hidden by quietly appending to `TOOLS`.
@@ -809,17 +851,17 @@ def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]
     A refusal that says «this name is not among the mirrored tools» is only
     actionable if the caller can FIND the mirrored set, so the set is itself a
     read tool. It carries each verb's governance, native scope, and the JSON
-    schema recorded from CloudCLI (each entry names its `recorded_from`), so a
-    client can discover the closed set rather than guess.
+    schema recorded from CloudCLI 1.39.0, so a client can discover the closed
+    set rather than guess.
     """
     return cloudcli_native.manifest()
 
 
 NATIVE_MANIFEST_TOOL = Tool(
     name="fleet_cloudcli_native_manifest",
-    title="The inherited CloudCLI surface (23 verbs)",
+    title="The inherited CloudCLI surface (22 verbs)",
     description=(
-        "The 23 CloudCLI-native verbs this surface mirrors as "
+        "The 22 CloudCLI-native verbs this surface mirrors as "
         "`fleet_cloudcli_<name>`, each with its governance class, the native "
         "scope it needs, and the input schema recorded from CloudCLI. Read this "
         "to discover the closed set; a name not in it is refused rather than "
@@ -850,14 +892,16 @@ NATIVE_CAPABILITY_TOOL = Tool(
     name="fleet_cloudcli_native_capability",
     title="Live capability snapshot for one device",
     description=(
-        "Read what ONE device ACTUALLY exposes of the 23 inherited verbs: each "
-        "verb's state (`USABLE` when the device declares it; "
-        "`UNSUPPORTED_BY_DEVICE` when it does not), which verbs rest on the "
-        "registry capture rather than on a call this surface made "
-        "(`unverified_handlers`), the device's own annotations, and the "
-        "source/version/sample time. A device whose tool list cannot be read is "
-        "reported `UNKNOWN` with a reason — a count of 23 is never evidence "
-        "that 23 answer."
+        "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
+        "verb's live registration state (`USABLE` when the device explicitly "
+        "reports a bound handler; `DECLARED_NOT_IMPLEMENTED` when it explicitly "
+        "reports no handler; `HANDLER_BINDING_UNKNOWN` for older or untyped "
+        "metadata; `UNSUPPORTED_BY_DEVICE` when the name is absent), the "
+        "device's annotations and source/version/sample time. A bound handler "
+        "is not a verified workflow. Historical placeholder defaults are "
+        "provenance and do not establish current availability. "
+        "A device whose tool list cannot be read is reported `UNKNOWN` with a "
+        "reason — a count of 22 is never evidence that 22 answer."
     ),
     input_schema={
         "type": "object",

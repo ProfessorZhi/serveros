@@ -1,5 +1,7 @@
 # ServerOS Architecture
 
+> **2026-10-22 Fleet V2 product target:** [Autonomous Agent Organization + Owner Full-Control](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md), with [phased acceptance](docs/plans/fleet-v2-delivery-and-acceptance.md), extends the established native Agent/Session design with a user-requested hierarchical-autonomy, peer-collaboration, DSH/CC/Codex, device-repair and self-update operating model. **DESIGN ONLY**: current V1 #237 safety gates, actual OS/Owner authorities and deployment state remain unchanged.
+
 > **2026-10-07 current target revision:** [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md)
 > owns the daily workflow, conditional human checkpoints, research/reproduction,
 > reusable Session roles, three-project portfolio, progressive disclosure and

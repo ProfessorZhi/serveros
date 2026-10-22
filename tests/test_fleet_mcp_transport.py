@@ -176,16 +176,26 @@ class NodeSignature(unittest.TestCase):
         self.assertEqual(np.split_path_and_query("/v1/health"), ("/v1/health", ""))
 
     def test_the_route_set_is_closed(self):
-        """An added route must be a deliberate edit to this tuple."""
+        """Pin every route declared by fleet/fleet-mcp-contract.yaml."""
         self.assertNotIn("POST /v1/exec", np.ROUTES)
         for route in np.ROUTES:
             method, _, path = route.partition(" ")
             self.assertIn(method, ("GET", "POST"))
             self.assertTrue(path.startswith("/v1/"))
-        self.assertEqual(len(np.ROUTES), 10)
-        # The one route control added, named so that a future edit cannot add a
-        # second one under cover of this count going up.
-        self.assertIn("POST /v1/sessions/{id}/interrupt", np.ROUTES)
+        self.assertCountEqual(np.ROUTES, (
+            "GET /v1/health",
+            "GET /v1/self",
+            "GET /v1/sessions",
+            "POST /v1/sessions",
+            "POST /v1/projects",
+            "GET /v1/sessions/{id}",
+            "POST /v1/sessions/{id}/read",
+            "POST /v1/sessions/{id}/send",
+            "POST /v1/sessions/{id}/interrupt",
+            "GET /v1/runs/{run_id}",
+            "POST /v1/native/call",
+            "GET /v1/core/status",
+        ))
 
 
 def _free_port() -> int:
@@ -363,22 +373,21 @@ class HttpTransport(_HttpHarness):
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        # The served surface is the hand-written Fleet tools PLUS the 23
+        # The served surface is the hand-written Fleet tools PLUS the 22
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
         self.assertEqual(len(tools_out), 34)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
-        # The hand-written Fleet writes are unchanged...
+        # The legacy writes retain order; fresh project creation is explicit.
         fleet_writes = [n for n in writes if n.startswith("fleet_")
                         and not n.startswith("fleet_cloudcli_")]
         self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
-                                        "fleet_interrupt_session"])
-        # ...and the inherited CloudCLI mirror contributes its own eleven
-        # writes, carry CloudCLI's annotations rather than this surface's
-        # opinion.
+                                        "fleet_interrupt_session", "fleet_create_project"])
+        # ...and the inherited CloudCLI mirror contributes its own ten writes,
+        # carry CloudCLI's annotations rather than this surface's opinion.
         self.assertEqual(
-            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 11)
+            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 10)
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -628,7 +637,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 34)  # 9 + 23 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 34)  # 10 + 22 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

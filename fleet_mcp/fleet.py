@@ -30,10 +30,13 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from .audit import AuditLog, RateLimiter
+from .dispatch import DispatchGuard, delivery_receipt
+from .discovery import DiscoveryPool
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
                      OPERATOR_GRANT_VERBS, provider_key)
@@ -45,6 +48,7 @@ from .errors import (
     BAD_SESSION_REF,
     FleetRefusal,
     IDEMPOTENT_REPLAY,
+    DISPATCH_OUTCOME_UNKNOWN,
     INTERNAL,
     RATE_LIMITED,
     SCOPE_DENIED,
@@ -54,6 +58,9 @@ from .errors import (
     refuse,
 )
 from .identity import SessionKey
+from .owner_access import build_project_path, OwnerAccessError
+from .version import SERVER_VERSION
+from .session_detail import normalize_detail
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
 from .registry import (
@@ -66,11 +73,6 @@ from .registry import (
 # this module is where callers have always imported them from.
 from .scopes import (SCOPE_APPROVE, SCOPE_CONTROL, SCOPE_CREATE, SCOPE_NAVIGATE,  # noqa: F401
                      SCOPE_READ, SCOPE_SEND)
-
-# How long a recorded idempotency key is honoured. Long enough to cover a
-# caller's retry after a timeout, short enough that the table is bounded by the
-# session it belongs to rather than by uptime.
-IDEMPOTENCY_TTL_SECONDS = 3600
 
 #: The largest mirrored CloudCLI answer this surface will relay, in BYTES. A
 #: paginated read (`limit`, `cursor`) stays far under it; a runaway single
@@ -201,15 +203,9 @@ class Principal:
                 "scopes": sorted(self.scopes)}
 
 
-@dataclass
-class _IdempotencyEntry:
-    run: dict[str, Any]
-    at: float = field(default_factory=time.time)
-
-
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
-                 core_lite_source=None) -> None:
+                 core_lite_source=None, attempts=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
@@ -222,10 +218,98 @@ class FleetService:
         self.core_lite_source = core_lite_source
         self.audit = AuditLog(config.audit)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
-        self._idempotency: dict[str, _IdempotencyEntry] = {}
-        self._idem_lock = threading.Lock()
+        self.dispatch = DispatchGuard(attempts)
+        self.discovery = DiscoveryPool(config.policy.discovery_workers)
 
     # -- helpers -----------------------------------------------------------
+
+    def _owner_profile(self, principal: Principal, device_ref: str, namespace: str):
+        selected = self.config.policy.owner_max.get(principal.name, ())
+        if provider_key(device_ref, namespace) not in selected:
+            return None
+        binding = self.config.namespace_binding(device_ref, namespace)
+        if (binding is None or not binding.enabled
+                or not self._device_is_grant_eligible(device_ref)):
+            return None
+        return binding.owner_access
+
+    @staticmethod
+    def _create_namespace(binding, family):
+        return family if binding.multiplex_native_families else binding.runtime
+
+    def _owner_project_grant(self, principal, device_ref, project, runtime, namespace):
+        profile = self._owner_profile(principal, device_ref, namespace)
+        if profile is None:
+            return None
+        existing = self.config.policy.create_allow.get(project)
+        rule = self._project_runtime_rule(principal, device_ref, project, runtime, namespace)
+        binding = self.config.provider_for(device_ref, runtime)
+        alias = binding is not None and binding.multiplex_native_families and namespace != runtime
+        models = rule.allowed_models if rule is not None else (
+            existing.models if existing is not None and not alias else ())
+        return CreateGrant(permission_modes=(profile.permission_mode,), models=tuple(models))
+
+    def _project_runtime_rule(self, principal, device_ref, project, runtime, namespace):
+        binding = self.config.provider_for(device_ref, runtime)
+        policy_runtime = runtime
+        if (self._owner_profile(principal, device_ref, namespace) is not None
+                and binding is not None and binding.multiplex_native_families):
+            policy_runtime = namespace
+        return self.config.policy.runtime_create_defaults.get(
+            provider_key(device_ref, policy_runtime), {}).get(project)
+
+    def _resolve_create_policy(self, principal, device_ref, project, runtime,
+                               namespace, family, model, permission_mode):
+        grant = self._may_create(device_ref, project, runtime, principal=principal,
+                                 namespace=namespace)
+        profile = self._owner_profile(principal, device_ref, namespace)
+        binding = self.config.provider_for(device_ref, runtime)
+        if family not in runtime_identity.FAMILIES:
+            raise refuse(BAD_REQUEST, "provider must name the Claude or Codex native family")
+        if profile is not None and not binding.multiplex_native_families and family != binding.family:
+            raise refuse(WRITE_NOT_GRANTED, "native family differs from the selected account profile")
+        rule = self._project_runtime_rule(principal, device_ref, project, runtime, namespace)
+        by = None
+        if rule is not None:
+            if "create" not in self._operator_grant_verbs(principal, device_ref, namespace):
+                raise refuse(APPROVAL_REQUIRED, "selected runtime/project requires a create operator grant")
+            try:
+                model, resolved_mode = rule.resolve(
+                    family=family, model=model,
+                    permission_mode=None if profile is not None else permission_mode)
+                if profile is None:
+                    permission_mode = resolved_mode
+                by = "runtime/project policy"
+            except PolicyError as exc:
+                raise refuse(WRITE_NOT_GRANTED, f"selected runtime/project denies session defaults: {exc}") from None
+        if profile is not None:
+            permission_mode = profile.permission_mode if permission_mode is None else permission_mode
+            by = "owner-max profile"
+        self._may_name_mode_and_model(device_ref, project, grant,
+                                      model=model, permission_mode=permission_mode)
+        return model, permission_mode, by
+
+    @staticmethod
+    def _verify_owner_project(provider, project):
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
+        listing = caller("projects_list", {"includeArchived": False})
+        rows = listing.get("projects") if isinstance(listing, dict) else listing
+        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
+            rows = listing["data"].get("projects")
+        if not isinstance(rows, list):
+            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ids = [row[k] for k in ("projectId", "project_id", "id")
+                   if isinstance(row.get(k), str) and row[k]]
+            if ids and len(set(ids)) == 1 and ids[0] == project:
+                if row.get("isArchived") is True or row.get("is_archived") is True:
+                    break
+                return
+        raise refuse(WRITE_NOT_GRANTED, "project does not exist in the selected runtime's active catalogue")
 
     def _provider(self, device_ref: str,
                   runtime: str = BASE_RUNTIME) -> DeviceProvider | None:
@@ -252,6 +336,29 @@ class FleetService:
                 f"`local_agent_controller: UNKNOWN`.",
             )
         return provider
+
+    def _session_provider(self, key: SessionKey) -> DeviceProvider:
+        binding = self.config.session_binding(key)
+        if binding is None:
+            raise refuse(UNKNOWN_DEVICE, "the session namespace has no configured binding")
+        if not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
+        return self._require_provider(key.device_ref, binding.runtime)
+
+    def _verified_family_detail(self, key: SessionKey, provider, detail=None):
+        binding = self.config.session_binding(key)
+        if binding is None or not binding.multiplex_native_families:
+            return None
+        if detail is None:
+            detail = provider.get_session(key)
+        detail = normalize_detail(key, detail, binding)
+        native = detail.get("session")
+        if (not isinstance(native, dict) or "session_ref" in native
+                or native.get("provider") != key.provider
+                or not any(name in native for name in
+                           ("id", "sessionId", "session_id", "native_session_id"))):
+            raise refuse(BAD_SESSION_REF, "native session family or identity is unverified")
+        return detail
 
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:
@@ -334,6 +441,8 @@ class FleetService:
         device's owner changes the answer here, with no second list to keep in
         step.
         """
+        if self._owner_profile(principal, device_ref, runtime) is not None:
+            return tuple(OPERATOR_GRANT_VERBS)
         verbs = self._declared_grant_verbs(principal.name, device_ref, runtime)
         if not verbs:
             return ()
@@ -346,7 +455,7 @@ class FleetService:
         return self._device_ownership(device_ref) == GRANT_ELIGIBLE_OWNERSHIP
 
     def _may_send(self, principal: Principal, key: SessionKey) -> None:
-        binding = self.config.provider_for(key.device_ref, key.provider)
+        binding = self.config.session_binding(key)
         if binding is None:
             # No binding is not "not authorized", it is "not reachable" — the
             # distinction `_require_provider` draws in its own words, and the one
@@ -355,8 +464,10 @@ class FleetService:
             # tells the caller the profile is real, which a caller probing a tag
             # is not necessarily entitled to learn, while `UNKNOWN_DEVICE` says
             # nothing about whether this tag was ever bound.
-            self._require_provider(key.device_ref, key.provider)
-        if not binding.allow_send:
+            self._session_provider(key)
+        if not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
+        if not binding.allow_send and self._owner_profile(principal, key.device_ref, key.provider) is None:
             raise refuse(
                 APPROVAL_REQUIRED,
                 f"{key.device_ref} is not authorized to send on this runtime. "
@@ -482,14 +593,16 @@ class FleetService:
         `session_background`'s stop branch — reaches this one method, so they
         cannot disagree about who may stop what.
         """
-        binding = self.config.provider_for(key.device_ref, key.provider)
+        binding = self.config.session_binding(key)
         if binding is None:
             # The same line `_may_send` draws: a runtime with no binding has no
             # route, which is unreachable rather than unauthorized, and an
             # answer that named a withheld grant would confirm the profile for a
             # caller who may not be entitled to know it is there.
-            self._require_provider(key.device_ref, key.provider)
-        if not binding.allow_control:
+            self._session_provider(key)
+        if not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the addressed session binding is disabled")
+        if not binding.allow_control and self._owner_profile(principal, key.device_ref, key.provider) is None:
             raise refuse(
                 APPROVAL_REQUIRED,
                 f"{key.device_ref} is not authorized for control from this "
@@ -540,7 +653,8 @@ class FleetService:
             )
 
     def _may_create(self, device_ref: str, project: str,
-                    runtime: str = BASE_RUNTIME) -> CreateGrant:
+                    runtime: str = BASE_RUNTIME, *, principal=None,
+                    namespace=None) -> CreateGrant:
         """Creation is granted per device *and* per project, by the binding.
 
         Two gates, and both are needed. The device gate (`allow_create`) is a
@@ -579,6 +693,13 @@ class FleetService:
             # It is asked for the SAME runtime, so the two cannot disagree about
             # which account was unreachable.
             self._require_provider(device_ref, runtime)
+        owner_grant = (self._owner_project_grant(principal, device_ref, project, runtime,
+                                                namespace or runtime)
+                       if principal is not None else None)
+        if binding is not None and not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the selected creation binding is disabled")
+        if owner_grant is not None:
+            return owner_grant
         if binding is None or not binding.allow_create:
             raise refuse(
                 APPROVAL_REQUIRED,
@@ -605,56 +726,6 @@ class FleetService:
                 )
             return wildcard
         return grants[project]
-
-    def _may_project_create(self, device_ref: str, project_path: str,
-                            runtime: str = BASE_RUNTIME) -> None:
-        """Creating a NEW project is a separate grant from minting a session.
-
-        `_may_create` answers "may a session be minted in THIS project", and its
-        allowlist is keyed by ids that exist. A project being created has no id
-        yet, so reusing that gate would mean either refusing every creation or
-        pre-listing a name that is by definition not there. The two grants are
-        therefore separate lists, and neither widens the other:
-
-          * the device gate is still `allow_create` — a machine authorized to be
-            minted on is not thereby authorized to have directories made on it,
-            but this verb is still a write to that machine and reads the same
-            per-runtime binding;
-          * the path gate is `policy.project_create_allow`, a list of absolute
-            prefixes. Empty means nowhere, exactly as an empty `create_allow`
-            means no project.
-
-        The prefix test is on a path-component boundary: `/a/b` admits `/a/b/c`
-        and not `/a/bc`. Anything else would let one writable prefix admit a
-        sibling that merely spells it.
-        """
-        binding = self.config.provider_for(device_ref, runtime)
-        if binding is None:
-            self._require_provider(device_ref, runtime)
-        if binding is None or not binding.allow_create:
-            raise refuse(
-                APPROVAL_REQUIRED,
-                f"{device_ref} is not authorized for creation from this runtime. "
-                f"Project creation is a write to that machine and is gated by the "
-                f"same per-device `allow_create: true` flag session creation uses; "
-                f"it is refused by default and never granted by naming a device id.",
-            )
-        allowed = self.config.policy.project_create_allow
-        if "*" in allowed and self.config.policy.allow_wildcard_project_create:
-            return
-        for prefix in allowed:
-            if project_path == prefix or project_path.startswith(prefix + "/"):
-                return
-        raise refuse(
-            APPROVAL_REQUIRED,
-            f"{project_path!r} is not under any prefix in "
-            f"`policy.project_create_allow` for {device_ref}. The device is "
-            f"authorized for creation and this location is not: a new project "
-            f"path decides where a directory is made, so the allowlist is closed "
-            f"and an unlisted path is refused rather than defaulted.",
-            device_ref=device_ref,
-            allowed=sorted(allowed),
-        )
 
     def _may_name_mode_and_model(
         self, device_ref: str, project: str, grant: CreateGrant, *,
@@ -1001,9 +1072,23 @@ class FleetService:
         sessions: list[dict[str, Any]] = []
         unreachable: list[dict[str, Any]] = []
         queried: list[str] = []
+        selections = {entry.device_ref.ref: self._runtimes_for(entry.device_ref.ref, runtime)
+                      for entry in targets}
+        jobs = {}
         for entry in targets:
             ref = entry.device_ref.ref
-            selected = self._runtimes_for(ref, runtime)
+            for one in selections[ref]:
+                provider = self._provider(ref, one)
+                if provider is not None:
+                    where = provider_key(ref, one)
+                    token = (principal.credential_kind, principal.name, where, limit, project, state)
+                    jobs[where] = (token, partial(provider.list_sessions,
+                                                 limit=limit, project=project, state=state))
+        outcomes = self.discovery.collect(
+            jobs, timeout=self.config.policy.discovery_timeout_seconds)
+        for entry in targets:
+            ref = entry.device_ref.ref
+            selected = selections[ref]
             if not selected:
                 # `all` resolved to no runtimes, which happens on a device this
                 # host holds no binding for. Skipped, that device would
@@ -1044,7 +1129,18 @@ class FleetService:
                     )
                     continue
                 try:
-                    found = provider.list_sessions(limit=limit, project=project, state=state)
+                    found = outcomes[where]
+                    if isinstance(found, Exception):
+                        raise found
+                    from .session_detail import validate_binding_target
+                    selected_binding = self.config.provider_for(ref, one)
+                    for summary in found:
+                        if summary.key.device_ref != ref:
+                            raise refuse(BAD_SESSION_REF, "listing names another device")
+                        validate_binding_target(summary.key, selected_binding, observation=True)
+                        if (one == BASE_RUNTIME and summary.key.provider == "codex"
+                                and self.config.provider_for(ref, "codex") is not None):
+                            raise refuse(BAD_SESSION_REF, "base listing impersonates an explicit Codex route")
                 except Exception as exc:  # noqa: BLE001 - one runtime's failure is one runtime's failure
                     code = getattr(exc, "code", "INTERNAL")
                     detail = getattr(exc, "detail", str(exc))
@@ -1069,6 +1165,7 @@ class FleetService:
                     # for the agent family would be reading the wrong axis, so the
                     # runtime is named as itself.
                     row["runtime"] = summary.key.provider
+                    row["binding_runtime"] = one
                     row["control_allowed"] = self._session_control_state(principal, summary.key)
                     sessions.append(row)
 
@@ -1085,9 +1182,12 @@ class FleetService:
             unreachable=[u["provider_key"] for u in unreachable],
         )
         counts: dict[str, int] = {}
+        binding_counts: dict[str, int] = {}
         for row in sessions:
             key = provider_key(row["device_ref"], row["runtime"])
             counts[key] = counts.get(key, 0) + 1
+            actual = provider_key(row["device_ref"], row["binding_runtime"])
+            binding_counts[actual] = binding_counts.get(actual, 0) + 1
         return {
             "sessions": sessions,
             "total": len(sessions),
@@ -1100,6 +1200,7 @@ class FleetService:
             # saying the opposite of what happened.
             "runtimes_queried": queried,
             "sessions_per_runtime": counts,
+            "sessions_per_binding": binding_counts,
             # Named with their runtime, not their device alone. On a machine
             # serving two runtimes, "the device is unreachable" is not a thing
             # that can be true: one runtime answered and the other did not, and
@@ -1140,8 +1241,9 @@ class FleetService:
         machine about the one question it was asked, which is worse than not
         reporting it.
         """
-        binding = self.config.provider_for(key.device_ref, key.provider)
-        device_ok = bool(binding and binding.allow_send)
+        binding = self.config.session_binding(key)
+        device_ok = bool(binding and binding.enabled and (binding.allow_send
+                         or self._owner_profile(principal, key.device_ref, key.provider) is not None))
         session_ok = key.ref in self.config.policy.send_allow
         grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
         scope_ok = SCOPE_SEND in principal.scopes
@@ -1169,6 +1271,10 @@ class FleetService:
         grant, checked per principal, per device and per session, and this block
         is the answer to that check rather than a promise about it.
         """
+        if self._owner_profile(principal, key.device_ref, key.provider) is not None:
+            return {**self._session_control_state(principal, key),
+                    "note": "Owner-max is configured for this runtime. The current credential's "
+                            "scopes apply; no new per-session or per-project grant is needed."}
         return {
             **self._session_control_state(principal, key),
             "note": "control is a separate grant from creation. A session this "
@@ -1199,8 +1305,11 @@ class FleetService:
     def get_session(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref, key.provider)
+        provider = self._session_provider(key)
         detail = provider.get_session(key)
+        detail = normalize_detail(
+            key, detail, self.config.session_binding(key))
+        self._verified_family_detail(key, provider, detail)
         detail["control"] = self._session_control_state(principal, key)
         self.audit.record("fleet.get_session", principal=principal.name, session_ref=key.ref)
         return detail
@@ -1219,7 +1328,8 @@ class FleetService:
     ) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref, key.provider)
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         applied, clamped = clamp_limit(
             limit, self.config.policy.max_read_messages, default=min(20, self.config.policy.max_read_messages)
         )
@@ -1260,6 +1370,24 @@ class FleetService:
         )
         return result
 
+    def _record_delivery_ack(self, claim, record, *, expect_execution=False):
+        # An omitted idempotency key removes replay protection, not ACK checks.
+        # In particular a busy/error envelope cannot become accepted:true merely
+        # because no claim was requested.
+        try:
+            receipt = delivery_receipt(record)
+            if expect_execution and not (receipt["run_id"] or receipt["queued_message_uuid"]):
+                raise ValueError("execution acknowledgement has no original reference")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise refuse(DISPATCH_OUTCOME_UNKNOWN,
+                         "the provider did not return a valid delivery acknowledgement; "
+                         "reconcile the original session before retrying",
+                         retry_safe=False,
+                         idempotency_durability=(self.dispatch.durability if claim
+                                                else "NOT_REQUESTED")) from exc
+        if claim is not None:
+            self.dispatch.complete(claim, record)
+
     def send_to_session(
         self,
         principal: Principal,
@@ -1286,8 +1414,13 @@ class FleetService:
         # `policy.send_allow` must stop answering from the idempotency cache too.
         self._may_send(principal, key)
 
-        if idempotency_key:
-            replayed = self._lookup_idempotent(principal, _VERB_SEND, key.ref, idempotency_key)
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, _VERB_SEND, key.ref, idempotency_key,
+                device_ref=key.device_ref, runtime=key.provider,
+                session_ref=key.ref, params={"message": message})
+            replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
                     "fleet.send.replay",
@@ -1303,9 +1436,12 @@ class FleetService:
                               "no second message was sent",
                     "run": replayed,
                     "run_id": replayed.get("run_id"),
+                    "queued_message_uuid": replayed.get("queued_message_uuid"),
+                    "idempotency_durability": self.dispatch.durability,
                 }
 
-        provider = self._require_provider(key.device_ref, key.provider)
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
         record = {
@@ -1315,8 +1451,7 @@ class FleetService:
             "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if idempotency_key and run_id:
-            self._remember_idempotent(principal, _VERB_SEND, key.ref, idempotency_key, record)
+        self._record_delivery_ack(claim, record, expect_execution=True)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -1330,6 +1465,7 @@ class FleetService:
             "run_id": run_id,
             "queued_message_uuid": record["queued_message_uuid"],
             "run": record,
+            "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             "note": "session_send is message delivery. It grants no authority "
                     "over anything the receiving session may then operate on.",
         }
@@ -1375,7 +1511,8 @@ class FleetService:
         self.admit(principal)
         self._may_control(principal, key)
 
-        provider = self._require_provider(key.device_ref, key.provider)
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.interrupt(key)
         # An answer with no `aborted` field is not an answer. This is not
         # defensive padding: `structured()` returns `{}` for a provider result it
@@ -1414,6 +1551,65 @@ class FleetService:
         if message:
             answer["message"] = message
         return answer
+
+    def create_project(self, principal: Principal, *, device: str, root: str,
+                       name: str, display_name: str | None = None,
+                       runtime: str = BASE_RUNTIME, idempotency_key: str | None = None):
+        """Create one new project through an exact owner's named local root."""
+        principal.require(SCOPE_CREATE)
+        self.admit(principal)
+        self._validate_runtime_selector(runtime)
+        if not isinstance(device, str) or not device.strip():
+            raise refuse(BAD_REQUEST, "device is required")
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        binding = self.config.namespace_binding(device_ref, runtime)
+        profile = self._owner_profile(principal, device_ref, runtime)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
+        if profile is None:
+            raise refuse(APPROVAL_REQUIRED, "project creation requires the selected owner-max profile")
+        if display_name is not None and (not isinstance(display_name, str)
+                or not display_name.strip() or len(display_name) > 256
+                or any(ord(c) < 32 for c in display_name)):
+            raise refuse(BAD_REQUEST, "display_name must be a nonempty label of at most 256 characters")
+        try:
+            target = build_project_path(profile, root, name, local_check=False)
+        except OwnerAccessError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        adapter = self._require_provider(device_ref, binding.runtime)
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, "project.create", provider_key(device_ref, binding.runtime),
+                idempotency_key, device_ref=device_ref, runtime=binding.runtime,
+                params={"namespace": runtime, "root": root, "name": name,
+                        "display_name": display_name}, expected_project_path=target)
+            if claim.replay is not None:
+                return {**claim.replay, "device_ref": device_ref, "runtime": runtime,
+                        "binding_runtime": binding.runtime, "idempotent_replay": True,
+                        "idempotency_durability": self.dispatch.durability}
+        creator = getattr(adapter, "create_project", None)
+        if creator is None:
+            raise refuse("CAPABILITY_UNSUPPORTED", "provider has no project creation operation")
+        payload = creator(root=root, name=name, project_path=target, display_name=display_name)
+        if (not isinstance(payload, dict) or payload.get("freshDirectoryCreated") is not True
+                or payload.get("accepted", True) is not True
+                or not isinstance(payload.get("projectId"), str) or not payload["projectId"].strip()
+                or payload["projectId"] != payload["projectId"].strip() or len(payload["projectId"]) > 512
+                or payload.get("path") != target
+                or payload.get("isArchived") is not None and payload.get("isArchived") is not False
+                or payload.get("outcome", "created") != "created"):
+            raise refuse(INTERNAL, "project creation may have happened but its fresh ACK is malformed",
+                         retry_safe=False)
+        receipt = {"project_id": payload["projectId"], "project_path": target, "accepted": True}
+        if claim is not None:
+            self.dispatch.complete(claim, receipt)
+        self.audit.record("fleet.project.create", principal=principal.name,
+                          device_ref=device_ref, runtime=runtime, project_id=receipt["project_id"])
+        return {**receipt, "device_ref": device_ref, "runtime": runtime,
+                "binding_runtime": binding.runtime, "idempotent_replay": False,
+                "fresh_directory_created": True,
+                "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
 
     def create_session(
         self,
@@ -1493,52 +1689,29 @@ class FleetService:
         # `create_allow` would find that the key minted under the old grant still
         # returns its session, so a revoked grant would keep answering for as
         # long as the key was retried.
-        grant = self._may_create(device_ref, project, runtime)
-        # Owner-approved defaults are addressed by the EXACT bound runtime and
-        # project. No global default, fallback account, or operator-provided
-        # endpoint is permitted. Existing installations with no policy keep the
-        # provider's own default behavior byte-for-byte.
-        # WHAT THE CALLER ASKED FOR, captured before anything resolves it.
-        # `runtime_rule.resolve()` rebinds these names, so the requested value
-        # was destroyed by the act of completing it: a receipt built afterwards
-        # could not tell "the caller asked for X and the policy overrode it to Y"
-        # from "the caller asked for Y". The three are different facts and the
-        # caller is entitled to all of them.
+        selected_binding = self.config.provider_for(device_ref, runtime)
+        receipt_namespace = self._create_namespace(selected_binding, provider)
         requested_defaults = {"model": model, "permission_mode": permission_mode}
-        resolved_defaults = {"model": model, "permission_mode": permission_mode,
-                             "by": None}
-        runtime_rule = self.config.policy.runtime_create_defaults.get(
-            provider_key(device_ref, runtime), {}).get(project)
-        if runtime_rule is not None:
-            # A broad OAuth create scope is insufficient to request the
-            # elevated/default mode of an independently managed account.
-            if "create" not in self._operator_grant_verbs(principal, device_ref, runtime):
-                raise refuse(
-                    APPROVAL_REQUIRED,
-                    "this caller has no create operator grant for the selected "
-                    "runtime/project; project and OAuth scope alone do not "
-                    "authorize another account",
-                    device_ref=device_ref, runtime=runtime, project=project,
-                )
-            try:
-                model, permission_mode = runtime_rule.resolve(
-                    family=provider, model=model, permission_mode=permission_mode)
-                resolved_defaults = {"model": model, "permission_mode": permission_mode,
-                                     "by": "runtime/project policy"}
-            except PolicyError as exc:
-                raise refuse(
-                    WRITE_NOT_GRANTED,
-                    f"selected runtime/project denies the requested session defaults: {exc}",
-                    device_ref=device_ref, runtime=runtime, project=project,
-                ) from None
-        self._may_name_mode_and_model(
-            device_ref, project, grant, model=model, permission_mode=permission_mode
-        )
+        model, permission_mode, by = self._resolve_create_policy(
+            principal, device_ref, project, runtime, receipt_namespace,
+            provider, model, permission_mode)
+        resolved_defaults = {"model": model, "permission_mode": permission_mode, "by": by}
 
-        if idempotency_key:
-            replayed = self._lookup_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key
-            )
+        if provider not in runtime_identity.FAMILIES:
+            raise refuse(BAD_REQUEST, "provider must name the Claude or Codex native family")
+        selected_binding = self.config.provider_for(device_ref, runtime)
+        receipt_namespace = (provider if selected_binding is not None
+                             and selected_binding.multiplex_native_families else runtime)
+        claim = None
+        if idempotency_key is not None:
+            claim = self.dispatch.begin(
+                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime),
+                idempotency_key, device_ref=device_ref, runtime=receipt_namespace,
+                params={"project": project, "message": message, "provider": provider,
+                        "model": requested_defaults["model"],
+                        "permission_mode": requested_defaults["permission_mode"],
+                        "lifecycle_mode": lifecycle_mode})
+            replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
                     "fleet.create_session.replay",
@@ -1554,7 +1727,9 @@ class FleetService:
                     "detail": "this idempotency_key already created this session; "
                               "no second session was created",
                     "run_id": replayed.get("run_id"),
+                    "queued_message_uuid": replayed.get("queued_message_uuid"),
                     "created": replayed,
+                    "idempotency_durability": self.dispatch.durability,
                     # Recomputed rather than replayed: the session is the thing
                     # the key remembers, and what may be done with it is a
                     # question about policy *now*. A cached answer here would be
@@ -1566,6 +1741,8 @@ class FleetService:
                             "called.",
                 }
 
+        if self._owner_profile(principal, device_ref, receipt_namespace) is not None:
+            self._verify_owner_project(adapter, project)
         payload = adapter.create(
             project=project,
             message=message,
@@ -1575,7 +1752,7 @@ class FleetService:
             permission_mode=permission_mode,
         )
         session_id = payload.get("sessionId") or payload.get("session_id")
-        if not session_id:
+        if not isinstance(session_id, str) or not session_id.strip():
             # A create that reports success must name what it created. There is
             # nothing sensible to return without it, and returning the bare
             # payload would hand the caller a shape this surface never promised.
@@ -1585,30 +1762,21 @@ class FleetService:
                 f"the session may exist and this surface cannot name it. Keys "
                 f"answered: {sorted(payload)}",
             )
-        # Composed with the RUNTIME, not with `provider`. The middle component of
-        # a session ref is the runtime tag — `list_sessions` says so in as many
-        # words (`row["runtime"] = summary.key.provider`) and every read, send
-        # and control path resolves it that way
-        # (`_require_provider(key.device_ref, key.provider)`). `provider` here is
-        # the CloudCLI AGENT FAMILY, a different axis: one connector serves both.
-        # Composing with the family gave a session minted in a second account the
-        # base account's address, so the very next `read_session` on that ref
-        # resolved to the account beside the one that created it — the same
-        # device, a different credential, and nothing in the returned ref to say
-        # so. For the default call the two spellings agree (`provider` defaults
-        # to `claude`, which is `BASE_RUNTIME`), so this is byte-identical for
-        # every caller that existed before a device could serve two.
-        key = SessionKey.compose(device_ref, runtime, str(session_id))
+        # Profiles keep their exact runtime namespace. Only an explicitly
+        # multiplexed base uses the native family. This expected namespace was
+        # fixed before the claim/IO; it never relabels a stored receipt.
+        key = SessionKey.compose(device_ref, receipt_namespace, str(session_id))
         run_id = payload.get("runId") or payload.get("run_id")
+        queued_message_uuid = payload.get("queuedMessageUuid", payload.get("queued_message_uuid"))
         record = {
             "session": key.as_dict(),
             "run_id": run_id,
+            "queued_message_uuid": queued_message_uuid,
+            "accepted": payload.get("accepted", True),
             "raw": payload,
         }
-        if idempotency_key:
-            self._remember_idempotent(
-                principal, _VERB_CREATE, _create_scope(device_ref, project, runtime), idempotency_key, record
-            )
+        self._record_delivery_ack(claim, record,
+                                  expect_execution=bool(message and message.strip()))
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -1623,7 +1791,9 @@ class FleetService:
             **key.as_dict(),
             "idempotent_replay": False,
             "run_id": run_id,
+            "queued_message_uuid": queued_message_uuid,
             "created": record,
+            "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             # The caller is told, in the same answer, whether the session it just
             # minted is one it may drive. Sent separately it would be a second
             # round trip the caller could forget, and the natural mistake — treat
@@ -1665,66 +1835,23 @@ class FleetService:
     ) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
-        provider = self._require_provider(key.device_ref, key.provider)
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
         payload = provider.get_run(key, run_id, wait=wait, wait_seconds=wait_seconds)
+        expected = {**key.as_dict(), "run_id": run_id, "runId": run_id}
+        for field in ("device_ref", "native_session_id", "session_ref", "run_id", "runId"):
+            if payload.get(field) is not None and payload[field] != expected[field]:
+                raise refuse(BAD_SESSION_REF, "run metadata contradicts its requested target")
+        binding = self.config.session_binding(key)
+        native_family = key.provider if key.provider in runtime_identity.FAMILIES else binding.family
+        providers = (key.provider,) if payload.get("session_ref") is not None else (
+            key.provider, native_family)
+        if payload.get("provider") is not None and payload["provider"] not in providers:
+            raise refuse(BAD_SESSION_REF, "run metadata names another session family")
         self.audit.record(
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
         )
-        return {**key.as_dict(), "run_id": run_id, **payload}
-
-    # -- idempotency -------------------------------------------------------
-
-    def _idem_identity(self, principal: Principal, verb: str, scope: str, key: str) -> str:
-        """What an idempotency key is a name *for*.
-
-        Four components, and every one of them is here because leaving it out
-        was a bug with the same shape:
-
-        *   **the credential** — otherwise one caller's key answers another's
-            retry, which is a cross-credential answer to a question nobody asked;
-        *   **the verb** — `send` and `create` had one shared table, so a key
-            used to message a session would, replayed with `create`, return a
-            *create* result that had never been created. Two verbs are two
-            namespaces; a key is a name for one attempt, and the verb is part of
-            which attempt it was;
-        *   **the target** — the device and the project for `create`, the session
-            ref for `send`. Without it, the same key against a *different*
-            device or a different project returned the first device's session:
-            the caller would be handed a session id minted somewhere else, on the
-            strength of a key they only meant to retry once, and the second
-            device would never be asked. This is the one that matters most,
-            because the returned record *looks* wholly valid — it names a real
-            session, just not the one that was asked for;
-        *   **the key itself**.
-
-        `\\x00` is the separator because it cannot occur in any of the four: a
-        principal name, a verb, a project id and a session ref all come from
-        text a user or a registry authored, and a separator that could occur in
-        one component would let two distinct identities compose to the same
-        string.
-        """
-        return f"{principal.name}\x00{verb}\x00{scope}\x00{key}"
-
-    def _lookup_idempotent(
-        self, principal: Principal, verb: str, scope: str, key: str
-    ) -> dict[str, Any] | None:
-        with self._idem_lock:
-            self._sweep_idempotent()
-            entry = self._idempotency.get(self._idem_identity(principal, verb, scope, key))
-            return entry.run if entry else None
-
-    def _remember_idempotent(
-        self, principal: Principal, verb: str, scope: str, key: str, run: dict[str, Any]
-    ) -> None:
-        with self._idem_lock:
-            self._idempotency[self._idem_identity(principal, verb, scope, key)] = (
-                _IdempotencyEntry(run=run)
-            )
-
-    def _sweep_idempotent(self) -> None:
-        cutoff = time.time() - IDEMPOTENCY_TTL_SECONDS
-        for key in [k for k, entry in self._idempotency.items() if entry.at < cutoff]:
-            self._idempotency.pop(key, None)
+        return {**payload, **key.as_dict(), "run_id": run_id}
 
     # -- status ------------------------------------------------------------
 
@@ -1766,7 +1893,6 @@ class FleetService:
         arguments: dict[str, Any] | None = None,
         session_ref: str | None = None,
         project: str | None = None,
-        project_path: str | None = None,
         runtime: str | None = None,
     ) -> dict[str, Any]:
         """Inherit ONE CloudCLI native tool, under Fleet's own gates.
@@ -1803,7 +1929,10 @@ class FleetService:
                 f"is refused rather than forwarded to a device.",
             )
         runtime = self._runtime_for_call(device_ref, session_ref, runtime)
-        binding = self.config.provider_for(device_ref, runtime)
+        proof_key = self._native_session_key(device_ref, session_ref, native) if session_ref else None
+        session_key = proof_key if cloudcli_native.is_session_addressed(native) else None
+        binding = (self.config.session_binding(session_key) if session_key is not None
+                   else self.config.provider_for(device_ref, runtime))
         if binding is None or not binding.enabled:
             raise refuse(
                 UNKNOWN_DEVICE,
@@ -1823,6 +1952,8 @@ class FleetService:
                 f"{type(arguments).__name__} was given.",
             )
         args = dict(arguments or {})
+        if proof_key is not None and "session" in args:
+            self._same_identity(args, "session", proof_key.native_session_id, native)
         # The class is decided ONCE, here, and BEFORE the scope gate, so a
         # `session_background` whose `stopTaskId` is present-but-empty is
         # refused as a bad request rather than screened as a listing — no read
@@ -1837,7 +1968,6 @@ class FleetService:
             principal.require(fleet_scope)
         self._gate_native_write(principal, device_ref, binding, native, args,
                                 session_ref=session_ref, project=project,
-                                project_path=project_path,
                                 governance=governance, runtime=runtime)
         # HIGH-7: validate the caller's arguments against the tool's OWN schema
         # (recorded from the CloudCLI build each entry names in `recorded_from`;
@@ -1862,7 +1992,12 @@ class FleetService:
                 key = self._native_session_key(device_ref, session_ref, native)
                 args["session"] = key.native_session_id
             self._clamp_native_read(args)
-        provider = self._require_provider(device_ref, runtime)
+        provider = (self._session_provider(session_key) if session_key is not None
+                    else self._require_provider(device_ref, runtime))
+        if governance == cloudcli_native.GOV_CREATE:
+            namespace = self._create_namespace(binding, args.get("provider") or "claude")
+            if self._owner_profile(principal, device_ref, namespace) is not None:
+                self._verify_owner_project(provider, args.get("project"))
         caller = getattr(provider, "native_call", None)
         if caller is None:
             raise refuse(
@@ -1870,6 +2005,8 @@ class FleetService:
                 f"{device_ref}'s provider ({provider.kind}) does not inherit the "
                 f"CloudCLI native surface.",
             )
+        family_detail = (self._verified_family_detail(session_key, provider)
+                         if session_key is not None else None)
         # OWNERSHIP before the answer: the requestId must be one THIS device
         # enumerates for the session named. This runs on the host, over a READ
         # (`approvals_list`), so an arbitrary string cannot be used to clear a
@@ -1884,7 +2021,8 @@ class FleetService:
         if governance == cloudcli_native.GOV_RECONFIGURE and (
                 args.get("model") is not None or args.get("permissionMode") is not None):
             self._native_reconfigure_ceiling(provider, device_ref, session_ref,
-                                             project, args, native)
+                                             project, args, native, detail=family_detail,
+                                             principal=principal)
         result = caller(native_tool, args, session_ref=session_ref)
         # HIGH-5: a mirrored READ carries the same "this is data, not
         # instruction" marking the hand-written reader attaches, so a consumer
@@ -1991,7 +2129,6 @@ class FleetService:
     def _gate_native_write(self, principal: Principal, device_ref: str, binding,
                            native, arguments: dict[str, Any], *,
                            session_ref: str | None, project: str | None,
-                           project_path: str | None,
                            governance: str, runtime: str = BASE_RUNTIME) -> None:
         """Route a native write through the SAME floor its Fleet verb uses.
 
@@ -2002,11 +2139,7 @@ class FleetService:
             `device_ref`; the floor is `_may_send` / `_may_control`, reused
             verbatim, so `policy.send_allow` and `policy.control_allow` bind;
           * create -> a `project`; the floor is `_may_create`, so the project
-            allowlist binds;
-          * project_create -> a `project_path`; the floor is
-            `_may_project_create`, so the device's `allow_create` and the path
-            allowlist bind. The path does not exist yet, which is exactly why it
-            is a different address from `project`.
+            allowlist binds.
 
         A class whose identity cannot be established is REFUSED, never guessed
         from the native payload: a native `session` id inside `arguments` is not
@@ -2050,52 +2183,22 @@ class FleetService:
                 self._require_operator_verb(principal, device_ref, "navigate", native,
                                                runtime=runtime)
             return
-        if governance == cloudcli_native.GOV_PROJECT_CREATE:
-            path = self._native_project_path(project_path, native)
-            # BLOCKER-1 on the path axis: the location the floor passed on is
-            # the location the device is asked to create.
-            self._same_identity(arguments, "projectPath", path, native)
-            self._may_project_create(device_ref, path, runtime)
-            self._require_operator_verb(principal, device_ref, "create", native,
-                                        runtime=runtime)
-            return
         if governance == cloudcli_native.GOV_CREATE:
             project_name = self._native_project(project, native)
             # BLOCKER-1 for the project axis: the project the floor passed on is
             # the project that must be minted in.
             self._same_identity(arguments, "project", project_name, native)
-            grant = self._may_create(device_ref, project_name, runtime)
+            namespace = self._create_namespace(binding, arguments.get("provider") or "claude")
             self._require_operator_verb(principal, device_ref, "create", native,
-                                        project=project_name, runtime=runtime)
-            # The CloudCLI *native mirror* must apply the SAME owner-approved
-            # per-runtime defaults as fleet_create_session. Without this, the
-            # caller could bypass the configured default by choosing the
-            # mirrored session_create tool with omitted model/permissionMode.
-            runtime_rule = self.config.policy.runtime_create_defaults.get(
-                provider_key(device_ref, runtime), {}).get(project_name)
-            if runtime_rule is not None:
-                try:
-                    resolved_model, resolved_mode = runtime_rule.resolve(
-                        family=arguments.get("provider") or "claude",
-                        model=arguments.get("model"),
-                        permission_mode=arguments.get("permissionMode"))
-                except PolicyError as exc:
-                    raise refuse(
-                        WRITE_NOT_GRANTED,
-                        f"native session_create denied by selected runtime/project: {exc}",
-                        device_ref=device_ref, runtime=runtime, project=project_name,
-                    ) from None
-                if resolved_model is not None:
-                    arguments["model"] = resolved_model
-                if resolved_mode is not None:
-                    arguments["permissionMode"] = resolved_mode
-            # HIGH-3: a caller may not name a model or permission mode the
-            # project's grant does not allow — the same ceiling the hand-written
-            # `fleet_create_session` applies, reused rather than restated.
-            self._may_name_mode_and_model(
-                device_ref, project_name, grant,
-                model=arguments.get("model"),
-                permission_mode=arguments.get("permissionMode"))
+                                        project=project_name, runtime=namespace)
+            model, mode, _ = self._resolve_create_policy(
+                principal, device_ref, project_name, binding.runtime, namespace,
+                arguments.get("provider") or "claude", arguments.get("model"),
+                arguments.get("permissionMode"))
+            if model is not None:
+                arguments["model"] = model
+            if mode is not None:
+                arguments["permissionMode"] = mode
             return
         if governance == cloudcli_native.GOV_APPROVE:
             # An approval is answered for ONE request, on ONE device, in ONE
@@ -2162,7 +2265,8 @@ class FleetService:
 
     def _native_reconfigure_ceiling(self, provider, device_ref: str,
                                     session_ref: str | None, project: str | None,
-                                    arguments: dict[str, Any], native) -> None:
+                                    arguments: dict[str, Any], native, *, detail=None,
+                                    principal=None) -> None:
         """A reconfigure's model/mode is bounded by the SESSION's REAL project.
 
         The caller's `project` is a claim. The project that decides the ceiling
@@ -2200,16 +2304,21 @@ class FleetService:
                 f"belongs to (this provider does not report it), so a permission "
                 f"change is refused rather than trusted to the caller's claim.",
             )
+        if detail is None:
+            try:
+                detail = caller("session_get", {"session": key.native_session_id})
+            except FleetRefusal as exc:
+                raise refuse(
+                    APPROVAL_REQUIRED,
+                    f"`{native.namespaced}` could not confirm the session's project: "
+                    f"the device would not report it ({exc.code}). A permission "
+                    f"change with no confirmed project is refused.",
+                    device_ref=device_ref,
+                ) from None
         try:
-            detail = caller("session_get", {"session": key.native_session_id})
-        except FleetRefusal as exc:
-            raise refuse(
-                APPROVAL_REQUIRED,
-                f"`{native.namespaced}` could not confirm the session's project: "
-                f"the device would not report it ({exc.code}). A permission "
-                f"change with no confirmed project is refused.",
-                device_ref=device_ref,
-            ) from None
+            detail = normalize_detail(key, detail, self.config.session_binding(key))
+        except FleetRefusal:
+            raise refuse(APPROVAL_REQUIRED, "session project metadata contradicts its target") from None
         actual = _session_project(detail)
         if actual is None:
             raise refuse(
@@ -2228,7 +2337,13 @@ class FleetService:
                 f"never against a project the caller chose.",
                 device_ref=device_ref, device_project=actual, declared=declared,
             )
-        grant = self.config.policy.create_allow.get(actual)
+        binding = self.config.session_binding(key)
+        actual_runtime = binding.runtime if binding is not None else key.provider
+        owner = (self._owner_profile(principal, device_ref, key.provider)
+                 if principal is not None else None)
+        grant = (self._owner_project_grant(principal, device_ref, actual, actual_runtime,
+                                          key.provider) if owner is not None
+                 else self.config.policy.create_allow.get(actual))
         if grant is None:
             raise refuse(
                 WRITE_NOT_GRANTED,
@@ -2242,16 +2357,24 @@ class FleetService:
         # Reconfigure must not bypass the narrower per-credential-instance
         # ceiling after a legitimate create. Do NOT fill omitted fields here:
         # a reconfigure that names only model must not reset permissionMode.
-        runtime_rule = self.config.policy.runtime_create_defaults.get(
-            provider_key(device_ref, key.provider), {}).get(actual)
+        binding = self.config.session_binding(key)
+        actual_runtime = binding.runtime if binding is not None else key.provider
+        family = key.provider if key.provider in runtime_identity.FAMILIES else (
+            binding.family if binding is not None else None)
+        runtime_rule = (self._project_runtime_rule(principal, device_ref, actual,
+                                                  actual_runtime, key.provider)
+                        if principal is not None else self.config.policy.runtime_create_defaults.get(
+                            provider_key(device_ref, actual_runtime), {}).get(actual))
         if runtime_rule is not None:
+            if family != runtime_rule.family:
+                raise refuse(WRITE_NOT_GRANTED, "session family is not authorized on this account/project")
             if model is not None and model not in runtime_rule.allowed_models:
                 raise refuse(
                     WRITE_NOT_GRANTED,
                     "session_reconfigure model is not authorized for this account/project",
                     device_ref=device_ref, runtime=key.provider, project=actual,
                 )
-            if mode is not None and mode not in runtime_rule.allowed_permission_modes:
+            if mode is not None and owner is None and mode not in runtime_rule.allowed_permission_modes:
                 raise refuse(
                     WRITE_NOT_GRANTED,
                     "session_reconfigure permissionMode is not authorized for this account/project",
@@ -2387,43 +2510,6 @@ class FleetService:
             )
         return project.strip()
 
-    def _native_project_path(self, project_path: str | None, native) -> str:
-        """The directory a native project create names, or a refusal.
-
-        Refused unless it is absolute and already normalised. Both rules are
-        about the allowlist rather than tidiness: `policy.project_create_allow`
-        compares prefixes as strings, so `/root/../etc` would be checked as one
-        location and created as another, and a relative path would be resolved
-        against the daemon's working directory — a different place after every
-        restart. The final bound is still the device's own workspace root; this
-        is the Fleet-side bound, and it has to mean exactly what it reads.
-        """
-        if not isinstance(project_path, str) or not project_path.strip():
-            raise refuse(
-                BAD_REQUEST,
-                f"`{native.namespaced}` creates a project and this call named no "
-                f"`project_path`. The location is named at the outer layer and "
-                f"checked against `policy.project_create_allow`, never read out "
-                f"of the native payload.",
-            )
-        path = project_path.strip()
-        if "\x00" in path or not os.path.isabs(path):
-            raise refuse(
-                BAD_REQUEST,
-                f"`{native.namespaced}`: `project_path` must be an absolute "
-                f"directory path; {path!r} is not.",
-                project_path=path,
-            )
-        if path == "/" or os.path.normpath(path) != path:
-            raise refuse(
-                BAD_REQUEST,
-                f"`{native.namespaced}`: `project_path` must be written already "
-                f"normalised (no '..' segments, no trailing slash, not the root "
-                f"itself); {path!r} is not.",
-                project_path=path,
-            )
-        return path
-
     def _require_operator_verb(self, principal: Principal, device_ref: str,
                                verb: str, native, *, project: str | None = None,
                                runtime: str = BASE_RUNTIME) -> None:
@@ -2528,10 +2614,11 @@ class FleetService:
         return {
             "surface": {
                 "server_name": "serveros-fleet-mcp",
-                "version": "0.1.0",
+                "version": SERVER_VERSION,
                 "local_device_ref": self.config.local_device_ref,
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
+                "idempotency_durability": self.dispatch.durability,
             },
             "identity_layer": {
                 "authority": "fleet/registry.yaml",
@@ -2550,6 +2637,16 @@ class FleetService:
                 "max_read_messages": self.config.policy.max_read_messages,
             },
             "principal": principal.as_dict(),
+            "owner_access": [
+                {"device_ref": namespace.partition("|")[0],
+                 "runtime": namespace.partition("|")[2] or BASE_RUNTIME,
+                 "root_refs": list(profile.project_roots),
+                 "permission_mode": profile.permission_mode}
+                for namespace in self.config.policy.owner_max.get(principal.name, ())
+                if (profile := self._owner_profile(
+                    principal, namespace.partition("|")[0],
+                    namespace.partition("|")[2] or BASE_RUNTIME)) is not None
+            ],
             "recent_audit": self.audit.tail(20),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

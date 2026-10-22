@@ -162,11 +162,9 @@ class TheSchemaCarriesTheRuntimeAxis(unittest.TestCase):
         self.assertIn("runtime", tool.input_schema["properties"])
         self.assertEqual(tool.input_schema["required"], ["device_ref"])
 
-    def test_the_surface_is_thirty_four_tools_and_six_scopes(self):
-        # 9 authored + 23 mirrored + 2 capability reads. The 23rd mirror is
-        # `project_create`; the scope vocabulary did not move with it.
+    def test_the_surface_is_still_thirty_four_tools_and_six_scopes(self):
         self.assertEqual(len(tools_mod.SERVED_TOOLS), 34)
-        self.assertEqual(len(tools_mod.NATIVE_MIRROR_TOOLS), 23)
+        self.assertEqual(len(tools_mod.NATIVE_MIRROR_TOOLS), 22)
         self.assertEqual(len(scopes_mod.ALLOWED_SCOPES), 6)
 
     def test_an_unknown_top_level_key_is_still_refused(self):

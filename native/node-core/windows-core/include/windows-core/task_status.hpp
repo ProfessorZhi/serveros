@@ -1,29 +1,4 @@
-// The Task Scheduler, as its OWN vocabulary.
-//
-// WHY IT IS NOT A SECOND SET OF SERVICE STATES
-// --------------------------------------------
-// A scheduled task is not a service wearing a different name. A service has a
-// `dwCurrentState` and stays up until something stops it; a task has no current
-// state worth the name — it starts, it finishes, and the question that matters
-// is what its LAST RUN did. Putting both behind one vocabulary produces a word
-// that means different things depending on which half produced it: `RUNNING` for
-// a task that finished an hour ago is the obvious example, and it is the kind of
-// word a Fleet reader would act on.
-//
-// So this vocabulary is separate, and it is separate in a way a machine can
-// check rather than a way a comment promises: every task word carries a `TASK_`
-// prefix, so no word here can equal a service state word. The test asserts that
-// set intersection is empty, which means a summary cannot report a task's status
-// with a service's word, and cannot report a service's status with a task's.
-//
-// STATUS IN THIS BUILD
-// --------------------
-// NOT IMPLEMENTED, and not approximated. There is no Task Scheduler API call
-// anywhere in this tree, no Windows compiler on this host to build one, and no
-// owner authorisation to exercise it on a real machine (`contract/
-// windows-core-status.v1.md` §5). `UnsupportedTaskQuery` returns
-// `TASK_UNSUPPORTED` with a reason, and **no code path derives a task state from
-// SCM data** — the two producers do not share a field, a function or a word.
+// Task Scheduler has an independent TASK_* vocabulary, never inferred from SCM.
 #pragma once
 
 #include <string>
@@ -62,9 +37,13 @@ public:
     virtual WindowsTaskObservation query(const std::string& task_path) = 0;
 };
 
-//: The only implementation in this tree. It answers `TASK_UNSUPPORTED` with a
-//: reason, because nothing here can read a task and nothing here will pretend to.
+// Explicit unsupported adapter retained for callers that disable task reads.
 class UnsupportedTaskQuery final : public WindowsTaskQuery {
+public:
+    WindowsTaskObservation query(const std::string& task_path) override;
+};
+
+class Win32TaskQuery final : public WindowsTaskQuery {
 public:
     WindowsTaskObservation query(const std::string& task_path) override;
 };

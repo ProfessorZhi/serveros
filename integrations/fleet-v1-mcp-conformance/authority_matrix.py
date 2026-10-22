@@ -93,7 +93,7 @@ def _dual(name: str, family: str, alternatives: tuple[tuple[str, ...], ...], *,
 
 
 AUTHORITY: tuple[Authority, ...] = (
-    # -- the nine hand-written tools -------------------------------------
+    # -- the ten hand-written tools --------------------------------------
     _tool("fleet_list_devices", "authored", READ, gates="—",
           note="Enrolled devices and route reachability."),
     _tool("fleet_list_sessions", "authored", READ, gates="—"),
@@ -113,8 +113,10 @@ AUTHORITY: tuple[Authority, ...] = (
     _tool("fleet_interrupt_session", "authored", CONTROL,
           gates="device allow_control AND (control_allow contains session OR "
                 "operator 'control' grant)"),
+    _tool("fleet_create_project", "authored", CREATE,
+          gates="exact owner-max principal/namespace AND configured root AND target-local fresh creation"),
 
-    # -- the 23 mirrored CloudCLI verbs ----------------------------------
+    # -- the 22 mirrored CloudCLI verbs ----------------------------------
     _tool("fleet_cloudcli_overview", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_projects_list", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_sessions_list", "mirror", READ, gates="—"),
@@ -156,9 +158,6 @@ AUTHORITY: tuple[Authority, ...] = (
     _tool("fleet_cloudcli_approval_answer", "mirror", APPROVE,
           gates="device allow_control AND operator 'control' grant; approval "
                 "ownership is verified against the named session"),
-    _tool("fleet_cloudcli_project_create", "mirror", CREATE,
-          gates="device allow_create AND project_path under "
-                "project_create_allow AND operator 'create' grant"),
 
     # -- the two capability reads ----------------------------------------
     _tool("fleet_cloudcli_native_manifest", "capability",

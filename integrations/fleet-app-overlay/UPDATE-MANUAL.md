@@ -35,6 +35,80 @@ Fleet 插件有两条互斥的分发路径，规则**相反**。混淆它们会�
 
 ---
 
+## 0.1 Skill/版本更新与头像/展示更新是两条边界
+
+这一节只处理 **App-backed 插件的 Skill / 版本 / payload 更新**。它不处理头像、
+`displayName` 或其它 presentation 字段；那些属于 **App/Creator owner**，本仓库
+的 overlay ZIP 不能证明自己可以改它们。在 Creator 侧真人读回之前，头像与展示
+更新一律是 **UNVERIFIED**。不要用“重新打个 ZIP”去绕过这个边界，也不要把
+`displayName` 当成 overlay 可以顺带修的字段。
+
+同 ID 更新必须有可执行的本地检查，而不是只看人眼：
+
+```sh
+# 1) 构建新 overlay；identity 字段由 baseline 钉住
+python3 integrations/fleet-app-overlay/build_overlay.py \
+    --source <source-tree> \
+    --baseline integrations/fleet-app-overlay/baseline.json \
+    --out <dist>
+
+# 2) 同 plugin_id、版本前进、旧 Skill 保留、archive hash 一致
+python3 integrations/fleet-app-overlay/package_update_check.py plan \
+    --previous <previous.release.json> \
+    --next <next.release.json> \
+    --out <plan.json>
+
+# 3) 真人/Creator readback 与 plan 对齐；这是 claim，不是本机观察
+python3 integrations/fleet-app-overlay/package_update_check.py readback \
+    --plan <plan.json> --observed <readback.json> --out <readback-result.json>
+
+# 4) 只确认 previous archive 是合法回滚目标，不执行回滚
+python3 integrations/fleet-app-overlay/package_update_check.py rollback \
+    --previous <previous.release.json> \
+    --current <next.release.json> \
+    --out <rollback.json>
+```
+
+没有 Creator 调用时，`verify_readback` 接受
+`OPERATOR_SUPPLIED_RECEIPT` 或 `SYNTHETIC_LOCAL_REHEARSAL`，并始终写
+`production_verified: false`；标成 `LIVE` 的 receipt 会被拒绝，因为本工具没有
+观察它。回滚检查只产出一个 target，不创建 release、不删除当前 release、不
+调用 Creator。
+
+本地演练（两个合成版本，无网络、无安装）：
+
+```sh
+python3 integrations/fleet-app-overlay/package_update_check.py rehearse \
+    --source tests/data/fleet-overlay-fixture \
+    --baseline integrations/fleet-app-overlay/baseline.json \
+    --out <rehearsal-dir>
+```
+
+`rehearse` 的 `--out` 必须是**新建的空目录**（或尚不存在），且从该路径到根的
+所有已存在父路径都不得是 symlink；输出不得与 source 的**真实 resolved 路径**
+重叠（两个方向）。source 与共享 Skills 的全部现存祖先也必须无 symlink；检查发生
+在任何 copy/write 之前。工具不会 `rmtree` 调用者已有目录。拒绝时外部 sentinel
+不变，也不读取 symlink 目标内容。
+
+本地 CC/Codex adapter 不是本 overlay：它们从同一 Skills 源生成、在隔离客户端 home 中加载，
+不带 App/Creator plugin id，也不改全局配置或 OAuth。Codex 的 `.codex-plugin` +
+`.codex-mcp.json` + marketplace 格式与 CC 的 `.claude-plugin`/`.mcp.json` 不同，二者不是
+可互换的 ZIP。overlay 的更新对象仍是已存在的 App-backed 插件。
+
+`plan` 不只比较 plugin id/name/version/Skills。它比较完整的受保护 manifest
+（root 与 `.codex-plugin` 重复字段）、`mcp.json`/`.mcp.json` 的结构及其引用
+文件，并拒绝非 Skill 成员的增删或字节漂移。MCP 引用会按 POSIX 归一化
+（包括 `scripts/../scripts/server.py`），拒绝 traversal/escape；被 MCP 引用的
+skill 文件按归一化目标的实际字节比较，不因位于可变 `skills/` 而豁免。App-backed 更新只允许版本、
+Skills/其 supporting files、keywords、onboarding selection 和 local-executor
+requirement；MCP/后端/tool 行为变化属于 server deployment，不是 overlay 更新。
+
+它只证明本地 identity/受保护配置/readback/rollback 规则成立；它不是一次真实
+Creator 更新，也不证明私有 Creator 接受同 ID 更新或回滚。真实更新、回读和回滚
+仍由真人在 Creator 里执行，并按 §5 记录结果。
+
+---
+
 ## 1. 什么都不用动的情况
 
 **后端变化不需要新 ZIP。** 新增设备、新增 runtime、换处理器、扩容实例，全在服务端完成；ChatGPT 侧固定 **Plugin ID / App ID / MCP HTTPS 地址**。
@@ -46,7 +120,7 @@ Fleet 插件有两条互斥的分发路径，规则**相反**。混淆它们会�
 | 后端设备 / runtime 增减、处理器更换、扩实例 | **不需要**插件重装，也不需要新 ZIP |
 | hosted MCP 工具本身变化 | **不需要**新 ZIP（MCP scans 单独处理；也可在 MCPs → Issues → Rescan 手动请求） |
 | **工具 schema 或 scope 变化** | 可能需要客户端 `tools/list` **刷新**，以及 **OAuth 再授权** |
-| Skill / 素材 / 元数据 | **需要**新的 overlay ZIP + 一次 Creator 更新 |
+| Skill / 受支持的 supporting metadata（在 App-backed 允许边界内） | **需要**新的 overlay ZIP + 一次 Creator 更新；App-owned 的 avatar/display/presentation/assets 不在此列 |
 
 **绝不向用户承诺"连刷新都不需要"。**
 
@@ -55,7 +129,9 @@ Fleet 插件有两条互斥的分发路径，规则**相反**。混淆它们会�
 ## 2. 日常更新流程
 
 ```
-1) 改源                 operator 的 overlay 源树（不入库）：skills/、assets/、plugin.json 的 version
+1) 改源                 operator 的 overlay 源树（不入库）：skills/ 及其 supporting files、
+                        plugin.json 的 version / keywords / onboarding / local-executor；
+                        不改 assets/、displayName、描述、defaultPrompt 或其它 App-owned presentation
 2) 构建                 python3 integrations/fleet-app-overlay/build_overlay.py \
                           --source <源树> --baseline integrations/fleet-app-overlay/baseline.json --out dist
 3) 复核                 看 distribution 标记、sha256、以及两个 icon slot 的校验结论

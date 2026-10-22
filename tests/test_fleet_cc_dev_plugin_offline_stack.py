@@ -256,7 +256,7 @@ class TheIngressRefusesBeforeItEnumerates(unittest.TestCase):
         self.assertIn("fleet_send_to_session", names)
         self.assertNotIn("fleet_send_session", names)
 
-    def test_thirty_three_tools_is_not_thirty_three_permissions(self) -> None:
+    def test_thirty_four_tools_is_not_thirty_three_permissions(self) -> None:
         _, _, payload = self.client.rpc(
             {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, token=OWNER_TOKEN)
         tools_out = payload["result"]["tools"]

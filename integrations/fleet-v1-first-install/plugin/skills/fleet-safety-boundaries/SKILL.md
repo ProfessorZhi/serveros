@@ -3,7 +3,7 @@ name: fleet-safety-boundaries
 description: What the Fleet tool list does and does not authorize, which runtime profiles may be mixed, and where the assistant's work ends and the coding agent's begins. Use before any Fleet write, and when deciding which runtime a task belongs on.
 ---
 
-# Thirty-three tools are not thirty-three permissions
+# A tool list is not a permission
 
 The tool surface is a **catalogue of what can be asked for**, not a grant. Each
 verb is separately gated, and the gates are on other machines:
@@ -28,32 +28,40 @@ verb is separately gated, and the gates are on other machines:
 So a listed verb can still be `WRITE_NOT_GRANTED` or `APPROVAL_REQUIRED`, and
 that is the normal answer rather than a bug. Never read a tool's presence in
 the list as permission to call it, and never describe a discovery result as
-"you have 33 permissions".
+"you have every permission".
+
+## The owner-max managed profile is configured once
+
+The owner may configure one managed account / runtime / project ceiling at the
+highest native permissions the owner chooses. Within that configured profile,
+routine create, send and dispatch are **pre-authorized**: do not ask a human to
+reconfirm each ordinary call. This is an authorization normalisation, not a new
+authority. It is not Linux root, not OS administration, not control of another
+OS account, and not a universal bypass.
+
+A human decision is still required when the target is outside the configured
+profile, a required capability is absent, identity is ambiguous or
+contradictory, or an irreversible action would exceed the grant. Read the
+effective model and native permission mode back per CC/Codex runtime; a high
+mode chosen for one runtime does not become a fleet default and does not
+transfer to another account or project.
 
 ## Runtimes are separate, and their profiles differ
 
 Two runtimes on one device are **not** interchangeable, even when both answer:
 
-| Runtime profile | What it is | What must not be assumed |
+| Runtime | What it is | What must not be assumed |
 |---|---|---|
-| Claude on the admin account, `cloudcli-deepseek` kind | the owner's own account, a DeepSeek candidate model, and `bypassPermissions` as the **owner-approved** mode | that the bypass is available to anyone else, on any other account, project or runtime |
-| Codex | a different agent family with its **own** native model and its own provider | that a Codex runtime works because Claude does — a Codex runtime with no provider is not a working runtime, and it must never be given Claude's Anthropic-compatible model id |
-| `official-claude`, `marketops-claude` | dedicated accounts | that they inherit the DeepSeek default. They are separate subscriptions; borrowing a model id across them is a cross-account mix, and the evidence gate refuses it |
+| Claude | a Claude runtime with the owner-chosen model and native permission mode | that its model or mode applies to another runtime, account or project |
+| Codex | a different agent family with its own native model and provider | that a Codex runtime works because Claude does, or that a Claude model id is valid for it |
+| dedicated accounts | separate subscriptions or accounts | that they inherit another account's model or default |
 
-Owner-approved `bypassPermissions` is scoped to **that account, that project,
-that runtime**. If you find yourself describing it as "the fleet runs with
-bypass", stop — that sentence is false and it is the one that gets a shared
-machine damaged.
-
-Two labels in that table get over-read, and both over-read the owner:
-
-- **`admin`** names an upstream **model/billing** gateway route. It is not Linux
-  root, not the Fleet owner, and not `sudo`. A runtime described as the admin
-  route has no administrative power over the machine it runs on.
-- **`bypassPermissions`** is a CloudCLI/Claude **permission-mode** choice, not OS
-  admin. It does not bypass Fleet scopes, per-OS-account ownership, a project
-  ceiling, or the node's own authorization floor — and it is *verified* by
-  creating a permitted session, never asserted from the label.
+If the owner configures a high native permission mode for one runtime, read it
+back and report it with that runtime, account and project. It is never "the
+fleet runs with bypass", never a caller-requestable widening, and never OS
+administration. `admin`, where it appears in a runtime name, is an upstream
+model/billing route label: it is not Linux root, not the Fleet owner, and not
+OS administration.
 
 ## Never do these
 
@@ -142,13 +150,16 @@ Three things look like recovery and are on no allowlist:
 ## The Skills route; they do not keep a second registry
 
 These Skills decide **where** work belongs and **how to tell it happened**. They
-call the ingress; the ingress reaches the device; the agent on that device uses
-its own ability family, with its own registry and its own responsibilities.
+call the ingress; the ingress reaches the device; the agent on that device
+consumes the shared `ability-management` authority through its
+**installed / ready / granted projection**. The projection is per device; it is
+not a second ability registry, and it does not replace the shared catalogue.
 
 So do not re-implement a device's abilities here, do not keep a parallel list of
 its responsibilities, and do not treat this plugin as a second authority over
-what a device can do. A capability exists because the device says so in its own
-inventory — never because a name in these Skills sounds like it.
+what a device can do. A capability exists because the shared authority declares
+it and that device's projection says it is installed and ready for the relevant
+grant — never because a name in these Skills sounds like it.
 
 ## What this release is not
 

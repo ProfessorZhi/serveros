@@ -159,7 +159,8 @@ class HttpSurface:
             # is configured to permit.
             return Principal(
                 name="owner-pat",
-                scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
+                scopes=frozenset(ALLOWED_SCOPES if self.config.policy.owner_max.get("owner-pat")
+                                 else (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
                 credential_kind="pat",
             )
         if self.oauth is not None:

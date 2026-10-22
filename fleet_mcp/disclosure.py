@@ -200,6 +200,8 @@ KIND_BY_FIELD: dict[str, str] = {
     "tool": CODE,
     "session_ref": REF,
     "project": REF,
+    "project_id": REF,
+    "runtime": CODE,
     "run_id": REF,
     "idempotency_key": DIGEST,  # opaque, caller-chosen, correlatable
     "mode": CODE,

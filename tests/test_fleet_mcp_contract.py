@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 9)
+        self.assertEqual(len(declared), 10)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -70,10 +70,10 @@ class TheContractDescribesThisCode(unittest.TestCase):
                     f"{tool.name} is declared {verb} and annotated otherwise",
                 )
 
-    def test_the_writes_are_the_three_named_ones(self):
+    def test_the_writes_are_the_four_named_ones(self):
         writes = [t.name for t in tools_module.TOOLS if not t.annotations["readOnlyHint"]]
         self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
-                                  "fleet_interrupt_session"])
+                                  "fleet_interrupt_session", "fleet_create_project"])
         for name in writes:
             with self.subTest(tool=name):
                 self.assertEqual(contract()["tools"][name]["verb"], "write")

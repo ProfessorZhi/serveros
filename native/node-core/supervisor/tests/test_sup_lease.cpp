@@ -320,6 +320,73 @@ bool entry_count(int dir_fd, int& count) {
     return true;
 }
 
+
+// --- the file the lease is allowed to be -----------------------------------
+//
+// `flock` proves a descriptor, not a path. These four cases are the ways the
+// path stops meaning the descriptor: a symlink, a hard link, a world-writable
+// file, and a file replaced underneath a held lock.
+
+std::string scratch_file(const char* name) {
+    char templ[] = "/tmp/serveros-lease-safe-XXXXXX";
+    const char* made = ::mkdtemp(templ);
+    if (made == nullptr) {
+        return "";
+    }
+    return std::string(made) + "/" + name;
+}
+
+void test_a_symlinked_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    const std::string link = real + ".link";
+    if (::symlink(real.c_str(), link.c_str()) != 0) return;
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(link, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_hardlinked_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    if (::link(real.c_str(), (real + ".second").c_str()) != 0) return;
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(real, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_world_writable_lease_is_refused() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    ::close(::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600));
+    ::chmod(real.c_str(), 0666);
+    WriterLease lease;
+    const LeaseAttempt attempt = lease.acquire(real, "test");
+    CHECK(!attempt.ok);
+    CHECK(!lease.held());
+}
+
+void test_a_replaced_lease_fails_revalidation() {
+    const std::string real = scratch_file("real");
+    if (real.empty()) return;
+    WriterLease lease;
+    const LeaseAttempt taken = lease.acquire(real, "test");
+    CHECK(taken.ok);
+    CHECK(lease.held());
+    // Rename the held file away and put a fresh one at the path: the descriptor
+    // still holds a lock, on an inode nobody else will ever open.
+    ::rename(real.c_str(), (real + ".moved").c_str());
+    const int replacement = ::open(real.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (replacement >= 0) ::close(replacement);
+    const LeaseAttempt again = lease.revalidate();
+    CHECK(!again.ok);
+    lease.release();
+}
+
 }  // namespace
 
 //: The scratch-root contract. These are the cases an independent review asked
@@ -524,6 +591,10 @@ void test_the_scratch_root_is_fd_anchored() {
 
 int main() {
     test_the_scratch_root_is_fd_anchored();
+    test_a_symlinked_lease_is_refused();
+    test_a_hardlinked_lease_is_refused();
+    test_a_world_writable_lease_is_refused();
+    test_a_replaced_lease_fails_revalidation();
 
     Scratch scratch;
     if (!open_default_scratch(scratch)) {
@@ -615,6 +686,7 @@ int main() {
         CHECK(source.acquire(path, "core-a").ok);
         WriterLease moved(std::move(source));
         CHECK(moved.held());
+        CHECK(moved.revalidate().ok);
         CHECK(!source.held());
         // Still exclusive after the move.
         WriterLease other;
@@ -654,6 +726,45 @@ int main() {
         const LeaseAttempt holder = peek_holder(path);
         CHECK(holder.ok);
         CHECK(holder.holder.size() <= 200);
+    }
+
+    {
+        // A no-follow leaf open must not create a lock through an ancestor alias.
+        CHECK(::mkdirat(scratch.leaf_fd, "ancestor-owned", 0700) == 0);
+        CHECK(::symlinkat("ancestor-owned", scratch.leaf_fd, "ancestor-alias") == 0);
+        WriterLease lease;
+        CHECK(!lease.acquire(root + "/ancestor-alias/new.lock", "core-a").ok);
+        CHECK(!std::filesystem::exists(root + "/ancestor-owned/new.lock"));
+        // This branch also cleans up a lock incorrectly created by the RED version.
+        ::unlink((root + "/ancestor-owned/new.lock").c_str());
+        CHECK(::unlinkat(scratch.leaf_fd, "ancestor-alias", 0) == 0);
+        CHECK(::unlinkat(scratch.leaf_fd, "ancestor-owned", AT_REMOVEDIR) == 0);
+    }
+    {
+        // Replacing an ancestor with an alias to the SAME inode must not keep
+        // the namespace claim valid just because leaf dev/ino still matches.
+        CHECK(::mkdirat(scratch.leaf_fd, "lease-parent", 0700) == 0);
+        WriterLease lease;
+        CHECK(lease.acquire(root + "/lease-parent/stable.lock", "core-a").ok);
+        CHECK(::renameat(scratch.leaf_fd, "lease-parent", scratch.leaf_fd, "lease-moved") == 0);
+        CHECK(::symlinkat("lease-moved", scratch.leaf_fd, "lease-parent") == 0);
+        CHECK(!lease.revalidate().ok);
+        lease.release();
+        CHECK(::unlinkat(scratch.leaf_fd, "lease-parent", 0) == 0);
+        CHECK(::unlink((root + "/lease-moved/stable.lock").c_str()) == 0);
+        CHECK(::unlinkat(scratch.leaf_fd, "lease-moved", AT_REMOVEDIR) == 0);
+    }
+
+    {
+        // Fully owned nonshared 0755 paths need no 0700 exception. Retaining
+        // their namespace must not accidentally make the private barrier mandatory.
+        CHECK(::fchmod(scratch.leaf_fd, 0755) == 0);
+        WriterLease lease;
+        CHECK(lease.acquire(root + "/ordinary.lock", "core-a").ok);
+        CHECK(lease.revalidate().ok);
+        lease.release();
+        CHECK(::unlinkat(scratch.leaf_fd, "ordinary.lock", 0) == 0);
+        CHECK(::fchmod(scratch.leaf_fd, 0700) == 0);
     }
 
     // Remove exactly what this test created, by name, relative to the pinned

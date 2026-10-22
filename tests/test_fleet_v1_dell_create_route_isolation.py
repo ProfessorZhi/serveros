@@ -121,7 +121,8 @@ class _Recorder:
     def send(self, key, message, *, idempotency_key=None):
         self.calls.append(("send", {"ref": key.ref, "message": message}))
         self._or_offline()
-        return {"sessionId": key.native_session_id, "served_by": self.runtime}
+        return {"sessionId": key.native_session_id, "served_by": self.runtime,
+                "runId": f"{self.runtime}-fixture-run-{len(self.calls)}"}
 
     def interrupt(self, key):
         self.calls.append(("interrupt", key.ref))

@@ -23,6 +23,7 @@ set(supervisor_cases
   test_sup_action_journal
   test_sup_probe
   test_sup_lease
+  test_sup_facts
 )
 
 foreach(case IN ITEMS ${supervisor_cases})

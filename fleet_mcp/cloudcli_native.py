@@ -2,11 +2,10 @@
 
 What is inherited
 -----------------
-CloudCLI 1.39 exposes exactly 22 MCP tools on its gateway, and the maintained
-fork adds a twenty-third (`project_create`). Fleet inherits ALL 23, each as
-`fleet_cloudcli_<native_name>`, so a caller discovers one typed tool per native
-verb instead of the seven hand-written ones this surface used to carry. The set
-is recorded here, once, and everything else reads it.
+CloudCLI 1.39 exposes exactly 22 MCP tools on its gateway. Fleet inherits ALL of
+them, each as `fleet_cloudcli_<native_name>`, so a caller discovers one typed
+tool per native verb instead of the seven hand-written ones this surface used to
+carry. The set is recorded here, once, and everything else reads it.
 
 Why a closed set, and not a proxy
 ---------------------------------
@@ -15,7 +14,7 @@ Why a closed set, and not a proxy
 make the Fleet surface a transparent proxy to a device — the caller would be
 choosing the operation, and there would be nothing left in the call to govern."
 This module keeps that refusal and answers it. The mirror is not a passthrough;
-it is a DECLARED set of 23 entries, each carrying its own native scope, its own
+it is a DECLARED set of 22 entries, each carrying its own native scope, its own
 Fleet scope, and its own governance class. A tool name nobody recorded is not
 forwarded — it is refused, because a name that arrived from the wire is not a
 capability this build decided to offer.
@@ -34,8 +33,7 @@ not, and a credential trusted to list is not thereby trusted to answer.
 
 The recorded baseline and the live list
 ---------------------------------------
-`NATIVE_TOOLS` is the recorded baseline — the 22 verbs CloudCLI 1.39.0
-declares plus `project_create` from the fork (`recorded_from` names which). The
+`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.39.0 declares. The
 provider already fetches the LIVE `tools/list` on every `health()`. `coverage()`
 compares the two and reports drift (a tool that appeared, one that vanished, an
 annotation that moved), so an upgrade is a diff a person reads rather than a
@@ -49,8 +47,7 @@ advertised and what is enforced cannot disagree. The cost is the one this
 paragraph used to deny: a restated schema drifts, silently, the first time
 CloudCLI changes a parameter. That is paid for by
 `tests/test_fleet_cloudcli_full_inheritance.py`'s capture tests, which hold this
-table against a VERBATIM 1.39.0 `tools/list` capture, and the one entry that
-capture cannot hold against its own `recorded_from` — a restatement checked
+table against a VERBATIM 1.39.0 `tools/list` capture — a restatement checked
 against the thing it restates, rather than trusted.
 
 No I/O, no clock, no credentials. This module is a table and the functions over
@@ -101,12 +98,6 @@ GOV_NAVIGATE = "navigate"
 #: the create-side ceiling as well as the control floor — its own class rather
 #: than `control`, which would leave the model/mode unbounded.
 GOV_RECONFIGURE = "reconfigure"
-#: `project_create` mints a project rather than a session in one, so its floor
-#: cannot be `create`: `policy.create_allow` is keyed by EXISTING project ids,
-#: and the whole point of this verb is that the project has none yet. It gets its
-#: own class and its own allowlist (`policy.project_create_allow`), so widening
-#: project creation never widens session minting and the reverse.
-GOV_PROJECT_CREATE = "project_create"
 
 #: The governance classes whose Fleet floor is stated over ONE session. The
 #: outer schema must therefore both DECLARE `session_ref` and REQUIRE it, and
@@ -132,12 +123,6 @@ SESSION_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_SEND, GOV_CONTROL,
 
 #: The one class whose floor is stated over a PROJECT rather than a session.
 PROJECT_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_CREATE,)
-
-#: The one class whose floor is stated over a project PATH that does not exist
-#: yet. `project` is a name to look up; `project_path` is a location to create,
-#: and the two are deliberately different outer fields so neither can be passed
-#: off as the other.
-PROJECT_PATH_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_PROJECT_CREATE,)
 
 #: The READS whose disclosure the runtime also scopes to one session.
 #:
@@ -185,10 +170,6 @@ class NativeTool:
     #: off the installed build. `None` means "not recorded here; read it from the
     #: live tools/list" — never "these are the arguments".
     input_schema_zod: str | None = None
-    #: Where this entry was recorded from. The default names the installed build
-    #: every entry predating the project-create branch was read off; a verb from
-    #: a newer source says so rather than borrowing that build's provenance.
-    recorded_from: str = "CloudCLI 1.39.0"
 
     @property
     def namespaced(self) -> str:
@@ -210,23 +191,21 @@ class NativeTool:
             "open_world": self.open_world,
             "placeholder_default": self.placeholder_default,
             "input_schema_zod": self.input_schema_zod,
-            "recorded_from": self.recorded_from,
         }
 
 
 def _t(name: str, governance: str, *native_scopes: str, read_only: bool,
        destructive: bool, idempotent: bool, open_world: bool,
        placeholder_default: bool = False,
-       input_schema_zod: str | None = None,
-       recorded_from: str = "CloudCLI 1.39.0") -> NativeTool:
+       input_schema_zod: str | None = None) -> NativeTool:
     return NativeTool(name=name, governance=governance, native_scopes=tuple(native_scopes),
                       read_only=read_only, destructive=destructive, idempotent=idempotent,
                       open_world=open_world, placeholder_default=placeholder_default,
-                      input_schema_zod=input_schema_zod, recorded_from=recorded_from)
+                      input_schema_zod=input_schema_zod)
 
 
-#: The 23 tools. Order is CloudCLI's own grouping: the stage-3 reads, the five
-#: stage-4 writes, then the tools that register through their own modules. The
+#: The 22 tools. Order is CloudCLI's own grouping: the eleven stage-3 reads, the
+#: five stage-4 writes, then the six that register through their own modules. The
 #: annotations are CloudCLI's (`MCP_TOOL_ANNOTATIONS`, read from the installed
 #: 1.39.0), not this surface's opinion — carried, never re-derived.
 NATIVE_TOOLS: tuple[NativeTool, ...] = (
@@ -285,25 +264,9 @@ NATIVE_TOOLS: tuple[NativeTool, ...] = (
     _t("session_background", GOV_CONTROL, NATIVE_READ, NATIVE_CONTROL, read_only=False,
        destructive=True, idempotent=False, open_world=True),
     # A read and its answer are two different authorities: listing approvals is
-    # read; answering one is approve, and this surface refuses it separately
-    # (`fleet:approve`, a device `allow_control`, and an operator grant) rather
-    # than letting a read credential decide an approval.
+    # read; answering one is approve, which Fleet plans and does not implement.
     _t("approval_answer", GOV_APPROVE, NATIVE_APPROVE, read_only=False,
        destructive=False, idempotent=False, open_world=True),
-    # From this fleet's own CloudCLI branch (`feat/fleet-project-create-20261021`,
-    # `639ded6`), not from the installed 1.39.0: `recorded_from` says so, and the
-    # capability snapshot reports a device that does not declare it as
-    # `UNSUPPORTED_BY_DEVICE` until that build is installed. The schema below is
-    # the fork's registered zod object, copied the same way every other entry was.
-    # It creates a directory and a project row; repeats of an active path are
-    # conflicts, so it is neither idempotent nor destructive.
-    _t("project_create", GOV_PROJECT_CREATE, NATIVE_CREATE, read_only=False,
-       destructive=False, idempotent=False, open_world=False,
-       input_schema_zod=(
-           "{ projectPath: z.string().trim().min(1).max(4096), "
-           "customName: z.string().trim().max(256).nullable().optional(), "
-           "requireFresh: z.boolean().default(false) }"),
-       recorded_from="CloudCLI fork feat/fleet-project-create-20261021 @ 639ded6"),
 )
 
 NATIVE_BY_NAME: dict[str, NativeTool] = {t.name: t for t in NATIVE_TOOLS}
@@ -418,15 +381,6 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "answers": {},
         "message": {"type": "string"},
     }, ["requestId", "allow"]),
-    # `trim().min(1).max(4096)`: the device itself refuses an empty path, so the
-    # recorded schema refuses it here too rather than forwarding a value the
-    # device will reject. `customName` is nullable, carried as a type ARRAY so
-    # `null` stays distinct from omitted.
-    "project_create": _s({
-        "projectPath": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "customName": {"type": ["string", "null"], "maxLength": 256},
-        "requireFresh": {"type": "boolean", "default": False},
-    }, ["projectPath"]),
 }
 
 
@@ -440,7 +394,7 @@ def input_schema(native_name: str) -> dict[str, Any]:
     return NATIVE_INPUT_SCHEMAS.get(native_name, {})
 
 #: The count this build mirrors, as a number a test and a status can both read.
-NATIVE_TOOL_COUNT = 23
+NATIVE_TOOL_COUNT = 22
 
 
 def namespaced(native_name: str) -> str:
@@ -528,30 +482,23 @@ def coverage(observed_names: Iterable[str],
 #: differs is refused by name rather than widened to a union no device accepts.
 UNSUPPORTED_BY_DEVICE = "UNSUPPORTED_BY_DEVICE"
 
-#: A verb the device DECLARES on `tools/list` whose recorded handler is the named
-#: A verb this surface has MEASURED a device answering with the named
-#: `MCP_TOOL_NOT_IMPLEMENTED` refusal.
-#:
-#: This is a verdict about a device, and it may only be written from a call that
-#: returned that refusal. It is NOT the reading of a build-time registry fact:
-#: the 1.39.0 capture carries `notImplemented('overview', 'AC-247')` as the
-#: verb's *default body when its deps are not injected*, and live devices inject
-#: them — so the capture cannot tell a wired handler from an unwired one.
-#: `capability_snapshot` therefore never assigns this state; it carries
-#: `placeholder_default` and `unverified_handlers` as a caveat instead. The name
-#: stays in the vocabulary for the measurement that would earn it.
+#: The live registration explicitly reports its handler is absent. Historical
+#: `placeholder_default` remains provenance and cannot establish current wiring.
 DECLARED_NOT_IMPLEMENTED = "DECLARED_NOT_IMPLEMENTED"
 
-#: A verb the device declares with a wired handler. The only state that asserts
-#: the device will answer a call.
+#: The live registration reports a wired handler; no end-to-end call is implied.
 USABLE = "USABLE"
+
+#: Older gateways advertise no registration evidence. Do not guess from names
+#: or the default handlers captured in a different process/version.
+HANDLER_BINDING_UNKNOWN = "HANDLER_BINDING_UNKNOWN"
 
 
 def native_schema(tool_entry: dict) -> dict | None:
     """One live tool entry's own `inputSchema`, or `None`.
 
     Read from the DEVICE's `tools/list`, which is the version-reviewed
-    authority. This module does NOT restate 23 schemas: a restated schema drifts
+    authority. This module does NOT restate 22 schemas: a restated schema drifts
     the first time CloudCLI changes a parameter, and the drift is silent. A tool
     with no `inputSchema` (a placeholder registration — the write tools register
     `{}` until their deps are wired) returns `None`, which means "no parameters
@@ -569,8 +516,7 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     The native tool's OWN parameters, carried UNCHANGED under `arguments`, with
     the Fleet outer fields ADDED: `device_ref` always, `session_ref` for every
     call whose floor is stated over one session (whether it writes or, like
-    `approvals_list`, only reads), `project` for the writes that mint a session
-    in one, and `project_path` for the write that creates a project. `required`, `properties`
+    `approvals_list`, only reads), and `project` for the writes that mint one. `required`, `properties`
     and a nullable type are the native tool's; the outer layer only adds keys and
     never rewrites a native one. When `device_schema` is `None` the outer layer
     still declares `arguments` as an open object, because there is no native
@@ -602,14 +548,6 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
                             "the project floor and named here rather than read "
                             "out of `arguments`."),
         }
-    if native.governance in PROJECT_PATH_ADDRESSED_GOVERNANCE:
-        outer["project_path"] = {
-            "type": "string",
-            "description": ("The absolute directory to create, named here rather "
-                            "than read out of `arguments`: the floor is checked "
-                            "on this string, and it must equal "
-                            "`arguments.projectPath`."),
-        }
     # The `arguments` object carries the SAME closure the runtime validator
     # uses: `additionalProperties` is copied from the recorded schema, not
     # advertised open. A published schema that said `true` while the runtime
@@ -639,8 +577,6 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
         outer_required.append("session_ref")
     if native.governance in PROJECT_ADDRESSED_GOVERNANCE:
         outer_required.append("project")
-    if native.governance in PROJECT_PATH_ADDRESSED_GOVERNANCE:
-        outer_required.append("project_path")
     return {
         "type": "object",
         "properties": {**outer, "arguments": arguments},
@@ -693,24 +629,13 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
                         reason: str | None = None) -> dict[str, Any]:
     """A read-only snapshot of what ONE device actually exposes.
 
-    `observed` is `{tool_name: {"annotations": ..., "schema": ...}}` read from
-    the device's OWN `tools/list`, or `None` when nobody could read it (a device
-    that needs a credential this surface does not hold is reported UNKNOWN, not
-    assumed complete).
-
-    A recorded verb the device does NOT declare is `UNSUPPORTED_BY_DEVICE` — the
-    23 names this build mirrors are not 23 working verbs on every machine, and a
-    count of 23 is not evidence that any of them answer. A recorded verb the
-    device DOES declare is `USABLE`, and `unverified_handlers` names the ones
-    whose usability this build did not confirm by calling them. A verb the
-    device declares that this build did NOT record is reported separately; it is
-    not silently added, because a name that arrived from the wire is not a
-    capability this build decided to offer.
-
-    `declared_not_implemented` is in the payload and is always empty here: it is
-    reserved for a verb a device was MEASURED answering with the named refusal,
-    which `tools/list` cannot establish. The caveat travels in
-    `unverified_handlers` instead.
+    `observed` carries the device's own `tools/list` schema, annotations and
+    `_meta`. Only the typed `cloudcli/handlerBound` registration bit establishes
+    handler binding. `USABLE` means declared wired, not a verified workflow.
+    Older lists without this evidence remain `HANDLER_BINDING_UNKNOWN`; the
+    recorded default-handler table is provenance, not live runtime truth.
+    Missing tools are unsupported; unrecorded names are never added to the
+    mirror. No tool is called to manufacture this read-only snapshot.
     """
     base = {
         "schema": "serveros/fleet-cloudcli-capability.v1",
@@ -724,12 +649,13 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
         return {**base, "state": "UNKNOWN", "observed_count": None,
                 "reason": reason or "the device's tool list was not read",
                 "tools": {}, "unsupported_by_device": sorted(NATIVE_BY_NAME),
-                "declared_not_implemented": [],
+                "declared_not_implemented": [], "handler_binding_unknown": [],
                 "unrecorded_by_build": []}
     observed = {k: v for k, v in observed.items() if isinstance(k, str)}
     tools: dict[str, Any] = {}
     unsupported: list[str] = []
-    unverified_handlers: list[str] = []
+    declared_not_implemented: list[str] = []
+    handler_binding_unknown: list[str] = []
     for native in NATIVE_TOOLS:
         entry = observed.get(native.name)
         if entry is None:
@@ -740,52 +666,29 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
             unsupported.append(native.name)
             continue
         entry = entry if isinstance(entry, dict) else {}
-        # A verb the device DECLARES is answered by this device. That is the
-        # whole of what a `tools/list` capture can establish, and it is what
-        # `USABLE` is allowed to mean.
-        #
-        # `placeholder_default` is NOT a verdict about the device. It is a fact
-        # about the *registry capture* this build was written from: the verb's
-        # default body in CloudCLI 1.39.0 returns `MCP_TOOL_NOT_IMPLEMENTED`
-        # when its dependencies were not injected, so the capture could not tell
-        # a wired handler from an unwired one. A running device DOES inject them.
-        #
-        # This used to force `DECLARED_NOT_IMPLEMENTED` here, and that was a
-        # misreading of the static table as a measurement — it reported eight
-        # verbs as unavailable that answer when called. Measured on
-        # 2026-10-22 against `device:tokyo-shared-dev-01`: overview,
-        # ui_clients_list, ui_visible_context, ui_last_opened_session,
-        # session_search, run_get and quay_snapshot all returned real answers
-        # (including real handler errors such as RUN_NOT_FOUND and
-        # no_quay_config), not the not-implemented refusal.
-        #
-        # So the recorded fact rides ALONGSIDE the state rather than deciding
-        # it: `unverified_handlers` names the verbs whose usability rests on the
-        # capture rather than on a call this surface made.
+        meta = entry.get("_meta")
+        bound = meta.get("cloudcli/handlerBound") if isinstance(meta, dict) else None
+        if bound is True:
+            state = USABLE
+        elif bound is False:
+            state = DECLARED_NOT_IMPLEMENTED
+            declared_not_implemented.append(native.name)
+        else:
+            state = HANDLER_BINDING_UNKNOWN
+            handler_binding_unknown.append(native.name)
         tools[native.name] = {
-            "state": USABLE,
+            "state": state,
             "placeholder_default": native.placeholder_default,
-            "handler_note": (
-                "declared by the device; its default body in the CloudCLI 1.39.0 "
-                "registry capture is the not-implemented refusal, which is a "
-                "property of the capture and not of this device"
-                if native.placeholder_default else None
-            ),
-            # Carried through, not interpreted: the device's own annotation.
+            "binding_evidence": ("LIVE_HANDLER_METADATA" if type(bound) is bool
+                                 else "NOT_OBSERVED"),
+            "workflow_verified": False,
             "annotations": entry.get("annotations"),
             "schema_present": isinstance(entry.get("schema"), dict),
         }
-        if native.placeholder_default:
-            unverified_handlers.append(native.name)
     return {**base, "state": "OBSERVED", "observed_count": len(observed),
             "tools": tools, "unsupported_by_device": sorted(unsupported),
-            # Kept in the payload and always empty: this surface holds no
-            # measurement of a declared verb refusing to run. An empty list here
-            # is not "nothing could be checked" — that is `state: UNOBSERVED`
-            # above — and `unverified_handlers` is where the residual doubt
-            # lives.
-            "declared_not_implemented": [],
-            "unverified_handlers": sorted(unverified_handlers),
+            "declared_not_implemented": sorted(declared_not_implemented),
+            "handler_binding_unknown": sorted(handler_binding_unknown),
             "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME))}
 
 

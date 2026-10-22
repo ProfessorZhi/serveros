@@ -141,8 +141,11 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
+import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,7 +185,7 @@ def lock_path(path: Path | str) -> Path:
 
 
 @contextmanager
-def _exclusive(lock: Path):
+def _exclusive(lock: Path, *, owner_only: bool = False):
     """Hold the write lock for the duration of a mutation.
 
     Why the lock is not taken on the store file, which is the obvious target and
@@ -206,10 +209,24 @@ def _exclusive(lock: Path):
     resource". Here a file left by a killed writer is a file and nothing more.
     """
     lock.parent.mkdir(parents=True, exist_ok=True)
-    handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    handle = os.open(lock, os.O_CREAT | os.O_RDWR | (os.O_NOFOLLOW if owner_only else 0), 0o600)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if owner_only:
+            _validate_owner_lock(lock, handle)
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise LockUnavailable("owner delivery ledger is busy; no effect was admitted") from None
+                    time.sleep(0.005)
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
         try:
+            if owner_only:
+                _validate_owner_lock(lock, handle)
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -405,6 +422,19 @@ RECEIPT_STATUSES = ("STARTED", "EXITED", "REFUSED", "TIMED_OUT", "OUTPUT_LIMIT",
 
 class StoreError(RuntimeError):
     pass
+
+
+def _validate_owner_lock(path: Path, handle=None):
+    observed = path.lstat()
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+            or observed.st_mode & 0o022 or observed.st_nlink != 1):
+        raise StoreError("the owner ledger lock must be an unshared owner file")
+    if handle is not None:
+        opened = os.fstat(handle)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid()
+                or opened.st_mode & 0o022 or opened.st_nlink != 1
+                or (opened.st_ino, opened.st_dev) != (observed.st_ino, observed.st_dev)):
+            raise StoreError("the owner ledger lock changed while it was opened")
 
 
 class AttemptRefused(StoreError):
@@ -906,9 +936,12 @@ class AgentControlStore:
     why it is here rather than in a store of its own.
     """
 
-    def __init__(self, path: Path | str, *, now=None) -> None:
+    def __init__(self, path: Path | str, *, now=None, require_existing: bool = False) -> None:
         self.path = Path(path)
         self._now = now
+        if type(require_existing) is not bool:
+            raise StoreError("require_existing must be a boolean")
+        self.require_existing = require_existing
         # Whether THIS instance has written the store. It is what separates a
         # file that was never there — an ordinary node where nothing has been
         # recorded yet — from a file that was there and is gone. See `_load`.
@@ -926,8 +959,9 @@ class AgentControlStore:
     # -- loading -----------------------------------------------------------
 
     def _load(self) -> dict:
+        strict_data = self._existing_owner_document() if self.require_existing else None
         if not self.path.exists():
-            if self._wrote:
+            if self._wrote or self.require_existing:
                 # An absent file is not read as an empty store once this process
                 # has put something in it. The two are the same bytes on disk and
                 # opposite answers: "nothing has been recorded here" versus "what
@@ -946,7 +980,7 @@ class AgentControlStore:
                     "admissions": {}, "checkpoints": {},
                     "dispatch_attempts": {}, "grant_epoch": 0}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = strict_data if strict_data is not None else json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             # Refused rather than replaced with an empty store. An unreadable
             # control-plane store means every approval that existed is no
@@ -977,6 +1011,43 @@ class AgentControlStore:
         data["schema"] = SCHEMA
         return data
 
+    def _existing_owner_document(self) -> dict:
+        """Keep a configured owner anchor existing and attributable on every IO.
+
+        The owner normally atomically replaces the file; no inode is pinned.
+        This mode never bootstraps an empty register after disappearance.
+        """
+        if not self.path.is_absolute():
+            raise StoreError("the existing owner store requires an absolute anchor")
+        try:
+            if self.lock_path.exists() or self.lock_path.is_symlink():
+                _validate_owner_lock(self.lock_path)
+            for ancestor in reversed(self.path.parents):
+                observed = ancestor.lstat()
+                if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+                    raise StoreError("owner store ancestors must be real directories")
+                if observed.st_uid not in (0, os.geteuid()):
+                    raise StoreError("owner store ancestor belongs to another account")
+            observed = self.path.lstat()
+            if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+                    or observed.st_mode & 0o022 or observed.st_nlink != 1):
+                raise StoreError("owner store must be an existing, unshared owner file")
+            handle = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(handle, encoding="utf-8") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_ino, opened.st_dev) != (observed.st_ino, observed.st_dev):
+                    raise StoreError("owner anchor changed while it was opened")
+                data = json.load(stream)
+        except (OSError, ValueError) as exc:
+            raise StoreError("the configured existing owner store is unavailable or invalid") from exc
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+            raise StoreError("the configured owner anchor is not an Agent Control store")
+        for collection in ("contexts", "approvals", "bindings", "selections", "grants",
+                           "admissions", "checkpoints", "dispatch_attempts"):
+            if collection in data and not isinstance(data[collection], dict):
+                raise StoreError("the owner store contains an invalid collection")
+        return data
+
     def _read(self) -> dict:
         """The document as it is on disk now, which is what every reader gets.
 
@@ -988,8 +1059,10 @@ class AgentControlStore:
         one `json.loads`; there is no cache here to invalidate, and so none to
         be wrong.
         """
-        self._data = self._load()
-        return self._data
+        # A read must not replace a mutation's in-memory snapshot while that
+        # mutation is paused before flush. The file lock serializes writers,
+        # not readers sharing this Python instance.
+        return self._load()
 
     @contextmanager
     def _mutation(self):
@@ -1005,7 +1078,9 @@ class AgentControlStore:
         a refusal reached after the mutation started must not leave the store
         locked for the rest of the process's life.
         """
-        with _exclusive(self.lock_path):
+        if self.require_existing:
+            self._existing_owner_document()
+        with _exclusive(self.lock_path, owner_only=self.require_existing):
             self._data = self._load()
             self._writing = True
             try:
@@ -1028,6 +1103,8 @@ class AgentControlStore:
                 "the write lock and re-reads first (`_mutation`), because a "
                 "write that skips either one drops whatever another writer "
                 "recorded in between")
+        if self.require_existing:
+            self._existing_owner_document()
         _atomic_write(self.path, self._data)
         self._wrote = True
 
@@ -1149,6 +1226,95 @@ class AgentControlStore:
     # its owner and because a second attempt store is the "new-lease-system"
     # shape `integration/components.yaml` refuses by name.
 
+    def claim_dispatch_attempt(self, intent: dict, *, actor: str) -> dict:
+        """Atomically latch one Fleet delivery before IO, in the existing collection.
+
+        The private marker correlates the claimant's later ACK. It is not an
+        execution grant. No generic UNKNOWN transition is relaxed.
+        """
+        fields = {"key", "action", "device_ref", "verb", "intent_digest",
+                  "principal", "runtime", "session_ref", "expected_project_path"}
+        required = fields - {"session_ref", "expected_project_path"}
+        if (not isinstance(intent, dict) or set(intent) - fields
+                or not required.issubset(intent)
+                or any(not isinstance(intent[k], str) or not intent[k].strip()
+                       for k in required)):
+            raise StoreError("invalid delivery claim")
+        if not isinstance(actor, str) or not actor.strip() or intent["principal"] != actor:
+            raise AttemptRefused("UNTRUSTED_ACTOR", "claim principal differs from its actor")
+        if (not re.fullmatch(r"[a-f0-9]{64}", intent["intent_digest"])
+                or len(intent["key"]) > 256):
+            raise StoreError("invalid delivery claim identity")
+        project = intent["verb"] == "project.create"
+        expected = intent.get("expected_project_path")
+        if (project and (not isinstance(expected, str) or not expected.strip()
+                         or len(expected) > 4096 or "session_ref" in intent)
+                or not project and expected is not None):
+            raise StoreError("invalid project delivery target")
+        kernel = _dispatch_attempts()
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            existing = section.get(intent["key"])
+            if existing is not None:
+                if existing.get("principal") != actor:
+                    raise AttemptRefused("UNTRUSTED_ACTOR", "attempt belongs to another actor")
+                public = {k: v for k, v in existing.items() if k != "_dispatch_claim"}
+                return {"claimed": False, "record": json.loads(json.dumps(public))}
+            marker = uuid.uuid4().hex
+            record = kernel.attempt_record(
+                **{k: v for k, v in intent.items() if k != "expected_project_path"},
+                phase=kernel.EFFECT_UNKNOWN, at=datetime.now(timezone.utc).isoformat())
+            if project:
+                record["expected_project_path"] = expected
+            record["_dispatch_claim"] = marker
+            section[intent["key"]] = record
+            self._flush()
+            return {"claimed": True, "claim_id": marker,
+                    "record": {k: v for k, v in record.items() if k != "_dispatch_claim"}}
+
+    def complete_dispatch_claim(self, key, *, digest, claim_id, actor, receipt) -> dict:
+        """Record only the original invocation's ACK; unknown retries cannot reopen it."""
+        if (not isinstance(receipt, dict)
+                or receipt.get("accepted") is not True
+                or len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > 65536):
+            raise StoreError("invalid closed delivery receipt")
+        for name in ("run_id", "queued_message_uuid"):
+            value = receipt.get(name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise StoreError("invalid receipt identifier")
+        with self._mutation():
+            section = self._data.setdefault("dispatch_attempts", {})
+            record = section.get(str(key))
+            if (not record or record.get("principal") != actor
+                    or record.get("intent_digest") != digest
+                    or not claim_id or record.get("_dispatch_claim") != claim_id
+                    or record.get("phase") != "EFFECT_UNKNOWN"):
+                raise AttemptRefused("INVALID_CONTEXT", "not the original unresolved delivery claim")
+            if record["verb"] == "project.create":
+                if (set(receipt) != {"project_id", "project_path", "accepted"}
+                        or not isinstance(receipt["project_id"], str)
+                        or not receipt["project_id"].strip()
+                        or receipt["project_path"] != record.get("expected_project_path")):
+                    raise StoreError("invalid or misbound project receipt")
+            else:
+                if (set(receipt) - {"session_ref", "run_id", "queued_message_uuid", "accepted"}
+                        or not isinstance(receipt.get("session_ref"), str)):
+                    raise StoreError("invalid session receipt")
+                parts = receipt["session_ref"].split("|")
+                if (len(parts) != 3 or not parts[2]
+                        or parts[:2] != [record["device_ref"], record["runtime"]]
+                        or (record.get("session_ref")
+                            and record["session_ref"] != receipt["session_ref"])):
+                    raise StoreError("receipt addresses a different target")
+                if (record["verb"] == "session.send" and not receipt.get("run_id")
+                        and not receipt.get("queued_message_uuid")):
+                    raise StoreError("send acknowledgement has no execution reference")
+            updated = {k: v for k, v in record.items() if k != "_dispatch_claim"}
+            updated.update(phase="ACCEPTED", result=dict(receipt))
+            section[str(key)] = updated
+            self._flush()
+            return json.loads(json.dumps(updated))
+
     def put_dispatch_attempt(self, record: dict, *, context_ref=None,
                              actor=None) -> dict:
         """Record one dispatch attempt, durably, keyed by its idempotency key.
@@ -1246,6 +1412,7 @@ class AgentControlStore:
                                           kernel.SETTLE_NOT_APPLIED):
                 return verdict
             updated = dict(recorded)
+            updated.pop("_dispatch_claim", None)
             updated["phase"] = verdict["phase"]
             updated["reconciled_by"] = str((reconciler or {}).get("principal") or "")
             if now:
@@ -1254,14 +1421,22 @@ class AgentControlStore:
                 updated["result"] = verdict["result"]
             section[str(key)] = updated
             self._flush()
-            return dict(verdict, attempt=updated)
+            return dict(verdict, attempt=self._dispatch_view(updated))
 
     def get_dispatch_attempt(self, key: str) -> dict | None:
         """The recorded attempt for a key, or None if nothing was recorded."""
-        return self._read().get("dispatch_attempts", {}).get(str(key))
+        return self._dispatch_view(self._read().get("dispatch_attempts", {}).get(str(key)))
 
     def dispatch_attempts(self) -> dict:
-        return dict(self._read().get("dispatch_attempts", {}))
+        return {key: self._dispatch_view(value) for key, value in
+                self._read().get("dispatch_attempts", {}).items()}
+
+    @staticmethod
+    def _dispatch_view(record):
+        if record is None:
+            return None
+        return json.loads(json.dumps({k: v for k, v in record.items()
+                                      if k != "_dispatch_claim"}))
 
     def close_binding(self, ref: str, *, at: str, reason: str | None = None,
                       successor: dict | None = None,
