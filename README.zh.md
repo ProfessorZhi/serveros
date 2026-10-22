@@ -1,6 +1,6 @@
 # ServerOS
 
-[English](README.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1 设备/MCP 运行架构](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Agent/Session V2](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[English](README.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1 设备/MCP 运行架构](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Fleet V2 自治组织架构](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) · [Agent/Session V2](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
 **当前 Fleet 完整 V1 的已确认开发范围（2026-10-17）：** [完整三机 Core/Fleet 拓扑](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [一口气多线交付计划](docs/plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [总 Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。东京共享 Linux、Dell A6000 和 Windows 各自授权 OS 用户拥有 C++ Native Core、资源/服务/网络状态和受控自愈；CC 与 Codex 的真实 Runtime 经 CloudCLI/Node 接入，Device Ability 按实际安装、健康及权限分配。Windows 127.0.0.1:16095 → SSH 隧道 → Selkies/Claude Web 及 Tailscale/RDC 属于必须核实的节点服务路径，主要代码开发和测试在东京/Dell，Windows 只做必要原生验证。**先本地 Claude Code Fleet Plugin + 同源 Operator Skills 完整 E2E，最后才注册 ChatGPT 插件**。完整 V1 接受目标已包含真实 Codex，不再把基础 Codex Provider 全部推迟到 V2；当前仍不得声称 Codex 已经验证。Hosted GitHub Actions 配额不足只豁免托管CI，不豁免真实本地测试和设备验收。
 
