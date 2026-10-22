@@ -1,10 +1,12 @@
-# Fleet V1 · Next ingress runbook — independent Tailscale node
+# Fleet V1 · Next ingress 运行手册：独立 Tailscale 节点
 
-Lane E · branch `feat/fleet-v1-independent-ingress-20261015` (from #198 `8186028`)
-Scope: **repository source, tests and this sheet.** Tokyo host operations are
-performed by the Tokyo owner under the resource gate, not by this branch.
-
----
+> **这篇回答什么：** 给 Fleet Next 起一个独立 Tailscale 节点时，从源码就位到公网 MCP 可用要经过哪 8 级阶梯；每一级要求什么证据、后端该不该在跑；以及怎么只回滚 Next 而不碰 V1。
+>
+> **状态：** Lane E 运行手册（分支 `feat/fleet-v1-independent-ingress-20261015`，源自 #198 `8186028`）。本分支的范围是**仓库源码、测试与本手册**；东京主机上的操作由 Tokyo owner 在资源闸门下执行，不由本分支执行。
+>
+> **怎么读：** §0 说明本手册不是什么；§1 是阶梯总表与排序理由（先读这一节）；§2 是不碰设备的离线检查；§3 是主机侧逐级操作；§4 是禁令与代码里的强制点；§5 是 mock 与真实结果的区别；§6 是本分支修好的问题；§7 是 V2 边界。
+>
+> **三个容易读错的地方：** ① 阶梯单调且 fail-closed——某一级只有在它下面每一级都有证据时才算到达；② rung 3–4 故意在后端**未启动**时完成，此时 connection refused 或 502 是正确观察，不是失败；③ 阶段不能靠自报 flag 声称——`PUBLIC_MCP_VERIFIED` 从 `public_readback` 推导，schema 里没有 `public_verified` 字段。
 
 ## 0. What this runbook is not
 
