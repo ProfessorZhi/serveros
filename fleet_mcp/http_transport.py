@@ -321,11 +321,18 @@ class HttpSurface:
         secure_cookie = self.oauth.base_url.startswith("https://")
 
         def render(status: int, markup_client, *, form: dict[str, str],
-                   error: str | None = None, granted: list[str] | None = None):
+                   error: str | None = None, granted: list[str] | None = None,
+                   interactive: bool = True):
             return _html(status, consent_page(
                 client=markup_client, params=form, error=error,
                 authorize_path=authorize_path or "/oauth/authorize",
                 granted=granted,
+                # The deployment's ceiling is what the boxes enumerate. Without
+                # this the page can only ever offer what the client asked for,
+                # and an owner who means to hand out all six has no way to say so
+                # on this form.
+                grantable=list(self.oauth.auth.grantable_scopes),
+                interactive=interactive,
                 login_mode="password" if self.human is not None else "pat",
                 login_user=login_user,
                 csrf=self.human.csrf(cookie) if (self.human is not None and login_user) else None,
@@ -343,8 +350,13 @@ class HttpSurface:
             try:
                 client = self.oauth.validate_authorize(params)
             except OAuthError as exc:
+                # Nothing was validated, so there is no form that could succeed:
+                # render the error alone. A bare `/oauth/authorize` is the common
+                # way to land here, and a page with greyed-out scope boxes reads
+                # to an operator as "permissions are off" rather than "this URL
+                # carries no authorization request".
                 return render(exc.status, _placeholder_client(params), form=params,
-                              error=f"{exc.error}: {exc.description}")
+                              error=f"{exc.error}: {exc.description}", interactive=False)
             return render(200, client, form=params)
 
         if method != "POST":

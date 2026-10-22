@@ -800,9 +800,9 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(hidden.count("requested_scope"), 1)
         self.assertEqual(
             re.findall(r'name="scope" value="([^"]+)"', markup),
-            ["fleet:read", "fleet:send", "fleet:control", "fleet:create",
-             "fleet:approve", "fleet:navigate"],
-            "the only things named `scope` are the checkboxes",
+            ["fleet:read", "fleet:send"],
+            "the boxes are the deployment's grantable scopes, not the whole "
+            "vocabulary: this harness leaves `grantable_scopes` at its default",
         )
 
     def test_unticking_a_scope_does_not_grant_it(self):
@@ -820,6 +820,29 @@ class OAuthFlow(_HttpHarness):
         location = headers["Location"]
         self.assertNotIn("code=", location)
         self.assertIn("access_denied", location)
+
+    def test_an_operator_may_grant_more_than_the_client_asked_for(self):
+        """The ticks bound the token; the client's request does not cap the owner.
+
+        The consent page offers the deployment's whole grantable set, so a box
+        the client did not request is still grantable on purpose. `approve` used
+        to intersect with the request and silently drop that tick.
+        """
+        form = self._form_as_a_browser_sends_it(
+            ticked=["fleet:read", "fleet:send"], scope="fleet:read")
+        self.assertEqual(form["requested_scope"], "fleet:read")
+        status, _, payload = self._redeem(form)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["scope"], "fleet:read fleet:send")
+
+    def test_a_page_that_is_not_a_request_offers_no_form(self):
+        """A bare `/oauth/authorize` must not look like a permission question."""
+        status, _, body = self.client.request("GET", "/oauth/authorize")
+        self.assertEqual(status, 400)
+        text = body.decode()
+        self.assertIn("unsupported_response_type", text)
+        self.assertNotIn("<form", text)
+        self.assertNotIn('name="owner_token"', text)
 
     # -- revocation: the declared semantics, enforced ----------------------
 

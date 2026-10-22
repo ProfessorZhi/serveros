@@ -55,7 +55,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlencode, urlparse
 
 from .config import AuthBinding
@@ -657,7 +657,9 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
                  login_mode: str = "pat",
                  login_user: str | None = None,
                  csrf: str | None = None,
-                 totp_required: bool = False) -> str:
+                 totp_required: bool = False,
+                 grantable: Sequence[str] | None = None,
+                 interactive: bool = True) -> str:
     """The form the operator completes. Plain HTML, no script, no external refs.
 
     `granted` names the boxes to render ticked. It is None on the first render,
@@ -665,22 +667,38 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
     actual ticks when the form is re-shown after a failed submit — because a
     re-render that silently re-ticked a box the operator had cleared would ask
     for consent to something it had just been told not to do.
+
+    `grantable` is the deployment's ceiling (`auth.grantable_scopes`), and it is
+    what the boxes enumerate. A scope the client did not request is offered
+    unticked rather than disabled: on this surface the binding, not the client,
+    decides what may be handed out, and an operator who wants a client to have
+    every write class should not have to re-register that client to ask for
+    them. The tick is still the grant — nothing is issued that was not ticked.
+
+    `interactive=False` is the page for a request that never reached stage one
+    (no response_type, no client, no PKCE). It shows the error and nothing to
+    fill in: a form under an invalid request is a page that cannot succeed, and
+    rendering one is what makes an operator believe the fault is a permission.
     """
+    offered = tuple(s for s in (grantable if grantable is not None else ALLOWED_SCOPES)
+                    if s in ALLOWED_SCOPES)
     rows = []
-    for scope in ALLOWED_SCOPES:
+    for scope in offered:
         requested = scope in (params.get("scope") or "").split()
         ticked = scope in granted if granted is not None else requested
         checked = "checked" if ticked else ""
-        disabled = "" if requested else "disabled"
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
             "fleet:send": "Send messages to sessions the operator has already authorized",
             "fleet:control": "Stop the run currently in flight in sessions the operator has already authorized",
             "fleet:create": "Create new sessions on devices the operator has authorized for creation",
+            "fleet:approve": "Approve the tool calls the operator has been asked to answer",
+            "fleet:navigate": "Open a session in a connected browser UI",
         }.get(scope, scope)
+        note = "" if requested else ' <span class="muted">(not requested by this client)</span>'
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
-            f'{checked} {disabled}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span></label>'
+            f'{checked}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span>{note}</label>'
         )
     # The requested scope is carried in its own field, `requested_scope`, and
     # never under the name `scope`. That separation is the whole of the fix for
@@ -724,6 +742,14 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             f'registered, <a href="{html.escape(feishu_start_path)}{joiner}'
             f'{html.escape(carry)}">sign in with Feishu</a> instead.</p>'
         )
+    if not interactive:
+        # Nothing here can succeed: the request that names the client, the
+        # redirect and the requested scope failed validation before this page
+        # was built. Offering credentials and boxes would make a malformed
+        # request look like a permissions question — exactly the confusion that
+        # a bare `/oauth/authorize` produces.
+        feishu_html = ""
+
     if login_mode == "password":
         if login_user:
             # The cookie already proved the human. Asking for the password again
@@ -761,6 +787,25 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             'here and never stored, logged or forwarded.</span></p>'
             '<input type="password" id="pat" name="owner_token" autocomplete="off" required>'
         )
+
+    if interactive:
+        form_html = (
+            f'<form method="post" action="{html.escape(authorize_path)}">\n'
+            f' {hidden}\n'
+            f' {"".join(rows)}\n'
+            f' {credentials_html}\n'
+            f' <button type="submit">Approve</button>\n'
+            f'</form>'
+        )
+    else:
+        form_html = (
+            '<p class="muted">This page is reached from the client\'s own sign-in '
+            'flow. A hand-typed <code>/oauth/authorize</code> carries no request: '
+            'the client must send <code>response_type=code</code>, its '
+            '<code>client_id</code>, a PKCE <code>code_challenge</code> and at '
+            'least one scope. Start the sign-in from the client and it will open '
+            'this page with those values.</p>'
+        )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Authorize {html.escape(client.client_name)} · {html.escape(SERVER_NAME)}</title>
@@ -787,12 +832,7 @@ Revoking makes the client's existing access tokens stop working immediately.</p>
  <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
 </dl>
 {feishu_html}
-<form method="post" action="{html.escape(authorize_path)}">
- {hidden}
- {''.join(rows)}
- {credentials_html}
- <button type="submit">Approve</button>
-</form>
+{form_html}
 </body></html>
 """
 
@@ -974,8 +1014,19 @@ class AuthorizationServer:
         if verified_user is None:
             if not self._check_owner(owner_token):
                 raise OAuthError("access_denied", "owner token did not verify", status=401)
-        requested = set((params.get("scope") or "").split())
-        scopes = tuple(sorted(requested & set(granted) & set(self.auth.grantable_scopes)))
+        # The ticks bound the grant, not the client's request. RFC 6749 §3.3
+        # lets an authorization server issue a token whose scope differs from
+        # the one asked for, and here it must: the consent page offers every
+        # scope this deployment can grant, so an operator who ticks `fleet:create`
+        # on a client that asked only for `fleet:read` is making a deliberate
+        # grant, and dropping it silently would be the form lying about what the
+        # tick meant. The binding still bounds it — `grantable_scopes` is what
+        # this deployment will hand out at all.
+        #
+        # A non-browser POST (the test harness, any scripted caller) sends its
+        # scopes in `scope`; http_transport copies them into `granted` when
+        # there is no `requested_scope`, so the same expression covers it.
+        scopes = tuple(sorted(set(granted) & set(self.auth.grantable_scopes)))
         if not scopes:
             raise OAuthError(
                 "access_denied",
