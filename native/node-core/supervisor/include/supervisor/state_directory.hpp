@@ -20,6 +20,14 @@
 // the `openat` fd's `st_dev`/`st_ino`; a mismatch is refused rather than
 // applying the policy to one inode and opening another.
 //
+// A writable intermediate directory may also be admitted below an opened,
+// current-euid-owned private boundary (zero group/other permission bits), with
+// current-euid ownership throughout that private tail. Only paths which actually
+// need this exception retain the complete FD ancestry and captured permissions;
+// before/after I/O they refuse any owner/gid/mode, principal or namespace change.
+// Other state readers retain the existing original-inode semantics below.
+// Leases explicitly retain the complete namespace proof even on ordinary paths.
+//
 // The write uses openat(dirfd, ...) for the temp file, renameat(dirfd, ...) for
 // the replace, and fsync(dirfd). No path string is the write authority. A
 // post-write stability check compares the path's inode to the opened fd and
@@ -27,6 +35,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace nodecore::supervisor {
@@ -51,7 +60,9 @@ inline constexpr const char* kStateParentGroupWritable = "STATE_PARENT_GROUP_WRI
 inline constexpr const char* kStateAncestorSymlink = "STATE_ANCESTOR_SYMLINK";
 inline constexpr const char* kStateAncestorNotADirectory = "STATE_ANCESTOR_NOT_A_DIRECTORY";
 inline constexpr const char* kStateAncestorMissing = "STATE_ANCESTOR_MISSING";
-//: A group-writable ancestor WITHOUT the sticky bit: any member of the group
+inline constexpr const char* kStateAncestorWrongOwner = "STATE_ANCESTOR_WRONG_OWNER";
+//: A group-writable ancestor outside a private enclosure WITHOUT the sticky bit:
+//: any member of the group
 //: can rename the entry that leads to the state root.
 inline constexpr const char* kStateAncestorGroupWritable = "STATE_ANCESTOR_GROUP_WRITABLE";
 //: A world-writable ancestor WITHOUT the sticky bit: any account can rename the
@@ -75,11 +86,12 @@ struct StatePathVerdict {
 //:
 //: `open` walks from `/` component by component with
 //: `openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`,
-//: `fstat`s every opened inode, and keeps only the immediate parent. The file is
-//: then addressed by `basename` relative to that fd, never by the full path.
+//: `fstat`s every opened inode, and keeps the immediate parent. Paths using the
+//: private-writable exception also retain their complete ancestry. The file is
+//: addressed by `basename` relative to its parent fd, never by the full path.
 class StateDirectory {
 public:
-    StateDirectory() = default;
+    StateDirectory();
     ~StateDirectory();
     StateDirectory(StateDirectory&& other) noexcept;
     StateDirectory& operator=(StateDirectory&& other) noexcept;
@@ -98,7 +110,13 @@ public:
     //: verdict. On success the fd is kept for `write_atomically`.
     bool open(const std::string& path, StatePathVerdict& verdict,
               const OpenObservationHook& after_lookup = {},
-              const std::function<void()>& after_file_lookup = {});
+              const std::function<void()>& after_file_lookup = {},
+              bool retain_namespace = false);
+
+    // Leases need the current namespace, even on otherwise ordinary paths:
+    // an alias to the same inode must not establish a second writer claim.
+    // Ordinary state readers retain their existing anchored-inode semantics.
+    bool namespace_current(std::string& error) const;
 
     bool valid() const { return dirfd_ >= 0; }
     int fd() const { return dirfd_; }
@@ -119,11 +137,13 @@ public:
     bool write_atomically(const std::string& text, std::string& error) const;
 
 private:
+    struct Ancestry;
     void close();
 
     int dirfd_ = -1;
     std::string basename_;
     std::string parent_path_;
+    std::unique_ptr<Ancestry> ancestry_;
 };
 
 //: Whether `path` is a state file this account can durably own, implemented

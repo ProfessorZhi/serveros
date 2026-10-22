@@ -640,13 +640,21 @@ class BuildTests(unittest.TestCase):
 
     def test_output_destination_is_mandatory(self):
         """The artifact has exactly one home; no repo-local default payload."""
+        agents = ROOT / ".agents"
+        def snapshot():
+            return {str(p.relative_to(ROOT)): (p.lstat().st_mode, p.lstat().st_size,
+                                               p.lstat().st_mtime_ns)
+                    for p in agents.rglob("*")} if agents.exists() else None
+        before = snapshot()
         result = run_build([
             "--check",
             "--ability-repo", str(self.repo), "--ability-rev", self.rev,
         ])
         self.assertEqual(result.returncode, 2)
         self.assertIn("--output", result.stderr)
-        self.assertFalse((ROOT / ".agents").exists())
+        # Review metadata may already exist here. Missing --output must leave
+        # it untouched rather than requiring all unrelated source metadata absent.
+        self.assertEqual(snapshot(), before)
         self.assertFalse((ROOT / "plugin/build").exists())
 
     def test_bundle_declares_expected_schema_and_sources(self):

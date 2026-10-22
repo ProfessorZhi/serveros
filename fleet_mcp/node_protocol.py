@@ -80,6 +80,7 @@ ROUTES = (
     "GET /v1/self",
     "GET /v1/sessions",
     "POST /v1/sessions",
+    "POST /v1/projects",
     "GET /v1/sessions/{id}",
     "POST /v1/sessions/{id}/read",
     "POST /v1/sessions/{id}/send",

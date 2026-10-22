@@ -95,7 +95,8 @@ class FakeDevice:
 
     def send(self, key, message, *, idempotency_key=None) -> dict:
         self.calls.append(("send", key.ref, message))
-        return {"ok": True, "served_by": self.runtime}
+        return {"ok": True, "served_by": self.runtime,
+                "runId": f"{self.runtime}-fixture-run-{len(self.calls)}"}
 
     def interrupt(self, key) -> dict:
         self.calls.append(("interrupt", key.ref))

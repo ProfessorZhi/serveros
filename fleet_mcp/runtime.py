@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from .config import FleetConfig, load_config
-from .errors import INTERNAL, FleetRefusal, refuse
+from .errors import INTERNAL, DISPATCH_STATE_UNAVAILABLE, FleetRefusal, refuse
 from .fleet import FleetService, Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
 from .http_transport import HttpSurface, build_oauth, local_base_url, serve
 from .local_roots import binding_root, state_root
@@ -30,9 +30,10 @@ from .oauth import TokenStore, store_root_for
 from .server import SUPPORTED_PROTOCOL_VERSIONS, McpServer, dumps, loads
 from .tools import ToolContext
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION
+from .scopes import ALLOWED_SCOPES
 
 
-def owner_principal() -> Principal:
+def owner_principal(config: FleetConfig | None = None) -> Principal:
     """The principal for a channel that is already inside the trust boundary.
 
     All three scopes, including `fleet:create` — and that is not a loosening.
@@ -50,11 +51,16 @@ def owner_principal() -> Principal:
     authority and the scope merely stops the call before the binding is read.
     """
     return Principal(name="local-owner",
-                     scopes=frozenset((SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
+                     scopes=frozenset(ALLOWED_SCOPES if config is not None
+                                      and config.policy.owner_max.get("local-owner")
+                                      else (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
                      credential_kind="pat")
 
 
 def build_service(config: FleetConfig) -> FleetService:
+    if config.policy.owner_max:
+        raise refuse(DISPATCH_STATE_UNAVAILABLE,
+                     "owner-max uses bin/serveros-fleet-owned and the existing ServerOS ledger")
     return FleetService(config)
 
 
@@ -130,7 +136,7 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
     have to restart the server to recover.
     """
     service = service or build_service(config)
-    context = lambda: ToolContext(service=service, principal=owner_principal())  # noqa: E731
+    context = lambda: ToolContext(service=service, principal=owner_principal(config))  # noqa: E731
     mcp = McpServer(context)
     out = sys.stdout
     for line in sys.stdin:
@@ -203,7 +209,7 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, service_factory=build_service) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = "stdio"
     config_path: str | None = None
@@ -259,9 +265,14 @@ def main(argv: list[str] | None = None) -> int:
         return clients_command(config, revoke=revoke_client, as_json=as_json)
 
     sys.stderr.write(f"{SERVER_NAME} {SERVER_VERSION}: binding from {config.source}\n")
-    if mode == "http":
-        return run_http(config)
-    return run_stdio(config)
+    try:
+        service = service_factory(config)
+        if mode == "http":
+            return run_http(config, service=service)
+        return run_stdio(config, service=service)
+    except FleetRefusal as exc:
+        sys.stderr.write(f"{SERVER_NAME}: {exc.code}: {exc.detail}\n")
+        return 3
 
 
 _HELP = f"""\

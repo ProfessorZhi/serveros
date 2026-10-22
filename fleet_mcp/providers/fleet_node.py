@@ -268,6 +268,13 @@ class FleetNodeProvider(DeviceProvider):
         """
         return NodeCoreLiteSource(self)
 
+    def create_project(self, *, root: str, name: str, project_path: str,
+                       display_name: str | None = None):
+        body = {"root": root, "name": name, "expected_project_path": project_path}
+        if display_name is not None:
+            body["display_name"] = display_name
+        return self._request("POST", "/v1/projects", body)
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE mirrored native tool on this node, over the signed route.
@@ -385,13 +392,19 @@ class FleetNodeProvider(DeviceProvider):
             query["state"] = state
         path = "/v1/sessions?" + urllib.parse.urlencode(query)
         payload = self._request("GET", path)
-        return [summary_from_dict(row) for row in (payload.get("sessions") or []) if isinstance(row, dict)]
+        from ..session_detail import validate_binding_target
+        summaries = [summary_from_dict(row) for row in (payload.get("sessions") or []) if isinstance(row, dict)]
+        for summary in summaries:
+            validate_binding_target(summary.key, self.binding, observation=True)
+        return summaries
 
     def get_session(self, key: SessionKey) -> dict[str, Any]:
+        from ..session_detail import normalize_detail, validate_binding_target
+        validate_binding_target(key, self.binding)
         payload = self._request("GET", f"/v1/sessions/{urllib.parse.quote(key.native_session_id)}")
         if not payload:
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
-        return payload
+        return normalize_detail(key, payload, self.binding, repair_legacy_claude=True)
 
     def read_session(
         self,

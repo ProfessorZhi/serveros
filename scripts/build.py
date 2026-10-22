@@ -139,7 +139,7 @@ def _git(repo: Path, *args: str) -> bytes:
 # `release.py`'s `REQUIRED_MEMBERS` is what makes a release carry it.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
                 "abilities", "memory", "fleet", "intake", "documents",
-                "workengine")
+                "workengine", "fleet_mcp")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:

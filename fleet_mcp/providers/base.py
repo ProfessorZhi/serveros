@@ -206,6 +206,11 @@ class DeviceProvider(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def create_project(self, *, root: str, name: str, project_path: str,
+                       display_name: str | None = None) -> dict[str, Any]:
+        """Create below an owner-configured root, with a fresh-directory ACK."""
+        ...
+
     def create(
         self,
         *,

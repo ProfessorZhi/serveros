@@ -202,11 +202,11 @@ class TheProtocolSurface(unittest.TestCase):
         self.assertEqual(response["result"]["serverInfo"]["name"],
                          "serveros-fleet-mcp")
 
-    def test_discovery_is_all_33_tools_and_is_not_entitlement(self) -> None:
+    def test_discovery_is_all_34_tools_and_is_not_entitlement(self) -> None:
         tools = self.rpc("tools/list")["result"]["tools"]
         names = [tool["name"] for tool in tools]
-        self.assertEqual(len(names), 33)
-        self.assertEqual(len(set(names)), 33)
+        self.assertEqual(len(names), 34)
+        self.assertEqual(len(set(names)), 34)
         self.assertIn("fleet_list_devices", names)
         self.assertIn("fleet_send_to_session", names)
         self.assertIn("fleet_cloudcli_native_capability", names)

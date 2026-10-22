@@ -101,6 +101,10 @@ instead of sending a second message.
 A distinct code rather than a silent success, because a caller must be able to
 tell "I sent it once and this is that run" from "I just sent it now"."""
 
+IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+DISPATCH_OUTCOME_UNKNOWN = "DISPATCH_OUTCOME_UNKNOWN"
+DISPATCH_STATE_UNAVAILABLE = "DISPATCH_STATE_UNAVAILABLE"
+
 # -- surface ----------------------------------------------------------------
 METHOD_NOT_FOUND = "METHOD_NOT_FOUND"
 """The JSON-RPC method is not one this dispatcher implements.

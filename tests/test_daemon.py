@@ -3862,3 +3862,36 @@ def test_digest_account_cli_partial_failure_stops_and_retries_without_consuming_
     assert result["owed"] == document["decision"]["pending_keys"]
     assert len(result["unaccounted_immediate"]) == 1
     assert daemon.delivery_cursor().generation() == 0
+
+
+def test_reconcile_revalidates_acquired_lease_at_the_actual_effect_seam(daemon_factory):
+    """A stale acquired descriptor cannot reach the real recording actuator."""
+    clock = FakeClock()
+    runner = FakeRunner()
+    daemon = daemon_factory(
+        an_automatable_resource("down"),
+        containers={"down": {"State": {"Status": "exited"}}},
+        runner=runner, clock=clock, sleep=clock.sleep, enable_reconcile=True,
+    )
+
+    class ReplacedLease:
+        def __init__(self):
+            self.acquisitions = self.revalidations = self.releases = 0
+        def acquire(self):
+            self.acquisitions += 1
+        def revalidate(self):
+            self.revalidations += 1
+            raise daemon_mod.native_core_facts_mod.FactsRefused(
+                daemon_mod.native_core_facts_mod.LEASE_UNSAFE, "synthetic replaced lease")
+        def release(self):
+            self.releases += 1
+
+    lease = ReplacedLease()
+    daemon._native_lease = lease
+    report = daemon.tick()
+    decision = next(d for d in report["decisions"] if d["resource"] == "down")
+    assert runner.commands == []
+    assert decision["performed"] is False
+    assert decision["blocked_by"] == daemon_mod.native_core_facts_mod.LEASE_UNSAFE
+    assert (lease.acquisitions, lease.revalidations, lease.releases) == (1, 1, 1)
+    assert "reprobe" not in decision

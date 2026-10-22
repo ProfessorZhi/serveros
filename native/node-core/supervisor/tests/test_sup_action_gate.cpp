@@ -21,6 +21,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.hpp"
@@ -34,6 +35,20 @@ std::string make_temp_dir() {
     char pattern[] = "/tmp/serveros-sup-gate-XXXXXX";
     char* made = ::mkdtemp(pattern);
     return made == nullptr ? std::string() : std::string(made);
+}
+
+std::string make_private_fixture() {
+    // CI defaults to its isolated /tmp. Shared hosts must explicitly select an
+    // admitted artifact/toolchain root and can run only this fixture via argv.
+    const char* configured = std::getenv("SERVEROS_STATE_TEST_ROOT");
+    const std::string root = configured ? configured : "/tmp";
+    if (root.empty() || root.front() != '/' || root.find("/../") != std::string::npos)
+        return {};
+    const std::string name = root + "/serveros-private-ancestor-XXXXXX";
+    std::vector<char> pattern(name.begin(), name.end());
+    pattern.push_back('\0');
+    char* made = ::mkdtemp(pattern.data());
+    return made ? made : std::string();
 }
 
 bool write_file(const std::string& path, const std::string& text, mode_t mode) {
@@ -215,6 +230,9 @@ void test_the_state_path_must_be_safe_to_write() {
     // A world-writable ancestor WITHOUT the sticky bit lets any account rename
     // the entry. `/tmp` (1777) is allowed because only the owner can rename an
     // entry in a sticky directory; a bare 0777 directory is not.
+    // These are public-prefix negatives. A 0700 mkdtemp root would establish a
+    // legitimate private boundary around both writable intermediate fixtures.
+    CHECK(::chmod(dir.c_str(), 0755) == 0);
     CHECK(::mkdir((dir + "/open").c_str(), 0700) == 0);
     CHECK(::chmod((dir + "/open").c_str(), 0777) == 0);
     CHECK(::mkdir((dir + "/open/sub").c_str(), 0700) == 0);
@@ -246,6 +264,7 @@ void test_the_state_path_must_be_safe_to_write() {
     ::rmdir((dir + "/gsticky/sub").c_str());
     CHECK(::chmod((dir + "/gsticky").c_str(), 0700) == 0);
     ::rmdir((dir + "/gsticky").c_str());
+    CHECK(::chmod(dir.c_str(), 0700) == 0);
 
     // `/tmp` itself is 1777 (world-writable + sticky, root-owned) and is the
     // ancestor of every temp root in this file. The positive checks prove the
@@ -259,6 +278,117 @@ void test_the_state_path_must_be_safe_to_write() {
     ::unlink((dir + "/state.json").c_str());
     ::rmdir((dir + "/sub").c_str());
     ::rmdir(dir.c_str());
+}
+
+void test_private_ancestors_are_fd_verified_and_revalidated() {
+    const std::string root = make_private_fixture();
+    CHECK(!root.empty());
+    if (root.empty())
+        return;
+    CHECK(::chmod(root.c_str(), 0755) == 0);
+    const std::string shared = root + "/public-shared";
+    CHECK(::mkdir(shared.c_str(), 0700) == 0);
+    CHECK(::chmod(shared.c_str(), 0775) == 0);
+    CHECK(::mkdir((shared + "/parent").c_str(), 0700) == 0);
+    CHECK_EQ(check_state_path(shared + "/parent/budget.json").code,
+             std::string(kStateAncestorGroupWritable));
+    CHECK(::chmod(shared.c_str(), 0777) == 0);
+    CHECK_EQ(check_state_path(shared + "/parent/budget.json").code,
+             std::string(kStateAncestorWorldWritable));
+    CHECK(::chmod(shared.c_str(), 01777) == 0);
+    CHECK(check_state_path(shared + "/parent/budget.json").ok);
+
+    const std::string hidden = root + "/private";
+    const std::string middle = hidden + "/serveros";
+    const std::string parent = middle + "/native";
+    const std::string budget = parent + "/budget.json";
+    CHECK(::mkdir(hidden.c_str(), 0700) == 0);
+    CHECK(::mkdir(middle.c_str(), 0700) == 0);
+    CHECK(::chmod(middle.c_str(), 0775) == 0);
+    CHECK(::mkdir(parent.c_str(), 0700) == 0);
+
+    // Group search access is already enough to defeat a private boundary.
+    CHECK(::chmod(hidden.c_str(), 0710) == 0);
+    CHECK_EQ(check_state_path(budget).code, std::string(kStateAncestorGroupWritable));
+    CHECK(::chmod(hidden.c_str(), 0700) == 0);
+    bool weakened_during_open = false;
+    StateDirectory opening;
+    StatePathVerdict opening_verdict;
+    CHECK(!opening.open(budget, opening_verdict, [&](const std::string& component) {
+        if (component == "serveros") {
+            weakened_during_open = true;
+            CHECK(::chmod(hidden.c_str(), 0755) == 0);
+        }
+    }));
+    CHECK(weakened_during_open);
+    CHECK(!opening.valid());
+    CHECK(::chmod(hidden.c_str(), 0700) == 0);
+
+    StateDirectory directory;
+    StatePathVerdict verdict;
+    const bool admitted = directory.open(budget, verdict);
+    CHECK(admitted);  // RED on 30f6fd7: 0700/private/0775/nonshared parent.
+    if (admitted) {
+        std::string error, text;
+        bool present = false;
+        CHECK(directory.write_atomically("{\"attempts\":1}", error));
+        CHECK(directory.read(text, present, error));
+        CHECK(present);
+        CHECK_EQ(text, std::string("{\"attempts\":1}"));
+
+        // Privacy is derived again from fstat; the old open/flag is insufficient.
+        CHECK(::chmod(hidden.c_str(), 0755) == 0);
+        CHECK(!directory.read(text, present, error));
+        CHECK(!directory.write_atomically("weakened", error));
+        CHECK(::chmod(hidden.c_str(), 0700) == 0);
+        CHECK(directory.read(text, present, error));
+        CHECK_EQ(text, std::string("{\"attempts\":1}"));
+
+        // Even below a private boundary the immediate parent stays nonshared.
+        CHECK(::chmod(parent.c_str(), 0775) == 0);
+        CHECK(!directory.read(text, present, error));
+        CHECK(!directory.write_atomically("shared-parent", error));
+        CHECK_EQ(check_state_path(budget).code, std::string(kStateParentGroupWritable));
+        CHECK(::chmod(parent.c_str(), 0700) == 0);
+
+        // A real directory replacement after open is not a new authority.
+        const std::string moved = root + "/original-private";
+        CHECK(::rename(hidden.c_str(), moved.c_str()) == 0);
+        CHECK(::mkdir(hidden.c_str(), 0700) == 0);
+        CHECK(!directory.read(text, present, error));
+        CHECK(!directory.write_atomically("replacement", error));
+        bool original_ok = false;
+        CHECK_EQ(read_file(moved + "/serveros/native/budget.json", original_ok),
+                 std::string("{\"attempts\":1}"));
+        CHECK(original_ok);
+        CHECK(::rmdir(hidden.c_str()) == 0);
+        CHECK(::rename(moved.c_str(), hidden.c_str()) == 0);
+
+        // The anchored descriptors survive a move, with exactly one owner.
+        StateDirectory transferred(std::move(directory));
+        CHECK(!directory.valid());
+        CHECK(transferred.read(text, present, error));
+        CHECK_EQ(text, std::string("{\"attempts\":1}"));
+        StateDirectory assigned;
+        assigned = std::move(transferred);
+        CHECK(!transferred.valid());
+        CHECK(assigned.write_atomically("{\"attempts\":2}", error));
+    }
+
+    CHECK(::symlink(middle.c_str(), (hidden + "/alias").c_str()) == 0);
+    CHECK_EQ(check_state_path(hidden + "/alias/native/budget.json").code,
+             std::string(kStateAncestorSymlink));
+    if (::geteuid() != 0) {
+        // Real foreign-owned immediate parent, observed without writing to it.
+        struct stat foreign {};
+        CHECK(::stat("/", &foreign) == 0);
+        CHECK(foreign.st_uid != ::geteuid());
+        CHECK_EQ(check_state_path("/serveros-foreign-budget.json").code,
+                 std::string(kStateParentWrongOwner));
+    }
+
+    // Fixtures are freshly created and owned by this test. Leave them under the
+    // isolated runner for evidence rather than recursively deleting paths.
 }
 
 void test_an_in_between_inode_replacement_is_refused() {
@@ -308,7 +438,10 @@ void test_a_final_file_lookup_switch_is_refused() {
     const auto after_file_lookup = [&] {
         if (!swapped) {
             swapped = true;
-            ::unlink((root + "/state/state.json").c_str());
+            // Keep the old inode alive. unlink+recreate can reuse its number
+            // immediately on ext4, which would not exercise an inode switch.
+            CHECK(::rename((root + "/state/state.json").c_str(),
+                           (root + "/state/previous.json").c_str()) == 0);
             CHECK(write_file(root + "/state/state.json", "{\"different\":true}", 0600));
         }
     };
@@ -320,6 +453,7 @@ void test_a_final_file_lookup_switch_is_refused() {
     CHECK(!directory.valid());
 
     ::unlink((root + "/state/state.json").c_str());
+    ::unlink((root + "/state/previous.json").c_str());
     ::rmdir((root + "/state").c_str());
     ::rmdir(root.c_str());
 }
@@ -356,11 +490,16 @@ void test_the_toy_harness_passes_the_budget() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--private-ancestor-only") {
+        test_private_ancestors_are_fd_verified_and_revalidated();
+        return check::report("test_sup_private_ancestor");
+    }
     test_the_gate_requires_every_acting_fact();
     test_the_state_path_must_be_safe_to_write();
     test_an_in_between_inode_replacement_is_refused();
     test_a_final_file_lookup_switch_is_refused();
     test_the_toy_harness_passes_the_budget();
+    test_private_ancestors_are_fd_verified_and_revalidated();
     return check::report("test_sup_action_gate");
 }

@@ -257,11 +257,18 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
     told from a provider that simply produced nothing, so it says exactly that
     rather than inventing a reason.
     """
+    content = (result or {}).get("content") or []
+    if result.get("isError"):
+        text = " ".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        )
+        if not text:
+            raise refuse(INTERNAL, f"{label} reported an error and said nothing more")
+        raise refuse(INTERNAL, remote_summary(label, error_message=text))
     if isinstance(result, dict) and "structuredContent" in result:
         value = result["structuredContent"]
         if isinstance(value, dict):
             return value
-    content = (result or {}).get("content") or []
     for block in content:
         if isinstance(block, dict) and block.get("type") == "text":
             try:
@@ -270,11 +277,4 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
                 continue
             if isinstance(parsed, dict):
                 return parsed
-    if result.get("isError"):
-        text = " ".join(
-            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-        )
-        if not text:
-            raise refuse(INTERNAL, f"{label} reported an error and said nothing more")
-        raise refuse(INTERNAL, remote_summary(label, error_message=text))
     return {}

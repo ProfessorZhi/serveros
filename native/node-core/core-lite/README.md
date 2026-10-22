@@ -27,7 +27,7 @@ restated.
 
 ## 2. The profile, and what the reader refuses
 
-`profiles/tokyo-node.profile.json` and `profiles/dell-fjd.profile.json` are the
+`profiles/tokyo-vince.profile.json` and `profiles/dell-fjd.profile.json` are the
 V1 declarations. The reader (`src/profile.cpp`) refuses, BY NAME:
 
 | refused | why |

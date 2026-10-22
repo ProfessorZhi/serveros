@@ -1,7 +1,7 @@
 """One place the Fleet MCP surface's own version is written down."""
 
 SERVER_NAME = "serveros-fleet-mcp"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 
 # The revision of the Fleet tool surface. Bumped when a tool's contract changes
 # shape, not when an implementation detail does — a caller caches the tool list
@@ -16,7 +16,9 @@ SERVER_VERSION = "0.1.0"
 # that reads `-4` see the same 33 tools and different result shapes, and a
 # revision that only moved when the count moved would not be telling them that.
 # Every field that existed at `-3` is still there, unchanged.
-TOOL_SURFACE_REVISION = "fleet-mcp-4"
+# `fleet-mcp-5`: explicit fresh project creation, ten authored tools (34 total),
+# owner-max admission and existing-owner delivery durability/readback.
+TOOL_SURFACE_REVISION = "fleet-mcp-5"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

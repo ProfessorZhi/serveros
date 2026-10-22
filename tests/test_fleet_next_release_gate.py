@@ -40,17 +40,16 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
     """Every number here is quoted in at least one document. Change one and the
     prose becomes wrong, which is the thing a test can catch and review cannot."""
 
-    def test_thirty_three_tools_are_served(self):
-        self.assertEqual(len(tools.SERVED_TOOLS), 33)
-        self.assertEqual(len(tools.TOOLS), 9)
+    def test_thirty_four_tools_are_served(self):
+        self.assertEqual(len(tools.SERVED_TOOLS), 34)
+        self.assertEqual(len(tools.TOOLS), 10)
         self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 24)
 
     def test_the_tool_surface_revision_is_the_one_the_contract_declares(self):
         import yaml
 
-        # `fleet-mcp-4`: an OUTPUT shape changed (the optional `core_lite`
-        # block on the two status tools). The tool count did not.
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-4")
+        # V5 retains core-lite output and adds the fresh-project entry.
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-5")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)

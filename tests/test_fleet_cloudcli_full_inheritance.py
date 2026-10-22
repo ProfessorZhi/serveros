@@ -802,11 +802,11 @@ class SurfaceTest(unittest.TestCase):
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
         self.assertEqual(len(mirrored), 22)
-        # nine hand-written + 22 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 33)
+        # ten hand-written + 22 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 34)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
-        self.assertEqual(len(tools_mod.tool_names()), 9)
+        self.assertEqual(len(tools_mod.tool_names()), 10)
 
     def test_mirror_annotations_match_the_manifest(self):
         by_name = {t.name: t for t in tools_mod.NATIVE_MIRROR_TOOLS}
@@ -1463,7 +1463,8 @@ class CapabilitySnapshotTest(unittest.TestCase):
             device_ref=TOKYO, observed={"session_send": {"annotations": {}, "schema": {}}})
         self.assertEqual(snap["state"], "OBSERVED")
         self.assertEqual(snap["observed_count"], 1)
-        self.assertEqual(snap["tools"]["session_send"]["state"], "USABLE")
+        self.assertEqual(snap["tools"]["session_send"]["state"],
+                         cloudcli_native.HANDLER_BINDING_UNKNOWN)
         self.assertEqual(snap["tools"]["overview"]["state"],
                          cloudcli_native.UNSUPPORTED_BY_DEVICE)
         self.assertEqual(len(snap["unsupported_by_device"]), 21)
@@ -1511,17 +1512,10 @@ class CapabilitySnapshotTest(unittest.TestCase):
 
     # -- a declared verb is not a verb that answers -------------------------
 
-    def test_a_declared_placeholder_is_never_usable(self):
-        """Being on the device's `tools/list` is not answering.
-
-        CloudCLI registers all 22 names at stage 4 and leaves the ones whose deps
-        are absent on the named `MCP_TOOL_NOT_IMPLEMENTED` refusal — the installed
-        1.39.0 registers `overview` as `notImplemented('overview', 'AC-247')`. A
-        snapshot calling such a verb `USABLE` would answer "what does this device
-        expose?" with a verb that cannot answer, which is the count-of-22 error
-        reappearing in the one place built to prevent it.
-        """
-        observed = {t.name: {"annotations": {}, "schema": {}}
+    def test_an_explicitly_unbound_placeholder_is_never_usable(self):
+        """An absent handler must be reported from live registration evidence."""
+        observed = {t.name: {"annotations": {}, "schema": {},
+                            "_meta": {"cloudcli/handlerBound": not t.placeholder_default}}
                     for t in cloudcli_native.NATIVE_TOOLS}
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
         placeholders = sorted(t.name for t in cloudcli_native.NATIVE_TOOLS
@@ -1534,10 +1528,10 @@ class CapabilitySnapshotTest(unittest.TestCase):
             self.assertIs(snap["tools"][name]["placeholder_default"], True)
         self.assertEqual(snap["declared_not_implemented"], placeholders)
 
-    def test_usable_is_exactly_the_wired_verbs(self):
-        """`USABLE` is withheld from every placeholder and given to every other
-        declared verb, so a declared count of 22 can never read as 22 answering."""
-        observed = {t.name: {} for t in cloudcli_native.NATIVE_TOOLS}
+    def test_usable_is_exactly_the_live_wired_verbs(self):
+        """Availability is based on current registration, not old defaults."""
+        observed = {t.name: {"_meta": {"cloudcli/handlerBound": not t.placeholder_default}}
+                    for t in cloudcli_native.NATIVE_TOOLS}
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO, observed=observed)
         usable = sorted(n for n, v in snap["tools"].items()
                         if v["state"] == cloudcli_native.USABLE)

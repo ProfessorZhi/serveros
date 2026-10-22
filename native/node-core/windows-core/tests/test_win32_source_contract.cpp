@@ -173,8 +173,8 @@ int main() {
         // compiled is not a guarantee, so the status is a constant that says so —
         // and a later change that wants to claim otherwise has to change this
         // line deliberately.
-        CHECK_EQ(windows_status_ipc_status(), std::string(kIpcStatusUnsupported));
-        CHECK_EQ(windows_status_ipc_reason(), std::string(kIpcReasonUnverified));
+        CHECK_EQ(windows_status_ipc_status(), win32_scm_available() ? std::string("AVAILABLE") : std::string(kIpcStatusUnsupported));
+        CHECK_EQ(windows_status_ipc_reason(), win32_scm_available() ? std::string("LOCAL_PIPE_REQUIRES_PINNED_INSTANCE") : std::string(kIpcReasonUnverified));
     }
 
     // ---------------------------------------------------------------------
