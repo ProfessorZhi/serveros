@@ -1,33 +1,25 @@
 # ServerOS
 
-[中文入口](README.zh.md) · [Canonical architecture](ARCHITECTURE.md) · [Fleet V1 topology and MCP/Skills](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Fleet V2 autonomous organization](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) · [V2 Agent/Session architecture](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [Architecture review](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
+[English](README.en.md) · [完整架构](ARCHITECTURE.md) · [Fleet V1 设备/MCP 运行架构](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [Fleet V2 自治组织架构](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) · [Agent/Session V2](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) · [本轮架构审查](docs/architecture/CONSOLIDATION-REVIEW-20260921.md)
 
-**Fleet complete V1 active delivery target (2026-10-17):** [per-node Fleet architecture](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md), [full multi-line campaign and acceptance](docs/plans/plan-02-complete-fleet-v1-delivery-campaign.md), [campaign #244](https://github.com/ProfessorZhi/serveros/issues/244). One per-authorized-OS-principal C++ Node Core on Tokyo/Dell/Windows, supervised Tailscale/SSH/remote access, actual CC **and Codex** runtimes via CloudCLI, effective local Abilities, unified 34-tool Fleet MCP and a shared-source **local Claude Code Fleet plugin first**. Windows 127.0.0.1:16095 -> SSH forward -> Selkies/Claude Web and RDC have platform-specific acceptance, with development primarily on Tokyo/Dell. ChatGPT plugin installation is a later client rollout. The previous V2-only Codex deferral has been superseded **for full Fleet V1**, but neither a static registry nor this README proves live acceptance. Hosted GitHub Actions quota exhaustion may waive hosted CI only, never local/device tests.
+**当前 Fleet 完整 V1 的已确认开发范围（2026-10-17）：** [完整三机 Core/Fleet 拓扑](docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) · [一口气多线交付计划](docs/plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [总 Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。东京共享 Linux、Dell A6000 和 Windows 各自授权 OS 用户拥有 C++ Native Core、资源/服务/网络状态和受控自愈；CC 与 Codex 的真实 Runtime 经 CloudCLI/Node 接入，Device Ability 按实际安装、健康及权限分配。Windows 127.0.0.1:16095 → SSH 隧道 → Selkies/Claude Web 及 Tailscale/RDC 属于必须核实的节点服务路径，主要代码开发和测试在东京/Dell，Windows 只做必要原生验证。**先本地 Claude Code Fleet Plugin + 同源 Operator Skills 完整 E2E，最后才注册 ChatGPT 插件**。完整 V1 接受目标已包含真实 Codex，不再把基础 Codex Provider 全部推迟到 V2；当前仍不得声称 Codex 已经验证。Hosted GitHub Actions 配额不足只豁免托管CI，不豁免真实本地测试和设备验收。
 
-Current target: [Native Agent Work Environment V2](docs/architecture/NATIVE-WORK-ENVIRONMENT.md).
-Implementation entry: [the current CC plan](docs/plans/plan-01-native-work-environment.md),
-[verified gaps and changes](docs/architecture/IMPLEMENTATION-DELTA-20261007.md), and
-[CC/GPT research exchange](docs/architecture/RESEARCH-EXCHANGE.md).
-The [earlier P0–P12 plan](docs/CC-EXECUTION-PLAN.md) remains a subsystem reference;
-none of these design documents is a deployment receipt.
+实施入口：[唯一P0–P12计划](docs/CC-EXECUTION-PLAN.md) · [2026-09-25现场基线](docs/IMPLEMENTATION-BASELINE-20260925.md) · [交给服务器CC的短提示](docs/CC-IMPLEMENTATION-HANDOFF.md)。计划覆盖实现、获准安装、真实验收、定时启用与目录收口，不代表已执行。
 
-Fleet V1 — the ChatGPT-facing MCP + Skills control surface, and its V1/V2
-boundary: [delivery plan](docs/plans/fleet-v1-delivery-plan.md).
+**ServerOS 是个人用户态 Agent 工作操作系统：增强 Claude Code、Codex，而不是在它们上面再套一个更笨的调度者。**
 
-**A personal user-space Agent Work OS that enhances Claude Code, Codex and their native tools.**
+## 开发快速开始
 
-## Development quickstart
+下面的命令在一个全新 clone、独立 venv 里跑过（Linux，Python 3.12）。ServerOS 是面向一台已授权设备的控制平面：仓库级测试套件会读取这台设备的 profile 和实时 records 树。所以这里跑的是零配置的核心子集，不依赖宿主绑定。
 
-The commands below were run in a fresh clone with an isolated venv (Linux, Python 3.12). ServerOS is a control plane for a specific authorized device: the repository-wide test suite reads that device's profile and live records tree. The command below therefore runs the zero-configuration core subset, which does not depend on the host binding.
-
-### Clone
+### 克隆
 
 ```bash
 git clone https://github.com/ProfessorZhi/serveros.git
 cd serveros
 ```
 
-### Install dependencies
+### 安装依赖
 
 ```bash
 python3.12 -m venv .venv
@@ -35,7 +27,7 @@ python3.12 -m venv .venv
 python -m pip install pytest pytest-xdist pytest-timeout pyyaml cryptography
 ```
 
-### Run tests
+### 跑测试
 
 ```bash
 export TMPDIR=/tmp/serveros-test-tmp
@@ -54,227 +46,247 @@ CUDA_VISIBLE_DEVICES="" nice -n 10 python -m pytest -q -n 8 --timeout=300 \
   tests/test_ability_projection.py
 ```
 
-Measured: `638 passed, 185 subtests passed in 16.07s`, rc=0. The short `TMPDIR` is required: some tests create deep socket/work paths.
+实测：`638 passed, 185 subtests passed in 16.07s`，rc=0。`TMPDIR` 必须短：有些测试会建很深的 socket/work 路径。
 
-The repository-wide suite (`python -m pytest tests -q -n 8 --timeout=300`) additionally needs the real device profile, live records tree, and sibling `ability-management` / ops checkouts. With those roots supplied on this development host it measured `7561 passed, 79 failed, 71 skipped, 4532 subtests passed in 178.48s`; the remaining failures are bound to the live host (uid `1002`, `/data/home/vince`, the Lark CLI, and time-dependent assertions) and are not a clean-host baseline.
+仓库级套件（`python -m pytest tests -q -n 8 --timeout=300`）另外还需要真实设备 profile、实时 records 树，以及同级的 `ability-management` / ops 检出。在这台开发机上把这些根都补齐后实测 `7561 passed, 79 failed, 71 skipped, 4532 subtests passed in 178.48s`；剩余失败绑定在实时宿主上（uid `1002`、`/data/home/vince`、Lark CLI 和依赖时间的断言），不是干净机器的基线。
 
-### Local start
+### 本地启动
 
-No service needs to be started for CLI development. The two entry points are:
+CLI 开发不需要启动任何服务。两个入口是：
 
 ```bash
 bin/serverosctl --help
 python -m workengine --help
 ```
 
-Measured: both rc=0. `bin/serverosctl` is the reference-node control CLI; `python -m workengine` is the v3 work control plane.
+实测：两者 rc=0。`bin/serverosctl` 是参考节点的控制 CLI；`python -m workengine` 是 v3 工作控制平面。
 
-## The daily experience
+## 你每天实际得到什么
 
 ```text
-During the day
-├─ Feishu IM / Doc / Wiki / Minutes / files / Follow arrive incrementally
-├─ routine facts update Understanding / Memory without a meeting
-├─ already-selected Focus work keeps moving under its logical Parent
-├─ workspace/runtime/research/Quay/tests are prepared only when needed
-└─ owned/followed/authorized shared documents are maintained in place
+白天
+├─ 飞书 IM / Doc / Wiki / 妙记 / 文件 / Follow 增量自动进入
+├─ routine facts 自动更新 Understanding / Memory
+├─ 已选 Focus 由原 Parent 持续推进
+├─ 需要时自动准备 worktree / runtime / research / Quay / tests
+└─ OWNED / FOLLOW_MIRROR / 获准共享章节按变化维护，不重复造正文
 
 19:xx
-└─ source catch-up + understanding reconciliation; missing material remains an explicit gap
+└─ source catch-up + understanding reconciliation，缺材料只标 gap
 
 20:00
-└─ CloudCLI shows only what deserves attention:
-   automatic updates / decisions needed / conflicts / understanding gaps
+└─ CloudCLI 只给真正值得你看的：
+   自动更新 / 需要你决定 / 冲突 / 理解缺口
 
-After the user accepts or adjusts 0–2 Focus items
-└─ authorized work may continue that evening without repeated "continue" prompts
+你接受或调整 0–2 个 Focus 后
+└─ 已授权工作可当晚继续，不等第二天、不要求你逐步说“继续”
 
-Next day or a fresh Session
-└─ resume from the current Requirement / checkpoint / worker / effect state
-   without retelling history, duplicating child work or replaying unknown effects
+第二天或新 Session
+└─ 从当前 Requirement / checkpoint / worker / effect 状态继续，
+   不重讲历史、不重复派 child、不重放未知外部效果
 ```
 
-This is not a mandatory workflow. A day may have no new Requirement, no Quay task and no
-report, and Focus may be zero. Research may start with experiments; tests may disprove the
-plan; the useful deliverable may be verification or prose. ServerOS should automate HOW and
-interrupt only for goals, material tradeoffs, protected effects or genuinely irreplaceable
-human input.
+这不是固定流水线。一天可以没有新 Requirement、没有 Quay、没有报告，Focus 也可以为 0；调研可以先实验，测试可以推翻设计，交付物也可以只有验证或报告。系统应自动完成 HOW，只有目标、重要取舍、真正受保护的效果或不可替代的人类输入才打断你。你随时新开 Session，提起某个项目或需求，Agent 应恢复最小有效上下文，而不是要求你重新解释全部历史。
 
-Open a fresh Session, mention the work, and recover the **right environment,
-context, memory, capability and safety boundary** without rereading the whole world.
+## 核心理念
 
-## Architecture at a glance
+**正确的环境、上下文、记忆、能力与权限边界，在需要时出现。**
+
+安装的能力可以很多，当前上下文必须很小。ServerOS 提供目标、已知事实、工作连续性、资源和证据；CC/Codex 决定怎么研究、实验、拆分、使用工具和迭代。
 
 ```text
-Human / CloudCLI / Feishu
+默认：很薄的入口
+说出需求后：相关目标、checkpoint、约束、来源
+真正需要时：记忆详情、Skill 正文、MCP、原始证据
+```
+
+不是每步先找 ServerOS 批准方法，不是每次改文档先跑全量测试，更不是为了注册表完整制造工作。
+
+## 一张图看懂整个架构
+
+```text
+你 / CloudCLI / 飞书
         │
         ▼
-Claude Code / Codex                    native intelligence
+Claude Code / Codex                     ← 主脑：理解、研究、设计、实现
         │
         ▼
-ServerOS Plugin                        thin context / selected Skills / MCP
+ServerOS Plugin                         ← 当前相关 context / Skills / MCP
    ├─ serveros-node-mcp ─────────┐
    └─ serveros-agent-mcp ────────┤
                                  ▼
                               serverosd
-                one resident Node Core
-            node facts / admission / leases /
-            effect coordination / self-health
+                    唯一常驻 Node Core
+                 节点事实 / admission / lease /
+                 effect coordination / self-health
                                  │
         ┌────────────────────────┼────────────────────────┐
         ▼                        ▼                        ▼
-semantic/work owners         external providers       Ability Fabric
-Claims / Requirements        Feishu / GitHub          G1 registry
-Work Engine / Control        OpenViking / MetaCC      Skills / MCPs
-                             Quay / Browser / OS      Plugins / Providers
+语义/工作权威                外部 Provider             Ability Fabric
+B2 Claims/Views              Feishu / GitHub           G1 registry
+Requirement/Work Engine      OpenViking / MetaCC       Skills / MCPs
+Agent Control                Quay / Browser / OS       Plugins / Providers
 ```
 
-Abilities are stable product responsibilities; Skills, MCPs, Plugins and Providers are realizations. The Plugin is the Agent-facing composition, while `serverosd` is the resident node/control core. The two ServerOS MCPs are adapters and do not own a second copy of ServerOS state.
+这里最容易混淆的三点：
 
-## Five automatic loops
+- **Ability 是产品职责，Skill/MCP/Plugin 是实现方式。** 不要求每个 Ability 配齐一套 Skill+MCP+Plugin。
+- **Plugin 是 Agent 入口，serverosd 是常驻 Node Core。** Plugin 内的两个 MCP 只是适配器，不保存第二份 ServerOS 状态。
+- **OpenViking/MetaCC/GitHub 都服务记忆与协作，但不抢当前事实权威。** 当前业务事实仍由 Source、B2、Requirement、Work Engine、Agent Control 各自负责。
 
-ServerOS is designed as five connected loops rather than one mandatory workflow:
+## 五条自动循环
+
+ServerOS 的日常自动化不是一条固定流水线，而是五条相互连接、可独立降级的循环：
 
 ```text
-Information  source/IM/doc/meeting/web -> capture/follow -> understanding -> memory -> requirement candidates
-Work         formal requirement -> Work Item -> Focus -> Parent -> execute -> accept -> Outcome
-Capability   real gap -> native/installed/upstream -> thinnest realization -> eval/install -> fresh consumer
-Knowledge    source revision -> delta reading -> understanding -> document stewardship -> readback/Git continuity
-Runtime      observe -> health/impact/owner -> bounded recovery -> Status/Incident -> human only when needed
+1. 信息循环
+   IM / Doc / Meeting / Web / File
+   → B1 Capture / Follow
+   → B2 Structured Understanding
+   → A2 Memory retrieval / invalidation
+   → B3 Requirement candidates
+
+2. 工作循环
+   Formal Requirement
+   → canonical Work Item
+   → 0–2 Active Focus
+   → A1 Parent continuity
+   → B5/B6/B7 + A6 execution
+   → A7 acceptance
+   → Outcome
+
+3. 能力循环
+   capability gap
+   → G1 查 Native / 已装 / 上游
+   → 最薄 realization
+   → eval / package / install
+   → fresh consumer
+   → 真实失败再迭代
+
+4. 知识循环
+   Source revision
+   → Follow / read delta
+   → Understanding
+   → B9 更新 FOLLOW_MIRROR / EXTERNAL_MAINTAINED / OWNED 文档
+   → readback
+   → local / private Git continuity
+
+5. 运行循环
+   Observe
+   → health / impact / responsibility
+   → native supervisor / bounded recovery
+   → Daily Status / Incident
+   → 真正需要人时才进入 Human Control
 ```
 
-Memory, authority and evidence cross all five loops. Failure of one optional provider degrades only the work that depends on it; it does not create one global ServerOS `NOT_READY`.
+Memory、权限和证据横穿五条循环。某一条 Provider 暂时不可用只让依赖它的部分降级，不把整个 ServerOS 变成全局 `NOT_READY`。
 
-## What ServerOS organizes automatically
+## 日常会自动整理什么
 
-| Object | Default automation | It does not silently do |
+| 对象 | 默认自动行为 | 不会静默做的事 |
 |---|---|---|
-| Workspace / paths | place new outputs in the resolved worktree/artifact/test root when the canonical parent is clear; run low-frequency hygiene | move historical repos, other actors' worktrees, unique evidence or unknown roots just to make a map clean |
-| Feishu IM / files | capture new messages, edits, forwards and required attachments incrementally; preserve partial gaps and fill them later | turn every message into a Requirement, download every media item or export private material by default |
-| Followed Docs / Wiki / Web | track stable source identity/revision; reread only changed scope and update understanding/mirror | expand one Follow into a whole space or turn a bookmark into permanent full-content subscription |
-| Meetings / Minutes / recordings | keep one MeetingBundle; process late transcripts/material automatically and refresh only affected understanding | require MP3+transcript+minutes for every meeting, trust background/support audio as business intent, or create MyDocs notes for every call |
-| Owned guides / mirrors | use standing stewardship to patch allowed sections from source revisions, preserve human edits and read back | whole-body overwrite, silently change audience/ACL/owner or turn external source text into internal policy |
-| Daily / weekly reports | standing routine can compose from accepted Outcomes/evidence and maintain one logical report | rerun E2E for prose, count Tasks as成果, or stop night work because a report was sent |
-| Runtime status | patch the workday Daily Status Card and track real incidents by episode | report green merely because no human action is needed, or promote every diagnostic finding to an incident |
+| Workspace / 目录 | 新产物在Project/Work Item/canonical parent明确时自动落到正确worktree/artifact/test根；低频检查结构漂移 | 不因“目录看着乱”移动历史repo、别人worktree、唯一证据或未知目录；root级move/delete先走对应effect边界 |
+| 飞书 IM / 文件 | 增量捕获新消息、编辑、转发和需要的附件；partial保gap，后续自动补 | 不把每条消息变Requirement，不为计数下载全部媒体，不把私密材料自动外发 |
+| 关注 Doc / Wiki / Web | 保存稳定source identity/revision；有变化只重读受影响范围并更新理解/mirror | 不因Follow一页扩成全库，不把收藏自动变永久订阅/全文转载 |
+| 会议 / 妙记 / 录音 | MeetingBundle关联Minutes、转录、录音、附件；转录/材料晚到后自动补读并触发受影响理解 | 不要求每场会都有MP3+妙记+纪要；背景/远控音频不自动形成业务承诺；无长期阅读价值不强建MyDocs |
+| OWNED指南 / FOLLOW_MIRROR | standing stewardship按source revision更新允许区块，保护人改，publish后readback | 不whole overwrite，不因source变化自动扩大受众/ACL/业务政策 |
+| 共享维护文档 | 在获准原对象/章节原位维护，变化跟进并三方比较 | 不复制第二份可编辑正文，不接管owner/priority |
+| 日报 / 周报 | 启用standing routine后从accepted Outcome/evidence生成同一logical report，发布/送达分开恢复 | 不为日报重跑E2E、不拼Task数量、不让“日报已发”停止夜间Focus |
+| 运行状态 | 工作日更新同一Daily Status Card；真实Incident按episode跟踪 | 不因为无需人工就假绿，也不把历史/diagnostic finding全升成事故 |
 
-The product rule is: **automate unambiguous placement and maintenance; treat historical or destructive restructuring as a separate effect.** ServerOS should do the locating, diffing, scoped patching, readback, indexing and continuation so the user is not the daily file operator.
+自动整理遵循同一个原则：**明确的新增/维护路径自动做，历史结构性破坏动作谨慎做。** 系统应该替你完成定位、diff、局部patch、readback、索引和接续，而不是让你每天当文件管理员。
 
-## Small core, broad capability
+## 一个小核，两大能力家族
 
-There is one resident ServerOS core daemon per managed node/runtime scope:
-**serverosd**. It observes real resources, attributes ownership, handles its admission
-boundaries and reconciles explicitly owned desired resources. It is not an LLM planner
-or a second process supervisor.
+每个受管节点/运行范围正常只有一个常驻核心 **serverosd**。它生产真实资源观察、归属、边界准入与有限的环境修复，不做 LLM 规划，也不重复实现 systemd 等进程监督器。
 
-The product composition has two canonical Core members: **serveros** and
-**ability-management**. Long-lived providers such as memory, UI or networking remain
-outside the daemon.
+产品 Core 的两个 canonical 成员是 **serveros + ability-management**；这不代表两个常驻 daemon。
 
-Two capability families cover the work:
-
-| Family | Examples |
+| 家族 | 覆盖内容 |
 |---|---|
-| Agent Working Infrastructure | compliance, credentials, runtime, sessions, context/memory, abilities, workspace/Git, build/test environments, E2E, connectivity, release |
-| Information-to-Delivery | source capture/Follow, understanding/alignment, Board, requirements, research/decisions, execution/Quay, document stewardship, reporting and routines |
+| Agent 工作基础设施 | 合规、凭据、资源、Session、上下文与记忆、能力发现分发、Workspace/Git、构建与测试环境、E2E、跨设备连接、发布运维 |
+| 信息到交付 | 飞书归档/关注、结构化认识与对账、需求看板、需求挖掘、调研设计、CC/Quay 执行、知识与文档维护、汇报、定期任务 |
 
-These are navigation and composition views, not a Skill, repository or daemon for
-every box. See [the complete architecture](ARCHITECTURE.md).
+家族和簇是能力导航，不是每个框都造一个仓库、Skill 或服务。
 
-## Native agents stay in charge of method
+## 几条最重要的分工
+
+**Session：** 一个需求可以有多个干净 Session。原生线程 ID、进程、tmux 窗口不是 Item 身份。手机打开东京会话是远程接入；换到 Windows 执行是工作交接，二者不同。
+
+**记忆：** 目标架构是一份共享的 OpenViking 长期记忆服务运行在 Tokyo，Claude Code、Codex 与获准的远端 Agent 通过各自原生集成/客户端访问同一个用户记忆世界；MetaCC 保留 Session 历史与行为分析，原生 memory 继续作为本地便利层。OpenViking 负责跨 Session / 跨项目 / 跨设备的相关性召回和经验记忆，**不覆盖** B2 当前 Claims/Views、原 Source、Requirement、Work Engine 或权限事实。GitHub 保存可版本化的 records、设计和受众合适的知识，不同步 OpenViking 的向量索引/内部数据库。ChatGPT 当前优先通过 GitHub/项目文件读取这些权威材料，不为了接入 ChatGPT 把 OpenViking 暴露公网。
+
+**能力：** 全设备共享 ability-management；外部作者的能力保留来源。设备根据兼容性、安装、目标、网络和授权形成能力视图，当前 Session 只加载有关部分。登记、安装、可用和授权是四件事。
+
+**Quay：** 用来完成有价值的委派、并行实验、实现和独立验证。CC 可以在已批准范围内自主使用，但 Quay Task 完成不等于业务 Item 完成，也不把全部 Quay 方法论强塞给所有项目。
+
+**后台运行：** 批准的工作可以继续。超时后的外部效果先查清再重试；需要你时保留 checkpoint，只暂停相关边界，不冻结其他项目。
+
+## 你看到的界面
+
+**CloudCLI 与 CC 终端**是主要交流界面。保留原生项目、会话、文件、Git、终端体验，优先通过受支持的插件补充 ServerOS 上下文，不要求先 fork 整个 UI。
+
+**飞书**负责信息来源、提醒、阅读和汇报：
+
+- 我的文档库：当前工作、对账、结构化认识、需求与报告。
+- 我的文档库：动态工作、每日对齐、项目工作台和正式汇报。
+- 个人笔记：私人长期知识和自己负责维护的方法笔记。
+- 公开文档：我们承担正确性责任的长期教程/指南；名字不自动代表互联网公开。
+- 外部文档：只读长期关注资料的稳定 Source Card / FOLLOW_MIRROR；原 Source 仍是正文权威。
+- 共同维护的别人文档：保持原位，按授权章节维护，不复制第二份飞书正文。
+- 云盘：MP3、图片、PDF、PPTX、ZIP、E2E trace 等 Asset Plane；IM、妙记/Minutes 仍保留原始 Source 身份。
+
+日报、周报、专项汇报按同事可读的正式行文生成。生成报告、放到飞书和发送给别人分别受权限约束。日报记录真实 Quay 贡献，不为凑使用记录制造任务。
+
+**GitHub**是 CC/GPT 当前的版本化协作面。较大的需求通常有 brief、design、execution、report；小工作不必凑四个文件。GPT 写回被接受的设计后，CC 在原授权范围内继续，不能只凭一行 READY 就扩大权限。
+
+## 跨项目、跨设备记忆怎样工作
 
 ```text
-ServerOS preserves: goal, constraints, identity, context, continuity and evidence
-Native Agent chooses: investigation, experiments, tools, decomposition and iteration
+                 ┌─ current Source / B2 Claims & Views ── 权威当前事实
+Claude / Codex ──┤
+Windows Agent  ──┼─ OpenViking @ Tokyo ──────────────── 长期相关性/经验召回
+Tokyo Agent    ──┤          │
+                 │          └─ private persistent storage
+                 ├─ MetaCC / native transcripts ─────── Session历史/行为分析
+                 └─ GitHub private records ──────────── 版本化语义记录/设计/文档
 ```
 
-Bootstrap is thin. Detailed memory, Skill content and MCP tools load when needed and
-when the runtime actually supports it. Existing native tools remain discoverable.
-A catalogue can be global while each device installs and each Session sees a different
-subset.
+目标是一份共享 OpenViking 服务，而不是每台设备各自建向量库再用 Git 同步。Tokyo 本地 Agent 可走本机私有入口；Windows 等远端通过受认证的 Tailscale/private endpoint 使用同一服务和同一用户 namespace。设备只是 provenance/applicability，不形成独立“记忆宇宙”。
 
-The target memory topology is one shared **OpenViking** service on Tokyo for cross-session,
-cross-project and cross-device associative/experience retrieval. Claude Code and Codex use
-their runtime integrations against that same private service; MetaCC supplies session
-history/intelligence, while native memory remains a local convenience. Current Claims/Views,
-source revisions, Requirements, work control and authorization still outrank any retrieved
-memory. GitHub stores versionable records/designs and suitable knowledge, not the OpenViking
-vector index or live database. ChatGPT initially reads the private GitHub/project records;
-ServerOS does not expose OpenViking to the public Internet just to give ChatGPT memory access.
-OpenViking is still a target/unbound provider until a real service, authenticated Binding and
-fresh-agent retrieval/capture are verified. Quay is an execution accelerator, not a mirror
-of the user's personal Board.
+Claude Code/Codex 优先复用 OpenViking 官方 Memory Plugin 的 lifecycle hooks + MCP：会话前召回、回合后捕获、compaction/session end 提交。ServerOS **关闭/不采用 OpenViking 的 Skill catalog 作为能力权威**，Skill 仍由 ability-management/G1 发现与分发，避免两套能力目录。
 
-## Interfaces and information spaces
+召回默认先当前 Project/Item，再个人稳定偏好/经验；跨项目内容只有相关且 scope 允许才进入。生产秘密、credential、受限原始日志和不应跨项目传播的材料不因“记忆方便”被自动捕获或外发。
 
-CloudCLI and the native terminal remain the main conversational work surfaces.
-Use a supported contextual plugin rather than requiring a CloudCLI fork.
+OpenViking 当前仍是 **目标/未绑定 Provider**，不是 LIVE 事实。服务挂掉时从 current records、checkpoint、Git/source 和 native history 继续；不会因此阻断工作或复活已经纠正的旧结论。
 
-Feishu provides the principal information sources, reminders, readable work documents
-and reporting. My Document Library holds dynamic work, reconciliation and reports; Personal
-Notes holds private long-term knowledge; Public Docs holds maintained owned guides; External
-Docs holds Source Cards / FOLLOW_MIRROR for long-lived read-only sources, while externally
-maintained shared documents stay in their canonical location. Drive is the binary Asset
-Plane for recordings, images, PDFs, archives and E2E evidence. IM and Minutes remain
-original source identities.
+## 设备与合规
 
-GitHub work packets are the durable CC/GPT collaboration path. Authoritative bodies
-and generated human views have explicit revision links; they are not independently
-editable competing copies.
+当前完整 Fleet V1 目标拓扑：**Tokyo/vince 主 Work+Fleet 节点、Dell A6000/fjd Compute/Linux Core 节点、Windows FJPCOS 原生 Edge 节点**；手机与 ChatGPT 是后续客户端入口，北京为历史/未验证绑定。设备注册不表示其所有 OS 用户、Codex Runtime、服务或 Session 都有授权。
 
-## Devices and safety
+Tailscale 是默认私网 Provider：**先用 tailnet，特殊需要才开隧道**。节点在线不等于所有端口可用；替换隧道前验证实际客户端、应用、认证和流式连接，并保证服务可自启动。
 
-Tokyo is the primary node, Windows a specialist device and the phone a human client.
-Beijing is historical, not a normal execution fallback.
+Tokyo 默认使用 vince。共享网关的 ubuntu 维护例外只限明确目标与操作。**LiteLLM 生产和东京共享网关的生产切换、重启、配置变更、回滚仍由你执行。** Skill 文字和“已批准”卡片本身不构成技术强制边界。
 
-Tailscale is the preferred private transport: **tailnet-first, tunnel-by-exception**.
-Node connectivity does not prove every application endpoint is reachable. Verify the
-actual authenticated client-to-service path before retiring an old tunnel.
+## 仓库职责
 
-Compliance and non-interference come first. Default Tokyo principal is vince; the
-ubuntu exception applies only to explicitly delegated shared-gateway work. Current
-LiteLLM production and shared-gateway production changes remain **user-executed**.
-A Skill instruction or a card button is not an enforced security boundary by itself.
+三个项目，六个仓库。ServerOS 的代码只在两个仓库：**serveros**（完整产品，含 `workengine/`）和 **ability-management**；**hwz-records** 是节点运行时读写的私有数据仓库，不是第二个代码仓库。
 
-## Ownership
-
-Three projects, six repositories. ServerOS code lives only in **serveros** (the
-complete product, including the Work Engine under `workengine/`) and
-**ability-management**; **hwz-records** is the private data repository the node
-runtime reads and writes, not a second code repository.
-
-| Repository | Owns |
+| 仓库 | 职责 |
 |---|---|
-| serveros | product architecture, composition, bootstrap, deterministic contracts, node runtime, and the Work Engine (`workengine/`): work/control transitions, Run/effect receipts and Board projections |
-| ability-management | typed capability registry, provenance/revisions, reusable Skills and distribution |
-| hwz-records | understanding, stable intent, designs, human semantic records, instance roots, topology, concrete bindings, policy and observed maps (private data, not code) |
-| marketops | MarketOps application/MCP, research pipeline and business truth |
-| marketops-session | MarketOps session-derived design analysis and tooling; the session corpus itself is not stored in the repository |
-| llmlab | LLM Lab gateway, evaluation and deployment templates |
-| native providers | their actual task stores, sessions, cloud bodies and runtime interfaces |
+| serveros | 产品架构、插件组合、入口、确定性契约、节点运行时，以及 Work Engine（`workengine/`）：工作控制状态、Run/动作回执、看板投影 |
+| ability-management | 能力身份、来源、revision、可复用 Skill 与分发 |
+| hwz-records | 确认的认识、稳定工作意图、设计、人类记录、实例目录、拓扑、目标/Binding、策略与带时间的观察地图（私有数据，不是代码） |
+| marketops | MarketOps 应用/MCP、研究管线与业务真值 |
+| marketops-session | MarketOps 会话反推的设计分析与工具；会话语料本体不入库 |
+| llmlab | LLM Lab 网关、评测与部署模板 |
 
-The six repositories absorbed their former neighbors: `work-engine` and the
-`serveros-research-exchange` templates/tools into `serveros`; `dev-doctor` and
-`agent-software` into `ability-management`; `hwz-ops` and `agent-session-archive`
-into `hwz-records`; `marketops-private` into `marketops`;
-`marketops-session-private` into `marketops-session`; `llm-lab` and
-`llm-lab-portal` into `llmlab`. The target structure has three public
-repositories (`serveros`, `marketops`, `llmlab`) and three private repositories
-(`ability-management`, `marketops-session`, `hwz-records`).
+这六个仓库吸收了原仓库：`work-engine` 与 `serveros-research-exchange` 的模板/工具并入 `serveros`；`dev-doctor`、`agent-software` 并入 `ability-management`；`hwz-ops`、`agent-session-archive` 并入 `hwz-records`；`marketops-private` 并入 `marketops`；`marketops-session-private` 并入 `marketops-session`；`llm-lab`、`llm-lab-portal` 并入 `llmlab`。目标结构为 3 个 Public（`serveros`、`marketops`、`llmlab`）与 3 个 Private（`ability-management`、`marketops-session`、`hwz-records`）。
 
-MarketOps and Support Bot remain independent parallel projects. Support Bot uses
-litellm-support-bot for code and troublebuddy-kb-bridge for knowledge; ServerOS does not
-take over either product's roadmap.
+MarketOps 和 Support Bot 保持并行业务项目。Bot 代码是 litellm-support-bot，知识仓是 troublebuddy-kb-bridge；ServerOS 不接管它们的路线或正在运行的实验。
 
-## Reading and implementation status
+## 从哪里继续
 
-[ARCHITECTURE.md](ARCHITECTURE.md) is the single normative product design. Both READMEs
-are explanatory entrypoints, not additional authorities.
+[ARCHITECTURE.md](ARCHITECTURE.md) 是唯一规范性产品架构；中英文 README 都是说明入口。
+[文档索引](docs/README.md) 区分当前契约与旧实现说明。
 
-[docs/README.md](docs/README.md) distinguishes current contracts from older technical
-notes. The [review record](docs/architecture/CONSOLIDATION-REVIEW-20260921.md) records the
-consolidation's evidence and limits.
-
-**A completed design is not a deployed system.** Implementation acceptance uses the
-scenario matrix in the architecture and real revision/environment evidence. Do not
-infer CODE, INTEGRATION or LIVE readiness from this README, file counts, tool listings
-or a successful documentation commit.
+**设计完成不代表已经上线。** 实施按架构中的场景验收，分别记录 CODE、INTEGRATION、LIVE 证据，不用文件数量、注册表绿色或文档提交代替真实可用性。
