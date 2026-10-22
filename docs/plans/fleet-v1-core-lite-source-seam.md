@@ -44,6 +44,8 @@ and one method (`core_lite_status`), which is **not an MCP tool**. Nothing in
 `tools.py` names it, `list_devices` and `status` do not call it, and no route is
 declared for it. The served surface is unchanged: 9 hand-written tools plus the
 22 inherited verbs, six scopes, `TOOL_SURFACE_REVISION = "fleet-mcp-3"`.
+(Historical: this seam was written at `fleet-mcp-3`. The current surface is
+`fleet-mcp-5`, 10 hand-written tools plus 22 inherited verbs.)
 
 Adding a `core_lite` field to every `fleet_list_devices` row would be a change to
 a tool's contract shape — which `fleet_mcp/version.py` says is exactly what

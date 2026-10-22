@@ -26,7 +26,7 @@ V1 includes:
 
 | | |
 |---|---|
-| tool surface | **34 tools** = 9 hand-written + 23 CloudCLI mirrors + 2 mirror descriptors |
+| tool surface | **34 tools** = 10 hand-written + 22 CloudCLI mirrors + 2 mirror descriptors |
 | scopes | **6** — `fleet:read`, `fleet:send`, `fleet:control`, `fleet:create`, `fleet:approve`, `fleet:navigate` |
 | accounts | multiple OS users; several CC configurations inside one UID |
 | defaults | the DeepSeek `admin`-route candidate as the default; **CC `bypassPermissions` only through an owner-authorized project** |
@@ -39,7 +39,7 @@ V1 includes:
 
 **Monitoring adds no surface.** These readings ride as sub-fields of the
 **existing read-only Fleet status**, not as new MCP tools, a new state store, or
-a shell. The tool count stays 33 and the scope count stays 6 — a monitor is not
+a shell. The tool count stays 34 and the scope count stays 6 — a monitor is not
 a verb, and a metric is not an entitlement.
 
 **34 tools is not 34 permissions.** The tool list is what the surface *offers*;

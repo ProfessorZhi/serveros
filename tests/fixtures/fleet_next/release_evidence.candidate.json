@@ -20,18 +20,20 @@
   },
   "tool_surface": {
     "observed_tools": [
-      "fleet_list_devices", "fleet_status", "fleet_list_sessions", "fleet_read_session",
-      "fleet_send_session", "fleet_create_session", "fleet_interrupt_session",
-      "fleet_resume_session", "fleet_get_run",
-      "cloudcli_session_list", "cloudcli_session_read", "cloudcli_session_send",
-      "cloudcli_session_create", "cloudcli_session_interrupt", "cloudcli_session_resume",
-      "cloudcli_session_get", "cloudcli_session_close", "cloudcli_session_reconfigure",
-      "cloudcli_session_approval", "cloudcli_run_get", "cloudcli_run_list",
-      "cloudcli_project_list", "cloudcli_project_get", "cloudcli_project_create",
-      "cloudcli_agent_list", "cloudcli_agent_get", "cloudcli_agent_start",
-      "cloudcli_agent_stop", "cloudcli_agent_status", "cloudcli_model_list",
-      "cloudcli_health", "fleet_discover", "fleet_capabilities",
-      "fleet_cloudcli_project_create"
+      "fleet_list_devices", "fleet_list_sessions", "fleet_get_session", "fleet_read_session",
+      "fleet_send_to_session", "fleet_get_run", "fleet_status", "fleet_create_session",
+      "fleet_interrupt_session", "fleet_create_project",
+      "fleet_cloudcli_overview", "fleet_cloudcli_projects_list", "fleet_cloudcli_sessions_list",
+      "fleet_cloudcli_session_get", "fleet_cloudcli_session_read", "fleet_cloudcli_run_get",
+      "fleet_cloudcli_quay_snapshot", "fleet_cloudcli_ui_last_opened_session",
+      "fleet_cloudcli_ui_visible_context", "fleet_cloudcli_ui_clients_list",
+      "fleet_cloudcli_session_search", "fleet_cloudcli_approvals_list",
+      "fleet_cloudcli_session_send", "fleet_cloudcli_session_create",
+      "fleet_cloudcli_session_interrupt", "fleet_cloudcli_session_start",
+      "fleet_cloudcli_session_close", "fleet_cloudcli_ui_open_session",
+      "fleet_cloudcli_session_cancel_queued", "fleet_cloudcli_session_reconfigure",
+      "fleet_cloudcli_session_background", "fleet_cloudcli_approval_answer",
+      "fleet_cloudcli_native_manifest", "fleet_cloudcli_native_capability"
     ],
     "authorized_scopes": [
       "fleet:read", "fleet:send", "fleet:create",

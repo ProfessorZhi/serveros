@@ -125,17 +125,18 @@ runtime_record / runtime_binding / health / policy / task_context / providers`�
 
 `read_source(repository=..., revision="origin/main")` → `(manifest, resolved_sha)`。
 
-## 到 33 工具 Fleet 消费端的路线（本 PR **不**做）
+## 到 Fleet 消费端的路线（本 PR **不**做；写于 33 工具时期）
 
 `CAPABILITY-PROJECTION.md` 说这一步「is B's file」，所以本目录**不动** `fleet_mcp/`、
-不加第 34 个工具、不改任何 served surface。路线是：
+不加工具、不改任何 served surface。路线是：
 
 1. `fleet_mcp` 侧（**B 的文件**）加一个 **read-scoped** 工具，输入 `device_ref` +
    `runtime` + `principal`，输出本模块的 dict；
 2. 它只调用 `effective.project_device(...)`，**不重建**任何判断；
 3. 它的 `source_revision` 就是它读的 git revision，随回执一起返回；
-4. 33 工具的计数不变 —— 这是一个**读**面，与两个既有的 capability read 同级，
-   而不是第 34 个可执行动词。
+4. 它落地时工具计数只加一 —— 这是一个**读**面，与两个既有的 capability read 同级，
+   而不是一个新的可执行动词。（本段写于 33 工具时期；今天是 `fleet-mcp-5`，
+   34 = 10 手写 + 22 镜像 + 2 能力读，所以这个读面落地后是第 35 个。）
 
 在 (1) 被 B 落地之前，本模块只能被直接 import 或在测试里跑。
 

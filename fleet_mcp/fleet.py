@@ -780,8 +780,9 @@ class FleetService:
 
         **Not an MCP tool.** Nothing in `tools.py` names it, `list_devices` and
         `status` do not call it, and no route is declared for it — so the served
-        surface is exactly what it was: nine hand-written tools plus the 22
-        inherited verbs, six scopes, `TOOL_SURFACE_REVISION = "fleet-mcp-3"`.
+        surface is unchanged by this seam: ten hand-written tools, the 22
+        inherited verbs and the two capability reads, six scopes,
+        `TOOL_SURFACE_REVISION = "fleet-mcp-5"`.
         Adding a field to `fleet_list_devices` would be a change to a tool's
         contract shape, and that decision belongs in the change that makes it,
         openly, rather than inside a wiring commit.

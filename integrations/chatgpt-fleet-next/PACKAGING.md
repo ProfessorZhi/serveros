@@ -115,12 +115,12 @@ run, not a report of one.
 
 | # | Gate | Evidence it needs | State |
 |---|---|---|---|
-| G1 | The server serves exactly **33** tools at `tools/list` with `TOOL_SURFACE_REVISION == "fleet-mcp-3"` | one captured `tools/list` from the live endpoint | **NOT EXERCISED** (asserted in tests against fakes only) |
-| G2 | OAuth: issuer + RFC 9207 `iss`, audience binding, PKCE S256, DCR | a real authorization with a real client | **BLOCKED** — `fleet-mcp-contract.yaml` records `chatgpt_oauth_consent` as requiring the owner token, which no agent may supply or simulate |
+| G1 | The server serves exactly **34** tools at `tools/list` with `TOOL_SURFACE_REVISION == "fleet-mcp-5"` | one captured `tools/list` from the live endpoint | **NOT EXERCISED** (asserted in tests against fakes only) |
+| G2 | OAuth: issuer + RFC 9207 `iss`, audience binding, PKCE S256, DCR | a real authorization with a real client | **BLOCKED** — `fleet-mcp-contract.yaml` records `chatgpt_oauth_consent` as requiring a human to complete the consent (account + password + TOTP), which no agent may supply or simulate |
 | G3 | The client actually **refreshes** a cached tool list when the surface revision changes | an old client, a surface change, and a before/after tool list | **NOT EXERCISED** — no real client was driven |
 | G4 | A read-only grant cannot reach a write verb, end to end through the client | a `fleet:read`-only consent plus an attempted write | **NOT EXERCISED** |
 | G5 | Instructions-only Skills produce no fabricated local command | a real prompt against a real device | **NOT EXERCISED** |
-| G6 | V1 keeps working while Fleet Next is added | V1's 9 tools listed before and after | **NOT EXERCISED** |
+| G6 | V1 keeps working while Fleet Next is added | V1's own `tools/list` captured before and after | **NOT EXERCISED** |
 
 Two gates are owned by the human operator and cannot be closed by an agent:
 `fleet-mcp-contract.yaml` lists `public_exposure_decision` and

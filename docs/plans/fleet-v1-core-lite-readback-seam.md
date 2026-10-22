@@ -133,7 +133,9 @@ The obvious next step is an explicitly injected `core_lite_source` callable on
 a code one:
 
 - `fleet_list_devices` and `fleet_status` are two of the nine hand-written tools
-  behind `TOOL_SURFACE_REVISION = "fleet-mcp-3"`. Adding a `core_lite` key to
+  behind `TOOL_SURFACE_REVISION = "fleet-mcp-3"`. (Historical: this seam was
+  written at `fleet-mcp-3`. The current surface is `fleet-mcp-5`: 10 hand-written
+  tools plus 22 inherited verbs and 2 capability reads.) Adding a `core_lite` key to
   every device row changes the shape of what those tools return, and this
   repository's own rule is that a tool's contract changing shape is what moves
   the surface revision — a client that cached `tools/list` and its annotations
