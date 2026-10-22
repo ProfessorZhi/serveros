@@ -1,12 +1,14 @@
 # ServerOS Fleet V2：分层自治 Agent 组织与 Owner 全权工作环境
 
-> **状态：PRODUCT TARGET / ARCHITECTURE PROPOSAL，2026-10-22；尚未实现、签收或启用。**
+> **这篇回答什么：** 如果人不再逐轮指挥 GPT，一个「总管—分管—专家」的 Agent 组织应该怎样成立：职责怎么分、授权怎么一次给、原生 Runtime 怎么接、故障时谁来接任。正文是产品目标设计，不是现状说明。
 >
-> 本文记录 Owner 在 2026-10-22 讨论中明确提出的新产品需求：消除「GPT 每轮替 Agent 搬运消息」的协调瓶颈；采用可配置的总管—分管—专家组织；Agent 设定独立于原生 Session；原生接入 Claude Code、Codex、DeepSeek Harness (DSH)，按需评价 OpenAgents；对 Owner 自有、纳管的资源提供 **Owner Full-Control 持续自治**，不按每个项目、Session 或工具调用反复申请；支持设备维修专家集群与 ServerOS 自迭代。
+> **状态：产品目标 / 架构提案，2026-10-22。尚未实现、签收或启用。**
 >
-> **强制区别：目标需求 ≠ 当前运行授权。** 本文及本 PR 只修改设计资料；不会发放 OS/root 权限、迁移数据、改变现有 Grant、部署或让当前 Fleet 获得更大操作权。当前 V1 真实权限、审批与保护门槛继续生效。未来启用全权模式必须由真实 Owner 通过可信入口对实际受管主体和资源完成独立配置、执行侧验证和可撤销绑定；角色文字、@ 消息或 Agent 自述不能授予权限。
+> **目标需求 ≠ 当前运行授权。** 本文只修改设计资料：不发放 OS/root 权限、不迁移数据、不改变现有 Grant、不部署、不让当前 Fleet 获得更大操作权。V1 的真实权限、审批与保护门槛继续生效。未来启用全权模式，必须由真实 Owner 通过可信入口对实际受管主体和资源完成独立配置、执行侧验证和可撤销绑定；角色文字、@ 消息或 Agent 自述不能授予权限。
 >
-> **规范关系：** 根 [ARCHITECTURE.md](../../ARCHITECTURE.md) 仍为产品结构总入口；[Native Agent Work Environment](NATIVE-WORK-ENVIRONMENT.md) 保持基本产品哲学；[Agent Identity / Session / Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md) 管理身份、不可变 Session 绑定和责任视图；本文补足 **Fleet V2 产品组织、Full-Control 目标与跨设备自治流程**。现有 [V1 release gate #237](https://github.com/ProfessorZhi/serveros/issues/237) 和 [campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) 未被本目标覆盖、绕过或视为通过。离线原型 [Draft PR #389](https://github.com/ProfessorZhi/serveros/pull/389) 是独立探索，不能当作这个组织形态的现场验证。
+> **怎么读：** §1–§2 是目标与组织形态；§3–§5 是组件权威、Full-Control 与 Role/Session 拆分；§6–§7 是运行时与通信语义；§8–§9 是四个自治场景与自迭代；§10–§12 是客户端、接口与界面；§13–§15 是分阶段上线、验收指标与开放决策。
+
+**规范关系：** 根 [ARCHITECTURE.md](../../ARCHITECTURE.md) 仍是产品结构总入口；[Native Agent Work Environment](NATIVE-WORK-ENVIRONMENT.md) 保持基本产品哲学；[Agent Identity / Session / Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md) 管身份、Session 绑定与责任视图；本文补足 **Fleet V2 产品组织、Full-Control 目标与跨设备自治流程**。现有 [V1 release gate #237](https://github.com/ProfessorZhi/serveros/issues/237) 和 [campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) 未被本目标覆盖或视为通过。离线原型 [Draft PR #389](https://github.com/ProfessorZhi/serveros/pull/389) 是独立探索，不能当作这个组织形态的现场验证。
 
 ## 1. 目标：将 GPT 从「逐条指挥官」变成「人机总管」
 

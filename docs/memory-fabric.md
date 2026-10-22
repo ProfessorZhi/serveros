@@ -1,7 +1,16 @@
-# Memory-Context Fabric
+# Memory-Context Fabric · 记忆与上下文
 
-The fabric answers: **what does this work remember, where is that written down,
-and what happens when a device disagrees with the answer?**
+> **这篇回答什么：** 一项工作记住什么、记在哪里，以及两台设备对同一事实给出不同答案时怎么办。核心是三层记忆、五类语义和一条防火墙规则。
+>
+> **状态：** 设计 · 2026-09-24（文末 2026-09-24 的 current-first 澄清仍然有效）。这是**规范设计**，不是已安装验收；各 Provider 的现时能力以实际回读为准。
+>
+> **一条规则：** **影响当前业务状态的事实不能只活在 Layer C。** 召回结果若要变成 Requirement、决定、owner、期限或权限，必须走正常的 B2/B3 接受路径，进入对应的权威。
+>
+> **三层：** A 本机运行时状态（可丢弃，丢了重探即可）· B 持久参考面（source / records / evidence，可评审、可恢复）· C 派生长期记忆（OpenViking + 检索，持久但**非权威**）。
+>
+> **五类语义：** Working（正在做的活）· Episodic（发生了什么）· Semantic（当前什么是真的）· Experience（什么在类似情况下奏效）· Executable procedure（系统要反复执行的方法，属于 Ability Fabric，不属于记忆）。
+>
+> **怎么读：** 「Three memory layers」是分层与权威；「The five semantics」区分记忆与可执行流程；「The ledger」与「Writing to the ledger」是写入；「Retrieval, the ContextBundle, and the firewall」是召回与防火墙；之后是跨设备交接、拓扑与 OpenViking 的边界；「What is not memory」列出四类不是记忆的东西。
 
 It exists because "the Agent knows" is not a storage location. Today a work
 Item's memory is spread across four places that were never designed to agree —

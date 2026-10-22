@@ -1,7 +1,17 @@
-# Fleet V1 owner/runtime acceptance — 2026-10-22
+# Fleet V1 owner/runtime 验收记录 — 2026-10-22
 
-Candidate for SRV-0011. This document distinguishes source, isolated execution
-and deployment. It is not a claim that the production App has been updated.
+> **这篇回答什么：** 针对 SRV-0011 候选，哪些已经通过源码审阅与隔离执行，哪些只是源码就绪，哪些在真实设备上被拒绝或仍未验证。本文**不**声称生产 App 已更新。
+>
+> **状态：** 候选验收证据，2026-10-22。文中的数字（34 个 Fleet 工具、3102 个测试、通过项与耗时）是该候选当天的值，不回改；引用前先核对日期与对应 commit。
+>
+> **结论先读：**
+> - 工具面为 34 个 Fleet 工具（10 个手写 + 22 个原生镜像 + 2 个描述符）；另有打过补丁的 CloudCLI 提供 23 个原生工具。
+> - CC 与 Codex 作为执行器，在同一批 send 下各自跑完一个隔离任务，ACK 分别为 0.090 / 0.162 秒；连接被替换后执行器继续运行。
+> - 各条源码线都有对应 scoped review 与独占的 Evidence Run。
+>
+> **仍然不成立的：** Windows 的 LIVE 执行被自动审批拒绝，SCM `StartServiceW` 效果与现场更新未验证；生产 Fleet、常驻服务、全局客户端与网络传输均未改变；没有上传、没有 OAuth 或 ChatGPT 发布。
+>
+> **怎么读：** 「V1 behavior」是目标行为；「Accepted source and execution」是逐项证据表；「Full-build acceptance and live boundaries」是最终构建门与仍然成立的边界。正文保留英文原文，以免改写证据表述。
 
 ## V1 behavior
 
@@ -41,8 +51,8 @@ and active agents, bound recovery attempts, and prove a real recovery effect.
 | Windows source | PR387 at 3eeb84c: official hosted Windows build, six suites/477 checks, extracted static ZIP startup, and a real current-user ScheduledTask recovery effect. Independent source/hosted evidence review passes. Actual SCM StartServiceW effect and user-device LIVE acceptance are not covered. |
 | Private state ancestry | a4d74b8 source, integrated as 7edfce8/2a8c295/d7a6c14. Hosted native full tree: 33 suites/2844 checks pass. The current-user private boundary permits the measured state-root layout while retaining no-follow identity checks. Independent review passes. |
 | Codex commander Skill | One native-owner invocation discovers eight Skills, reads orchestration Skill with exact source hash, makes three read-only Fleet calls and returns a long-task DAG. Read output is 7492 characters / 7504 UTF-8 bytes. Old read-only bwrap failures remain recorded. |
-| Linux recovery source | PR390 through bc1ad5c plus root correction2bc869a, independently reviewed. C++ and Python effects retain/revalidate the actual lease namespace; the daemon guards its real actuator; private state ancestors work while immediate writer parents remain nonshared. Each Core tick releases its lease. |
-| Combined Fleet regression | Exact integration75f0855: all96 Fleet test files,3102 tests and3522 subtests pass in196.07 seconds under2GiB/no swap/oneCPU. Later CI input and documentation changes do not alter these product/client source bytes. Evidence646. |
+| Linux recovery source | PR390 through bc1ad5c plus root correction 2bc869a, independently reviewed. C++ and Python effects retain/revalidate the actual lease namespace; the daemon guards its real actuator; private state ancestors work while immediate writer parents remain nonshared. Each Core tick releases its lease. |
+| Combined Fleet regression | Exact integration 75f0855: all 96 Fleet test files, 3102 tests and 3522 subtests pass in 196.07 seconds under 2 GiB, no swap, one CPU. Later CI input and documentation changes do not alter these product/client source bytes. Evidence646. |
 | CC commander Skill | A real model selects fleet-commander-orchestration, makes three Fleet reads and returns a parallel DAG. It reports four enrolled devices with three live routes, as returned by tools. One invocation; CLI reports six internal turns, exceeding the three-turn test target. No writes were requested. |
 
 The native model evidence is under root Run0046's exclusive
@@ -55,14 +65,14 @@ Run finalization files are not overwritten.
 ## Full-build acceptance and live boundaries
 
 All source lanes above have scoped review. The final build gate is the exact
-candidate's official Linux workflow: all34 native suites and both entire
+candidate's official Linux workflow: all 34 native suites and both entire
 Python files (`test_daemon.py` and `test_native_core_facts.py`). Logs, JUnit,
 source SHA and the actual root-input contract are retained. The three existing
 pilot-specific daemon skips remain visible; the hosted runner does not have
 this user's installed/running pilot service.
 
-The first2cfb0ad run passed34 native suites and56 facts tests but failed five
-of the148 daemon cases: the runner had not bound its four semantic filesystem
+The first 2cfb0ad run passed 34 native suites and 56 facts tests but failed five
+of the 148 daemon cases: the runner had not bound its four semantic filesystem
 roots. It was not recorded as a combined PASS. The CI-only input driver at
 3ab74c5 supplies real private DATA/workspace/artifacts/toolchains/state paths
 through the existing environment seam. The unchanged five cases then pass;
@@ -70,10 +80,10 @@ no product code, old assertions, catalogue authority or extra skips are changed.
 A missing global ability catalogue remains NOT_MATERIALIZED. The final workflow
 still runs both whole files rather than extrapolating those five cases.
 
-Client source3ebd5f7 closes the four residuals at169e50b: owner-max Skill
+Client source 3ebd5f7 closes the four residuals at 169e50b: owner-max Skill
 semantics, output-root ownership, correlated successful initialization and
 bounded stdio/notification observation with complete writes. Original ten
-review probes and42 independent focused cases pass. The real commander Skill
+review probes and 42 independent focused cases pass. The real commander Skill
 model evidence uses the earlier identical orchestration Skill bytes; it is not
 mislabelled as a rerun of every model on the final client head.
 

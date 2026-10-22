@@ -1,13 +1,12 @@
-# Fleet V1 · Lane D — Dell A6000 multi-account readiness
+# Fleet V1 · Lane D — Dell A6000 多账号就绪度
 
-Branch `feat/fleet-v1-dell-runtime-e2e-20261015` · from #198 SHA `8186028`
-Author: the Dell-managed CC session (OS account `vince`, uid 1002)
-Date: 2026-10-15
-
-This lane is **read-only on the device** and **offline for its tests**. Nothing
-in it writes a binding, starts a service, opens a tunnel, reads another
-account's home or credential, or consumes GPU. Every claim below is either a
-measurement with its command, or it is marked `UNKNOWN`.
+> **这篇回答什么：** Dell 上两个 Linux 账号（`vince` uid 1002、`fjd` uid 1000）在 Fleet V1 里各自就绪到什么程度：哪些测过、哪些是 `UNKNOWN`、哪些被阻塞。
+>
+> **状态：** 只读测量记录，2026-10-15。分支 `feat/fleet-v1-dell-runtime-e2e-20261015`，源自 #198 `8186028`；作者是 Dell 上受管的 CC session（OS 账号 `vince`，uid 1002）。数字与判断都是当天值。
+>
+> **测量边界：** 对设备只读，测试离线。没有写 binding、没有启动服务、没有开隧道、没有读另一个账号的 home 或凭据、没有占用 GPU。每条结论要么是带命令的测量，要么标 `UNKNOWN`。
+>
+> **一句话结论：** Dell 的 `vince` runtime 实测 PASS；`fjd` 未被观测到，也未接入 Fleet；两账号路由只在离线用 fake transport 验证过（66 tests），真机未跑。不要把本文件读成「Dell 两账号已就绪」。
 
 ---
 
