@@ -738,6 +738,45 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(status, 400)
         self.assertIn("revoked", json.loads(body)["error_description"])
 
+    def test_a_refused_refresh_leaves_a_row(self):
+        """Without one, "expired" and "revoked" look identical afterwards."""
+        first = self._grant()["refresh_token"]
+        refused = "fleet-t-never-issued"
+        status, _, _ = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "refresh_token", "refresh_token": refused,
+            "client_id": type(self).client_id,
+        })
+        self.assertEqual(status, 400)
+        rows = [
+            json.loads(line)
+            for line in (Path(self._tmp.name) / "audit.jsonl").read_text(
+                encoding="utf-8").splitlines()
+        ]
+        matches = [row for row in rows
+                   if row.get("event") == "oauth.token.refused"
+                   and row.get("client_id") == type(self).client_id]
+        self.assertTrue(matches, "a refused grant must be recorded")
+        self.assertEqual(matches[-1].get("error"), "invalid_grant")
+        self.assertEqual(matches[-1].get("grant_type"), "refresh_token")
+        # The description is written for the caller and may quote what they
+        # sent; only the error kind is a fact about this server.
+        self.assertNotIn("unknown refresh token", json.dumps(matches[-1]))
+        self.assertTrue(first, "the grant above is a valid one, so the refusal is the token's")
+
+    def test_the_binding_chooses_whether_a_refresh_rotates(self):
+        """The store is built from config, not from a default nobody can see."""
+        config = FleetConfig(
+            source=None, local_device_ref=WINDOWS, providers={},
+            auth=AuthBinding(pat_anchor=self.pat, refresh_rotate=False,
+                             refresh_rotation_grace_seconds=600),
+            server=ServerBinding(bind="127.0.0.1", port=self.port),
+            policy=PolicyBinding(),
+        )
+        oauth = build_oauth(config, base_url=self.base,
+                            store_root=Path(self._tmp.name) / "wiring")
+        self.assertFalse(oauth.store.rotate_refresh)
+        self.assertEqual(oauth.store.rotation_grace_seconds, 600)
+
     def test_a_refresh_cannot_widen_the_scope(self):
         refresh = self._grant(scope="fleet:read", granted=["fleet:read"])["refresh_token"]
         status, _, body = self.client.request("POST", "/oauth/token", form={

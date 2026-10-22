@@ -186,7 +186,9 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
         )
         return 4
     store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
-                       refresh_ttl=config.auth.refresh_token_ttl)
+                       refresh_ttl=config.auth.refresh_token_ttl,
+                       rotate_refresh=config.auth.refresh_rotate,
+                       rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
     if revoke is None:
         rows = store.clients()
         if as_json:

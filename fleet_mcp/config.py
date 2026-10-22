@@ -232,6 +232,21 @@ class AuthBinding:
     oauth_enabled: bool = True
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
+    #: Whether a refresh replaces the token it was presented with. Rotation is
+    #: what makes reuse detection possible — a rotated token turning up a second
+    #: time is the signature of a stolen chain — and it is also what a client
+    #: with two refreshes in flight trips over. True keeps that protection, and
+    #: every deployment that never writes this key keeps it. False makes the
+    #: refresh token a standing credential the client reuses: the price is that
+    #: a replayed token can no longer be told apart from an honest one, the
+    #: return is a session that cannot die of its own race.
+    refresh_rotate: bool = True
+    #: How long a rotated token is still honoured after it was rotated: inside
+    #: this window a replay answers with the token that replaced it rather than
+    #: revoking the chain. 0 means no grace — every replay revokes, which is the
+    #: earlier behaviour. A client race is seconds wide; the window does not
+    #: have to be large to cover the case it exists for.
+    refresh_rotation_grace_seconds: int = 0
     # Scopes this surface issues. A ChatGPT connector is granted the read set
     # plus `fleet:send` / `fleet:create` only if the operator adds them here —
     # this tuple is the ceiling the consent form may present, and the operator
@@ -1083,6 +1098,8 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
+        refresh_rotate=bool(auth_raw.get("refresh_rotate", True)),
+        refresh_rotation_grace_seconds=int(auth_raw.get("refresh_rotation_grace_seconds", 0)),
         grantable_scopes=_grantable_scopes(auth_raw),
         feishu=_feishu_binding(auth_raw),
     )

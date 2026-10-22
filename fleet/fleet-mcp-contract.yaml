@@ -459,6 +459,20 @@ ingress:
     consent_requires: [username, password, totp]
     owner_token_fallback: when no auth.password_anchor is configured
     requires_human_consent: true
+    # Refresh tokens rotate by default: the presented token is marked used, and
+    # a second use of it revokes the whole chain — the only reading of a
+    # replayed token that does not assume the client is honest. Two binding keys
+    # relax that, and both are the deployment's choice rather than a code path
+    # being removed. `auth.refresh_rotation_grace_seconds` (default 0, no grace)
+    # answers a replay inside the window with the chain head instead of revoking
+    # it: wide enough for a client with two refreshes in flight, narrow enough
+    # not to forgive a replay from somewhere else later.
+    # `auth.refresh_rotate: false` keeps the presented token as the credential
+    # and slides its expiry, for clients that never store the replacement; the
+    # cost is that a replayed token can no longer be told apart from an honest
+    # one, and `--revoke-client` becomes the only way to retire it.
+    refresh_rotation: rotate by default
+    refresh_rotation_relaxations: [auth.refresh_rotation_grace_seconds, auth.refresh_rotate]
 
   # No part of the request body may become a URL, a host or a path this
   # surface will fetch. There is no proxy route, no fetch route and no

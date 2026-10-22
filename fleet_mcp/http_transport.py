@@ -604,7 +604,19 @@ class HttpSurface:
         if method != "POST":
             return _json(405, {"error": "invalid_request", "error_description": "token requires POST"})
         form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
-        issued = self.oauth.token(form)
+        try:
+            issued = self.oauth.token(form)
+        except OAuthError as exc:
+            # A refusal has to leave a row too. Without one, an operator asking
+            # "why did this client lose its session" cannot tell an expired
+            # token from a revoked chain from a wrong client_id — the state
+            # file shows all three as "no live token", and the answer is only
+            # in the code. The description is deliberately NOT recorded: it is
+            # written for the caller and may quote what they sent.
+            if self.audit:
+                self.audit.record("oauth.token.refused", grant_type=form.get("grant_type"),
+                                  client_id=form.get("client_id"), error=exc.error)
+            raise
         if self.audit:
             self.audit.record("oauth.token", grant_type=form.get("grant_type"),
                               client_id=form.get("client_id"), scope=issued.get("scope"))
@@ -1020,7 +1032,9 @@ def build_oauth(config, *, base_url: str, store_root,
             return None
 
     store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
-                       refresh_ttl=config.auth.refresh_token_ttl)
+                       refresh_ttl=config.auth.refresh_token_ttl,
+                       rotate_refresh=config.auth.refresh_rotate,
+                       rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
     return AuthorizationServer(
         store=store, auth=config.auth, base_url=base_url, pat_reader=read_pat,
         mcp_path=mcp_path or str(getattr(config.server, "mcp_path", "/mcp")),

@@ -117,6 +117,10 @@ class RefreshRecord:
     # the signature of a stolen one, and is treated as a breach of the whole
     # chain rather than of one token.
     rotated_to: str | None = None
+    # When the rotation above happened. Only the grace window reads it, and a
+    # record written before this field existed loads with `None` — which no
+    # grace covers, so old chains keep the stricter reading.
+    rotated_at: float | None = None
     revoked: bool = False
     # Which consent proof produced this grant: `None`/absent for the owner-PAT
     # path, `"feishu"` for a whitelisted identity. Carried across rotation so a
@@ -164,9 +168,12 @@ def _revocations_from(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
 class TokenStore:
     """Signing key, clients and refresh chains. Lives at 0600, outside git."""
 
-    def __init__(self, root: Path, *, access_ttl: int, refresh_ttl: int) -> None:
+    def __init__(self, root: Path, *, access_ttl: int, refresh_ttl: int,
+                 rotate_refresh: bool = True, rotation_grace_seconds: int = 0) -> None:
         self.access_ttl = max(60, int(access_ttl))
         self.refresh_ttl = max(600, int(refresh_ttl))
+        self.rotate_refresh = bool(rotate_refresh)
+        self.rotation_grace_seconds = max(0, int(rotation_grace_seconds))
         self._lock = threading.Lock()
         root.mkdir(parents=True, exist_ok=True)
         self._key_path = root / "signing.key"
@@ -249,6 +256,7 @@ class TokenStore:
                 expires_at=row.get("expires_at", 0.0),
                 resource=row.get("resource"),
                 rotated_to=row.get("rotated_to"),
+                rotated_at=row.get("rotated_at"),
                 revoked=bool(row.get("revoked")),
                 idp=row.get("idp"),
             )
@@ -275,6 +283,7 @@ class TokenStore:
                     "expires_at": rec.expires_at,
                     "resource": rec.resource,
                     "rotated_to": rec.rotated_to,
+                    "rotated_at": rec.rotated_at,
                     "revoked": rec.revoked,
                     "idp": rec.idp,
                 }
@@ -557,7 +566,16 @@ class TokenStore:
             self._save_state()
         return token
 
-    def consume_refresh_token(self, token: str, *, client_id: str) -> RefreshRecord:
+    def consume_refresh_token(self, token: str, *, client_id: str) -> tuple[str, RefreshRecord]:
+        """Validate a presented refresh token, and say which token is live.
+
+        Returns `(live_token, record)`. Usually `live_token` is the token that
+        was presented. It is not when that token was already rotated: the head
+        of the chain is what continues to be rotated, so a client that keeps
+        replaying the token it was first given either continues on the head
+        (rotation off, or inside the grace window) or loses the chain — never
+        the third thing, quietly refreshing against a dead record.
+        """
         self._reload_revocations_if_changed()
         with self._lock:
             if client_id in self._revocations["clients"]:
@@ -576,7 +594,19 @@ class TokenStore:
             if record.expires_at <= time.time():
                 raise OAuthError("invalid_grant", "refresh token expired", status=400)
             if record.rotated_to:
-                # Reuse of a rotated token. The only safe reading is that the
+                head_token, head = self._chain_head_locked(token)
+                if (head is not None and not head.revoked and head.expires_at > time.time()
+                        and (not self.rotate_refresh or self._within_rotation_grace(record))):
+                    # The replay has a benign reading, so take it: answer with
+                    # the token that replaced this one and let the chain go on.
+                    # With rotation off this is the normal path — the client is
+                    # meant to keep presenting a token that was rotated before
+                    # the setting changed. With rotation on it is the grace
+                    # window, which covers a client with two refreshes in
+                    # flight without covering a replay from somewhere else an
+                    # hour later.
+                    return head_token, head
+                # Reuse of a rotated token, outside every benign reading: the
                 # chain is compromised, so the whole chain dies — the caller has
                 # to re-authorize, which is the correct cost.
                 self._revoke_chain_locked(token)
@@ -594,14 +624,58 @@ class TokenStore:
                     "and the client must authorize again",
                     status=400,
                 )
-            return record
+            return token, record
+
+    def _within_rotation_grace(self, record: RefreshRecord) -> bool:
+        if self.rotation_grace_seconds <= 0 or record.rotated_at is None:
+            return False
+        return (time.time() - record.rotated_at) <= self.rotation_grace_seconds
+
+    def _chain_head_locked(self, token: str) -> tuple[str, RefreshRecord | None]:
+        """Follow `rotated_to` forward and return the last token in the chain.
+
+        `(token, None)` means the chain is broken — a successor named in the
+        state file that is not in it, or a cycle this code cannot build and will
+        not walk forever. A broken chain is not a live one, so the caller treats
+        it exactly as it treats a chain that is revoked.
+        """
+        seen: set[str] = set()
+        cursor = token
+        while cursor not in seen:
+            seen.add(cursor)
+            record = self._refresh.get(cursor)
+            if record is None:
+                return cursor, None
+            if not record.rotated_to:
+                return cursor, record
+            cursor = record.rotated_to
+        return cursor, None
 
     def rotate_refresh_token(self, old_token: str, record: RefreshRecord) -> str:
+        """Return the refresh token the client should use from now on.
+
+        With rotation on, that is a new token and the presented one is marked
+        used, dated so the grace window above can tell a race from a replay.
+
+        With rotation off, the presented token IS the credential: it comes back
+        unchanged and its expiry slides forward. Sliding is the point — a token
+        that is never replaced is also never refreshed into a fresh one, so
+        letting it lapse would reintroduce exactly the login this setting was
+        turned off to remove.
+        """
+        if not self.rotate_refresh:
+            with self._lock:
+                current = self._refresh.get(old_token)
+                if current is not None:
+                    current.expires_at = time.time() + self.refresh_ttl
+                    self._save_state()
+            return old_token
         new_token = REFRESH_PREFIX + secrets.token_urlsafe(32)
         with self._lock:
             current = self._refresh.get(old_token)
             if current is not None:
                 current.rotated_to = new_token
+                current.rotated_at = time.time()
             self._refresh[new_token] = RefreshRecord(
                 client_id=record.client_id,
                 subject=record.subject,
@@ -1146,7 +1220,10 @@ class AuthorizationServer:
     def _token_from_refresh(self, form: dict[str, str]) -> dict[str, Any]:
         token = form.get("refresh_token") or ""
         client_id = form.get("client_id") or ""
-        record = self.store.consume_refresh_token(token, client_id=client_id)
+        # The store names the live token: when the client replayed one that was
+        # already rotated, the head continues the chain and the returned token
+        # is the head, not the one presented.
+        live_token, record = self.store.consume_refresh_token(token, client_id=client_id)
         requested = set((form.get("scope") or "").split())
         scopes = record.scopes
         if requested:
@@ -1159,7 +1236,7 @@ class AuthorizationServer:
                     "a refresh cannot widen the granted scope; re-authorize instead",
                 )
             scopes = tuple(sorted(requested))
-        new_refresh = self.store.rotate_refresh_token(token, record)
+        new_refresh = self.store.rotate_refresh_token(live_token, record)
         issued = self._issue(client_id=client_id, scopes=scopes, subject=record.subject,
                              resource=record.resource, idp=record.idp)
         issued["refresh_token"] = new_refresh
