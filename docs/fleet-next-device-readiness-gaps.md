@@ -1,29 +1,16 @@
-# Fleet Next — device readiness gaps (dry run, read from the repository)
+# Fleet Next — 设备就绪缺口（只读推演）
 
-Scope: what would have to be true, per device and per verb, before a Fleet Next
-dry run could be executed on Tokyo, the FJPCOS Windows workstation, and the Dell
-A6000.
-
-Method: read from this branch only. **No device was contacted, no account was
-logged into, and nothing belonging to `fjd` was read, touched or inferred.** The
-`fjd` half is UNKNOWN by construction, and it is recorded as UNKNOWN rather than
-filled in from a plausible-looking guess.
-
-Two facts reshape the question before the matrix:
-
-- **The registry enrolls five devices, not three.** `fleet/registry.yaml` holds
-  `device:server-beijing`, `device:personal-dell`, `device:work-fj`,
-  `device:tokyo-shared-dev-01`, `device:llm-lab-dell`. Only three carry
-  `ownership: company` and are in scope:
-  `company_devices() == [device:llm-lab-dell, device:tokyo-shared-dev-01, device:work-fj]`.
-  The other two are personal and are excluded by the release plan, not by
-  accident.
-- **The registry cannot declare a second runtime on one account.** A
-  `runtime_bindings` entry names `runtime_ref: agent-runtime:<family>` and has no
-  field to say "and a second CloudCLI under account `fjd`". That is the category
-  error `docs/fleet-multi-runtime-design.md` §12 records. So for the Dell, the
-  registry can say *claude-code belongs here* and cannot say *the second runtime
-  exists*.
+> **这篇回答什么：** 在 Tokyo、FJPCOS Windows、Dell A6000 上跑一次 Fleet Next dry run 之前，每台设备、每个 verb 分别还缺什么。
+>
+> **状态：** 缺口清单，2026-10-13，从**仓库**读出，不是现场测量。文中的「7 tools served」等数字是当天值；当前工具面以 `fleet_mcp/version.py` 为准。
+>
+> **方法边界：** 只读本分支。没有联系任何设备、没有登录任何账号、没有读取或推断 `fjd` 的任何东西。`fjd` 的一半按构造就是 `UNKNOWN`，并如实记为 `UNKNOWN`，而不是用看起来合理的猜测填上。
+>
+> **两个先知道的事实：**
+> 1. **registry 注册了 5 台设备，不是 3 台。** `fleet/registry.yaml` 里有 `device:server-beijing`、`device:personal-dell`、`device:work-fj`、`device:tokyo-shared-dev-01`、`device:llm-lab-dell`；只有 3 台带 `ownership: company`，在范围内：`company_devices() == [device:llm-lab-dell, device:tokyo-shared-dev-01, device:work-fj]`。另外两台是 personal，被发布计划排除，不是遗漏。
+> 2. **registry 无法声明「一个账号下的第二个 runtime」。** `runtime_bindings` 只能写 `runtime_ref: agent-runtime:<family>`，没有字段能表达「以及 `fjd` 账号下的第二个 CloudCLI」。这正是 `docs/fleet-multi-runtime-design.md` §12 记录的类别错误。所以在 Dell 上，registry 能说 *claude-code 属于这里*，不能说 *第二个 runtime 存在*。
+>
+> **怎么读：** 先看 Legend 的五个状态词，再按设备读表。每张表的 `on the machine` 列才是设备事实；`code` / `tested` 两列只说明仓库里的代码与测试。
 
 Legend — **READY** code path exists in this branch · **TESTED** asserted by an
 executing test · **NOT DEPLOYED** no such thing on the device · **NOT INSTALLED**

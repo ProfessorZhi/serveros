@@ -1,6 +1,14 @@
 # Daily Work Cycle · 有真实接收者的每日工作
 
-状态：2026-09-24 产品/自动化收敛，产品规范仍为ARCHITECTURE.md。此Profile组合现有能力，不新增workflowd、第二任务数据库或固定业务阶段机。通用交接/预算/恢复依 [COLLABORATION-CONTRACT](COLLABORATION-CONTRACT.md)，每职责详见ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
+> **这篇回答什么：** ServerOS 的一天怎么运转：采集与理解两条水位、对账后最多两个 Focus、按需展开研究与执行、报告与通知，以及哪些环节由定时节点唤醒、哪些必须由 Work Engine 驱动。
+>
+> **状态：** 设计 · 2026-09-24。这是产品与自动化的收敛，**不新增** workflowd、第二任务数据库或固定业务阶段机；产品规范仍以 [ARCHITECTURE.md](../ARCHITECTURE.md) 为准。
+>
+> **三条边界：** ① 一天不等于「必开两个新任务」，也不要求写代码或走完每个阶段；② 定时节点只唤醒有限 routine，不做业务判断；③ 报告写出来不等于这些步骤真的运行过。
+>
+> **怎么读：** §1–§2 是目标与一轮的输入输出；§3–§5 是授权、采集水位与 Focus；§6–§8 是按需研究、执行与交付；§9–§10 是故障与调度资格；§11–§17 是历史缺口、定时节点、`serverosd` 边界、自迭代与默认自主推进。
+
+**配套：** 通用交接、预算与恢复见 [COLLABORATION-CONTRACT](COLLABORATION-CONTRACT.md)；每项职责的场景合同见 ability-management 的 `ABILITY-SCENARIO-CONTRACTS.md`。
 
 ## 1. 已接受的目标
 

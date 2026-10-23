@@ -1,6 +1,12 @@
-# Ability Operating Model · 定时节点、职责Owner与serverosd边界
+# Ability Operating Model · 定时节点、职责 Owner 与 serverosd 边界
 
-状态：2026-09-24 产品行为收敛。本文把 ServerOS 的稳定 Ability 职责、Daily Cycle 的定时节点、Session/Workspace 等横向能力和唯一 Core 的边界放在一张图里。21个顶层语义职责不随 Skill / Plugin / MCP 重构改变；完整多层产品树见 ability-management [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md)。
+> **这篇回答什么：** ServerOS 的稳定 Ability 职责、每日循环里的定时节点、Session/Workspace 等横向能力，以及唯一 Core 的边界，怎么放在同一张图里；以及为什么定时唤醒不等于新的业务调度器。
+>
+> **状态：** 产品行为收敛 · 2026-09-24，2026-10-17 补充 Fleet V1 的设备 Ability 与 Core 分层。21 个顶层语义职责不随 Skill / Plugin / MCP 重构改变；完整多层产品树见 ability-management 的 [PRODUCT-ABILITY-TREE](https://github.com/ProfessorZhi/ability-management/blob/main/design/PRODUCT-ABILITY-TREE.md)。
+>
+> **三条边界：** ① Scheduled routine 不是新 Ability；② `serverosd` 只做 Node Core，不做业务总管；③ Scheduler 负责唤醒，不负责业务判断。
+>
+> **怎么读：** §1 是一句话模型；§2–§3 是 routine 与一天的节奏；§4–§8 是对账、继续责任、Core 边界、Scheduler 与自迭代；§9–§11 是职责表、LIVE 门与「不是第二调度器」；§12 是自动交接与唤醒；文末是产品职责树的按需入口。
 
 ## 2026-10-17 完整 Fleet V1 · 设备 Ability 与 Core 分层
 

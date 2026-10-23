@@ -1,13 +1,18 @@
 # Fleet V1：设备运行底座、统一 MCP、Operator Skills 与工作交付
 
-> **架构与发布范围决策 / DESIGN · 2026-10-16，2026-10-17 完整 Fleet V1 修订。** 不是已部署验收记录；线上功能、授权与 Runtime 能力以各自现时回读为准。
-> **当前范围与唯一实施清单：** [Complete Fleet V1 Delivery Campaign](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。三设备 Native Core + 网络/服务自愈 + CC/Codex/CloudCLI + Device Ability + 33-tool Fleet + 本地 CC Plugin/Skills，作为最终 Fleet V1 功能范围。旧文档所写 Codex 正式验收在 V2 的结论被此 owner 决策取代；未安装/未授权的能力仍必须明确列为 BLOCKED，不能虚构已接通。开发优先 Tokyo/Dell，Windows 只做最终必需原生验收，ChatGPT App2/插件注册非当前开发关键路径。
+> **这篇回答什么：** 一个由多台设备组成的 Fleet，每台机器上分别跑什么、边界在哪、跨设备工作靠什么约束；以及 V1 验收到哪里结束、V2 从哪里开始。
 >
-> **V2 Agent 身份、Session 资源化、Assignment、分层委派与消息通信的唯一专题架构**：
-> [Agent Identity, Session Resources and Multi-Agent Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md)。
-> 本文只定义 **Fleet V1 的执行拓扑与验收边界**，不再建第二份 V2 身份规范。
+> **状态：** 设计基线 2026-10-16，2026-10-17 修订完整 V1 范围。这是**范围与拓扑决策，不是已部署验收记录**；线上功能、授权与 Runtime 能力以各自现时回读为准。
+>
+> **怎么读：** §1–§3 是产品定义与三类设备的分工；§4 是客户端插件与设备能力的区别；§5 是一条工作如何跨设备流动、文件落在哪；§6 是 V1 验收门与 V2 分界；§7 是依赖的既有规范。
+
+**当前实施范围：** [Complete Fleet V1 Delivery Campaign](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。三设备 Native Core + 网络/服务自愈 + CC/Codex/CloudCLI + Device Ability + Fleet 工具面 + 本地 CC Plugin/Skills 构成 V1 的功能范围。未安装或未授权的能力必须明确列为 BLOCKED，不能因为设计存在就当作已接通。开发优先 Tokyo/Dell，Windows 只做最终必需的原生验收；ChatGPT App2 与插件注册不在当前关键路径上。
+
+**V2 专题：** Agent 身份、Session 资源化、Assignment、分层委派与消息通信只在 [Agent Identity, Session Resources and Multi-Agent Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md) 中定义。本文只定义 Fleet V1 的执行拓扑与验收边界，不再建第二份 V2 身份规范。
 
 ## 1. 产品定义：各设备 ServerOS 加速原生 Agent，Fleet 连接它们
+
+这一节定义 Fleet 与 ServerOS 的关系：每台设备自己加速原生 Agent，Fleet 只负责连接，而不是让东京的模型代替所有机器推理。
 
 ServerOS 在每个受管设备/OS 用户内增强 Claude Code 等原生 Agent 的工作条件：清晰的资源与健康事实、正确 Workspace/Context/Ability、Runtime 准入、可信授权、工作证据，以及对指定服务经批准的安全自启/自愈。它**不重写模型解码器、不在 C++ Core 中运行 LLM 业务决策、不接管 Claude Code 的原生工具**。
 
@@ -32,6 +37,8 @@ Yale CloudCLI（@yalehwang/cloudcli）是目前可用的原生 Agent Session/工
 这不是“东京一个模型代替三台机器推理”。东京保存工作权威、协调与交付；实际代码、推理、测试、图形/网络操作由合适的设备和原生 Agent 执行。**一个统一 MCP 入口不能消除控制面可用性风险**：节点在东京不可达时只能在已有授权与资源预算内维持局部安全行为，不能偷偷扩权或发明新的主工作状态。
 
 ## 2. 每个设备 ServerOS Core / Node / Runtime / Ability 的边界
+
+这一节列出每台设备上各组件的边界，以及「进程存在、能接通、功能可用、已验收」这四种不同的事实。
 
 | 组件 | 负责的真实问题 | 明确不拥有 |
 | --- | --- | --- |
@@ -80,6 +87,8 @@ V1 **必须**拥有对已明确批准的本用户服务的本机受限恢复能�
 
 ## 3. 三类设备分工，新增设备无需重做 Plugin
 
+这一节说明三类设备各自做什么，以及新增一台设备要走哪些步骤，而不是复制插件。
+
 | 节点 | 主要职责 | 约束 |
 | --- | --- | --- |
 | **Tokyo（共享 Work Node）** | 飞书信息增量、结构化认识、Work/版本/项目主工作区、主要开发与集成、Fleet Gateway、日报归档和汇报 | 保护共享机其他 OS user/Agent，不默认接收最敏感个人资料或任意生产原始日志 |
@@ -94,6 +103,8 @@ Windows→东京 Claude Web/noVNC 特殊隧道和 Remote Desktop Control 是 Edg
 
 ## 4. Operator Plugin 与设备 Ability 的关系
 
+这一节区分客户端插件里的 Operator Skills 与设备上的 Ability，避免把它们混成同一张能力表。
+
 面向 ChatGPT/Claude Chat/本地 Claude Code 的 **Fleet Plugin 只做薄客户端适配**。其概念组合是：
 
 1. 一个可认证的远程 Fleet MCP 入口和当前真实工具表面；
@@ -102,13 +113,15 @@ Windows→东京 Claude Web/noVNC 特殊隧道和 Remote Desktop Control 是 Edg
 
 **Operator Skills 不等于 Device Abilities**，不能把全部机器内 Skill/CLI 的正文复制到 ChatGPT 里。当前能力权威是 [ability-management](https://github.com/ProfessorZhi/ability-management) 的 manifest；同一 Ability 的来源/Revision 只注册一次，设备 Installation/Ready/Supported 则逐个观测。一个 Agent 是否能调用，先核当前 Ability × Provider × Device Binding × Runtime × Target × Health × Authorization。
 
-声明 33 个工具不等于“可做 33 项写操作”；六个 Scope 只是可能的权限类，与发给此 token 的 Scope、device allow flags、本地 owner floor、Work/OS 协议分别核验。权限、默认模型和 permissionMode 必须区分 requested / resolved / effective；不能因为 CLI 参数包含“default”或某配置文件缺失就声称实际模型是既定 DeepSeek。
+工具面里的条目数不等于“可做的写操作数”；六个 Scope 只是可能的权限类，与发给此 token 的 Scope、device allow flags、本地 owner floor、Work/OS 协议分别核验。权限、默认模型和 permissionMode 必须区分 requested / resolved / effective；不能因为 CLI 参数包含“default”或某配置文件缺失就声称实际模型是既定 DeepSeek。
 
 **V1 当前的第一个正式客户端验收者是东京本地 Claude Code Fleet Plugin**（一个经真实认证的 MCP Server + 一套共享 Operator Skills 源），并需要至少验证实际工具发现、负面授权、受管 Session 生命周期、本机 Core/网络健康、Device Ability 调用和原始回执。未来 ChatGPT/Claude Chat 的格式/OAuth/图标/飞书 App2 属后续部署工作；不能因为 CC 本地通过就声称 ChatGPT 已安装。CC Plugin 是 Fleet 使用指南而不是 Device Ability 的复制件。
 
 Operator Skills 的初始五个核心入口分别是 device-and-session-discovery、reuse-idle-session、create-with-grants、evidence-review 和 safety-boundaries；按需以 references 扩充运行时/模型核验、Tailscale/SSH/Selkies/RDC 故障分析、恢复审批、Ability route 和版本回滚，不复制新 registry。
 
 ## 5. 主要业务流程在东京自动接续，而不是固定步骤仪式
+
+这一节给出一条工作跨设备流动的路径，并规定文件落在哪里、谁是权威。
 
 ~~~text
 飞书与批准的其他来源
@@ -137,6 +150,8 @@ Dell 任务临时目录可以按 owner/Work/Run 做已结束工件 dry-run 清�
 
 ## 6. Fleet V1 验收与后续 V2 分界
 
+这一节列出 V1 的验收门，并说明 V2 新增什么、哪些不回填为 V1。
+
 **V1 验收门：**
 - 经授权设备/OS user 上 Native Core 的实际采集、身份/新鲜度、服务与资源状态、受管重启后自启、必要服务的有界恢复/拒绝及复测；生产动作仍需要各 unit 单独批准。
 - **CC-first 里程碑**：Claude Code + CloudCLI/Fleet 的实际多 Runtime 寻址、发现/创建/发送/读取/中断/继续所支持的生命周期，以及项目/有效模型/permissionMode/账号/授权负测；**完整 V1 验收还必须包含真实 Codex 与 CloudCLI/Node/Fleet 的三机相应 Runtime/Session 支持（真实支持/授权的 profile），不得用 registry 声明或 Windows mock 充当验收。**
@@ -149,6 +164,8 @@ Dell 任务临时目录可以按 owner/Work/Run 做已结束工件 dry-run 清�
 截至本文决策日，候选源码、PR 与合成/toy 验收**不等于三设备生产部署或本地 CC authenticated E2E 已通过**。[Fleet 完整 V1 Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244)、[完整 V1 实施计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 和 [早期计划 Issue #189](https://github.com/ProfessorZhi/serveros/issues/189)、[Ability Journey #190](https://github.com/ProfessorZhi/serveros/issues/190) 和各自真实回执是实施范围与证据入口。
 
 ## 7. 直接依赖的既有规范
+
+这一节指向本文依赖的规范；具体语义以那些文档为准。
 
 - [总架构](../../ARCHITECTURE.md)、[Ability Operating Model](../ABILITY-OPERATING-MODEL.md)（21 项职责）、[Native 工作环境](NATIVE-WORK-ENVIRONMENT.md)。
 - [Agent Session 合同](../../runtime/agent-session-contract.yaml)、[Agent Runtime Model](../agent-runtime-model.md)。

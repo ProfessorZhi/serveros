@@ -1,14 +1,12 @@
-# Fleet Next V1 human acceptance runbook
+# Fleet Next V1 人工验收手册
 
-Who this is for: the independent reviewer who has to decide whether to look at a
-`REVIEW_CANDIDATE_ONLY` verdict and take it further. Nothing in this repository
-deploys, installs, cuts over or triggers a rollout, and this runbook does not
-either — every step below is something a person *looks at*.
-
-The offline gate (`fleet_mcp/release_evidence.py`) and the admission adviser
-(`fleet_mcp/health_admission.py`) only decide whether the paperwork is
-well-formed enough to be worth your time. Neither can tell you a receipt is
-real.
+> **这篇回答什么：** 独立评审者拿到 `REVIEW_CANDIDATE_ONLY` 结论之后，具体看哪些东西、按什么顺序看、哪些空白必须记成 UNKNOWN。本文的每一步都是「看」：不部署、不安装、不切换、不发布。
+>
+> **状态：** 运行手册。工具面为 `34 tools / 6 scopes`（`fleet-mcp-5`）；验收时以 `fleet_mcp/version.py` 与实际 `tools/list` 回读为准，不要照抄本页数字。
+>
+> **怎么读：** §0 先跑离线检查，知道哪些结论有机器背书；§1–§3 是评审资格、端点与工具面；§4 是每设备/账号矩阵；§5 是机器检查清单；§6 是「被要求启动一个 run」时的准入判断；§7 是必须留下什么记录。
+>
+> **底线：** 离线门（`release_evidence.py`）与准入建议（`health_admission.py`）只判断材料是否成形，**不能证明任何回执是真的**。fixture 里的 `provenance: LIVE` 是门要求的字段，不是现场测量。
 
 ## 0. What the offline suite does and does not cover
 
