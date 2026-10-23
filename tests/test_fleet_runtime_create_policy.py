@@ -174,8 +174,8 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
 
         This is the case the three words exist for. `requested` is null because
         the caller named no model, `resolved` is the owner-approved default, and
-        `effective` is null because nothing has read back what the device
-        applied. Reporting `resolved` as effective would assert a readback the
+        `effective` carries no value because this fake device reported nothing
+        back. Reporting `resolved` as effective would assert a readback the
         surface never took, and the one case that matters — a device that
         quietly applies its own default — is exactly where the two differ.
         """
@@ -188,7 +188,9 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual(defaults["resolved"]["model"], M[0])
         self.assertEqual(defaults["resolved"]["permission_mode"], "bypassPermissions")
         self.assertEqual(defaults["resolved"]["by"], "runtime/project policy")
-        self.assertIsNone(defaults["effective"])
+        self.assertIsNone(defaults["effective"]["model"])
+        self.assertIsNone(defaults["effective"]["permission_mode"])
+        self.assertIn("UNKNOWN", defaults["effective_reason"])
 
     def test_an_explicit_request_survives_as_requested(self):
         """`resolve()` REBINDS the names, so this is what it used to destroy.
@@ -210,14 +212,23 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual(defaults["resolved"]["permission_mode"], "default")
 
     def test_effective_is_never_inferred_from_resolved(self):
-        """Even when the two agree, `effective` stays null — the claim is what
-        would be wrong, not the value."""
+        """Even when the two agree, `effective` stays empty without a readback.
+
+        The value the device reported would be fine to relay — this fake device
+        reports nothing, so the honest answer is null. Copying `resolved` into
+        it would be the claim that is wrong, not the value.
+        """
         self.configure()
         self.h.second_provider.create = lambda **kw: {"sessionId": "session-x"}
         for kwargs in ({}, {"model": M[2], "permission_mode": "default"}):
             with self.subTest(kwargs=sorted(kwargs)):
                 result = self.h.create(runtime=SECOND, project=PROJECT, **kwargs)
-                self.assertIsNone(result["defaults"]["effective"])
+                effective = result["defaults"]["effective"]
+                self.assertIsNone(effective["model"])
+                self.assertIsNone(effective["permission_mode"])
+                self.assertNotEqual(
+                    effective["permission_mode"],
+                    result["defaults"]["resolved"]["permission_mode"])
                 self.assertIn("UNKNOWN", result["defaults"]["effective_reason"])
 
     def test_without_a_policy_rule_nothing_is_attributed_to_one(self):
@@ -227,7 +238,7 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         result = self.h.create(runtime=SECOND, project=PROJECT)
         defaults = result["defaults"]
         self.assertIsNone(defaults["resolved"]["by"])
-        self.assertIsNone(defaults["effective"])
+        self.assertIsNone(defaults["effective"]["permission_mode"])
 
     def test_no_operator_create_grant_denies_even_when_scope_is_present(self):
         self.configure(owner=False)
