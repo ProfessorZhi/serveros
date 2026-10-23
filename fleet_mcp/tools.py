@@ -744,7 +744,8 @@ TOOLS: tuple[Tool, ...] = (
             "properties": {
                 "device": _string(DEVICE_REF_DOC),
                 "project_id": _string(
-                    "The project id, exactly as fleet_cloudcli_projects_list returns it."
+                    "The project id: `fleet_create_project` returns it as `project_id`, "
+                    "and `fleet_cloudcli_projects_list` reports the same value as `id`."
                 ),
                 "confirm_path": _string(
                     "The project's own `path`, exactly as the catalogue reports it. "
