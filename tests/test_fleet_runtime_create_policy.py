@@ -359,6 +359,58 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual([name for name, _ in seen],
                          ["session_get", "session_reconfigure"])
 
+    def test_a_wildcard_create_grant_is_the_ceiling_for_a_project_it_covers(self):
+        """One reading of `create_allow`: a project the wildcard covers can be
+        reconfigured under it, exactly as it can be created under it.
+
+        Before this, `create_allow["*"]` minted sessions and then reported
+        "the project is not in `policy.create_allow`" the moment one was
+        reconfigured — the sweep read as a configuration that no edit could
+        satisfy while `allow_wildcard_create` was on.
+        """
+        from fleet_mcp.fleet import Principal
+        from fleet_mcp.scopes import SCOPE_CONTROL, SCOPE_READ
+
+        providers = dict(self.h.config.providers)
+        providers[KEY] = replace(providers[KEY], allow_control=True)
+        wildcard_grant = CreateGrant(permission_modes=("bypassPermissions",))
+        base = replace(
+            self.h.config.policy, create_allow={"*": wildcard_grant},
+            allow_wildcard_create=True,
+            operator_grants={"oauth:test": {KEY: ("create", "control")}})
+        self.h.config = replace(self.h.config, providers=providers, policy=base)
+        self.h.service.config = self.h.config
+
+        seen: list[str] = []
+
+        def fake_native(tool, arguments, *, session_ref=None):
+            seen.append(tool)
+            if tool == "session_get":
+                return {"sessionId": OWNER_ID, "projectId": PROJECT}
+            return {"ok": True}
+
+        self.h.second_provider.native_call = fake_native
+        principal = Principal(name="oauth:test",
+                              scopes=frozenset((SCOPE_READ, SCOPE_CONTROL)),
+                              credential_kind="oauth")
+        call = dict(device_ref=DEVICE, native_tool="session_reconfigure",
+                    arguments={"session": OWNER_ID,
+                               "permissionMode": "bypassPermissions"},
+                    session_ref=f"{DEVICE}|{SECOND}|{OWNER_ID}",
+                    project=PROJECT, runtime=SECOND)
+
+        self.h.service.native_call(principal, **call)
+        self.assertEqual(seen, ["session_get", "session_reconfigure"])
+
+        # Turning the wildcard off narrows the SAME call again: the grant is
+        # the configuration's, not a property of the project.
+        self.h.config = replace(self.h.config, policy=replace(
+            base, allow_wildcard_create=False, create_allow={}))
+        self.h.service.config = self.h.config
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service.native_call(principal, **call)
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+
     def test_reconfigure_does_not_set_unmentioned_permission_mode(self):
         self.configure()
         provider = SimpleNamespace(native_call=lambda *a, **kw: {"projectId": PROJECT})

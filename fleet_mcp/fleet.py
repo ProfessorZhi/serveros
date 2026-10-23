@@ -871,7 +871,7 @@ class FleetService:
             )
         grants = self.config.policy.create_allow
         if grants.get(project) is None:
-            wildcard = grants.get("*") if self.config.policy.allow_wildcard_create else None
+            wildcard = self._configured_create_grant("*")
             if wildcard is None:
                 raise refuse(
                     APPROVAL_REQUIRED,
@@ -887,6 +887,26 @@ class FleetService:
                 )
             return wildcard
         return grants[project]
+
+    def _configured_create_grant(self, project: str):
+        """The binding's create grant for one project, wildcard included.
+
+        ONE reading of `policy.create_allow`, used by every ceiling that asks
+        what a project admits. It exists because there were two: session
+        creation honoured `create_allow["*"]` when `allow_wildcard_create` was
+        on, while the reconfigure ceiling read `create_allow.get(project)` and
+        so saw nothing for a project covered only by the wildcard — a session
+        could be MINTED under a grant it was then unable to be RECONFIGURED
+        under, with the sweep reading as a refusal that no configuration could
+        lift. `"*"` passes through unharmed: it is a real key, and the caller
+        asking for it is asking for the wildcard entry itself.
+        """
+        grants = self.config.policy.create_allow
+        if project != "*" and grants.get(project) is not None:
+            return grants[project]
+        if self.config.policy.allow_wildcard_create:
+            return grants.get("*")
+        return None
 
     def _may_name_mode_and_model(
         self, device_ref: str, project: str, grant: CreateGrant, *,
@@ -2762,7 +2782,7 @@ class FleetService:
                  if principal is not None else None)
         grant = (self._owner_project_grant(principal, device_ref, actual, actual_runtime,
                                           key.provider) if owner is not None
-                 else self.config.policy.create_allow.get(actual))
+                 else self._configured_create_grant(actual))
         if grant is None:
             raise refuse(
                 WRITE_NOT_GRANTED,
