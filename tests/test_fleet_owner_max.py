@@ -130,7 +130,9 @@ def test_status_reports_the_roots_the_wildcard_admits(tmp_path):
     opaque = Principal("oauth:fleet-some-new-client", frozenset(ALLOWED_SCOPES), "oauth")
     reported = h.service.status(opaque)["owner_access"]
     assert reported == [{"device_ref": TOKYO, "runtime": "claude",
-                         "root_refs": ["work"], "permission_mode": "bypassPermissions"}]
+                         "root_refs": ["work"],
+                         "permission_mode": "bypassPermissions",
+                         "admitted_by": "owner-max"}]
 
 
 def test_an_exact_entry_shadows_the_wildcard(tmp_path):

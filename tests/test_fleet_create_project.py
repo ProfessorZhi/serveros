@@ -82,6 +82,65 @@ def test_project_scope_revocation_precedes_offline_replay(tmp_path):
     assert len(h.providers[TOKYO].project_calls) == 1
 
 
+def _grant_admitted(tmp_path, verbs=("create",), *, allow_create=False):
+    """The standalone HTTP surface: no owner_max, roots authored, grant named."""
+    h = project_service(tmp_path)
+    binding = replace(h.config.providers[TOKYO], allow_create=allow_create)
+    config = replace(h.config, providers={TOKYO: binding}, policy=replace(
+        h.config.policy, owner_max={}, operator_grants={"*": {TOKYO: list(verbs)}}))
+    h.config = config
+    h.service.config = config
+    return h
+
+
+def test_a_create_grant_on_owner_roots_mints_without_the_owner_profile(tmp_path):
+    """`owner_max` needs a durable ledger the HTTP surface does not have."""
+    h = _grant_admitted(tmp_path)
+    principal = Principal("oauth:any-client", owner_principal(h.config).scopes, "oauth")
+    result = h.service.create_project(principal, device=TOKYO, root="work",
+                                      name="alpha", idempotency_key="granted")
+    assert result["admitted_by"] == "operator-grant"
+    assert result["project_path"] == str(tmp_path / "alpha")
+    assert result.get("fresh_directory_created") is True
+
+
+@pytest.mark.parametrize("verbs, owner_access", [
+    (("send", "control"), "present"),      # no create verb
+    (("create",), "absent"),               # no authored roots
+])
+def test_the_grant_path_needs_both_halves(tmp_path, verbs, owner_access):
+    h = _grant_admitted(tmp_path, verbs)
+    if owner_access == "absent":
+        binding = replace(h.config.providers[TOKYO], owner_access=None)
+        h.service.config = replace(h.config, providers={TOKYO: binding})
+    principal = Principal("oauth:any-client", owner_principal(h.config).scopes, "oauth")
+    with pytest.raises(FleetRefusal) as caught:
+        h.service.create_project(principal, device=TOKYO, root="work", name="alpha")
+    assert caught.value.code == "APPROVAL_REQUIRED"
+    assert h.providers[TOKYO].project_calls == []
+
+
+def test_the_grant_path_does_not_carry_bypass_permissions(tmp_path):
+    """Roots, not authority: a session minted under it takes create_allow."""
+    from fleet_mcp.config import CreateGrant
+    h = _grant_admitted(tmp_path, allow_create=True)
+    principal = Principal("oauth:any-client", owner_principal(h.config).scopes, "oauth")
+    result = h.service.create_project(principal, device=TOKYO, root="work",
+                                      name="alpha", idempotency_key="granted")
+    h.service.config = replace(h.config, policy=replace(
+        h.config.policy, create_allow={"just-created": CreateGrant()}))
+    h.service.create_session(principal, device=TOKYO, project=result["project_id"])
+    assert h.providers[TOKYO].created[0]["permission_mode"] != "bypassPermissions"
+
+
+def test_status_reports_the_grant_roots_without_a_mode(tmp_path):
+    h = _grant_admitted(tmp_path)
+    principal = Principal("oauth:any-client", owner_principal(h.config).scopes, "oauth")
+    assert h.service.status(principal)["owner_access"] == [
+        {"device_ref": TOKYO, "runtime": "claude", "root_refs": ["work"],
+         "permission_mode": None, "admitted_by": "operator-grant"}]
+
+
 @pytest.mark.parametrize("reply", [
     {"projectId": "id", "path": "/different", "freshDirectoryCreated": True},
     {"projectId": "id", "freshDirectoryCreated": False},

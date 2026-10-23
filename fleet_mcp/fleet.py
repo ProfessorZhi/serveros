@@ -246,6 +246,66 @@ class FleetService:
             return None
         return binding.owner_access
 
+    def _project_root_profile(self, principal: Principal, device_ref: str,
+                              namespace: str):
+        """The roots this caller may MINT a project below, and why.
+
+        Two admissions, deliberately different in what they carry:
+
+        *   `("owner-max", profile)` — the configured owner. Minting and the
+            `bypassPermissions` default for sessions in the new project are the
+            same authority, and that authority is why owner-max requires a
+            durable dispatch ledger the standalone HTTP surface does not have.
+        *   `("operator-grant", profile)` — a caller holding the `create` verb on
+            a device the operator gave roots for. It carries the ROOTS only. It
+            is not owner-max: `_owner_project_grant` still asks owner-max, so a
+            session minted under this admission takes the normal create policy
+            and may not name `bypassPermissions` or a model. Creation is not
+            smuggled in as a way to widen one's own session authority.
+
+        Everything else — no binding, no profile, a personal device, or no
+        `create` verb — is `None`, which the caller answers with
+        APPROVAL_REQUIRED. An empty `owner_max` and an absent `owner_access`
+        block therefore both mean refusal, which is the default this deployment
+        ships.
+        """
+        owner = self._owner_profile(principal, device_ref, namespace)
+        if owner is not None:
+            return owner, "owner-max"
+        binding = self.config.namespace_binding(device_ref, namespace)
+        if (binding is None or not binding.enabled or binding.owner_access is None
+                or not self._device_is_grant_eligible(device_ref)):
+            return None
+        if "create" not in self._operator_grant_verbs(principal, device_ref, namespace):
+            return None
+        return binding.owner_access, "operator-grant"
+
+    def owner_access_report(self, principal: Principal) -> list[dict[str, Any]]:
+        """What `fleet_status.owner_access` shows: where THIS caller may mint.
+
+        `permission_mode` is reported only where it is actually in force. An
+        `operator-grant` admission carries the roots and nothing else, so it
+        reports `None` rather than repeating the profile's `bypassPermissions`
+        — a status that named a mode the gate would refuse is worse than no
+        status at all.
+        """
+        report = []
+        for key in sorted(self.config.providers):
+            binding = self.config.providers[key]
+            admitted = self._project_root_profile(principal, binding.device_ref,
+                                                  binding.runtime)
+            if admitted is None:
+                continue
+            profile, how = admitted
+            report.append({
+                "device_ref": binding.device_ref,
+                "runtime": binding.runtime,
+                "root_refs": list(profile.project_roots),
+                "permission_mode": profile.permission_mode if how == "owner-max" else None,
+                "admitted_by": how,
+            })
+        return report
+
     @staticmethod
     def _create_namespace(binding, family):
         return family if binding.multiplex_native_families else binding.runtime
@@ -1577,11 +1637,17 @@ class FleetService:
             raise refuse(BAD_REQUEST, "device is required")
         device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
         binding = self.config.namespace_binding(device_ref, runtime)
-        profile = self._owner_profile(principal, device_ref, runtime)
+        admitted = self._project_root_profile(principal, device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
-        if profile is None:
-            raise refuse(APPROVAL_REQUIRED, "project creation requires the selected owner-max profile")
+        if admitted is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                "project creation requires the selected owner-max profile, or the "
+                "`create` operator grant on a device whose operator authored "
+                "project roots",
+            )
+        profile, admitted_by = admitted
         if display_name is not None and (not isinstance(display_name, str)
                 or not display_name.strip() or len(display_name) > 256
                 or any(ord(c) < 32 for c in display_name)):
@@ -1622,7 +1688,7 @@ class FleetService:
                           device_ref=device_ref, runtime=runtime, project_id=receipt["project_id"])
         return {**receipt, "device_ref": device_ref, "runtime": runtime,
                 "binding_runtime": binding.runtime, "idempotent_replay": False,
-                "fresh_directory_created": True,
+                "fresh_directory_created": True, "admitted_by": admitted_by,
                 "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
 
     # Modes that never wait for a person, and modes that do. These classify a
@@ -2738,16 +2804,7 @@ class FleetService:
                 "max_read_messages": self.config.policy.max_read_messages,
             },
             "principal": principal.as_dict(),
-            "owner_access": [
-                {"device_ref": namespace.partition("|")[0],
-                 "runtime": namespace.partition("|")[2] or BASE_RUNTIME,
-                 "root_refs": list(profile.project_roots),
-                 "permission_mode": profile.permission_mode}
-                for namespace in self._owner_namespaces(principal)
-                if (profile := self._owner_profile(
-                    principal, namespace.partition("|")[0],
-                    namespace.partition("|")[2] or BASE_RUNTIME)) is not None
-            ],
+            "owner_access": self.owner_access_report(principal),
             "recent_audit": self.audit.tail(20),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
