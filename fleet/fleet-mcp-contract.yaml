@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-5
+tool_surface_revision: fleet-mcp-6
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -339,6 +339,44 @@ tools:
       Accepted replay returns before provider IO; unknown outcomes stay fenced.
       Process-local standalone mode is reported, never a restart guarantee.
 
+  fleet_delete_project:
+    verb: write
+    answers: whether a project row was archived, or permanently removed with its session rows and transcripts
+    answered_by: the target CloudCLI project service and existing project database (native `project_delete`)
+    schema: >-
+      device, project_id and confirm_path are required; optional force defaults to
+      false. project_id is the catalogue's own id, never a name — the gateway
+      resolves names to ids before a write, and this surface does not repeat that
+      resolution. confirm_path must equal the row's own `path` as read from the
+      device before anything is touched: an id is opaque and easy to paste wrong,
+      a path is what a person recognises. No directory path is accepted as a
+      target and no caller path is created.
+    authorization: >-
+      fleet:control, then the device's `allow_control` (or a selected owner-max
+      profile), then the `control` operator grant for this principal on that
+      device. Deliberately NOT routed through `allow_create`: removal is not
+      minting, and a device trusted to create is not thereby trusted to destroy.
+      There is no per-session half because a project row is not a session.
+    effect: >-
+      force:false archives the row: the directory and the transcripts are
+      untouched and the archive is reversible. force:true removes the session
+      rows and their transcript files, then the project row. The project
+      DIRECTORY on disk is never removed by this call, and the answer states
+      `directory_removed: false` rather than leaving the silence to be read as an
+      omission.
+    freshness: >-
+      The catalogue is read BEFORE the call (archived rows included) to resolve
+      the target and check `confirm_path`, and read AGAIN afterwards: an archive
+      must come back listed as archived and a force delete must come back absent
+      even with archived included. A device that acknowledges the call and still
+      contradicts the catalogue is INTERNAL with `retry_safe: false` — the effect
+      is unconfirmed, and a caller must reconcile rather than retry blind.
+    idempotency: >-
+      None, and none is needed: the second call re-reads the catalogue and
+      answers from it — PROJECT_NOT_FOUND after a force delete, `was_archived:
+      true` after an archive. That is a statement about the present; a cached
+      answer would replay the past.
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -604,22 +642,28 @@ authorization:
 # that machine runs.
 
 native_mirror:
-  # The CloudCLI native surface, inherited whole. The 22 verbs are NOT
+  # The CloudCLI native surface, inherited whole. The 31 verbs are NOT
   # enumerated here: the surface is DERIVED once, in
   # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
-  # hand-written ten. Restating 22 rows here would be a second copy that drifts
-  # the first time CloudCLI adds a parameter.
+  # hand-written eleven. Restating 31 rows here would be a second copy that
+  # drifts the first time CloudCLI adds a parameter.
+  #
+  # Two of the device's verbs are NOT mirrored: `project_create` and
+  # `project_delete` are reached through the authored `fleet_create_project` /
+  # `fleet_delete_project`, which is what `EXTENSION_CLAIMED_NATIVE_TOOLS`
+  # records. The device declares 33 verbs; this surface mirrors 31 and claims 2.
   declared_in: fleet_mcp/cloudcli_native.py#NATIVE_TOOLS
   manifest_schema: serveros/fleet-cloudcli-native-manifest.v1
   prefix: 'fleet_cloudcli_'
   native_server: CloudCLI
-  native_version_recorded: '1.39.0'
-  count: 22
-  # The hand-written ten, the 22 mirrored verbs, plus the two read-only tools
+  native_version_recorded: '1.40.0'
+  count: 31
+  extension_claimed: ['project_create', 'project_delete']
+  # The hand-written eleven, the 31 mirrored verbs, plus the two read-only tools
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
-  # line is a copy of it, and it said 31 while the surface served 33.
-  served_total: 34
+  # line is a copy of it.
+  served_total: 44
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

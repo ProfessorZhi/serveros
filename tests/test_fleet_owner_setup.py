@@ -193,4 +193,5 @@ def test_full_built_runtime_starts_owned_entry_outside_checkout(tmp_path):
     responses = {row["id"]: row for row in map(json.loads, result.stdout.splitlines())}
     assert responses[1]["result"]["serverInfo"]["name"] == "serveros-fleet-mcp"
     names = {row["name"] for row in responses[2]["result"]["tools"]}
-    assert len(names) == 34 and "fleet_create_project" in names
+    assert len(names) == 44 and "fleet_create_project" in names
+    assert "fleet_delete_project" in names

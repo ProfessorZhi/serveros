@@ -135,7 +135,7 @@ runtime_record / runtime_binding / health / policy / task_context / providers`�
 2. 它只调用 `effective.project_device(...)`，**不重建**任何判断；
 3. 它的 `source_revision` 就是它读的 git revision，随回执一起返回；
 4. 它落地时工具计数只加一 —— 这是一个**读**面，与两个既有的 capability read 同级，
-   而不是一个新的可执行动词。（本段写于 33 工具时期；今天是 `fleet-mcp-5`，
+   而不是一个新的可执行动词。（本段写于 33 工具时期；今天是 `fleet-mcp-6`，
    34 = 10 手写 + 22 镜像 + 2 能力读，所以这个读面落地后是第 35 个。）
 
 在 (1) 被 B 落地之前，本模块只能被直接 import 或在测试里跑。

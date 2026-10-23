@@ -1,4 +1,4 @@
-"""The eight tools ChatGPT sees, and nothing else.
+"""The hand-written Fleet tools ChatGPT sees, and nothing else.
 
 Naming
 ------
@@ -13,11 +13,13 @@ Annotations
 -----------
 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` are
 declared, not inferred from the description text. A connector UI that gates
-writes on the annotation has to be able to trust it: exactly two tools here are
-not read-only (`fleet_send_to_session` and `fleet_create_session`), neither is
-destructive in the sense that it deletes anything, and both declare
-`idempotentHint: false` because CloudCLI has no idempotency of its own and this
-surface only approximates it with a caller-supplied key.
+writes on the annotation has to be able to trust it. Four tools here are not
+read-only: `fleet_send_to_session` and `fleet_create_session` (neither destroys
+anything, both `idempotentHint: false` because CloudCLI has no idempotency of its
+own), `fleet_create_project` (mints a directory and a row), and
+`fleet_delete_project` — the one destructive tool on this surface, which archives
+by default and only removes rows and transcripts when `force` is explicitly
+true.
 
 Conventions
 -----------
@@ -227,6 +229,13 @@ def _create_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.create_project(
         ctx.principal, device=args.get("device"), root=args.get("root"), name=args.get("name"),
         display_name=args.get("display_name"), idempotency_key=args.get("idempotency_key"),
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
+def _delete_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.delete_project(
+        ctx.principal, device=args.get("device"), project_id=args.get("project_id"),
+        confirm_path=args.get("confirm_path"), force=bool(args.get("force", False)),
         runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
 
 
@@ -712,6 +721,48 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": False, "openWorldHint": True},
         handler=_create_project,
+    ),
+    Tool(
+        name="fleet_delete_project",
+        title="Archive or permanently remove a project",
+        description=(
+            "Archive a project (the default, reversible: the directory and the "
+            "transcripts are untouched) or permanently remove its session rows and "
+            "transcript files with `force: true`. The project DIRECTORY on disk is "
+            "never removed.\n\n"
+            "`confirm_path` is required and must repeat the project's own `path` as "
+            "`fleet_cloudcli_projects_list` reports it (archived projects included): "
+            "a delete is confirmed against the device's catalogue, never against an "
+            "id alone. The answer is verified by re-reading that catalogue — an "
+            "archive must come back listed as archived and a force delete must come "
+            "back absent — so `isError: false` means the effect was observed, not "
+            "merely acknowledged. An id with no row is PROJECT_NOT_FOUND, which is "
+            "also what a second force delete answers."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "project_id": _string(
+                    "The project id, exactly as fleet_cloudcli_projects_list returns it."
+                ),
+                "confirm_path": _string(
+                    "The project's own `path`, exactly as the catalogue reports it. "
+                    "A mismatch is refused before anything is touched."
+                ),
+                "force": _boolean(
+                    "false (default) archives the row; true permanently removes the "
+                    "session rows and transcript files. Neither removes the directory.",
+                    default=False,
+                ),
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+            },
+            "required": ["device", "project_id", "confirm_path"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": True,
+                     "idempotentHint": False, "openWorldHint": True},
+        handler=_delete_project,
     ),
 )
 

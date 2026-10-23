@@ -1,0 +1,1485 @@
+{
+  "schema": "serveros/cloudcli-tools-list-capture.v1",
+  "captured_at_utc": "2026-10-23T03:38:08Z",
+  "captured_from": "http://127.0.0.1:3011/mcp  (the CloudCLI native gateway on device:tokyo-shared-dev-01)",
+  "server": {
+    "name": "claudecodeui-mcp-gateway",
+    "version": "0.1.0"
+  },
+  "cloudcli_package_version": "1.40.0-fleet.1",
+  "cloudcli_package_version_source": "/data/home/vince/.local/yale-cloudcli/lib/node_modules/@yalehwang/cloudcli/package.json -- read on this device. The tools/list response does NOT carry the CloudCLI package version; serverInfo reports the gateway module version above, which is a different number.",
+  "protocolVersion": "2025-06-18",
+  "verbatim_fields": [
+    "name",
+    "annotations",
+    "execution",
+    "_meta",
+    "inputSchema"
+  ],
+  "omitted_fields": [
+    "description",
+    "outputSchema"
+  ],
+  "omitted_because": "description and outputSchema are prose and bulk; neither is read by any assertion in the conformance tests.",
+  "tools": [
+    {
+      "name": "approval_answer",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN",
+          "APPROVAL_NOT_FOUND"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "allow": {
+            "type": "boolean"
+          },
+          "answers": {},
+          "message": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "requestId",
+          "allow"
+        ]
+      }
+    },
+    {
+      "name": "approvals_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "changes",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "session",
+                "run",
+                "interaction",
+                "quay_task",
+                "quay_gate",
+                "commit"
+              ]
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      }
+    },
+    {
+      "name": "draft_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "draft_set",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "draft_submit",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "SESSION_BUSY",
+          "DRAFT_EMPTY"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "mcp_usage_stats",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          },
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "tool",
+              "error_code",
+              "client"
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "groupBy"
+        ]
+      }
+    },
+    {
+      "name": "overview",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "A project reference: an exact id, an absolute directory path, or a name. A name resolves most-specific-first (exact id, then full path, then an exact title, then a case-insensitive title substring); an ambiguous or unknown reference is refused, never guessed. Write tools accept only an exact id, path or title."
+          }
+        }
+      }
+    },
+    {
+      "name": "project_create",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "projectPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Absolute project directory under this device workspace root; the caller cannot override the root."
+          },
+          "customName": {
+            "description": "Optional project display name; defaults to the directory name.",
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requireFresh": {
+            "default": false,
+            "description": "When true, atomically require a new final directory and new project row; refuse every existing or archived target.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "projectPath"
+        ]
+      }
+    },
+    {
+      "name": "project_delete",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The project id, exactly as projects_list reports it."
+          },
+          "force": {
+            "default": false,
+            "description": "false archives the project (reversible); true permanently removes its session rows and transcript files.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "projectId"
+        ]
+      }
+    },
+    {
+      "name": "projects_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "includeArchived": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "quay_snapshot",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "refresh": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "run_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "RUN_NOT_FOUND",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "waitSeconds": {
+            "type": "number"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ]
+      }
+    },
+    {
+      "name": "session_background",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "TASK_NOT_FOUND"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "stopTaskId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_cancel_queued",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN",
+          "QUEUED_MESSAGE_NOT_FOUND"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "messageUuid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "messageUuid"
+        ]
+      }
+    },
+    {
+      "name": "session_close",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_create",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED",
+          "UNSUPPORTED_PERMISSION_MODE",
+          "SESSION_CONFIGURATION_FAILED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "lifecycleMode": {
+            "type": "string"
+          },
+          "permissionMode": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      }
+    },
+    {
+      "name": "session_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_interrupt",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_read",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "latest",
+              "outline",
+              "around"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "aroundId": {
+            "type": "string"
+          },
+          "before": {
+            "type": "number"
+          },
+          "after": {
+            "type": "number"
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_reconfigure",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "UNSUPPORTED_PERMISSION_MODE"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "permissionMode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "session_search",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Literal text to find in stored session transcripts and titles. Not semantic."
+          },
+          "project": {
+            "description": "Restrict to one project reference, or several to aggregate across.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "provider": {
+            "description": "Restrict to one provider.",
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "speaker": {
+            "description": "Restrict matches to one speaker.",
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "any"
+            ]
+          },
+          "limit": {
+            "description": "How many sessions to return, 1..50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "description": "Continuation token from a previous call. Not stable across calls.",
+            "type": "string"
+          },
+          "since": {
+            "description": "Inclusive lower bound on a session last activity (ISO 8601). Out-of-window sessions are never scanned.",
+            "type": "string"
+          },
+          "until": {
+            "description": "Inclusive upper bound on a session last activity (ISO 8601). See `since`.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "Reserved; the only accepted value is 'fulltext'.",
+            "type": "string",
+            "enum": [
+              "fulltext"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "session_send",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "SESSION_BUSY"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "waitSeconds": {
+            "type": "number"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "message"
+        ]
+      }
+    },
+    {
+      "name": "session_start",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "sessions_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "idle",
+              "resident",
+              "any"
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      }
+    },
+    {
+      "name": "ui_clients_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "ui_focus_turn",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "turnId"
+        ]
+      }
+    },
+    {
+      "name": "ui_last_opened_session",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "ui_open_session",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "latest": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                },
+                "required": [
+                  "latest"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "messageId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "messageId"
+                ]
+              }
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "ui_open_task",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "taskId"
+        ]
+      }
+    },
+    {
+      "name": "ui_selected_text",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "ui_show_diff",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "filePath"
+        ]
+      }
+    },
+    {
+      "name": "ui_visible_context",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ],
+        "cloudcli/handlerBound": true
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "navigationId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -487,9 +487,9 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
     def test_no_tool_and_no_scope_was_added(self):
         from fleet_mcp import scopes
         from fleet_mcp.version import TOOL_SURFACE_REVISION
-        self.assertEqual(len(tools_mod.SERVED_TOOLS), 34)
+        self.assertEqual(len(tools_mod.SERVED_TOOLS), 44)
         self.assertEqual(len(scopes.ALLOWED_SCOPES), 6)
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-5")
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-6")
         self.assertNotIn("core_lite_status",
                          [t.name for t in tools_mod.SERVED_TOOLS])
 
@@ -752,7 +752,7 @@ class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
     def test_fleet_exposes_no_device_ability_tool(self):
         """The catalogue is 34 and none of them is an Ability projection."""
         names = [tool.name for tool in tools_mod.SERVED_TOOLS]
-        self.assertEqual(len(names), 34)
+        self.assertEqual(len(names), 44)
         # TOKENS, not substrings: `fleet_cloudcli_native_capability` is the
         # CloudCLI capability read and contains "ability" inside "capability".
         # A substring check would fail on the one word it must not confuse, and

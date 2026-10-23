@@ -288,15 +288,19 @@ class TheV1AcceptanceItemsAreNamed(unittest.TestCase):
 
 
 class TheSurfaceIsStillTheOneTheDocumentsDescribe(unittest.TestCase):
-    def test_the_gate_still_requires_34_tools_and_exactly_six_scopes(self):
+    def test_the_candidate_fixture_lists_exactly_what_the_build_serves(self):
+        from fleet_mcp.tools import SERVED_TOOLS
+
         x = load()
-        self.assertEqual(len(x["tool_surface"]["observed_tools"]), 34)
+        self.assertEqual(len(x["tool_surface"]["observed_tools"]), len(SERVED_TOOLS))
         self.assertEqual(set(x["tool_surface"]["authorized_scopes"]), set(SCOPES))
 
     def test_a_short_tool_list_blocks(self):
+        from fleet_mcp.tools import SERVED_TOOLS
+
         x = load()
         x["tool_surface"]["observed_tools"].pop()
-        self.assertIn("exactly 34", " ".join(evaluate(x)["blockers"]))
+        self.assertIn(f"exactly {len(SERVED_TOOLS)}", " ".join(evaluate(x)["blockers"]))
 
     def test_a_missing_scope_blocks(self):
         x = load()

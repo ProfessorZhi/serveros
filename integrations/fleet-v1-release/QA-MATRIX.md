@@ -131,8 +131,11 @@ scheduling detail: a matrix with an unowned row cannot pass as a whole.
 Reading "33" as "33 tools served by this candidate" is the specific mistake this
 row exists to prevent. The counts above are what #243 (`fleet-mcp-4`) was
 observed to serve. A later candidate, `fleet-mcp-5`, adds a 23rd mirror
-(`fleet_cloudcli_project_create`) for 34 tools / 6 scopes; that revision is not
-part of this observation and is not installed anywhere yet.
+(`fleet_cloudcli_project_create`) for 34 tools / 6 scopes; the current source
+tree is `fleet-mcp-6` — 44 tools, because CloudCLI 1.40 adds nine mirror verbs
+and `fleet_delete_project` is the eleventh authored tool. Neither revision is
+part of this observation, and nothing beyond the `fleet-mcp-4` canary is
+installed.
 
 ## Local Claude Code plugin — #230
 

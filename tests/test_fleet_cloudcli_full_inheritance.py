@@ -150,9 +150,9 @@ class Harness:
 # ---------------------------------------------------------------------------
 
 class ManifestTest(unittest.TestCase):
-    def test_all_twenty_two_native_tools_are_recorded(self):
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 22)
-        self.assertEqual(cloudcli_native.NATIVE_TOOL_COUNT, 22)
+    def test_all_thirty_one_native_tools_are_recorded(self):
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 31)
+        self.assertEqual(cloudcli_native.NATIVE_TOOL_COUNT, 31)
 
     def test_names_are_the_recorded_native_set(self):
         expected = {
@@ -163,13 +163,17 @@ class ManifestTest(unittest.TestCase):
             "session_close", "ui_open_session", "session_cancel_queued",
             "session_reconfigure", "session_background", "approvals_list",
             "approval_answer",
+            # CloudCLI 1.40's nine additions.
+            "changes", "mcp_usage_stats", "ui_selected_text", "draft_get",
+            "draft_set", "draft_submit", "ui_focus_turn", "ui_show_diff",
+            "ui_open_task",
         }
         self.assertEqual(set(cloudcli_native.NATIVE_BY_NAME), expected)
 
-    def test_read_write_split_is_twelve_and_ten(self):
+    def test_read_write_split_is_sixteen_and_fifteen(self):
         ro = [t for t in cloudcli_native.NATIVE_TOOLS if t.read_only]
-        self.assertEqual(len(ro), 12)
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS) - len(ro), 10)
+        self.assertEqual(len(ro), 16)
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS) - len(ro), 15)
 
     def test_approve_and_navigate_are_implemented_but_not_default_granted(self):
         self.assertEqual(
@@ -213,7 +217,7 @@ class ManifestTest(unittest.TestCase):
 
     def test_manifest_is_machine_readable(self):
         m = cloudcli_native.manifest()
-        self.assertEqual(m["count"], 22)
+        self.assertEqual(m["count"], 31)
         self.assertEqual(m["schema"], "serveros/fleet-cloudcli-native-manifest.v1")
         self.assertIn("fleet_cloudcli_", json.dumps(m, ensure_ascii=False))
 
@@ -796,17 +800,17 @@ class NodeRouteSignatureTest(unittest.TestCase):
 
 
 class SurfaceTest(unittest.TestCase):
-    def test_the_served_surface_is_the_nine_plus_the_twenty_two(self):
+    def test_the_served_surface_is_the_eleven_plus_the_thirty_one(self):
         names = {t.name for t in tools_mod.SERVED_TOOLS}
         for tool in cloudcli_native.NATIVE_TOOLS:
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
-        self.assertEqual(len(mirrored), 22)
-        # ten hand-written + 22 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 34)
+        self.assertEqual(len(mirrored), 31)
+        # eleven hand-written + 31 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 44)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
-        self.assertEqual(len(tools_mod.tool_names()), 10)
+        self.assertEqual(len(tools_mod.tool_names()), 11)
 
     def test_mirror_annotations_match_the_manifest(self):
         by_name = {t.name: t for t in tools_mod.NATIVE_MIRROR_TOOLS}
@@ -838,7 +842,7 @@ class SurfaceTest(unittest.TestCase):
 
 
 class MatrixTest(unittest.TestCase):
-    """All 22 tools × the routing and the deny-path, counted, not sampled."""
+    """All 31 tools × the routing and the deny-path, counted, not sampled."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -887,7 +891,7 @@ class MatrixTest(unittest.TestCase):
 
     def test_the_whole_surface_is_discoverable_and_counted(self):
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
-        self.assertEqual(len(mirrored), 22)
+        self.assertEqual(len(mirrored), 31)
         self.assertTrue(mirrored <= {t.name for t in tools_mod.SERVED_TOOLS})
 
 
@@ -1467,21 +1471,21 @@ class CapabilitySnapshotTest(unittest.TestCase):
                          cloudcli_native.HANDLER_BINDING_UNKNOWN)
         self.assertEqual(snap["tools"]["overview"]["state"],
                          cloudcli_native.UNSUPPORTED_BY_DEVICE)
-        self.assertEqual(len(snap["unsupported_by_device"]), 21)
+        self.assertEqual(len(snap["unsupported_by_device"]), 30)
 
     def test_an_unreadable_device_is_unknown_not_complete(self):
         snap = cloudcli_native.capability_snapshot(device_ref=TOKYO,
                                                    reason="needs a credential")
         self.assertEqual(snap["state"], "UNKNOWN")
         self.assertIsNone(snap["observed_count"])
-        self.assertEqual(len(snap["unsupported_by_device"]), 22)
+        self.assertEqual(len(snap["unsupported_by_device"]), 31)
         self.assertIn("credential", snap["reason"])
 
     def test_a_verb_the_build_did_not_record_is_reported_not_added(self):
         snap = cloudcli_native.capability_snapshot(
             device_ref=TOKYO, observed={"overview": {}, "session_teleport": {}})
         self.assertEqual(snap["unrecorded_by_build"], ["session_teleport"])
-        self.assertEqual(len(snap["tools"]), 22)   # the recorded set, unchanged
+        self.assertEqual(len(snap["tools"]), 31)   # the recorded set, unchanged
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1595,11 +1599,13 @@ class CapabilitySnapshotTest(unittest.TestCase):
 # device does not accept is a lie the other way round.
 
 CAPTURE = (Path(__file__).resolve().parent / "data"
-           / "capture-cloudcli-1.39.0-tools-list-2026-10-14.json")
+           / "capture-cloudcli-1.40.0-tools-list-2026-10-23.json")
 
 #: The build the recorded baseline claims to be. A capture naming another build
-#: must not be quietly held against 1.39.0's table.
-CAPTURED_CLOUDCLI_VERSION = "1.39.0"
+#: must not be quietly held against this table. The value is the package version
+#: the device reported, suffix included — the fork's revision is part of which
+#: build the schemas were read from.
+CAPTURED_CLOUDCLI_VERSION = "1.40.0-fleet.1"
 
 #: CloudCLI's code for "registered, but its behaviour is delivered elsewhere" —
 #: the fact `placeholder_default` records.
@@ -1667,9 +1673,21 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
         self.assertEqual(capture["server"]["name"], "claudecodeui-mcp-gateway")
         self.assertEqual(capture["protocolVersion"], "2025-06-18")
         self.assertEqual(capture["cloudcli_package_version"], CAPTURED_CLOUDCLI_VERSION)
-        self.assertEqual(len(capture["tools"]), cloudcli_native.NATIVE_TOOL_COUNT)
-        self.assertEqual(sorted(entry["name"] for entry in capture["tools"]),
-                         sorted(cloudcli_native.NATIVE_BY_NAME))
+        self.assertEqual(
+            len(capture["tools"]),
+            cloudcli_native.NATIVE_TOOL_COUNT
+            + len(cloudcli_native.EXTENSION_CLAIMED_NATIVE_TOOLS),
+        )
+        # The device's list is the MIRRORED set PLUS the verbs this build
+        # reaches through authored tools (`project_create` / `project_delete`).
+        # Comparing against the mirror alone would report those two as drift on
+        # every device, and comparing against the capture alone would let a
+        # mirrored verb disappear unnoticed.
+        self.assertEqual(
+            sorted(entry["name"] for entry in capture["tools"]),
+            sorted(set(cloudcli_native.NATIVE_BY_NAME)
+                   | set(cloudcli_native.EXTENSION_CLAIMED_NATIVE_TOOLS)),
+        )
 
     def test_no_recorded_schema_omits_a_constraint_the_device_declares(self):
         problems = []
@@ -1689,6 +1707,12 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
         """
         problems = []
         for entry in _capture()["tools"]:
+            # A claimed verb has no mirror to compare: its authored tool takes
+            # the caller's own fields (`project_id` / `confirm_path`), and that
+            # schema is asserted in `test_fleet_mcp_surface`. Holding it against
+            # the native schema would compare two deliberately different shapes.
+            if entry["name"] in cloudcli_native.EXTENSION_CLAIMED_NATIVE_TOOLS:
+                continue
             native = cloudcli_native.NATIVE_BY_NAME[entry["name"]]
             published = tools_mod.SERVED_BY_NAME[native.namespaced].input_schema
             arguments = (published.get("properties") or {}).get("arguments") or {}
@@ -1699,6 +1723,11 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
     def test_recorded_annotations_are_the_capture_s_annotations(self):
         moved = []
         for entry in _capture()["tools"]:
+            # Claimed verbs are not mirrored, so the hints a caller sees for
+            # them are Fleet's own (on `fleet_create_project` /
+            # `fleet_delete_project`), not a restatement of the device's.
+            if entry["name"] in cloudcli_native.EXTENSION_CLAIMED_NATIVE_TOOLS:
+                continue
             tool = cloudcli_native.NATIVE_BY_NAME[entry["name"]]
             declared = {
                 "readOnlyHint": tool.read_only,
@@ -1722,7 +1751,14 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
         """
         on_the_wire = {
             entry["name"] for entry in _capture()["tools"]
-            if NOT_IMPLEMENTED_CODE
+            # A claimed verb advertises the code too — the gateway publishes it
+            # on every handler that can ever reach an unimplemented body — but
+            # it is not in `NATIVE_TOOLS`, so `placeholder_default` has no row
+            # to hold the claim and the comparison would be against a set this
+            # build never mirrors. Excluding it here is the same fact recorded
+            # in `EXTENSION_CLAIMED_NATIVE_TOOLS`.
+            if entry["name"] not in cloudcli_native.EXTENSION_CLAIMED_NATIVE_TOOLS
+            and NOT_IMPLEMENTED_CODE
             in ((entry.get("_meta") or {}).get("cloudcli/errorCodes") or [])
         }
         recorded = {tool.name for tool in cloudcli_native.NATIVE_TOOLS

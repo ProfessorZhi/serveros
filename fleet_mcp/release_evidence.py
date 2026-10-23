@@ -306,6 +306,21 @@ def _profile_problems(key, row):
     return problems
 
 
+def _expected_tool_count() -> int:
+    """How many tools this build actually serves.
+
+    Read from the catalogue rather than written down as a number here. A gate
+    that pins a count has to be edited every time the surface grows, and that
+    edit is easy to make while the gate's whole job is to notice the growth. The
+    import is local because `fleet_mcp.tools` pulls in the service and provider
+    modules, and this linter is imported by release tooling that only wants the
+    schema.
+    """
+    from fleet_mcp.tools import SERVED_TOOLS
+
+    return len(SERVED_TOOLS)
+
+
 def evaluate(report):
     problems = []
     if not isinstance(report, dict) or report.get('schema') != SCHEMA:
@@ -332,10 +347,12 @@ def evaluate(report):
     if not isinstance(surface, dict):
         surface = {}
     names = surface.get('observed_tools')
-    if (not isinstance(names, list) or len(names) != 34
+    expected_tools = _expected_tool_count()
+    if (not isinstance(names, list) or len(names) != expected_tools
             or any(not isinstance(n, str) or not n for n in names)
-            or len(set(names)) != 34):
-        block('tool_surface: must discover exactly 34 distinct real tools')
+            or len(set(names)) != expected_tools):
+        block(f'tool_surface: must discover exactly {expected_tools} '
+              'distinct real tools')
     given_scopes = surface.get('authorized_scopes')
     if (not isinstance(given_scopes, list) or
             any(not isinstance(v, str) for v in given_scopes) or

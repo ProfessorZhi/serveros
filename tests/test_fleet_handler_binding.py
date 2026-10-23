@@ -69,4 +69,4 @@ def test_successful_empty_list_is_observed_not_unknown():
     result = provider(client).capability_snapshot()
     assert result["state"] == "OBSERVED" and result["observed_count"] == 0
     assert result["sampled_at"]
-    assert len(result["unsupported_by_device"]) == 22
+    assert len(result["unsupported_by_device"]) == 31

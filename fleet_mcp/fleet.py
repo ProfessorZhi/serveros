@@ -50,6 +50,7 @@ from .errors import (
     IDEMPOTENT_REPLAY,
     DISPATCH_OUTCOME_UNKNOWN,
     INTERNAL,
+    PROJECT_NOT_FOUND,
     RATE_LIMITED,
     SCOPE_DENIED,
     UNKNOWN_DEVICE,
@@ -201,6 +202,20 @@ class Principal:
     def as_dict(self) -> dict[str, Any]:
         return {"name": self.name, "credential_kind": self.credential_kind,
                 "scopes": sorted(self.scopes)}
+
+
+@dataclass(frozen=True)
+class _AuthoredVerb:
+    """The label `_require_operator_verb` reports for a tool with no native row.
+
+    `fleet_delete_project` reaches CloudCLI's `project_delete`, which
+    `cloudcli_native` records but deliberately does not MIRROR (see
+    `EXTENSION_CLAIMED_NATIVE_TOOLS`), so there is no `NativeTool` object to hand
+    to the grant check. All that check needs from it is the namespaced name it
+    puts in its refusal — the caller has to be told WHICH verb was not granted.
+    """
+
+    namespaced: str
 
 
 class FleetService:
@@ -363,25 +378,55 @@ class FleetService:
         return model, permission_mode, by
 
     @staticmethod
-    def _verify_owner_project(provider, project):
-        caller = getattr(provider, "native_call", None)
-        if caller is None:
-            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
-        listing = caller("projects_list", {"includeArchived": False})
-        rows = listing.get("projects") if isinstance(listing, dict) else listing
-        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
-            rows = listing["data"].get("projects")
-        if not isinstance(rows, list):
-            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+    def _project_row(rows, project_id: str) -> dict[str, Any] | None:
+        """The catalogue row whose id is exactly `project_id`, or `None`.
+
+        A row is matched only when every id field it carries agrees with the
+        others AND with the id asked for: a row that reports two different ids
+        is ambiguous, and picking one of them would be this surface guessing
+        which project to act on.
+        """
         for row in rows:
             if not isinstance(row, dict):
                 continue
             ids = [row[k] for k in ("projectId", "project_id", "id")
                    if isinstance(row.get(k), str) and row[k]]
-            if ids and len(set(ids)) == 1 and ids[0] == project:
-                if row.get("isArchived") is True or row.get("is_archived") is True:
-                    break
-                return
+            if ids and len(set(ids)) == 1 and ids[0] == project_id:
+                return row
+        return None
+
+    @staticmethod
+    def _project_catalogue_row(provider, project_id: str, *,
+                               include_archived: bool) -> dict[str, Any] | None:
+        """One project row, read from the DEVICE's own catalogue.
+
+        `include_archived` is explicit at every call site because the two
+        questions differ: a create verifies against the ACTIVE catalogue (a
+        session cannot be minted in an archived project), while a delete's
+        pre-read must see archived rows too, or the row a permanent delete most
+        often targets would be invisible. An unreadable catalogue is a refusal
+        rather than an empty one — acting on "it is not there" when the question
+        was never answered is exactly the blind delete this read exists to
+        prevent.
+        """
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
+        listing = caller("projects_list", {"includeArchived": bool(include_archived)})
+        rows = listing.get("projects") if isinstance(listing, dict) else listing
+        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
+            rows = listing["data"].get("projects")
+        if not isinstance(rows, list):
+            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+        return FleetService._project_row(rows, project_id)
+
+    @staticmethod
+    def _verify_owner_project(provider, project):
+        row = FleetService._project_catalogue_row(provider, project,
+                                                  include_archived=False)
+        if row is not None and not (row.get("isArchived") is True
+                                    or row.get("is_archived") is True):
+            return
         raise refuse(WRITE_NOT_GRANTED, "project does not exist in the selected runtime's active catalogue")
 
     def _provider(self, device_ref: str,
@@ -725,6 +770,37 @@ class FleetService:
                 allowed=sorted(allow),
             )
 
+    def _may_control_device(self, principal: Principal, device_ref: str, binding,
+                            native, *, runtime: str) -> None:
+        """The DEVICE half of control, for a target that is not a session.
+
+        `_may_control` is stated over a `SessionKey` because stopping a run is
+        about one session. Deleting a project is about a project ROW: there is no
+        session to name, so `policy.control_allow` — a per-session list — has no
+        referent here, while the other two gates apply unchanged:
+
+        *   the device's `allow_control` (or a selected owner-max profile — the
+            same substitution `_may_control` makes), and
+        *   the caller's `control` operator grant on that device.
+
+        A caller who may not stop a run on a machine may not remove project rows
+        on it either, and this is deliberately NOT routed through `allow_create`:
+        removal is not minting, and a device trusted to create is not thereby
+        trusted to destroy.
+        """
+        if not binding.allow_control and self._owner_profile(principal, device_ref, runtime) is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{device_ref} is not authorized for control from this runtime. "
+                f"Removing a project row is granted per device in the local "
+                f"binding (`allow_control: true`) and per caller by the "
+                f"`control` operator grant — never by naming a project id.",
+                device_ref=device_ref,
+                required_verb="control",
+            )
+        self._require_operator_verb(principal, device_ref, "control", native,
+                                    runtime=runtime)
+
     def _may_create(self, device_ref: str, project: str,
                     runtime: str = BASE_RUNTIME, *, principal=None,
                     namespace=None) -> CreateGrant:
@@ -855,7 +931,7 @@ class FleetService:
         `status` do not call it, and no route is declared for it — so the served
         surface is unchanged by this seam: ten hand-written tools, the 22
         inherited verbs and the two capability reads, six scopes,
-        `TOOL_SURFACE_REVISION = "fleet-mcp-5"`.
+        `TOOL_SURFACE_REVISION = "fleet-mcp-6"`.
         Adding a field to `fleet_list_devices` would be a change to a tool's
         contract shape, and that decision belongs in the change that makes it,
         openly, rather than inside a wiring commit.
@@ -1690,6 +1766,170 @@ class FleetService:
                 "binding_runtime": binding.runtime, "idempotent_replay": False,
                 "fresh_directory_created": True, "admitted_by": admitted_by,
                 "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
+
+    def delete_project(self, principal: Principal, *, device: str, project_id: str,
+                       confirm_path: str, force: bool = False,
+                       runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+        """Archive (default) or permanently remove ONE project row.
+
+        Three questions, in this order, and each is a different authority:
+
+        *   **may this caller destroy stored state on this device** — the
+            device's `allow_control` (or a selected owner-max profile) plus the
+            `control` operator grant, through `_may_control_device`. A project
+            row is stored state on that machine, and removing it is not a lighter
+            act than stopping a run;
+        *   **is this the project the caller means** — the catalogue is read
+            FIRST, archived rows included, and the row's own `path` must equal
+            `confirm_path`. A project id is opaque and easy to paste wrong; the
+            path is what a person can recognise, so the caller has to repeat the
+            one it saw. An id with no row is `PROJECT_NOT_FOUND`, which is also
+            what a second force delete answers — an honest reading, not a
+            replayed success;
+        *   **did it actually happen** — the device's ACK is not taken as proof.
+            The catalogue is read AGAIN: a force delete must leave no row even
+            with archived included, and an archive must leave the row marked
+            archived. A device that answers "deleted" and still lists the project
+            is reported as a contradiction, never as success.
+
+        `force: false` is reversible (the row is archived; the directory and the
+        transcripts are untouched) and `force: true` removes the session rows and
+        their transcript files. The project DIRECTORY on disk is never removed —
+        the device's own service does not do it either, and this call restates
+        that in its answer rather than leaving the silence to be read as an
+        omission.
+
+        No idempotency key, and this call does not need one: the second call
+        re-reads the catalogue and answers from it, so a retried force delete
+        reports `PROJECT_NOT_FOUND` and a retried archive reports
+        `was_archived: true`. That is a statement about the present; a cached
+        answer would be a statement about the past wearing its clothes.
+        """
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        self._validate_runtime_selector(runtime)
+        if not isinstance(device, str) or not device.strip():
+            raise refuse(BAD_REQUEST, "device is required")
+        if (not isinstance(project_id, str) or not project_id.strip()
+                or project_id != project_id.strip() or len(project_id) > 512):
+            raise refuse(
+                BAD_REQUEST,
+                "project_id must be a non-empty id, exactly as `projects_list` "
+                "reports it — leading or trailing whitespace is a different id.",
+            )
+        if not isinstance(confirm_path, str) or not confirm_path.strip():
+            raise refuse(
+                BAD_REQUEST,
+                "confirm_path is required: repeat the project's own `path` as "
+                "`projects_list` reports it. A delete is confirmed against the "
+                "device's catalogue, never against the id alone.",
+            )
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        binding = self.config.namespace_binding(device_ref, runtime)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
+        self._may_control_device(
+            principal, device_ref, binding,
+            _AuthoredVerb(cloudcli_native.namespaced("project_delete")),
+            runtime=binding.runtime,
+        )
+        provider = self._require_provider(device_ref, binding.runtime)
+        deleter = getattr(provider, "delete_project", None)
+        if deleter is None:
+            raise refuse(
+                "CAPABILITY_UNSUPPORTED",
+                f"{device_ref}'s provider ({provider.kind}) has no project "
+                f"deletion operation.",
+                device_ref=device_ref,
+            )
+        before = self._project_catalogue_row(provider, project_id,
+                                            include_archived=True)
+        if before is None:
+            raise refuse(
+                PROJECT_NOT_FOUND,
+                f"{device_ref} has no project with id {project_id!r} — archived "
+                f"projects included. Read `projects_list` again rather than "
+                f"assuming an earlier call failed.",
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        before_path = before.get("path")
+        if not isinstance(before_path, str) or not before_path:
+            raise refuse(
+                INTERNAL,
+                "the device's catalogue named the project without a path, so a "
+                "delete could not be confirmed against it",
+                retry_safe=False,
+            )
+        if before_path != confirm_path:
+            # The path is NOT echoed: the caller may hold `control` without
+            # `read`, and the path of a project it cannot list is not this
+            # refusal's to disclose. It is told which read answers the question.
+            raise refuse(
+                BAD_REQUEST,
+                "confirm_path does not match the path the device's catalogue "
+                "holds for this project id. Read `projects_list` and repeat the "
+                "row's own `path` exactly.",
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        payload = deleter(project_id=project_id, force=bool(force))
+        if (not isinstance(payload, dict)
+                or payload.get("projectId") != project_id
+                or payload.get("path") != before_path
+                or not isinstance(payload.get("deleted"), bool)
+                or not isinstance(payload.get("archived"), bool)
+                or not isinstance(payload.get("wasArchived"), bool)
+                or payload.get("deleted") != bool(force)
+                or payload.get("archived") == payload.get("deleted")
+                or payload.get("directoryRemoved") is not False):
+            raise refuse(
+                INTERNAL,
+                "project deletion may have happened but its ACK is malformed: it "
+                "must name the same project id and path, say which of archived/"
+                "deleted it did, and say that no directory was removed",
+                retry_safe=False,
+            )
+        after = self._project_catalogue_row(provider, project_id,
+                                            include_archived=True)
+        if force:
+            verified = after is None
+            verification = "absent from the catalogue, archived included"
+        else:
+            verified = after is not None and bool(
+                after.get("isArchived") is True or after.get("is_archived") is True
+                or after.get("isArchived") == 1 or after.get("is_archived") == 1)
+            verification = "catalogued as archived"
+        if not verified:
+            raise refuse(
+                INTERNAL,
+                f"{device_ref} acknowledged the {'delete' if force else 'archive'} "
+                f"of {project_id!r} and its catalogue still disagrees. The effect "
+                f"is unconfirmed: reconcile by reading `projects_list` before "
+                f"retrying.",
+                retry_safe=False,
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        self.audit.record("fleet.project.delete", principal=principal.name,
+                          device_ref=device_ref, runtime=runtime,
+                          project_id=project_id,
+                          mode="force" if force else "archive")
+        return {
+            "device_ref": device_ref,
+            "runtime": runtime,
+            "binding_runtime": binding.runtime,
+            "project_id": project_id,
+            "project_path": before_path,
+            "was_archived": payload["wasArchived"],
+            "archived": payload["archived"],
+            "deleted": payload["deleted"],
+            # A literal, so a caller reading the shape cannot mistake the silence
+            # for an omission: this call never removes a directory.
+            "directory_removed": False,
+            "verified": True,
+            "verification": verification,
+        }
 
     # Modes that never wait for a person, and modes that do. These classify a
     # value the DEVICE reported; they are not a list of what a caller may ask

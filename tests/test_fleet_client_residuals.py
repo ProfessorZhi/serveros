@@ -28,6 +28,7 @@ def load(name, filename):
 cc = load("residual_fix_cc", "run_cc_client_e2e.py")
 codex = load("residual_fix_codex", "run_codex_client_e2e.py")
 framing = load("residual_fix_framing", "stdio_framing.py")
+SERVED_TOOL_COUNT = cc.fixture.SERVED_TOOL_COUNT
 interposer = load("residual_fix_interposer", "stdio_interposer.py")
 
 
@@ -87,7 +88,8 @@ def wire():
         {"connection_id": "one", "direction": "cc->owned", "method": "notifications/initialized"},
         {"connection_id": "one", "direction": "cc->owned", "method": "tools/list", "id": 2},
         {"connection_id": "one", "direction": "owned->cc", "id": 2,
-         "request_method": "tools/list", "response_ok": True, "tool_count": 34},
+         "request_method": "tools/list", "response_ok": True,
+         "tool_count": SERVED_TOOL_COUNT},
     ]
 
 
@@ -126,7 +128,7 @@ def test_cc_accepts_actual_correlated_result_and_list(tmp_path):
     runner, ok = observe(tmp_path, wire())
     assert ok
     assert runner.results["MCP_INITIALIZE_OK"]["status"] == "PASS"
-    assert runner.results["TOOLS_LIST_OK"]["evidence"]["tool_count"] == 34
+    assert runner.results["TOOLS_LIST_OK"]["evidence"]["tool_count"] == SERVED_TOOL_COUNT
 
 
 @pytest.mark.parametrize("kwargs,payload", [

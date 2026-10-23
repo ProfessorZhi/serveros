@@ -18,7 +18,10 @@ SERVER_VERSION = "0.2.0"
 # Every field that existed at `-3` is still there, unchanged.
 # `fleet-mcp-5`: explicit fresh project creation, ten authored tools (34 total),
 # owner-max admission and existing-owner delivery durability/readback.
-TOOL_SURFACE_REVISION = "fleet-mcp-5"
+# `fleet-mcp-6`: the surface follows CloudCLI 1.40 — the mirror grows from 22 to
+# 31 verbs (the nine 1.40 additions), and `fleet_delete_project` is the eleventh
+# authored tool, the surface's only destructive one. 44 tools total.
+TOOL_SURFACE_REVISION = "fleet-mcp-6"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

@@ -115,7 +115,7 @@ run, not a report of one.
 
 | # | Gate | Evidence it needs | State |
 |---|---|---|---|
-| G1 | The server serves exactly **34** tools at `tools/list` with `TOOL_SURFACE_REVISION == "fleet-mcp-5"` | one captured `tools/list` from the live endpoint | **NOT EXERCISED** (asserted in tests against fakes only) |
+| G1 | The server serves exactly **44** tools at `tools/list` with `TOOL_SURFACE_REVISION == "fleet-mcp-6"` | one captured `tools/list` from the live endpoint | **NOT EXERCISED** (asserted in tests against fakes only) |
 | G2 | OAuth: issuer + RFC 9207 `iss`, audience binding, PKCE S256, DCR | a real authorization with a real client | **BLOCKED** — `fleet-mcp-contract.yaml` records `chatgpt_oauth_consent` as requiring a human to complete the consent (account + password + TOTP), which no agent may supply or simulate |
 | G3 | The client actually **refreshes** a cached tool list when the surface revision changes | an old client, a surface change, and a before/after tool list | **NOT EXERCISED** — no real client was driven |
 | G4 | A read-only grant cannot reach a write verb, end to end through the client | a `fleet:read`-only consent plus an attempted write | **NOT EXERCISED** |

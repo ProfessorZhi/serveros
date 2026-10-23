@@ -727,7 +727,8 @@ class Runner:
         ok = all(checks.values())
         self.negative_results = results
         self.record("AUTH_SCOPE", "PASS" if ok else "FAIL",
-                    "read-only principal: 33 tools discovered, write refused "
+                    f"read-only principal: {fixture.SERVED_TOOL_COUNT} tools discovered, "
+                    "write refused "
                     "SCOPE_DENIED, provider never reached"
                     if ok else f"failed: {[k for k, v in checks.items() if not v]}",
                     {"checks": checks, "results": results})
@@ -746,11 +747,13 @@ class Runner:
         devices_total = (results.get("list_devices") or {}).get("total")
         sessions_total = (results.get("list_sessions") or {}).get("total")
         capability_state = (results.get("capability") or {}).get("state")
-        ok = (tools_count == 33 and devices_total == 1 and sessions_total == 1
+        ok = (tools_count == fixture.SERVED_TOOL_COUNT
+              and devices_total == 1 and sessions_total == 1
               and capability_state == "OBSERVED" and sends == 0)
         self.record(
             "TEMP_DAEMON_VIRTUAL_FACTS", "PASS" if ok else "FAIL",
-            "local stdio daemon: 33 tools, one virtual device and session, "
+            f"local stdio daemon: {fixture.SERVED_TOOL_COUNT} tools, one virtual "
+            "device and session, "
             "OBSERVED capability" if ok else
             "the local temporary daemon did not answer the virtual facts",
             {"virtual_facts": True, "real_device": False,
@@ -783,7 +786,7 @@ class Runner:
         project = result.get("project_create_schema") or {}
         required = set((project.get("inputSchema") or {}).get("required") or [])
         self.record("OWNED_PROBE_READBACK",
-                    "PASS" if (result["tool_count_actual"] >= 34
+                    "PASS" if (result["tool_count_actual"] >= fixture.SERVED_TOOL_COUNT
                                and result["project_create_present"]
                                and result["six_scopes"]
                                and result["durability"] == "AGENT_CONTROL_STORE"

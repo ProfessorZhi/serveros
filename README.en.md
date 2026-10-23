@@ -26,7 +26,7 @@ It is **not** a new chat client, a new model, or a second task scheduler. The mo
 | Area | Status | Notes |
 |---|---|---|
 | Tokyo node, daily use | In use | Core, plugin, MCPs and Work Engine run on the host |
-| Fleet MCP (cross-device sessions) | Candidate | 34 tools (`fleet-mcp-5`); Tokyo and Dell enrolled, Windows pending native acceptance; V1 not released |
+| Fleet MCP (cross-device sessions) | Candidate | 44 tools (`fleet-mcp-6`); Tokyo and Dell enrolled, Windows pending native acceptance; V1 not released |
 | Feishu information plane | Partial | Capture, Follow and Owned-document stewardship are connected ability by ability |
 | Monitoring and status cards | Partial | Resource and runtime observation works; alerts and cards are still converging |
 | Fleet V2 (autonomous organization, delegation) | Design only | No service or revision exists; do not treat it as a current capability |

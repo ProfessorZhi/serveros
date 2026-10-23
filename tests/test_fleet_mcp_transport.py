@@ -373,9 +373,9 @@ class HttpTransport(_HttpHarness):
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        # The served surface is the hand-written Fleet tools PLUS the 22
+        # The served surface is the hand-written Fleet tools PLUS the 31
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
-        self.assertEqual(len(tools_out), 34)
+        self.assertEqual(len(tools_out), 44)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
@@ -383,11 +383,12 @@ class HttpTransport(_HttpHarness):
         fleet_writes = [n for n in writes if n.startswith("fleet_")
                         and not n.startswith("fleet_cloudcli_")]
         self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
-                                        "fleet_interrupt_session", "fleet_create_project"])
-        # ...and the inherited CloudCLI mirror contributes its own ten writes,
-        # carry CloudCLI's annotations rather than this surface's opinion.
+                                        "fleet_interrupt_session", "fleet_create_project",
+                                        "fleet_delete_project"])
+        # ...and the inherited CloudCLI mirror contributes its own fifteen writes,
+        # carrying CloudCLI's annotations rather than this surface's opinion.
         self.assertEqual(
-            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 10)
+            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 15)
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -637,7 +638,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 34)  # 10 + 22 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 44)  # 11 + 31 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

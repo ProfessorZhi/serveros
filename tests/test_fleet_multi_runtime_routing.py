@@ -427,11 +427,11 @@ class OneRuntimeOfflineDoesNotAffectTheOtherTest(unittest.TestCase):
 class TheServedSurfaceIsUnchangedTest(unittest.TestCase):
     """Neither gap closed here changes what a single-runtime device serves."""
 
-    def test_the_tool_surface_is_still_thirty_four_with_the_legacy_nine(self):
+    def test_the_tool_surface_is_still_forty_four_with_the_legacy_nine(self):
         from fleet_mcp import cloudcli_native, tools
         names = [t.name for t in tools.SERVED_TOOLS]
-        self.assertEqual(len(names), 34)
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 22)
+        self.assertEqual(len(names), 44)
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 31)
         for nine in ("fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                      "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
                      "fleet_status", "fleet_create_session", "fleet_interrupt_session"):

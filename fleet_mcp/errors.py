@@ -39,6 +39,15 @@ SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
 Different from UNKNOWN_DEVICE and from PROVIDER_UNREACHABLE by construction:
 here we asked and got a real 'no'."""
 
+PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND"
+"""The device answered and has no project with that id.
+
+Read from the device's own catalogue, archived rows included — so this is also
+the honest answer to a SECOND force delete: the first one removed the row, and
+"it is not there" is a fact about now rather than a replay of the first
+answer. It is deliberately not a success: a lost response cannot be turned into
+"already done" without the read that proves it."""
+
 # -- reachability -----------------------------------------------------------
 PROVIDER_UNREACHABLE = "PROVIDER_UNREACHABLE"
 """The device's CloudCLI provider did not answer.

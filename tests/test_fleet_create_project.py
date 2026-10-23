@@ -163,8 +163,8 @@ def test_project_tool_is_explicit_and_keeps_native_mirror_count(tmp_path):
     assert set(schema["required"]) == {"device", "root", "name"}
     assert schema["additionalProperties"] is False
     assert "path" not in schema["properties"]
-    assert len(tools.SERVED_TOOLS) == 34
-    assert len(tools.NATIVE_MIRROR_TOOLS) == 22
+    assert len(tools.SERVED_TOOLS) == 44
+    assert len(tools.NATIVE_MIRROR_TOOLS) == 31
     result = tool.handler(tools.ToolContext(h.service, owner_principal(h.config)),
                           {"device": TOKYO, "root": "work", "name": "alpha"})
     assert result["project_id"] == "just-created"
