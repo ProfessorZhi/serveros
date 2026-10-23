@@ -212,7 +212,22 @@ def evaluator_rule() -> tuple[str, str]:
         "looked in:\n  " + "\n  ".join(looked))
 
 
-EVALUATOR_TEXT, EVALUATOR_ORIGIN = evaluator_rule()
+#: The fixture reads the composition rule out of a second repository
+#: (`ability-management`), and the roots it declares out of a third
+#: (`hwz-ops`). Neither can be stood in for: a hand-written copy of the rule
+#: agrees with the real one only until the first edit of either, and a
+#: hand-written environment.yaml would be a fixture asserting its own text.
+#: So on a node that has never carried those checkouts the whole module is
+#: SKIPPED, loudly — the reason names every repository that was looked in, so
+#: "nobody pointed this at the clone" and "the clone is not here" cannot be
+#: mistaken for each other. This was an import-time AssertionError, which made
+#: a missing input indistinguishable from a broken file: the module never
+#: collected, so nothing in it ran and nothing said what was missing.
+try:
+    EVALUATOR_TEXT, EVALUATOR_ORIGIN = evaluator_rule()
+except AssertionError as exc:  # noqa: PERF203 - one call, one message
+    pytest.skip(f"cross-repo composition fixture unavailable: {exc}",
+                allow_module_level=True)
 
 
 def ops_source() -> Path:
@@ -249,7 +264,11 @@ def ops_source() -> Path:
         + "\n  ".join(str(c) for c in candidates))
 
 
-OPS_SOURCE = ops_source()
+try:
+    OPS_SOURCE = ops_source()
+except AssertionError as exc:
+    pytest.skip(f"cross-repo composition fixture unavailable: {exc}",
+                allow_module_level=True)
 
 
 def _commit(repo: Path) -> None:

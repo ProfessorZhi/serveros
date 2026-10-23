@@ -59,6 +59,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The canonical records checkout, as `tests/test_capture_coverage.py` and
 #: `tests/test_source_policy.py` name it.
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
 
@@ -1236,7 +1238,7 @@ def test_reading_writes_nothing(tmp_path):
 # ---------------------------------------------------------------------------
 # The live tree: tree-independent invariants only
 # ---------------------------------------------------------------------------
-live = pytest.mark.skipif(not LIVE_RECORDS.is_dir(),
+live = pytest.mark.skipif(not readable_dir(LIVE_RECORDS),
                           reason=f"{LIVE_RECORDS} is not on this node")
 
 

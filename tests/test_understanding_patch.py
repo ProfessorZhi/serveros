@@ -33,6 +33,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
+# The live records checkout belongs to one developer account. `is_dir()` is not
+# the question to ask it: a second account on the same machine gets
+# `PermissionError`, not `False`, and the suite then reports the checkout as
+# broken instead of absent.
+try:
+    LIVE_RECORDS_READABLE = LIVE_RECORDS.is_dir()
+except OSError:
+    LIVE_RECORDS_READABLE = False
+
+requires_live_records = pytest.mark.skipif(
+    not LIVE_RECORDS_READABLE,
+    reason="the live records checkout (/data/home/vince/workspace/records) is "
+           "not readable from this account")
+
 
 def _load(name: str, relative: str):
     spec = importlib.util.spec_from_file_location(
@@ -1083,6 +1097,7 @@ class TestTheCli:
 # --------------------------------------------------------------------------
 
 class TestAgainstTheRecordedLayer:
+    @requires_live_records
     def test_the_live_layer_produces_proposals_all_awaiting(self):
         patch = up.build(read(LIVE_RECORDS))
         assert patch["cards_read"] > 0
@@ -1090,6 +1105,7 @@ class TestAgainstTheRecordedLayer:
         assert patch["awaiting"] == len(patch["items"])
         assert patch["confirmed"] == 0 and patch["rejected"] == 0
 
+    @requires_live_records
     def test_every_live_proposal_carries_a_version_pair(self):
         for item in up.build(read(LIVE_RECORDS))["items"]:
             assert item["card"].startswith("information/understanding/")
@@ -1101,12 +1117,14 @@ class TestAgainstTheRecordedLayer:
                 assert item["applied"] is not None, item
                 assert item["from_position"] <= item["to_position"], item
 
+    @requires_live_records
     def test_the_live_census_covers_every_card(self):
         patch = up.build(read(LIVE_RECORDS))
         assert sum(patch["states"].values()) == patch["cards_read"]
         assert sum(patch["no_item"].values()) + len({
             item["card"] for item in patch["items"]}) == patch["cards_read"]
 
+    @requires_live_records
     def test_the_live_patch_verifies_against_the_live_records(self, tmp_path):
         target = tmp_path / "live-patch.json"
         up.write(up.build(read(LIVE_RECORDS)), target)

@@ -22,11 +22,13 @@ name the half that is missing, and a dependency that *is* there must still be
 accepted — a guard that refuses everything would satisfy the first half alone.
 """
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 from workengine import ExecutionContext, WorkItem
 from workengine.model import Activity, ActivityState, ContextMode, RunState
@@ -56,6 +58,23 @@ class ADependencyIsNamed(unittest.TestCase):
         self.other = self.s.create_item(WorkItem("DEM-0002", "demo", "y", "test", "/card"))
         self.s.add_activity(Activity(self.other.id, "act-2", "develop"))
         self.theirs = self.s.begin_run(self.other.id, "act-2", "worker", "key-2", self.artifacts)
+        # `main()` resolves the roots it was not given from the device's host
+        # profile, so on a machine with no profile every call below refuses
+        # before reaching the dependency it is about. One written here keeps the
+        # tests on the fixture they declare.
+        self.profile = Path(self.td.name) / "host-profile.yaml"
+        self.profile.write_text(
+            f"""schema: serveros/host-profile.v1
+node:
+  device_ref: device:test-device
+  roots:
+    state_root: {self.state}
+    artifacts_root: {self.artifacts}
+    workspace_root: {Path(self.td.name) / 'workspace'}
+    runtime_assets_root: {Path(self.td.name) / 'runtime-assets'}
+""",
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         self.td.cleanup()
@@ -68,7 +87,7 @@ class ADependencyIsNamed(unittest.TestCase):
         the group; putting it there is the form that works for every group.
         """
         stderr = StringIO()
-        with redirect_stderr(stderr):
+        with mock.patch.dict(os.environ, {"SERVEROS_HOST_PROFILE": str(self.profile)}),                 redirect_stderr(stderr):
             code = main([args[0], "--state-dir", str(self.state), *args[1:]])
         body = stderr.getvalue().strip()
         return code, (json.loads(body)["error"] if body.startswith("{") else None)

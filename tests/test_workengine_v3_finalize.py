@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,8 +19,31 @@ class FinalizeV3Tests(unittest.TestCase):
         self.s.add_activity(Activity(self.item.id, "test", "test")); self.s.attach_context(__import__('workengine').ExecutionContext(self.item.id, "test", "repo", ContextMode.TEST, "base"))
         self.run = self.s.begin_run(self.item.id, "test", "worker", "key", Path(self.td.name) / "artifacts")
         for state in (RunState.PREPARING, RunState.RUNNING, RunState.FINALIZING): self.run = self.s.advance_run(self.item.id, self.run.id, state)
+        # `main()` takes the roots it was not given from the device's host
+        # profile; a machine without one refuses before reaching the Run this
+        # class is about. One written here keeps the tests on their fixture.
+        self.profile = Path(self.td.name) / "host-profile.yaml"
+        self.profile.write_text(
+            f"""schema: serveros/host-profile.v1
+node:
+  device_ref: device:test-device
+  roots:
+    state_root: {self.s.state_dir}
+    artifacts_root: {Path(self.td.name) / 'artifacts'}
+    workspace_root: {Path(self.td.name) / 'workspace'}
+    runtime_assets_root: {Path(self.td.name) / 'runtime-assets'}
+""",
+            encoding="utf-8",
+        )
+        self._saved_profile = os.environ.get("SERVEROS_HOST_PROFILE")
+        os.environ["SERVEROS_HOST_PROFILE"] = str(self.profile)
 
-    def tearDown(self): self.td.cleanup()
+    def tearDown(self):
+        if self._saved_profile is None:
+            os.environ.pop("SERVEROS_HOST_PROFILE", None)
+        else:
+            os.environ["SERVEROS_HOST_PROFILE"] = self._saved_profile
+        self.td.cleanup()
 
     def _evidence_file(self, name="evidence.txt"):
         path = Path(self.td.name) / name

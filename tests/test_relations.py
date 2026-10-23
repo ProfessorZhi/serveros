@@ -26,6 +26,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from live_checkouts import readable_dir  # noqa: E402
+
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -534,7 +536,7 @@ class RealRecordsTest(unittest.TestCase):
 
     def records_root(self):
         for candidate in RECORDS_CANDIDATES:
-            if (candidate / "projects").is_dir():
+            if readable_dir(candidate / "projects"):
                 return candidate
         self.skipTest("no records checkout reachable")
 

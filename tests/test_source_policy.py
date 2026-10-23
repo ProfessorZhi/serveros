@@ -62,6 +62,8 @@ CONTRACT = REPO_ROOT / "intake" / "workchain-contract.yaml"
 #: file assert only tree-INDEPENDENT invariants against it, so that they stay
 #: true when the tree moves and still catch a reader that stopped respecting
 #: them.
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
 
@@ -238,7 +240,7 @@ def rules_of(row: dict, decided_by: str) -> list[dict]:
 @pytest.fixture(scope="module")
 def document() -> dict:
     """The live tree, resolved once for the whole class that asserts on it."""
-    if not LIVE_RECORDS.is_dir():
+    if not readable_dir(LIVE_RECORDS):
         pytest.skip("this node has no records checkout to walk")
     return resolved(LIVE_RECORDS)
 
@@ -1265,7 +1267,7 @@ class TestTheLiveTree:
         assert set(document["summary"]["by_decided_by"]) <= set(policy.DECIDED_BY)
 
     def test_the_verb_runs_against_the_real_tree(self, tmp_path):
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip("this node has no records checkout to walk")
         run = cli("work", "source-policy", "--records-root", str(LIVE_RECORDS),
                   "--coverage", "--json", env_extra=data_root(tmp_path))

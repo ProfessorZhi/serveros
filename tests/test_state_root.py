@@ -53,7 +53,37 @@ state_root = _load("serveros_runtime_state_root", "state_root.py")
 paths_mod = _load("serveros_runtime_paths", "paths.py")
 conformance = _load("serveros_runtime_conformance", "conformance.py")
 
-DATA_ROOT = Path(paths_mod.Paths().root("data"))
+_PATHS = paths_mod.Paths()
+# `unbound_ok=True` answers the template `{DATA_ROOT}` when this node binds no
+# data root. Asking without it raised `PathRefused` while this module was being
+# imported, so a node nobody had identified turned the whole file — including
+# the forty tests below that build their own roots in `tmp_path` — into a
+# collection error.
+DATA_ROOT = Path(_PATHS.root("data", unbound_ok=True))
+_STATE_ROOT = Path(_PATHS.root("state", unbound_ok=True))
+
+# The markers below are the three different things "live" means in this file,
+# kept apart because one gate for all of them would hide which input is
+# missing. A skipped test names the path it needed; a test that ran against an
+# empty fixture would have said nothing at all.
+requires_data_root = pytest.mark.skipif(
+    "data" in _PATHS.unconfigured,
+    reason="this node binds no DATA_ROOT, so there is no live data root to read")
+requires_state_root = pytest.mark.skipif(
+    "state" in _PATHS.unconfigured,
+    reason="this node binds no STATE root, so there is no live state root to read")
+requires_live_namespace = pytest.mark.skipif(
+    "state" in _PATHS.unconfigured or not (_STATE_ROOT / "projections").is_dir(),
+    reason=f"no live projections namespace at {_STATE_ROOT / 'projections'}")
+requires_populated_state = pytest.mark.skipif(
+    "state" in _PATHS.unconfigured or not (_STATE_ROOT / "runtime").is_dir(),
+    reason=f"nothing has ever written {_STATE_ROOT / 'runtime'} on this node, "
+           f"so every namespace under it is absent and the report has no "
+           f"live instance to read")
+requires_live_distribution = pytest.mark.skipif(
+    not (DATA_ROOT / "runtime-assets/hwz-server-os").is_dir(),
+    reason=f"the serveros distribution is not on this node at "
+           f"{DATA_ROOT / 'runtime-assets/hwz-server-os'}")
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +487,7 @@ def test_every_invariant_is_declared():
 # ---------------------------------------------------------------------------
 
 
+@requires_data_root
 def test_no_data_root_projections_root_was_introduced():
     """The frozen decision, and the reason for it: a second top-level root for
     derived material becomes a durable-looking location, which is the one
@@ -467,6 +498,7 @@ def test_no_data_root_projections_root_was_introduced():
     assert not (DATA_ROOT / "projections").exists()
 
 
+@requires_state_root
 def test_the_projections_namespace_is_inside_the_state_root():
     resolved = paths_mod.Paths().resolve("state/projections")
     assert resolved["path"].startswith(str(paths_mod.Paths().root("state")))
@@ -514,6 +546,7 @@ def test_a_reproducible_true_manifest_is_accepted():
     assert result["problems"] == [], result["problems"]
 
 
+@requires_live_namespace
 def test_the_environment_baseline_left_the_state_root():
     """§1: the capture is evidence, and evidence does not live in a namespace
     whose defining promise is that you may delete it."""
@@ -532,6 +565,7 @@ def test_the_environment_baseline_left_the_state_root():
     )
 
 
+@requires_live_namespace
 def test_the_environment_projection_kind_is_absent():
     """No environment projection producer exists, so there is no environment
     projection.
@@ -566,6 +600,7 @@ def test_the_environment_projection_kind_is_absent():
         ), f"{child} is neither a projection nor a grouping of them"
 
 
+@requires_live_namespace
 def test_every_projection_in_the_namespace_is_labelled_and_reproducible():
     """The invariant the emptiness assertion was standing in for.
 
@@ -635,6 +670,7 @@ def test_the_evidence_migration_preserved_content_and_provenance():
     assert not (run / "projection.yaml").exists()
 
 
+@requires_data_root
 def test_no_new_top_level_namespace_was_created_for_the_evidence():
     """§1.2: no `evidence/`, `snapshots/`, `legacy/`, `archive-old/` — the
     artifact contract already had a home for a skill run."""
@@ -666,6 +702,7 @@ def test_no_code_path_still_reads_the_retired_projection_path():
 # ---------------------------------------------------------------------------
 
 
+@requires_live_distribution
 def test_the_distribution_role_resolves_to_the_live_physical_path():
     """The frozen §25 decision: keep the current physical root, give it a
     semantic role, and let `path.resolve` find it.
@@ -687,6 +724,7 @@ def test_the_distribution_role_resolves_to_the_live_physical_path():
     )
 
 
+@requires_live_distribution
 def test_the_root_and_the_role_answer_the_same_thing():
     """§25 finished: the role was added in one package, the root was fixed in a
     later one, and only together are they correct.
@@ -722,6 +760,7 @@ def test_the_root_and_the_role_answer_the_same_thing():
         "and nothing should be created at it either.")
 
 
+@requires_live_distribution
 def test_the_browsers_root_was_not_relocated():
     """§25: classify, do not move. 1.7 GB of browser distributions moved out
     from under an undeclared consumer set is how a test environment stops
@@ -845,6 +884,7 @@ def test_the_rendered_row_shows_all_three_fields():
     assert "row['enforcement']" in source
 
 
+@requires_populated_state
 def test_a_computed_on_demand_namespace_does_not_promise_a_future_write():
     """§61: four namespaces declare producers that never persist.
 

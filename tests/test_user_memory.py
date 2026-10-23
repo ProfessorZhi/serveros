@@ -895,10 +895,17 @@ def test_the_view_reads_the_account_inventory_once_for_both_consumers():
             raise AssertionError(f"unexpected producer call: inventory.{name}")
 
     inventory = CountingInventory()
+    # `registry_doc` is a NODE input, not an argument of this test: left at
+    # its default the view loads this machine's managed-runtime registry, so a
+    # node without one fails a test that is about how many times an inventory
+    # was read. `NO_REGISTRY` is the module's own sentinel for "the caller has
+    # none and said so" — the answer `None` means "go and load it", which is
+    # exactly the reach this fixture must not make.
     out = view_mod.resource_anomaly(
         inventory=inventory, host={"memory": {}}, disk={"roles": [], "others": []},
         docker={"sizes": {}, "logs": {}}, hygiene={"docker": {"containers": []}},
-        desired={"signals": []}, tunnel={"tunnels": []}, space=False)
+        desired={"signals": []}, tunnel={"tunnels": []},
+        registry_doc=view_mod.NO_REGISTRY, space=False)
 
     assert inventory.calls == 1
     assert "user_memory" in out["gathering"]["inputs_reached"]
@@ -914,11 +921,18 @@ def test_the_view_honours_a_caller_supplied_inventory():
         def __getattr__(self, name):
             raise AssertionError(f"the view re-measured {name}")
 
+    # `registry_doc` is a NODE input, not an argument of this test: left at
+    # its default the view loads this machine's managed-runtime registry, so a
+    # node without one fails a test that is about how many times an inventory
+    # was read. `NO_REGISTRY` is the module's own sentinel for "the caller has
+    # none and said so" — the answer `None` means "go and load it", which is
+    # exactly the reach this fixture must not make.
     out = view_mod.resource_anomaly(
         inventory=Exploding(), host={"memory": {}}, disk={"roles": [], "others": []},
         docker={"sizes": {}, "logs": {}}, hygiene={"docker": {"containers": []}},
         desired={"signals": []}, tunnel={"tunnels": []},
-        user_memory=uid_doc([uid_row(1002, 31.0, 31.0)]), space=False)
+        user_memory=uid_doc([uid_row(1002, 31.0, 31.0)]),
+        registry_doc=view_mod.NO_REGISTRY, space=False)
 
     assert "user_memory" in out["gathering"]["inputs_supplied_by_the_caller"]
     assert [r["severity"] for r in out["signals"]

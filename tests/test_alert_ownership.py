@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -133,16 +134,22 @@ an = _load("serveros_runtime_anomaly", "anomaly.py")
 CONTRACT = yaml.safe_load((RUNTIME / "attribution-contract.yaml").read_text())
 
 # The scopes a reader is most likely to get wrong, written as the kernel writes
-# them. `user-1002` is this account; the others are other people on the host.
+# them. "This account" is whoever runs the suite: `anomaly.our_uid()` reads
+# `os.getuid()`, so a fixture pinned to the author's uid 1002 makes every scope
+# test fail on any other account — including a CI runner's. The foreign pair is
+# derived so it stays foreign on whichever uid the suite runs as.
+SELF_UID = os.getuid()
+OTHER_UID = 1002 if SELF_UID != 1002 else 1042
+
 SYSTEM_UNIT = "/system.slice/docker.service"
 PID1 = "/init.scope"
-THIS_USER_MANAGER = "/user.slice/user-1002.slice/user@1002.service/init.scope"
-OTHER_USER_MANAGER = "/user.slice/user-1042.slice/user@1042.service/init.scope"
-THIS_USER_UNIT = "/user.slice/user-1002.slice/user@1002.service/dbus.service"
-OTHER_USER_SESSION = "/user.slice/user-1042.slice/session-91.scope"
+THIS_USER_MANAGER = f"/user.slice/user-{SELF_UID}.slice/user@{SELF_UID}.service/init.scope"
+OTHER_USER_MANAGER = f"/user.slice/user-{OTHER_UID}.slice/user@{OTHER_UID}.service/init.scope"
+THIS_USER_UNIT = f"/user.slice/user-{SELF_UID}.slice/user@{SELF_UID}.service/dbus.service"
+OTHER_USER_SESSION = f"/user.slice/user-{OTHER_UID}.slice/session-91.scope"
 # A runtime grouping under somebody's live user instance — the shape tmux's
 # spawn helper and `systemd-run --scope` both leave behind.
-USER_RUNTIME_SCOPE = ("/user.slice/user-1042.slice/user@1042.service/"
+USER_RUNTIME_SCOPE = (f"/user.slice/user-{OTHER_UID}.slice/user@{OTHER_UID}.service/"
                       "tmux-spawn-abc.scope")
 
 # The SAME two shapes for THIS account, added 2026-09-24 with the §7 scope
@@ -161,8 +168,8 @@ USER_RUNTIME_SCOPE = ("/user.slice/user-1042.slice/user@1042.service/"
 # classifier must still read a stranger's cgroup correctly (asserted all over
 # this file, `OTHER_USER_SESSION` included); what changed is only that the
 # answer no longer opens an alert on this deployment's behalf.
-THIS_USER_SESSION = "/user.slice/user-1002.slice/session-91.scope"
-THIS_USER_RUNTIME_SCOPE = ("/user.slice/user-1002.slice/user@1002.service/"
+THIS_USER_SESSION = f"/user.slice/user-{SELF_UID}.slice/session-91.scope"
+THIS_USER_RUNTIME_SCOPE = (f"/user.slice/user-{SELF_UID}.slice/user@{SELF_UID}.service/"
                            "tmux-spawn-abc.scope")
 
 # A slice this file has no evidence about. Not present on the live host — every
@@ -187,11 +194,11 @@ VENDOR_AGENT = "/YunJing/YDEyes"
 # EXTERNAL class carries was false for it. Same uid and same position as the
 # next fixture, different unit, opposite answer.
 THIS_DEPLOYMENT_UNIT = (
-    "/user.slice/user-1002.slice/user@1002.service/app.slice/serverosd.service")
+    f"/user.slice/user-{SELF_UID}.slice/user@{SELF_UID}.service/app.slice/serverosd.service")
 # A unit under the SAME manager for the SAME uid that this deployment does not
 # ship. Nothing in the path tells the two apart; the declaration does.
 FOREIGN_UNIT_SAME_PLACE = (
-    "/user.slice/user-1002.slice/user@1002.service/app.slice/gh-runner-quay.service")
+    f"/user.slice/user-{SELF_UID}.slice/user@{SELF_UID}.service/app.slice/gh-runner-quay.service")
 
 
 def ownership(scope: str) -> str:
@@ -326,7 +333,7 @@ def test_another_users_session_is_not_this_hosts_service():
     mystery."""
     result = att.ownership_of_scope(OTHER_USER_SESSION)
     assert result["role"] == att.ROLE_EXTERNAL_USER_SESSION
-    assert result["uid"] == "1042"
+    assert result["uid"] == str(OTHER_UID)
     assert result["session"] == "91"
     assert att.is_external_system({"ownership": result}) is False
 
@@ -511,7 +518,7 @@ def test_a_users_systemd_manager_is_not_quieted_as_a_system_service():
     assert observed["implies_stale"] is False
     assert observed["measured"]["ownership"]["role"] == \
         att.ROLE_EXTERNAL_USER_MANAGER
-    assert observed["measured"]["ownership"]["uid"] == "1002"
+    assert observed["measured"]["ownership"]["uid"] == str(SELF_UID)
     assert observed["measured"]["ownership"]["lifecycle"] == att.OBSERVE_ONLY
 
 
@@ -687,7 +694,7 @@ def test_a_session_leftover_keeps_the_high_severity_signal():
     assert orphan["severity"] == "high"
     assert orphan["measured"]["ownership"]["role"] == \
         att.ROLE_EXTERNAL_USER_SESSION
-    assert orphan["measured"]["ownership"]["uid"] == "1002"
+    assert orphan["measured"]["ownership"]["uid"] == str(SELF_UID)
     assert orphan["measured"]["detached_by_design"] is False
     assert orphan["measured"]["root_session"] == 999999
 
@@ -1085,7 +1092,7 @@ def test_the_scope_test_excludes_a_named_foreign_owner_and_nobody_else():
     `test_an_unattributable_group_is_still_an_orphan` and the §8 guards with
     it, which is the near-miss this test exists to keep closed.
     """
-    our = 1002
+    our = SELF_UID
     assert an._owned_by_another_account(group(OTHER_USER_SESSION), our) is True
     assert an._owned_by_another_account(group(USER_RUNTIME_SCOPE), our) is True
     assert an._owned_by_another_account(group(THIS_USER_SESSION), our) is False

@@ -839,6 +839,11 @@ class TheQuayBinaryIsSuppliedNotBakedIn(unittest.TestCase):
         self.assertIn("不是空", out)
 
     def test_a_rendered_page_carries_no_literal_home_path(self):
+        # The renderer is a Node program; the fake `--quay-bin` above only
+        # changes what it is pointed at. Without Node this cannot look at a
+        # page at all, and saying so is better than failing on the shell.
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed on this host; the renderer needs it")
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "quay.js"
             fake.write_text("// not the real one\n")
