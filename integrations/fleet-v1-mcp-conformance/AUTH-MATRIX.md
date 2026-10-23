@@ -1,6 +1,6 @@
 # The 44-tool catalogue and what actually authorizes a call
 
-`TOOL_SURFACE_REVISION = "fleet-mcp-6"` serves **44 tools**: 11 hand-written,
+`TOOL_SURFACE_REVISION = "fleet-mcp-7"` serves **44 tools**: 11 hand-written,
 31 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 44
 to every client that can reach the surface. That is discovery. It is not
 entitlement.

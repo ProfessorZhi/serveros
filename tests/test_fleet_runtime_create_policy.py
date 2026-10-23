@@ -21,7 +21,8 @@ from fleet_mcp.config import CreateGrant, PolicyBinding, provider_key  # noqa: E
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.runtime_create_policy import (  # noqa: E402
     RuntimeProjectDefaults, PolicyError, parse_runtime_create_defaults)
-from test_fleet_create_session_runtime import TwoAccounts, DEVICE, SECOND, PROJECT  # noqa: E402
+from test_fleet_create_session_runtime import (  # noqa: E402
+    TwoAccounts, DEVICE, SECOND, PROJECT, OWNER_ID)
 
 M = ["deepseek-v4-flash-vision-anthropic",
      "deepseek-v4-flash-anthropic",
@@ -306,6 +307,57 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
             self.h.service._native_reconfigure_ceiling(
                 provider, DEVICE, session_ref, PROJECT, {"model": M[1]}, native)
         self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+
+    def test_a_mode_change_is_satisfiable_and_the_outer_project_is_what_it_reads(self):
+        """The ceiling needs a project the caller names OUTSIDE `arguments`.
+
+        `session_reconfigure`'s native schema has no `project` parameter, so
+        before 2026-10-23 the ceiling's refusal ("must also name `project`") was
+        unsatisfiable through this surface: the outer schema carried no such key
+        and `arguments` refuses unknown ones. This drives the whole path —
+        `native_call` → handler-passed `project` → ceiling — and checks both
+        halves: no claim is refused, a matching claim is forwarded to the
+        device, and the device's own `session_get` is what the ceiling compared.
+        """
+        from fleet_mcp.fleet import Principal
+        from fleet_mcp.scopes import SCOPE_CONTROL, SCOPE_READ
+
+        self.configure()
+        providers = dict(self.h.config.providers)
+        providers[KEY] = replace(providers[KEY], allow_control=True)
+        self.h.config = replace(
+            self.h.config, providers=providers,
+            policy=replace(self.h.config.policy,
+                           operator_grants={"oauth:test": {KEY: ("create", "control")}}))
+        self.h.service.config = self.h.config
+        seen: list[tuple[str, dict]] = []
+
+        def fake_native(tool, arguments, *, session_ref=None):
+            seen.append((tool, dict(arguments)))
+            if tool == "session_get":
+                return {"sessionId": OWNER_ID, "projectId": PROJECT}
+            return {"ok": True}
+
+        self.h.second_provider.native_call = fake_native
+        principal = Principal(name="oauth:test",
+                              scopes=frozenset((SCOPE_READ, SCOPE_CONTROL)),
+                              credential_kind="oauth")
+        session_ref = f"{DEVICE}|{SECOND}|{OWNER_ID}"
+
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service.native_call(
+                principal, device_ref=DEVICE, native_tool="session_reconfigure",
+                arguments={"session": OWNER_ID, "permissionMode": "default"},
+                session_ref=session_ref, runtime=SECOND)
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+
+        out = self.h.service.native_call(
+            principal, device_ref=DEVICE, native_tool="session_reconfigure",
+            arguments={"session": OWNER_ID, "permissionMode": "default"},
+            session_ref=session_ref, project=PROJECT, runtime=SECOND)
+        self.assertIsInstance(out, dict)
+        self.assertEqual([name for name, _ in seen],
+                         ["session_get", "session_reconfigure"])
 
     def test_reconfigure_does_not_set_unmentioned_permission_mode(self):
         self.configure()

@@ -134,6 +134,16 @@ SESSION_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_SEND, GOV_CONTROL,
 #: The one class whose floor is stated over a PROJECT rather than a session.
 PROJECT_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_CREATE,)
 
+#: The class that carries a PROJECT as a CLAIM rather than a floor. A
+#: reconfigure's ceiling is the project the session really belongs to, and the
+#: caller names that project so the claim can be held against the device's
+#: answer. It cannot be required in the schema: a reconfigure that changes
+#: neither `model` nor `permissionMode` declares no ceiling at all, and
+#: `session_reconfigure`'s native schema has no `project` parameter to inherit —
+#: so the outer layer is the only place it can be carried, and only a call that
+#: names a model or a mode has to.
+PROJECT_CLAIMED_GOVERNANCE: tuple[str, ...] = (GOV_RECONFIGURE,)
+
 #: The READS whose disclosure the runtime also scopes to one session.
 #:
 #: A read is not session-addressed as a class: `session_read` names its session
@@ -727,6 +737,20 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
             "description": ("The project the new session is for; checked against "
                             "the project floor and named here rather than read "
                             "out of `arguments`."),
+        }
+    elif native.governance in PROJECT_CLAIMED_GOVERNANCE:
+        # Optional here on purpose: it is required exactly when the call names a
+        # `model` or a `permissionMode`, which the outer schema cannot see
+        # inside `arguments`. Declaring it optional states the narrower rule
+        # honestly; declaring it required would refuse the reconfigure that
+        # changes nothing about permissions.
+        outer["project"] = {
+            "type": "string",
+            "description": ("Required when `arguments` names `model` or "
+                            "`permissionMode`: the project the target session "
+                            "must really belong to. Compared with the project "
+                            "the device reports for that session, and the ceiling "
+                            "is applied against the device's answer."),
         }
     # The `arguments` object carries the SAME closure the runtime validator
     # uses: `additionalProperties` is copied from the recorded schema, not

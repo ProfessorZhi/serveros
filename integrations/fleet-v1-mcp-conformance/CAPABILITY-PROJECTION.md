@@ -107,5 +107,5 @@ settled first — which is why it is named here rather than invented here.
 No device was contacted for any statement above; the capability reads are
 described from their code and their tests. Nothing in this candidate is installed
 (the installed Next revision is A `008a336`, which predates the current
-`fleet-mcp-6` as well), and no
+`fleet-mcp-7` as well), and no
 mock in this repository is evidence about a live machine.

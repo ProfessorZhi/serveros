@@ -871,9 +871,18 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             "session id>` address, as `fleet_list_sessions` returns it; its "
             "device must equal `device_ref`.")
     if "project" in properties:
-        properties["project"] = _string(
-            "Required for this verb. The project the new session is for; "
-            "checked against the selected owner catalogue or `policy.create_allow`.")
+        if native.governance == cloudcli_native.GOV_RECONFIGURE:
+            properties["project"] = _string(
+                "Required when `arguments` names `model` or `permissionMode`. "
+                "The project the target session must really belong to: it is "
+                "compared with the project the DEVICE reports for that session "
+                "and the ceiling is applied against the device's answer, so a "
+                "claim that disagrees is refused rather than believed.")
+        else:
+            properties["project"] = _string(
+                "Required for this verb. The project the new session is for; "
+                "checked against the selected owner catalogue or "
+                "`policy.create_allow`.")
     properties["arguments"]["description"] = (
         f"`{native.name}`'s own arguments, passed through to the device "
         f"unchanged; `null` and an omitted key stay distinct. Arguments are "

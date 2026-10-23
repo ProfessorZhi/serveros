@@ -21,7 +21,15 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-6`: the surface follows CloudCLI 1.40 — the mirror grows from 22 to
 # 31 verbs (the nine 1.40 additions), and `fleet_delete_project` is the eleventh
 # authored tool, the surface's only destructive one. 44 tools total.
-TOOL_SURFACE_REVISION = "fleet-mcp-6"
+# `fleet-mcp-7`: `fleet_cloudcli_session_reconfigure` gains an OPTIONAL outer
+# `project`. A model or permission-mode change has always been refused unless the
+# caller named the session's real project, and that key had nowhere to live: the
+# native `session_reconfigure` schema has none to inherit, and `arguments`
+# refuses unknown keys — so every such reconfigure was refused for naming a
+# project the surface would not accept. No tool was added and no result shape
+# changed, but the schema of one tool did: a client that cached `tools/list` at
+# `-6` would call it the same way and keep failing.
+TOOL_SURFACE_REVISION = "fleet-mcp-7"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

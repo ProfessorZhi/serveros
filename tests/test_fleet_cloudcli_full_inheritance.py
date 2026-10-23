@@ -1865,13 +1865,31 @@ class AdvertisedSchemaInvariantTest(unittest.TestCase):
                 self.assertIn("session_ref", schema["properties"])
                 self.assertIn("session_ref", schema["required"])
 
-    def test_the_project_axis_belongs_to_create_alone(self):
+    def test_the_project_axis_is_a_floor_for_create_and_a_claim_for_reconfigure(self):
+        """`project` means two different things, and the schema says which.
+
+        For CREATE it is the FLOOR — the project the new session is minted
+        under — so it is a property and required. For RECONFIGURE it is a
+        CLAIM: the ceiling is the project the target session really belongs to,
+        read from the device, and the caller's `project` only has to agree with
+        it. It therefore has to exist in the schema (the runtime refuses a
+        model/mode change that names none, and `session_reconfigure`'s native
+        schema carries no `project` to inherit), but it cannot be REQUIRED: a
+        reconfigure that changes neither `model` nor `permissionMode` declares
+        no ceiling at all. Until 2026-10-23 this test asserted the axis belonged
+        to create alone, which described the intent but not the satisfiability —
+        every model/mode reconfigure was refused for naming no project that the
+        schema would not accept.
+        """
         for native in cloudcli_native.NATIVE_TOOLS:
             with self.subTest(tool=native.name):
                 schema = cloudcli_native.mirrored_schema(native)
                 if native.governance == cloudcli_native.GOV_CREATE:
                     self.assertIn("project", schema["properties"])
                     self.assertIn("project", schema["required"])
+                elif native.governance == cloudcli_native.GOV_RECONFIGURE:
+                    self.assertIn("project", schema["properties"])
+                    self.assertNotIn("project", schema["required"])
                 else:
                     self.assertNotIn("project", schema["properties"])
                     self.assertNotIn("project", schema["required"])
