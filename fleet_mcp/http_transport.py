@@ -47,6 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from . import human_auth
 from .audit import AuditLog
 from .errors import FleetRefusal
 from .feishu_sso import FeishuBroker, SSOError, build_feishu
@@ -95,6 +96,18 @@ class HttpSurface:
         # and a disabled block — both arrive here as `None` and both make the
         # two routes 404 exactly as an unknown path does.
         self.feishu = feishu if feishu is not None else build_feishu(config)
+        # Password login is a property of the binding, not of this class: a
+        # deployment that names no `password_anchor` keeps the owner-token form
+        # exactly as it was, and one that names one gets the login form.
+        self.human = None
+        if oauth is not None and config.auth.password_anchor is not None:
+            self.human = human_auth.HumanLogin.from_paths(
+                password_anchor=config.auth.password_anchor,
+                totp_anchor=config.auth.totp_anchor,
+                replay_path=oauth.store.root / "login-replay.json",
+                key=oauth.store.signing_key,
+                session_ttl=config.auth.session_ttl,
+            )
         self.max_body_bytes = int(getattr(config.server, "max_body_bytes", MAX_BODY_BYTES_DEFAULT))
         self.mcp_path = getattr(config.server, "mcp_path", "/mcp")
         # When the advertised base URL carries a path — the shape a deployment
@@ -120,8 +133,14 @@ class HttpSurface:
     def principal_for_token(self, token: str) -> Principal:
         import hmac
 
-        pat = self.config.auth.pat_anchor.read_text(encoding="utf-8").strip() \
-            if self.config.auth.pat_anchor and self.config.auth.pat_anchor.exists() else None
+        # `pat_enabled: false` is a config edit, not a code path: the anchor may
+        # still exist and still be valid, and it simply stops being consulted.
+        # A deployment that turns the PAT back on needs no redeploy of a
+        # different build.
+        pat = None
+        if self.config.auth.pat_enabled and self.config.auth.pat_anchor \
+                and self.config.auth.pat_anchor.exists():
+            pat = self.config.auth.pat_anchor.read_text(encoding="utf-8").strip()
         if pat and hmac.compare_digest(pat, token):
             # The owner's own token carries all three scopes. `fleet:create` is
             # not a widening of what this credential can reach: creation is
@@ -195,7 +214,9 @@ class HttpSurface:
             if route == "/oauth/register":
                 return self._oauth_register(method, body)
             if route == "/oauth/authorize":
-                return self._oauth_authorize(method, query, body)
+                return self._oauth_authorize(method, query, body, headers)
+            if route == "/oauth/authorize/logout":
+                return self._oauth_logout()
             if route == "/oauth/feishu/start":
                 return self._oauth_feishu_start(method, query)
             if route == "/oauth/feishu/callback":
@@ -289,12 +310,39 @@ class HttpSurface:
             )
         return _json(201, registered)
 
-    def _oauth_authorize(self, method: str, query: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
+    def _oauth_authorize(self, method: str, query: str, body: bytes,
+                         headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
         if self.oauth is None:
             return _json(404, {"error": "not_found",
                                "error_description": "this deployment does not run an OAuth issuer"})
         params = {k: v[0] for k, v in parse_qs(query).items()}
         authorize_path = urlparse(self.oauth.base_url).path or ""
+        cookie = _cookie_value(headers or {}, human_auth.COOKIE_NAME)
+        login_user = self.human.user(cookie) if self.human is not None else None
+        secure_cookie = self.oauth.base_url.startswith("https://")
+
+        def render(status: int, markup_client, *, form: dict[str, str],
+                   error: str | None = None, granted: list[str] | None = None,
+                   interactive: bool = True):
+            return _html(status, consent_page(
+                client=markup_client, params=form, error=error,
+                authorize_path=authorize_path or "/oauth/authorize",
+                granted=granted,
+                # The deployment's ceiling is what the boxes enumerate. Without
+                # this the page can only ever offer what the client asked for,
+                # and an owner who means to hand out all six has no way to say so
+                # on this form.
+                grantable=list(self.oauth.auth.grantable_scopes),
+                interactive=interactive,
+                login_mode="password" if self.human is not None else "pat",
+                login_user=login_user,
+                csrf=self.human.csrf(cookie) if (self.human is not None and login_user) else None,
+                totp_required=bool(self.human is not None and self.human.totp_required),
+                feishu_start_path=(
+                    f"{authorize_path}/oauth/feishu/start"
+                    if self.feishu is not None and self.feishu.enabled else None
+                ),
+            ), form_action=_redirect_origin(form.get("redirect_uri", "")))
 
         if method == "GET":
             # Stage one: response_type, client and redirect_uri must be sound
@@ -303,19 +351,14 @@ class HttpSurface:
             try:
                 client = self.oauth.validate_authorize(params)
             except OAuthError as exc:
-                return _html(exc.status, consent_page(
-                    client=_placeholder_client(params), params=params,
-                    error=f"{exc.error}: {exc.description}",
-                    authorize_path=authorize_path or "/oauth/authorize",
-                ))
-            return _html(200, consent_page(
-                    client=client, params=params,
-                    authorize_path=authorize_path or "/oauth/authorize",
-                    feishu_start_path=(
-                        f"{authorize_path}/oauth/feishu/start"
-                        if self.feishu is not None and self.feishu.enabled else None
-                    )),
-                         form_action=_redirect_origin(params.get("redirect_uri", "")))
+                # Nothing was validated, so there is no form that could succeed:
+                # render the error alone. A bare `/oauth/authorize` is the common
+                # way to land here, and a page with greyed-out scope boxes reads
+                # to an operator as "permissions are off" rather than "this URL
+                # carries no authorization request".
+                return render(exc.status, _placeholder_client(params), form=params,
+                              error=f"{exc.error}: {exc.description}", interactive=False)
+            return render(200, client, form=params)
 
         if method != "POST":
             return _json(405, {"error": "invalid_request",
@@ -348,39 +391,108 @@ class HttpSurface:
         try:
             self.oauth.validate_authorize(form)
         except OAuthError as exc:
-            return _html(exc.status, consent_page(
-                client=_placeholder_client(form), params=form,
-                error=f"{exc.error}: {exc.description}",
-                authorize_path=authorize_path or "/oauth/authorize",
-                granted=granted,
-            ))
+            return render(exc.status, _placeholder_client(form), form=form,
+                          error=f"{exc.error}: {exc.description}", granted=granted)
+
+        # Stage two: who is authorising. Two shapes, one page:
+        #
+        #   password mode  a session cookie, or username+password[+TOTP] on
+        #                  this submit. The cookie is what makes three clients
+        #                  cost one sign-in.
+        #   PAT mode       the single owner token, unchanged.
+        verified_user: str | None = None
+        fresh_cookie: str | None = None
+        extra: dict[str, str] = {}
+
+        if self.human is not None:
+            if login_user is not None:
+                # A cookie was present, so the form carried a CSRF token bound
+                # to it and this submit must present the matching one. Without
+                # this check any page on the internet could POST this consent
+                # form on behalf of a signed-in browser.
+                if not self.human.csrf_ok(cookie, form.get("csrf", "")):
+                    if self.audit:
+                        self.audit.record("oauth.login.refused", username=login_user,
+                                          login_result="csrf")
+                    return render(403, _placeholder_client(form), form=form,
+                                  error="This form was not submitted from the consent page.",
+                                  granted=granted)
+                verified_user = login_user
+            else:
+                username = (form.get("username") or "").strip()
+                ok, reason = self.human.verify(
+                    username, form.get("password") or "", form.get("totp") or "",
+                )
+                if self.audit:
+                    # Two fields, both closed: the result is a word this module
+                    # chose, and the name is recorded only when it matched an
+                    # entry in the anchor — never the text the caller typed.
+                    # The password and the code are not in scope here at all.
+                    self.audit.record(
+                        "oauth.login" if ok else "oauth.login.refused",
+                        username=username if username in self.human.passwords else None,
+                        login_result=reason.partition(":")[0],
+                    )
+                if not ok:
+                    return render(401, _placeholder_client(form), form=form,
+                                  error=_login_error(reason), granted=granted)
+                verified_user = username
+                raw = self.human.issue(username)
+                attrs = [f"{human_auth.COOKIE_NAME}={raw}", "HttpOnly", "SameSite=Lax",
+                         "Path=/oauth", f"Max-Age={int(self.human.session_ttl)}"]
+                if secure_cookie:
+                    attrs.insert(2, "Secure")
+                fresh_cookie = "; ".join(attrs)
+                extra["Set-Cookie"] = fresh_cookie
 
         try:
             code, client = self.oauth.approve(
-                params=form, owner_token=form.get("owner_token", ""), granted=list(granted)
+                params=form, owner_token=form.get("owner_token", ""),
+                granted=list(granted), verified_user=verified_user,
             )
         except OAuthError as exc:
-            if exc.error == "access_denied" and "owner token" in exc.description:
+            if verified_user is None and exc.error == "access_denied" \
+                    and "owner token" in exc.description:
                 # The operator mistyped their token. Re-present the form rather
                 # than bouncing them through a redirect that loses their place.
-                return _html(401, consent_page(
-                    client=_placeholder_client(form), params=form,
-                    error=f"{exc.error}: {exc.description}",
-                    authorize_path=authorize_path or "/oauth/authorize",
-                    granted=granted,
-                ), form_action=_redirect_origin(form.get("redirect_uri", "")))
+                return render(401, _placeholder_client(form), form=form,
+                              error=f"{exc.error}: {exc.description}", granted=granted)
             # Any other failure is the client's to hear about, and the
-            # redirect_uri is now known good.
+            # redirect_uri is now known good. A cookie minted a moment ago still
+            # travels: the sign-in succeeded, only the grant did not.
             return _redirect(redirect_with_error(
                 form.get("redirect_uri", ""), exc.error, exc.description, form.get("state"),
                 issuer=self.oauth.base_url,
-            ))
+            ), extra_headers=extra)
         if self.audit:
+            # `username` stays None in PAT mode rather than being filled with
+            # `owner-pat`: the field answers "which person approved this", and a
+            # token is not a person.
             self.audit.record("oauth.approve", client_id=client.client_id,
-                              redirect_uri=form.get("redirect_uri"))
+                              redirect_uri=form.get("redirect_uri"),
+                              username=verified_user)
         return _redirect(redirect_with_code(
             form["redirect_uri"], code, form.get("state"), issuer=self.oauth.base_url,
-        ))
+        ), extra_headers=extra)
+
+    def _oauth_logout(self) -> tuple[int, dict[str, str], bytes]:
+        """Drop the session cookie and send the browser back to the form.
+
+        Expiring it is the whole of the operation: the cookie is a signed
+        statement and nothing server-side tracks it, so "signed out" means
+        "this browser no longer holds the statement". Nothing else is touched.
+        """
+        if self.oauth is None:
+            return _json(404, {"error": "not_found",
+                               "error_description": "this deployment does not run an OAuth issuer"})
+        attrs = [f"{human_auth.COOKIE_NAME}=", "HttpOnly", "SameSite=Lax",
+                 "Path=/oauth", "Max-Age=0"]
+        if self.oauth.base_url.startswith("https://"):
+            attrs.insert(2, "Secure")
+        target = (urlparse(self.oauth.base_url).path or "") + "/oauth/authorize"
+        if self.audit:
+            self.audit.record("oauth.logout")
+        return _redirect(target, extra_headers={"Set-Cookie": "; ".join(attrs)})
 
     def _oauth_feishu_start(self, method: str, query: str) -> tuple[int, dict[str, str], bytes]:
         """Begin the Feishu leg: validate the request, hold it, redirect.
@@ -492,7 +604,19 @@ class HttpSurface:
         if method != "POST":
             return _json(405, {"error": "invalid_request", "error_description": "token requires POST"})
         form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
-        issued = self.oauth.token(form)
+        try:
+            issued = self.oauth.token(form)
+        except OAuthError as exc:
+            # A refusal has to leave a row too. Without one, an operator asking
+            # "why did this client lose its session" cannot tell an expired
+            # token from a revoked chain from a wrong client_id — the state
+            # file shows all three as "no live token", and the answer is only
+            # in the code. The description is deliberately NOT recorded: it is
+            # written for the caller and may quote what they sent.
+            if self.audit:
+                self.audit.record("oauth.token.refused", grant_type=form.get("grant_type"),
+                                  client_id=form.get("client_id"), error=exc.error)
+            raise
         if self.audit:
             self.audit.record("oauth.token", grant_type=form.get("grant_type"),
                               client_id=form.get("client_id"), scope=issued.get("scope"))
@@ -683,12 +807,51 @@ def _redirect_origin(redirect_uri: str) -> str | None:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def _html(status: int, markup: str, form_action: str | None = None):
+def _cookie_value(headers: dict[str, str], name: str) -> str | None:
+    """One cookie out of a `Cookie:` header, or None.
+
+    The header name is compared case-insensitively because `http.client` and
+    the test harness spell it differently, and a lookup that misses returns
+    "not signed in" — which is indistinguishable from a stolen-cookie answer
+    and would show up as a silent login loop rather than an error.
+    """
+    raw = ""
+    for key, value in headers.items():
+        if key.lower() == "cookie":
+            raw = value
+            break
+    for part in raw.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name:
+            return value.strip() or None
+    return None
+
+
+def _login_error(reason: str) -> str:
+    """The page's one sentence for every failed sign-in.
+
+    Distinct wording per cause ("no such user" vs "wrong password") would turn
+    this form into an account enumerator; the reason itself goes to the audit
+    log, where only the operator can read it.
+    """
+    if reason.startswith("throttled:"):
+        wait = reason.split(":", 1)[1]
+        return f"Too many failed attempts. Try again in {wait}."
+    if reason == "missing_username":
+        return "Enter a username and password."
+    if reason == "bad_totp":
+        return "That verification code was not accepted. Enter the current six-digit code."
+    return "Username, password or verification code was not accepted."
+
+
+def _html(status: int, markup: str, form_action: str | None = None,
+          extra_headers: dict[str, str] | None = None):
     raw = markup.encode("utf-8")
     csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
     if form_action:
         csp += " " + form_action
     return status, {
+        **(extra_headers or {}),
         "Content-Type": "text/html; charset=utf-8",
         "Content-Length": str(len(raw)),
         "Cache-Control": "no-store",
@@ -701,8 +864,8 @@ def _html(status: int, markup: str, form_action: str | None = None):
     }, raw
 
 
-def _redirect(location: str):
-    return 302, {"Location": location, "Cache-Control": "no-store",
+def _redirect(location: str, extra_headers: dict[str, str] | None = None):
+    return 302, {**(extra_headers or {}), "Location": location, "Cache-Control": "no-store",
                  "Referrer-Policy": "no-referrer"}, b""
 
 
@@ -833,24 +996,45 @@ def build_oauth(config, *, base_url: str, store_root,
             "oauth_enabled is false in the local binding; a ChatGPT connector "
             "cannot authenticate without it",
         )
-    if config.auth.pat_anchor is None or not config.auth.pat_anchor.exists():
+    # One verifier is required, and either flavour will do: a password anchor
+    # (username + password [+ TOTP]) or the owner PAT. What is refused is
+    # neither — an issuer that cannot authenticate the person approving a
+    # client is a public token dispenser.
+    if config.auth.password_anchor is not None:
+        if not config.auth.password_anchor.exists():
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                f"auth.password_anchor points at {config.auth.password_anchor}, which "
+                f"does not exist. The consent step proves the human approving a client "
+                f"is the owner by asking for a password and a one-time code; with no "
+                f"credential file there is nothing to prove it with.",
+            )
+    elif config.auth.pat_anchor is None or not config.auth.pat_anchor.exists():
         raise FleetRefusal(
             "BAD_REQUEST",
-            "auth.pat_anchor is not set to a readable file. The consent step "
-            "proves the human approving a client is the owner by requiring that "
-            "token; with no owner credential configured there is nothing to "
-            "prove it with, and this surface will not issue tokens to anonymous "
-            "clients.",
+            "neither auth.password_anchor nor auth.pat_anchor is set to a readable "
+            "file. The consent step proves the human approving a client is the owner; "
+            "with no owner credential configured there is nothing to prove it with, "
+            "and this surface will not issue tokens to anonymous clients.",
         )
 
     def read_pat() -> str | None:
+        # `pat_enabled: false` answers None here as well as in
+        # `principal_for_token`. Two gates on one fact, because they fail
+        # differently: one refuses a bearer at the front door, this one makes
+        # sure the consent form cannot fall back to a token the operator has
+        # turned off even if a future call site passes `verified_user=None`.
+        if not config.auth.pat_enabled or config.auth.pat_anchor is None:
+            return None
         try:
             return config.auth.pat_anchor.read_text(encoding="utf-8").strip() or None
         except OSError:
             return None
 
     store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
-                       refresh_ttl=config.auth.refresh_token_ttl)
+                       refresh_ttl=config.auth.refresh_token_ttl,
+                       rotate_refresh=config.auth.refresh_rotate,
+                       rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
     return AuthorizationServer(
         store=store, auth=config.auth, base_url=base_url, pat_reader=read_pat,
         mcp_path=mcp_path or str(getattr(config.server, "mcp_path", "/mcp")),

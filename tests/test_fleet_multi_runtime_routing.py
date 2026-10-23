@@ -109,7 +109,7 @@ class TwoRuntimes:
 
     def __init__(self, tmp: Path, *, owner: str = "company", second: bool = True,
                  grants=None, enabled_second: bool = True, first: bool = True,
-                 first_ids=(UUID,), second_ids=(UUID,)):
+                 first_ids=(UUID,), second_ids=(UUID,), eligible_ownership=None):
         self.tmp = tmp
         first_anchor = tmp / "vince.node-secret"
         first_anchor.write_text("vince-secret", encoding="utf-8")
@@ -134,7 +134,10 @@ class TwoRuntimes:
             source=None, local_device_ref=DEVICE, providers=providers,
             auth=AuthBinding(pat_anchor=first_anchor),
             server=ServerBinding(bind="127.0.0.1", port=0),
-            policy=PolicyBinding(operator_grants=dict(grants or {})),
+            policy=PolicyBinding(
+                operator_grants=dict(grants or {}),
+                **({"grant_eligible_ownership": tuple(eligible_ownership)}
+                   if eligible_ownership is not None else {})),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
         )
 
@@ -377,8 +380,9 @@ class AGrantDoesNotCrossRuntimesTest(unittest.TestCase):
                                   session_ref=SECOND_REF,
                                   arguments={"session": UUID, "message": "x"})
 
-    def test_a_personal_device_grants_neither_runtime(self):
-        h = TwoRuntimes(self.tmp, owner="personal", grants={
+    def test_a_personal_device_grants_neither_runtime_when_the_binding_narrows(self):
+        h = TwoRuntimes(self.tmp, owner="personal", eligible_ownership=("company",),
+                        grants={
             "oauth:test": {DEVICE: ["send"], provider_key(DEVICE, SECOND): ["send"]}})
         for ref in (OWNER_REF, SECOND_REF):
             with self.subTest(ref=ref):
@@ -427,11 +431,11 @@ class OneRuntimeOfflineDoesNotAffectTheOtherTest(unittest.TestCase):
 class TheServedSurfaceIsUnchangedTest(unittest.TestCase):
     """Neither gap closed here changes what a single-runtime device serves."""
 
-    def test_the_tool_surface_is_still_thirty_four_with_the_legacy_nine(self):
+    def test_the_tool_surface_is_still_forty_four_with_the_legacy_nine(self):
         from fleet_mcp import cloudcli_native, tools
         names = [t.name for t in tools.SERVED_TOOLS]
-        self.assertEqual(len(names), 34)
-        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 22)
+        self.assertEqual(len(names), 44)
+        self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 31)
         for nine in ("fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                      "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
                      "fleet_status", "fleet_create_session", "fleet_interrupt_session"):
@@ -575,8 +579,9 @@ class TheSameUuidUnderTwoRuntimesIsNotADuplicateTest(unittest.TestCase):
         self.assertFalse(by_ref[OWNER_REF]["control_allowed"]["send_allowed"])
         self.assertTrue(by_ref[SECOND_REF]["control_allowed"]["send_allowed"])
 
-    def test_a_personal_devices_rows_are_admitted_on_neither_runtime(self):
-        h = TwoRuntimes(self.tmp, owner="personal", grants={
+    def test_a_personal_devices_rows_are_admitted_on_neither_runtime_when_narrowed(self):
+        h = TwoRuntimes(self.tmp, owner="personal", eligible_ownership=("company",),
+                        grants={
             "oauth:test": {DEVICE: ["send"], provider_key(DEVICE, SECOND): ["send"]}})
         got = h.service.list_sessions(h.principal(), runtime="all")
         for row in got["sessions"]:

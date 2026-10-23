@@ -55,7 +55,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlencode, urlparse
 
 from .config import AuthBinding
@@ -117,6 +117,10 @@ class RefreshRecord:
     # the signature of a stolen one, and is treated as a breach of the whole
     # chain rather than of one token.
     rotated_to: str | None = None
+    # When the rotation above happened. Only the grace window reads it, and a
+    # record written before this field existed loads with `None` — which no
+    # grace covers, so old chains keep the stricter reading.
+    rotated_at: float | None = None
     revoked: bool = False
     # Which consent proof produced this grant: `None`/absent for the owner-PAT
     # path, `"feishu"` for a whitelisted identity. Carried across rotation so a
@@ -164,10 +168,12 @@ def _revocations_from(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
 class TokenStore:
     """Signing key, clients and refresh chains. Lives at 0600, outside git."""
 
-    def __init__(self, root: Path, *, access_ttl: int, refresh_ttl: int) -> None:
-        self.root = root
+    def __init__(self, root: Path, *, access_ttl: int, refresh_ttl: int,
+                 rotate_refresh: bool = True, rotation_grace_seconds: int = 0) -> None:
         self.access_ttl = max(60, int(access_ttl))
         self.refresh_ttl = max(600, int(refresh_ttl))
+        self.rotate_refresh = bool(rotate_refresh)
+        self.rotation_grace_seconds = max(0, int(rotation_grace_seconds))
         self._lock = threading.Lock()
         root.mkdir(parents=True, exist_ok=True)
         self._key_path = root / "signing.key"
@@ -175,6 +181,22 @@ class TokenStore:
         self._key = self._load_or_create_key()
         self._clients, self._refresh, self._revocations = self._load_state()
         self._revocation_stamp: tuple[int, int] | None = None
+
+    @property
+    def root(self) -> Path:
+        """The store's directory, for state that must outlive the process."""
+        return self._state_path.parent
+
+    @property
+    def signing_key(self) -> bytes:
+        """The store's HMAC key, for the one other signature this server makes.
+
+        The browser session cookie is signed with the same key as tokens: it is
+        the same deployment, the same rotation event, and a second key would be
+        a second thing to lose. Exposed as a value rather than by reaching into
+        `_key` so the field keeps its privacy.
+        """
+        return self._key
 
     # -- persistence -------------------------------------------------------
 
@@ -234,6 +256,7 @@ class TokenStore:
                 expires_at=row.get("expires_at", 0.0),
                 resource=row.get("resource"),
                 rotated_to=row.get("rotated_to"),
+                rotated_at=row.get("rotated_at"),
                 revoked=bool(row.get("revoked")),
                 idp=row.get("idp"),
             )
@@ -260,6 +283,7 @@ class TokenStore:
                     "expires_at": rec.expires_at,
                     "resource": rec.resource,
                     "rotated_to": rec.rotated_to,
+                    "rotated_at": rec.rotated_at,
                     "revoked": rec.revoked,
                     "idp": rec.idp,
                 }
@@ -542,7 +566,16 @@ class TokenStore:
             self._save_state()
         return token
 
-    def consume_refresh_token(self, token: str, *, client_id: str) -> RefreshRecord:
+    def consume_refresh_token(self, token: str, *, client_id: str) -> tuple[str, RefreshRecord]:
+        """Validate a presented refresh token, and say which token is live.
+
+        Returns `(live_token, record)`. Usually `live_token` is the token that
+        was presented. It is not when that token was already rotated: the head
+        of the chain is what continues to be rotated, so a client that keeps
+        replaying the token it was first given either continues on the head
+        (rotation off, or inside the grace window) or loses the chain — never
+        the third thing, quietly refreshing against a dead record.
+        """
         self._reload_revocations_if_changed()
         with self._lock:
             if client_id in self._revocations["clients"]:
@@ -561,7 +594,19 @@ class TokenStore:
             if record.expires_at <= time.time():
                 raise OAuthError("invalid_grant", "refresh token expired", status=400)
             if record.rotated_to:
-                # Reuse of a rotated token. The only safe reading is that the
+                head_token, head = self._chain_head_locked(token)
+                if (head is not None and not head.revoked and head.expires_at > time.time()
+                        and (not self.rotate_refresh or self._within_rotation_grace(record))):
+                    # The replay has a benign reading, so take it: answer with
+                    # the token that replaced this one and let the chain go on.
+                    # With rotation off this is the normal path — the client is
+                    # meant to keep presenting a token that was rotated before
+                    # the setting changed. With rotation on it is the grace
+                    # window, which covers a client with two refreshes in
+                    # flight without covering a replay from somewhere else an
+                    # hour later.
+                    return head_token, head
+                # Reuse of a rotated token, outside every benign reading: the
                 # chain is compromised, so the whole chain dies — the caller has
                 # to re-authorize, which is the correct cost.
                 self._revoke_chain_locked(token)
@@ -579,14 +624,58 @@ class TokenStore:
                     "and the client must authorize again",
                     status=400,
                 )
-            return record
+            return token, record
+
+    def _within_rotation_grace(self, record: RefreshRecord) -> bool:
+        if self.rotation_grace_seconds <= 0 or record.rotated_at is None:
+            return False
+        return (time.time() - record.rotated_at) <= self.rotation_grace_seconds
+
+    def _chain_head_locked(self, token: str) -> tuple[str, RefreshRecord | None]:
+        """Follow `rotated_to` forward and return the last token in the chain.
+
+        `(token, None)` means the chain is broken — a successor named in the
+        state file that is not in it, or a cycle this code cannot build and will
+        not walk forever. A broken chain is not a live one, so the caller treats
+        it exactly as it treats a chain that is revoked.
+        """
+        seen: set[str] = set()
+        cursor = token
+        while cursor not in seen:
+            seen.add(cursor)
+            record = self._refresh.get(cursor)
+            if record is None:
+                return cursor, None
+            if not record.rotated_to:
+                return cursor, record
+            cursor = record.rotated_to
+        return cursor, None
 
     def rotate_refresh_token(self, old_token: str, record: RefreshRecord) -> str:
+        """Return the refresh token the client should use from now on.
+
+        With rotation on, that is a new token and the presented one is marked
+        used, dated so the grace window above can tell a race from a replay.
+
+        With rotation off, the presented token IS the credential: it comes back
+        unchanged and its expiry slides forward. Sliding is the point — a token
+        that is never replaced is also never refreshed into a fresh one, so
+        letting it lapse would reintroduce exactly the login this setting was
+        turned off to remove.
+        """
+        if not self.rotate_refresh:
+            with self._lock:
+                current = self._refresh.get(old_token)
+                if current is not None:
+                    current.expires_at = time.time() + self.refresh_ttl
+                    self._save_state()
+            return old_token
         new_token = REFRESH_PREFIX + secrets.token_urlsafe(32)
         with self._lock:
             current = self._refresh.get(old_token)
             if current is not None:
                 current.rotated_to = new_token
+                current.rotated_at = time.time()
             self._refresh[new_token] = RefreshRecord(
                 client_id=record.client_id,
                 subject=record.subject,
@@ -638,7 +727,13 @@ def _validate_redirect_uri(uri: str) -> None:
 def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str | None = None,
                  authorize_path: str = "/oauth/authorize",
                  granted: list[str] | None = None,
-                 feishu_start_path: str | None = None) -> str:
+                 feishu_start_path: str | None = None,
+                 login_mode: str = "pat",
+                 login_user: str | None = None,
+                 csrf: str | None = None,
+                 totp_required: bool = False,
+                 grantable: Sequence[str] | None = None,
+                 interactive: bool = True) -> str:
     """The form the operator completes. Plain HTML, no script, no external refs.
 
     `granted` names the boxes to render ticked. It is None on the first render,
@@ -646,22 +741,38 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
     actual ticks when the form is re-shown after a failed submit — because a
     re-render that silently re-ticked a box the operator had cleared would ask
     for consent to something it had just been told not to do.
+
+    `grantable` is the deployment's ceiling (`auth.grantable_scopes`), and it is
+    what the boxes enumerate. A scope the client did not request is offered
+    unticked rather than disabled: on this surface the binding, not the client,
+    decides what may be handed out, and an operator who wants a client to have
+    every write class should not have to re-register that client to ask for
+    them. The tick is still the grant — nothing is issued that was not ticked.
+
+    `interactive=False` is the page for a request that never reached stage one
+    (no response_type, no client, no PKCE). It shows the error and nothing to
+    fill in: a form under an invalid request is a page that cannot succeed, and
+    rendering one is what makes an operator believe the fault is a permission.
     """
+    offered = tuple(s for s in (grantable if grantable is not None else ALLOWED_SCOPES)
+                    if s in ALLOWED_SCOPES)
     rows = []
-    for scope in ALLOWED_SCOPES:
+    for scope in offered:
         requested = scope in (params.get("scope") or "").split()
         ticked = scope in granted if granted is not None else requested
         checked = "checked" if ticked else ""
-        disabled = "" if requested else "disabled"
         label = {
             "fleet:read": "Read this fleet — list devices and sessions, and read session history",
             "fleet:send": "Send messages to sessions the operator has already authorized",
             "fleet:control": "Stop the run currently in flight in sessions the operator has already authorized",
             "fleet:create": "Create new sessions on devices the operator has authorized for creation",
+            "fleet:approve": "Approve the tool calls the operator has been asked to answer",
+            "fleet:navigate": "Open a session in a connected browser UI",
         }.get(scope, scope)
+        note = "" if requested else ' <span class="muted">(not requested by this client)</span>'
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
-            f'{checked} {disabled}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span></label>'
+            f'{checked}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span>{note}</label>'
         )
     # The requested scope is carried in its own field, `requested_scope`, and
     # never under the name `scope`. That separation is the whole of the fix for
@@ -682,6 +793,12 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         f'<input type="hidden" name="requested_scope" '
         f'value="{html.escape(params.get("scope") or "")}">'
     )
+    # A CSRF token is only meaningful once the browser carries a session cookie:
+    # before that there is no ambient credential for a cross-site request to
+    # ride on, and a token would be ceremony. After login the cookie IS ambient,
+    # so the form binds the token to it and the POST compares.
+    if csrf:
+        hidden += f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
     requested_note = params.get("scope") or "(no scope requested)"
     error_html = (
         f'<p class="error">{html.escape(error)}</p>' if error else ""
@@ -697,8 +814,71 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         feishu_html = (
             f'<p class="muted">Or, if you are one of the identities the operator '
             f'registered, <a href="{html.escape(feishu_start_path)}{joiner}'
-            f'{html.escape(carry)}">sign in with Feishu</a> instead of using the '
-            f'owner token.</p>'
+            f'{html.escape(carry)}">sign in with Feishu</a> instead.</p>'
+        )
+    if not interactive:
+        # Nothing here can succeed: the request that names the client, the
+        # redirect and the requested scope failed validation before this page
+        # was built. Offering credentials and boxes would make a malformed
+        # request look like a permissions question — exactly the confusion that
+        # a bare `/oauth/authorize` produces.
+        feishu_html = ""
+
+    if login_mode == "password":
+        if login_user:
+            # The cookie already proved the human. Asking for the password again
+            # would be the friction this design exists to remove: three clients
+            # authorize in a row, and only the first one types anything.
+            credentials_html = (
+                f'<p class="muted">Signed in as <b>{html.escape(login_user)}</b>. '
+                f'Continue to approve this client, or '
+                f'<a href="{html.escape(authorize_path)}/logout">sign out</a>.</p>'
+                f'<p><label class="scope"><input type="checkbox" name="continue" value="yes" checked> '
+                f'<b>Continue as {html.escape(login_user)}</b></label></p>'
+            )
+        else:
+            totp_html = ""
+            if totp_required:
+                totp_html = (
+                    '<p><label for="totp"><b>One-time code</b></label><br>'
+                    '<span class="muted">The six digits from your authenticator app.</span></p>'
+                    '<input type="text" id="totp" name="totp" inputmode="numeric" '
+                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>'
+                )
+            credentials_html = (
+                '<p><label for="username"><b>Username</b></label></p>'
+                '<input type="text" id="username" name="username" autocomplete="username" required>'
+                '<p><label for="password"><b>Password</b></label></p>'
+                '<input type="password" id="password" name="password" '
+                'autocomplete="current-password" required>'
+                + totp_html
+            )
+    else:
+        credentials_html = (
+            '<p><label for="pat"><b>Owner access token</b></label><br>'
+            '<span class="muted">Required. This is the token at the configured '
+            '<code>pat_anchor</code> on the machine running this server. It is checked '
+            'here and never stored, logged or forwarded.</span></p>'
+            '<input type="password" id="pat" name="owner_token" autocomplete="off" required>'
+        )
+
+    if interactive:
+        form_html = (
+            f'<form method="post" action="{html.escape(authorize_path)}">\n'
+            f' {hidden}\n'
+            f' {"".join(rows)}\n'
+            f' {credentials_html}\n'
+            f' <button type="submit">Approve</button>\n'
+            f'</form>'
+        )
+    else:
+        form_html = (
+            '<p class="muted">This page is reached from the client\'s own sign-in '
+            'flow. A hand-typed <code>/oauth/authorize</code> carries no request: '
+            'the client must send <code>response_type=code</code>, its '
+            '<code>client_id</code>, a PKCE <code>code_challenge</code> and at '
+            'least one scope. Start the sign-in from the client and it will open '
+            'this page with those values.</p>'
         )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -708,7 +888,7 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
  body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1.25rem;color:#1b1b1f}}
  h1{{font-size:1.25rem}} .muted{{color:#5b5b66}} .error{{color:#a3232b;font-weight:600}}
  .scope{{display:block;border:1px solid #d8d8de;border-radius:8px;padding:.75rem 1rem;margin:.5rem 0}}
- input[type=password]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
+ input[type=password],input[type=text]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
  button{{margin-top:1.25rem;padding:.7rem 1.4rem;border:0;border-radius:8px;background:#1b1b1f;color:#fff;font:inherit;cursor:pointer}}
  dl{{display:grid;grid-template-columns:auto 1fr;gap:.25rem 1rem;font-size:.9rem}}
  dt{{color:#5b5b66}} dd{{margin:0;word-break:break-all}}
@@ -726,16 +906,7 @@ Revoking makes the client's existing access tokens stop working immediately.</p>
  <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
 </dl>
 {feishu_html}
-<form method="post" action="{html.escape(authorize_path)}">
- {hidden}
- {''.join(rows)}
- <p><label for="pat"><b>Owner access token</b></label><br>
- <span class="muted">Required. This is the token at the configured
- <code>pat_anchor</code> on the machine running this server. It is checked
- here and never stored, logged or forwarded.</span></p>
- <input type="password" id="pat" name="owner_token" autocomplete="off" required>
- <button type="submit">Approve</button>
-</form>
+{form_html}
 </body></html>
 """
 
@@ -896,14 +1067,40 @@ class AuthorizationServer:
         result = self.store.revoke_presented_token(token, client_id=client_id)
         return result
 
-    def approve(self, *, params: dict[str, str], owner_token: str,
-                granted: list[str]) -> tuple[str, RegisteredClient]:
-        """The human step. Returns (code, client) or raises."""
+    def approve(self, *, params: dict[str, str], granted: list[str],
+                owner_token: str = "",
+                verified_user: str | None = None) -> tuple[str, RegisteredClient]:
+        """The human step. Returns (code, client) or raises.
+
+        Two ways to prove the human, and the caller picks exactly one:
+
+        *   `verified_user` — a username whose password and one-time code were
+            checked by `http_transport` before this call. The check happens
+            there because it needs the throttle, the replay record and the
+            error page, none of which belong in the code-minting path.
+        *   `owner_token` — the PAT, compared here, for a deployment that has
+            not moved to password login.
+
+        `verified_user is None` is not "skip the check": it selects the PAT
+        branch, which refuses when the token does not match.
+        """
         client = self.validate_authorize(params)
-        if not self._check_owner(owner_token):
-            raise OAuthError("access_denied", "owner token did not verify", status=401)
-        requested = set((params.get("scope") or "").split())
-        scopes = tuple(sorted(requested & set(granted) & set(self.auth.grantable_scopes)))
+        if verified_user is None:
+            if not self._check_owner(owner_token):
+                raise OAuthError("access_denied", "owner token did not verify", status=401)
+        # The ticks bound the grant, not the client's request. RFC 6749 §3.3
+        # lets an authorization server issue a token whose scope differs from
+        # the one asked for, and here it must: the consent page offers every
+        # scope this deployment can grant, so an operator who ticks `fleet:create`
+        # on a client that asked only for `fleet:read` is making a deliberate
+        # grant, and dropping it silently would be the form lying about what the
+        # tick meant. The binding still bounds it — `grantable_scopes` is what
+        # this deployment will hand out at all.
+        #
+        # A non-browser POST (the test harness, any scripted caller) sends its
+        # scopes in `scope`; http_transport copies them into `granted` when
+        # there is no `requested_scope`, so the same expression covers it.
+        scopes = tuple(sorted(set(granted) & set(self.auth.grantable_scopes)))
         if not scopes:
             raise OAuthError(
                 "access_denied",
@@ -1023,7 +1220,10 @@ class AuthorizationServer:
     def _token_from_refresh(self, form: dict[str, str]) -> dict[str, Any]:
         token = form.get("refresh_token") or ""
         client_id = form.get("client_id") or ""
-        record = self.store.consume_refresh_token(token, client_id=client_id)
+        # The store names the live token: when the client replayed one that was
+        # already rotated, the head continues the chain and the returned token
+        # is the head, not the one presented.
+        live_token, record = self.store.consume_refresh_token(token, client_id=client_id)
         requested = set((form.get("scope") or "").split())
         scopes = record.scopes
         if requested:
@@ -1036,7 +1236,7 @@ class AuthorizationServer:
                     "a refresh cannot widen the granted scope; re-authorize instead",
                 )
             scopes = tuple(sorted(requested))
-        new_refresh = self.store.rotate_refresh_token(token, record)
+        new_refresh = self.store.rotate_refresh_token(live_token, record)
         issued = self._issue(client_id=client_id, scopes=scopes, subject=record.subject,
                              resource=record.resource, idp=record.idp)
         issued["refresh_token"] = new_refresh

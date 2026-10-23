@@ -40,16 +40,16 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
     """Every number here is quoted in at least one document. Change one and the
     prose becomes wrong, which is the thing a test can catch and review cannot."""
 
-    def test_thirty_four_tools_are_served(self):
-        self.assertEqual(len(tools.SERVED_TOOLS), 34)
-        self.assertEqual(len(tools.TOOLS), 10)
-        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 24)
+    def test_forty_four_tools_are_served(self):
+        self.assertEqual(len(tools.SERVED_TOOLS), 44)
+        self.assertEqual(len(tools.TOOLS), 11)
+        self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 33)
 
     def test_the_tool_surface_revision_is_the_one_the_contract_declares(self):
         import yaml
 
         # V5 retains core-lite output and adds the fresh-project entry.
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-5")
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-7")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)
@@ -70,9 +70,16 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
                         scopes.SCOPE_APPROVE, scopes.SCOPE_NAVIGATE):
             self.assertNotIn(heavier, scopes.DEFAULT_GRANTABLE_SCOPES)
 
-    def test_only_company_devices_are_eligible_for_a_grant(self):
-        from fleet_mcp.config import GRANT_ELIGIBLE_OWNERSHIP
-        self.assertEqual(GRANT_ELIGIBLE_OWNERSHIP, "company")
+    def test_eligibility_is_policy_and_defaults_to_every_owned_class(self):
+        """The eligible-ownership set is a binding value, not a code constant.
+
+        The default admits every ownership the registry can author, because the
+        narrow reading is a narrowing and a deployment that wrote no policy has
+        not asked for one. A binding narrows it by naming fewer.
+        """
+        from fleet_mcp.config import KNOWN_DEVICE_OWNERSHIPS, PolicyBinding
+        self.assertEqual(PolicyBinding().grant_eligible_ownership,
+                         KNOWN_DEVICE_OWNERSHIPS)
 
 
 class NothingIsOnByDefault(unittest.TestCase):

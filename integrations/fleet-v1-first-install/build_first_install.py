@@ -120,7 +120,8 @@ STATUSES = (READY_TO_BUILD, BLOCKED_MCP_ENDPOINT, MISSING_BRAND_ASSET,
 #: Written down rather than derived, for the reason that builder gives: a
 #: builder that packages the folder eventually packages its own previous
 #: output, and stops being a function of the source.
-PAYLOAD_ENTRIES = ("plugin.json", "mcp.json", "skills", "assets")
+PAYLOAD_ENTRIES = ("plugin.json", "mcp.json", "README.md", "PRIVACY.md",
+                   "skills", "assets")
 
 SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"

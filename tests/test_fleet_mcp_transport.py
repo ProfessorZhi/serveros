@@ -373,9 +373,9 @@ class HttpTransport(_HttpHarness):
         )
         self.assertEqual(status, 200)
         tools_out = payload["result"]["tools"]
-        # The served surface is the hand-written Fleet tools PLUS the 22
+        # The served surface is the hand-written Fleet tools PLUS the 31
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
-        self.assertEqual(len(tools_out), 34)
+        self.assertEqual(len(tools_out), 44)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
@@ -383,11 +383,12 @@ class HttpTransport(_HttpHarness):
         fleet_writes = [n for n in writes if n.startswith("fleet_")
                         and not n.startswith("fleet_cloudcli_")]
         self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
-                                        "fleet_interrupt_session", "fleet_create_project"])
-        # ...and the inherited CloudCLI mirror contributes its own ten writes,
-        # carry CloudCLI's annotations rather than this surface's opinion.
+                                        "fleet_interrupt_session", "fleet_create_project",
+                                        "fleet_delete_project"])
+        # ...and the inherited CloudCLI mirror contributes its own fifteen writes,
+        # carrying CloudCLI's annotations rather than this surface's opinion.
         self.assertEqual(
-            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 10)
+            len([n for n in writes if n.startswith("fleet_cloudcli_")]), 15)
 
     def test_a_notification_gets_no_body_and_not_an_error(self):
         status, _, body = self.client.request(
@@ -637,7 +638,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 34)  # 10 + 22 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 44)  # 11 + 31 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()
@@ -738,6 +739,45 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(status, 400)
         self.assertIn("revoked", json.loads(body)["error_description"])
 
+    def test_a_refused_refresh_leaves_a_row(self):
+        """Without one, "expired" and "revoked" look identical afterwards."""
+        first = self._grant()["refresh_token"]
+        refused = "fleet-t-never-issued"
+        status, _, _ = self.client.request("POST", "/oauth/token", form={
+            "grant_type": "refresh_token", "refresh_token": refused,
+            "client_id": type(self).client_id,
+        })
+        self.assertEqual(status, 400)
+        rows = [
+            json.loads(line)
+            for line in (Path(self._tmp.name) / "audit.jsonl").read_text(
+                encoding="utf-8").splitlines()
+        ]
+        matches = [row for row in rows
+                   if row.get("event") == "oauth.token.refused"
+                   and row.get("client_id") == type(self).client_id]
+        self.assertTrue(matches, "a refused grant must be recorded")
+        self.assertEqual(matches[-1].get("error"), "invalid_grant")
+        self.assertEqual(matches[-1].get("grant_type"), "refresh_token")
+        # The description is written for the caller and may quote what they
+        # sent; only the error kind is a fact about this server.
+        self.assertNotIn("unknown refresh token", json.dumps(matches[-1]))
+        self.assertTrue(first, "the grant above is a valid one, so the refusal is the token's")
+
+    def test_the_binding_chooses_whether_a_refresh_rotates(self):
+        """The store is built from config, not from a default nobody can see."""
+        config = FleetConfig(
+            source=None, local_device_ref=WINDOWS, providers={},
+            auth=AuthBinding(pat_anchor=self.pat, refresh_rotate=False,
+                             refresh_rotation_grace_seconds=600),
+            server=ServerBinding(bind="127.0.0.1", port=self.port),
+            policy=PolicyBinding(),
+        )
+        oauth = build_oauth(config, base_url=self.base,
+                            store_root=Path(self._tmp.name) / "wiring")
+        self.assertFalse(oauth.store.rotate_refresh)
+        self.assertEqual(oauth.store.rotation_grace_seconds, 600)
+
     def test_a_refresh_cannot_widen_the_scope(self):
         refresh = self._grant(scope="fleet:read", granted=["fleet:read"])["refresh_token"]
         status, _, body = self.client.request("POST", "/oauth/token", form={
@@ -809,9 +849,9 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(hidden.count("requested_scope"), 1)
         self.assertEqual(
             re.findall(r'name="scope" value="([^"]+)"', markup),
-            ["fleet:read", "fleet:send", "fleet:control", "fleet:create",
-             "fleet:approve", "fleet:navigate"],
-            "the only things named `scope` are the checkboxes",
+            ["fleet:read", "fleet:send"],
+            "the boxes are the deployment's grantable scopes, not the whole "
+            "vocabulary: this harness leaves `grantable_scopes` at its default",
         )
 
     def test_unticking_a_scope_does_not_grant_it(self):
@@ -829,6 +869,29 @@ class OAuthFlow(_HttpHarness):
         location = headers["Location"]
         self.assertNotIn("code=", location)
         self.assertIn("access_denied", location)
+
+    def test_an_operator_may_grant_more_than_the_client_asked_for(self):
+        """The ticks bound the token; the client's request does not cap the owner.
+
+        The consent page offers the deployment's whole grantable set, so a box
+        the client did not request is still grantable on purpose. `approve` used
+        to intersect with the request and silently drop that tick.
+        """
+        form = self._form_as_a_browser_sends_it(
+            ticked=["fleet:read", "fleet:send"], scope="fleet:read")
+        self.assertEqual(form["requested_scope"], "fleet:read")
+        status, _, payload = self._redeem(form)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["scope"], "fleet:read fleet:send")
+
+    def test_a_page_that_is_not_a_request_offers_no_form(self):
+        """A bare `/oauth/authorize` must not look like a permission question."""
+        status, _, body = self.client.request("GET", "/oauth/authorize")
+        self.assertEqual(status, 400)
+        text = body.decode()
+        self.assertIn("unsupported_response_type", text)
+        self.assertNotIn("<form", text)
+        self.assertNotIn('name="owner_token"', text)
 
     # -- revocation: the declared semantics, enforced ----------------------
 

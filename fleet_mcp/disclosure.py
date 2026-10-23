@@ -127,10 +127,24 @@ REF = "ref"
 SCOPE = "scope"
 URI = "uri"
 DIGEST = "digest"
+ERROR_CODE = "error_code"
 
 # A control-plane code: `fleet.send.replay`, `oauth.token`, `latest`. Lowercase,
 # dotted or dashed, no whitespace and no punctuation a credential would need.
 _CODE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+
+# A refusal code from `errors.py`: `APPROVAL_REQUIRED`, `SCOPE_DENIED`,
+# `WRITE_NOT_GRANTED`. A second kind rather than a wider `_CODE`, because these
+# are a different word list with a different owner, not a different case of the
+# same one. `error` already means the RFC 6749 name on the OAuth path, and
+# folding the two together would either let an uppercase word through a
+# lowercase shape (which is what the shape exists to stop) or force this
+# surface to lowercase its own codes in the log, so that the record and the
+# refusal the caller received no longer say the same word.
+#
+# Still a closed set: `errors.py` is where these are defined, and a caller
+# never supplies one. The shape accepts exactly what that file can produce.
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
 
 # A record's own timestamp, which this module writes and nothing else does.
 _STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -184,6 +198,13 @@ KIND_BY_FIELD: dict[str, str] = {
     # it holds the redirect_uri), and a caller that passes a description under
     # this name loses it to the `code` shape rather than parking it in the log.
     "error": CODE,
+    # The refusal a call received, named from `errors.py`'s closed set. A
+    # separate field from `error` above because it is a separate vocabulary:
+    # that one holds RFC 6749 names in lowercase, this one holds this surface's
+    # own constants. Recording the code and not the detail is the line: the
+    # detail is prose built around what the caller sent, the code is what an
+    # operator greps for when asking whether a door was tested.
+    "error_code": ERROR_CODE,
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,
@@ -217,6 +238,24 @@ KIND_BY_FIELD: dict[str, str] = {
     "verb": CODE,
     "decision": CODE,
     "grant_reason": CODE,
+    # Who signed in at `/oauth/authorize`, and how it went.
+    #
+    # `username` is a `ref` and not a `code` because a real account name is
+    # neither lowercase-dotted nor a closed word. The narrowing that matters is
+    # not the kind but the call site: what is recorded here is an entry read
+    # from the operator's own password anchor, and the caller's submitted text
+    # is recorded ONLY when it matched one. An unknown name — which is exactly
+    # what a probe sends, and may be a pasted token — is passed as None and
+    # never reaches the log. That is the opposite of the usual direction and it
+    # is deliberate: `ref`'s residual (see the module docstring) accepts a
+    # token that happens to have the shape, and an unauthenticated form is the
+    # one place a stranger chooses the value.
+    "username": REF,
+    # The closed word this module decided: `ok`, `bad_password`, `bad_totp`,
+    # `unknown_user`, `no_totp_secret`, `missing_username`, `throttled`, `csrf`.
+    # A code and not `withheld`, for the same reason `grant_reason` is: the
+    # value is written here from a closed set, never taken from the request.
+    "login_result": CODE,
     # what came back
     "bytes": COUNT,
     "detail": WITHHELD,  # free text a caller filled
@@ -285,6 +324,7 @@ def remote_summary(
     content_type: str | None = None,
     rpc_code: object = None,
     error_message: object = None,
+    error_code: object = None,
 ) -> str:
     """Describe a remote failure without relaying a character of remote text.
 
@@ -298,6 +338,16 @@ def remote_summary(
 
     `method` is this surface's own outbound method name, so it is relayed: the
     message has to say which call failed.
+
+    `error_code` is the exception to "no remote text", and it is a narrow one:
+    the far end's `structuredContent.code` is an identifier from a fixed
+    upper-case vocabulary (`NO_CLIENT`, `PROJECT_WORKSPACE_ROOT_REQUIRED`), the
+    same shape `_ERROR_CODE` already admits into the audit. Relaying it is what
+    turns "answered unusably" into a fact a caller can act on without reading
+    the device's journal. It is still checked against that shape and the size
+    ceiling: a code that is not an enum of that shape is reported as
+    `not-an-enum` and never echoed, so a gateway that puts a sentence — or a key
+    — in that field does not thereby get it across.
     """
     head = [label]
     if status is not None:
@@ -317,6 +367,9 @@ def remote_summary(
     if rpc_code is not None:
         code = rpc_code if isinstance(rpc_code, int) and not isinstance(rpc_code, bool) else "not-an-integer"
         measured.append(f"code {code}")
+    if error_code is not None:
+        named = error_code if _shaped(error_code, _ERROR_CODE) else "not-an-enum"
+        measured.append(f"error code {named}")
     tail = f" ({'; '.join(measured)})" if measured else ""
 
     return (
@@ -397,6 +450,8 @@ def project_value(value: Any, *, kind: str = WITHHELD) -> Any:
         return value if isinstance(value, str) and _shaped(value, _STAMP) else OMITTED_MARK
     if kind == CODE:
         return value if isinstance(value, str) and _shaped(value, _CODE) else OMITTED_MARK
+    if kind == ERROR_CODE:
+        return value if isinstance(value, str) and _shaped(value, _ERROR_CODE) else OMITTED_MARK
     if kind == REF:
         return value if isinstance(value, str) and _shaped(value, _REF) else OMITTED_MARK
     if kind == SCOPE:

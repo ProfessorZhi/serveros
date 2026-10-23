@@ -2,7 +2,7 @@
 
 > **这篇回答什么：** 独立评审者拿到 `REVIEW_CANDIDATE_ONLY` 结论之后，具体看哪些东西、按什么顺序看、哪些空白必须记成 UNKNOWN。本文的每一步都是「看」：不部署、不安装、不切换、不发布。
 >
-> **状态：** 运行手册。工具面为 `34 tools / 6 scopes`（`fleet-mcp-5`）；验收时以 `fleet_mcp/version.py` 与实际 `tools/list` 回读为准，不要照抄本页数字。
+> **状态：** 运行手册。工具面为 `44 tools / 6 scopes`（`fleet-mcp-7`）；验收时以 `fleet_mcp/version.py` 与实际 `tools/list` 回读为准，不要照抄本页数字。
 >
 > **怎么读：** §0 先跑离线检查，知道哪些结论有机器背书；§1–§3 是评审资格、端点与工具面；§4 是每设备/账号矩阵；§5 是机器检查清单；§6 是「被要求启动一个 run」时的准入判断；§7 是必须留下什么记录。
 >
@@ -89,7 +89,61 @@ Then ask the two questions the JSON cannot answer: was the session the receipt
 describes **created by this runtime**, and was it **read back from the device**?
 A receipt that only records a request going out is not an observation.
 
-## 5. The machine checks
+## 5. Created is not permission-ready
+
+Three different claims hide behind "the session is up", and a receipt for one is
+not a receipt for the next:
+
+| State | What it means | What proves it |
+|---|---|---|
+| `created` | the provider minted a session and returned an id | the create response, and the device's own `session_get` for that id |
+| `permission-ready` | the session can act with no human at the keyboard | the mode the **device** reports for that session, read back after the create |
+| `smoke-passed` | that mode actually behaves that way | an allowed action succeeding **and** an out-of-scope action being refused |
+
+A create request that names a permission mode is a **request**. A response that
+echoes it back is an echo. The only readback that counts is the one the device
+makes about the session it now holds, which is what `permission_readiness` in
+the create answer carries:
+
+- `state` — `CONFIRMED` (the device reported the mode that was resolved for this
+  create), `MISMATCH` (it reported another one), `REPORTED` (the device reported
+  its own default and nothing was requested), `UNVERIFIED` (the device reported
+  nothing, or the readback call failed). `UNVERIFIED` is not a pass: it is the
+  absence of the observation this step exists to make.
+- `prompt_risk` — `NONE` for a mode that never waits for a person (`dontAsk`,
+  `plan`, `bypassPermissions`), `HIGH` for an interactive one (`default`,
+  `manual`, `auto`, `acceptEdits`), `UNKNOWN` when no mode was reported. `auto`
+  belongs on the second list: it may fall back to `manual` silently, so it is
+  not a mode an unattended run can rely on.
+- `run_started` — whether this same call also opened a run.
+
+The hazardous combination is `run_started: true` with `prompt_risk` `HIGH` or
+`UNKNOWN`. That is a session that exists, looks busy, and is in fact parked on
+an approval prompt nobody can answer. It is indistinguishable from working when
+read from the outside, which is exactly why it is recorded rather than inferred.
+
+A replayed create (`IDEMPOTENT_REPLAY`) answers `UNVERIFIED` on purpose: no
+device call was made, so the effective mode of the session that already exists
+is unknown here. Replay proves one session, not one permission.
+
+For the smoke step, two readings matter:
+
+1. An **allowed** action succeeds without prompting.
+2. An **out-of-scope** action is **refused immediately**. A refusal that arrives
+   after an approval timeout is not the same reading: it means the session was
+   interactive and the refusal came from the absence of a human, not from the
+   profile. A run that takes about a minute to say no has told you the mode is
+   wrong.
+
+A profile that enforces this is a project `.claude/settings.json` with
+`defaultMode: dontAsk`, allow rules for the read roots it needs, a single
+narrow `Edit(...)` rule for its write root, and deny rules for credential
+directories. Two properties of that file are worth checking rather than
+assuming: `permissions.allow` and `additionalDirectories` take effect only once
+the workspace is trusted, and write permission is expressed as `Edit(...)` — a
+`Write(...)` rule is never read.
+
+## 6. The machine checks
 
 | Check | What to look at |
 |---|---|
@@ -104,7 +158,7 @@ A receipt that only records a request going out is not an observation.
 | Backend-only update | a backend change with **no plugin reinstall** — the client's tool list is refreshed, not re-installed |
 | Short-window PSI and caps | a current PSI figure and real per-project caps. Swap *occupancy* is not a stall; do not accept a large `SwapUsed` alone as a blocker either, and do not accept it alone as evidence of health |
 
-## 6. Admission, if you are being asked to start something
+## 7. Admission, if you are being asked to start something
 
 `health_admission` is advice about **one more** bounded run on one runtime, from
 a snapshot under 60 seconds old. Check by hand that:
@@ -123,7 +177,7 @@ A `GO_ONE_BOUNDED_RUN` is still not permission. The owner grant, the device's
 own binding and the Node floor all still apply, and the adviser saw none of
 them.
 
-## 7. Recording the outcome
+## 8. Recording the outcome
 
 Record, for the reviewer who comes after you: the manifest hash, the six
 dimensions you checked, which receipts you opened and which you could not, and

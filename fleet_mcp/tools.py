@@ -1,4 +1,4 @@
-"""The eight tools ChatGPT sees, and nothing else.
+"""The hand-written Fleet tools ChatGPT sees, and nothing else.
 
 Naming
 ------
@@ -13,11 +13,13 @@ Annotations
 -----------
 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` are
 declared, not inferred from the description text. A connector UI that gates
-writes on the annotation has to be able to trust it: exactly two tools here are
-not read-only (`fleet_send_to_session` and `fleet_create_session`), neither is
-destructive in the sense that it deletes anything, and both declare
-`idempotentHint: false` because CloudCLI has no idempotency of its own and this
-surface only approximates it with a caller-supplied key.
+writes on the annotation has to be able to trust it. Four tools here are not
+read-only: `fleet_send_to_session` and `fleet_create_session` (neither destroys
+anything, both `idempotentHint: false` because CloudCLI has no idempotency of its
+own), `fleet_create_project` (mints a directory and a row), and
+`fleet_delete_project` — the one destructive tool on this surface, which archives
+by default and only removes rows and transcripts when `force` is explicitly
+true.
 
 Conventions
 -----------
@@ -227,6 +229,13 @@ def _create_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.create_project(
         ctx.principal, device=args.get("device"), root=args.get("root"), name=args.get("name"),
         display_name=args.get("display_name"), idempotency_key=args.get("idempotency_key"),
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
+def _delete_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.delete_project(
+        ctx.principal, device=args.get("device"), project_id=args.get("project_id"),
+        confirm_path=args.get("confirm_path"), force=bool(args.get("force", False)),
         runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
 
 
@@ -518,8 +527,20 @@ TOOLS: tuple[Tool, ...] = (
             "defaults to `claude`. Omit a field rather than sending an empty one "
             "— an omitted model retains that native family's configured default. "
             "The owner-max permission default is `bypassPermissions` (Codex "
-            "danger-full-access/never); verify actual effective values in the "
-            "returned session. Non-owner defaults retain existing policy.\n\n"
+            "danger-full-access/never). Non-owner defaults retain existing "
+            "policy.\n\n"
+            "A created session is not thereby permission-ready. The answer "
+            "carries `permission_readiness`, read back from the device in the "
+            "same call: `CONFIRMED` (the device reported the mode this surface "
+            "resolved), `MISMATCH` (it reported a different one), `REPORTED` "
+            "(the device reported its own default and nothing was requested), "
+            "or `UNVERIFIED` (the device reported no mode; a requested value is "
+            "not proof of the effective one). `prompt_risk` says whether that "
+            "reported mode waits for a person: `HIGH` modes (default/manual/"
+            "auto/acceptEdits) block an unattended run until someone answers, "
+            "`NONE` (dontAsk/plan/bypassPermissions) never does. When "
+            "`run_started` is true and `prompt_risk` is `HIGH` or `UNKNOWN`, "
+            "the run may hang on an approval that nobody is there to give.\n\n"
             "`run_id` is present only when you supplied a first `message`: "
             "creating a session and starting a run in it are two different "
             "things, and a create that started nothing reports no run. Creating a "
@@ -591,8 +612,12 @@ TOOLS: tuple[Tool, ...] = (
                 "permission_mode": _string(
                     "Owner-max defaults to its approved maximum `bypassPermissions` "
                     "(Codex danger-full-access/never). Other callers retain "
-                    "the project's configured mode policy. Read back the actual "
-                    "effective permission mode; a requested value is not proof."
+                    "the project's configured mode policy. A value named here is "
+                    "a request, not proof: the answer's `permission_readiness` "
+                    "carries what the device reported back for this session. "
+                    "For an unattended run prefer a mode whose `prompt_risk` is "
+                    "`NONE` (`dontAsk` is the usual choice); an interactive mode "
+                    "leaves the session waiting for an approval nobody can give."
                 ),
                 "idempotency_key": _string(
                     "Stable key scoped to principal, verb and target "
@@ -696,6 +721,49 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": False, "openWorldHint": True},
         handler=_create_project,
+    ),
+    Tool(
+        name="fleet_delete_project",
+        title="Archive or permanently remove a project",
+        description=(
+            "Archive a project (the default, reversible: the directory and the "
+            "transcripts are untouched) or permanently remove its session rows and "
+            "transcript files with `force: true`. The project DIRECTORY on disk is "
+            "never removed.\n\n"
+            "`confirm_path` is required and must repeat the project's own `path` as "
+            "`fleet_cloudcli_projects_list` reports it (archived projects included): "
+            "a delete is confirmed against the device's catalogue, never against an "
+            "id alone. The answer is verified by re-reading that catalogue — an "
+            "archive must come back listed as archived and a force delete must come "
+            "back absent — so `isError: false` means the effect was observed, not "
+            "merely acknowledged. An id with no row is PROJECT_NOT_FOUND, which is "
+            "also what a second force delete answers."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "project_id": _string(
+                    "The project id: `fleet_create_project` returns it as `project_id`, "
+                    "and `fleet_cloudcli_projects_list` reports the same value as `id`."
+                ),
+                "confirm_path": _string(
+                    "The project's own `path`, exactly as the catalogue reports it. "
+                    "A mismatch is refused before anything is touched."
+                ),
+                "force": _boolean(
+                    "false (default) archives the row; true permanently removes the "
+                    "session rows and transcript files. Neither removes the directory.",
+                    default=False,
+                ),
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+            },
+            "required": ["device", "project_id", "confirm_path"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": True,
+                     "idempotentHint": False, "openWorldHint": True},
+        handler=_delete_project,
     ),
 )
 
@@ -803,9 +871,18 @@ def _native_tool(native: cloudcli_native.NativeTool) -> Tool:
             "session id>` address, as `fleet_list_sessions` returns it; its "
             "device must equal `device_ref`.")
     if "project" in properties:
-        properties["project"] = _string(
-            "Required for this verb. The project the new session is for; "
-            "checked against the selected owner catalogue or `policy.create_allow`.")
+        if native.governance == cloudcli_native.GOV_RECONFIGURE:
+            properties["project"] = _string(
+                "Required when `arguments` names `model` or `permissionMode`. "
+                "The project the target session must really belong to: it is "
+                "compared with the project the DEVICE reports for that session "
+                "and the ceiling is applied against the device's answer, so a "
+                "claim that disagrees is refused rather than believed.")
+        else:
+            properties["project"] = _string(
+                "Required for this verb. The project the new session is for; "
+                "checked against the selected owner catalogue or "
+                "`policy.create_allow`.")
     properties["arguments"]["description"] = (
         f"`{native.name}`'s own arguments, passed through to the device "
         f"unchanged; `null` and an omitted key stay distinct. Arguments are "
@@ -851,7 +928,7 @@ def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]
     A refusal that says «this name is not among the mirrored tools» is only
     actionable if the caller can FIND the mirrored set, so the set is itself a
     read tool. It carries each verb's governance, native scope, and the JSON
-    schema recorded from CloudCLI 1.39.0, so a client can discover the closed
+    schema recorded from CloudCLI 1.40.0, so a client can discover the closed
     set rather than guess.
     """
     return cloudcli_native.manifest()
@@ -975,26 +1052,58 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
     """
     tool = SERVED_BY_NAME.get(name)
     if tool is None:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=refuse(
+        return _refusal_answer(ctx, refuse(
             BAD_REQUEST,
             f"unknown tool {name!r}. This surface exposes: "
             f"{sorted(SERVED_BY_NAME)}",
-        )))
+        ))
     args = arguments or {}
     if not isinstance(args, dict):
-        return _disclose(ctx, _error(principal=ctx.principal,
-                                     exc=refuse(BAD_REQUEST, "arguments must be an object")))
+        return _refusal_answer(ctx, refuse(BAD_REQUEST, "arguments must be an object"))
     unknown = unknown_argument_refusal(tool, args)
     if unknown is not None:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=unknown, tool=tool.name))
+        return _refusal_answer(ctx, unknown, tool=tool.name)
     try:
         payload = tool.handler(ctx, args)
     except FleetRefusal as exc:
-        return _disclose(ctx, _error(principal=ctx.principal, exc=exc, tool=tool.name))
+        return _refusal_answer(ctx, exc, tool=tool.name)
     except ValueError as exc:
-        return _disclose(ctx, _error(principal=ctx.principal,
-                                     exc=refuse(BAD_REQUEST, str(exc)), tool=tool.name))
+        return _refusal_answer(ctx, refuse(BAD_REQUEST, str(exc)), tool=tool.name)
     return _disclose(ctx, _ok(payload))
+
+
+def _refusal_answer(ctx: ToolContext, exc: FleetRefusal,
+                    tool: str | None = None) -> dict[str, Any]:
+    """Record a refusal, then shape it as the answer the caller gets.
+
+    Refusals used to leave the audit log with nothing but a byte count.
+    `record_grant` fires only when a grant *admits* a call, so a caller probing
+    for a door that is shut produced one `mcp.request` line and no evidence of
+    which door, on which device, or why. On a surface that answers on a public
+    Funnel that is the fact an operator most needs — a login path that records
+    its failures beside an authorization path that does not is a log that
+    answers half the question it exists for.
+
+    Only values this surface writes from a closed set are recorded. `error_code`
+    is the refusal code; `device_ref` / `session_ref` / `project` are the
+    addresses the caller already named, and `tool` is a name from the served
+    set. `exc.detail` is deliberately absent: it is prose assembled around
+    caller input and, for a device error, around the provider's own words —
+    recording it would put free text from the far end into the control plane's
+    log under the control plane's name.
+    """
+    audit = getattr(getattr(ctx, "service", None), "audit", None)
+    if audit is not None:
+        extra = exc.extra if isinstance(exc.extra, dict) else {}
+        fields: dict[str, Any] = {"principal": ctx.principal.name, "error_code": exc.code}
+        if tool:
+            fields["tool"] = tool
+        for identifier in ("device_ref", "session_ref", "project"):
+            value = extra.get(identifier)
+            if isinstance(value, str) and value:
+                fields[identifier] = value
+        audit.record("fleet.refused", **fields)
+    return _disclose(ctx, _error(principal=ctx.principal, exc=exc, tool=tool))
 
 
 def _disclose(ctx: ToolContext, result: dict[str, Any]) -> dict[str, Any]:

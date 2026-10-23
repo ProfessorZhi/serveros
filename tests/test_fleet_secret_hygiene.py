@@ -181,6 +181,37 @@ class GatewayOnLoopback(unittest.TestCase):
             structured({"isError": True, "content": []})
         self.assertIn("said nothing more", caught.exception.detail)
 
+    def test_a_structured_error_code_crosses_but_its_message_does_not(self):
+        """CloudCLI's envelope: `{code, message, retryable}` beside `isError`.
+
+        The code is the one field that makes a remote refusal actionable here;
+        the message is where the gateway quotes its own configuration back.
+        """
+        result = {
+            "isError": True,
+            "content": [{"type": "text", "text": f"root is {self.secret}"}],
+            "structuredContent": {
+                "code": "PROJECT_WORKSPACE_ROOT_REQUIRED",
+                "message": f"Configure an absolute root: {self.secret}",
+                "retryable": False,
+            },
+        }
+        with self.assertRaises(FleetRefusal) as caught:
+            structured(result)
+        self.assert_is_clean(str(caught.exception))
+        self.assertIn("PROJECT_WORKSPACE_ROOT_REQUIRED", caught.exception.detail)
+
+    def test_a_code_that_is_not_an_enum_is_withheld_with_the_rest(self):
+        result = {
+            "isError": True,
+            "content": [{"type": "text", "text": "refused"}],
+            "structuredContent": {"code": f"key={self.secret}"},
+        }
+        with self.assertRaises(FleetRefusal) as caught:
+            structured(result)
+        self.assert_is_clean(str(caught.exception))
+        self.assertIn("not-an-enum", caught.exception.detail)
+
     # -- the same thing, through the surface the credential actually reads --
 
     def test_the_provider_refusal_carries_nothing_remote(self):

@@ -92,6 +92,6 @@ evidence_locator: null
 **P0 GitHub-only（本 PR）**：合同与两份 cloud-facing thin Skills。未经跑环境测试，不算插件完成。
 **P1 离线 PoC**：SDK 锁定版本、fake task transport、fake provider、任务关联/幂等/失联/拒绝/独立review单测；不得安装到生产。
 **P2 设备侧授权 canary**：有明确 owner/设备/资源/端口/数据范围后，隔离测试环境中 Codex Parent → DeepSeek Worker → Review 完整闭环；逐个检查真正运行的 agent、产物和成本。
-**P3 Fleet Next 分发**：正式 ZIP 包含薄 Skills、图标、MCP app link；先让 33 tools + 飞书 SSO 和双账户在真实客户端验收，再与 OpenAgents 做联合演练。旧 V1 在验收后退役。
+**P3 Fleet Next 分发**：正式 ZIP 包含薄 Skills、图标、MCP app link；先让 34 tools + 飞书 SSO 和双账户在真实客户端验收，再与 OpenAgents 做联合演练。旧 V1 在验收后退役。
 
 至少比较原生单 Agent 与多 Agent：从提交到接受的耗时、真实通过率、出错率、模型成本、资源消耗、人工中断数、恢复能力。只有有净收益的任务类别才自动采用多 Agent。

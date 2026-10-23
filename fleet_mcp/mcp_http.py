@@ -256,15 +256,30 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
     where it was produced. A result flagged `isError` with *no* text cannot be
     told from a provider that simply produced nothing, so it says exactly that
     rather than inventing a reason.
+
+    The one part of an error envelope that *is* relayed is its `code`
+    (`structuredContent.code`): an upper-case enum naming which failure this was
+    (`NO_CLIENT`, `PROJECT_WORKSPACE_ROOT_REQUIRED`, `PROJECT_ALREADY_EXISTS`).
+    Without it an operator learns only that "the provider answered unusably" and
+    has to open the device's journal to find out why — which is how a missing
+    `WORKSPACES_ROOT` read as a Fleet defect on 2026-10-23. `disclosure.
+    remote_summary` re-checks the shape and withholds anything that is not an
+    enum.
     """
     content = (result or {}).get("content") or []
     if result.get("isError"):
         text = " ".join(
             b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
-        if not text:
+        envelope = result.get("structuredContent")
+        code = envelope.get("code") if isinstance(envelope, dict) else None
+        if not text and code is None:
             raise refuse(INTERNAL, f"{label} reported an error and said nothing more")
-        raise refuse(INTERNAL, remote_summary(label, error_message=text))
+        raise refuse(INTERNAL, remote_summary(
+            label,
+            error_message=text or None,
+            error_code=code,
+        ))
     if isinstance(result, dict) and "structuredContent" in result:
         value = result["structuredContent"]
         if isinstance(value, dict):

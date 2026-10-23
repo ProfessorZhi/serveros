@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 10)
+        self.assertEqual(len(declared), 11)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -70,27 +70,29 @@ class TheContractDescribesThisCode(unittest.TestCase):
                     f"{tool.name} is declared {verb} and annotated otherwise",
                 )
 
-    def test_the_writes_are_the_four_named_ones(self):
+    def test_the_writes_are_the_five_named_ones(self):
         writes = [t.name for t in tools_module.TOOLS if not t.annotations["readOnlyHint"]]
         self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
-                                  "fleet_interrupt_session", "fleet_create_project"])
+                                  "fleet_interrupt_session", "fleet_create_project",
+                                  "fleet_delete_project"])
         for name in writes:
             with self.subTest(tool=name):
                 self.assertEqual(contract()["tools"][name]["verb"], "write")
 
-    def test_interrupt_is_the_only_write_annotated_destructive(self):
-        """The annotation is a claim about consequence, and it is the first one
-        in this surface to differ from the others.
+    def test_the_two_writes_annotated_destructive_are_named(self):
+        """The annotation is a claim about consequence.
 
-        A client gates a destructive write behind a confirmation; a client that
-        treated interrupt like a send would be wrong about the one verb here
-        that takes work away. Asserted as "exactly one" rather than
-        "interrupt is true" so that a second destructive verb cannot be added
-        without this test naming it.
+        A client gates a destructive write behind a confirmation. Two verbs here
+        carry it and they take away different things: `fleet_interrupt_session`
+        ends work in flight, and `fleet_delete_project` removes stored state
+        (archived by default, deleted only with `force: true`). Asserted as the
+        exact list so a third destructive verb cannot be added without this test
+        naming it.
         """
         destructive = [t.name for t in tools_module.TOOLS
                        if t.annotations.get("destructiveHint")]
-        self.assertEqual(destructive, ["fleet_interrupt_session"])
+        self.assertEqual(destructive,
+                         ["fleet_interrupt_session", "fleet_delete_project"])
 
     def test_every_tool_names_the_owner_that_answers_it(self):
         """The file's central promise: this surface owns no fact.
@@ -234,8 +236,12 @@ class TheIngressIsTheCodeThatServesIt(unittest.TestCase):
                     self.assertNotIn(name.lower(), forbidden)
 
     def test_the_consent_step_cannot_be_completed_by_an_agent(self):
-        self.assertIs(contract()["ingress"]["auth"]["consent_requires_owner_token"], True)
-        self.assertIs(contract()["ingress"]["auth"]["requires_human_consent"], True)
+        auth = contract()["ingress"]["auth"]
+        # The three factors are a person's, and an agent holds none of them.
+        self.assertEqual(tuple(auth["consent_requires"]),
+                         ("username", "password", "totp"))
+        self.assertIn("password_anchor", auth["owner_token_fallback"])
+        self.assertIs(auth["requires_human_consent"], True)
 
     def test_off_host_reach_is_an_operators_decision_and_is_reported_outstanding(self):
         blockers = {b["id"]: b for b in contract()["blocked_on"]}
@@ -554,8 +560,11 @@ class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
     def test_the_declared_eligibility_rule_is_the_implemented_one(self):
         from fleet_mcp import config as config_module
 
-        self.assertEqual(self.declared["eligible_ownership"],
-                         config_module.GRANT_ELIGIBLE_OWNERSHIP)
+        self.assertEqual(
+            list(self.declared["eligible_ownership"]),
+            list(config_module.PolicyBinding().grant_eligible_ownership))
+        self.assertEqual(self.declared["eligible_ownership_field"],
+                         "policy.grant_eligible_ownership")
 
     def test_the_declared_field_is_a_field_the_binding_carries(self):
         from fleet_mcp.config import PolicyBinding

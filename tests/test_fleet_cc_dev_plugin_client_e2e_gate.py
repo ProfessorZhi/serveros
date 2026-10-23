@@ -63,7 +63,7 @@ PINNED_SKILLS = {
     "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
     "fleet-plugin-update": "f10d852c0bc286eb8b7343a8a9a6839d54e14a384efd00e226b2d894767d8205",
     "fleet-reuse-idle-session": "7e0cf5e428bde2f4f0cd626a8881344742c564a1284a9961d03c354a1ffe6eba",
-    "fleet-safety-boundaries": "a1773f96c221741a4bbea7ecf7d0184d44acae28497cf2ee186bc787475471e5",
+    "fleet-safety-boundaries": "64401b469bf71f9d43a16e7d8a1e5a76db2c0be0badd80da41f3d5f38172c877",
 }
 
 

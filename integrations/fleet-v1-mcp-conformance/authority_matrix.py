@@ -1,4 +1,4 @@
-"""The 34-tool catalogue's authorization contract, in one table.
+"""The 44-tool catalogue's authorization contract, in one table.
 
 Why this module exists
 ----------------------
@@ -7,7 +7,7 @@ per tool, *which* Fleet scope a caller must present, and the two questions are
 different: a tool is visible to every client that can read `tools/list`, while
 being callable only by a credential that carries the scope, and (for the write
 verbs) by a principal the local binding also names. A release gate that counted
-33 tools and stopped there would be reporting discovery as entitlement.
+44 tools and stopped there would be reporting discovery as entitlement.
 
 So this module is the join. Every served tool has exactly one row, the row
 names the scope alternatives the call can take, and `selftest.py` fails if the
@@ -93,7 +93,7 @@ def _dual(name: str, family: str, alternatives: tuple[tuple[str, ...], ...], *,
 
 
 AUTHORITY: tuple[Authority, ...] = (
-    # -- the ten hand-written tools --------------------------------------
+    # -- the eleven hand-written tools -----------------------------------
     _tool("fleet_list_devices", "authored", READ, gates="—",
           note="Enrolled devices and route reachability."),
     _tool("fleet_list_sessions", "authored", READ, gates="—"),
@@ -115,8 +115,15 @@ AUTHORITY: tuple[Authority, ...] = (
                 "operator 'control' grant)"),
     _tool("fleet_create_project", "authored", CREATE,
           gates="exact owner-max principal/namespace AND configured root AND target-local fresh creation"),
+    _tool("fleet_delete_project", "authored", CONTROL,
+          gates="device allow_control AND operator 'control' grant; the target "
+                "is resolved from the device's own catalogue (archived rows "
+                "included) and the caller must repeat its path",
+          note="Removal is control, not creation: `allow_create` and the "
+               "`create` grant do not authorize it. Archiving is the default; "
+               "`force` deletes rows and transcripts and never the directory."),
 
-    # -- the 22 mirrored CloudCLI verbs ----------------------------------
+    # -- the 31 mirrored CloudCLI verbs ----------------------------------
     _tool("fleet_cloudcli_overview", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_projects_list", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_sessions_list", "mirror", READ, gates="—"),
@@ -129,8 +136,20 @@ AUTHORITY: tuple[Authority, ...] = (
     _tool("fleet_cloudcli_ui_clients_list", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_session_search", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_approvals_list", "mirror", READ, gates="—"),
+    _tool("fleet_cloudcli_changes", "mirror", READ, gates="—"),
+    _tool("fleet_cloudcli_mcp_usage_stats", "mirror", READ, gates="—"),
+    _tool("fleet_cloudcli_ui_selected_text", "mirror", READ, gates="—"),
+    _tool("fleet_cloudcli_draft_get", "mirror", READ, gates="—"),
     _tool("fleet_cloudcli_session_send", "mirror", SEND,
           gates="same per-session floor as fleet_send_to_session"),
+    _tool("fleet_cloudcli_draft_set", "mirror", SEND,
+          gates="same per-session floor as fleet_send_to_session",
+          note="The device declares this destructive (it overwrites a draft); "
+               "the floor is still the per-session send floor."),
+    _tool("fleet_cloudcli_draft_submit", "mirror", SEND,
+          gates="same per-session floor as fleet_send_to_session",
+          note="Sending the draft is delivery, not authority over what the "
+               "receiving session then touches."),
     _tool("fleet_cloudcli_session_create", "mirror", CREATE,
           gates="device allow_create AND project in create_allow AND "
                 "operator 'create' grant (always, unlike the authored verb)"),
@@ -143,6 +162,15 @@ AUTHORITY: tuple[Authority, ...] = (
           gates="device allow_control AND operator 'control' grant"),
     _tool("fleet_cloudcli_ui_open_session", "mirror", NAVIGATE,
           gates="per-session send floor AND operator 'navigate' grant"),
+    _tool("fleet_cloudcli_ui_focus_turn", "mirror", NAVIGATE,
+          gates="per-session send floor AND operator 'navigate' grant"),
+    _tool("fleet_cloudcli_ui_show_diff", "mirror", NAVIGATE,
+          gates="per-session send floor AND operator 'navigate' grant"),
+    _tool("fleet_cloudcli_ui_open_task", "mirror", NAVIGATE,
+          gates="per-session send floor AND operator 'navigate' grant",
+          note="Opens a task on the machine in front of whoever is sitting at "
+               "it, so it takes the same per-session floor as opening a "
+               "session, not the device-wide floor."),
     _tool("fleet_cloudcli_session_cancel_queued", "mirror", CONTROL,
           gates="device allow_control AND operator 'control' grant"),
     _tool("fleet_cloudcli_session_reconfigure", "mirror", CONTROL,

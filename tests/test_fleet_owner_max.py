@@ -110,6 +110,72 @@ def test_http_owner_scope_expansion_requires_its_own_entry(tmp_path):
     assert set(surface.principal_for_token("owner-token-value").scopes) == set(ALLOWED_SCOPES)
 
 
+def test_a_wildcard_principal_is_admitted_when_none_is_named(tmp_path):
+    """`oauth:<client_id>` is an opaque id; the owner should not have to author it."""
+    h = owned(tmp_path, namespaces=(TOKYO,))
+    h.config = replace(h.config, policy=replace(h.config.policy,
+                                                owner_max={"*": (TOKYO,)}))
+    h.service.config = h.config
+    opaque = Principal("oauth:fleet-some-new-client", frozenset(ALLOWED_SCOPES), "oauth")
+    h.service.create_session(opaque, device=TOKYO, project="just-created")
+    assert h.providers[TOKYO].created[0]["permission_mode"] == "bypassPermissions"
+
+
+def test_status_reports_the_roots_the_wildcard_admits(tmp_path):
+    """`fleet_create_project` says to read `fleet_status.owner_access` for `root`."""
+    h = owned(tmp_path, namespaces=(TOKYO,))
+    h.config = replace(h.config, policy=replace(h.config.policy,
+                                                owner_max={"*": (TOKYO,)}))
+    h.service.config = h.config
+    opaque = Principal("oauth:fleet-some-new-client", frozenset(ALLOWED_SCOPES), "oauth")
+    reported = h.service.status(opaque)["owner_access"]
+    assert reported == [{"device_ref": TOKYO, "runtime": "claude",
+                         "root_refs": ["work"],
+                         "permission_mode": "bypassPermissions",
+                         "admitted_by": "owner-max"}]
+
+
+def test_an_exact_entry_shadows_the_wildcard(tmp_path):
+    """A named principal's own entry decides, including when it is narrower."""
+    h = owned(tmp_path, namespaces=(TOKYO,))
+    h.config = replace(h.config, policy=replace(
+        h.config.policy,
+        owner_max={"local-owner": (TOKYO + "|codex",), "*": (TOKYO,)},
+    ))
+    h.service.config = h.config
+    with pytest.raises(FleetRefusal):
+        h.service.create_session(owner_principal(h.config), device=TOKYO,
+                                 project="just-created", provider="claude")
+    assert h.providers[TOKYO].created == []
+
+
+def test_the_wildcard_does_not_make_a_personal_device_eligible(tmp_path):
+    """Ownership eligibility, not the wildcard, keeps a personal device inert.
+
+    Eligibility is `policy.grant_eligible_ownership`; this binding narrows it to
+    `company`, which is the only thing that makes the personal owner class inert
+    here — the default admits it.
+    """
+    h = owned(tmp_path, namespaces=(TOKYO,))
+    h.config = replace(h.config, policy=replace(
+        h.config.policy, owner_max={"*": (TOKYO,)},
+        grant_eligible_ownership=("company",)))
+    h.service.config = h.config
+    h.service._device_ownership = lambda device_ref: "personal"
+    opaque = Principal("oauth:fleet-some-new-client", frozenset(ALLOWED_SCOPES), "oauth")
+    with pytest.raises(FleetRefusal):
+        h.service.create_session(opaque, device=TOKYO, project="just-created")
+    assert h.providers[TOKYO].created == []
+
+
+def test_only_a_bare_star_is_a_wildcard(tmp_path):
+    from fleet_mcp.config import load_owner_max
+    assert load_owner_max({"*": [TOKYO]}) == {"*": (TOKYO,)}
+    for bad in ("oauth:*", "a*b", "*:"):
+        with pytest.raises(ValueError):
+            load_owner_max({bad: [TOKYO]})
+
+
 def test_unbound_owner_namespace_is_rejected(tmp_path):
     h = owned(tmp_path)
     with pytest.raises(ValueError):

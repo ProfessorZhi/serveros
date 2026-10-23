@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import threading
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -36,8 +38,8 @@ from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
 from . import cloudcli_native, core_lite_source, runtime_identity
-from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
-                     OPERATOR_GRANT_VERBS, provider_key)
+from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
+                     provider_key)
 from .runtime_identity import BASE_RUNTIME
 from .runtime_create_policy import PolicyError
 from .errors import (
@@ -48,6 +50,7 @@ from .errors import (
     IDEMPOTENT_REPLAY,
     DISPATCH_OUTCOME_UNKNOWN,
     INTERNAL,
+    PROJECT_NOT_FOUND,
     RATE_LIMITED,
     SCOPE_DENIED,
     UNKNOWN_DEVICE,
@@ -201,6 +204,20 @@ class Principal:
                 "scopes": sorted(self.scopes)}
 
 
+@dataclass(frozen=True)
+class _AuthoredVerb:
+    """The label `_require_operator_verb` reports for a tool with no native row.
+
+    `fleet_delete_project` reaches CloudCLI's `project_delete`, which
+    `cloudcli_native` records but deliberately does not MIRROR (see
+    `EXTENSION_CLAIMED_NATIVE_TOOLS`), so there is no `NativeTool` object to hand
+    to the grant check. All that check needs from it is the namespaced name it
+    puts in its refusal — the caller has to be told WHICH verb was not granted.
+    """
+
+    namespaced: str
+
+
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
                  core_lite_source=None, attempts=None) -> None:
@@ -221,8 +238,21 @@ class FleetService:
 
     # -- helpers -----------------------------------------------------------
 
+    def _owner_namespaces(self, principal: Principal) -> tuple[str, ...]:
+        """The namespaces `policy.owner_max` gives THIS caller.
+
+        `"*"` is the principal-axis fallback, consulted only when the caller has
+        no entry of its own — an exact entry says what it holds, including when
+        that is a namespace list this device is not in. The namespace side is
+        never a wildcard. One reader, so `fleet_status` and the create gate
+        cannot answer "is this an owner" differently.
+        """
+        by_principal = self.config.policy.owner_max
+        return (by_principal[principal.name] if principal.name in by_principal
+                else by_principal.get("*", ()))
+
     def _owner_profile(self, principal: Principal, device_ref: str, namespace: str):
-        selected = self.config.policy.owner_max.get(principal.name, ())
+        selected = self._owner_namespaces(principal)
         if provider_key(device_ref, namespace) not in selected:
             return None
         binding = self.config.namespace_binding(device_ref, namespace)
@@ -230,6 +260,66 @@ class FleetService:
                 or not self._device_is_grant_eligible(device_ref)):
             return None
         return binding.owner_access
+
+    def _project_root_profile(self, principal: Principal, device_ref: str,
+                              namespace: str):
+        """The roots this caller may MINT a project below, and why.
+
+        Two admissions, deliberately different in what they carry:
+
+        *   `("owner-max", profile)` — the configured owner. Minting and the
+            `bypassPermissions` default for sessions in the new project are the
+            same authority, and that authority is why owner-max requires a
+            durable dispatch ledger the standalone HTTP surface does not have.
+        *   `("operator-grant", profile)` — a caller holding the `create` verb on
+            a device the operator gave roots for. It carries the ROOTS only. It
+            is not owner-max: `_owner_project_grant` still asks owner-max, so a
+            session minted under this admission takes the normal create policy
+            and may not name `bypassPermissions` or a model. Creation is not
+            smuggled in as a way to widen one's own session authority.
+
+        Everything else — no binding, no profile, a personal device, or no
+        `create` verb — is `None`, which the caller answers with
+        APPROVAL_REQUIRED. An empty `owner_max` and an absent `owner_access`
+        block therefore both mean refusal, which is the default this deployment
+        ships.
+        """
+        owner = self._owner_profile(principal, device_ref, namespace)
+        if owner is not None:
+            return owner, "owner-max"
+        binding = self.config.namespace_binding(device_ref, namespace)
+        if (binding is None or not binding.enabled or binding.owner_access is None
+                or not self._device_is_grant_eligible(device_ref)):
+            return None
+        if "create" not in self._operator_grant_verbs(principal, device_ref, namespace):
+            return None
+        return binding.owner_access, "operator-grant"
+
+    def owner_access_report(self, principal: Principal) -> list[dict[str, Any]]:
+        """What `fleet_status.owner_access` shows: where THIS caller may mint.
+
+        `permission_mode` is reported only where it is actually in force. An
+        `operator-grant` admission carries the roots and nothing else, so it
+        reports `None` rather than repeating the profile's `bypassPermissions`
+        — a status that named a mode the gate would refuse is worse than no
+        status at all.
+        """
+        report = []
+        for key in sorted(self.config.providers):
+            binding = self.config.providers[key]
+            admitted = self._project_root_profile(principal, binding.device_ref,
+                                                  binding.runtime)
+            if admitted is None:
+                continue
+            profile, how = admitted
+            report.append({
+                "device_ref": binding.device_ref,
+                "runtime": binding.runtime,
+                "root_refs": list(profile.project_roots),
+                "permission_mode": profile.permission_mode if how == "owner-max" else None,
+                "admitted_by": how,
+            })
+        return report
 
     @staticmethod
     def _create_namespace(binding, family):
@@ -288,25 +378,55 @@ class FleetService:
         return model, permission_mode, by
 
     @staticmethod
-    def _verify_owner_project(provider, project):
-        caller = getattr(provider, "native_call", None)
-        if caller is None:
-            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
-        listing = caller("projects_list", {"includeArchived": False})
-        rows = listing.get("projects") if isinstance(listing, dict) else listing
-        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
-            rows = listing["data"].get("projects")
-        if not isinstance(rows, list):
-            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+    def _project_row(rows, project_id: str) -> dict[str, Any] | None:
+        """The catalogue row whose id is exactly `project_id`, or `None`.
+
+        A row is matched only when every id field it carries agrees with the
+        others AND with the id asked for: a row that reports two different ids
+        is ambiguous, and picking one of them would be this surface guessing
+        which project to act on.
+        """
         for row in rows:
             if not isinstance(row, dict):
                 continue
             ids = [row[k] for k in ("projectId", "project_id", "id")
                    if isinstance(row.get(k), str) and row[k]]
-            if ids and len(set(ids)) == 1 and ids[0] == project:
-                if row.get("isArchived") is True or row.get("is_archived") is True:
-                    break
-                return
+            if ids and len(set(ids)) == 1 and ids[0] == project_id:
+                return row
+        return None
+
+    @staticmethod
+    def _project_catalogue_row(provider, project_id: str, *,
+                               include_archived: bool) -> dict[str, Any] | None:
+        """One project row, read from the DEVICE's own catalogue.
+
+        `include_archived` is explicit at every call site because the two
+        questions differ: a create verifies against the ACTIVE catalogue (a
+        session cannot be minted in an archived project), while a delete's
+        pre-read must see archived rows too, or the row a permanent delete most
+        often targets would be invisible. An unreadable catalogue is a refusal
+        rather than an empty one — acting on "it is not there" when the question
+        was never answered is exactly the blind delete this read exists to
+        prevent.
+        """
+        caller = getattr(provider, "native_call", None)
+        if caller is None:
+            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
+        listing = caller("projects_list", {"includeArchived": bool(include_archived)})
+        rows = listing.get("projects") if isinstance(listing, dict) else listing
+        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
+            rows = listing["data"].get("projects")
+        if not isinstance(rows, list):
+            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+        return FleetService._project_row(rows, project_id)
+
+    @staticmethod
+    def _verify_owner_project(provider, project):
+        row = FleetService._project_catalogue_row(provider, project,
+                                                  include_archived=False)
+        if row is not None and not (row.get("isArchived") is True
+                                    or row.get("is_archived") is True):
+            return
         raise refuse(WRITE_NOT_GRANTED, "project does not exist in the selected runtime's active catalogue")
 
     def _provider(self, device_ref: str,
@@ -377,6 +497,40 @@ class FleetService:
                 return device.ownership
         return None
 
+    def _declared_grant_verbs(self, principal_name: str, device_ref: str,
+                              runtime: str = BASE_RUNTIME) -> tuple[str, ...]:
+        """What the binding *declares* for this principal on this device.
+
+        Eligibility is deliberately not applied here. This answers "did the
+        operator write a grant that covers this", which is the question both
+        `_may_send` and `_may_control` need in order to tell a missing grant
+        apart from a grant written against a device it cannot reach. Applying
+        eligibility here would erase exactly the distinction the refusal exists
+        to draw, and the caller applies it where it belongs.
+        """
+        grants = self.config.policy.operator_grants
+        # An entry for this principal is authoritative even when it is empty:
+        # `{}` means "this principal holds nothing", and falling through to the
+        # wildcard would turn an explicit deny into a grant. Only an ABSENT
+        # principal entry consults `"*"`.
+        per_device = grants[principal_name] if principal_name in grants else grants.get("*", {})
+        if not per_device:
+            return ()
+        # Looked up under the SAME key a provider binding uses: the base runtime
+        # keeps the bare `device:<id>` key, so a grant written before a device
+        # could serve two means exactly what it meant then, and a SECOND runtime
+        # needs its own entry. That is the "independent owner consent" a new
+        # runtime requires — it is not inherited from the runtime beside it.
+        #
+        # `"*"` is consulted only when no exact device entry exists, for the
+        # same reason: an exact entry says what this device holds, including
+        # when what it holds is an empty list.
+        key = provider_key(device_ref, runtime)
+        verbs = per_device[key] if key in per_device else per_device.get("*")
+        if not verbs:
+            return ()
+        return tuple(verbs)
+
     def _operator_grant_verbs(self, principal: Principal, device_ref: str,
                               runtime: str = BASE_RUNTIME) -> tuple[str, ...]:
         """The verbs `principal` holds on `device_ref` — `()`, usually.
@@ -395,27 +549,18 @@ class FleetService:
             from one another, which is what keeps the three planned ones from
             arriving for free on the day they are implemented.
 
-        On the ownership test: a grant naming `device:personal-dell` is not
-        *narrowed* here, it is inert, and the refusal says so. The rule is
-        `ownership == "company"` — the registered devices of the organization
-        this runtime serves — rather than "not personal", because `ownership` is
-        `str | None` and an unset owner is an unknown owner, and an unknown owner
-        is DEFER on this host rather than an authorization. Writing the eligible
-        set as one allowed value also means a registry edit that changes a
-        device's owner changes the answer here, with no second list to keep in
-        step.
+        On the ownership test: a grant naming a device whose owner class the
+        binding does not admit is not *narrowed* here, it is inert, and the
+        refusal says so. The eligible classes come from
+        `policy.grant_eligible_ownership`, whose default is every ownership the
+        registry can author; a binding narrows it by naming fewer. What stays in
+        code is the distinction between "not in the list" and "no owner at
+        all": `ownership` is `str | None`, and an unset owner is an unknown
+        owner, which is DEFER on this host rather than an authorization.
         """
         if self._owner_profile(principal, device_ref, runtime) is not None:
             return tuple(OPERATOR_GRANT_VERBS)
-        per_device = self.config.policy.operator_grants.get(principal.name)
-        if not per_device:
-            return ()
-        # Looked up under the SAME key a provider binding uses: the base runtime
-        # keeps the bare `device:<id>` key, so a grant written before a device
-        # could serve two means exactly what it meant then, and a SECOND runtime
-        # needs its own entry. That is the "independent owner consent" a new
-        # runtime requires — it is not inherited from the runtime beside it.
-        verbs = per_device.get(provider_key(device_ref, runtime))
+        verbs = self._declared_grant_verbs(principal.name, device_ref, runtime)
         if not verbs:
             return ()
         if not self._device_is_grant_eligible(device_ref):
@@ -423,8 +568,21 @@ class FleetService:
         return tuple(v for v in verbs if v in OPERATOR_GRANT_VERBS)
 
     def _device_is_grant_eligible(self, device_ref: str) -> bool:
-        """Whether a device may appear in an operator grant at all."""
-        return self._device_ownership(device_ref) == GRANT_ELIGIBLE_OWNERSHIP
+        """Whether a device may appear in an operator grant at all.
+
+        Read from `policy.grant_eligible_ownership`, never from a constant in
+        this file: which ownership classes an operator drives is their decision
+        about their own fleet, and the binding is where they express it. The
+        default there is every ownership the registry can author.
+
+        An ownership the registry does not state is still not eligible, because
+        it is not a value the list can hold — see `KNOWN_DEVICE_OWNERSHIPS`.
+        """
+        ownership = self._device_ownership(device_ref)
+        return ownership is not None and ownership in self._eligible_ownerships()
+
+    def _eligible_ownerships(self) -> tuple[str, ...]:
+        return self.config.policy.grant_eligible_ownership
 
     def _may_send(self, principal: Principal, key: SessionKey) -> None:
         binding = self.config.session_binding(key)
@@ -480,9 +638,8 @@ class FleetService:
             # does not make eligible. Only the third is a policy question rather
             # than a typo, and it is the one worth saying out loud — a grant
             # written against a personal device reads as authority and is inert.
-            granted_here = (
-                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
-            )
+            granted_here = self._declared_grant_verbs(
+                principal.name, key.device_ref, key.provider)
             if granted_here:
                 ownership = self._device_ownership(key.device_ref)
                 # Recorded as well as reported, because the operator who wrote
@@ -498,12 +655,16 @@ class FleetService:
                     grant_reason="device-not-eligible",
                     session_ref=key.ref,
                 )
+                scope = self.config.policy.operator_grants
+                who = principal.name if principal.name in scope else "*"
+                per_device = scope.get(who, {})
+                named = provider_key(key.device_ref, key.provider)
+                what = named if named in per_device else "*"
                 detail = (
-                    f"`policy.operator_grants[{principal.name!r}]"
-                    f"[{provider_key(key.device_ref, key.provider)!r}]` "
+                    f"`policy.operator_grants[{who!r}][{what!r}]` "
                     f"does name {list(granted_here)}, but {key.device_ref} is "
-                    f"{ownership!r} and only {GRANT_ELIGIBLE_OWNERSHIP!r} devices "
-                    f"may be granted. The grant is inert here rather than "
+                    f"{ownership!r} and `policy.grant_eligible_ownership` is "
+                    f"{list(self._eligible_ownerships())}. The grant is inert here rather than "
                     f"narrowed: the owner of a device is a registry fact, and "
                     f"an unset owner is an unknown one, which this host defers "
                     f"on rather than authorizes."
@@ -595,9 +756,8 @@ class FleetService:
         if self.config.policy.allow_wildcard_control and "*" in allow:
             return
         if key.ref not in allow:
-            granted_here = (
-                self.config.policy.operator_grants.get(principal.name, {}).get(key.device_ref)
-            )
+            granted_here = self._declared_grant_verbs(
+                principal.name, key.device_ref, key.provider)
             if granted_here:
                 self.audit.record_grant(
                     event="fleet.grant",
@@ -621,6 +781,37 @@ class FleetService:
                 session_ref=key.ref,
                 allowed=sorted(allow),
             )
+
+    def _may_control_device(self, principal: Principal, device_ref: str, binding,
+                            native, *, runtime: str) -> None:
+        """The DEVICE half of control, for a target that is not a session.
+
+        `_may_control` is stated over a `SessionKey` because stopping a run is
+        about one session. Deleting a project is about a project ROW: there is no
+        session to name, so `policy.control_allow` — a per-session list — has no
+        referent here, while the other two gates apply unchanged:
+
+        *   the device's `allow_control` (or a selected owner-max profile — the
+            same substitution `_may_control` makes), and
+        *   the caller's `control` operator grant on that device.
+
+        A caller who may not stop a run on a machine may not remove project rows
+        on it either, and this is deliberately NOT routed through `allow_create`:
+        removal is not minting, and a device trusted to create is not thereby
+        trusted to destroy.
+        """
+        if not binding.allow_control and self._owner_profile(principal, device_ref, runtime) is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                f"{device_ref} is not authorized for control from this runtime. "
+                f"Removing a project row is granted per device in the local "
+                f"binding (`allow_control: true`) and per caller by the "
+                f"`control` operator grant — never by naming a project id.",
+                device_ref=device_ref,
+                required_verb="control",
+            )
+        self._require_operator_verb(principal, device_ref, "control", native,
+                                    runtime=runtime)
 
     def _may_create(self, device_ref: str, project: str,
                     runtime: str = BASE_RUNTIME, *, principal=None,
@@ -680,7 +871,7 @@ class FleetService:
             )
         grants = self.config.policy.create_allow
         if grants.get(project) is None:
-            wildcard = grants.get("*") if self.config.policy.allow_wildcard_create else None
+            wildcard = self._configured_create_grant("*")
             if wildcard is None:
                 raise refuse(
                     APPROVAL_REQUIRED,
@@ -696,6 +887,26 @@ class FleetService:
                 )
             return wildcard
         return grants[project]
+
+    def _configured_create_grant(self, project: str):
+        """The binding's create grant for one project, wildcard included.
+
+        ONE reading of `policy.create_allow`, used by every ceiling that asks
+        what a project admits. It exists because there were two: session
+        creation honoured `create_allow["*"]` when `allow_wildcard_create` was
+        on, while the reconfigure ceiling read `create_allow.get(project)` and
+        so saw nothing for a project covered only by the wildcard — a session
+        could be MINTED under a grant it was then unable to be RECONFIGURED
+        under, with the sweep reading as a refusal that no configuration could
+        lift. `"*"` passes through unharmed: it is a real key, and the caller
+        asking for it is asking for the wildcard entry itself.
+        """
+        grants = self.config.policy.create_allow
+        if project != "*" and grants.get(project) is not None:
+            return grants[project]
+        if self.config.policy.allow_wildcard_create:
+            return grants.get("*")
+        return None
 
     def _may_name_mode_and_model(
         self, device_ref: str, project: str, grant: CreateGrant, *,
@@ -750,8 +961,9 @@ class FleetService:
 
         **Not an MCP tool.** Nothing in `tools.py` names it, `list_devices` and
         `status` do not call it, and no route is declared for it — so the served
-        surface is exactly what it was: nine hand-written tools plus the 22
-        inherited verbs, six scopes, `TOOL_SURFACE_REVISION = "fleet-mcp-3"`.
+        surface is unchanged by this seam: ten hand-written tools, the 22
+        inherited verbs and the two capability reads, six scopes,
+        `TOOL_SURFACE_REVISION = "fleet-mcp-7"`.
         Adding a field to `fleet_list_devices` would be a change to a tool's
         contract shape, and that decision belongs in the change that makes it,
         openly, rather than inside a wiring commit.
@@ -1533,11 +1745,17 @@ class FleetService:
             raise refuse(BAD_REQUEST, "device is required")
         device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
         binding = self.config.namespace_binding(device_ref, runtime)
-        profile = self._owner_profile(principal, device_ref, runtime)
+        admitted = self._project_root_profile(principal, device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
-        if profile is None:
-            raise refuse(APPROVAL_REQUIRED, "project creation requires the selected owner-max profile")
+        if admitted is None:
+            raise refuse(
+                APPROVAL_REQUIRED,
+                "project creation requires the selected owner-max profile, or the "
+                "`create` operator grant on a device whose operator authored "
+                "project roots",
+            )
+        profile, admitted_by = admitted
         if display_name is not None and (not isinstance(display_name, str)
                 or not display_name.strip() or len(display_name) > 256
                 or any(ord(c) < 32 for c in display_name)):
@@ -1578,8 +1796,235 @@ class FleetService:
                           device_ref=device_ref, runtime=runtime, project_id=receipt["project_id"])
         return {**receipt, "device_ref": device_ref, "runtime": runtime,
                 "binding_runtime": binding.runtime, "idempotent_replay": False,
-                "fresh_directory_created": True,
+                "fresh_directory_created": True, "admitted_by": admitted_by,
                 "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED"}
+
+    def delete_project(self, principal: Principal, *, device: str, project_id: str,
+                       confirm_path: str, force: bool = False,
+                       runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+        """Archive (default) or permanently remove ONE project row.
+
+        Three questions, in this order, and each is a different authority:
+
+        *   **may this caller destroy stored state on this device** — the
+            device's `allow_control` (or a selected owner-max profile) plus the
+            `control` operator grant, through `_may_control_device`. A project
+            row is stored state on that machine, and removing it is not a lighter
+            act than stopping a run;
+        *   **is this the project the caller means** — the catalogue is read
+            FIRST, archived rows included, and the row's own `path` must equal
+            `confirm_path`. A project id is opaque and easy to paste wrong; the
+            path is what a person can recognise, so the caller has to repeat the
+            one it saw. An id with no row is `PROJECT_NOT_FOUND`, which is also
+            what a second force delete answers — an honest reading, not a
+            replayed success;
+        *   **did it actually happen** — the device's ACK is not taken as proof.
+            The catalogue is read AGAIN: a force delete must leave no row even
+            with archived included, and an archive must leave the row marked
+            archived. A device that answers "deleted" and still lists the project
+            is reported as a contradiction, never as success.
+
+        `force: false` is reversible (the row is archived; the directory and the
+        transcripts are untouched) and `force: true` removes the session rows and
+        their transcript files. The project DIRECTORY on disk is never removed —
+        the device's own service does not do it either, and this call restates
+        that in its answer rather than leaving the silence to be read as an
+        omission.
+
+        No idempotency key, and this call does not need one: the second call
+        re-reads the catalogue and answers from it, so a retried force delete
+        reports `PROJECT_NOT_FOUND` and a retried archive reports
+        `was_archived: true`. That is a statement about the present; a cached
+        answer would be a statement about the past wearing its clothes.
+        """
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        self._validate_runtime_selector(runtime)
+        if not isinstance(device, str) or not device.strip():
+            raise refuse(BAD_REQUEST, "device is required")
+        if (not isinstance(project_id, str) or not project_id.strip()
+                or project_id != project_id.strip() or len(project_id) > 512):
+            raise refuse(
+                BAD_REQUEST,
+                "project_id must be a non-empty id, exactly as `projects_list` "
+                "reports it — leading or trailing whitespace is a different id.",
+            )
+        if not isinstance(confirm_path, str) or not confirm_path.strip():
+            raise refuse(
+                BAD_REQUEST,
+                "confirm_path is required: repeat the project's own `path` as "
+                "`projects_list` reports it. A delete is confirmed against the "
+                "device's catalogue, never against the id alone.",
+            )
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        binding = self.config.namespace_binding(device_ref, runtime)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, "the project namespace has no enabled binding")
+        self._may_control_device(
+            principal, device_ref, binding,
+            _AuthoredVerb(cloudcli_native.namespaced("project_delete")),
+            runtime=binding.runtime,
+        )
+        provider = self._require_provider(device_ref, binding.runtime)
+        deleter = getattr(provider, "delete_project", None)
+        if deleter is None:
+            raise refuse(
+                "CAPABILITY_UNSUPPORTED",
+                f"{device_ref}'s provider ({provider.kind}) has no project "
+                f"deletion operation.",
+                device_ref=device_ref,
+            )
+        before = self._project_catalogue_row(provider, project_id,
+                                            include_archived=True)
+        if before is None:
+            raise refuse(
+                PROJECT_NOT_FOUND,
+                f"{device_ref} has no project with id {project_id!r} — archived "
+                f"projects included. Read `projects_list` again rather than "
+                f"assuming an earlier call failed.",
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        before_path = before.get("path")
+        if not isinstance(before_path, str) or not before_path:
+            raise refuse(
+                INTERNAL,
+                "the device's catalogue named the project without a path, so a "
+                "delete could not be confirmed against it",
+                retry_safe=False,
+            )
+        if before_path != confirm_path:
+            # The path is NOT echoed: the caller may hold `control` without
+            # `read`, and the path of a project it cannot list is not this
+            # refusal's to disclose. It is told which read answers the question.
+            raise refuse(
+                BAD_REQUEST,
+                "confirm_path does not match the path the device's catalogue "
+                "holds for this project id. Read `projects_list` and repeat the "
+                "row's own `path` exactly.",
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        payload = deleter(project_id=project_id, force=bool(force))
+        if (not isinstance(payload, dict)
+                or payload.get("projectId") != project_id
+                or payload.get("path") != before_path
+                or not isinstance(payload.get("deleted"), bool)
+                or not isinstance(payload.get("archived"), bool)
+                or not isinstance(payload.get("wasArchived"), bool)
+                or payload.get("deleted") != bool(force)
+                or payload.get("archived") == payload.get("deleted")
+                or payload.get("directoryRemoved") is not False):
+            raise refuse(
+                INTERNAL,
+                "project deletion may have happened but its ACK is malformed: it "
+                "must name the same project id and path, say which of archived/"
+                "deleted it did, and say that no directory was removed",
+                retry_safe=False,
+            )
+        after = self._project_catalogue_row(provider, project_id,
+                                            include_archived=True)
+        if force:
+            verified = after is None
+            verification = "absent from the catalogue, archived included"
+        else:
+            verified = after is not None and bool(
+                after.get("isArchived") is True or after.get("is_archived") is True
+                or after.get("isArchived") == 1 or after.get("is_archived") == 1)
+            verification = "catalogued as archived"
+        if not verified:
+            raise refuse(
+                INTERNAL,
+                f"{device_ref} acknowledged the {'delete' if force else 'archive'} "
+                f"of {project_id!r} and its catalogue still disagrees. The effect "
+                f"is unconfirmed: reconcile by reading `projects_list` before "
+                f"retrying.",
+                retry_safe=False,
+                device_ref=device_ref,
+                project_id=project_id,
+            )
+        self.audit.record("fleet.project.delete", principal=principal.name,
+                          device_ref=device_ref, runtime=runtime,
+                          project_id=project_id,
+                          mode="force" if force else "archive")
+        return {
+            "device_ref": device_ref,
+            "runtime": runtime,
+            "binding_runtime": binding.runtime,
+            "project_id": project_id,
+            "project_path": before_path,
+            "was_archived": payload["wasArchived"],
+            "archived": payload["archived"],
+            "deleted": payload["deleted"],
+            # A literal, so a caller reading the shape cannot mistake the silence
+            # for an omission: this call never removes a directory.
+            "directory_removed": False,
+            "verified": True,
+            "verification": verification,
+        }
+
+    # Modes that never wait for a person, and modes that do. These classify a
+    # value the DEVICE reported; they are not a list of what a caller may ask
+    # for (that is `create_allow.<project>.permission_modes`) and they never
+    # stand in for a readback. A mode this build does not know is `UNKNOWN`
+    # rather than guessed safe.
+    _UNATTENDED_SAFE_MODES = frozenset({"dontAsk", "plan", "bypassPermissions"})
+    _INTERACTIVE_MODES = frozenset({"default", "manual", "auto", "acceptEdits"})
+
+    def _read_effective_permission_mode(self, provider, key, resolved_mode):
+        """Ask the device what it actually applied; never infer it from the ask.
+
+        One `session_get`, after the session exists. A failure here is a finding
+        about the READBACK, not about the create: the session may well exist and
+        be fine, and turning a successful mint into an error because the second
+        read failed would report a failure this surface did not observe. The
+        caller gets `UNVERIFIED` and the reason, which is the honest answer.
+        """
+        try:
+            detail = provider.get_session(key)
+        except Exception as exc:  # noqa: BLE001 - any readback failure is a finding
+            return None, {
+                "state": "UNVERIFIED",
+                "prompt_risk": "UNKNOWN",
+                "requested": resolved_mode,
+                "effective": None,
+                "reason": f"session_get failed: {type(exc).__name__}",
+            }
+        native = detail.get("session") if isinstance(detail.get("session"), dict) else {}
+        mode = native.get("permissionMode")
+        if mode is None:
+            mode = detail.get("permissionMode")
+        if not isinstance(mode, str) or not mode.strip():
+            return None, {
+                "state": "UNVERIFIED",
+                "prompt_risk": "UNKNOWN",
+                "requested": resolved_mode,
+                "effective": None,
+                "reason": "the device did not report a permission mode for this "
+                          "session; a requested value is not proof of the effective "
+                          "one",
+            }
+        mode = mode.strip()
+        if resolved_mode is None:
+            state = "REPORTED"
+            reason = ("the device reported its own default; nothing was requested "
+                      "for it to be compared against")
+        elif mode == resolved_mode:
+            state = "CONFIRMED"
+            reason = "the device reported the mode that was resolved for this create"
+        else:
+            state = "MISMATCH"
+            reason = ("the device reported a mode other than the one resolved for "
+                      "this create")
+        risk = ("NONE" if mode in self._UNATTENDED_SAFE_MODES
+                else "HIGH" if mode in self._INTERACTIVE_MODES else "UNKNOWN")
+        return mode, {
+            "state": state,
+            "prompt_risk": risk,
+            "requested": resolved_mode,
+            "effective": mode,
+            "reason": reason,
+        }
 
     def create_session(
         self,
@@ -1706,6 +2151,15 @@ class FleetService:
                     # exactly the stale grant this surface refuses everywhere
                     # else.
                     "control": self._control_block(principal, key) if key else None,
+                    "permission_readiness": {
+                        "state": "UNVERIFIED",
+                        "prompt_risk": "UNKNOWN",
+                        "requested": None,
+                        "effective": None,
+                        "reason": "replayed from the idempotency record; no device "
+                                  "call was made, so the effective mode of the "
+                                  "session that already exists is unknown here",
+                    },
                     "note": "replayed from the idempotency record; no second "
                             "session was created and nothing on the device was "
                             "called.",
@@ -1747,6 +2201,13 @@ class FleetService:
         }
         self._record_delivery_ack(claim, record,
                                   expect_execution=bool(message and message.strip()))
+        # The one fact the create could not know: what the DEVICE applied. Read
+        # back here, in the same answer, because a second call is a second
+        # round trip a caller can forget — and "created" being mistaken for
+        # "permission-ready" is the exact inference this block exists to stop.
+        effective_mode, readiness = self._read_effective_permission_mode(
+            adapter, key, permission_mode)
+        readiness["run_started"] = bool(message and message.strip())
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -1782,12 +2243,20 @@ class FleetService:
             "defaults": {
                 "requested": requested_defaults,
                 "resolved": resolved_defaults,
-                "effective": None,
+                "effective": {"model": None, "permission_mode": effective_mode},
                 "effective_reason": (
-                    "not read back: what the device applied is a property of the "
-                    "device, and this surface does not infer it from what it asked "
-                    "for. Null means UNKNOWN, never 'the resolved values were used'."),
+                    "permission_mode is what the device reported for this session, "
+                    "or null when it reported nothing; a null is UNKNOWN, never "
+                    "'the resolved value was used'. model is not read back: the "
+                    "provider reports no effective model on this surface."),
             },
+            # Four states, not a boolean: CONFIRMED and MISMATCH are comparisons
+            # against what was resolved, REPORTED is a device default with
+            # nothing to compare, and UNVERIFIED is the absence of an answer.
+            # `prompt_risk` is a statement about the mode the DEVICE reported:
+            # NONE means nothing in that mode waits for a person, HIGH means it
+            # does, UNKNOWN means this build does not know the mode.
+            "permission_readiness": readiness,
             "note": "session_create mints a session and, when a first message was "
                     "given, starts its run. It grants no authority over anything "
                     "that session may then operate on: see `control` for whether "
@@ -1940,7 +2409,8 @@ class FleetService:
                                 session_ref=session_ref, project=project,
                                 governance=governance, runtime=runtime)
         # HIGH-7: validate the caller's arguments against the tool's OWN schema
-        # (recorded from CloudCLI 1.39.0; a live per-device schema may override).
+        # (recorded from the CloudCLI build each entry names in `recorded_from`;
+        # a live per-device schema may override).
         # A required parameter that is missing, or one the schema does not
         # declare, is refused rather than forwarded and silently ignored.
         problems = cloudcli_native.validate_arguments(
@@ -2312,7 +2782,7 @@ class FleetService:
                  if principal is not None else None)
         grant = (self._owner_project_grant(principal, device_ref, actual, actual_runtime,
                                           key.provider) if owner is not None
-                 else self.config.policy.create_allow.get(actual))
+                 else self._configured_create_grant(actual))
         if grant is None:
             raise refuse(
                 WRITE_NOT_GRANTED,
@@ -2501,12 +2971,35 @@ class FleetService:
             )
         verbs = self._operator_grant_verbs(principal, device_ref, runtime)
         if verb not in verbs:
+            # Two refusals, because they send an operator to two edits. A grant
+            # the binding DOES declare but the device cannot hold is a registry
+            # fact, not a missing line; reporting it as "held are none" would
+            # send someone to add a grant that is already there.
+            declared = self._declared_grant_verbs(
+                principal.name, device_ref, runtime)
+            if verb in declared:
+                ownership = self._device_ownership(device_ref)
+                detail = (
+                    f"the binding does name `{verb}` for {principal.name!r} on "
+                    f"{device_ref}, but that device is {ownership!r} and "
+                    f"`policy.grant_eligible_ownership` is "
+                    f"{list(self._eligible_ownerships())}. The "
+                    f"grant is inert here rather than narrowed: the owner of a "
+                    f"device is a registry fact, and an unset owner is an "
+                    f"unknown one, which this host defers on rather than "
+                    f"authorizes."
+                )
+            else:
+                detail = (
+                    f"the operator grant verbs held are "
+                    f"{list(verbs) or 'none'}."
+                )
             raise refuse(
                 WRITE_NOT_GRANTED,
                 f"`{native.namespaced}` needs a `{verb}` operator grant for "
-                f"{principal.name!r} on {device_ref}; the operator grant verbs "
-                f"held are {list(verbs) or 'none'}. The device floor passed and "
-                f"the principal is not granted, so the call is refused.",
+                f"{principal.name!r} on {device_ref}; {detail} The device floor "
+                f"passed and the principal is not granted, so the call is "
+                f"refused.",
                 device_ref=device_ref, required_verb=verb,
                 **({"project": project} if project is not None else {}),
             )
@@ -2582,18 +3075,14 @@ class FleetService:
                 "send_allow": list(self.config.policy.send_allow),
                 "read_redact": self.config.policy.read_redact,
                 "max_read_messages": self.config.policy.max_read_messages,
+                # Reported because it is now the binding's answer rather than a
+                # constant in this file: an operator reading `fleet_status`
+                # should be able to see which ownership classes a grant can
+                # reach without opening the YAML.
+                "grant_eligible_ownership": list(self._eligible_ownerships()),
             },
             "principal": principal.as_dict(),
-            "owner_access": [
-                {"device_ref": namespace.partition("|")[0],
-                 "runtime": namespace.partition("|")[2] or BASE_RUNTIME,
-                 "root_refs": list(profile.project_roots),
-                 "permission_mode": profile.permission_mode}
-                for namespace in self.config.policy.owner_max.get(principal.name, ())
-                if (profile := self._owner_profile(
-                    principal, namespace.partition("|")[0],
-                    namespace.partition("|")[2] or BASE_RUNTIME)) is not None
-            ],
+            "owner_access": self.owner_access_report(principal),
             "recent_audit": self.audit.tail(20),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

@@ -228,6 +228,23 @@ class BuildIt(unittest.TestCase):
         self.assertIn("assets/composerIcon.png", record["members"])
         self.assertIn("assets/logo.png", record["members"])
 
+    def test_the_archive_carries_the_readme_and_the_privacy_notice(self) -> None:
+        """A package an installer opens must say what it does and what it sends.
+
+        Both are source files, not generated text: the ZIP carries the same
+        bytes the repository does, so an edit cannot reach one and miss the
+        other.
+        """
+        record = self.f.build()
+        self.assertIn("README.md", record["members"])
+        self.assertIn("PRIVACY.md", record["members"])
+        with zipfile.ZipFile(self.f.out / record["archive"]) as zf:
+            for name in ("README.md", "PRIVACY.md"):
+                with self.subTest(member=name):
+                    self.assertEqual(
+                        zf.read(name),
+                        (HERE / "plugin" / name).read_bytes())
+
     def test_two_builds_of_one_source_agree(self) -> None:
         first = self.f.build()
         second = self.f.build()

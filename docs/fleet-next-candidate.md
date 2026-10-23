@@ -1,5 +1,13 @@
 # Fleet Next — the candidate, and how to take it back
 
+> **HISTORICAL (2026-10-14 candidate).** This describes the five-branch
+> candidate as it stood at `fleet-mcp-3`; that work is now on `main`. The
+> current surface is `fleet-mcp-7`: **44 tools = 11 hand-written + 31 mirrored
+> CloudCLI verbs + 2 capability reads**, and the consent step is account +
+> password + TOTP with a PAT fallback. Numbers, revisions and status rows below
+> are what was measured at the time and are kept as a record, not as current
+> state.
+
 This file names one candidate as one thing. It exists because "the Fleet Next
 candidate" was previously a chain of five stacked branches, and a chain is not
 something you can turn off, roll back or deploy as a unit.
@@ -22,10 +30,11 @@ Line-level review of the inherited work belongs to its own pull requests
 
 ## The surface, counted from the code
 
-- **33 tools** = `TOOLS` (9 hand-written) + `NATIVE_MIRROR_TOOLS` (22 CloudCLI
-  1.39.0 verbs) + the two mirror-descriptor tools. `SERVED_TOOLS` in
-  `fleet_mcp/tools.py` is the definition; `tests/test_fleet_multi_runtime_routing.py`
-  and `tests/test_fleet_release_plan.py` assert the count.
+- **34 tools** = `TOOLS` (10 hand-written, including `fleet_create_project`) +
+  `NATIVE_MIRROR_TOOLS` (22 CloudCLI verbs from 1.39.0) + the two
+  mirror-descriptor tools. `SERVED_TOOLS` in `fleet_mcp/tools.py` is the
+  definition; `tests/test_fleet_multi_runtime_routing.py` and
+  `tests/test_fleet_release_plan.py` assert the count.
 - **6 scopes** — `fleet_mcp/scopes.py`: `fleet:read`, `fleet:send`,
   `fleet:control`, `fleet:create`, `fleet:approve`, `fleet:navigate`.
   `ALLOWED_SCOPES` equals the implemented set on purpose: what is advertised is
@@ -52,7 +61,7 @@ binding file the process refuses to start, and the loader's refusal is what
 | `operator_grants` | `{}` | nobody holds any verb on any device |
 | `auth.grantable_scopes` | `read`, `send` | the OAuth ceiling |
 | `auth.feishu` | `None` | the two SSO routes 404 exactly as an unknown path does |
-| `auth.oauth_enabled` | **`True`** | OAuth is wired unless disabled — but still refuses without a `pat_anchor` |
+| `auth.oauth_enabled` | **`True`** | OAuth is wired unless disabled — but still refuses without a verifier (account/password anchor, or the PAT fallback) |
 | `ProviderBinding.enabled` | **`True`** | a binding has a route. It grants nothing until a verb flag is set |
 | `policy.read_redact` | **`True`** | credentials read out of transcripts are redacted |
 
@@ -102,8 +111,8 @@ prints a note saying it will not.
 
 | | state | basis |
 |---|---|---|
-| **CODE READY** | the 33-tool surface, 6 scopes, grant model, per-runtime routing, Feishu SSO broker and the packaging above | present in this branch |
-| **TESTED** | all of the above | asserted in `tests/test_fleet_*.py`, including `test_fleet_multi_runtime_routing.py` (33 tools, per-runtime grants, Dell two-runtime routing) against **fake providers** |
+| **CODE READY** | the 34-tool surface, 6 scopes, grant model, per-runtime routing, Feishu SSO broker and the packaging above | present in this branch |
+| **TESTED** | all of the above | asserted in `tests/test_fleet_*.py`, including `test_fleet_multi_runtime_routing.py` (34 tools, per-runtime grants, Dell two-runtime routing) against **fake providers** |
 | **DEVICE NOT DEPLOYED** | every device | `docs/fleet-multi-runtime-design.md`: "nothing here is deployed and no second runtime exists on any machine yet"; `fleet_mcp/node/README.linux.md`: "`device:llm-lab-dell` is not enrolled by any of this" |
 | **CLIENT NOT INSTALLED** | every client | no upload, no install, no refresh has been performed (see `integrations/chatgpt-fleet-next/PACKAGING.md`) |
 
@@ -127,8 +136,8 @@ Per-device dry-run gaps are collected separately in
   G1): the only seam is a device-level `allow_control`. G2–G4 in that file
   (an anchor read by nothing, no `close` verb, `session_start` being a spawn
   rather than a resume) are unchanged by this candidate.
-- **Documentation drift, flagged rather than fixed here:** the docstring and
-  comments in `fleet_mcp/cloudcli_native.py` still describe `approve`/`navigate`
-  as planned-and-not-implemented, while `scopes.py` has moved them into
-  `IMPLEMENTED_SCOPES`. The behaviour is right — they remain default-deny — but
-  the prose in that one file is stale.
+- **Documentation drift (fixed since):** the docstring and comments in
+  `fleet_mcp/cloudcli_native.py` used to describe `approve`/`navigate` as
+  planned-and-not-implemented while `scopes.py` had them in
+  `IMPLEMENTED_SCOPES`. The prose was corrected after this candidate; the
+  behaviour was right throughout — both remain default-deny.

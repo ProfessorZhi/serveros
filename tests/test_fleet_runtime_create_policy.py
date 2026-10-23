@@ -21,7 +21,8 @@ from fleet_mcp.config import CreateGrant, PolicyBinding, provider_key  # noqa: E
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.runtime_create_policy import (  # noqa: E402
     RuntimeProjectDefaults, PolicyError, parse_runtime_create_defaults)
-from test_fleet_create_session_runtime import TwoAccounts, DEVICE, SECOND, PROJECT  # noqa: E402
+from test_fleet_create_session_runtime import (  # noqa: E402
+    TwoAccounts, DEVICE, SECOND, PROJECT, OWNER_ID)
 
 M = ["deepseek-v4-flash-vision-anthropic",
      "deepseek-v4-flash-anthropic",
@@ -174,8 +175,8 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
 
         This is the case the three words exist for. `requested` is null because
         the caller named no model, `resolved` is the owner-approved default, and
-        `effective` is null because nothing has read back what the device
-        applied. Reporting `resolved` as effective would assert a readback the
+        `effective` carries no value because this fake device reported nothing
+        back. Reporting `resolved` as effective would assert a readback the
         surface never took, and the one case that matters — a device that
         quietly applies its own default — is exactly where the two differ.
         """
@@ -188,7 +189,9 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual(defaults["resolved"]["model"], M[0])
         self.assertEqual(defaults["resolved"]["permission_mode"], "bypassPermissions")
         self.assertEqual(defaults["resolved"]["by"], "runtime/project policy")
-        self.assertIsNone(defaults["effective"])
+        self.assertIsNone(defaults["effective"]["model"])
+        self.assertIsNone(defaults["effective"]["permission_mode"])
+        self.assertIn("UNKNOWN", defaults["effective_reason"])
 
     def test_an_explicit_request_survives_as_requested(self):
         """`resolve()` REBINDS the names, so this is what it used to destroy.
@@ -210,14 +213,23 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         self.assertEqual(defaults["resolved"]["permission_mode"], "default")
 
     def test_effective_is_never_inferred_from_resolved(self):
-        """Even when the two agree, `effective` stays null — the claim is what
-        would be wrong, not the value."""
+        """Even when the two agree, `effective` stays empty without a readback.
+
+        The value the device reported would be fine to relay — this fake device
+        reports nothing, so the honest answer is null. Copying `resolved` into
+        it would be the claim that is wrong, not the value.
+        """
         self.configure()
         self.h.second_provider.create = lambda **kw: {"sessionId": "session-x"}
         for kwargs in ({}, {"model": M[2], "permission_mode": "default"}):
             with self.subTest(kwargs=sorted(kwargs)):
                 result = self.h.create(runtime=SECOND, project=PROJECT, **kwargs)
-                self.assertIsNone(result["defaults"]["effective"])
+                effective = result["defaults"]["effective"]
+                self.assertIsNone(effective["model"])
+                self.assertIsNone(effective["permission_mode"])
+                self.assertNotEqual(
+                    effective["permission_mode"],
+                    result["defaults"]["resolved"]["permission_mode"])
                 self.assertIn("UNKNOWN", result["defaults"]["effective_reason"])
 
     def test_without_a_policy_rule_nothing_is_attributed_to_one(self):
@@ -227,7 +239,7 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         result = self.h.create(runtime=SECOND, project=PROJECT)
         defaults = result["defaults"]
         self.assertIsNone(defaults["resolved"]["by"])
-        self.assertIsNone(defaults["effective"])
+        self.assertIsNone(defaults["effective"]["permission_mode"])
 
     def test_no_operator_create_grant_denies_even_when_scope_is_present(self):
         self.configure(owner=False)
@@ -294,6 +306,109 @@ class RealServiceIntegrationUsingFakeConnectors(unittest.TestCase):
         with self.assertRaises(FleetRefusal) as caught:
             self.h.service._native_reconfigure_ceiling(
                 provider, DEVICE, session_ref, PROJECT, {"model": M[1]}, native)
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+
+    def test_a_mode_change_is_satisfiable_and_the_outer_project_is_what_it_reads(self):
+        """The ceiling needs a project the caller names OUTSIDE `arguments`.
+
+        `session_reconfigure`'s native schema has no `project` parameter, so
+        before 2026-10-23 the ceiling's refusal ("must also name `project`") was
+        unsatisfiable through this surface: the outer schema carried no such key
+        and `arguments` refuses unknown ones. This drives the whole path —
+        `native_call` → handler-passed `project` → ceiling — and checks both
+        halves: no claim is refused, a matching claim is forwarded to the
+        device, and the device's own `session_get` is what the ceiling compared.
+        """
+        from fleet_mcp.fleet import Principal
+        from fleet_mcp.scopes import SCOPE_CONTROL, SCOPE_READ
+
+        self.configure()
+        providers = dict(self.h.config.providers)
+        providers[KEY] = replace(providers[KEY], allow_control=True)
+        self.h.config = replace(
+            self.h.config, providers=providers,
+            policy=replace(self.h.config.policy,
+                           operator_grants={"oauth:test": {KEY: ("create", "control")}}))
+        self.h.service.config = self.h.config
+        seen: list[tuple[str, dict]] = []
+
+        def fake_native(tool, arguments, *, session_ref=None):
+            seen.append((tool, dict(arguments)))
+            if tool == "session_get":
+                return {"sessionId": OWNER_ID, "projectId": PROJECT}
+            return {"ok": True}
+
+        self.h.second_provider.native_call = fake_native
+        principal = Principal(name="oauth:test",
+                              scopes=frozenset((SCOPE_READ, SCOPE_CONTROL)),
+                              credential_kind="oauth")
+        session_ref = f"{DEVICE}|{SECOND}|{OWNER_ID}"
+
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service.native_call(
+                principal, device_ref=DEVICE, native_tool="session_reconfigure",
+                arguments={"session": OWNER_ID, "permissionMode": "default"},
+                session_ref=session_ref, runtime=SECOND)
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+
+        out = self.h.service.native_call(
+            principal, device_ref=DEVICE, native_tool="session_reconfigure",
+            arguments={"session": OWNER_ID, "permissionMode": "default"},
+            session_ref=session_ref, project=PROJECT, runtime=SECOND)
+        self.assertIsInstance(out, dict)
+        self.assertEqual([name for name, _ in seen],
+                         ["session_get", "session_reconfigure"])
+
+    def test_a_wildcard_create_grant_is_the_ceiling_for_a_project_it_covers(self):
+        """One reading of `create_allow`: a project the wildcard covers can be
+        reconfigured under it, exactly as it can be created under it.
+
+        Before this, `create_allow["*"]` minted sessions and then reported
+        "the project is not in `policy.create_allow`" the moment one was
+        reconfigured — the sweep read as a configuration that no edit could
+        satisfy while `allow_wildcard_create` was on.
+        """
+        from fleet_mcp.fleet import Principal
+        from fleet_mcp.scopes import SCOPE_CONTROL, SCOPE_READ
+
+        providers = dict(self.h.config.providers)
+        providers[KEY] = replace(providers[KEY], allow_control=True)
+        wildcard_grant = CreateGrant(permission_modes=("bypassPermissions",))
+        base = replace(
+            self.h.config.policy, create_allow={"*": wildcard_grant},
+            allow_wildcard_create=True,
+            operator_grants={"oauth:test": {KEY: ("create", "control")}})
+        self.h.config = replace(self.h.config, providers=providers, policy=base)
+        self.h.service.config = self.h.config
+
+        seen: list[str] = []
+
+        def fake_native(tool, arguments, *, session_ref=None):
+            seen.append(tool)
+            if tool == "session_get":
+                return {"sessionId": OWNER_ID, "projectId": PROJECT}
+            return {"ok": True}
+
+        self.h.second_provider.native_call = fake_native
+        principal = Principal(name="oauth:test",
+                              scopes=frozenset((SCOPE_READ, SCOPE_CONTROL)),
+                              credential_kind="oauth")
+        call = dict(device_ref=DEVICE, native_tool="session_reconfigure",
+                    arguments={"session": OWNER_ID,
+                               "permissionMode": "bypassPermissions"},
+                    session_ref=f"{DEVICE}|{SECOND}|{OWNER_ID}",
+                    project=PROJECT, runtime=SECOND)
+
+        self.h.service.native_call(principal, **call)
+        self.assertEqual(seen, ["session_get", "session_reconfigure"])
+
+        # Turning the wildcard off narrows the SAME call again: the grant is
+        # the configuration's, not a property of the project.
+        self.h.config = replace(self.h.config, policy=replace(
+            base, allow_wildcard_create=False, create_allow={}))
+        self.h.service.config = self.h.config
+        with self.assertRaises(FleetRefusal) as caught:
+            self.h.service.native_call(principal, **call)
         self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
 
     def test_reconfigure_does_not_set_unmentioned_permission_mode(self):

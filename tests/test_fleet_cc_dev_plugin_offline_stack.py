@@ -8,7 +8,7 @@ difficulty is that an earlier revision reported one of them as another. They are
    registers an MCP server *name*. This is what `LOCAL_CC_PLUGIN_LOADED` rests
    on, and it is a statement about a directory on this host. It enumerates no
    tool, and a registered server name is not a tool list.
-2. **an authenticated `tools/list`.** The ingress answers 33 distinct tool names
+2. **an authenticated `tools/list`.** The ingress answers 34 distinct tool names
    to a credential it accepted. Unauthenticated it answers 401 -- and a 401 is a
    refusal, not an empty list. `NEXT_TOOLS_DISCOVERED` is this and only this.
 3. **an ability resolution.** `abilities/resolver.py` intersects eight inputs for
@@ -130,7 +130,7 @@ class PackageLoadCarriesNoToolList(unittest.TestCase):
 
         The Skills do name tools -- that is what a Skill is for. What no file
         carries is a tool list: the wire shape of one is a declaration with an
-        `inputSchema`, and the enumeration of all 33 is what a load is not.
+        `inputSchema`, and the enumeration of all 34 is what a load is not.
         """
         served = set(fleet_tools.SERVED_BY_NAME)
         for structural in (".claude-plugin/plugin.json", ".mcp.json"):
@@ -143,7 +143,7 @@ class PackageLoadCarriesNoToolList(unittest.TestCase):
             self.assertNotIn("inputSchema", text, f"{path} declares a tool")
             found = {name for name in served if name in text}
             self.assertLess(len(found), len(served),
-                            f"{path} carries the whole 33-name surface")
+                            f"{path} carries the whole 34-name surface")
 
     def test_the_generated_plugin_is_byte_identical_to_the_one_skills_source(self) -> None:
         """One canonical copy: the adapter reads the shared source, never retypes."""
@@ -249,14 +249,14 @@ class TheIngressRefusesBeforeItEnumerates(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token=OWNER_TOKEN)
         self.assertEqual(status, 200)
         names = [tool["name"] for tool in payload["result"]["tools"]]
-        self.assertEqual(len(names), 34)
-        self.assertEqual(len(set(names)), 34)
+        self.assertEqual(len(names), 44)
+        self.assertEqual(len(set(names)), 44)
         # The verb the Skill used to misname. It is served under its real name,
         # and the name it was called by is not a tool.
         self.assertIn("fleet_send_to_session", names)
         self.assertNotIn("fleet_send_session", names)
 
-    def test_thirty_four_tools_is_not_thirty_three_permissions(self) -> None:
+    def test_forty_four_tools_is_not_thirty_three_permissions(self) -> None:
         _, _, payload = self.client.rpc(
             {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, token=OWNER_TOKEN)
         tools_out = payload["result"]["tools"]

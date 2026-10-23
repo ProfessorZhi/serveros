@@ -133,6 +133,30 @@ class RemoteSummaryRelaysNothingItWasGiven(unittest.TestCase):
         summary = disclosure.remote_summary("provider", rpc_code=a_secret()[:20])
         self.assertIn("not-an-integer", summary)
 
+    def test_a_device_error_code_is_relayed_because_it_is_an_enum(self):
+        """`NO_CLIENT` is a fact; the sentence beside it is not.
+
+        Without this, an operator sees "the provider answered unusably" and has
+        to read the device's journal to learn that no browser was connected —
+        the same shape of blindness that hid a missing `WORKSPACES_ROOT`.
+        """
+        summary = disclosure.remote_summary(
+            "cloudcli-gateway",
+            error_message="No browser is connected, so there is no screen to open the session on.",
+            error_code="NO_CLIENT",
+        )
+        self.assertIn("error code NO_CLIENT", summary)
+        self.assertNotIn("no screen to open", summary)
+        self.assertNotIn("No browser is connected", summary)
+
+    def test_a_code_that_is_not_an_enum_is_not_echoed(self):
+        secret = a_secret()
+        for hostile in (secret, f"key={secret}", "lower_case", "Has Space", ""):
+            with self.subTest(code=hostile[:8]):
+                summary = disclosure.remote_summary("provider", error_code=hostile)
+                self.assertNotIn(secret, summary)
+                self.assertIn("not-an-enum", summary)
+
     def test_a_failure_with_nothing_measured_still_says_something(self):
         summary = disclosure.remote_summary("provider")
         self.assertIn("provider", summary)

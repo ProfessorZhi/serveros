@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         #
         # `tools/list` is discovery and stays open; every live read and every
         # write is gated. The checks below pin the difference, because a suite
-        # that only counted 33 tools would be reporting discovery as
+        # that only counted 34 tools would be reporting discovery as
         # entitlement.
         def refusal_code(answer) -> str:
             if answer is None:

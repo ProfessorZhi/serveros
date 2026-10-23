@@ -5,7 +5,7 @@ description: Coordinate ChatGPT with authorized ServerOS Fleet Sessions, native 
 
 # Fleet Native Agent Collaboration (Cloud-side thin Skill)
 
-This is **an uninstalled design candidate** for Fleet Next. The available tools are only those actually exposed by the connected Fleet MCP app; do not assume the full 33-tool candidate is installed.
+This is **an uninstalled design candidate** for Fleet Next. The available tools are only those actually exposed by the connected Fleet MCP app; do not assume the full 34-tool candidate is installed.
 
 ## Core decision
 - First decide whether the user really needs a remote agent. Plain advice and drafts stay in chat; repository-only work can use GitHub directly.
@@ -23,7 +23,7 @@ This is **an uninstalled design candidate** for Fleet Next. The available tools 
 8. Report using accurate labels: PROPOSED / WAITING_AUTHORIZATION / DISPATCHED / RUNNING / RESULT_READY / ACCEPTED / BLOCKED / FAILED. When evidence is missing, explain the specific missing observation.
 
 ## Existing V1 tool surface
-Use `fleet_list_devices`, `fleet_list_sessions`, `fleet_get_session`, `fleet_read_session`, `fleet_status` for read-only orientation when relevant and authorized. Use `fleet_send_to_session`, `fleet_create_session`, `fleet_get_run`, `fleet_interrupt_session` only within specific permissions; creation has a project allowlist, and interrupt ends a *run*, not a session. Do not assume additional 33-tool mirrored CloudCLI names or per-UID runtime controls unless actually discovered.
+Use `fleet_list_devices`, `fleet_list_sessions`, `fleet_get_session`, `fleet_read_session`, `fleet_status` for read-only orientation when relevant and authorized. Use `fleet_send_to_session`, `fleet_create_session`, `fleet_get_run`, `fleet_interrupt_session` only within specific permissions; creation has a project allowlist, and interrupt ends a *run*, not a session. Do not assume additional 34-tool mirrored CloudCLI names or per-UID runtime controls unless actually discovered.
 
 ## Native Parent and worker responsibilities
 - Native Parent: owns work decomposition, workspace, receipt consumption and AC acceptance; may choose Codex, Claude Code, or a valid runtime/provider.

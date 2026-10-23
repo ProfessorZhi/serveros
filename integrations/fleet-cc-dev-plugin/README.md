@@ -175,7 +175,7 @@ claude --plugin-dir <dir> plugin details serveros-fleet-dev-fixture
 # 2. a real client handshake and tools/list, with no model call
 CLAUDE_CONFIG_DIR=<fresh-dir> claude --plugin-dir <dir> mcp list
 #    the fixture's .fixture-state/mcp-wire.log proves initialize,
-#    notifications/initialized and tools/list, and the 33-tool answer
+#    notifications/initialized and tools/list, and the 34-tool answer
 
 # 3. the whole receipt; --model-readbacks adds one real claude -p session
 python3 integrations/fleet-cc-dev-plugin/run_cc_client_e2e.py \
@@ -285,7 +285,7 @@ never copied into the receipt, and a stdio `command` is not reported at all.
 
 [`ACCEPTANCE-2026-10-20.md`](ACCEPTANCE-2026-10-20.md) records the layered
 functional acceptance at code SHA **`b24b15a`**: L0 package structure and
-byte-identical Skills, L1 real Claude Code CLI load/handshake with 33 tools,
+byte-identical Skills, L1 real Claude Code CLI load/handshake with 34 tools,
 L2 the local temporary daemon's virtual facts and the `SCOPE_DENIED` write
 refusal (provider send count 0), and L3 one real `claude -p` session calling
 three read-only tools (0 permission denials, **1** model call, **$0.218094**).

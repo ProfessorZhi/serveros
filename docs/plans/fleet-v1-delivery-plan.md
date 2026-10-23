@@ -26,7 +26,7 @@ V1 includes:
 
 | | |
 |---|---|
-| tool surface | **33 tools** = 9 hand-written + 22 CloudCLI mirrors + 2 mirror descriptors |
+| tool surface | **34 tools** = 10 hand-written + 22 CloudCLI mirrors + 2 mirror descriptors |
 | scopes | **6** — `fleet:read`, `fleet:send`, `fleet:control`, `fleet:create`, `fleet:approve`, `fleet:navigate` |
 | accounts | multiple OS users; several CC configurations inside one UID |
 | defaults | the DeepSeek `admin`-route candidate as the default; **CC `bypassPermissions` only through an owner-authorized project** |
@@ -39,14 +39,14 @@ V1 includes:
 
 **Monitoring adds no surface.** These readings ride as sub-fields of the
 **existing read-only Fleet status**, not as new MCP tools, a new state store, or
-a shell. The tool count stays 33 and the scope count stays 6 — a monitor is not
+a shell. The tool count stays 34 and the scope count stays 6 — a monitor is not
 a verb, and a metric is not an entitlement.
 
-**33 tools is not 33 permissions.** The tool list is what the surface *offers*;
+**34 tools is not 34 permissions.** The tool list is what the surface *offers*;
 authority is what the credential *carries*. The implemented scope set is 6 and
 the default grantable set is **2** (`fleet:read`, `fleet:send`) — a credential
-holding the default can see 33 tools and call the read-and-send subset. Reading
-"33 tools" as "33 permissions" is the single most likely misreading of this
+holding the default can see 34 tools and call the read-and-send subset. Reading
+"34 tools" as "34 permissions" is the single most likely misreading of this
 product, so it is stated here rather than assumed.
 
 ### V2 — and why it is not V1
@@ -614,7 +614,7 @@ first because it is the part that is easy to lose:
   execute. Bounded self-healing is **V2** and is not a V1 dependency.
 - **No new surface.** The readings arrive as **sub-fields of the existing
   read-only Fleet status** — not as new MCP tools, not as a new state store,
-  and not through a shell. **33 tools and 6 scopes do not move.**
+  and not through a shell. **34 tools and 6 scopes do not move.**
 - **A metric is not a permission.** Nothing here widens what a credential may
   do, and a freshness field is not a grant.
 

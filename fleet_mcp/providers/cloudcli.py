@@ -146,6 +146,29 @@ class CloudCliProvider(DeviceProvider):
         except ProviderRefusal as exc:
             raise _translate(exc) from None
 
+    def delete_project(self, *, project_id: str, force: bool):
+        """Explicit extension: archive (default) or remove one project's rows.
+
+        Checked against the device's OWN advertised schema before the call, for
+        the reason `create_project` does it: a CloudCLI that predates
+        `project_delete` must answer CAPABILITY_UNSUPPORTED here rather than
+        have this surface forward a name the device never registered.
+        """
+        client = self._client()
+        try:
+            advertised = client.tools_list()
+            tool = next((t for t in advertised if t.get("name") == "project_delete"), {})
+            schema = tool.get("inputSchema") or {}
+            required = schema.get("required") or []
+            properties = schema.get("properties") or {}
+            if "projectId" not in required or properties.get("projectId", {}).get("type") != "string":
+                raise refuse("CAPABILITY_UNSUPPORTED",
+                             "gateway does not advertise project deletion by id")
+            return structured(client.tools_call(
+                "project_delete", {"projectId": project_id, "force": bool(force)}))
+        except ProviderRefusal as exc:
+            raise _translate(exc) from None
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE native tool by a name this build records. Never a proxy.

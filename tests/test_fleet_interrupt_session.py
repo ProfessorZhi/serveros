@@ -239,9 +239,10 @@ class Harness:
 
 
 class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
-    def test_interrupt_stays_ninth_before_the_project_extension(self):
+    def test_interrupt_stays_ninth_before_the_project_extensions(self):
         names = fleet_tools.tool_names()
-        self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project"])
+        self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project",
+                                     "fleet_delete_project"])
         # The eight that came before are still there, still in their order.
         self.assertEqual(names[:8], [
             "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
@@ -249,10 +250,13 @@ class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
             "fleet_status", "fleet_create_session",
         ])
 
-    def test_it_is_the_only_tool_this_surface_calls_destructive(self):
+    def test_it_shares_the_destructive_claim_only_with_project_deletion(self):
+        """Interrupt ends work in flight; the project delete removes stored state.
+        No other tool on this surface may claim the same consequence."""
         destructive = [t.name for t in fleet_tools.TOOLS
                        if t.annotations.get("destructiveHint")]
-        self.assertEqual(destructive, ["fleet_interrupt_session"])
+        self.assertEqual(destructive,
+                         ["fleet_interrupt_session", "fleet_delete_project"])
         tool = fleet_tools.TOOLS_BY_NAME["fleet_interrupt_session"]
         self.assertFalse(tool.annotations["readOnlyHint"])
         # Repeating it is safe: a second interrupt on an idle session is not an

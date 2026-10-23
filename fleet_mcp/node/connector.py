@@ -49,12 +49,13 @@ granting more than was read.
 
 So there is a second grant here, `allow_all_sessions_for_owner`: a list of
 *verbs*, empty by default, that the person at this keyboard may open for every
-session on this device at once. It is separate from `allow_send_to` rather than
-a wildcard entry inside it, because the two are read differently — the named
-list is read against the sessions it covers, and a floor is read against the
-machine. Which of the two admitted a given message is reported (`send_grant`)
-and, for the floor, journalled, since a floor send is the only one that leaves
-no trace in this binding.
+session on this device at once. It is separate from `allow_send_to`, and the
+two answer different questions even when both are wide: the owner floor is a
+permission ("this caller may drive my work"), while `allow_send_to: ["*"]` is a
+reach statement ("every session here is in scope"). A binding can hold either
+without the other. Which of them admitted a given message is reported by
+`send_grant` — `"named"`, `"wildcard"`, `"owner-floor"` — and a floor send is
+journalled, since it is the one admission that names no session anywhere.
 
 It is not a claim about **who** the caller is. Nothing on this side can see a
 remote principal: the signature proves a holder of the far end's secret, not a
@@ -275,8 +276,9 @@ class NodeConfig:
     # accident — "creation is on, for nothing" — and it would otherwise present
     # as a connector that accepts the request and refuses every project.
     #
-    # Exact match, no wildcard, and no `"*"` spelling: an entry that means
-    # "every project" would re-open the question this field closes.
+    # `["*"]` is the one entry that is not an id: it means every project on
+    # this machine, and it is admitted deliberately rather than inferred. Any
+    # other entry is matched exactly — one project id, no prefixes, no globs.
     allow_create_projects: tuple[str, ...] = ()
     # A fourth grant, and the first one this machine uses to END something
     # rather than to add to it. Off by default and independent of the other
@@ -340,20 +342,26 @@ class NodeConfig:
             return None
 
     def send_grant(self, key: SessionKey) -> str | None:
-        """Which gate admits a send to `key`: `"named"`, `"owner-floor"`, `None`.
+        """Which gate admits a send to `key`: `"named"`, `"wildcard"`,
+        `"owner-floor"`, `None`.
 
         The named list is asked first, so a session an operator wrote down stays
         attributed to that list even while a floor is open. Withdrawing a floor
         must not silently move a send that was named into the wider bucket, or
         the wider bucket's audit line would grow entries that were never the
-        floor's to admit.
+        floor's to admit. `"*"` in `allow_send_to` is its own answer for the
+        same reason: it is a reach statement written in this file, not the
+        owner floor, and an audit line that called it "named" would point an
+        operator at a session that is not in the list.
 
         `key` is always composed from *this* config's `device_ref` (see
-        `Connector._key`), so neither gate can be satisfied on behalf of another
+        `Connector._key`), so no gate can be satisfied on behalf of another
         device: a caller cannot name a foreign device into existence here.
         """
         if key.ref in self.allow_send_to or key.native_session_id in self.allow_send_to:
             return "named"
+        if "*" in self.allow_send_to:
+            return "wildcard"
         if "send" in self.allow_all_sessions_for_owner:
             return "owner-floor"
         return None
@@ -363,6 +371,11 @@ class NodeConfig:
         not name. Reported rather than inferred: three distinct states, because
         "nothing is named" and "nothing may be sent" are not the same answer."""
         floor = "send" in self.allow_all_sessions_for_owner
+        if "*" in self.allow_send_to:
+            return (
+                "every session on this device (`allow_send_to: [\"*\"]`)"
+                + ("; the owner floor (send) is also open" if floor else "")
+            )
         if floor and self.allow_send_to:
             return (
                 "the sessions named in allow_send_to, and every other session on "
@@ -378,7 +391,8 @@ class NodeConfig:
         return self.send_grant(key) is not None
 
     def control_grant(self, key: SessionKey) -> str | None:
-        """Which gate admits an interrupt of `key`: `"named"`, `"owner-floor"`, `None`.
+        """Which gate admits an interrupt of `key`: `"named"`, `"wildcard"`,
+        `"owner-floor"`, `None`.
 
         The exact mirror of `send_grant`, and separated from `permits_control`
         for the same reason: the two lists are read differently by an operator
@@ -387,10 +401,13 @@ class NodeConfig:
 
         The named list is asked first. Withdrawing a floor must not silently
         re-bucket a session that was named, or the floor's audit line would grow
-        entries that were never the floor's to admit.
+        entries that were never the floor's to admit. `"*"` is its own value for
+        the same reason it is in `send_grant`.
         """
         if key.ref in self.allow_control_to or key.native_session_id in self.allow_control_to:
             return "named"
+        if "*" in self.allow_control_to:
+            return "wildcard"
         if "control" in self.allow_all_sessions_for_owner:
             return "owner-floor"
         return None
@@ -414,6 +431,11 @@ class NodeConfig:
         if not self.allow_control:
             return "refused"
         floor = "control" in self.allow_all_sessions_for_owner
+        if "*" in self.allow_control_to:
+            return (
+                "every session on this device (`allow_control_to: [\"*\"]`)"
+                + ("; the owner floor (control) is also open" if floor else "")
+            )
         if floor and self.allow_control_to:
             return (
                 "the sessions named in allow_control_to, and every other session "
@@ -491,13 +513,23 @@ def _owner_floors(value: Any) -> tuple[str, ...]:
 
 
 def _create_projects(value: Any) -> tuple[str, ...]:
-    """Read the project floor, refusing a wildcard and refusing a bare string.
+    """Read the project floor, refusing a bare string.
 
     A bare string is refused rather than wrapped, for the same reason it is in
     `_owner_floors`: `allow_create_projects: notes` is a one-character-away
     typo, and the reading that makes it a one-element list is also the reading
     that makes a mistake into a grant. Refusing means the operator writes the
     brackets.
+
+    `["*"]` is accepted and means every project on this machine. It used to be
+    refused, on the argument that a wildcard makes the project floor
+    meaningless. That argument is about *what the floor is for*, not about what
+    a binding may say: an operator who wants creation into any project already
+    has a way to say it (an `owner_access` block, which is checked against this
+    machine's real project catalogue), and refusing the shorter spelling only
+    forced them into the longer one. It is still written down explicitly — the
+    same list that is empty by default — so "any project" is a decision on this
+    machine's disk, never an inference.
     """
     if value is None:
         return ()
@@ -516,13 +548,6 @@ def _create_projects(value: Any) -> tuple[str, ...]:
             raise FleetRefusal(
                 BAD_REQUEST, "allow_create_projects must contain non-empty strings")
         name = item.strip()
-        if name == "*":
-            raise FleetRefusal(
-                BAD_REQUEST,
-                "allow_create_projects contains '*'. A wildcard would make the "
-                "project floor meaningless — it would be `allow_create` again, "
-                "under a longer name. Name the projects.",
-            )
         if name not in out:
             out.append(name)
     return tuple(out)
@@ -554,22 +579,22 @@ def _flag(value: Any, *, name: str) -> bool:
 
 
 def _control_sessions(value: Any) -> tuple[str, ...]:
-    """Read `allow_control_to`, refusing a wildcard and refusing a bare string.
+    """Read `allow_control_to`, refusing a bare string.
 
     `allow_send_to` is read with a bare `tuple(...)` because it predates this
     file's rule about floors, and a session named there is refused loudly at the
     session it names, so a typo costs one failed send and nothing else. Control
-    is not the same shape of grant: it *ends* work rather than adding to it, and
-    the failure a wildcard would cause is not a refused call but a silent one.
-    So this field is read the strict way from the start — the same way
-    `allow_create_projects` is — rather than inheriting the older leniency by
-    accident of being next to `allow_send_to` in the binding.
+    is not the same shape of grant: it *ends* work rather than adding to it, so
+    this field keeps the strict reading of a scalar — a bare string is refused
+    rather than wrapped.
 
-    A wildcard is refused here specifically because the device-wide grant
-    already exists and is written elsewhere (`allow_all_sessions_for_owner:
-    [control]`). Accepting `"*"` in this list would give an operator two
-    spellings for one grant, and the one that reads like a session list would
-    be the one that is not.
+    `["*"]` is accepted and means every session on this machine. It overlaps
+    with `allow_all_sessions_for_owner: [control]`, and they are kept distinct
+    on purpose: the owner floor is a permissions decision ("this caller may
+    stop my work"), while this list is a reach decision ("which sessions are in
+    scope at all"). A binding may hold either without the other, and the set
+    that actually admitted a call is reported by `control_grant`, which names
+    the wildcard as its own gate rather than folding it into `named`.
     """
     if value is None:
         return ()
@@ -587,14 +612,6 @@ def _control_sessions(value: Any) -> tuple[str, ...]:
             raise FleetRefusal(
                 BAD_REQUEST, "allow_control_to must contain non-empty strings")
         name = item.strip()
-        if name == "*":
-            raise FleetRefusal(
-                BAD_REQUEST,
-                "allow_control_to contains '*'. The device-wide control grant is "
-                "written as `allow_all_sessions_for_owner: [control]`, not as a "
-                "wildcard in a list of sessions. Name the sessions, or move the "
-                "grant to the field that means it.",
-            )
         if name not in out:
             out.append(name)
     return tuple(out)
@@ -1300,7 +1317,8 @@ class Connector:
         if self.config.owner_access is not None:
             from ..fleet import FleetService
             FleetService._verify_owner_project(self.provider, project)
-        elif project.strip() not in self.config.allow_create_projects:
+        elif ("*" not in self.config.allow_create_projects
+              and project.strip() not in self.config.allow_create_projects):
             raise FleetRefusal(
                 "WRITE_NOT_GRANTED",
                 f"this connector is not authorized to create a session on "
@@ -1336,13 +1354,13 @@ class Connector:
                 f"{list(self.config.allow_all_sessions_for_owner) or 'closed'}; "
                 f"both live on this machine, not on the caller's.",
             )
-        if grant == "owner-floor":
-            # The only send this machine admits without naming the session, and
-            # therefore the only one whose admission is explained nowhere in the
+        if grant in ("owner-floor", "wildcard"):
+            # The only sends this machine admits without naming the session, and
+            # therefore the only ones whose admission is explained nowhere in the
             # binding. The Fleet host records the send itself, but nothing over
-            # there can record that this machine had not named the session, so
-            # this line is what an operator reads to answer "what went out under
-            # the floor, and when it started".
+            # there can record *which* of this machine's wide grants admitted it,
+            # so this line is what an operator reads to answer "what went out
+            # under the floor, and when it started".
             #
             # The ref is the one the request line above already carries (see
             # `_Handler.log_message`); what is added here is the *gate*, not the
@@ -1350,8 +1368,10 @@ class Connector:
             # lines cannot be mismatched by two concurrent handlers: the request
             # line is interleavable, this one is self-contained. One `write` call
             # for the same reason. No message body, no header, no signature.
+            gate = ("owner floor" if grant == "owner-floor"
+                    else '`allow_send_to: ["*"]`')
             sys.stderr.write(
-                f"connector: send admitted by the owner floor, session not named "
+                f"connector: send admitted by the {gate}, session not named "
                 f"in this binding: {key.ref}\n"
             )
         # The caller's idempotency key is not forwarded: CloudCLI has no such

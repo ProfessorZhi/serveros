@@ -14,9 +14,9 @@ in this file installs, uploads, registers or logs in.
 | layer | state | what would change it |
 |---|---|---|
 | Source | **READY** | every gate has a test; the suite runs green offline |
-| Final release ZIP | **BLOCKED** | the two approved PNGs, and an observed Next `https://<name>.ts.net/mcp` |
+| Final release ZIP | **BUILT** (2026-10-22) | `--check` reproduced both digests; the observation receipt and the two approved assets are in place (the README records the build) |
 | Registered | **NOT STARTED** | an owner creating the plugin in Plugin Creator, and reading back its id |
-| Client installed | **NOT DONE** | a human installing it, and completing the OAuth consent |
+| Client installed | **PARTIAL** | the Claude Code adapter is installed and its MCP server is Connected; the portable package in an App-backed client and the OAuth consent are still owner actions |
 
 The bottom three are **owner actions on external systems**. No command in this
 file discharges any of them, and none may be reported as done because a script
@@ -28,12 +28,11 @@ exited 0.
 python3 -m unittest tests.test_fleet_v1_first_install tests.test_fleet_v1_stage_manifest
 ```
 
-Expected today: **101 tests, OK** — 93 in the builder's suite and 8 in the
+Expected today: **111 tests, OK** — 99 in the builder's suite and 12 in the
 staging suite. No network, no secret, no Plugin Creator, no Feishu, no
-Tailscale. The two real images do not exist on the machine this runs on, so the
-positive path uses a lock over PNGs the test generates; that is deliberate, and
-a suite that could not produce pinned bytes could not exercise the gate that
-compares them.
+Tailscale. The two real images have been in the repository since 2026-10-22;
+the positive path still uses a lock over PNGs the test generates, so the gate
+that compares bytes is exercised without depending on the committed ones.
 
 Three properties this run is asserting, beyond "the tests pass":
 
@@ -65,13 +64,13 @@ anything:
   incomplete run, which is the one whose manifest is most tempting to write
   over. The existing manifest keeps its original bytes; nothing is written.
 
-Expected today, measured:
+Expected today, measured 2026-10-22 (the assets are in the repository; the
+endpoint gate still refuses a run that supplies no observation):
 
 ```
 serveros-fleet-ingress v1.0.0 STAGED (not a release)
 staging_dir=staging manifest=serveros-fleet-ingress-v1.0.0-STAGING-MANIFEST.json
-present=6 absent=['assets'] skills=5
-blocked[assets]=MISSING_BRAND_ASSET
+present=10 absent=[] skills=5
 blocked[endpoint]=BLOCKED_MCP_ENDPOINT
 ```
 
@@ -81,7 +80,7 @@ lie:
 | check | why |
 |---|---|
 | `installable` is `false` and no `.zip` exists beside it | a ZIP is the one artifact that gets installed |
-| `absent_members` names `assets`, and `pinned_assets` carries the **approved** digests from the lock | the manifest reports the pinned digest, it does not hash a substitute |
+| `absent_members` is empty here, and `pinned_assets` carries the **approved** digests from the lock | an absent slot is named in `absent_members`; a present one is compared with the pinned digest, never against a substitute |
 | `blockers` names both gates, and `mcp_url` is `null` | a block that is recorded is one an operator can act on; a block that is swallowed is one that becomes a fabricated URL |
 
 The staging tree is the release payload **minus `mcp.json`**. That member is
@@ -131,7 +130,7 @@ host: this repository refuses V1's host as the Next binding for that reason.
 
 ## What must not be claimed
 
-- **33 tools** is true and measured — `SERVED_TOOLS` is 33 (9 hand-written +
+- **34 tools** is true and measured — `SERVED_TOOLS` is 34 (10 hand-written +
   22 mirror + 2 descriptor tools), asserted in `tests/test_fleet_release_plan.py`.
   It is a count of what is *reachable*, not of what a given token may do.
 - **6 scopes** is true: `ALLOWED_SCOPES` equals `IMPLEMENTED_SCOPES` — all six,

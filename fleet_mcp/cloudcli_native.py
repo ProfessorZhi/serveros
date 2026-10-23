@@ -33,7 +33,7 @@ not, and a credential trusted to list is not thereby trusted to answer.
 
 The recorded baseline and the live list
 ---------------------------------------
-`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.39.0 declares. The
+`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.40.0 declares. The
 provider already fetches the LIVE `tools/list` on every `health()`. `coverage()`
 compares the two and reports drift (a tool that appeared, one that vanished, an
 annotation that moved), so an upgrade is a diff a person reads rather than a
@@ -47,7 +47,7 @@ advertised and what is enforced cannot disagree. The cost is the one this
 paragraph used to deny: a restated schema drifts, silently, the first time
 CloudCLI changes a parameter. That is paid for by
 `tests/test_fleet_cloudcli_full_inheritance.py`'s capture tests, which hold this
-table against a VERBATIM 1.39.0 `tools/list` capture — a restatement checked
+table against a VERBATIM 1.40.0 `tools/list` capture — a restatement checked
 against the thing it restates, rather than trusted.
 
 No I/O, no clock, no credentials. This module is a table and the functions over
@@ -70,6 +70,10 @@ NATIVE_CREATE = "cloudcli:session:create"
 NATIVE_CONTROL = "cloudcli:session:control"
 NATIVE_APPROVE = "cloudcli:approve"
 NATIVE_NAVIGATE = "cloudcli:navigate"
+#: Reading the user's current transcript SELECTION (CloudCLI 1.40). It is its
+#: own device scope because the selection is content the user highlighted rather
+#: than content the transcript stores.
+NATIVE_SELECTION = "cloudcli:selection"
 
 #: Native scope -> the Fleet scope a caller must present. A native scope with no
 #: implemented Fleet counterpart maps to a PLANNED Fleet scope and is therefore
@@ -80,8 +84,14 @@ FLEET_SCOPE_FOR_NATIVE: dict[str, str] = {
     NATIVE_SEND: "fleet:send",
     NATIVE_CREATE: "fleet:create",
     NATIVE_CONTROL: "fleet:control",
-    NATIVE_APPROVE: "fleet:approve",      # planned, not implemented -> denied
-    NATIVE_NAVIGATE: "fleet:navigate",    # planned, not implemented -> denied
+    NATIVE_APPROVE: "fleet:approve",
+    NATIVE_NAVIGATE: "fleet:navigate",
+    # The selection is text out of this device's own sessions, which `fleet:read`
+    # already governs: a caller trusted to read the transcript a selection came
+    # from is not trusted with less by being shown the part a person highlighted.
+    # A separate Fleet scope would add a vocabulary entry without drawing a line
+    # the device scope does not already draw.
+    NATIVE_SELECTION: "fleet:read",
 }
 
 #: Governance classes, coarser than scope: which Fleet write verb (if any) and
@@ -123,6 +133,16 @@ SESSION_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_SEND, GOV_CONTROL,
 
 #: The one class whose floor is stated over a PROJECT rather than a session.
 PROJECT_ADDRESSED_GOVERNANCE: tuple[str, ...] = (GOV_CREATE,)
+
+#: The class that carries a PROJECT as a CLAIM rather than a floor. A
+#: reconfigure's ceiling is the project the session really belongs to, and the
+#: caller names that project so the claim can be held against the device's
+#: answer. It cannot be required in the schema: a reconfigure that changes
+#: neither `model` nor `permissionMode` declares no ceiling at all, and
+#: `session_reconfigure`'s native schema has no `project` parameter to inherit —
+#: so the outer layer is the only place it can be carried, and only a call that
+#: names a model or a mode has to.
+PROJECT_CLAIMED_GOVERNANCE: tuple[str, ...] = (GOV_RECONFIGURE,)
 
 #: The READS whose disclosure the runtime also scopes to one session.
 #:
@@ -176,7 +196,11 @@ class NativeTool:
         return PREFIX + self.name
 
     def fleet_scopes(self) -> tuple[str, ...]:
-        return tuple(FLEET_SCOPE_FOR_NATIVE[s] for s in self.native_scopes)
+        # Order-preserving dedupe: a verb may name two native scopes that map
+        # to the SAME Fleet scope (`ui_selected_text` is `cloudcli:read` plus
+        # `cloudcli:selection`, and both are `fleet:read`). Reporting
+        # `["fleet:read", "fleet:read"]` reads as two requirements.
+        return tuple(dict.fromkeys(FLEET_SCOPE_FOR_NATIVE[s] for s in self.native_scopes))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -204,10 +228,11 @@ def _t(name: str, governance: str, *native_scopes: str, read_only: bool,
                       input_schema_zod=input_schema_zod)
 
 
-#: The 22 tools. Order is CloudCLI's own grouping: the eleven stage-3 reads, the
-#: five stage-4 writes, then the six that register through their own modules. The
-#: annotations are CloudCLI's (`MCP_TOOL_ANNOTATIONS`, read from the installed
-#: 1.39.0), not this surface's opinion — carried, never re-derived.
+#: The 31 tools. Order is CloudCLI's own: the 1.39.0 baseline first (the eleven
+#: stage-3 reads, the five stage-4 writes, then the six that register through
+#: their own modules), then 1.40.0's nine additions. The annotations are
+#: CloudCLI's (`MCP_TOOL_ANNOTATIONS`, read from the installed build), not this
+#: surface's opinion — carried, never re-derived.
 NATIVE_TOOLS: tuple[NativeTool, ...] = (
     # -- the eleven reads, all cloudcli:read ---------------------------------
     _t("overview", GOV_READ, NATIVE_READ, read_only=True, destructive=False,
@@ -245,7 +270,7 @@ NATIVE_TOOLS: tuple[NativeTool, ...] = (
     _t("session_send", GOV_SEND, NATIVE_SEND, read_only=False, destructive=False,
        idempotent=False, open_world=True),
     _t("session_create", GOV_CREATE, NATIVE_CREATE, read_only=False, destructive=False,
-       idempotent=False, open_world=True),
+       idempotent=False, open_world=True, placeholder_default=True),
     _t("session_interrupt", GOV_CONTROL, NATIVE_CONTROL, read_only=False,
        destructive=True, idempotent=False, open_world=True),
     _t("session_start", GOV_CONTROL, NATIVE_CONTROL, read_only=False, destructive=False,
@@ -267,6 +292,49 @@ NATIVE_TOOLS: tuple[NativeTool, ...] = (
     # read; answering one is approve, which Fleet plans and does not implement.
     _t("approval_answer", GOV_APPROVE, NATIVE_APPROVE, read_only=False,
        destructive=False, idempotent=False, open_world=True),
+    # -- CloudCLI 1.40's nine additions ---------------------------------------
+    #
+    # Read off the installed 1.40.0 `tools/list` (capture dated 2026-10-23, in
+    # `tests/data/`). `project_create` and `project_delete` are NOT here: this
+    # surface reaches both through authored tools (`fleet_create_project`,
+    # `fleet_delete_project`), which is what `EXTENSION_CLAIMED_NATIVE_TOOLS`
+    # records — a mirrored copy would be a second, ungoverned way to do the same
+    # thing.
+    #
+    # The event stream. A read: it answers from the watcher database, the run and
+    # approval registers and the Quay cache, and mutates nothing.
+    _t("changes", GOV_READ, NATIVE_READ, read_only=True, destructive=False,
+       idempotent=True, open_world=False, placeholder_default=True),
+    # The caller's own audit aggregate. Its handler is always real, so the
+    # device does not advertise the not-implemented code for it.
+    _t("mcp_usage_stats", GOV_READ, NATIVE_READ, read_only=True, destructive=False,
+       idempotent=True, open_world=False),
+    # The user's transcript selection, through the browser round trip. Read
+    # class; the device additionally asks for `cloudcli:selection`, which this
+    # surface maps onto `fleet:read` (see `FLEET_SCOPE_FOR_NATIVE`).
+    _t("ui_selected_text", GOV_READ, NATIVE_READ, NATIVE_SELECTION, read_only=True,
+       destructive=False, idempotent=True, open_world=False,
+       placeholder_default=True),
+    # The composer draft: reading it is a read; staging and submitting it are
+    # the SAME authority as `session_send`, which is the scope CloudCLI itself
+    # puts on both writes.
+    _t("draft_get", GOV_READ, NATIVE_READ, read_only=True, destructive=False,
+       idempotent=True, open_world=False),
+    _t("draft_set", GOV_SEND, NATIVE_SEND, read_only=False, destructive=True,
+       idempotent=True, open_world=False),
+    _t("draft_submit", GOV_SEND, NATIVE_SEND, read_only=False, destructive=False,
+       idempotent=False, open_world=True),
+    # Three more browser prompts, same profile as `ui_open_session`: reveal a
+    # turn / a diff / a task, discard nothing, drive no provider agent.
+    _t("ui_focus_turn", GOV_NAVIGATE, NATIVE_NAVIGATE, read_only=False,
+       destructive=False, idempotent=True, open_world=False,
+       placeholder_default=True),
+    _t("ui_show_diff", GOV_NAVIGATE, NATIVE_NAVIGATE, read_only=False,
+       destructive=False, idempotent=True, open_world=False,
+       placeholder_default=True),
+    _t("ui_open_task", GOV_NAVIGATE, NATIVE_NAVIGATE, read_only=False,
+       destructive=False, idempotent=True, open_world=False,
+       placeholder_default=True),
 )
 
 NATIVE_BY_NAME: dict[str, NativeTool] = {t.name: t for t in NATIVE_TOOLS}
@@ -292,12 +360,28 @@ def _s(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
             "additionalProperties": False}
 
 
+#: CloudCLI 1.40's caller-supplied correlation id, identical on every verb that
+#: carries one — recorded once so the character class cannot drift verb by verb.
+_CORRELATION_ID: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": 128,
+    "pattern": "^[A-Za-z0-9_.:-]+$",
+}
+
+
 NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
-    "overview": _s({"project": {"type": "string"}}, []),
+    # 1.40 widened a project reference from one string to a string OR an array
+    # (gap-mcp-cross-project-session-aggregation). Recorded as the same union the
+    # device publishes, because a recorded string would refuse an aggregate call
+    # the device accepts.
+    "overview": _s({"project": {"anyOf": [
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+    ]}}, []),
     "projects_list": _s({"includeArchived": {"type": "boolean"}}, []),
     "sessions_list": _s({
         "project": {"type": "string"},
         "state": {"type": "string", "enum": ["running", "idle", "resident", "any"]},
+        "correlationId": _CORRELATION_ID,
         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
     }, []),
     "session_get": _s({"session": {"type": "string"}}, ["session"]),
@@ -310,13 +394,14 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "after": {"type": "number"},
         "cursor": {"type": "string"},
     }, ["session"]),
+    # 1.40 made `runId` REQUIRED and dropped the old `run` / `wait` aliases: a
+    # call that names no run is now refused by the device rather than answered
+    # with a "latest run" this table never described.
     "run_get": _s({
-        "runId": {"type": "string"},
+        "runId": {"type": "string", "minLength": 1},
         "waitSeconds": {"type": "number"},
         "session": {"type": "string"},
-        "run": {"type": "string"},
-        "wait": {"type": "boolean"},
-    }, []),
+    }, ["runId"]),
     "quay_snapshot": _s({"project": {"type": "string"},
                          "refresh": {"type": "boolean"}}, []),
     "ui_last_opened_session": _s({}, []),
@@ -325,17 +410,24 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "ui_clients_list": _s({}, []),
     "session_search": _s({
         "query": {"type": "string", "minLength": 1},
-        "project": {"type": "string"},
+        "project": {"anyOf": [
+            {"type": "string"},
+            {"type": "array", "items": {"type": "string"}},
+        ]},
         "provider": {"type": "string", "enum": ["claude", "codex"]},
         "speaker": {"type": "string", "enum": ["user", "assistant", "any"]},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "cursor": {"type": "string"},
+        # 1.40 bounds the scan by session last-activity.
+        "since": {"type": "string"},
+        "until": {"type": "string"},
         "mode": {"type": "string", "enum": ["fulltext"]},
     }, ["query"]),
     "session_send": _s({
         "session": {"type": "string"},
         "message": {"type": "string"},
         "waitSeconds": {"type": "number"},
+        "correlationId": _CORRELATION_ID,
     }, ["session", "message"]),
     "session_create": _s({
         "project": {"type": "string"},
@@ -344,6 +436,7 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "model": {"type": "string"},
         "lifecycleMode": {"type": "string"},
         "permissionMode": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
     }, ["project"]),
     "session_interrupt": _s({"session": {"type": "string"}}, ["session"]),
     "session_start": _s({"session": {"type": "string"}}, ["session"]),
@@ -352,6 +445,7 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "ui_open_session": _s({
         "client": {"type": "string"},
         "session": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
         # A discriminated union, not a bare object: the device accepts exactly
         # `{latest: true}` or `{messageId: <non-empty>}`. Recorded flat as
         # `{"type": "object"}` it advertised a shape the device refuses, and
@@ -380,7 +474,61 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "allow": {"type": "boolean"},
         "answers": {},
         "message": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
     }, ["requestId", "allow"]),
+    # -- the two claimed extensions -------------------------------------------
+    # Not mirrored (see `EXTENSION_CLAIMED_NATIVE_TOOLS`), but recorded so the
+    # capture check holds them too: a schema test that skipped them would let the
+    # authored tools' premise — "the device accepts these arguments" — go
+    # unverified.
+    "project_create": _s({
+        "projectPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "customName": {"anyOf": [{"type": "string", "maxLength": 256},
+                                 {"type": "null"}]},
+        "requireFresh": {"type": "boolean", "default": False},
+    }, ["projectPath"]),
+    "project_delete": _s({
+        "projectId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "force": {"type": "boolean", "default": False},
+    }, ["projectId"]),
+    # -- 1.40's nine additions -------------------------------------------------
+    "changes": _s({
+        "cursor": {"type": "string"},
+        "since": {"type": "string"},
+        "projects": {"type": "array", "items": {"type": "string"}},
+        "kinds": {"type": "array", "items": {"type": "string", "enum": [
+            "session", "run", "interaction", "quay_task", "quay_gate", "commit"]}},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+    }, []),
+    "mcp_usage_stats": _s({
+        "since": {"type": "string"},
+        "until": {"type": "string"},
+        "groupBy": {"type": "string", "enum": ["tool", "error_code", "client"]},
+        "correlationId": _CORRELATION_ID,
+    }, ["groupBy"]),
+    "ui_selected_text": _s({"client": {"type": "string"}}, []),
+    "draft_get": _s({"session": {"type": "string"}}, ["session"]),
+    "draft_set": _s({"session": {"type": "string"}, "text": {"type": "string"}},
+                    ["session", "text"]),
+    "draft_submit": _s({"session": {"type": "string"}}, ["session"]),
+    "ui_focus_turn": _s({
+        "client": {"type": "string"},
+        "session": {"type": "string"},
+        "turnId": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
+    }, ["session", "turnId"]),
+    "ui_show_diff": _s({
+        "client": {"type": "string"},
+        "session": {"type": "string"},
+        "filePath": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
+    }, ["session", "filePath"]),
+    "ui_open_task": _s({
+        "client": {"type": "string"},
+        "session": {"type": "string"},
+        "taskId": {"type": "string"},
+        "correlationId": _CORRELATION_ID,
+    }, ["session", "taskId"]),
 }
 
 
@@ -394,7 +542,28 @@ def input_schema(native_name: str) -> dict[str, Any]:
     return NATIVE_INPUT_SCHEMAS.get(native_name, {})
 
 #: The count this build mirrors, as a number a test and a status can both read.
-NATIVE_TOOL_COUNT = 22
+NATIVE_TOOL_COUNT = 31
+
+#: Native verbs this build reaches through an AUTHORED tool, never the mirror.
+#:
+#: `project_create` and `project_delete` are the two. `fleet_create_project` and
+#: `fleet_delete_project` call them directly
+#: (`providers/cloudcli.py#create_project`) because minting a project is not a
+#: passthrough: it needs an owner-configured root, a fresh-directory guarantee,
+#: an idempotency key and a fresh-ACK readback, and none of those can be
+#: expressed by forwarding a caller's arguments unchanged.
+#:
+#: Recording it in `NATIVE_TOOLS` would advertise a second way to do the same
+#: thing — an ungoverned one — so it stays out. But leaving it out entirely made
+#: the device's declaration read as unexplained drift ("the device grew a verb
+#: nobody recorded"), which is a false alarm on every status call. Naming it
+#: here is the third option: the build says, in one place, which native verbs it
+#: claims through an extension, so `coverage()` can tell "claimed elsewhere" from
+#: "nobody recorded this".
+#:
+#: Claimed is not ignored. A claimed verb that the device STOPS declaring is
+#: still drift, because the authored tool would then fail at call time.
+EXTENSION_CLAIMED_NATIVE_TOOLS: tuple[str, ...] = ("project_create", "project_delete")
 
 
 def namespaced(native_name: str) -> str:
@@ -421,7 +590,10 @@ def manifest() -> dict[str, Any]:
     return {
         "schema": "serveros/fleet-cloudcli-native-manifest.v1",
         "native_server": "CloudCLI",
-        "native_version_recorded": "1.39.0",
+        # The version this table was READ OFF, not the version Fleet prefers.
+        # 1.39.0 through `fleet-mcp-5`; `fleet-mcp-6` reads 1.40.0, whose
+        # `tools/list` is the 33-entry capture in `tests/data/`.
+        "native_version_recorded": "1.40.0",
         "prefix": PREFIX,
         "count": len(NATIVE_TOOLS),
         "count_expected": NATIVE_TOOL_COUNT,
@@ -437,17 +609,33 @@ def coverage(observed_names: Iterable[str],
 
     Returns a drift report, not a verdict: `missing` are recorded tools the
     device no longer declares (the mirror would forward a name that is gone),
-    `extra` are device tools this build does not mirror (the device grew a verb
-    nobody recorded), and `annotation_drift` are tools whose read/write hints
-    moved (a verb that became destructive under a name this surface already
-    governs). An empty report is the only state in which the recorded baseline
-    and the device agree.
+    `extra` are device tools this build neither mirrors nor claims through an
+    authored tool (the device grew a verb nobody recorded), and
+    `annotation_drift` are tools whose read/write hints moved (a verb that became
+    destructive under a name this surface already governs).
+
+    `extension_claimed` is the third state, and it is not drift: a verb the
+    device declares and this build reaches through an authored tool instead of
+    the mirror. It is reported so a reader can see the claim rather than infer
+    it from an absence.
+
+    `extension_claimed_missing` is the same claim seen from the other side: a
+    claimed verb this device does not declare. That is ALSO not drift, and the
+    reason matters — the recorded baseline is CloudCLI 1.40.0, which never had
+    `project_create`. A device that matches the baseline exactly must therefore
+    read as agreement; making the claim part of `agrees` would make every
+    conforming device permanently in drift. What a missing claim means is
+    "this device's CloudCLI predates the verb", and the authored tool refuses
+    that call on its own live evidence (`providers/cloudcli.py#create_project`
+    checks the advertised schema before it calls).
     """
     observed = list(observed_names)
     observed_set = set(observed)
     recorded_set = set(NATIVE_BY_NAME)
+    claimed_set = set(EXTENSION_CLAIMED_NATIVE_TOOLS)
     missing = sorted(recorded_set - observed_set)
-    extra = sorted(observed_set - recorded_set)
+    extra = sorted(observed_set - recorded_set - claimed_set)
+    claimed_missing = sorted(claimed_set - observed_set)
     drift: list[dict[str, Any]] = []
     if observed_annotations:
         for name in sorted(recorded_set & observed_set):
@@ -469,6 +657,8 @@ def coverage(observed_names: Iterable[str],
         "observed_count": len(observed),
         "missing": missing,
         "extra": extra,
+        "extension_claimed": sorted(claimed_set & observed_set),
+        "extension_claimed_missing": claimed_missing,
         "annotation_drift": drift,
         "agrees": not (missing or extra or drift),
     }
@@ -547,6 +737,20 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
             "description": ("The project the new session is for; checked against "
                             "the project floor and named here rather than read "
                             "out of `arguments`."),
+        }
+    elif native.governance in PROJECT_CLAIMED_GOVERNANCE:
+        # Optional here on purpose: it is required exactly when the call names a
+        # `model` or a `permissionMode`, which the outer schema cannot see
+        # inside `arguments`. Declaring it optional states the narrower rule
+        # honestly; declaring it required would refuse the reconfigure that
+        # changes nothing about permissions.
+        outer["project"] = {
+            "type": "string",
+            "description": ("Required when `arguments` names `model` or "
+                            "`permissionMode`: the project the target session "
+                            "must really belong to. Compared with the project "
+                            "the device reports for that session, and the ceiling "
+                            "is applied against the device's answer."),
         }
     # The `arguments` object carries the SAME closure the runtime validator
     # uses: `additionalProperties` is copied from the recorded schema, not
@@ -689,7 +893,11 @@ def capability_snapshot(*, device_ref: str, observed=None, source: str | None = 
             "tools": tools, "unsupported_by_device": sorted(unsupported),
             "declared_not_implemented": sorted(declared_not_implemented),
             "handler_binding_unknown": sorted(handler_binding_unknown),
-            "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME))}
+            "unrecorded_by_build": sorted(set(observed) - set(NATIVE_BY_NAME)
+                                          - set(EXTENSION_CLAIMED_NATIVE_TOOLS)),
+            "extension_claimed": sorted(set(EXTENSION_CLAIMED_NATIVE_TOOLS) & set(observed)),
+            "extension_claimed_missing": sorted(
+                set(EXTENSION_CLAIMED_NATIVE_TOOLS) - set(observed))}
 
 
 def approval_ids(listing) -> set[str]:

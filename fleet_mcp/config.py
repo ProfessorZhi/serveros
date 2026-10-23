@@ -62,15 +62,24 @@ PROVIDER_KINDS = ("cloudcli-mcp-http", "fleet-node")
 OPERATOR_GRANT_VERBS = ("send", "control", "create", "approve", "navigate")
 PLANNED_OPERATOR_GRANT_VERBS = ()
 
-# The ownership value that makes a device eligible to appear in an owner grant.
+# The ownership values the registry model can author.
 #
-# A single allowed value rather than "anything except `personal`", because the
-# field is `str | None` and the two polarities differ exactly on the inputs
-# nobody thought about: `None` (authored without an owner), `"Company"`, and
-# `"personal "` all pass a `!= "personal"` test and all mean "this device's
-# owner is not established". Unknown ownership is DEFER here as it is everywhere
-# else on this host, and DEFER is not a grant.
-GRANT_ELIGIBLE_OWNERSHIP = "company"
+# Which of them may appear in an operator grant is POLICY, not code:
+# `PolicyBinding.grant_eligible_ownership` names it, and that list defaults to
+# every value here. This constant used to be a single code value
+# (`GRANT_ELIGIBLE_OWNERSHIP = "company"`), which meant a binding could not
+# express "drive my personal workstation too" no matter what it said.
+#
+# What the code still decides, because it is not a policy question:
+#
+# *   An ownership the registry does not state — `None` (authored without an
+#     owner), `"Company"`, `"personal "` — is not in any list and cannot be put
+#     in one. Reading that as eligible is the `!= "personal"` mistake: all three
+#     mean "this device's owner is not established", and unknown ownership is
+#     DEFER here as it is everywhere else on this host.
+# *   The authored vocabulary is closed. A binding can choose among these
+#     values; it cannot invent a third one that the registry will never produce.
+KNOWN_DEVICE_OWNERSHIPS = ("company", "personal")
 
 
 
@@ -211,9 +220,42 @@ class ProviderBinding:
 class AuthBinding:
     pat_anchor: Path | None = None
     owner_grant_anchor: Path | None = None
+    # The human login proof for the consent page: a `0600` file holding
+    # `<username>:$scrypt$<n>$<r>$<p>$<salt>$<hash>`. When present it REPLACES
+    # the PAT as the way a person approves an authorization — the operator types
+    # a username and password instead of pasting a token. The PAT is still what
+    # an API client authenticates with, unless `pat_enabled` is false.
+    password_anchor: Path | None = None
+    # Whether a PAT may authenticate an MCP request at all. True preserves the
+    # behaviour of every deployment that predates password login; a deployment
+    # that wants the browser login to be the only door sets it false. The code
+    # path is never removed, so turning it back on is one line of YAML.
+    pat_enabled: bool = True
+    #: How long a browser login lasts. Long enough that authorizing three MCP
+    #: clients in one sitting asks for the password once; short enough that a
+    #: borrowed laptop does not stay authorized overnight.
+    session_ttl: int = 8 * 3600
+    #: The TOTP secret anchor. Absent means password-only login; present means
+    #: the consent form also asks for the six-digit code.
+    totp_anchor: Path | None = None
     oauth_enabled: bool = True
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
+    #: Whether a refresh replaces the token it was presented with. Rotation is
+    #: what makes reuse detection possible — a rotated token turning up a second
+    #: time is the signature of a stolen chain — and it is also what a client
+    #: with two refreshes in flight trips over. True keeps that protection, and
+    #: every deployment that never writes this key keeps it. False makes the
+    #: refresh token a standing credential the client reuses: the price is that
+    #: a replayed token can no longer be told apart from an honest one, the
+    #: return is a session that cannot die of its own race.
+    refresh_rotate: bool = True
+    #: How long a rotated token is still honoured after it was rotated: inside
+    #: this window a replay answers with the token that replaced it rather than
+    #: revoking the chain. 0 means no grace — every replay revokes, which is the
+    #: earlier behaviour. A client race is seconds wide; the window does not
+    #: have to be large to cover the case it exists for.
+    refresh_rotation_grace_seconds: int = 0
     # Scopes this surface issues. A ChatGPT connector is granted the read set
     # plus `fleet:send` / `fleet:create` only if the operator adds them here —
     # this tuple is the ceiling the consent form may present, and the operator
@@ -331,6 +373,22 @@ class PolicyBinding:
     # pair that gets edited by mistake. The axis here is the operator, not the
     # credential.
     operator_grants: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+    # Which device ownerships may appear in `operator_grants` at all.
+    #
+    # Whether an operator drives only the machines their organization owns, or
+    # also a personal workstation, is a decision about that operator's fleet —
+    # so it is this field and not a code constant. It used to be
+    # `GRANT_ELIGIBLE_OWNERSHIP = "company"`, which no binding could widen.
+    #
+    # The default is every ownership the registry can author, because the
+    # narrow reading is a narrowing and a deployment that wrote no policy has
+    # not asked for one. Writing a shorter list is the only way to narrow it,
+    # and an empty list means exactly what it says: no device may be granted.
+    #
+    # This list decides eligibility, not authority. A device in it still needs a
+    # grant naming it (or `"*"`) and still needs its own per-device floor on the
+    # far side; a device outside it is inert there, exactly as before.
+    grant_eligible_ownership: tuple[str, ...] = KNOWN_DEVICE_OWNERSHIPS
     # Projects this runtime may create sessions on, mapped to that project's
     # ceiling on the caller-supplied `permissionMode` and `model`. A device that
     # sets `allow_create: true` is authorized to be minted on; *which* projects
@@ -732,6 +790,53 @@ def _create_allow(policy_raw: dict[str, Any]) -> dict[str, CreateGrant]:
     return grants
 
 
+def load_grant_eligible_ownership(value: Any) -> tuple[str, ...]:
+    """Parse `policy.grant_eligible_ownership` into the ownerships grants reach.
+
+    Absent means every ownership the registry model can author — see
+    `PolicyBinding.grant_eligible_ownership` for why the wide reading is the
+    default. An explicit `[]` is a real answer and means "no device may be
+    granted"; it is not folded back into the default.
+
+    `"*"` is accepted as the spelling of "every known ownership" rather than
+    refused, because that is exactly what the default means and an operator
+    writing it has said the same thing in one line. It expands to the known
+    values; it does not make an unknown owner (`None`) eligible, because an
+    unknown owner is not a value this list can name.
+    """
+    if value is None:
+        return KNOWN_DEVICE_OWNERSHIPS
+    if not isinstance(value, (list, tuple)):
+        raise refuse(
+            BAD_REQUEST,
+            "policy.grant_eligible_ownership must be a list of ownership values, "
+            f"not a {type(value).__name__}. Known values: {list(KNOWN_DEVICE_OWNERSHIPS)}.",
+        )
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise refuse(
+                BAD_REQUEST,
+                "policy.grant_eligible_ownership must contain non-empty strings",
+            )
+        name = item.strip()
+        if name == "*":
+            for known in KNOWN_DEVICE_OWNERSHIPS:
+                if known not in out:
+                    out.append(known)
+            continue
+        if name not in KNOWN_DEVICE_OWNERSHIPS:
+            raise refuse(
+                BAD_REQUEST,
+                f"policy.grant_eligible_ownership contains {name!r}, which the "
+                f"registry model never authors. Known values: "
+                f"{list(KNOWN_DEVICE_OWNERSHIPS)}.",
+            )
+        if name not in out:
+            out.append(name)
+    return tuple(out)
+
+
 def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tuple[str, ...]]]:
     """Parse `policy.operator_grants` into `{principal: {device_ref: (verbs,)}}`.
 
@@ -778,14 +883,12 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
         if not isinstance(principal, str) or not principal.strip():
             raise refuse(BAD_REQUEST, "policy.operator_grants principal names must be non-empty strings")
         name = principal.strip()
-        if name == "*":
-            raise refuse(
-                BAD_REQUEST,
-                "policy.operator_grants names '*' as a principal. A wildcard "
-                "principal would give every credential that can reach this "
-                "runtime the same authority — the global grant this field "
-                "exists to replace. Name the principals.",
-            )
+        # `"*"` is the vocabulary a deployment uses to say "every principal that
+        # can reach this runtime". It is not a default and it is not implied:
+        # a binding that does not write it grants nothing it did not name. The
+        # behaviour this field produces is therefore still entirely a property
+        # of the file, which is what lets one binding ship open and another
+        # ship closed with the same code.
         if not isinstance(devices, dict):
             raise refuse(
                 BAD_REQUEST,
@@ -800,14 +903,13 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
                     f"policy.operator_grants[{name!r}] device refs must be non-empty strings",
                 )
             ref = device_ref.strip()
-            if ref == "*":
-                raise refuse(
-                    BAD_REQUEST,
-                    f"policy.operator_grants[{name!r}] names '*' as a device. A "
-                    f"wildcard device would make the device axis meaningless; "
-                    f"write the device refs out.",
-                )
-            if not ref.startswith("device:"):
+            # `"*"` on the device axis is the same word as on the principal
+            # axis: "every enrolled device". It is not a fallback for a typo —
+            # an exact ref that names nothing still grants nothing — and the
+            # grant eligibility check (`ownership == company`) is applied after
+            # this lookup, so a wildcard cannot reach a device a named ref
+            # could not.
+            if ref != "*" and not ref.startswith("device:"):
                 raise refuse(
                     BAD_REQUEST,
                     f"policy.operator_grants[{name!r}] device ref {ref!r} is not a "
@@ -839,13 +941,27 @@ def load_operator_grants(policy_raw: dict[str, Any]) -> dict[str, dict[str, tupl
 
 
 def load_owner_max(raw) -> dict[str, tuple[str, ...]]:
+    """Compile `policy.owner_max` — exact principals, or one `"*"` fallback.
+
+    The namespace list is always exact: a device/runtime pair, never a wildcard.
+    What `"*"` widens is only the PRINCIPAL axis, and only for principals this
+    runtime admits at all — the same shape `policy.operator_grants` already has,
+    and for the same reason: an OAuth principal is `oauth:<client_id>`, an opaque
+    id that a re-registration can change. Pinning it into a binding makes the
+    owner's own project creation depend on an id nobody authored.
+
+    `"*"` is consulted only when the presented principal has no entry of its own.
+    An exact entry says what that principal holds, including when the device it
+    needs is not in it.
+    """
     if not isinstance(raw, dict):
         raise ValueError("policy.owner_max must map exact principals to namespace lists")
     result = {}
     for principal, namespaces in raw.items():
         if (not isinstance(principal, str) or not principal.strip()
-                or principal != principal.strip() or "*" in principal):
-            raise ValueError("owner_max requires exact nonempty principal names")
+                or principal != principal.strip()
+                or ("*" in principal and principal != "*")):
+            raise ValueError("owner_max requires exact nonempty principal names, or \"*\"")
         if not isinstance(namespaces, (list, tuple)) or not namespaces:
             raise ValueError("owner_max requires a nonempty namespace list")
         selected = []
@@ -1059,9 +1175,17 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         owner_grant_anchor=(
             Path(_expand(auth_raw["owner_grant_anchor"])) if auth_raw.get("owner_grant_anchor") else None
         ),
+        password_anchor=(
+            Path(_expand(auth_raw["password_anchor"])) if auth_raw.get("password_anchor") else None
+        ),
+        pat_enabled=bool(auth_raw.get("pat_enabled", True)),
+        session_ttl=int(auth_raw.get("session_ttl", 8 * 3600)),
+        totp_anchor=(Path(_expand(auth_raw["totp_anchor"])) if auth_raw.get("totp_anchor") else None),
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
+        refresh_rotate=bool(auth_raw.get("refresh_rotate", True)),
+        refresh_rotation_grace_seconds=int(auth_raw.get("refresh_rotation_grace_seconds", 0)),
         grantable_scopes=_grantable_scopes(auth_raw),
         feishu=_feishu_binding(auth_raw),
     )
@@ -1164,6 +1288,8 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         send_allow=send_allow,
         allow_wildcard_send=wildcard_send,
         operator_grants=load_operator_grants(policy_raw),
+        grant_eligible_ownership=load_grant_eligible_ownership(
+            policy_raw.get("grant_eligible_ownership")),
         create_allow=create_grants,
         runtime_create_defaults=runtime_defaults,
         allow_wildcard_create=bool(policy_raw.get("allow_wildcard_create", False)),

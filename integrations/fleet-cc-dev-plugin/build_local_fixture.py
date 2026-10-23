@@ -60,7 +60,16 @@ FIXTURE_DISPLAY_NAME = "ServerOS Fleet (local test fixture)"
 FIXTURE_VERSION = "0.0.1"
 FIXTURE_MARKER = "TEST_FIXTURE_ONLY.md"
 SERVER_NAME = "serveros-fleet-fixture"
-SERVED_TOOL_COUNT = 33
+
+# Read from the catalogue rather than pinned here: this number is reported back
+# as `served_tool_count`, and a copy of it in this file goes stale the first
+# time the surface grows.
+_REPO_ROOT = HERE.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from fleet_mcp import tools as _fleet_tools  # noqa: E402
+
+SERVED_TOOL_COUNT = len(_fleet_tools.SERVED_TOOLS)
 
 MARKER_BODY = """# TEST FIXTURE ONLY — not the release, not the development adapter
 

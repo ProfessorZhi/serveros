@@ -116,7 +116,14 @@ def run_http(config: FleetConfig, *, service: FleetService | None = None) -> int
         f"  health              {base}/health\n"
         f"  protected resource  {base}{PROTECTED_RESOURCE_PATH}\n"
         f"  devices with routes {sorted(service.providers)}\n"
-        f"  control authorized  {[r for r, b in config.providers.items() if b.allow_send]}\n"
+        # One line per write class, each filtered on the flag it names. This
+        # banner used to print the `allow_send` set under the label "control
+        # authorized", which read as a capability the binding had not granted:
+        # a startup log is where an operator checks what just came up, so a
+        # sentence about a permission has to be the answer to that permission.
+        f"  send authorized     {[r for r, b in config.providers.items() if b.allow_send]}\n"
+        f"  control authorized  {[r for r, b in config.providers.items() if b.allow_control]}\n"
+        f"  create authorized   {[r for r, b in config.providers.items() if b.allow_create]}\n"
     )
     try:
         server.serve_forever()
@@ -179,7 +186,9 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
         )
         return 4
     store = TokenStore(store_root, access_ttl=config.auth.access_token_ttl,
-                       refresh_ttl=config.auth.refresh_token_ttl)
+                       refresh_ttl=config.auth.refresh_token_ttl,
+                       rotate_refresh=config.auth.refresh_rotate,
+                       rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
     if revoke is None:
         rows = store.clients()
         if as_json:
