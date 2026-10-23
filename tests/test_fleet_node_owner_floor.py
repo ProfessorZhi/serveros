@@ -178,15 +178,17 @@ class TheGrantItself(unittest.TestCase):
         self.assertFalse(config.permits_control(self.other_key()))
         self.assertEqual(config.control_default(), "refused")
 
-    def test_a_wildcard_in_the_named_list_is_still_just_a_name_that_matches_nothing(self):
-        """`"*"` is the one string an operator is most likely to reach for, and
-        in the named list it is a session id — one nothing will ever match. The
-        floor must not be where it silently becomes "everything" either, which
-        is why it is a separate key with its own closed vocabulary."""
+    def test_a_wildcard_in_the_named_list_is_its_own_gate_and_not_the_floor(self):
+        """`"*"` widens reach, and it is reported as reach — not as the floor.
+
+        An audit line that called this "named" would point an operator at a
+        session that is not in the list, and one that called it the owner floor
+        would point at a permissions decision nobody made. It is neither.
+        """
         config = _config(self.root, allow_send_to=("*",))
-        self.assertIsNone(config.send_grant(self.named_key()))
-        self.assertIsNone(config.send_grant(self.other_key()))
-        self.assertEqual(config.send_default(), "only the sessions named in allow_send_to")
+        self.assertEqual(config.send_grant(self.named_key()), "wildcard")
+        self.assertEqual(config.send_grant(self.other_key()), "wildcard")
+        self.assertIn("allow_send_to", config.send_default())
 
     def test_the_default_sentence_distinguishes_the_three_states(self):
         """`send_default` is what an operator reads to answer "why was I

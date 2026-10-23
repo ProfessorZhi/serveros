@@ -96,7 +96,7 @@ class Harness:
     def __init__(self, tmp: Path, *, owner="company", grants=None, send_allow=(),
                  control_allow=(), create_allow=None, allow_send=True,
                  allow_control=True, allow_create=True, kinds=None,
-                 no_route=()):
+                 no_route=(), eligible_ownership=None):
         self.anchor = tmp / "pat"
         self.anchor.write_text("owner-token-value", encoding="utf-8")
         self.registry = _registry_file(tmp, {TOKYO: owner, WINDOWS: owner, DELL: owner})
@@ -114,10 +114,13 @@ class Harness:
             },
             auth=AuthBinding(pat_anchor=self.anchor),
             server=ServerBinding(bind="127.0.0.1", port=0),
-            policy=PolicyBinding(send_allow=tuple(send_allow),
-                                 control_allow=tuple(control_allow),
-                                 create_allow=dict(create_allow or {}),
-                                 operator_grants=dict(grants or {})),
+            policy=PolicyBinding(
+                send_allow=tuple(send_allow),
+                control_allow=tuple(control_allow),
+                create_allow=dict(create_allow or {}),
+                operator_grants=dict(grants or {}),
+                **({"grant_eligible_ownership": tuple(eligible_ownership)}
+                   if eligible_ownership is not None else {})),
             audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000),
         )
         self.providers = {}
@@ -430,12 +433,13 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual([c[0] for c in h.providers[TOKYO].calls],
                          ["session_interrupt"])
 
-    def test_a_control_grant_on_a_personal_device_is_inert(self):
-        """`_operator_grant_verbs` returns `()` unless the device is
-        `ownership: company`, so the grant arm cannot widen onto a machine the
-        organization does not own — the same rule the send arm already had."""
+    def test_a_control_grant_on_a_personal_device_is_inert_when_the_binding_narrows(self):
+        """Eligibility is `policy.grant_eligible_ownership`, and a binding that
+        names only `company` makes a personal device inert — the same rule the
+        send arm already had. (Unnarrowed, the default admits `personal` too.)"""
         h = Harness(self.tmp, owner="personal",
-                    grants={OAUTH: {TOKYO: ("control",)}})
+                    grants={OAUTH: {TOKYO: ("control",)}},
+                    eligible_ownership=("company",))
         with self.assertRaises(FleetRefusal) as caught:
             h.call("session_interrupt", args={"session": "s1"},
                    session_ref=ref(TOKYO, "s1"),
@@ -2011,7 +2015,8 @@ class ApprovalSessionFloorTest(unittest.TestCase):
         not own, so the `approve` operator verb refuses — and the session floor
         would have refused it too had the grant been read first."""
         h = self._h(owner="personal", send_allow=(ref(TOKYO, "s1"),),
-                    grants={OAUTH: {TOKYO: ("approve", "send")}})
+                    grants={OAUTH: {TOKYO: ("approve", "send")}},
+                    eligible_ownership=("company",))
         with self.assertRaises(FleetRefusal) as caught:
             h.call("approval_answer",
                    args={"requestId": "r1", "allow": True},

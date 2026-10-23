@@ -595,13 +595,20 @@ authorization:
       A planned verb is refused at load rather than accepted and ignored, and
       `control` does not inherit `send`: each is written and read as its own
       row, so a future round has to authorize `control` on purpose.
-    eligible_ownership: company
+    eligible_ownership_field: policy.grant_eligible_ownership
+    eligible_ownership: [company, personal]
     ownership_rule: >-
-      The registry decides whether a device may hold a grant at all. A device
-      whose entry is not `ownership: company` is refused even when named — the
-      question is not which devices an operator wants to reach but which
-      machines the authorizing party owns.
-    wildcard: refused at load in both dimensions, by name
+      The binding decides which ownerships may hold a grant at all; the registry
+      decides which device carries which. The default admits every ownership the
+      registry can author, and a binding narrows it by naming a shorter list —
+      `[]` is a valid narrowing that grants nothing. An ownership the registry
+      does not state (`None`, `Company`, `personal `) is still refused: unknown
+      ownership is DEFER, and it is not a value this list can name.
+    wildcard: >-
+      accepted in both dimensions (`"*"` for the principal and for the device)
+      as an explicit opt-in, because they are separate axes an operator may
+      want whole; an exact entry still wins over the wildcard, so an explicit
+      `{}` for one principal remains a deny
     default: {}
     default_means: >-
       no principal is granted anything. The device floor may still be open, in
@@ -756,7 +763,9 @@ node_transport:
       no project, so nothing to create. `allow_create: true` with an empty list
       is refused at load — a device that is open "for nothing" is reachable
       only by accident, and it would refuse every caller for a reason nobody
-      wrote down. Exact match, no wildcard, no prefix.
+      wrote down. Except for the single entry `"*"`, which means every project
+      on the machine and has to be written explicitly, every entry is an exact
+      project id: no prefix, no glob.
     lives_on: the device
     rule: >-
       The Fleet surface decides whether a caller may drive the device; the

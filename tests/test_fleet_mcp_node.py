@@ -1061,11 +1061,16 @@ class TheProjectFloorIsRefusedWhenContradictory(BindingFile):
         self.assertIs(config.allow_create, False)
         self.assertEqual(config.allow_create_projects, ("p-1",))
 
-    def test_a_wildcard_project_is_refused(self):
-        with self.assertRaises(FleetRefusal) as caught:
-            load_node_config(self._write(
-                self._valid(allow_create=True, allow_create_projects=["*"])))
-        self.assertIn("wildcard", caught.exception.detail.lower())
+    def test_a_wildcard_project_is_accepted_as_every_project(self):
+        """`["*"]` is a decision this machine writes, not an inference.
+
+        It used to be refused; the refusal only pushed an operator who meant
+        "any project" toward the longer `owner_access` spelling. It is still
+        written explicitly, and the empty list still means no project.
+        """
+        config = load_node_config(self._write(
+            self._valid(allow_create=True, allow_create_projects=["*"])))
+        self.assertEqual(config.allow_create_projects, ("*",))
 
     def test_a_bare_string_is_refused_rather_than_wrapped(self):
         with self.assertRaises(FleetRefusal) as caught:
@@ -1139,19 +1144,20 @@ class TheControlGrantInTheBindingFile(BindingFile):
         self.assertFalse(config.permits_control(SessionKey.compose(DEVICE, "claude", ALLOWED)))
         self.assertEqual(config.control_default(), "refused")
 
-    def test_a_wildcard_is_refused_and_the_refusal_names_the_other_field(self):
-        """`"*"` in a session list would be a second spelling of the floor.
+    def test_a_wildcard_is_accepted_and_reported_as_its_own_gate(self):
+        """`["*"]` is a reach statement, and it stays distinct from the floor.
 
-        The device-wide grant is written `allow_all_sessions_for_owner:
-        [control]`, so a wildcard here is refused with a message that says where
-        that grant lives. A refusal that only said "wildcard" would leave an
-        operator who meant "everything" with nowhere to go.
+        `allow_all_sessions_for_owner: [control]` is a *permission* decision;
+        this list is *which sessions are in scope*. Both are wide; only one of
+        them is the permissions answer, so the wildcard is reported as
+        `"wildcard"` rather than folded into `"named"` or `"owner-floor"`.
         """
-        with self.assertRaises(FleetRefusal) as caught:
-            load_node_config(self._write(
-                self._valid(allow_control=True, allow_control_to=["*"])))
-        self.assertEqual(caught.exception.code, "BAD_REQUEST")
-        self.assertIn("allow_all_sessions_for_owner", caught.exception.detail)
+        config = load_node_config(self._write(
+            self._valid(allow_control=True, allow_control_to=["*"])))
+        self.assertEqual(config.allow_control_to, ("*",))
+        self.assertEqual(
+            config.control_grant(SessionKey.compose(DEVICE, "claude", "any-session")),
+            "wildcard")
 
     def test_a_bare_string_is_refused_rather_than_wrapped(self):
         with self.assertRaises(FleetRefusal) as caught:

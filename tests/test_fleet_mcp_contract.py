@@ -560,8 +560,11 @@ class TheAuthorizationIsDeclaredAsItIsEnforced(unittest.TestCase):
     def test_the_declared_eligibility_rule_is_the_implemented_one(self):
         from fleet_mcp import config as config_module
 
-        self.assertEqual(self.declared["eligible_ownership"],
-                         config_module.GRANT_ELIGIBLE_OWNERSHIP)
+        self.assertEqual(
+            list(self.declared["eligible_ownership"]),
+            list(config_module.PolicyBinding().grant_eligible_ownership))
+        self.assertEqual(self.declared["eligible_ownership_field"],
+                         "policy.grant_eligible_ownership")
 
     def test_the_declared_field_is_a_field_the_binding_carries(self):
         from fleet_mcp.config import PolicyBinding

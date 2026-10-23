@@ -56,7 +56,7 @@ from fleet_mcp.config import (  # noqa: E402
     AuditBinding,
     AuthBinding,
     FleetConfig,
-    GRANT_ELIGIBLE_OWNERSHIP,
+    KNOWN_DEVICE_OWNERSHIPS,
     OPERATOR_GRANT_VERBS,
     PLANNED_OPERATOR_GRANT_VERBS,
     PolicyBinding,
@@ -264,16 +264,24 @@ class TheDeviceRule(unittest.TestCase):
         harness.service.registry = self.real
         return harness.service
 
-    def test_the_eligible_set_is_exactly_the_three_company_devices(self):
+    def test_the_default_admits_every_device_the_registry_states(self):
+        """The default is the wide reading: every authored ownership class.
+
+        The narrow reading is a narrowing, and it is expressed in a binding
+        (`policy.grant_eligible_ownership`), not assumed here.
+        """
         service = self._service()
         eligible = [d.device_ref.ref for d in self.real.all()
                     if service._device_is_grant_eligible(d.device_ref.ref)]
-        self.assertEqual(sorted(eligible), sorted(WANTED))
+        self.assertEqual(sorted(eligible), sorted(set(WANTED) | set(REFUSED)))
 
-    def test_the_refused_set_is_exactly_the_personal_device(self):
-        service = self._service()
+    def test_a_binding_naming_only_company_refuses_the_personal_device(self):
+        tmp = Path(tempfile.mkdtemp())
+        harness = Harness(tmp)
+        harness.edit_policy(grant_eligible_ownership=("company",))
+        harness.service.registry = self.real
         refused = [d.device_ref.ref for d in self.real.all()
-                   if not service._device_is_grant_eligible(d.device_ref.ref)]
+                   if not harness.service._device_is_grant_eligible(d.device_ref.ref)]
         self.assertEqual(sorted(refused), sorted(REFUSED))
 
     def test_every_shipped_device_states_an_owner(self):
@@ -290,16 +298,40 @@ class TheDeviceRule(unittest.TestCase):
     def test_an_unstated_owner_is_not_eligible(self):
         """`None` is an unknown owner, and an unknown owner is DEFER, not a grant.
 
-        This is why the rule is `== "company"` and not `!= "personal"`: the two
-        polarities differ on exactly the inputs nobody thought about.
+        This is why eligibility tests membership in the configured list and not
+        `!= "personal"`: the two polarities differ on exactly the inputs nobody
+        thought about, and the default list names every value the registry can
+        author rather than excluding one.
         """
         tmp = Path(tempfile.mkdtemp())
         harness = Harness(tmp, ownership={TOKYO: None, WINDOWS: None})
         self.assertFalse(harness.service._device_is_grant_eligible(TOKYO))
-        self.assertEqual(GRANT_ELIGIBLE_OWNERSHIP, "company")
+        self.assertEqual(KNOWN_DEVICE_OWNERSHIPS, ("company", "personal"))
+        self.assertEqual(harness.service._eligible_ownerships(),
+                         KNOWN_DEVICE_OWNERSHIPS)
 
-    def test_a_case_or_whitespace_variant_is_not_eligible(self):
-        for variant in ("Company", "personal ", "COMPANY", ""):
+    def test_the_binding_can_narrow_eligibility_to_one_ownership(self):
+        """Which ownerships may hold a grant is policy, not a code constant."""
+        tmp = Path(tempfile.mkdtemp())
+        harness = Harness(tmp, ownership={TOKYO: "company", WINDOWS: "personal"})
+        harness.edit_policy(grant_eligible_ownership=("company",))
+        self.assertTrue(harness.service._device_is_grant_eligible(TOKYO))
+        self.assertFalse(harness.service._device_is_grant_eligible(WINDOWS))
+
+    def test_the_binding_can_admit_a_personal_device(self):
+        tmp = Path(tempfile.mkdtemp())
+        harness = Harness(tmp, ownership={WINDOWS: "personal"})
+        self.assertTrue(harness.service._device_is_grant_eligible(WINDOWS))
+
+    def test_an_empty_eligibility_list_grants_nothing(self):
+        tmp = Path(tempfile.mkdtemp())
+        harness = Harness(tmp, ownership={TOKYO: "company"})
+        harness.edit_policy(grant_eligible_ownership=())
+        self.assertFalse(harness.service._device_is_grant_eligible(TOKYO))
+
+    def test_a_case_variant_or_unknown_owner_is_not_eligible(self):
+        """The list holds authored values exactly; it is not a case folder."""
+        for variant in ("Company", "COMPANY", "", "contractor"):
             with self.subTest(ownership=variant):
                 tmp = Path(tempfile.mkdtemp())
                 harness = Harness(tmp, ownership={TOKYO: variant})
@@ -367,6 +399,7 @@ class ThePrincipalAxis(unittest.TestCase):
     def test_refusal_says_which_of_the_three_situations_it_is(self):
         """A granted device, an ungranted one, and an ineligible one read apart."""
         h = self.harness(grants={OAUTH: {TOKYO: ("send",), PERSONAL_DELL: ("send",)}})
+        h.edit_policy(grant_eligible_ownership=("company",))
 
         # (a) granted principal, device not in the grant
         with self.assertRaises(FleetRefusal) as other_device:
@@ -388,10 +421,12 @@ class ThePrincipalAxis(unittest.TestCase):
         # operator to re-check a principal name that is perfectly correct.
         self.assertIn("does name", ineligible.exception.detail)
         self.assertIn("'personal'", ineligible.exception.detail)
-        self.assertIn("only 'company' devices may be granted", ineligible.exception.detail)
+        self.assertIn("policy.grant_eligible_ownership` is ['company']",
+                      ineligible.exception.detail)
 
     def test_the_inert_grant_is_audited_because_its_author_is_not_the_caller(self):
         h = self.harness(grants={OAUTH: {PERSONAL_DELL: ("send",)}})
+        h.edit_policy(grant_eligible_ownership=("company",))
         with self.assertRaises(FleetRefusal):
             h.send(f"{PERSONAL_DELL}|claude|x")
         rows = h.audit_rows("fleet.grant")
@@ -410,9 +445,9 @@ class TheWildcardBranch(unittest.TestCase):
 
     The wildcard is expressible so an OPEN binding can be written in a file
     without listing every principal and every device by name; closing it is
-    deleting the line. What it must not become is a way around a rule that is
-    deliberately code: ownership eligibility, and the exact name winning over
-    the wildcard.
+    deleting the line. What it must not become is a way around the rules it
+    sits on: ownership eligibility (a binding narrows that separately) and an
+    exact name winning over the wildcard.
     """
 
     def setUp(self) -> None:
@@ -434,12 +469,25 @@ class TheWildcardBranch(unittest.TestCase):
         self.assertEqual([s["session_ref"] for s in h.providers[WINDOWS].sent],
                          [f"{WINDOWS}|claude|elsewhere"])
 
-    def test_the_wildcard_does_not_admit_a_personal_device(self):
-        """Eligibility is code, and the wildcard is not a way to edit code."""
+    def test_the_wildcard_does_not_admit_a_device_the_binding_excludes(self):
+        """Eligibility is policy; the wildcard is not a way to rewrite it.
+
+        With the default policy the wildcard does reach a personal device —
+        that is the wide default. Narrowing the ownership list is what keeps a
+        personal machine out, and the wildcard still respects it.
+        """
         h = Harness(self.tmp, grants={"*": {"*": ("send",)}})
+        h.edit_policy(grant_eligible_ownership=("company",))
         with self.assertRaises(FleetRefusal) as caught:
             h.send(f"{PERSONAL_DELL}|claude|x")
-        self.assertIn("only 'company' devices may be granted", caught.exception.detail)
+        self.assertIn("policy.grant_eligible_ownership` is ['company']",
+                      caught.exception.detail)
+
+    def test_the_wildcard_reaches_a_personal_device_under_the_default_policy(self):
+        h = Harness(self.tmp, grants={"*": {"*": ("send",)}})
+        h.send(f"{PERSONAL_DELL}|claude|x")
+        self.assertEqual(h.providers[PERSONAL_DELL].sent[0]["session_ref"],
+                         f"{PERSONAL_DELL}|claude|x")
 
     def test_an_exact_principal_entry_with_nothing_in_it_grants_nothing(self):
         """Absent consults `"*"`; present-and-empty is a decision, not a gap."""

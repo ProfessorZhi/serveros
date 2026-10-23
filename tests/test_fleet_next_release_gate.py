@@ -70,9 +70,16 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
                         scopes.SCOPE_APPROVE, scopes.SCOPE_NAVIGATE):
             self.assertNotIn(heavier, scopes.DEFAULT_GRANTABLE_SCOPES)
 
-    def test_only_company_devices_are_eligible_for_a_grant(self):
-        from fleet_mcp.config import GRANT_ELIGIBLE_OWNERSHIP
-        self.assertEqual(GRANT_ELIGIBLE_OWNERSHIP, "company")
+    def test_eligibility_is_policy_and_defaults_to_every_owned_class(self):
+        """The eligible-ownership set is a binding value, not a code constant.
+
+        The default admits every ownership the registry can author, because the
+        narrow reading is a narrowing and a deployment that wrote no policy has
+        not asked for one. A binding narrows it by naming fewer.
+        """
+        from fleet_mcp.config import KNOWN_DEVICE_OWNERSHIPS, PolicyBinding
+        self.assertEqual(PolicyBinding().grant_eligible_ownership,
+                         KNOWN_DEVICE_OWNERSHIPS)
 
 
 class NothingIsOnByDefault(unittest.TestCase):

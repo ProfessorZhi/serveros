@@ -150,10 +150,16 @@ def test_an_exact_entry_shadows_the_wildcard(tmp_path):
 
 
 def test_the_wildcard_does_not_make_a_personal_device_eligible(tmp_path):
-    """Ownership, not the wildcard, is what keeps a personal device inert."""
+    """Ownership eligibility, not the wildcard, keeps a personal device inert.
+
+    Eligibility is `policy.grant_eligible_ownership`; this binding narrows it to
+    `company`, which is the only thing that makes the personal owner class inert
+    here — the default admits it.
+    """
     h = owned(tmp_path, namespaces=(TOKYO,))
-    h.config = replace(h.config, policy=replace(h.config.policy,
-                                                owner_max={"*": (TOKYO,)}))
+    h.config = replace(h.config, policy=replace(
+        h.config.policy, owner_max={"*": (TOKYO,)},
+        grant_eligible_ownership=("company",)))
     h.service.config = h.config
     h.service._device_ownership = lambda device_ref: "personal"
     opaque = Principal("oauth:fleet-some-new-client", frozenset(ALLOWED_SCOPES), "oauth")

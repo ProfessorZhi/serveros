@@ -38,8 +38,8 @@ from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
 from . import cloudcli_native, core_lite_source, runtime_identity
-from .config import (CreateGrant, FleetConfig, GRANT_ELIGIBLE_OWNERSHIP,
-                     OPERATOR_GRANT_VERBS, provider_key)
+from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
+                     provider_key)
 from .runtime_identity import BASE_RUNTIME
 from .runtime_create_policy import PolicyError
 from .errors import (
@@ -549,15 +549,14 @@ class FleetService:
             from one another, which is what keeps the three planned ones from
             arriving for free on the day they are implemented.
 
-        On the ownership test: a grant naming `device:personal-dell` is not
-        *narrowed* here, it is inert, and the refusal says so. The rule is
-        `ownership == "company"` — the registered devices of the organization
-        this runtime serves — rather than "not personal", because `ownership` is
-        `str | None` and an unset owner is an unknown owner, and an unknown owner
-        is DEFER on this host rather than an authorization. Writing the eligible
-        set as one allowed value also means a registry edit that changes a
-        device's owner changes the answer here, with no second list to keep in
-        step.
+        On the ownership test: a grant naming a device whose owner class the
+        binding does not admit is not *narrowed* here, it is inert, and the
+        refusal says so. The eligible classes come from
+        `policy.grant_eligible_ownership`, whose default is every ownership the
+        registry can author; a binding narrows it by naming fewer. What stays in
+        code is the distinction between "not in the list" and "no owner at
+        all": `ownership` is `str | None`, and an unset owner is an unknown
+        owner, which is DEFER on this host rather than an authorization.
         """
         if self._owner_profile(principal, device_ref, runtime) is not None:
             return tuple(OPERATOR_GRANT_VERBS)
@@ -569,8 +568,21 @@ class FleetService:
         return tuple(v for v in verbs if v in OPERATOR_GRANT_VERBS)
 
     def _device_is_grant_eligible(self, device_ref: str) -> bool:
-        """Whether a device may appear in an operator grant at all."""
-        return self._device_ownership(device_ref) == GRANT_ELIGIBLE_OWNERSHIP
+        """Whether a device may appear in an operator grant at all.
+
+        Read from `policy.grant_eligible_ownership`, never from a constant in
+        this file: which ownership classes an operator drives is their decision
+        about their own fleet, and the binding is where they express it. The
+        default there is every ownership the registry can author.
+
+        An ownership the registry does not state is still not eligible, because
+        it is not a value the list can hold — see `KNOWN_DEVICE_OWNERSHIPS`.
+        """
+        ownership = self._device_ownership(device_ref)
+        return ownership is not None and ownership in self._eligible_ownerships()
+
+    def _eligible_ownerships(self) -> tuple[str, ...]:
+        return self.config.policy.grant_eligible_ownership
 
     def _may_send(self, principal: Principal, key: SessionKey) -> None:
         binding = self.config.session_binding(key)
@@ -651,8 +663,8 @@ class FleetService:
                 detail = (
                     f"`policy.operator_grants[{who!r}][{what!r}]` "
                     f"does name {list(granted_here)}, but {key.device_ref} is "
-                    f"{ownership!r} and only {GRANT_ELIGIBLE_OWNERSHIP!r} devices "
-                    f"may be granted. The grant is inert here rather than "
+                    f"{ownership!r} and `policy.grant_eligible_ownership` is "
+                    f"{list(self._eligible_ownerships())}. The grant is inert here rather than "
                     f"narrowed: the owner of a device is a registry fact, and "
                     f"an unset owner is an unknown one, which this host defers "
                     f"on rather than authorizes."
@@ -2949,8 +2961,9 @@ class FleetService:
                 ownership = self._device_ownership(device_ref)
                 detail = (
                     f"the binding does name `{verb}` for {principal.name!r} on "
-                    f"{device_ref}, but that device is {ownership!r} and only "
-                    f"{GRANT_ELIGIBLE_OWNERSHIP!r} devices may be granted. The "
+                    f"{device_ref}, but that device is {ownership!r} and "
+                    f"`policy.grant_eligible_ownership` is "
+                    f"{list(self._eligible_ownerships())}. The "
                     f"grant is inert here rather than narrowed: the owner of a "
                     f"device is a registry fact, and an unset owner is an "
                     f"unknown one, which this host defers on rather than "
@@ -3042,6 +3055,11 @@ class FleetService:
                 "send_allow": list(self.config.policy.send_allow),
                 "read_redact": self.config.policy.read_redact,
                 "max_read_messages": self.config.policy.max_read_messages,
+                # Reported because it is now the binding's answer rather than a
+                # constant in this file: an operator reading `fleet_status`
+                # should be able to see which ownership classes a grant can
+                # reach without opening the YAML.
+                "grant_eligible_ownership": list(self._eligible_ownerships()),
             },
             "principal": principal.as_dict(),
             "owner_access": self.owner_access_report(principal),
