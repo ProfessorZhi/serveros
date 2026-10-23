@@ -39,12 +39,23 @@ jobs:
       - { uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683, with: { persist-credentials: false } }
       - { uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065, with: { python-version: '3.12' } }
       - run: python -m pip install --disable-pip-version-check 'pytest==9.1.1' 'PyYAML==6.0.2'
+      - name: Bind the hosted daemon inputs
+        # $GITHUB_ENV written by this script reaches *later* steps only. Running it in the
+        # same step as pytest leaves the roots unbound and every path.resolve answers
+        # PathRefused — which is exactly how this job was failing.
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d)"
+          echo "HOSTED_WORK_ROOT=$work" >> "$GITHUB_ENV"
+          python .github/scripts/hosted_daemon_inputs.py \
+            --work-root "$work" --evidence-dir "$work" --github-env "$GITHUB_ENV"
       - name: Run the daemon and native-facts suites
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONPATH: ${{ github.workspace }}/runtime:${{ github.workspace }}
         run: |
           set -euo pipefail
-          umask 077; work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT   # 077: the private-file rule reads mode bits
-          python .github/scripts/hosted_daemon_inputs.py --work-root "$work" --evidence-dir "$work" --github-env "$GITHUB_ENV"
-          python -m pytest -q -p no:cacheprovider -o addopts='' tests/test_daemon.py tests/test_native_core_facts.py tests/test_hosted_daemon_inputs.py
+          umask 077
+          python -m pytest -q -p no:cacheprovider -o addopts='' \
+            tests/test_daemon.py tests/test_native_core_facts.py tests/test_hosted_daemon_inputs.py
