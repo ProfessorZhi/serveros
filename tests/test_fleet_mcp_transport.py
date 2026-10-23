@@ -188,6 +188,7 @@ class NodeSignature(unittest.TestCase):
             "GET /v1/sessions",
             "POST /v1/sessions",
             "POST /v1/projects",
+            "POST /v1/projects/delete",
             "GET /v1/sessions/{id}",
             "POST /v1/sessions/{id}/read",
             "POST /v1/sessions/{id}/send",

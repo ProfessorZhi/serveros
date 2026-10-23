@@ -907,6 +907,8 @@ class Connector:
             return 200, self._sessions(args)
         if parts == ["v1", "projects"]:
             return 200, self._create_project(payload)
+        if parts == ["v1", "projects", "delete"]:
+            return 200, self._delete_project(payload)
         if len(parts) == 3 and parts[:2] == ["v1", "sessions"]:
             return 200, self.provider.get_session(self._key(parts[2]))
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "read":
@@ -1286,6 +1288,70 @@ class Connector:
             raise FleetRefusal("CAPABILITY_UNSUPPORTED", "local provider has no fresh project operation")
         return creator(root=payload["root"], name=payload["name"], project_path=target,
                        display_name=label)
+
+    def _delete_project(self, payload: dict[str, Any]):
+        """Archive, or permanently remove, ONE project row — here, on this machine.
+
+        The only destructive route on this connector, and it is deliberately not
+        a `/v1/native/call` for `project_delete`. A native call forwards a name
+        the caller chose from a recorded set; this one decides, from THIS
+        machine's own catalogue, that the id names a project the owner here
+        already claimed — and refuses anything else before the upstream sees it.
+
+        Three gates, and the far end holds the same three independently:
+
+        *   `allow_control` — a project row is stored state, and removing it is
+            not a lighter act than interrupting a run;
+        *   the row must exist in this machine's catalogue, archived included,
+            because the id is opaque and an id nobody here catalogues is not a
+            project this device has anything to delete;
+        *   its path must sit under one of the roots the owner configured on
+            this machine. The catalogue is written by CloudCLI, and a project a
+            previous configuration created outside today's roots is exactly the
+            row a caller must not be able to reach.
+
+        The answer is returned UNCHANGED: the host re-reads the catalogue after
+        it and does not take this ACK as proof that anything happened.
+        """
+        from ..owner_access import project_path_within_roots
+        from ..fleet import FleetService
+
+        if set(payload) - {"project_id", "force"}:
+            raise FleetRefusal(BAD_REQUEST,
+                               "project deletion accepts only a project id and a force flag")
+        project_id = payload.get("project_id")
+        if (not isinstance(project_id, str) or not project_id.strip()
+                or project_id != project_id.strip() or len(project_id) > 512):
+            raise FleetRefusal(BAD_REQUEST, "invalid project id")
+        force = payload.get("force", False)
+        if not isinstance(force, bool):
+            raise FleetRefusal(BAD_REQUEST, "force must be a JSON boolean")
+        if not self.config.allow_control:
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                "this connector's `allow_control` is false, so no stored state "
+                "on this machine may be removed from the far end.",
+            )
+        row = FleetService._project_catalogue_row(self.provider, project_id,
+                                                  include_archived=True)
+        if row is None:
+            raise FleetRefusal(
+                "PROJECT_NOT_FOUND",
+                "this machine's catalogue has no such project, archived "
+                "projects included, so there is nothing here to remove.",
+            )
+        profile = self.config.owner_access
+        if profile is None or not project_path_within_roots(profile, row.get("path")):
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                "that project is not under any root this machine's owner "
+                "configured, so this connector will not remove it.",
+            )
+        remover = getattr(self.provider, "delete_project", None)
+        if remover is None:
+            raise FleetRefusal("CAPABILITY_UNSUPPORTED",
+                               "local provider has no project deletion operation")
+        return remover(project_id=project_id, force=force)
 
     def _create(self, payload: dict[str, Any]):
         """Mint a session here, if this machine has said that may happen.

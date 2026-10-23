@@ -40,6 +40,7 @@ from ..disclosure import remote_summary
 from ..errors import (
     BAD_REQUEST,
     FleetRefusal,
+    PROJECT_NOT_FOUND,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
@@ -275,6 +276,18 @@ class FleetNodeProvider(DeviceProvider):
             body["display_name"] = display_name
         return self._request("POST", "/v1/projects", body)
 
+    def delete_project(self, *, project_id: str, force: bool):
+        """Ask THIS machine to archive or remove one of its own project rows.
+
+        A route of its own on the signed channel, not `/v1/native/call`: the
+        connector re-reads its own catalogue and refuses a project outside the
+        roots its owner configured before the upstream is asked anything. The
+        answer is returned unchanged — the caller re-reads the catalogue and
+        does not take this ACK for proof.
+        """
+        return self._request("POST", "/v1/projects/delete",
+                             {"project_id": project_id, "force": bool(force)})
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE mirrored native tool on this node, over the signed route.
@@ -338,6 +351,8 @@ class FleetNodeProvider(DeviceProvider):
             return refuse(PROVIDER_UNREACHABLE, detail)
         if code == "SESSION_NOT_FOUND":
             return refuse(SESSION_NOT_FOUND, detail)
+        if code == "PROJECT_NOT_FOUND":
+            return refuse(PROJECT_NOT_FOUND, detail)
         if code == "WRITE_NOT_GRANTED":
             # The connector on the far side refused on its own authority. It is
             # not this surface's decision and must not be reported as one: the

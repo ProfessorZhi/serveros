@@ -81,6 +81,14 @@ ROUTES = (
     "GET /v1/sessions",
     "POST /v1/sessions",
     "POST /v1/projects",
+    # The other half of project creation, and the only DESTRUCTIVE route here.
+    # It is a route of its own rather than a parameter on `/v1/native/call`
+    # because the two are governed differently: a native call forwards a verb the
+    # device recorded verbatim, while this one has to re-read THIS machine's
+    # catalogue, refuse a project outside the owner's own roots, and hand back an
+    # answer the host re-verifies. The id rides in the SIGNED body, not in a path
+    # segment, so there is still nothing in the URL for a caller to shape.
+    "POST /v1/projects/delete",
     "GET /v1/sessions/{id}",
     "POST /v1/sessions/{id}/read",
     "POST /v1/sessions/{id}/send",

@@ -134,6 +134,39 @@ def _check_local_destination(root: PurePosixPath | PureWindowsPath, target: str)
     raise OwnerAccessError("new project destination already exists")
 
 
+def project_path_within_roots(profile: OwnerAccessProfile, path: Any) -> bool:
+    """Whether an EXISTING project path sits under one of the owner's roots.
+
+    Lexical, like `build_project_path(..., local_check=False)`: this answers
+    *which project a caller means*, and a path that needs the filesystem to
+    resolve is a path this check must not follow — a reparse point that leads
+    out of the root would otherwise pass.
+
+    The root is not inside itself. A delete names one project, and "the
+    directory the roots are defined from" is not one of them.
+
+    `False` for anything that is not a usable absolute path, rather than an
+    exception: every caller here is deciding whether to refuse, and a malformed
+    path is already a refusal.
+    """
+    if not isinstance(profile, OwnerAccessProfile):
+        return False
+    try:
+        target = _root_path(path)
+    except OwnerAccessError:
+        return False
+    for value in profile.project_roots.values():
+        try:
+            root = _root_path(value)
+        except OwnerAccessError:  # validated at load; kept for a hand-made profile
+            continue
+        if isinstance(root, PureWindowsPath) != isinstance(target, PureWindowsPath):
+            continue
+        if target != root and root in target.parents:
+            return True
+    return False
+
+
 def build_project_path(profile: OwnerAccessProfile, root_ref: str, name: str,
                        *, local_check: bool) -> str:
     """Plan one new directory; never create, reuse, delete or resolve symlinks.

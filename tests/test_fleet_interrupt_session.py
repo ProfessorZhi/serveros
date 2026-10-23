@@ -712,8 +712,9 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
     def test_the_route_table_contains_one_interrupt_entry(self):
         from fleet_mcp import node_protocol as np
 
-        # The session routes, native mirror, core status and fresh projects.
-        self.assertEqual(len(np.ROUTES), 12)
+        # The session routes, native mirror, core status, fresh projects and
+        # the one destructive project route.
+        self.assertEqual(len(np.ROUTES), 13)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

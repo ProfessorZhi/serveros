@@ -265,6 +265,7 @@ class RouteClosure(_Base):
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
             ("POST", "/v1/sessions", {"project": "p-1"}),
             ("POST", "/v1/projects", {"root": "work", "name": "new"}),
+            ("POST", "/v1/projects/delete", {"project_id": "p-1", "force": False}),
             ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
             ("GET", "/v1/core/status", None),
         ]
@@ -272,7 +273,7 @@ class RouteClosure(_Base):
         for method, path, body in cases:
             with self.subTest(route=f"{method} {path}"):
                 status, payload = self.request(method, path, body)
-                if path == "/v1/projects":
+                if path in ("/v1/projects", "/v1/projects/delete"):
                     self.assertEqual(status, 403, payload)
                     self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
                     continue
@@ -1395,6 +1396,159 @@ class TheFlagsReachTheFloorThroughTheBindingFile(BindingFile):
                             "arguments": {"session": "s1"}})
         self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
         self.assertEqual(c.provider.calls, [])
+
+
+# ---------------------------------------------------------------------------
+# Removing a project: the one destructive route on this connector
+# ---------------------------------------------------------------------------
+
+
+class _DeletableProvider(FakeProvider):
+    """A CloudCLI that catalogues one project and can remove it."""
+
+    def __init__(self, *, project: str = "p-1",
+                 path: str = "/home/fjd/projects/p-1") -> None:
+        super().__init__()
+        self.project = project
+        self.path = path
+        self.deleted: list[tuple[str, bool]] = []
+
+    def native_call(self, tool, arguments):
+        self.calls.append(("native_call", tool, arguments))
+        if tool == "projects_list":
+            return {"projects": [{"id": self.project, "path": self.path,
+                                  "isArchived": False}]}
+        return {"tool": tool, "arguments": arguments}
+
+    def delete_project(self, *, project_id, force):
+        self.calls.append(("delete_project", project_id, force))
+        self.deleted.append((project_id, force))
+        return {"projectId": project_id, "path": self.path,
+                "deleted": bool(force), "archived": not force,
+                "wasArchived": False, "directoryRemoved": False}
+
+
+class DeleteProjectHere(_Base):
+    """`POST /v1/projects/delete` decides on THIS machine, before the upstream.
+
+    The far end holds the same three gates independently. These tests are about
+    what this side answers when the far end is right: a control grant, a row
+    this machine catalogues, and a path under a root the owner configured.
+    """
+
+    allow_control = True
+    allow_control_to = (ALLOWED,)
+
+    ROOT = "/home/fjd/projects"
+    PROJECT = "p-1"
+    PROJECT_PATH = "/home/fjd/projects/p-1"
+
+    _UNSET = object()
+
+    def _connector(self, *, allow_control=True, profile=_UNSET, provider=None):
+        import dataclasses
+
+        from fleet_mcp.owner_access import OwnerAccessProfile
+        if profile is self._UNSET:
+            profile = OwnerAccessProfile(owner_approved=True,
+                                         project_roots={"work": self.ROOT})
+        config = dataclasses.replace(
+            self.config,
+            allow_control=allow_control,
+            allow_control_to=(ALLOWED,),
+            owner_access=profile,
+        )
+        connector = Connector(config)
+        connector.provider = provider if provider is not None else _DeletableProvider()
+        connector.replay = np.ReplayCache()
+        return connector
+
+    def test_a_catalogued_project_under_a_root_is_removed(self):
+        c = self._connector()
+        answer = c._delete_project({"project_id": self.PROJECT, "force": True})
+        self.assertEqual(answer["projectId"], self.PROJECT)
+        self.assertEqual(c.provider.deleted, [(self.PROJECT, True)])
+
+    def test_the_archive_default_is_passed_through_unchanged(self):
+        c = self._connector()
+        c._delete_project({"project_id": self.PROJECT})
+        self.assertEqual(c.provider.deleted, [(self.PROJECT, False)])
+
+    def test_an_owner_profile_is_what_opens_the_control_grant(self):
+        """`allow_control: false` beside an owner profile is unreachable.
+
+        `NodeConfig.__post_init__` turns control, create, approve and navigate
+        ON for any binding that carries a validated owner profile — that is
+        what "V1 decides permission by configuration, and the profile is the
+        widest configuration" means at this layer. So the pair that has to be
+        tested is not `false + profile` but `no profile`, which is the test
+        below. This one pins the derivation itself, because a later edit that
+        removed it would otherwise leave the destructive route reachable only
+        by a config nobody can write.
+        """
+        c = self._connector(allow_control=False)
+        self.assertTrue(c.config.allow_control)
+        self.assertIn("control", c.config.allow_all_sessions_for_owner)
+
+    def test_an_id_this_machine_does_not_catalogue_is_refused(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": "p-nope"})
+        self.assertEqual(caught.exception.code, "PROJECT_NOT_FOUND")
+        self.assertEqual(c.provider.deleted, [])
+
+    def test_a_project_outside_the_owners_roots_is_refused(self):
+        provider = _DeletableProvider(project="p-9", path="/home/fjd/elsewhere/p-9")
+        c = self._connector(provider=provider)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": "p-9", "force": True})
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+        self.assertEqual(provider.deleted, [])
+
+    def test_the_root_itself_is_not_a_project_inside_it(self):
+        provider = _DeletableProvider(project="p-root", path=self.ROOT)
+        c = self._connector(provider=provider)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": "p-root", "force": True})
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+        self.assertEqual(provider.deleted, [])
+
+    def test_no_owner_profile_means_nothing_may_be_removed(self):
+        c = self._connector(profile=None)
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": self.PROJECT, "force": True})
+        self.assertEqual(caught.exception.code, "WRITE_NOT_GRANTED")
+        self.assertEqual(c.provider.deleted, [])
+
+    def test_unknown_keys_are_refused_rather_than_ignored(self):
+        c = self._connector()
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": self.PROJECT, "path": self.PROJECT_PATH})
+        self.assertEqual(caught.exception.code, "BAD_REQUEST")
+        self.assertEqual(c.provider.deleted, [])
+
+    def test_force_must_be_a_boolean(self):
+        for bad in ("true", 1, None):
+            with self.subTest(force=bad):
+                c = self._connector()
+                with self.assertRaises(FleetRefusal) as caught:
+                    c._delete_project({"project_id": self.PROJECT, "force": bad})
+                self.assertEqual(caught.exception.code, "BAD_REQUEST")
+                self.assertEqual(c.provider.deleted, [])
+
+    def test_a_provider_without_the_operation_is_a_capability_refusal(self):
+        from fleet_mcp.owner_access import OwnerAccessProfile
+        provider = FakeProvider()
+        provider.native_call = lambda tool, arguments: {
+            "projects": [{"id": self.PROJECT, "path": self.PROJECT_PATH}]}
+        c = self._connector(
+            profile=OwnerAccessProfile(owner_approved=True,
+                                       project_roots={"work": self.ROOT}),
+            provider=provider,
+        )
+        with self.assertRaises(FleetRefusal) as caught:
+            c._delete_project({"project_id": self.PROJECT, "force": True})
+        self.assertEqual(caught.exception.code, "CAPABILITY_UNSUPPORTED")
 
 
 if __name__ == "__main__":
