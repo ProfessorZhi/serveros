@@ -421,9 +421,16 @@ class WhatIsNotBuilt(unittest.TestCase):
         """
         absent = {entry["id"] for entry in contract()["not_implemented"]}
         self.assertIn("session_delete_or_force_stop", absent)
-        # No route, under any spelling of the verb.
+        # No route, under any spelling of the verb — for a SESSION. The one
+        # route that carries the word is named exactly rather than let through
+        # by a looser pattern, so a second deletion route cannot join it by
+        # looking similar: `POST /v1/projects/delete` removes one project ROW
+        # and is a built, governed verb (`fleet_delete_project`), not a
+        # session's host or its transcripts.
         for route in np.ROUTES:
             with self.subTest(route=route):
+                if route == "POST /v1/projects/delete":
+                    continue
                 self.assertNotIn("close", route)
                 self.assertNotIn("delete", route)
         # No provider method, which is what a route would have to call. The
