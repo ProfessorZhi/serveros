@@ -918,7 +918,7 @@ def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]
     A refusal that says «this name is not among the mirrored tools» is only
     actionable if the caller can FIND the mirrored set, so the set is itself a
     read tool. It carries each verb's governance, native scope, and the JSON
-    schema recorded from CloudCLI 1.39.0, so a client can discover the closed
+    schema recorded from CloudCLI 1.40.0, so a client can discover the closed
     set rather than guess.
     """
     return cloudcli_native.manifest()

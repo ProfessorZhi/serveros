@@ -20,7 +20,7 @@ Both are read-scoped, typed tools on the served surface — not a side channel.
 
 **`fleet_cloudcli_native_manifest`** — the whole inherited surface,
 machine-readable: one entry per recorded verb with its governance class, the
-native scope it needs, and the JSON schema recorded from CloudCLI 1.39.0. Each
+native scope it needs, and the JSON schema recorded from CloudCLI 1.40.0. Each
 entry carries the `recorded_from` it came from. This is the **closed set**: a
 name not in it is refused rather than forwarded, which is what makes "the
 surface grew a tool" a decision rather than a side effect. Project creation is
@@ -44,7 +44,7 @@ device declares that this build did **not** record is reported separately rather
 than added — a name off the wire is not a capability this build decided to offer.
 
 `placeholder_default: true` on a recorded entry is provenance about the CloudCLI
-1.39.0 registry capture — the default body when deps are not injected is the
+1.40.0 registry capture — the default body when deps are not injected is the
 named `MCP_TOOL_NOT_IMPLEMENTED` refusal — and **not** a verdict about a device.
 A running device injects those deps. The state is decided only by the typed
 `cloudcli/handlerBound` bit in that device's own `tools/list`; a list that does

@@ -33,7 +33,7 @@ not, and a credential trusted to list is not thereby trusted to answer.
 
 The recorded baseline and the live list
 ---------------------------------------
-`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.39.0 declares. The
+`NATIVE_TOOLS` is the recorded baseline — what CloudCLI 1.40.0 declares. The
 provider already fetches the LIVE `tools/list` on every `health()`. `coverage()`
 compares the two and reports drift (a tool that appeared, one that vanished, an
 annotation that moved), so an upgrade is a diff a person reads rather than a
@@ -47,7 +47,7 @@ advertised and what is enforced cannot disagree. The cost is the one this
 paragraph used to deny: a restated schema drifts, silently, the first time
 CloudCLI changes a parameter. That is paid for by
 `tests/test_fleet_cloudcli_full_inheritance.py`'s capture tests, which hold this
-table against a VERBATIM 1.39.0 `tools/list` capture — a restatement checked
+table against a VERBATIM 1.40.0 `tools/list` capture — a restatement checked
 against the thing it restates, rather than trusted.
 
 No I/O, no clock, no credentials. This module is a table and the functions over
@@ -186,7 +186,11 @@ class NativeTool:
         return PREFIX + self.name
 
     def fleet_scopes(self) -> tuple[str, ...]:
-        return tuple(FLEET_SCOPE_FOR_NATIVE[s] for s in self.native_scopes)
+        # Order-preserving dedupe: a verb may name two native scopes that map
+        # to the SAME Fleet scope (`ui_selected_text` is `cloudcli:read` plus
+        # `cloudcli:selection`, and both are `fleet:read`). Reporting
+        # `["fleet:read", "fleet:read"]` reads as two requirements.
+        return tuple(dict.fromkeys(FLEET_SCOPE_FOR_NATIVE[s] for s in self.native_scopes))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -214,10 +218,11 @@ def _t(name: str, governance: str, *native_scopes: str, read_only: bool,
                       input_schema_zod=input_schema_zod)
 
 
-#: The 22 tools. Order is CloudCLI's own grouping: the eleven stage-3 reads, the
-#: five stage-4 writes, then the six that register through their own modules. The
-#: annotations are CloudCLI's (`MCP_TOOL_ANNOTATIONS`, read from the installed
-#: 1.39.0), not this surface's opinion — carried, never re-derived.
+#: The 31 tools. Order is CloudCLI's own: the 1.39.0 baseline first (the eleven
+#: stage-3 reads, the five stage-4 writes, then the six that register through
+#: their own modules), then 1.40.0's nine additions. The annotations are
+#: CloudCLI's (`MCP_TOOL_ANNOTATIONS`, read from the installed build), not this
+#: surface's opinion — carried, never re-derived.
 NATIVE_TOOLS: tuple[NativeTool, ...] = (
     # -- the eleven reads, all cloudcli:read ---------------------------------
     _t("overview", GOV_READ, NATIVE_READ, read_only=True, destructive=False,
@@ -575,7 +580,10 @@ def manifest() -> dict[str, Any]:
     return {
         "schema": "serveros/fleet-cloudcli-native-manifest.v1",
         "native_server": "CloudCLI",
-        "native_version_recorded": "1.39.0",
+        # The version this table was READ OFF, not the version Fleet prefers.
+        # 1.39.0 through `fleet-mcp-5`; `fleet-mcp-6` reads 1.40.0, whose
+        # `tools/list` is the 33-entry capture in `tests/data/`.
+        "native_version_recorded": "1.40.0",
         "prefix": PREFIX,
         "count": len(NATIVE_TOOLS),
         "count_expected": NATIVE_TOOL_COUNT,
@@ -603,7 +611,7 @@ def coverage(observed_names: Iterable[str],
 
     `extension_claimed_missing` is the same claim seen from the other side: a
     claimed verb this device does not declare. That is ALSO not drift, and the
-    reason matters — the recorded baseline is CloudCLI 1.39.0, which never had
+    reason matters — the recorded baseline is CloudCLI 1.40.0, which never had
     `project_create`. A device that matches the baseline exactly must therefore
     read as agreement; making the claim part of `agrees` would make every
     conforming device permanently in drift. What a missing claim means is
