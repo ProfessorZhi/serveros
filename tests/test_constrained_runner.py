@@ -810,6 +810,15 @@ def test_a_real_user_unit_is_read_back_from_the_kernel(cr, tmp_path):
     ok, why = sysd.available()
     if not ok:
         pytest.skip(f"no user systemd here: {why}")
+    # `available()` asks the binaries; the units themselves go through the
+    # user manager's D-Bus. A host can have both binaries, a socket, and no
+    # manager answering behind it -- a container, or a login whose session bus
+    # outlived the manager. Ask the manager, not the filesystem.
+    probe = subprocess.run(["systemctl", "--user", "show-environment"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("no user systemd manager reachable: "
+                    + (probe.stderr or "").strip()[:120])
     limits = {"memory_high_bytes": 16 * 1024 ** 2,
               "memory_max_bytes": 32 * 1024 ** 2,
               "cpu_quota_percent": 50, "runtime_max_sec": 30, "tasks_max": 64}

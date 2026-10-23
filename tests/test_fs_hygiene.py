@@ -60,7 +60,23 @@ conformance = _load("serveros_runtime_conformance", "conformance.py")
 # fact about a device written where a fact about the contract belongs.
 _LIVE = paths.Paths()
 HOME = Path(_LIVE.root("home"))
-DATA = Path(_LIVE.root("data"))
+# `unbound_ok=True` answers the template `{DATA_ROOT}` when this node binds no
+# data root, and every live test below is gated on `DATA.is_dir()` — False for
+# a template. Asking without it raised PathRefused while the module was being
+# imported, so the whole file became a collection error on any node that had
+# not been identified, including the dozen-and-a-half tests below that build
+# their own roots in `tmp_path` and need no live one at all.
+DATA = Path(_LIVE.root("data", unbound_ok=True))
+
+from live_checkouts import LIVE_NODE_ENV, live_node  # noqa: E402
+
+#: The report below describes a MACHINE'S CONTENTS, so it runs only where
+#: somebody said this is the machine (see `live_checkouts.live_node`). A bound
+#: but synthetic root — which is what CI has — would have every count be zero
+#: and every invariant pass by emptiness.
+requires_live_node = pytest.mark.skipif(
+    not live_node() or not DATA.is_dir(),
+    reason=f"set {LIVE_NODE_ENV}=1 on an identified node to read its live roots")
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +782,7 @@ def test_no_placement_verdict_ever_offers_an_automatic_action(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
+@requires_live_node
 def test_the_live_roots_are_classified_and_the_counts_add_up():
     report = fh.report()
     assert sum(report["counts"].values()) == len(report["entries"])
@@ -775,7 +791,7 @@ def test_the_live_roots_are_classified_and_the_counts_add_up():
     assert report["coverage"]["data"]["state"] == "read"
 
 
-@pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
+@requires_live_node
 def test_every_allowed_exception_on_the_live_node_is_explained_by_something():
     """The regression gate for the live defect: `$DATA_ROOT/.vscode-server` was
     reported MISPLACED while `~/.vscode-server` was reported ALLOWED_EXCEPTION,
@@ -801,7 +817,7 @@ def test_every_allowed_exception_on_the_live_node_is_explained_by_something():
             assert row["why"] == fh.HOME_ALLOWED_EXCEPTIONS[row["name"]], row["name"]
 
 
-@pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
+@requires_live_node
 def test_every_misplaced_row_is_a_directory_under_an_enforced_vocabulary():
     """An invariant rather than a count, so the gate does not have to be
     rewritten when somebody moves the thing it currently reports."""
@@ -814,7 +830,7 @@ def test_every_misplaced_row_is_a_directory_under_an_enforced_vocabulary():
         assert row["actionable"] is False
 
 
-@pytest.mark.skipif(not DATA.is_dir(), reason="this node has no DATA_ROOT")
+@requires_live_node
 def test_the_live_retained_artifacts_are_reachable_and_untouched():
     """§16A names `.prev-*` by example. On this node four of them exist, plus
     two `.build-*`, and they must be reported as RETENTION_REQUIRED — not as
@@ -1564,6 +1580,7 @@ def test_a_family_with_no_reason_does_not_excuse_its_member(tmp_path, monkeypatc
         ["proj/an-undocumented-arrival"]
 
 
+@requires_live_node
 def test_the_live_governed_entries_are_every_one_of_them_classified():
     """The criterion, read on this node: nothing is left unclassified.
 

@@ -51,6 +51,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
 MODULE = REPO_ROOT / "intake" / "watch_coverage.py"
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
 
@@ -575,7 +577,7 @@ class TestAgainstTheLiveTree:
 
     @pytest.fixture(autouse=True)
     def _live(self):
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip(f"no live records root at {LIVE_RECORDS}")
 
     def test_every_watched_link_gets_exactly_one_row(self):

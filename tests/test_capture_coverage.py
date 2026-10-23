@@ -108,6 +108,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
 FIXTURE = Path(__file__).resolve().parent / "data" / "capture-coverage-live-2026-09-25.json"
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 # The day the capture above was taken, from its own name. A manifest the
 # collector re-verified after this day is the tree advancing; one that reads
@@ -139,6 +141,22 @@ def _load():
 
 
 cc = _load()
+
+
+def _cli_records_root() -> Path:
+    """The records root `serverosctl` will read when it is not given one.
+
+    `LIVE_RECORDS` above is the canonical checkout on a developer node; the
+    verb does not read it. It reads the `records` role under the workspace
+    root, so on any other node the two are different answers to the same
+    question, and a guard on the wrong one lets the test run against a root
+    that does not exist.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "serveros_runtime_paths", REPO_ROOT / "runtime" / "paths.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return Path(module.Paths().root("workspace", unbound_ok=True)) / "records"
 
 
 def cli(*args) -> subprocess.CompletedProcess:
@@ -876,6 +894,9 @@ class TestTheReaderHoldsNoClock:
 
 class TestTheCli:
     def test_it_renders_the_live_tree_and_exits_zero(self):
+        root = _cli_records_root()
+        if not readable_dir(root / "information" / "raw"):
+            pytest.skip(f"no capture tree at {root}")
         done = cli("information", "captured")
         assert done.returncode == 0, done.stderr
         assert "按分量计" in done.stdout
@@ -1128,7 +1149,7 @@ class TestAgainstTheRecordedCapture:
           * the denominator grew by exactly the manifests that are new, so a
             shrink cannot hide behind an arrival.
         """
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip("this node's records checkout is not here")
         report = cc.read_root(LIVE_RECORDS)
         captured = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -1150,7 +1171,7 @@ class TestAgainstTheRecordedCapture:
             "the tree cannot hold fewer manifests than the capture read from it")
 
     def test_the_denominator_equals_the_files_that_are_on_disk(self):
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip("this node's records checkout is not here")
         root = cc.raw_root(LIVE_RECORDS)
         on_disk = {str(p.relative_to(root)) for p in cc.walk_manifests(root)}
@@ -1160,7 +1181,7 @@ class TestAgainstTheRecordedCapture:
 
     def test_the_three_truncated_digests_are_the_finding_and_not_a_slip(self):
         """A 12-character `content_sha256` names a body without addressing one."""
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip("this node's records checkout is not here")
         report = cc.read_root(LIVE_RECORDS)
         short = [o for o in report["objects"]
@@ -1191,7 +1212,7 @@ class TestAgainstTheRecordedCapture:
         exact, because what it is for is that the reader calls these
         UNDECIDABLE for the stated reason rather than COMPLETE.
         """
-        if not LIVE_RECORDS.is_dir():
+        if not readable_dir(LIVE_RECORDS):
             pytest.skip("this node's records checkout is not here")
         report = cc.read_root(LIVE_RECORDS)
         undecided = [o for o in report["objects"]

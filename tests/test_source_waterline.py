@@ -42,6 +42,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
 
@@ -720,7 +722,7 @@ class TestTheVerbOnARealTree:
         assert before == after
 
 
-@pytest.mark.skipif(not LIVE_RECORDS.is_dir(),
+@pytest.mark.skipif(not readable_dir(LIVE_RECORDS),
                     reason="this node has no records checkout to walk")
 class TestTheLiveRecordsRoot:
     def test_the_denominator_is_every_capture_object_and_every_cited_source(self):

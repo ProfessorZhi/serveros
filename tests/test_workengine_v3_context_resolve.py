@@ -47,6 +47,22 @@ class ContextResolveTest(unittest.TestCase):
         self.bundle = self.base / "bundle"
         (self.bundle / "context").mkdir(parents=True)
         (self.bundle / "context" / "resolver.py").write_text(STUB)
+        # With no environment saying otherwise the CLI takes its roots from
+        # the device's host profile, so on a machine that has none it refuses
+        # before any fixture here matters. Supply one: what these tests pin is
+        # which roots reach the resolver, not where the profile was filed.
+        self.profile = self.base / "host-profile.yaml"
+        self.profile.write_text(
+            "schema: serveros/host-profile.v1\n"
+            "node:\n"
+            "  device_ref: device:test-device\n"
+            "  roots:\n"
+            f"    state_root: {self.base}/device/state/serveros\n"
+            f"    artifacts_root: {self.base}/device/artifacts\n"
+            f"    workspace_root: {self.base}/device/workspace\n"
+            f"    runtime_assets_root: {self.base}/device/runtime-assets\n",
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -58,6 +74,10 @@ class ContextResolveTest(unittest.TestCase):
                     "SERVEROS_HOST_PROFILE", "SERVEROS_RUNTIME_ASSETS"):
             env.pop(key, None)
         env.update(env_overrides)
+        # A caller that names its own profile keeps it; the rest get the one
+        # setUp wrote, so "no environment" means "no root overrides" here and
+        # not "no device".
+        env.setdefault("SERVEROS_HOST_PROFILE", str(self.profile))
         return subprocess.run(
             [sys.executable, "-m", "workengine", *args],
             text=True, capture_output=True, env=env, check=False,

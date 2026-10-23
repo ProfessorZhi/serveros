@@ -43,7 +43,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI = REPO_ROOT / "runtime" / "cli.py"
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
+
+
+def _cli_records_root() -> Path:
+    """The records root `serverosctl work understanding` reads by default."""
+    spec = importlib.util.spec_from_file_location(
+        "serveros_runtime_paths", REPO_ROOT / "runtime" / "paths.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return Path(module.Paths().root("workspace", unbound_ok=True)) / "records"
 
 
 def _load(name: str, relative: str):
@@ -1324,6 +1335,9 @@ class TestTheReaderHoldsNoClockAndWritesNothing:
 
 class TestTheCli:
     def test_it_renders_the_live_tree_and_exits_zero(self):
+        root = _cli_records_root()
+        if not readable_dir(root / "information" / "raw"):
+            pytest.skip(f"no capture tree at {root}")
         done = cli("work", "understanding")
         assert done.returncode == 0, done.stderr
         assert "卡" in done.stdout
@@ -1507,6 +1521,8 @@ class TestTheCli:
 # the live layer
 # --------------------------------------------------------------------------
 
+@pytest.mark.skipif(not readable_dir(LIVE_RECORDS / "information" / "raw"),
+                    reason=f"no records checkout at {LIVE_RECORDS}")
 class TestAgainstTheRecordedLayer:
     def test_the_denominator_is_the_number_of_cards_actually_there(self):
         report = read(LIVE_RECORDS)

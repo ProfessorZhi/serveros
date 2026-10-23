@@ -51,6 +51,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: 与 `tests/test_capture_coverage.py` / `test_source_policy.py` / `test_material_index.py`
 #: 同一个 records 检出。
+from live_checkouts import readable_dir  # noqa: E402
+
 LIVE_RECORDS = Path("/data/home/vince/workspace/records")
 
 
@@ -519,7 +521,7 @@ class TestAnExternalBodyAuthorisesNothing:
 # 活体树
 # ---------------------------------------------------------------------------
 class TestTheLiveTree:
-    @pytest.mark.skipif(not LIVE_RECORDS.is_dir(), reason="records 检出不在本机")
+    @pytest.mark.skipif(not readable_dir(LIVE_RECORDS), reason="records 检出不在本机")
     def test_the_denominator_adds_up(self):
         document = reference.read_root(
             reference.raw_root(LIVE_RECORDS), policy.key_of)
@@ -528,7 +530,7 @@ class TestTheLiveTree:
                                         + len(document["objects"]))
         assert document["manifests"] > 0
 
-    @pytest.mark.skipif(not LIVE_RECORDS.is_dir(), reason="records 检出不在本机")
+    @pytest.mark.skipif(not readable_dir(LIVE_RECORDS), reason="records 检出不在本机")
     def test_a_captured_object_has_no_unasked_question(self):
         document = reference.read_root(
             reference.raw_root(LIVE_RECORDS), policy.key_of)
@@ -537,7 +539,7 @@ class TestTheLiveTree:
             if record["quality"]["state"] == "CAPTURED":
                 assert all(q["state"] != "UNCHECKED" for q in questions)
 
-    @pytest.mark.skipif(not LIVE_RECORDS.is_dir(), reason="records 检出不在本机")
+    @pytest.mark.skipif(not readable_dir(LIVE_RECORDS), reason="records 检出不在本机")
     def test_a_label_meeting_a_weaker_reading_is_always_flagged(self):
         document = reference.read_root(
             reference.raw_root(LIVE_RECORDS), policy.key_of)
@@ -546,7 +548,7 @@ class TestTheLiveTree:
             if facts["collector_label"] and record["quality"]["state"] != "CAPTURED":
                 assert facts["label_exceeds_evidence"] is not None
 
-    @pytest.mark.skipif(not LIVE_RECORDS.is_dir(), reason="records 检出不在本机")
+    @pytest.mark.skipif(not readable_dir(LIVE_RECORDS), reason="records 检出不在本机")
     def test_every_reference_object_can_be_rendered(self):
         document = reference.read_root(
             reference.raw_root(LIVE_RECORDS), policy.key_of)
