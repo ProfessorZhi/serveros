@@ -40,14 +40,37 @@ from typing import Any
 
 from .disclosure import remote_summary
 from .errors import (
+    BAD_REQUEST,
+    INTERNAL,
+    PROJECT_NOT_FOUND,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
     PROVIDER_UNREACHABLE,
-    INTERNAL,
+    RUN_NOT_FOUND,
+    SESSION_BUSY,
+    SESSION_NOT_FOUND,
     refuse,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
+
+# Device envelope codes that name a condition this surface already has a word
+# for. The mapping is deliberately one-directional and exact: a code is here
+# only when the two words mean the same thing, because a translated refusal is
+# a claim about *whose* problem it is.
+#
+# Everything else keeps the device's own word inside the detail and is reported
+# as `BAD_REQUEST` — the way `providers/fleet_node._map_code` already reports
+# connector codes it does not translate. What it must never be is `INTERNAL`:
+# that code means "a defect in this surface", and a device saying
+# `SESSION_HOST_NOT_FOUND` is the device's behaviour, not a bug here. Reporting
+# it as INTERNAL on 2026-10-23 sent an operator looking at the wrong machine.
+REMOTE_REFUSAL_CODES = {
+    "SESSION_NOT_FOUND": SESSION_NOT_FOUND,
+    "PROJECT_NOT_FOUND": PROJECT_NOT_FOUND,
+    "RUN_NOT_FOUND": RUN_NOT_FOUND,
+    "SESSION_BUSY": SESSION_BUSY,
+}
 
 
 class ProviderRefusal(Exception):
@@ -265,6 +288,11 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
     `WORKSPACES_ROOT` read as a Fleet defect on 2026-10-23. `disclosure.
     remote_summary` re-checks the shape and withholds anything that is not an
     enum.
+
+    The refusal's *code* follows the device unless the two vocabularies agree
+    exactly (`REMOTE_REFUSAL_CODES`); otherwise it is `BAD_REQUEST` carrying the
+    device's own word in the detail. Neither is `INTERNAL`: `INTERNAL` means a
+    defect in this surface, and a device declining to do something is not one.
     """
     content = (result or {}).get("content") or []
     if result.get("isError"):
@@ -275,11 +303,18 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
         code = envelope.get("code") if isinstance(envelope, dict) else None
         if not text and code is None:
             raise refuse(INTERNAL, f"{label} reported an error and said nothing more")
-        raise refuse(INTERNAL, remote_summary(
+        detail = remote_summary(
             label,
             error_message=text or None,
             error_code=code,
-        ))
+        )
+        # The device refusing is the device's behaviour. It is translated only
+        # where the two vocabularies already agree exactly; otherwise it keeps
+        # its own word inside `detail` and is reported as a bad request.
+        translated = REMOTE_REFUSAL_CODES.get(code) if isinstance(code, str) else None
+        if translated:
+            raise refuse(translated, detail)
+        raise refuse(BAD_REQUEST, detail)
     if isinstance(result, dict) and "structuredContent" in result:
         value = result["structuredContent"]
         if isinstance(value, dict):
