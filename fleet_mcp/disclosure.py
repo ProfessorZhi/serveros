@@ -324,6 +324,7 @@ def remote_summary(
     content_type: str | None = None,
     rpc_code: object = None,
     error_message: object = None,
+    error_code: object = None,
 ) -> str:
     """Describe a remote failure without relaying a character of remote text.
 
@@ -337,6 +338,16 @@ def remote_summary(
 
     `method` is this surface's own outbound method name, so it is relayed: the
     message has to say which call failed.
+
+    `error_code` is the exception to "no remote text", and it is a narrow one:
+    the far end's `structuredContent.code` is an identifier from a fixed
+    upper-case vocabulary (`NO_CLIENT`, `PROJECT_WORKSPACE_ROOT_REQUIRED`), the
+    same shape `_ERROR_CODE` already admits into the audit. Relaying it is what
+    turns "answered unusably" into a fact a caller can act on without reading
+    the device's journal. It is still checked against that shape and the size
+    ceiling: a code that is not an enum of that shape is reported as
+    `not-an-enum` and never echoed, so a gateway that puts a sentence — or a key
+    — in that field does not thereby get it across.
     """
     head = [label]
     if status is not None:
@@ -356,6 +367,9 @@ def remote_summary(
     if rpc_code is not None:
         code = rpc_code if isinstance(rpc_code, int) and not isinstance(rpc_code, bool) else "not-an-integer"
         measured.append(f"code {code}")
+    if error_code is not None:
+        named = error_code if _shaped(error_code, _ERROR_CODE) else "not-an-enum"
+        measured.append(f"error code {named}")
     tail = f" ({'; '.join(measured)})" if measured else ""
 
     return (
