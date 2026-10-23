@@ -19,7 +19,12 @@ from typing import Any
 # -- input shape ------------------------------------------------------------
 BAD_REQUEST = "BAD_REQUEST"
 """The call did not name something this surface can act on (missing argument,
-malformed session ref, unknown tool)."""
+malformed session ref, unknown tool).
+
+This is also what an untranslated provider refusal carries, with the far side's
+own code in the detail. A device declining is not a defect here, and a closed
+vocabulary with no exact word for its reason should say so rather than invent
+one."""
 
 # -- identity ---------------------------------------------------------------
 UNKNOWN_DEVICE = "UNKNOWN_DEVICE"
