@@ -307,6 +307,7 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
             label,
             error_message=text or None,
             error_code=code,
+            refused=True,
         )
         # The device refusing is the device's behaviour. It is translated only
         # where the two vocabularies already agree exactly; otherwise it keeps
