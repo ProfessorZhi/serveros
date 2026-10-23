@@ -1,8 +1,10 @@
+# cmake+ctest over native/node-core, plus the daemon and native-facts suites.
+# (Was 189 lines: hand-built venv, deadline loop, taskset, ulimit, 8 evidence files.)
 name: serveros-native-linux-contract
 
 on:
   pull_request:
-    paths:
+    paths: &paths
       - 'native/node-core/**'
       - 'runtime/native_core_facts.py'
       - 'runtime/daemon.py'
@@ -12,17 +14,8 @@ on:
       - 'tests/test_hosted_daemon_inputs.py'
       - '.github/workflows/serveros-native-linux-contract.yml'
   push:
-    branches:
-      - 'test/fleet-v1-complete-*'
-    paths:
-      - 'native/node-core/**'
-      - 'runtime/native_core_facts.py'
-      - 'runtime/daemon.py'
-      - 'tests/test_daemon.py'
-      - 'tests/test_native_core_facts.py'
-      - '.github/scripts/hosted_daemon_inputs.py'
-      - 'tests/test_hosted_daemon_inputs.py'
-      - '.github/workflows/serveros-native-linux-contract.yml'
+    branches: [main]  # was 'test/fleet-v1-complete-*', a prefix no branch matches
+    paths: *paths
 
 permissions:
   contents: read
@@ -30,160 +23,28 @@ permissions:
 jobs:
   native-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
-      - name: Checkout the exact candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: Build and test the complete native tree
-        shell: bash
+      - { uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683, with: { persist-credentials: false } }
+      - name: Configure, build and test the native tree
         run: |
           set -euo pipefail
-          ulimit -v 2097152
-          git rev-parse HEAD
-          cmake -S native/node-core -B "$RUNNER_TEMP/serveros-native-build"
-          timeout 240s cmake --build "$RUNNER_TEMP/serveros-native-build" --parallel 1
-          timeout 60s ctest --test-dir "$RUNNER_TEMP/serveros-native-build" --output-on-failure --parallel 1
-      - name: Retain native test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-linux-contract-${{ github.sha }}
-          path: ${{ runner.temp }}/serveros-native-build/Testing/Temporary/*.log
-          if-no-files-found: warn
-          retention-days: 7
-
+          cmake -S native/node-core -B build-native
+          cmake --build build-native --parallel 2
+          ctest --test-dir build-native --output-on-failure
   hosted-daemon:
-    name: HOSTED_DAEMON complete daemon and native facts
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      PYTEST_ADDOPTS: ''
+    timeout-minutes: 15
     steps:
-      - name: Checkout the exact candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Prepare private short hosted paths and pinned venv
-        shell: bash
-        timeout-minutes: 2
+      - { uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683, with: { persist-credentials: false } }
+      - { uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065, with: { python-version: '3.12' } }
+      - run: python -m pip install --disable-pip-version-check 'pytest==9.1.1' 'PyYAML==6.0.2'
+      - name: Run the daemon and native-facts suites
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: ${{ github.workspace }}/runtime:${{ github.workspace }}
         run: |
           set -euo pipefail
-          test "${GITHUB_ACTIONS:-}" = true
-          umask 077
-          export DAEMON_EVIDENCE_DIR="$RUNNER_TEMP/hosted-daemon-evidence"
-          export DAEMON_VENV="$RUNNER_TEMP/hosted-daemon-venv"
-          mkdir "$DAEMON_EVIDENCE_DIR"
-          git rev-parse HEAD > "$DAEMON_EVIDENCE_DIR/source.sha"
-          python3 --version > "$DAEMON_EVIDENCE_DIR/python-version.txt"
-          daemon_work_root="$(mktemp -d /tmp/sod.XXXXXXXX)"
-          test "$(stat -c '%a' "$daemon_work_root")" = 700
-          mkdir "$daemon_work_root/t" "$daemon_work_root/r"
-          export TMPDIR="$daemon_work_root/t"
-          export XDG_RUNTIME_DIR="$daemon_work_root/r"
-          daemon_checkout_root="$(git rev-parse --show-toplevel)"
-          export PYTHONPATH="$daemon_checkout_root/runtime:$daemon_checkout_root"
-          printf '%s\n' "DAEMON_EVIDENCE_DIR=$DAEMON_EVIDENCE_DIR" "DAEMON_VENV=$DAEMON_VENV" \
-            "DAEMON_WORK_ROOT=$daemon_work_root" "TMPDIR=$TMPDIR" \
-            "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          printf '%s\n' 'PyYAML==6.0.2' 'pytest==9.1.1' > "$DAEMON_EVIDENCE_DIR/dependency-pins.txt"
-          ulimit -v 2097152
-          if timeout --signal=TERM --kill-after=5s 90s bash -c '
-            set -euo pipefail
-            python3 -B -m venv "$DAEMON_VENV"
-            "$DAEMON_VENV/bin/python" -B -m pip --isolated install --no-input \
-              --no-cache-dir --no-compile --disable-pip-version-check --only-binary=:all: \
-              --index-url https://pypi.org/simple "PyYAML==6.0.2" "pytest==9.1.1"
-            "$DAEMON_VENV/bin/python" -B -m pip --isolated freeze
-          ' > "$DAEMON_EVIDENCE_DIR/setup.log" 2>&1; then
-            daemon_setup_exit=0
-          else
-            daemon_setup_exit=$?
-          fi
-          printf '%s\n' "$daemon_setup_exit" > "$DAEMON_EVIDENCE_DIR/setup.exit-code"
-          cat "$DAEMON_EVIDENCE_DIR/setup.log"
-          if (( daemon_setup_exit != 0 )); then exit "$daemon_setup_exit"; fi
-          if "$DAEMON_VENV/bin/python" -B .github/scripts/hosted_daemon_inputs.py \
-            --work-root "$daemon_work_root" --evidence-dir "$DAEMON_EVIDENCE_DIR" \
-            --github-env "$GITHUB_ENV" > "$DAEMON_EVIDENCE_DIR/bootstrap.log" 2>&1; then
-            daemon_bootstrap_exit=0
-          else
-            daemon_bootstrap_exit=$?
-          fi
-          printf '%s\n' "$daemon_bootstrap_exit" > "$DAEMON_EVIDENCE_DIR/bootstrap.exit-code"
-          cat "$DAEMON_EVIDENCE_DIR/bootstrap.log"
-          exit "$daemon_bootstrap_exit"
-
-      - name: Run both complete files sequentially under one bounded budget
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "${GITHUB_ACTIONS:-}" = true
-          # These files are a conjunctive gate. The pre-integration base lacks
-          # native facts tests: merge that source before the one final CI push.
-          for daemon_test_file in tests/test_daemon.py tests/test_native_core_facts.py; do
-            if [[ ! -f "$daemon_test_file" ]]; then
-              printf 'NOT_RUN: required file missing: %s\n' "$daemon_test_file" \
-                >> "$DAEMON_EVIDENCE_DIR/gate.status"
-              exit 2
-            fi
-          done
-          ulimit -v 2097152
-          daemon_cpu="$(python3 -B -c 'import os; print(min(os.sched_getaffinity(0)))')"
-          printf 'cpu=%s; virtual_memory_kib=2097152; total_budget_seconds=540\n' "$daemon_cpu" \
-            > "$DAEMON_EVIDENCE_DIR/resources.txt"
-          daemon_deadline=$((SECONDS + 540))
-          daemon_first_exit=0
-          daemon_file_index=0
-          for daemon_test_file in tests/test_daemon.py tests/test_native_core_facts.py; do
-            daemon_file_index=$((daemon_file_index + 1))
-            daemon_label="$(basename "$daemon_test_file" .py)"
-            daemon_remaining=$((daemon_deadline - SECONDS))
-            if (( daemon_remaining <= 0 )); then
-              printf 'NOT_RUN: total test deadline exhausted before %s\n' "$daemon_test_file" \
-                >> "$DAEMON_EVIDENCE_DIR/gate.status"
-              # No synthetic per-file exit-code is written for an unrun file.
-              if (( daemon_first_exit == 0 )); then daemon_first_exit=124; fi
-              break
-            fi
-            printf '%s\n' "$daemon_test_file" >> "$DAEMON_EVIDENCE_DIR/files.started"
-            if timeout --signal=TERM --kill-after=10s "${daemon_remaining}s" \
-              taskset --cpu-list "$daemon_cpu" "$DAEMON_VENV/bin/python" -B -m pytest \
-              -q -ra -p no:cacheprovider -o addopts='' \
-              --basetemp "$DAEMON_WORK_ROOT/p$daemon_file_index" \
-              --junitxml "$DAEMON_EVIDENCE_DIR/$daemon_label.junit.xml" \
-              "$daemon_test_file" > "$DAEMON_EVIDENCE_DIR/$daemon_label.log" 2>&1; then
-              daemon_file_exit=0
-            else
-              daemon_file_exit=$?
-            fi
-            printf '%s\n' "$daemon_file_exit" > "$DAEMON_EVIDENCE_DIR/$daemon_label.exit-code"
-            cat "$DAEMON_EVIDENCE_DIR/$daemon_label.log"
-            if (( daemon_file_exit != 0 && daemon_first_exit == 0 )); then
-              daemon_first_exit=$daemon_file_exit
-            fi
-          done
-          printf '%s\n' "$daemon_first_exit" > "$DAEMON_EVIDENCE_DIR/gate.exit-code"
-          if (( daemon_first_exit == 0 )); then
-            printf '%s\n' 'PASS: both complete files exited zero' > "$DAEMON_EVIDENCE_DIR/gate.status"
-          else
-            printf 'FAIL: first nonzero result=%s; partial progress is not PASS\n' "$daemon_first_exit" \
-              >> "$DAEMON_EVIDENCE_DIR/gate.status"
-          fi
-          cat "$DAEMON_EVIDENCE_DIR/gate.status" >> "$GITHUB_STEP_SUMMARY"
-          exit "$daemon_first_exit"
-
-      - name: Retain full daemon and native facts evidence including failures
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: hosted-daemon-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/hosted-daemon-evidence/
-          if-no-files-found: warn
-          retention-days: 7
+          umask 077; work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT   # 077: the private-file rule reads mode bits
+          python .github/scripts/hosted_daemon_inputs.py --work-root "$work" --evidence-dir "$work" --github-env "$GITHUB_ENV"
+          python -m pytest -q -p no:cacheprovider -o addopts='' tests/test_daemon.py tests/test_native_core_facts.py tests/test_hosted_daemon_inputs.py

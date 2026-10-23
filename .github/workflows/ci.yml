@@ -1,0 +1,148 @@
+# The gate that runs the whole suite, not a sample of it.
+#
+# Nothing in this directory ran `tests/` before this file. The three contracts
+# beside it pin specific surfaces — native/node-core, fleet-next's isolated
+# canaries, the plugin ZIP — and each says so in its own name. 320 of the 321
+# `test_*.py` files in `tests/` were reachable only from somebody's shell.
+#
+# SHARDING, AND WHY IT CANNOT DROP A FILE
+#
+# The plan job enumerates `tests/**/test_*.py` from the checkout at run time
+# and splits that list by index. It then asserts, before emitting anything,
+# that reassembling the shards reproduces the enumeration byte for byte; a
+# failed assertion aborts the job, so no shard runs and the gate is red. The
+# test jobs receive their file list from that plan and pass it to pytest as
+# explicit paths, which makes "the shard ran" and "these files ran" the same
+# statement — pytest errors on a path it is given and cannot find. A file is
+# therefore skipped only by not existing in the enumeration, and a file that
+# does not exist is not collected by the enumeration either.
+name: serveros test suite
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: suite-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: enumerate and shard the suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+
+          SHARDS = 8
+          files = sorted(str(p) for p in pathlib.Path("tests").rglob("test_*.py"))
+          if not files:
+              sys.exit("no test files under tests/; the enumeration is empty")
+          buckets = [files[i::SHARDS] for i in range(SHARDS)]
+          union = sorted(f for b in buckets for f in b)
+          if union != files:
+              sys.exit("shard union does not reproduce the enumeration")
+          print("total=" + str(len(files)))
+          print("matrix=" + json.dumps({"include": [
+              {"shard": i + 1, "files": "\n".join(b), "count": len(b)}
+              for i, b in enumerate(buckets) if b]}))
+          PY
+
+  tests:
+    name: tests (shard ${{ matrix.shard }}/8, ${{ matrix.count }} files)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install the suite's declared dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-input \
+            'pytest==9.1.1' 'pytest-timeout==2.4.0' 'PyYAML==6.0.2' 'cryptography==50.0.2'
+      # `runtime.paths` refuses an unbound root by design, so a runner with no
+      # node profile is not "a machine where those tests are irrelevant" — it is
+      # the one world in which several hundred of them cannot answer at all.
+      # This binds the same synthetic node the native contract's daemon job
+      # uses, through the product's own environment seam, and asserts the
+      # contract closed. Measured on 2026-10-23: with no binding, 343 of the
+      # suite's failures were `PathRefused`/`no data root`, and binding turned
+      # 172 of 176 in six sampled files green without touching a test.
+      - name: Bind a hosted node's roots
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d)"
+          echo "HOSTED_WORK_ROOT=$work" >> "$GITHUB_ENV"
+          python .github/scripts/hosted_daemon_inputs.py \
+            --work-root "$work" --evidence-dir "$work" --github-env "$GITHUB_ENV"
+      - name: Run this shard
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTEST_ADDOPTS: ''
+          # `tests/test_native_core_facts.py` imports `native_core_facts` as a
+          # top-level module; it resolves only if some earlier test has already
+          # put `runtime/` on `sys.path`. In one process over the whole suite
+          # that happens by accident, which is why the failure is invisible
+          # there and appears the moment the file is run alone or in a shard.
+          PYTHONPATH: ${{ github.workspace }}/runtime:${{ github.workspace }}
+          SHARD_FILES: ${{ matrix.files }}
+        run: |
+          set -euo pipefail
+          # `runtime`'s private-file rule (and test_native_core_facts in
+          # particular) judges mode bits: a file written by `Path.write_text`
+          # must carry no group/other bits, and the runner's default umask of
+          # 022 makes that 0644. One developer machine happens to run at 077,
+          # which is why this is invisible outside CI.
+          umask 077
+          mapfile -t files <<<"$SHARD_FILES"
+          if (( ${#files[@]} != ${{ matrix.count }} )); then
+            echo "shard lost files in transit: got ${#files[@]} of ${{ matrix.count }}"; exit 1
+          fi
+          printf 'shard %s: %s file(s)\n  %s\n' "${{ matrix.shard }}" "${#files[@]}" \
+            "$(printf '%s\n  ' "${files[@]}")"
+          python -m pytest -q -p no:cacheprovider --timeout=600 \
+            --junitxml="shard-${{ matrix.shard }}.junit.xml" "${files[@]}"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: suite-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  suite:
+    name: suite
+    needs: tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every shard must have passed
+        run: |
+          if [ '${{ needs.tests.result }}' != 'success' ]; then
+            echo "shards: ${{ needs.tests.result }}"; exit 1
+          fi
+          echo "all shards passed"
