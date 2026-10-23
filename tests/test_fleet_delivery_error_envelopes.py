@@ -95,6 +95,18 @@ def test_an_untranslated_device_code_is_a_bad_request_not_our_defect(remote_code
     assert "synthetic-secret" not in str(caught.value)
 
 
+def test_a_device_refusal_is_described_as_one():
+    """It answered. "answered unusably" would describe the shape, not the fact."""
+    with pytest.raises(FleetRefusal) as caught:
+        structured({
+            "isError": True,
+            "content": [{"type": "text", "text": "no host for this session"}],
+            "structuredContent": {"code": "SESSION_HOST_NOT_FOUND"},
+        })
+    assert "refused the call" in caught.value.detail
+    assert "answered unusably" not in caught.value.detail
+
+
 def test_an_error_with_text_but_no_code_is_a_bad_request():
     with pytest.raises(FleetRefusal) as caught:
         structured({"isError": True, "content": [{"type": "text", "text": "refused"}]})

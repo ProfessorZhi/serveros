@@ -325,6 +325,7 @@ def remote_summary(
     rpc_code: object = None,
     error_message: object = None,
     error_code: object = None,
+    refused: bool = False,
 ) -> str:
     """Describe a remote failure without relaying a character of remote text.
 
@@ -339,6 +340,11 @@ def remote_summary(
     `method` is this surface's own outbound method name, so it is relayed: the
     message has to say which call failed.
 
+    `refused` says the far end answered with a refusal rather than with
+    something unreadable. A tool result flagged `isError` carries a code and a
+    message the device chose; calling that "answered unusably" describes the
+    shape of its answer and hides the fact that it answered.
+
     `error_code` is the exception to "no remote text", and it is a narrow one:
     the far end's `structuredContent.code` is an identifier from a fixed
     upper-case vocabulary (`NO_CLIENT`, `PROJECT_WORKSPACE_ROOT_REQUIRED`), the
@@ -352,7 +358,7 @@ def remote_summary(
     head = [label]
     if status is not None:
         head.append(f"returned HTTP {status}")
-    elif rpc_code is not None:
+    elif rpc_code is not None or refused:
         head.append("refused the call")
     else:
         head.append("answered unusably")
