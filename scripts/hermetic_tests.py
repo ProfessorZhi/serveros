@@ -150,7 +150,11 @@ def gate(command: list[str], env: dict, baseline_file: Path, ran_files: set[str]
         print(f"pytest exited {code}; not a test verdict", file=sys.stderr)
         return code
     new = sorted(f for f in failed if not known(f, baseline))
-    fixed = sorted(e for e in baseline if "::" in e and e.split("::", 1)[0] in ran_files
+    # A file that failed to collect ran none of its tests, so its listed
+    # entries say nothing about whether they pass now.
+    uncollected = {f for f in failed if "::" not in f}
+    fixed = sorted(e for e in baseline if "::" in e
+                   and e.split("::", 1)[0] in ran_files - uncollected
                    and not any(f == e or f.startswith(e + "::") for f in failed))
     flaky: list[str] = []
     if new:

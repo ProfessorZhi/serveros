@@ -85,7 +85,7 @@ jobs:
           python-version: '3.13'
       - run: >
           python3 -m pip install --disable-pip-version-check
-          'PyYAML==6.0.2' 'pytest==9.1.1' 'pytest-xdist==3.8.0'
+          'PyYAML==6.0.2' 'pytest==9.1.1' 'pytest-xdist==3.8.0' 'cryptography==50.0.1'
       - name: Run shard ${{ matrix.shard }} against throwaway node roots
         working-directory: serveros
         run: >

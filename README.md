@@ -47,7 +47,7 @@ scripts/install-fleet-plugin.sh      # 注册本仓库为 marketplace，替换�
 **跑测试（任何机器，不需要是节点）。**
 
 ```bash
-python3 -m pip install pytest pytest-xdist pyyaml
+python3 -m pip install pytest pytest-xdist pyyaml cryptography
 python3 scripts/hermetic_tests.py --baseline tests/hermetic-known-failures.txt -n auto
 ```
 
