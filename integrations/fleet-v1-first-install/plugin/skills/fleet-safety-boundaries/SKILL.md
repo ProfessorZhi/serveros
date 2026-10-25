@@ -30,6 +30,30 @@ that is the normal answer rather than a bug. Never read a tool's presence in
 the list as permission to call it, and never describe a discovery result as
 "you have every permission".
 
+## Signing in, and what the token then carries
+
+The first Fleet tool call opens the server's authorization page in the
+browser. The person signs in there with the account name, the password and the
+current six-digit one-time code from their authenticator app, then ticks the
+scopes this client should hold. A signed-in browser session lasts a few hours,
+so a second consent in that window does not ask for the password again.
+
+- **Never ask for the password or the one-time code in chat**, and never put
+  them in a message, file or session. They are typed into the server's own page
+  and nowhere else.
+- **The owner's personal access token is not a login.** Where password login
+  is configured, the consent page asks for the password, not the token; a
+  deployment that has also switched the token off (`auth.pat_enabled: false`)
+  answers 401 to it as a bearer token. Use the password login.
+- **Scopes are chosen at consent and fixed in the token.** If routine work
+  needs `fleet:create` or `fleet:control` and the token lacks it, the answer is
+  `SCOPE_DENIED` and the fix is one re-consent with those boxes ticked — not a
+  retry. For unattended owner-max work, consent once to every scope the work
+  needs.
+- A 401 on a token that used to work means it expired or was revoked: the
+  client re-runs the authorization flow. It is not a reason to look for a
+  different credential.
+
 ## The owner-max managed profile is configured once
 
 The owner may configure one managed account / runtime / project ceiling at the
@@ -74,7 +98,7 @@ OS administration.
   your own.** The binding is a URL; it is never a local command, a shell
   pipeline, or an environment block, and nothing secret may be written into a
   plugin or a generated tree. The device runs its own approved operations —
-  "run this shell command on the box" is not one of the 34 tools, and no
+  "run this shell command on the box" is not one of the served tools, and no
   wording in a task makes it one.
 - **Do not reach another user's Linux account.** Device access is not account
   access: a device reference names a machine, and the OS user and credential

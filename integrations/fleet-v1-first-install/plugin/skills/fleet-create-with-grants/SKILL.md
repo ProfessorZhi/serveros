@@ -19,7 +19,8 @@ Before the first use, resolve the managed profile:
 | Which **credential** is calling, and does it carry `fleet:create`? | the scope on the presented token — never a parameter you supply |
 | Is **creation** open on that device/runtime? | owner-max: its enabled owner runtime and actual owner grant; legacy: the machine's `allow_create` binding |
 | Which **project** may a session use? | owner-max: the selected runtime's registered project membership and owner grant; legacy/non-owner: the machine's project list plus static `create_allow` |
-| Which **root** may a **new** project be created under? | the owner-configured `owner_access.project_roots` binding — the root is the grant |
+| Which **root** may a **new** project be created under? | `fleet_status.owner_access` — the roots the owner configured in the `owner_access.project_roots` binding; the root is the grant |
+| Is the grant written with `"*"`? | an owner may write `"*"` for every principal or every enrolled device in `operator_grants`; the device's eligibility check still applies after it. It is server config, read from the refusal or `fleet_status`, never something a caller supplies |
 | Which **runtime / owner** does it run as? | the owner-approved runtime entry for that account |
 
 Owner-max checks the actual selected-runtime project membership and owner grant
@@ -38,15 +39,63 @@ After the owner has configured that profile, do not re-ask for routine create
 inside it. A refusal that names a project is not an invitation to retry with a
 different project.
 
-## Creating a new project is a separate capability
+## Creating a new project: `fleet_create_project`
 
 A session in an existing project and a **new project** are different
-operations. The core owns the project-creation entry point. Inspect the actual
-tool list (`tools/list` or the plugin's recorded capability list): if a
-project-create capability is present, use that exact name and schema. If it is
-absent, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and return the decision
-to the core/owner. Do not guess a verb name, edit a device file, or fall back to
+operations. Confirm the capability in the actual tool list (`tools/list` or the
+plugin's recorded capability list) and take its schema from there; if the
+served list has no `fleet_create_project`, report
+`PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and return the decision to the
+core/owner. Do not guess another verb name, edit a device file, or fall back to
 another account. Do not hardcode a tool count; read what the surface serves.
+
+When it is served:
+
+1. **Find the root.** `fleet_status.owner_access` lists, per device and
+   runtime, the `root_refs` this caller may create under, how it was admitted
+   (`owner-max`, or an operator `create` grant) and — for owner-max only — the
+   permission mode new sessions there take. No entry for the device means no
+   root: that is the answer, not a gap to work around.
+2. **Create.** Call `fleet_create_project` with `device`, `root` (a ref from
+   that list), `name` (one safe directory component), optional
+   `display_name`, the exact `runtime`, and a stable `idempotency_key` you keep
+   across retries. It needs `fleet:create` on the token. Inside owner-max there
+   is no per-project approval to ask for.
+3. **Use the returned `project_id`** for `fleet_create_session`. A project just
+   created through the owner's root needs no static `create_allow` edit.
+
+What its refusals mean:
+
+- `APPROVAL_REQUIRED` — the caller has neither the selected owner-max profile
+  nor a `create` operator grant on a device whose operator authored project
+  roots. That is an owner configuration question; do not retry elsewhere.
+- `BAD_REQUEST` — an unsafe name, an unknown root ref, or a directory that
+  already exists. Creation is exclusive: an existing directory is refused, never
+  adopted. Pick a new name or use the existing project's session instead.
+- `CAPABILITY_UNSUPPORTED` — that device's provider cannot create projects.
+- an `INTERNAL` answer with `retry_safe: false`, or any unknown outcome — the
+  project may exist. Reconcile with `fleet_cloudcli_projects_list` and the same
+  `idempotency_key`; never send a blind second create under a new key.
+
+## Removing a project: `fleet_delete_project`
+
+Only when the task explicitly asks for a project to be removed. It needs
+`fleet:control`, plus the device's `allow_control` (or the owner-max profile)
+and the `control` operator grant.
+
+- Read the row first with `fleet_cloudcli_projects_list`, archived rows
+  included, and pass its `id` as `project_id` and its own `path` as
+  `confirm_path`. A path that does not match is refused before anything is
+  touched.
+- The default archives the row: reversible, directory and transcripts kept.
+  `force: true` permanently removes the session rows and transcript files.
+  Neither form removes the project directory on disk.
+- A `fleet-node` device removes only rows in its own catalogue whose path sits
+  under a root its owner configured; a row outside today's roots is not
+  reachable from here.
+- Success is verified by the surface re-reading the catalogue. A second force
+  delete answers `PROJECT_NOT_FOUND`; that is the present state, not a failure
+  of the first call.
 
 ## A refusal is information, not an obstacle
 

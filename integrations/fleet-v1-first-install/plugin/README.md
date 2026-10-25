@@ -4,10 +4,11 @@ This plugin connects an assistant to one Fleet MCP server: the ingress your
 operator gave you a URL for. Through it the assistant can list the enrolled
 devices and the Claude Code / Codex sessions on them, read a session, send a
 message, interrupt a run, and — where the device and the policy allow it —
-create a session inside an approved project. It also carries five Skills that
-teach the assistant to discover the real device first, reuse an idle session
-instead of minting a new one, and accept a delegated result only from evidence
-it actually read.
+create or remove a project and create a session inside it. It also carries
+eight Skills that teach the assistant to discover the real device first, reuse
+an idle session instead of minting a new one, dispatch long work without
+waiting on it, and accept a delegated result only from evidence it actually
+read.
 
 ## What is inside
 
@@ -15,7 +16,7 @@ it actually read.
 |---|---|
 | `plugin.json` (agent-plugins.org) or `.claude-plugin/plugin.json` (Claude Code) | the manifest |
 | `mcp.json` / `.mcp.json` | the remote `streamable-http` MCP binding |
-| `skills/` | five Skill documents, one `SKILL.md` per directory |
+| `skills/` | eight Skill documents, one `SKILL.md` per directory |
 | `assets/` | the composer icon and the larger logo |
 | `PRIVACY.md` | what the package does and does not do with data |
 
@@ -31,7 +32,9 @@ it actually read.
    The marketplace name is the one that marketplace declares; substitute your
    own. The portable package is registered by the host that supports it.
 2. Use a Fleet tool once. The client opens the server's authorization page; sign
-   in and choose the scopes you consent to. The server advertises six
+   in with your account name, password and the six-digit code from your
+   authenticator app, and choose the scopes you consent to. Type these only
+   into that page, never into a chat. The server advertises six
    (`fleet:read`, `fleet:send`, `fleet:control`, `fleet:create`, `fleet:approve`,
    `fleet:navigate`); what your token actually carries is the subset you grant.
 3. Nothing else is configured here. The device allow-lists, project allow-lists
@@ -49,10 +52,10 @@ locally and what the server operator decides.
 - **Rendering is a client behaviour.** The icon paths point at the same bytes
   `brand-assets.lock.json` pins by SHA-256, but whether and where a client draws
   them has not been observed.
-- **34 tools are not 34 permissions.** The tool surface is wider than any one
+- **A tool is not a permission.** The tool surface is wider than any one
   credential: a token carries the scopes granted to it, and every mutating verb
   is checked again against the server's own policy.
-- **A Skill is instruction, not authority.** The five Skills describe how to
+- **A Skill is instruction, not authority.** The eight Skills describe how to
   use the surface correctly; they cannot grant a scope the token lacks.
 
 ## Reading the source tree
