@@ -339,18 +339,44 @@ class ReleaseTests(unittest.TestCase):
             "print(m.default_state_dir())"
         )
 
-        def resolve(**overrides) -> str:
+        def run(**overrides) -> subprocess.CompletedProcess:
             env = dict(os.environ)
             for key in ("SERVEROS_STATE_DIR", "DATA_ROOT"):
                 env.pop(key, None)
             env.update(overrides)
-            proc = subprocess.run([sys.executable, "-c", probe],
+            return subprocess.run([sys.executable, "-c", probe],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, env=env)
+
+        def resolve(**overrides) -> str:
+            proc = run(**overrides)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             return proc.stdout.strip()
 
-        bare = resolve()
+        # An explicit DATA_ROOT IS honoured, and that distinction is the point:
+        # a stated root is a statement about the node, while an absent one used
+        # to become a guess. `paths.py` owns that call.
+        self.assertEqual(resolve(DATA_ROOT="/tmp/somewhere-else"),
+                         "/tmp/somewhere-else/state/serveros")
+
+        # `SERVEROS_STATE_DIR` named the DAEMON's environment, not the
+        # installer's input. Reading it here let a variable set for one purpose
+        # decide where an install pointed, so it is no longer consulted.
+        self.assertEqual(resolve(DATA_ROOT="/tmp/somewhere-else",
+                                 SERVEROS_STATE_DIR="/tmp/ignored"),
+                         "/tmp/somewhere-else/state/serveros")
+
+        # With neither variable, the answer is the node's own binding. A
+        # machine that is not an enrolled node (a fresh clone, CI) has none,
+        # and then release must refuse exactly where the resolver refuses —
+        # never fall back to `$HOME` or to SERVEROS_STATE_DIR.
+        bare_run = run()
+        if bare_run.returncode != 0:
+            self.assertIn("PathRefused", bare_run.stderr)
+            self.assertIsNone(self.resolved_state_root(allow_refusal=True))
+            self.assertNotEqual(run(SERVEROS_STATE_DIR="/tmp/ignored").returncode, 0)
+            return
+        bare = bare_run.stdout.strip()
         # The old expression appended `state/serveros` to `$HOME`, and the
         # check for it was "the answer must not be under $HOME". That check was
         # a fact about the node it was written on. On THIS node the data root
@@ -363,19 +389,9 @@ class ReleaseTests(unittest.TestCase):
         # resolver's, which is what §18 asks for and what catches a
         # `release.py` that quietly stops delegating.
         self.assertEqual(bare, self.resolved_state_root())
-
-        # An explicit DATA_ROOT IS honoured, and that distinction is the point:
-        # a stated root is a statement about the node, while an absent one used
-        # to become a guess. `paths.py` owns that call.
-        self.assertEqual(resolve(DATA_ROOT="/tmp/somewhere-else"),
-                         "/tmp/somewhere-else/state/serveros")
-
-        # `SERVEROS_STATE_DIR` named the DAEMON's environment, not the
-        # installer's input. Reading it here let a variable set for one purpose
-        # decide where an install pointed, so it is no longer consulted.
         self.assertEqual(bare, resolve(SERVEROS_STATE_DIR="/tmp/ignored"))
 
-    def resolved_state_root(self) -> str:
+    def resolved_state_root(self, allow_refusal: bool = False) -> str | None:
         """What `runtime/paths.py` says the state root is, in the bare env.
 
         The same environment `resolve()` uses, so the two answers are
@@ -394,6 +410,8 @@ class ReleaseTests(unittest.TestCase):
         proc = subprocess.run([sys.executable, "-c", probe],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, env=env)
+        if allow_refusal and proc.returncode != 0 and "PathRefused" in proc.stderr:
+            return None
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.strip()
 
@@ -1275,6 +1293,18 @@ class UnitTemplateInventoryTest(unittest.TestCase):
     TEMPLATES = sorted(list((ROOT / "runtime").glob("*.service")) +
                        list((ROOT / "runtime").glob("*.timer")))
 
+    #: Templates another owner renders and installs, deliberately not this
+    #: installer. Each needs its reason, and the set is checked below so a
+    #: name cannot linger here after its template is gone.
+    #:   serveros-native-facts.service — the Native Core facts publisher;
+    #:   docs/plans/plan-08-native-facts-owner.md ships it as a template that
+    #:   release.py does not install.
+    NOT_INSTALLED_BY_RELEASE = {"serveros-native-facts.service"}
+
+    def test_every_exemption_is_a_shipped_template(self):
+        self.assertLessEqual(self.NOT_INSTALLED_BY_RELEASE,
+                             {path.name for path in self.TEMPLATES})
+
     def test_every_unit_template_is_named_by_the_installer(self):
         named = {
             release.UNIT_NAME, release.ALERT_SERVICE_NAME, release.ALERT_TIMER_NAME,
@@ -1282,7 +1312,7 @@ class UnitTemplateInventoryTest(unittest.TestCase):
             release.WAKE_SERVICE_NAME, release.WAKE_TIMER_NAME,
             release.EVENING_SERVICE_NAME, release.EVENING_TIMER_NAME,
         }
-        shipped = {path.name for path in self.TEMPLATES}
+        shipped = {path.name for path in self.TEMPLATES} - self.NOT_INSTALLED_BY_RELEASE
         self.assertEqual(
             shipped, named,
             "these two sets are the same set: a template nothing installs is a "

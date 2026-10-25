@@ -491,6 +491,17 @@ class BuildTests(unittest.TestCase):
                     [sys.executable, str(entry)], input=request,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     cwd=str(self.base), timeout=120)
+                if proc.returncode != 0 and "DaemonUnavailable" in proc.stderr:
+                    # The agent surface asks a running serverosd which device
+                    # it is on. Off a node there is none; naming the device is
+                    # the entry point's own documented alternative, and the
+                    # claim under test — it imports from the artifact and
+                    # answers tools/list — is unchanged.
+                    proc = subprocess.run(
+                        [sys.executable, str(entry), "--local-device",
+                         "device:hermetic-test"], input=request,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        cwd=str(self.base), timeout=120)
                 self.assertEqual(
                     proc.returncode, 0,
                     f"{name} could not start from the artifact:\n{proc.stderr}")
@@ -816,7 +827,7 @@ class BuildTests(unittest.TestCase):
             self.assertTrue(target.is_file(), f"{manifest_path} points at a file that is not there")
 
     def test_the_generated_artifact_passes_the_runtimes_own_validator(self):
-        """`claude plugin validate --strict` is the strongest available check on
+        """`claude plugin validate` is the strongest available check on
         the manifests, and it is not a formality: it was confirmed to fail on a
         misspelled `mcpservers` and on a wrong-typed `mcpServers`, which are the
         two ways this file can be present and inert. Skipped rather than failed
@@ -826,9 +837,41 @@ class BuildTests(unittest.TestCase):
         if cli is None:
             self.skipTest("claude CLI is not on PATH")
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
-        result = subprocess.run([cli, "plugin", "validate", "--strict", str(self.out)],
+        # `--strict` used to be the gate, but it promotes EVERY warning, and
+        # newer CLIs add advisory ones (a skill without a description, no icon,
+        # no install line in the README) — so the same artifact passed on one
+        # machine and failed on the next. The structured report keeps the two
+        # failures this test exists for: a wrong-typed `mcpServers` is an
+        # error, and a misspelled one is an "Unknown field" warning.
+        result = subprocess.run([cli, "plugin", "validate", "--json", str(self.out)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        report = json.loads(result.stdout[result.stdout.index("{"):])
+        files = [report["manifest"], *report.get("contents", [])]
+        errors = [(f["file"], e["message"]) for f in files for e in f["errors"]]
+        unknown = [(f["file"], w["message"]) for f in files for w in f["warnings"]
+                   if w["message"].startswith("Unknown field")]
+        self.assertEqual((errors, unknown), ([], []), result.stdout)
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_the_validator_gate_still_catches_an_inert_mcp_servers(self):
+        """The positive control for the gate above, on a minimal plugin."""
+        cli = shutil.which("claude")
+        if cli is None:
+            self.skipTest("claude CLI is not on PATH")
+        plugin = self.base / "inert-plugin"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        manifest = plugin / ".claude-plugin" / "plugin.json"
+        manifest.write_text(json.dumps(
+            {"name": "x", "version": "1.0.0", "mcpservers": {"a": {"command": "x"}}}))
+        result = subprocess.run([cli, "plugin", "validate", "--json", str(plugin)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        report = json.loads(result.stdout[result.stdout.index("{"):])
+        self.assertTrue(any(w["message"].startswith("Unknown field")
+                            for w in report["manifest"]["warnings"]), result.stdout)
+        manifest.write_text(json.dumps({"name": "x", "version": "1.0.0", "mcpServers": "oops"}))
+        result = subprocess.run([cli, "plugin", "validate", "--json", str(plugin)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
 
     def test_a_bundle_without_servers_declares_no_mcp_surface(self):
         """A plugin with no node surface must not advertise an empty one — an

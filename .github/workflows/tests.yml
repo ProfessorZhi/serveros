@@ -1,0 +1,95 @@
+# The whole test suite, on a machine that is not a ServerOS node.
+#
+# `scripts/hermetic_tests.py` binds every node root inside a throwaway
+# directory (the same seam serveros-native-linux-contract.yml uses), pins the
+# node's umask and time zone, and runs pytest. `tests/hermetic-known-failures.txt`
+# lists the tests that cannot pass off a node or already fail on main; a run
+# fails only on a failure that file does not list. Reproduce any shard locally:
+#
+#   python3 scripts/hermetic_tests.py --baseline tests/hermetic-known-failures.txt \
+#       --shard 2/4 -n auto
+#
+# Two sibling repositories are read by some tests: ability-management and the
+# archived hwz-ops. Both are private, so checking them out needs the repository
+# secret SIBLING_REPOS_TOKEN (a fine-grained token with read access to
+# contents of those two repositories). Without it the tests that need them
+# fail and say which checkout is missing.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    name: Claude Code plugin matches its source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2' 'pytest==9.1.1'
+      - name: The committed plugin is the one its Skills generate
+        run: python3 scripts/fleet_plugin.py check
+      - name: Plugin and Skill tests
+        run: >
+          python3 -m pytest -q -p no:cacheprovider
+          tests/test_fleet_plugin_marketplace.py tests/test_fleet_operator_skills.py
+          tests/test_fleet_cc_dev_plugin_client_e2e_gate.py tests/test_fleet_cc_release_adapter.py
+          tests/test_fleet_v1_first_install.py
+
+  suite:
+    name: Suite (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SIBLING_TOKEN: ${{ secrets.SIBLING_REPOS_TOKEN }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: serveros
+          persist-credentials: false
+      - name: Check out ability-management next to it
+        if: env.SIBLING_TOKEN != ''
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ProfessorZhi/ability-management
+          path: ability-management
+          token: ${{ env.SIBLING_TOKEN }}
+          # The tests read pinned revisions out of its history.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out hwz-ops next to it
+        if: env.SIBLING_TOKEN != ''
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ProfessorZhi/hwz-ops
+          path: hwz-ops
+          token: ${{ env.SIBLING_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: >
+          python3 -m pip install --disable-pip-version-check
+          'PyYAML==6.0.2' 'pytest==9.1.1' 'pytest-xdist==3.8.0'
+      - name: Run shard ${{ matrix.shard }} against throwaway node roots
+        working-directory: serveros
+        run: >
+          python3 scripts/hermetic_tests.py
+          --baseline tests/hermetic-known-failures.txt
+          --shard ${{ matrix.shard }}/4
+          -q -n auto --dist loadfile --continue-on-collection-errors

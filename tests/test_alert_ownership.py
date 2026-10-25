@@ -132,6 +132,23 @@ an = _load("serveros_runtime_anomaly", "anomaly.py")
 
 CONTRACT = yaml.safe_load((RUNTIME / "attribution-contract.yaml").read_text())
 
+#: The uid the fixtures below call "this account".
+THIS_UID = 1002
+
+
+@pytest.fixture(autouse=True)
+def _the_fixtures_account_is_the_running_one(monkeypatch):
+    """Run every test as the account its fixtures describe.
+
+    `anomaly.our_uid()` reads `os.getuid()`, and the scopes below were written
+    on the node whose account is 1002. Under any other uid — a laptop, a CI
+    runner — "this account" silently became "another account" and the §7 scope
+    rule dropped the very groups each test asserts on. Tests that are about
+    `our_uid` itself patch it again inside the test, which takes precedence.
+    """
+    monkeypatch.setattr(an.os, "getuid", lambda: THIS_UID)
+
+
 # The scopes a reader is most likely to get wrong, written as the kernel writes
 # them. `user-1002` is this account; the others are other people on the host.
 SYSTEM_UNIT = "/system.slice/docker.service"

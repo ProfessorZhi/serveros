@@ -35,28 +35,23 @@ ServerOS 把这四件事做成常驻的个人基础设施：节点上的 Core �
 
 ## 5 分钟上手
 
-下面命令在一个全新 clone、独立 venv 里跑过（Linux，Python 3.12）。ServerOS 是面向一台已授权设备的控制平面，仓库级测试会读取这台设备的 profile 与 records；这里跑的是零配置的核心子集。
+**装 Claude Code 插件（一键）。** 仓库根目录就是一个 Claude Code marketplace，插件已生成好放在 `plugins/serveros-fleet-ingress/`：
 
 ```bash
-git clone https://github.com/ProfessorZhi/serveros.git
-cd serveros
-
-python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install pytest pytest-xdist pytest-timeout pyyaml cryptography
-
-export TMPDIR=/tmp/serveros-test-tmp
-mkdir -p "$TMPDIR"
-CUDA_VISIBLE_DEVICES="" nice -n 10 python -m pytest -q -n 8 --timeout=300 \
-  tests/test_actor_context.py tests/test_agent_control_router.py \
-  tests/test_agent_control_store.py tests/test_agent_mcp.py \
-  tests/test_agent_sessions.py tests/test_approval.py \
-  tests/test_business_calendar.py tests/test_card_delivery.py \
-  tests/test_bootstrap_skill_scope.py tests/test_ability_resolver.py \
-  tests/test_ability_projection.py
+git clone https://github.com/ProfessorZhi/serveros.git && cd serveros
+scripts/install-fleet-plugin.sh      # 注册本仓库为 marketplace，替换旧的 @fleet-local，装上 serveros-fleet-ingress@serveros
 ```
 
-实测：`638 passed, 185 subtests passed in 16.07s`。`TMPDIR` 必须短，有些测试会建很深的 socket/work 路径。
+重启 Claude Code 后第一次调用 Fleet 工具会打开登录页（账号 + 密码 + 六位验证码）。也可以不 clone：在 Claude Code 里 `/plugin marketplace add ProfessorZhi/serveros`，再 `/plugin install serveros-fleet-ingress@serveros`。改了 `integrations/fleet-v1-first-install/plugin/skills/` 里的 Skill 后运行 `python3 scripts/fleet_plugin.py build` 并一起提交；`tests/test_fleet_plugin_marketplace.py` 会拒绝没重新生成的提交。
+
+**跑测试（任何机器，不需要是节点）。**
+
+```bash
+python3 -m pip install pytest pytest-xdist pyyaml
+python3 scripts/hermetic_tests.py --baseline tests/hermetic-known-failures.txt -n auto
+```
+
+`scripts/hermetic_tests.py` 在一个临时私有目录里绑定全部节点根（与 CI 同一套机制），固定 `umask 077`、`TZ=Asia/Shanghai`，所以测试既不依赖、也不会写到本机真实的 state。`ability-management` 和 `hwz-ops` 放在本仓库旁边（同级目录）即可被自动找到。整套约 12000 个用例，4 核约 6 分钟。`--baseline` 只在出现**清单之外**的失败时报错；清单里是离开节点跑不了的、以及 main 上本来就失败的用例，修好一个就删掉一行。CI（`.github/workflows/tests.yml`）跑的就是这一条命令，分 4 片。
 
 CLI 开发不需要启动任何服务，两个入口是：
 
@@ -64,8 +59,6 @@ CLI 开发不需要启动任何服务，两个入口是：
 bin/serverosctl --help
 python -m workengine --help
 ```
-
-仓库级套件（`python -m pytest tests -q -n 8 --timeout=300`）还需要真实设备 profile、records 树和同级的 `ability-management` 检出。在本机补齐这些根后实测 `7561 passed, 79 failed, 71 skipped, 4532 subtests passed`；剩余失败绑定在实时宿主上，不是干净机器的基线。
 
 ## 一张图
 
