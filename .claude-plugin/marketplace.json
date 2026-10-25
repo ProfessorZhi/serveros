@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "serveros",
+  "description": "ServerOS plugins, generated from this repository.",
+  "owner": {
+    "name": "ProfessorZhi"
+  },
+  "plugins": [
+    {
+      "name": "serveros-fleet-ingress",
+      "source": "./plugins/serveros-fleet-ingress",
+      "description": "Reach your ServerOS devices and their Claude Code / Codex sessions through the Fleet MCP server, with the operator Skills that teach how.",
+      "version": "1.0.0",
+      "category": "productivity"
+    }
+  ]
+}
