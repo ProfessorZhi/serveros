@@ -10,7 +10,7 @@
       "name": "serveros-fleet-ingress",
       "source": "./plugins/serveros-fleet-ingress",
       "description": "Reach your ServerOS devices and their Claude Code / Codex sessions through the Fleet MCP server, with the operator Skills that teach how.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "category": "productivity"
     }
   ]

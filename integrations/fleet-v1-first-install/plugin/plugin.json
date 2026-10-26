@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "serveros-fleet-ingress",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "ServerOS Fleet — reach an authorized Linux device and its Claude/Codex sessions through the Fleet ingress MCP server. Carries a remote streamable-HTTP MCP binding and the operator Skills that teach an assistant to discover a real device, reuse an idle session before creating one, and accept only evidence it actually read.",
   "author": {
     "name": "ProfessorZhi"
