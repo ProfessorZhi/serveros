@@ -11,6 +11,7 @@ from typing import Any
 from .errors import (BAD_REQUEST, DISPATCH_OUTCOME_UNKNOWN, DISPATCH_STATE_UNAVAILABLE,
                      IDEMPOTENCY_CONFLICT, RATE_LIMITED, refuse)
 from .identity import SessionKey
+from .principals import CONTEXT_REFS, KINDS, dispatch_context, valid_ref
 
 RECEIPT_FIELDS = frozenset(("session_ref", "run_id", "delivery_id", "queued_message_uuid", "accepted"))
 PROJECT_RECEIPT_FIELDS = frozenset(("project_id", "project_path", "accepted"))
@@ -84,28 +85,38 @@ class DispatchGuard:
 
     def begin(self, principal, verb: str, target: str, key: str, *,
               device_ref: str, runtime: str, params: dict, session_ref=None,
-              expected_project_path=None) -> Claim:
+              expected_project_path=None, work_ref=None, parent_ref=None, agent_ref=None,
+              project=None) -> Claim:
         if not isinstance(key, str) or not key.strip():
             raise refuse(BAD_REQUEST, "idempotency_key must be a non-empty string")
         actor = json.dumps([principal.credential_kind, principal.name], separators=(",", ":"))
         identity = json.dumps([actor, verb, target, key], separators=(",", ":"))
         token = "fleet-mcp:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        project = verb == "project.create"
-        if ((project and (not isinstance(expected_project_path, str) or not expected_project_path.strip()))
-                or (not project and expected_project_path is not None)):
+        project_create = verb == "project.create"
+        if ((project_create and (not isinstance(expected_project_path, str) or not expected_project_path.strip()))
+                or (not project_create and expected_project_path is not None)):
             raise refuse(BAD_REQUEST, "project.create requires its expected target path")
         intent_payload = {"principal": actor, "verb": verb, "target": target, "params": params}
-        if project:
+        refs = dispatch_context(work_ref=work_ref, parent_ref=parent_ref, agent_ref=agent_ref)
+        # Absent context preserves the byte-for-byte legacy digest, including
+        # pre-upgrade accepted attempts. Canonical labels never change actor keys.
+        if refs:
+            intent_payload["context"] = refs
+        if project_create:
             intent_payload["expected_project_path"] = expected_project_path
         payload = json.dumps(intent_payload, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=False, allow_nan=False)
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         intent = {"key": token, "action": "fleet." + verb, "device_ref": device_ref,
-                  "verb": verb if project else "session." + verb, "intent_digest": digest,
+                  "verb": verb if project_create else "session." + verb, "intent_digest": digest,
                   "principal": actor, "runtime": runtime}
+        context = {**refs, "principal_subject": principal.subject, "principal_kind": principal.kind}
+        if project is not None and valid_ref(project):
+            context["project"] = project
+        intent.update(context)
         if session_ref:
             intent["session_ref"] = session_ref
-        if project:
+        if project_create:
             if session_ref is not None:
                 raise refuse(BAD_REQUEST, "a project claim cannot name a session")
             intent["expected_project_path"] = expected_project_path
@@ -138,7 +149,13 @@ class DispatchGuard:
         if record.get("phase") == "ACCEPTED" and isinstance(record.get("result"), dict):
             receipt = record["result"]
             try:
-                if project:
+                if ({field: record[field] for field in CONTEXT_REFS if field in record} != refs
+                        or any(not valid_ref(record[field]) for field in ("project", "principal_subject") if field in record)
+                        or (("principal_subject" in record) != ("principal_kind" in record))
+                        or "principal_kind" in record and record["principal_kind"] not in KINDS
+                        or project is not None and "project" in record and record["project"] != project):
+                    raise ValueError("stored delivery context is malformed or misbound")
+                if project_create:
                     if (record.get("verb") != "project.create"
                             or set(receipt) != PROJECT_RECEIPT_FIELDS
                             or record.get("expected_project_path") != expected_project_path):
@@ -168,6 +185,10 @@ class DispatchGuard:
                       "queued_message_uuid": receipt.get("queued_message_uuid"), "accepted": True}
             if "delivery_id" in receipt:
                 replay["delivery_id"] = receipt["delivery_id"]
+            # Retain historical mapping; a binding edit cannot relabel evidence.
+            for field in ("principal_subject", "principal_kind", "project", "work_ref", "parent_ref", "agent_ref"):
+                if field in record:
+                    replay[field] = record[field]
             return Claim(token, digest, actor, None, replay)
         raise refuse(DISPATCH_OUTCOME_UNKNOWN,
                      "earlier delivery may have happened; reconcile its session/run before retrying",
@@ -180,16 +201,22 @@ class DispatchGuard:
             if project and receipt["project_path"] != claim.expected_project_path:
                 raise ValueError("project acknowledgement differs from the claimed path")
             if self.owner is not None:
+                metadata = ({"project": record["project"]} if "project" in record else {})
                 self.owner.complete_dispatch_claim(
                     claim.key, digest=claim.digest, claim_id=claim.claim_id,
-                    actor=claim.actor, receipt=receipt)
+                    actor=claim.actor, receipt=receipt, **metadata)
             else:
                 with self._lock:
                     entry = self._records[claim.key]
                     if (entry.get("_dispatch_claim") != claim.claim_id
                             or entry["phase"] != "EFFECT_UNKNOWN"):
                         raise ValueError("delivery claim changed")
+                    if "project" in record and (not valid_ref(record["project"])
+                            or project or entry.get("project", record["project"]) != record["project"]):
+                        raise ValueError("delivery project differs from original intent")
                     entry.update(phase="ACCEPTED", result=receipt)
+                    if "project" in record:
+                        entry["project"] = record["project"]
                     entry.pop("_dispatch_claim", None)
         except Exception as exc:
             raise refuse(DISPATCH_OUTCOME_UNKNOWN,

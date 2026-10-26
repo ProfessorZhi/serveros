@@ -31,7 +31,8 @@ SERVER_VERSION = "0.2.0"
 # `-6` would call it the same way and keep failing.
 # `fleet-mcp-8`: authenticated durable run-event inbox (45 tools total).
 # `fleet-mcp-9`: preserve native delivery IDs and expose one-of Run/delivery reads.
-TOOL_SURFACE_REVISION = "fleet-mcp-9"
+# `fleet-mcp-10`: optional dispatch correlation refs and trusted principal labels.
+TOOL_SURFACE_REVISION = "fleet-mcp-10"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

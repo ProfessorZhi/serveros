@@ -31,6 +31,7 @@ from .server import SUPPORTED_PROTOCOL_VERSIONS, McpServer, dumps, loads
 from .tools import ToolContext
 from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION
 from .scopes import ALLOWED_SCOPES
+from .principals import authenticated_principal
 
 
 def owner_principal(config: FleetConfig | None = None) -> Principal:
@@ -50,7 +51,7 @@ def owner_principal(config: FleetConfig | None = None) -> Principal:
     explicitly. This is the owner's own channel, where the binding is the
     authority and the scope merely stops the call before the binding is read.
     """
-    return Principal(name="local-owner",
+    return authenticated_principal(config, name="local-owner",
                      scopes=frozenset(ALLOWED_SCOPES if config is not None
                                       and config.policy.owner_max.get("local-owner")
                                       else (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),

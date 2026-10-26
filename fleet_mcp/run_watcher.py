@@ -87,7 +87,7 @@ class RunWatcher:
                             "summary": {"status": "UNKNOWN"}}
                 if delivery_id is not None:
                     template["delivery_id"] = delivery_id
-                for field in ("project", "work_ref", "parent_ref", "agent_ref"):
+                for field in ("project", "work_ref", "parent_ref", "agent_ref", "principal_subject", "principal_kind"):
                     if record.get(field) is not None:
                         template[field] = record[field]
                 validate_event(template)

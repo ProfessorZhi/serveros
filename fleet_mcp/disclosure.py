@@ -183,6 +183,11 @@ KIND_BY_FIELD: dict[str, str] = {
     # who
     "principal": REF,
     "subject": REF,
+    "principal_subject": REF,
+    "principal_kind": CODE,
+    "work_ref": REF,
+    "parent_ref": REF,
+    "agent_ref": REF,
     "client_id": REF,
     "client_name": WITHHELD,  # a client's own free text
     "scope": SCOPE,

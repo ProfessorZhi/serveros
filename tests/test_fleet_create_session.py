@@ -220,11 +220,12 @@ class TheToolIsOnTheSurfaceAndTheOldOnesAreUnchanged(unittest.TestCase):
         self.assertFalse(tool.annotations["idempotentHint"])
         self.assertTrue(tool.annotations["openWorldHint"])
 
-    def test_the_old_send_tool_is_untouched(self):
+    def test_send_keeps_its_arguments_and_adds_only_optional_correlation_refs(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_send_to_session"]
         self.assertEqual(sorted(tool.input_schema["properties"]),
                          sorted(["session_ref", "device", "session", "provider",
-                                 "message", "idempotency_key"]))
+                                 "message", "idempotency_key", "work_ref", "parent_ref", "agent_ref"]))
+        self.assertEqual(tool.input_schema["required"], ["message"])
 
     def test_the_new_tool_takes_no_url_host_path_or_command(self):
         banned = {"url", "uri", "host", "endpoint", "address", "command", "cmd",
@@ -252,7 +253,7 @@ class ArgumentsAreCloudclisOwnSchema(unittest.TestCase):
     #: binding at a time — the routing between them is this surface's, so the
     #: argument is too. It is consumed here and never forwarded, which the test
     #: below asserts, because the provider's own schema is closed.
-    SURFACE_OWNED_ARGUMENTS = {"runtime"}
+    SURFACE_OWNED_ARGUMENTS = {"runtime", "work_ref", "parent_ref", "agent_ref"}
 
     def test_the_declared_properties_are_the_providers_schema(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_create_session"]

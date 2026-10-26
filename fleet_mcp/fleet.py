@@ -59,6 +59,7 @@ from .errors import (
     refuse,
 )
 from .identity import SessionKey
+from .principals import Principal, dispatch_context, valid_ref
 from .owner_access import build_project_path, OwnerAccessError
 from .version import SERVER_VERSION
 from .session_detail import normalize_detail
@@ -176,32 +177,6 @@ def _session_project(detail) -> str | None:
                 if isinstance(value, str) and value:
                     return value
     return None
-
-
-@dataclass(frozen=True)
-class Principal:
-    """Who is calling, and what they may do.
-
-    Never derived from a client-supplied parameter. It is produced by the
-    credential the request presented — a personal access token or an OAuth
-    access token — and carried into every tool call by the server.
-    """
-
-    name: str
-    scopes: frozenset[str]
-    credential_kind: str  # "pat" | "oauth"
-
-    def require(self, scope: str) -> None:
-        if scope not in self.scopes:
-            raise refuse(
-                SCOPE_DENIED,
-                f"credential {self.name!r} ({self.credential_kind}) does not "
-                f"carry {scope!r}; it carries {sorted(self.scopes)}",
-            )
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "credential_kind": self.credential_kind,
-                "scopes": sorted(self.scopes)}
 
 
 @dataclass(frozen=True)
@@ -1579,9 +1554,13 @@ class FleetService:
         *,
         message: str,
         idempotency_key: str | None = None,
+        work_ref: str | None = None,
+        parent_ref: str | None = None,
+        agent_ref: str | None = None,
     ) -> dict[str, Any]:
         principal.require(SCOPE_SEND)
         self.admit(principal)
+        context = dispatch_context(work_ref=work_ref, parent_ref=parent_ref, agent_ref=agent_ref)
         if not message or not message.strip():
             raise refuse(BAD_REQUEST, "message must be a non-empty string")
         capped = message[: self.config.policy.max_message_chars]
@@ -1603,7 +1582,7 @@ class FleetService:
             claim = self.dispatch.begin(
                 principal, _VERB_SEND, key.ref, idempotency_key,
                 device_ref=key.device_ref, runtime=key.provider,
-                session_ref=key.ref, params={"message": message})
+                session_ref=key.ref, params={"message": message}, **context)
             replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
@@ -1611,6 +1590,7 @@ class FleetService:
                     principal=principal.name,
                     session_ref=key.ref,
                     idempotency_key=idempotency_key,
+                    **context,
                 )
                 return {
                     **key.as_dict(),
@@ -1626,13 +1606,19 @@ class FleetService:
                 }
 
         provider = self._session_provider(key)
-        self._verified_family_detail(key, provider)
+        detail = self._verified_family_detail(key, provider)
+        project = _session_project(detail)
+        project_context = {"project": project} if valid_ref(project) else {}
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
         delivery = ({"delivery_id": payload.get("deliveryId", payload.get("delivery_id"))}
                     if "deliveryId" in payload or "delivery_id" in payload else {})
         record = {
             **delivery,
+            **context,
+            **project_context,
+            "principal_subject": principal.subject,
+            "principal_kind": principal.kind,
             "display_name": key.as_dict(),
             "run_id": run_id,
             "queued_message_uuid": payload.get("queuedMessageUuid") or payload.get("queued_message_uuid"),
@@ -1646,6 +1632,10 @@ class FleetService:
             session_ref=key.ref,
             run_id=run_id,
             idempotency_key=idempotency_key,
+            **context,
+            **project_context,
+            principal_subject=principal.subject,
+            principal_kind=principal.kind,
         )
         return {
             **key.as_dict(),
@@ -2046,6 +2036,9 @@ class FleetService:
         permission_mode: str | None = None,
         idempotency_key: str | None = None,
         runtime: str = BASE_RUNTIME,
+        work_ref: str | None = None,
+        parent_ref: str | None = None,
+        agent_ref: str | None = None,
     ) -> dict[str, Any]:
         """Mint a session on one device, and start its first run only if asked.
 
@@ -2065,6 +2058,7 @@ class FleetService:
         """
         principal.require(SCOPE_CREATE)
         self.admit(principal)
+        context = dispatch_context(work_ref=work_ref, parent_ref=parent_ref, agent_ref=agent_ref)
         if not isinstance(project, str) or not project.strip():
             raise refuse(BAD_REQUEST, "`project` is required and must name a provider project id")
         if message is not None:
@@ -2132,7 +2126,7 @@ class FleetService:
                 params={"project": project, "message": message, "provider": provider,
                         "model": requested_defaults["model"],
                         "permission_mode": requested_defaults["permission_mode"],
-                        "lifecycle_mode": lifecycle_mode})
+                        "lifecycle_mode": lifecycle_mode}, project=project, **context)
             replayed = claim.replay
             if replayed is not None:
                 self.audit.record(
@@ -2140,6 +2134,7 @@ class FleetService:
                     principal=principal.name,
                     device_ref=device_ref,
                     idempotency_key=idempotency_key,
+                    **context,
                 )
                 key = _key_from_record(replayed, device_ref)
                 return {
@@ -2204,6 +2199,10 @@ class FleetService:
                     if "deliveryId" in payload or "delivery_id" in payload else {})
         record = {
             **delivery,
+            **context,
+            **({"project": project} if valid_ref(project) else {}),
+            "principal_subject": principal.subject,
+            "principal_kind": principal.kind,
             "session": key.as_dict(),
             "run_id": run_id,
             "queued_message_uuid": queued_message_uuid,
@@ -2228,6 +2227,9 @@ class FleetService:
             run_id=run_id,
             project=project,
             idempotency_key=idempotency_key,
+            **context,
+            principal_subject=principal.subject,
+            principal_kind=principal.kind,
         )
         return {
             **key.as_dict(),

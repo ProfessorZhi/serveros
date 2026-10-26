@@ -170,6 +170,7 @@ def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         _session_key(ctx, args),
         message=message,
         idempotency_key=args.get("idempotency_key"),
+        work_ref=args.get("work_ref"), parent_ref=args.get("parent_ref"), agent_ref=args.get("agent_ref"),
     )
 
 
@@ -222,6 +223,7 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         lifecycle_mode=args.get("lifecycle_mode"),
         permission_mode=args.get("permission_mode"),
         idempotency_key=args.get("idempotency_key"),
+        work_ref=args.get("work_ref"), parent_ref=args.get("parent_ref"), agent_ref=args.get("agent_ref"),
     )
 
 
@@ -437,6 +439,9 @@ TOOLS: tuple[Tool, ...] = (
                 "session": _string("The provider-native session id."),
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "message": _string("The message text to deliver."),
+                "work_ref": _string("Optional Work correlation identifier (max 200 characters); grants no Work authority."),
+                "parent_ref": _string("Optional parent checkpoint correlation identifier; does not establish trusted parent ownership."),
+                "agent_ref": _string("Optional agent correlation identifier; does not select the authenticated identity."),
                 "idempotency_key": _string(
                     "Stable key scoped to principal, verb and target session. "
                     "Reuse only for the identical intent. Accepted receipts "
@@ -578,6 +583,9 @@ TOOLS: tuple[Tool, ...] = (
                     "so newly created projects need no allowlist edit. Other "
                     "callers require local `policy.create_allow`."
                 ),
+                "work_ref": _string("Optional Work correlation identifier (max 200 characters); grants no Work authority."),
+                "parent_ref": _string("Optional parent checkpoint correlation identifier; does not establish trusted parent ownership."),
+                "agent_ref": _string("Optional agent correlation identifier; does not select the authenticated identity."),
                 "message": _string(
                     "Optional first message. Supplying one starts a run immediately "
                     "and the returned result carries its `run_id`; omitting it "

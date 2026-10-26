@@ -37,6 +37,7 @@ from .runtime_create_policy import (RuntimeProjectDefaults, PolicyError,
                                     parse_runtime_create_defaults)
 from .scopes import ALLOWED_SCOPES, DEFAULT_GRANTABLE_SCOPES
 from .owner_access import OwnerAccessProfile, parse_owner_access
+from .principals import parse_principals
 
 SCHEMA = "serveros/fleet-mcp.local/v1"
 
@@ -278,6 +279,11 @@ class AuthBinding:
     # deployment that believes SSO works and has nobody who can use it is a
     # support ticket rather than a configuration.
     feishu: FeishuBinding | None = None
+    # Canonical labels only; existing credential names retain their grants.
+    principals: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, "principals", parse_principals(self.principals))
 
 
 @dataclass(frozen=True)
@@ -1188,6 +1194,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         refresh_rotation_grace_seconds=int(auth_raw.get("refresh_rotation_grace_seconds", 0)),
         grantable_scopes=_grantable_scopes(auth_raw),
         feishu=_feishu_binding(auth_raw),
+        principals=auth_raw.get("principals"),
     )
 
     server_raw = raw.get("server") or {}

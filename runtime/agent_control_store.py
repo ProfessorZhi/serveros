@@ -1234,12 +1234,21 @@ class AgentControlStore:
         """
         fields = {"key", "action", "device_ref", "verb", "intent_digest",
                   "principal", "runtime", "session_ref", "expected_project_path"}
-        required = fields - {"session_ref", "expected_project_path"}
+        metadata_fields = {"principal_subject", "principal_kind", "project", "work_ref", "parent_ref", "agent_ref"}
+        fields |= metadata_fields
+        required = fields - {"session_ref", "expected_project_path"} - metadata_fields
         if (not isinstance(intent, dict) or set(intent) - fields
                 or not required.issubset(intent)
                 or any(not isinstance(intent[k], str) or not intent[k].strip()
                        for k in required)):
             raise StoreError("invalid delivery claim")
+        metadata = {k: intent[k] for k in metadata_fields if k in intent}
+        if (any(not isinstance(value, str) or len(value) > 200
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:|\-]*", value) is None
+                for value in metadata.values())
+                or ("principal_kind" in metadata and metadata["principal_kind"] not in {"owner", "client", "agent"})
+                or (("principal_kind" in metadata) != ("principal_subject" in metadata))):
+            raise StoreError("invalid delivery context")
         if not isinstance(actor, str) or not actor.strip() or intent["principal"] != actor:
             raise AttemptRefused("UNTRUSTED_ACTOR", "claim principal differs from its actor")
         if (not re.fullmatch(r"[a-f0-9]{64}", intent["intent_digest"])
@@ -1262,8 +1271,11 @@ class AgentControlStore:
                 return {"claimed": False, "record": json.loads(json.dumps(public))}
             marker = uuid.uuid4().hex
             record = kernel.attempt_record(
-                **{k: v for k, v in intent.items() if k != "expected_project_path"},
+                **{k: v for k, v in intent.items() if k != "expected_project_path" and k not in metadata_fields},
                 phase=kernel.EFFECT_UNKNOWN, at=datetime.now(timezone.utc).isoformat())
+            # Correlation labels only; work_item/grant/lease ownership stays in
+            # the existing owner APIs and is never inferred from these refs.
+            record.update(metadata)
             if project:
                 record["expected_project_path"] = expected
             record["_dispatch_claim"] = marker
@@ -1272,12 +1284,15 @@ class AgentControlStore:
             return {"claimed": True, "claim_id": marker,
                     "record": {k: v for k, v in record.items() if k != "_dispatch_claim"}}
 
-    def complete_dispatch_claim(self, key, *, digest, claim_id, actor, receipt) -> dict:
+    def complete_dispatch_claim(self, key, *, digest, claim_id, actor, receipt, project=None) -> dict:
         """Record only the original invocation's ACK; unknown retries cannot reopen it."""
         if (not isinstance(receipt, dict)
                 or receipt.get("accepted") is not True
                 or len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > 65536):
             raise StoreError("invalid closed delivery receipt")
+        if project is not None and (not isinstance(project, str) or len(project) > 200
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:|\-]*", project) is None):
+            raise StoreError("invalid delivery project")
         for name in ("run_id", "delivery_id", "queued_message_uuid"):
             value = receipt.get(name)
             if value is not None and (not isinstance(value, str) or not value.strip()
@@ -1311,6 +1326,10 @@ class AgentControlStore:
                         and not receipt.get("queued_message_uuid") and not receipt.get("delivery_id")):
                     raise StoreError("send acknowledgement has no execution reference")
             updated = {k: v for k, v in record.items() if k != "_dispatch_claim"}
+            if project is not None:
+                if record["verb"] == "project.create" or record.get("project", project) != project:
+                    raise StoreError("delivery project differs from original intent")
+                updated["project"] = project
             updated.update(phase="ACCEPTED", result=dict(receipt))
             section[str(key)] = updated
             self._flush()

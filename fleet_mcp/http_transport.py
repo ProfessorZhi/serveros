@@ -52,6 +52,7 @@ from .audit import AuditLog
 from .errors import FleetRefusal
 from .feishu_sso import FeishuBroker, SSOError, build_feishu
 from .fleet import Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
+from .principals import authenticated_principal
 from .oauth import (
     ALLOWED_SCOPES,
     AuthorizationServer,
@@ -157,7 +158,7 @@ class HttpSurface:
             # own credential would buy nothing and cost the whole feature: the
             # local tools would be the one caller unable to do what the binding
             # is configured to permit.
-            return Principal(
+            return authenticated_principal(self.config,
                 name="owner-pat",
                 scopes=frozenset(ALLOWED_SCOPES if self.config.policy.owner_max.get("owner-pat")
                                  else (SCOPE_READ, SCOPE_SEND, SCOPE_CREATE)),
@@ -185,8 +186,8 @@ class HttpSurface:
                     raise HttpAuthError(
                         "a Feishu identity token did not carry a Feishu subject"
                     )
-                return Principal(name=subject, scopes=scopes, credential_kind="feishu")
-            return Principal(
+                return authenticated_principal(self.config, name=subject, scopes=scopes, credential_kind="feishu")
+            return authenticated_principal(self.config,
                 name=f"oauth:{claims.get('cid', 'unknown')}",
                 scopes=scopes,
                 credential_kind="oauth",

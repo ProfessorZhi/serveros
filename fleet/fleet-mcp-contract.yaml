@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-9
+tool_surface_revision: fleet-mcp-10
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -154,6 +154,11 @@ tools:
     verb: write
     answers: the run id a delivered message produced
     answered_by: the device's provider adapter
+    dispatch_context: >-
+      Optional work_ref, parent_ref and agent_ref are bounded correlation
+      identifiers carried in the intent digest, accepted dispatch metadata,
+      audit and derived events. Changing context under the same scoped key
+      conflicts. They confer no Work ownership, parent authority or grant.
     admission: >-
       Two gates, on two machines, and both must open. This surface admits the
       call through the per-credential scope `fleet:send`, the device's
@@ -192,6 +197,11 @@ tools:
     verb: write
     answers: the session a device minted, and the run its first message started
     answered_by: the device's provider adapter (CloudCLI `session_create`)
+    dispatch_context: >-
+      Optional work_ref, parent_ref and agent_ref use the same correlation-only
+      contract as fleet_send_to_session. They are never forwarded to the
+      provider. Project metadata comes from the selected authorized project;
+      sending records project only from already verified session metadata.
     schema: >-
       The arguments are CloudCLI 1.39's own `session_create` input schema,
       carried unchanged rather than renamed: `project` (required, already a
@@ -603,6 +613,16 @@ ingress:
 # from the per-session allowlist — those fields and no message body.
 
 authorization:
+  principals:
+    field: auth.principals
+    schema: exact credential name to {subject, kind}
+    kinds: [owner, client, agent]
+    default: unmapped credentials retain their name as subject and kind client
+    authority: >-
+      Only trusted binding/authentication mapping selects kind and canonical
+      subject. Owner aliases may share a stable subject. Each credential keeps
+      its original name and credential_kind for grants, replay keys and inbox
+      cursors. Kind never supplies scopes, target grants or Work ownership.
   operator_grants:
     field: policy.operator_grants
     declared_in: fleet_mcp/config.py#load_operator_grants

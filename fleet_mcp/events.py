@@ -15,13 +15,15 @@ from typing import Callable
 
 from .identity import SessionKey
 from .errors import FleetRefusal
+from .principals import KINDS as PRINCIPAL_KINDS, CONTEXT_REFS, valid_ref
 
 KINDS = frozenset({"run.completed", "run.failed", "run.cancelled", "run.unknown", "run.corrected"})
 LEVELS = frozenset({"auto", "notify", "decide"})
 STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "UNKNOWN"})
 _REQUIRED = {"event_id", "kind", "level", "device_ref", "runtime", "session_ref",
              "run_id", "dispatcher", "occurred_at", "summary"}
-_OPTIONAL = {"project", "work_ref", "parent_ref", "agent_ref", "delivery_id"}
+_OPTIONAL = {"project", "work_ref", "parent_ref", "agent_ref", "delivery_id",
+             "principal_subject", "principal_kind"}
 
 
 def _text(value, name, maximum=512):
@@ -45,6 +47,10 @@ def validate_event(event):
             if name == "run_id" and event[name] is None and "delivery_id" in event:
                 continue
             _text(event[name], name)
+    if (("principal_subject" in event) != ("principal_kind" in event)
+            or "principal_kind" in event and event["principal_kind"] not in PRINCIPAL_KINDS
+            or any(not valid_ref(event[name]) for name in (*CONTEXT_REFS, "principal_subject") if name in event)):
+        raise ValueError("invalid event principal or correlation reference")
     if event["kind"] not in KINDS or event["level"] not in LEVELS:
         raise ValueError("unknown event kind or level")
     summary = event["summary"]
