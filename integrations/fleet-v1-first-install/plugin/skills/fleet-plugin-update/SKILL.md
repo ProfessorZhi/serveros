@@ -125,7 +125,8 @@ rollback target — say so before the update, not after.
 
 The stable identity is the point: the same plugin id, the same `apps` binding,
 a new version, the old Skills still there, and a rollback target that a person
-can actually return to. The tool count is not a package constant: after the core
-adds the project-create capability, read the actual `tools/list` and update the
-client evidence rather than assuming a count. A missing project-create capability is reported as absent,
-not invented by the package.
+can actually return to. The tool count is not a package constant: whenever the
+core changes its surface (as it did when `fleet_create_project` and
+`fleet_delete_project` arrived), read the actual `tools/list` and update the
+client evidence rather than assuming a count. A capability missing from the
+served list is reported as absent, not invented by the package.

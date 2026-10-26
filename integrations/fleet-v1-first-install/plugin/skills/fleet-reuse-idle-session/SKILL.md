@@ -33,9 +33,10 @@ diagnosis for a route/credential problem, and the filtered listing for a
 session. A global status read is a diagnostic, not a prerequisite.
 
 If no session can carry the task, create one inside the owner-max profile
-following `fleet-create-with-grants`. For a new project, use the capability
-discovery described there: the exact project-create name comes from the actual
-tool list, not from this Skill.
+following `fleet-create-with-grants`. For a new project, that Skill's
+`fleet_create_project` procedure applies: confirm it in the actual tool list,
+take the root from `fleet_status.owner_access`, and use the returned
+`project_id` for the session.
 
 ## Sending well
 

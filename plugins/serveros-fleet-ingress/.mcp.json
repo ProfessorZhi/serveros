@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "serveros-fleet": {
+      "type": "http",
+      "url": "https://serveros-fleet-next.tail3d8b76.ts.net/mcp",
+      "oauth": {
+        "scopes": "fleet:read fleet:send fleet:control fleet:create fleet:approve fleet:navigate",
+        "callbackPort": 64648
+      }
+    }
+  }
+}

@@ -53,11 +53,13 @@ unknown outranks nothing at all.
 
 The surface's capability list is read, not remembered. Use `tools/list` (or the
 plugin's recorded list from the same source) before assuming a verb exists.
-The **project-create** capability is a core-owned addition, not a name this
-Skill can invent: if the actual list serves it, use its exact name and schema;
-if it is absent, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and return the
-decision to the core/owner. Do not hardcode a tool count (the current count is
-not a permanent fact), and do not guess a project-create verb.
+The **project-create** capability is `fleet_create_project` where the served
+list carries it, and the roots it may use are in `fleet_status.owner_access`
+for the device and runtime you resolved. Existing projects, archived ones
+included, are in `fleet_cloudcli_projects_list`. If the served list has no
+project-create capability, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and
+return the decision to the core/owner. Do not hardcode a tool count (the
+current count is not a permanent fact), and do not guess another verb name.
 
 The owner-max managed profile is configured once by the owner. Inside it,
 routine create/send/dispatch is pre-authorized; the client does not ask a human

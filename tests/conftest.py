@@ -126,7 +126,40 @@ def _load_paths():
 RESOLVER_MARKER = "reads_the_ingress_resolver"
 
 
+#: Set by `scripts/hermetic_tests.py`: the private directory its roots live in.
+HERMETIC_WORK_ROOT = "SERVEROS_HERMETIC_WORK_ROOT"
+
+
+def _give_this_xdist_worker_its_own_roots() -> None:
+    """Under `pytest -n`, rebind every node root to this worker's own copy.
+
+    The hermetic runner binds one set of throwaway roots before pytest starts,
+    and xdist workers inherit it — so two workers shared one daemon socket
+    under `XDG_RUNTIME_DIR` and one state directory, and tests that pass alone
+    failed together. Each worker now prepares its own set through the same
+    seam the runner used. Outside the hermetic runner, or without xdist,
+    nothing changes.
+    """
+    import importlib.util
+    import os
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    work_root = os.environ.get(HERMETIC_WORK_ROOT)
+    if not worker or not work_root:
+        return
+    root = Path(work_root) / worker
+    if root.exists():
+        return
+    root.mkdir(mode=0o700)
+    spec = importlib.util.spec_from_file_location(
+        "serveros_hermetic_runner", REPO / "scripts" / "hermetic_tests.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    os.environ.update(runner.bind_roots(root))
+
+
 def pytest_configure(config):
+    _give_this_xdist_worker_its_own_roots()
     config.addinivalue_line(
         "markers", f"{RESOLVER_MARKER}: this test exercises the record's "
                    "resolver and must see the real function")

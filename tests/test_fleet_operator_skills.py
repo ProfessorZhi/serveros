@@ -144,9 +144,10 @@ def hardcodes_tool_count(text: str) -> bool:
 
 
 def names_invented_project_verb(text: str) -> bool:
+    # `fleet_create_project` is served now, so naming it is no longer an
+    # invention; `test_every_fleet_backtick_name_is_served` keeps that honest.
     return any(name in text for name in
-               ("fleet_create_project", "fleet_project_create",
-                "fleet_new_project"))
+               ("fleet_project_create", "fleet_new_project"))
 
 
 def has_capability_discovery(text: str) -> bool:
@@ -304,7 +305,7 @@ class TheOwnerMaxManagedProfileIsStated(unittest.TestCase):
         self.assertFalse(hardcodes_tool_count(all_text))
 
     def test_project_creation_uses_capability_discovery(self) -> None:
-        invented = "Call `fleet_create_project` to make a new project."
+        invented = "Call `fleet_project_create` to make a new project."
         self.assertTrue(names_invented_project_verb(invented))
         for name in ("fleet-create-with-grants",
                      "fleet-device-and-session-discovery",
@@ -313,6 +314,8 @@ class TheOwnerMaxManagedProfileIsStated(unittest.TestCase):
                 text = body(name)
                 self.assertTrue(has_capability_discovery(text))
                 self.assertFalse(names_invented_project_verb(text))
+                self.assertIn("fleet_create_project", text)
+                self.assertIn("fleet_status.owner_access", text)
 
 
 class TheSkillsNameOnlyServedTools(unittest.TestCase):
@@ -326,6 +329,19 @@ class TheSkillsNameOnlyServedTools(unittest.TestCase):
         self.assertTrue(referenced)
         self.assertEqual({name: sorted(where) for name, where in referenced.items()
                           if name not in served}, {})
+
+    def test_login_is_password_and_one_time_code_not_chat(self) -> None:
+        text = body("fleet-safety-boundaries")
+        self.assertIn("one-time code", text)
+        self.assertIn("Never ask for the password or the one-time code in chat", text)
+        self.assertIn("auth.pat_enabled", text)
+
+    def test_project_removal_is_documented_with_its_confirmation(self) -> None:
+        text = body("fleet-create-with-grants")
+        for word in ("fleet_delete_project", "confirm_path", "fleet:control",
+                     "PROJECT_NOT_FOUND"):
+            with self.subTest(word=word):
+                self.assertIn(word, text)
 
     def test_no_unserved_batch_or_scheduler_name_is_written(self) -> None:
         all_text = "\n".join(p.read_text(encoding="utf-8")

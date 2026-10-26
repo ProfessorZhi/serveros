@@ -1,0 +1,22 @@
+{
+  "$schema": "https://code.claude.com/schemas/plugin.json",
+  "name": "serveros-fleet-ingress",
+  "displayName": "ServerOS Fleet",
+  "version": "1.0.0",
+  "description": "ServerOS Fleet — reach an authorized Linux device and its Claude/Codex sessions through the Fleet ingress MCP server. Carries a remote streamable-HTTP MCP binding and the operator Skills that teach an assistant to discover a real device, reuse an idle session before creating one, and accept only evidence it actually read.",
+  "author": {
+    "name": "ProfessorZhi"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ProfessorZhi/serveros",
+  "repository": "https://github.com/ProfessorZhi/serveros",
+  "keywords": [
+    "serveros",
+    "fleet",
+    "mcp",
+    "remote-session",
+    "operator-skills"
+  ],
+  "icon": "./assets/composerIcon.png",
+  "privacyPolicyUrl": "https://github.com/ProfessorZhi/serveros/blob/main/integrations/fleet-v1-first-install/plugin/PRIVACY.md"
+}

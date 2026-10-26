@@ -81,10 +81,14 @@ context; when none can carry the task, create inside the owner-max profile
 without a fresh human approval. Use `fleet_send_to_session` for an existing
 session and `fleet_create_session` for a new one.
 
-For a **new project**, use the core's project-create capability only if the
-actual tool list serves it. Take the exact name and schema from that tool list;
-if the capability is absent, report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and
-return the decision to the core/owner. Do not guess a verb name or a tool count.
+For a **new project**, confirm the capability in the actual tool list, then
+take a root ref from `fleet_status.owner_access` and call
+`fleet_create_project` with a stable `idempotency_key`; use the returned
+`project_id` for `fleet_create_session`. Inside owner-max this needs no
+per-project approval. If the served list has no project-create capability,
+report `PROJECT_CREATE_CAPABILITY_NOT_EXPOSED` and return the decision to the
+core/owner. Do not guess a verb name or a tool count. The full procedure and
+its refusals are in `fleet-create-with-grants`.
 After create, read back the effective model and native permission mode for that
 CC or Codex runtime; they are per-runtime facts, not a fleet default.
 
