@@ -104,6 +104,29 @@ Start-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector'
 Start-ScheduledTask -TaskName 'ServerOS-FleetNode-Tunnel'
 ```
 
+## Native delivery reads on named runtime profiles
+
+For a named runtime such as `codex-owner`, add its actual native family to this
+device's existing connector binding before enabling delivery correlation:
+
+```yaml
+runtime: codex-owner
+family: codex
+```
+
+`family` accepts exactly `claude` or `codex`. Choose it from the configured
+CloudCLI runtime and verified session metadata; the profile name does not prove
+the family. The Fleet host binding must declare the same actual family. Apply
+the edited local binding through the normal connector restart/release procedure.
+Keep the existing device identity, endpoints, secret anchors and state intact.
+
+Existing bindings remain loadable. Unqualified `claude` and `codex` runtimes
+need no added field. A named profile without `family` returns
+`CAPABILITY_UNSUPPORTED` for delivery reads before calling CloudCLI; it cannot
+silently assume Claude. A contradictory family is refused on the signed native
+mirror as well as the authored delivery read. This binding field is shared by
+Windows and Linux; the Linux binding path is documented in `README.linux.md`.
+
 ## Uninstalling
 
 ```powershell

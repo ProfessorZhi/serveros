@@ -224,6 +224,7 @@ KIND_BY_FIELD: dict[str, str] = {
     "project_id": REF,
     "runtime": CODE,
     "run_id": REF,
+    "delivery_id": REF,
     "idempotency_key": DIGEST,  # opaque, caller-chosen, correlatable
     "mode": CODE,
     "limit": COUNT,

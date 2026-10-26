@@ -113,7 +113,9 @@ class RunWatcher:
         delivery_id = template.get("delivery_id")
         boot_id = None
         if delivery_id is not None:
-            payload = validate_delivery(provider.get_delivery(key, delivery_id), key, delivery_id)
+            family = (self.service.config.session_binding(key).family
+                      if key.provider not in {"claude", "codex"} else key.provider)
+            payload = validate_delivery(provider.get_delivery(key, delivery_id), key, delivery_id, family=family)
             if payload.get("provider") is not None:
                 binding = self.service.config.session_binding(key)
                 if payload["provider"] not in {key.provider, binding.family}:

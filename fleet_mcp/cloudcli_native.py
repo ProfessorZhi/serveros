@@ -1036,9 +1036,11 @@ def validate_delivery(payload, key, delivery_id, *, family=None):
         if payload.get(field) is not None and payload[field] != value:
             raise refuse(BAD_SESSION_REF, "delivery metadata contradicts its requested target")
     native_family = key.provider if key.provider in {"claude", "codex"} else family
+    if not isinstance(native_family, str) or native_family not in {"claude", "codex"}:
+        raise refuse("CAPABILITY_UNSUPPORTED", "delivery lookup requires a known expected native family")
     if payload.get("provider") is not None:
-        providers = {key.provider} if payload.get("session_ref") is not None else {key.provider, native_family}
-        if native_family is not None and payload["provider"] not in providers:
+        providers = {key.provider} if payload.get("session_ref") is not None else {native_family}
+        if payload["provider"] not in providers:
             raise refuse(BAD_SESSION_REF, "delivery metadata names another session family")
     run_id = payload.get("runId")
     if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()

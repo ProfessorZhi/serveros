@@ -89,7 +89,7 @@ import yaml
 from ..errors import BAD_REQUEST, FleetRefusal
 from ..identity import SessionKey
 from ..local_roots import binding_candidates, refusal_if_closed_root
-from ..runtime_identity import BASE_RUNTIME
+from ..runtime_identity import BASE_RUNTIME, FAMILIES
 from ..node_protocol import (
     PROTOCOL,
     CORE_SIGNATURE_HEADER,
@@ -325,8 +325,18 @@ class NodeConfig:
     # else reads this file, so nothing else can re-grant it.
     allow_all_sessions_for_owner: tuple[str, ...] = ()
     owner_access: Any = None
+    # Owner-local native family for named runtime profiles. Missing remains
+    # loadable for legacy bindings, but cannot authorize delivery correlation.
+    family: str | None = None
 
     def __post_init__(self):
+        family = self.family
+        if family is None and self.runtime in FAMILIES:
+            family = self.runtime
+        if (family is not None and (not isinstance(family, str) or family not in FAMILIES
+                or self.runtime in FAMILIES and family != self.runtime)):
+            raise FleetRefusal(BAD_REQUEST, "family must be claude or codex and agree with an unqualified runtime")
+        object.__setattr__(self, "family", family)
         if self.owner_access is not None:
             from ..owner_access import OwnerAccessProfile
             if not isinstance(self.owner_access, OwnerAccessProfile):
@@ -743,6 +753,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         allow_create=allow_create,
         allow_create_projects=allow_create_projects,
         runtime=_runtime_tag(raw.get("runtime")),
+        family=raw.get("family"),
         allow_control=_flag(raw.get("allow_control"), name="allow_control"),
         allow_control_to=_control_sessions(raw.get("allow_control_to")),
         # The two flags that open `approval_answer` and `ui_open_session` on THIS
@@ -775,6 +786,8 @@ class Connector:
         self.provider = CloudCliProvider(
             ProviderBinding(
                 device_ref=config.device_ref,
+                runtime=config.runtime,
+                family=config.family or BASE_RUNTIME,
                 kind="cloudcli-mcp-http",
                 endpoint=config.cloudcli_endpoint,
                 credential_anchor=config.cloudcli_credential_anchor,
@@ -998,6 +1011,9 @@ class Connector:
         self._native_floor(cloudcli_native, cloudcli_native.NATIVE_BY_NAME[tool],
                            arguments)
         if tool == "run_get" and "deliveryId" in arguments:
+            if self.config.family not in FAMILIES:
+                raise FleetRefusal("CAPABILITY_UNSUPPORTED",
+                    "named runtime delivery lookup requires an explicit local family declaration")
             session = arguments.get("session")
             if not isinstance(session, str) or not session.strip():
                 raise FleetRefusal("BAD_REQUEST", "delivery lookup requires its native session")
@@ -1014,7 +1030,8 @@ class Connector:
                         or key.provider not in allowed):
                     raise FleetRefusal("BAD_REQUEST", "delivery target contradicts signed runtime/session")
             answer = caller(key, arguments["deliveryId"])
-            return cloudcli_native.validate_delivery(answer, key, arguments["deliveryId"])
+            return cloudcli_native.validate_delivery(answer, key, arguments["deliveryId"],
+                                                     family=self.config.family)
         # DEVICE-side approval ownership: the requestId must be one THIS machine
         # enumerates for the named session, checked here from the machine's own
         # register. The host checks the same thing on its side; both must hold,

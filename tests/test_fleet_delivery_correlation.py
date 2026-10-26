@@ -106,6 +106,9 @@ def test_delivery_profile_accepts_native_family_but_refuses_a_different_family()
     p._client = lambda: delivery_client(delivery(provider="claude"))
     with pytest.raises(FleetRefusal):
         p.get_delivery(key, "delivery-1")
+    p._client = lambda: delivery_client(delivery(provider="codex-owner"))
+    with pytest.raises(FleetRefusal):
+        p.get_delivery(key, "delivery-1")
 
 
 def test_delivery_refuses_conflicting_run_aliases():
@@ -348,3 +351,103 @@ def test_node_delivery_uses_existing_signed_native_route(tmp_path, namespace):
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+def node_profile_config(tmp_path, family=None, runtime="codex-owner"):
+    import yaml
+    from fleet_mcp.node.connector import load_node_config
+    secret, token = tmp_path / "node.secret", tmp_path / "cloudcli.token"
+    secret.write_text("fixture-secret")
+    token.write_text("fixture-token")
+    raw = {"schema": "serveros/fleet-node.local/v1", "device_ref": KEY.device_ref,
+        "runtime": runtime, "secret_anchor": str(secret),
+        "cloudcli_endpoint": "http://127.0.0.1:1/mcp",
+        "cloudcli_credential_anchor": str(token), "port": 0}
+    if family is not None:
+        raw["family"] = family
+    path = tmp_path / "binding.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return load_node_config(path)
+
+
+@pytest.mark.parametrize("declared_family", ["claude", "codex"])
+def test_signed_named_profile_native_delivery_requires_declared_native_family(tmp_path, declared_family):
+    import threading
+    from fleet_mcp.config import ProviderBinding
+    from fleet_mcp.node.connector import Connector, serve
+    from fleet_mcp.providers.fleet_node import FleetNodeProvider
+    # The namespace intentionally says codex even for the configured Claude case:
+    # only the local explicit declaration determines native family.
+    config = node_profile_config(tmp_path, declared_family)
+    connector = Connector(config)  # keep its REAL CloudCLI provider and binding
+    client = delivery_client(delivery(provider=declared_family))
+    connector.provider._client = lambda: client
+    server = serve(config, connector=connector)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    key = SessionKey.compose(KEY.device_ref, "codex-owner", "session-1")
+    try:
+        p = FleetNodeProvider(ProviderBinding(device_ref=KEY.device_ref, runtime="codex-owner",
+            family=declared_family, kind="fleet-node", credential_anchor=config.secret_anchor,
+            endpoint=f"http://127.0.0.1:{server.server_address[1]}"))
+        args = {"deliveryId": "delivery-1", "session": "session-1"}
+        answer = p.native_call("run_get", args, session_ref=key.ref)
+        assert answer["provider"] == declared_family
+        wrong = "claude" if declared_family == "codex" else "codex"
+        client = delivery_client(delivery(provider=wrong))
+        with pytest.raises(FleetRefusal):
+            p.native_call("run_get", args, session_ref=key.ref)
+        # The authored arm retains its own guard too.
+        with pytest.raises(FleetRefusal):
+            p.get_delivery(key, "delivery-1")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def test_named_node_profile_without_family_refuses_before_native_call(tmp_path):
+    from fleet_mcp.node.connector import Connector
+    connector = Connector(node_profile_config(tmp_path))
+    client = delivery_client(delivery(provider="claude"))
+    connector.provider._client = lambda: client
+    with pytest.raises(FleetRefusal) as error:
+        connector._native_call({"tool": "run_get", "arguments": {
+            "session": "session-1", "deliveryId": "delivery-1"},
+            "session_ref": "device:work-fj|codex-owner|session-1"})
+    assert error.value.code == "CAPABILITY_UNSUPPORTED"
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("family", [None, "unknown", "codex-owner", ["codex"]])
+def test_unknown_expected_family_never_disables_delivery_validation(family):
+    from fleet_mcp.cloudcli_native import validate_delivery
+    key = SessionKey.compose(KEY.device_ref, "codex-owner", "session-1")
+    with pytest.raises(FleetRefusal):
+        validate_delivery(delivery(provider="claude"), key, "delivery-1", family=family)
+
+
+@pytest.mark.parametrize("family", ["", "Codex", "unknown", True, ["codex"]])
+def test_node_profile_family_declaration_is_a_closed_native_family(tmp_path, family):
+    with pytest.raises(FleetRefusal) as error:
+        node_profile_config(tmp_path, family)
+    assert error.value.code == "BAD_REQUEST"
+
+
+def test_base_node_runtime_cannot_declare_the_other_native_family(tmp_path):
+    with pytest.raises(FleetRefusal):
+        node_profile_config(tmp_path, "claude", runtime="codex")
+
+
+def test_named_profile_observer_uses_the_configured_native_family(tmp_path):
+    from types import SimpleNamespace
+    e, s = store(tmp_path / "events.db"), delivery_service(delivery(runId="bound", provider="codex"))
+    a = Attempts(run_id=None, delivery_id="delivery-1")
+    a.records["attempt-1"]["runtime"] = "codex-owner"
+    a.records["attempt-1"]["result"]["session_ref"] = "device:work-fj|codex-owner|session-1"
+    s.config = SimpleNamespace(session_binding=lambda key: SimpleNamespace(family="codex"))
+    s.provider.get_run = lambda *args, **kw: {"idKind": "run", "runId": "bound", "sessionId": "session-1",
+        "bootId": "boot-1", "status": "completed", "provider": "codex"}
+    watcher(s, e, a, lambda: 0).tick()
+    assert [(r["runtime"], r["run_id"], r["kind"]) for r in rows(e)] == [
+        ("codex-owner", "bound", "run.completed")]
